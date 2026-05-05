@@ -12,35 +12,34 @@ and it does not index whole repositories by default.
 - Redaction: known config files such as `.mcp.json`, `config.toml`, and settings JSON are copied through a redactor
   before import.
 - Secret scanning: candidate files are skipped if common token or private-key patterns remain after redaction.
+- User instructions: `install` upserts a managed Threadnote block in `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`
+  without replacing existing personal instructions.
 - Agent config changes are explicit: `mcp-install` prints commands and snippets by default; use `--apply` to run them.
 - Machine writes stay under `THREADNOTE_HOME`, which defaults to `~/.openviking`.
 
 ## Install
 
-Install with npm:
+Install with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+```
+
+This installs the published package from npmjs and runs `threadnote install`. It does not use npm `postinstall`,
+because setup writes local machine config and should be an explicit action.
+
+To force a runtime:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=bun sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=deno sh
+```
+
+Or install manually:
 
 ```bash
 npm install --global threadnote
 threadnote install
-threadnote doctor
-```
-
-With Bun:
-
-```bash
-bun install --global threadnote
-threadnote install
-threadnote doctor
-```
-
-With Deno:
-
-```bash
-deno install --global --name threadnote \
-  --allow-read --allow-write --allow-run --allow-env --allow-net \
-  npm:threadnote@latest
-threadnote install
-threadnote doctor
 ```
 
 For a one-off check before installing globally:
@@ -64,8 +63,8 @@ npm run doctor -- --dry-run
 npm run threadnote -- install
 ```
 
-`install` writes a small command shim to `~/.local/bin/threadnote` by default. After that, use the short command
-from any repo or working directory:
+`install` writes a small command shim to `~/.local/bin/threadnote` by default and upserts user-level agent guidance in
+`~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`. After that, use the short command from any repo or working directory:
 
 ```bash
 threadnote doctor --dry-run
@@ -84,7 +83,8 @@ The bundled `config/seed-manifest.example.yaml` is only an example. Each develop
 ## Commands
 
 - `doctor`: checks prerequisites, the generated command shim, manifest shape, templates, and local OpenViking health.
-- `install`: installs `openviking[local-embed]==0.3.12` if missing and creates `~/.openviking` config files if absent.
+- `install`: installs `openviking[local-embed]==0.3.12` if missing, creates `~/.openviking` config files if absent,
+  writes the command shim, and upserts user-level agent instructions.
 - `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude MCP configs from the
   current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
@@ -188,8 +188,7 @@ See `docs/migration.md` for switching an existing repo workflow to `threadnote` 
 See `docs/demo.md` for an engineer-facing demo script that shows recall, read, remember, handoff, and repair across
 agents or worktrees.
 
-See `docs/agent-instructions.md` for the agent-side behavior that makes recall, remember, and handoff mostly
-automatic instead of a manual developer chore.
+See `docs/agent-instructions.md` for the user-level agent guidance installed by `threadnote install`.
 
 ## Recall And Read
 

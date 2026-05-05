@@ -13,6 +13,10 @@
     "type": "git",
     "url": "git+https://github.com/Kashkovsky/threadnote.git"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "agent",
     "context",
@@ -31,7 +35,8 @@
     "dist/",
     "docs/",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "scripts/"
   ],
   "scripts": {
     "build": "npm run clean --silent && esbuild threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs",

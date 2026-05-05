@@ -15,6 +15,8 @@
 - `.mcp.json`, `config.toml`, and settings JSON are redacted before import.
 - Files are skipped if common secret patterns remain after redaction.
 - `mcp-install` requires `--apply` before it changes Codex or Claude config.
+- `install` updates user-level Codex and Claude instruction files through a managed Markdown block. Existing personal
+  instructions outside that block are preserved.
 - Config files created under `THREADNOTE_HOME` are written with user-only permissions.
 
 ## Rollout Requirements

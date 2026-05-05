@@ -45,9 +45,10 @@ Remember that this repo uses <durable workflow fact>.
 Create a handoff for the next agent before you stop.
 ```
 
-For better continuity, add the agent-side guidance from `docs/agent-instructions.md` to the relevant `AGENTS.md` and
-`CLAUDE.md` files. That guidance tells agents to recall context at task start, store durable memories when explicitly
-asked or when a reusable workflow fact is learned, and create handoffs automatically before stopping meaningful work.
+For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
+to the user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` files. That guidance tells agents to recall context at
+task start, store durable memories when explicitly asked or when a reusable workflow fact is learned, and create
+handoffs automatically before stopping meaningful work.
 
 ## Migration Steps
 
@@ -57,21 +58,20 @@ paths.
 1. Check prerequisites:
 
    ```bash
-   npm install --global threadnote
+   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
    threadnote doctor --dry-run
    ```
 
-   Bun users can use `bun install --global threadnote`. Deno users can install the npm package with explicit
-   permissions:
+   To force Bun or Deno:
 
    ```bash
-   deno install --global --name threadnote \
-     --allow-read --allow-write --allow-run --allow-env --allow-net \
-     npm:threadnote@latest
+   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=bun sh
+   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=deno sh
    ```
 
-2. Install or repair local OpenViking. This also installs the short `threadnote` command shim to `~/.local/bin` by
-   default:
+2. Install or repair local OpenViking. This also installs the short `threadnote` command shim to `~/.local/bin` and
+   upserts user-level agent instructions by default. The one-line installer already runs `threadnote install`; run these
+   only when doing the manual install flow or previewing changes:
 
    ```bash
    threadnote install --dry-run
@@ -158,7 +158,8 @@ Remember this workflow note for future agents: ...
 Create a handoff now.
 ```
 
-Preferred agent behavior is automatic when the relevant instruction file includes `docs/agent-instructions.md`:
+Preferred agent behavior is automatic after `threadnote install` has updated the user-level Codex and Claude instruction
+files:
 
 - On non-trivial task start, search OpenViking for recent handoffs and relevant repo guidance.
 - When the user says "remember", store the memory after checking that it contains no secret or customer data.

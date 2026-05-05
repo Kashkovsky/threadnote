@@ -1,11 +1,11 @@
 # Agent Instructions
 
-Use this as the repo instruction snippet that turns OpenViking from a manual CLI into agent behavior.
+Threadnote installs this as user-level agent guidance for Codex and Claude.
 
 ## Shared Context
 
-This repo uses OpenViking as a shared local context and memory layer. Repo files remain authoritative: always follow the
-nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction file first.
+Use OpenViking through Threadnote as a shared local context and memory layer. Repo files remain authoritative: always
+follow the nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction file first.
 
 When OpenViking MCP tools are available, use them directly. If MCP is unavailable, use the `threadnote` CLI fallback.
 
@@ -29,7 +29,7 @@ When the user asks you to remember something, store it unless it contains secret
 logs, or other sensitive data.
 
 Also remember durable workflow facts you discover during work when they would help future agents and are not already in
-the repo's canonical docs. Prefer updating checked-in docs for canonical repo rules.
+canonical docs. Prefer updating checked-in docs for canonical repo rules.
 
 ## Handoff
 
@@ -49,6 +49,7 @@ Do not store long diffs, secrets, raw logs, or customer data in handoffs.
 Use these only when MCP tools are not available:
 
 ```bash
+threadnote start
 threadnote recall --query "last handoff for this branch"
 threadnote read viking://agent/threadnote/memories/.abstract.md
 threadnote list viking://agent/threadnote/memories --all --recursive
