@@ -89,6 +89,8 @@ The bundled `config/seed-manifest.example.yaml` is only an example. Each develop
   current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
 - `stop`: stops the detached server pid or macOS LaunchAgent.
+- `uninstall`: removes Threadnote shims, MCP config, launchd config, and managed user instructions. Memories are
+  preserved by default; pass `--erase-memories` to delete `THREADNOTE_HOME`.
 - `init-manifest`: creates or updates `~/.openviking/seed-manifest.yaml` from one or more developer repo roots.
 - `seed`: imports curated repo guidance and docs from the manifest.
 - `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog. Use
@@ -163,6 +165,29 @@ If a future OpenViking build exposes a healthy native endpoint, install it expli
 ```bash
 threadnote mcp-install claude --native-http --apply
 ```
+
+## Uninstall
+
+Preview removal:
+
+```bash
+threadnote uninstall --dry-run
+```
+
+Remove Threadnote setup while keeping local OpenViking memories:
+
+```bash
+threadnote uninstall
+```
+
+Erase local memories too:
+
+```bash
+threadnote uninstall --erase-memories
+```
+
+`uninstall` removes only Threadnote-managed files and agent config. The npm, Bun, or Deno package remains installed;
+remove that with the package manager you used to install it.
 
 ## Notes
 

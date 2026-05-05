@@ -21,4 +21,4 @@ Start with a local-only pilot.
 - Codex and Claude can both store and recall a shared handoff.
 - Seeding curated guidance does not import known secret patterns.
 - Fresh agents can recall repo testing guidance and discover relevant skills.
-- Removing OpenViking leaves agent configs in a known state.
+- `uninstall --dry-run` previews removal, and `uninstall` leaves memories intact unless `--erase-memories` is explicit.

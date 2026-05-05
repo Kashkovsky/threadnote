@@ -105,3 +105,15 @@ This is expected. Run with `--apply` after reviewing the command:
 ```bash
 threadnote mcp-install codex --apply
 ```
+
+## Uninstall Without Losing Memories
+
+Run:
+
+```bash
+threadnote uninstall --dry-run
+threadnote uninstall
+```
+
+By default, uninstall removes Threadnote-managed shims, MCP config, launchd config, and user instruction blocks while
+preserving `THREADNOTE_HOME`. To delete local OpenViking data too, pass `--erase-memories`.

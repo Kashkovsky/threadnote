@@ -17,6 +17,7 @@
 - `mcp-install` requires `--apply` before it changes Codex or Claude config.
 - `install` updates user-level Codex and Claude instruction files through a managed Markdown block. Existing personal
   instructions outside that block are preserved.
+- `uninstall` preserves local memories by default. `--erase-memories` is required before deleting `THREADNOTE_HOME`.
 - Config files created under `THREADNOTE_HOME` are written with user-only permissions.
 
 ## Rollout Requirements

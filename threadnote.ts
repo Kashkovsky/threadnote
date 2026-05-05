@@ -22,6 +22,7 @@ import {readdir} from 'node:fs/promises';
 import {realpath} from 'node:fs/promises';
 import {relative} from 'node:path';
 import {resolve} from 'node:path';
+import {rm} from 'node:fs/promises';
 import {sep} from 'node:path';
 import {spawn} from 'node:child_process';
 import {stat} from 'node:fs/promises';
@@ -138,6 +139,13 @@ interface RepairOptions {
   readonly mcp?: string;
   readonly packageManager?: PackageManager;
   readonly start?: boolean;
+}
+
+interface UninstallOptions {
+  readonly dryRun?: boolean;
+  readonly eraseMemories?: boolean;
+  readonly mcp?: string;
+  readonly preserveMemories?: boolean;
 }
 
 interface DoctorOptions {
@@ -285,6 +293,21 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print the stop actions without running them')
     .action(async (options: ForgetOptions) => {
       await runStop(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('uninstall')
+    .description('Remove Threadnote setup and optionally erase local memories')
+    .option('--dry-run', 'Print uninstall actions without making changes')
+    .option(
+      '--mcp <clients>',
+      'MCP clients to remove: available, all, none, codex, claude, or comma-separated list',
+      'available',
+    )
+    .option('--preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)')
+    .option('--erase-memories', 'Delete THREADNOTE_HOME, including all OpenViking memories')
+    .action(async (options: UninstallOptions) => {
+      await runUninstall(getRuntimeConfig(program), options);
     });
 
   program
@@ -544,7 +567,7 @@ async function runRepair(config: RuntimeConfig, options: RepairOptions): Promise
     console.log('Skipping server health repair because --no-start was provided.');
   }
 
-  const mcpClients = await resolveRepairMcpClients(options.mcp ?? 'available');
+  const mcpClients = await resolveMcpClients(options.mcp ?? 'available', 'repair');
   if (mcpClients.length === 0) {
     console.log('Skipping MCP config repair.');
   } else {
@@ -556,6 +579,32 @@ async function runRepair(config: RuntimeConfig, options: RepairOptions): Promise
 
   console.log('\nPost-repair doctor:');
   await runDoctor(config, {dryRun, strict: false});
+}
+
+async function runUninstall(config: RuntimeConfig, options: UninstallOptions): Promise<void> {
+  const dryRun = options.dryRun === true;
+  if (options.eraseMemories === true && options.preserveMemories === true) {
+    throw new Error('Use either --erase-memories or --preserve-memories, not both.');
+  }
+
+  console.log('Uninstalling local Threadnote setup.');
+  await runStop(config, {dryRun});
+  await removePathIfExists(join(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun);
+  await removeLaunchAgent(dryRun);
+  await removeMcpConfigs(options.mcp ?? 'available', dryRun);
+  await removeMcpSnippets(config, dryRun);
+  await removeCommandShim(dryRun);
+  await removeUserAgentInstructions(dryRun);
+
+  if (options.eraseMemories === true) {
+    await eraseThreadnoteHome(config.agentContextHome, dryRun);
+  } else {
+    console.log(`Preserving local memories and OpenViking home: ${config.agentContextHome}`);
+    console.log('Use --erase-memories to delete this directory during uninstall.');
+  }
+
+  console.log('Uninstall complete.');
+  console.log('The package remains installed. Remove it with your package manager if desired.');
 }
 
 async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<void> {
@@ -690,7 +739,11 @@ function spawnDetachedServer(server: string, args: readonly string[], logFd: num
 async function runStop(config: RuntimeConfig, options: ForgetOptions): Promise<void> {
   const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
   if (platform() === 'darwin') {
-    await maybeRun(options.dryRun === true, 'launchctl', ['unload', launchAgentPath], {allowFailure: true});
+    if (options.dryRun === true || (await exists(launchAgentPath))) {
+      await maybeRun(options.dryRun === true, 'launchctl', ['unload', launchAgentPath], {allowFailure: true});
+    } else {
+      console.log(`No LaunchAgent found: ${launchAgentPath}`);
+    }
   }
 
   const pidPath = join(config.agentContextHome, 'openviking-server.pid');
@@ -1288,6 +1341,20 @@ async function installCommandShim(dryRun: boolean): Promise<void> {
   console.log(`Wrote command shim: ${shimPath}`);
 }
 
+async function removeCommandShim(dryRun: boolean): Promise<void> {
+  const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
+  const content = await readFileIfExists(shimPath);
+  if (content === undefined) {
+    console.log(`Already absent: ${shimPath}`);
+    return;
+  }
+  if (!isManagedCommandShim(content)) {
+    console.log(`WARN not removing unmanaged command shim: ${shimPath}`);
+    return;
+  }
+  await removePath(shimPath, 'command shim', dryRun);
+}
+
 async function installUserAgentInstructions(dryRun: boolean): Promise<void> {
   const block = await renderUserAgentInstructionsBlock();
   for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
@@ -1309,6 +1376,36 @@ async function installUserAgentInstructions(dryRun: boolean): Promise<void> {
     await ensureDirectory(dirname(targetPath), false);
     await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
     console.log(currentContent === undefined ? `Wrote ${targetPath}` : `Updated ${targetPath}`);
+  }
+}
+
+async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
+  for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
+    const targetPath = expandPath(target.path);
+    const currentContent = await readFileIfExists(targetPath);
+    if (currentContent === undefined) {
+      console.log(`Already absent: ${targetPath}`);
+      continue;
+    }
+    const nextContent = removeManagedBlock(currentContent);
+    if (nextContent === undefined) {
+      console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
+      continue;
+    }
+    if (nextContent === currentContent) {
+      console.log(`No threadnote block found: ${targetPath}`);
+      continue;
+    }
+    if (nextContent.trim().length === 0) {
+      await removePath(targetPath, target.label, dryRun);
+      continue;
+    }
+    if (dryRun) {
+      console.log(`Would update ${targetPath}`);
+      continue;
+    }
+    await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
+    console.log(`Updated ${targetPath}`);
   }
 }
 
@@ -1338,6 +1435,21 @@ function upsertManagedBlock(content: string, block: string): string | undefined 
     return joinMarkdownSections([before, block, after]);
   }
   return joinMarkdownSections([content.trimEnd(), block]);
+}
+
+function removeManagedBlock(content: string): string | undefined {
+  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
+  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
+  if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) {
+    return undefined;
+  }
+  if (startIndex === -1) {
+    return content;
+  }
+  const before = content.slice(0, startIndex).trimEnd();
+  const after = content.slice(endIndex + USER_INSTRUCTIONS_END_MARKER.length).trimStart();
+  const nextContent = joinMarkdownSections([before, after]);
+  return nextContent.trim().length > 0 ? nextContent : '';
 }
 
 function joinMarkdownSections(sections: readonly string[]): string {
@@ -1396,6 +1508,42 @@ async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promi
   await maybeRun(false, 'launchctl', ['load', destination]);
   await maybeRun(false, 'launchctl', ['start', LAUNCHD_LABEL]);
   console.log(`Installed and started ${LAUNCHD_LABEL}`);
+}
+
+async function removeLaunchAgent(dryRun: boolean): Promise<void> {
+  const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
+  const content = await readFileIfExists(launchAgentPath);
+  if (content === undefined) {
+    console.log(`Already absent: ${launchAgentPath}`);
+    return;
+  }
+  if (!content.includes(LAUNCHD_LABEL) || !content.includes(OPENVIKING_SERVER_COMMAND)) {
+    console.log(`WARN not removing unmanaged LaunchAgent: ${launchAgentPath}`);
+    return;
+  }
+  await removePath(launchAgentPath, 'LaunchAgent', dryRun);
+}
+
+async function removeMcpConfigs(value: string, dryRun: boolean): Promise<void> {
+  const clients = await resolveMcpClients(value, 'remove');
+  if (clients.length === 0) {
+    console.log('Skipping MCP config removal.');
+    return;
+  }
+  for (const client of clients) {
+    const command = buildMcpRemoveCommand(client, OPENVIKING_MCP_NAME);
+    await maybeRun(dryRun, command.executable, command.args, {allowFailure: true, cwd: command.cwd});
+  }
+}
+
+async function removeMcpSnippets(config: RuntimeConfig, dryRun: boolean): Promise<void> {
+  await removePathIfExists(join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.codex.toml`), 'MCP snippet', dryRun);
+  await removePathIfExists(join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.claude.txt`), 'MCP snippet', dryRun);
+}
+
+async function eraseThreadnoteHome(path: string, dryRun: boolean): Promise<void> {
+  assertSafeThreadnoteHomeForErase(path);
+  await removePathIfExists(path, 'THREADNOTE_HOME and all memories', dryRun);
 }
 
 function openVikingServerArgs(config: RuntimeConfig): readonly string[] {
@@ -2248,6 +2396,23 @@ async function readFileIfExists(path: string): Promise<string | undefined> {
   }
 }
 
+async function removePathIfExists(path: string, label: string, dryRun: boolean): Promise<void> {
+  if (!(await exists(path))) {
+    console.log(`Already absent: ${path}`);
+    return;
+  }
+  await removePath(path, label, dryRun);
+}
+
+async function removePath(path: string, label: string, dryRun: boolean): Promise<void> {
+  if (dryRun) {
+    console.log(`Would remove ${label}: ${path}`);
+    return;
+  }
+  await rm(path, {force: true, recursive: true});
+  console.log(`Removed ${label}: ${path}`);
+}
+
 function renderTemplate(template: string, config: RuntimeConfig): string {
   return template
     .replaceAll('{{THREADNOTE_HOME}}', config.agentContextHome)
@@ -2295,7 +2460,7 @@ function parseClaudeMcpScope(value: string): ClaudeMcpScope {
   throw new Error(`Invalid Claude MCP scope: ${value}. Expected local, project, or user.`);
 }
 
-async function resolveRepairMcpClients(value: string): Promise<readonly AgentClient[]> {
+async function resolveMcpClients(value: string, action: 'remove' | 'repair'): Promise<readonly AgentClient[]> {
   const normalized = value.trim().toLowerCase();
   if (normalized === 'none' || normalized === 'false' || normalized === 'off') {
     return [];
@@ -2315,7 +2480,7 @@ async function resolveRepairMcpClients(value: string): Promise<readonly AgentCli
   const clients: AgentClient[] = [];
   for (const client of requested) {
     if (!(await findExecutable([client]))) {
-      console.log(`WARN ${client} command not found; cannot repair ${client} MCP config.`);
+      console.log(`WARN ${client} command not found; cannot ${action} ${client} MCP config.`);
       continue;
     }
     if (!clients.includes(client)) {
@@ -2343,6 +2508,13 @@ function expandPath(path: string): string {
     return join(homedir(), path.slice(2));
   }
   return isAbsolute(path) ? path : resolve(getInvocationCwd(), path);
+}
+
+function assertSafeThreadnoteHomeForErase(path: string): void {
+  const resolvedPath = resolve(path);
+  if (resolvedPath === '/' || resolvedPath === homedir() || resolvedPath === dirname(homedir())) {
+    throw new Error(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`);
+  }
 }
 
 function portablePath(path: string): string {
