@@ -1,0 +1,62 @@
+{
+  "name": "threadnote",
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "dist/threadnote.cjs",
+  "description": "Shared local context and handoffs for development agents",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/Kashkovsky/threadnote#readme",
+  "bugs": {
+    "url": "https://github.com/Kashkovsky/threadnote/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kashkovsky/threadnote.git"
+  },
+  "keywords": [
+    "agent",
+    "context",
+    "handoff",
+    "mcp",
+    "openviking"
+  ],
+  "bin": {
+    "threadnote": "bin/threadnote.cjs",
+    "threadnote-mcp-server": "bin/threadnote-mcp-server.cjs"
+  },
+  "files": [
+    ".threadnoteignore",
+    "bin/",
+    "config/",
+    "dist/",
+    "docs/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run clean --silent && esbuild threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs",
+    "clean": "rm -rf dist",
+    "dev": "tsx threadnote.ts",
+    "dev:mcp-server": "tsx mcp_server.ts",
+    "prepack": "npm run build",
+    "threadnote": "npm run build --silent && node ./bin/threadnote.cjs",
+    "doctor": "npm run build --silent && node ./bin/threadnote.cjs doctor",
+    "mcp-server": "npm run build --silent && node ./bin/threadnote-mcp-server.cjs",
+    "pack:dry-run": "npm pack --dry-run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.6.0",
+    "commander": "^14.0.3",
+    "esbuild": "^0.27.7",
+    "js-yaml": "^4.1.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "zod": "^4.4.3"
+  }
+}

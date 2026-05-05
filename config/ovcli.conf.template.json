@@ -1,0 +1,7 @@
+{
+  "url": "http://{{OPENVIKING_HOST}}:{{OPENVIKING_PORT}}",
+  "account": "{{OPENVIKING_ACCOUNT}}",
+  "user": "{{OPENVIKING_USER}}",
+  "agent_id": "{{OPENVIKING_AGENT_ID}}",
+  "timeout": 60
+}

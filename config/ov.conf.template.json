@@ -1,0 +1,14 @@
+{
+  "default_account": "{{OPENVIKING_ACCOUNT}}",
+  "default_user": "{{OPENVIKING_USER}}",
+  "default_agent": "{{OPENVIKING_AGENT_ID}}",
+  "storage": {
+    "workspace": "{{THREADNOTE_HOME}}/data"
+  },
+  "auto_generate_l0": false,
+  "auto_generate_l1": false,
+  "server": {
+    "host": "{{OPENVIKING_HOST}}",
+    "port": "{{OPENVIKING_PORT}}"
+  }
+}

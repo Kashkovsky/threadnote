@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.threadnote.openviking</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>openviking-server</string>
+    <string>--config</string>
+    <string>{{THREADNOTE_HOME}}/ov.conf</string>
+    <string>--host</string>
+    <string>{{OPENVIKING_HOST}}</string>
+    <string>--port</string>
+    <string>{{OPENVIKING_PORT}}</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENVIKING_CONFIG_FILE</key>
+    <string>{{THREADNOTE_HOME}}/ov.conf</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{THREADNOTE_HOME}}/logs/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{THREADNOTE_HOME}}/logs/server.log</string>
+</dict>
+</plist>

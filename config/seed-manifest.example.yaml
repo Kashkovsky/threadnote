@@ -1,0 +1,15 @@
+# Example only. Developers should generate ~/.openviking/seed-manifest.yaml from their own checkouts with:
+#   threadnote init-manifest --repo /path/to/repo
+version: 1
+projects:
+  - name: example-service
+    path: ~/src/example-service
+    uri: viking://resources/repos/example-service
+    seed:
+      - AGENTS.md
+      - CLAUDE.md
+      - .github/AGENTS.md
+      - .github/CLAUDE.md
+      - .claude/commands/*.md
+      - .claude/skills/**/SKILL.md
+      - docs/**/*.md
