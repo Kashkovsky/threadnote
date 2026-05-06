@@ -7,22 +7,14 @@ import {access} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {realpath} from 'node:fs/promises';
-import {spawn} from 'node:child_process';
 import {z} from 'zod';
-
-const DEFAULT_ACCOUNT = 'local';
-const DEFAULT_AGENT_ID = 'threadnote';
+import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
+import {errorMessage, findExecutable, runCommand} from './utils.js';
 
 interface RuntimeConfig {
   readonly account: string;
   readonly agentId: string;
   readonly user: string;
-}
-
-interface CommandResult {
-  readonly exitCode: number;
-  readonly stderr: string;
-  readonly stdout: string;
 }
 
 async function main(): Promise<void> {
@@ -224,16 +216,6 @@ async function requiredOpenVikingCli(): Promise<string> {
   return command;
 }
 
-async function findExecutable(commands: readonly string[]): Promise<string | undefined> {
-  for (const command of commands) {
-    const result = await runCommand('which', [command], {allowFailure: true});
-    if (result.exitCode === 0 && result.stdout.trim()) {
-      return result.stdout.trim();
-    }
-  }
-  return undefined;
-}
-
 async function firstExistingPath(paths: readonly string[]): Promise<string | undefined> {
   for (const path of paths) {
     try {
@@ -244,47 +226,6 @@ async function firstExistingPath(paths: readonly string[]): Promise<string | und
     }
   }
   return undefined;
-}
-
-async function runCommand(
-  executable: string,
-  args: readonly string[],
-  options: {readonly allowFailure?: boolean} = {},
-): Promise<CommandResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(executable, args);
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    child.stdout.on('data', chunk => {
-      stdoutChunks.push(String(chunk));
-    });
-    child.stderr.on('data', chunk => {
-      stderrChunks.push(String(chunk));
-    });
-    child.on('error', err => {
-      if (options.allowFailure === true) {
-        resolvePromise({exitCode: 127, stderr: errorMessage(err), stdout: ''});
-      } else {
-        rejectPromise(err);
-      }
-    });
-    child.on('close', code => {
-      const result = {
-        exitCode: code ?? 1,
-        stderr: stderrChunks.join(''),
-        stdout: stdoutChunks.join(''),
-      };
-      if (result.exitCode !== 0 && options.allowFailure !== true) {
-        rejectPromise(new Error(`${executable} ${args.join(' ')} failed: ${result.stderr || result.stdout}`));
-        return;
-      }
-      resolvePromise(result);
-    });
-  });
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 main().catch(err => {

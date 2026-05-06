@@ -174,6 +174,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
 
 ## Source Checkout
 
+TypeScript sources live under `src/`; `src/threadnote.ts` is the CLI entrypoint and `src/mcp_server.ts` is the stdio MCP
+adapter entrypoint.
+
 For local development from this repo:
 
 ```bash
@@ -224,9 +227,6 @@ only occurs when another process already owns the same host and port. If that ha
 
 See `docs/migration.md` for switching an existing repo workflow to `threadnote` without deleting canonical
 `AGENTS.md`, `CLAUDE.md`, `.claude/`, or `.agents/` files.
-
-See `docs/demo.md` for an engineer-facing demo script that shows recall, read, remember, handoff, and repair across
-agents or worktrees.
 
 See `docs/agent-instructions.md` for the user-level agent guidance installed by `threadnote install`.
 

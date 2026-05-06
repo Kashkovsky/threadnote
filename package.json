@@ -39,11 +39,17 @@
     "scripts/"
   ],
   "scripts": {
-    "build": "npm run clean --silent && esbuild threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs",
+    "build": "npm run clean --silent && esbuild src/threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild src/mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs",
     "clean": "rm -rf dist",
-    "dev": "tsx threadnote.ts",
-    "dev:mcp-server": "tsx mcp_server.ts",
+    "dev": "tsx src/threadnote.ts",
+    "dev:mcp-server": "tsx src/mcp_server.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "prepare": "husky",
+    "precommit": "npm run lint && npm run prettier:check",
     "prepack": "npm run build",
+    "prettier:check": "prettier --check \"**/*.{ts,js,cjs,json,md,yaml,yml}\"",
+    "prettier:write": "prettier --write \"**/*.{ts,js,cjs,json,md,yaml,yml}\"",
     "threadnote": "npm run build --silent && node ./bin/threadnote.cjs",
     "doctor": "npm run build --silent && node ./bin/threadnote.cjs doctor",
     "mcp-server": "npm run build --silent && node ./bin/threadnote-mcp-server.cjs",
@@ -54,14 +60,20 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
     "commander": "^14.0.3",
     "esbuild": "^0.27.7",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
     "js-yaml": "^4.1.1",
+    "prettier": "^3.8.3",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2",
     "zod": "^4.4.3"
   }
 }
