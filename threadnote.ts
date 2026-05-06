@@ -526,16 +526,20 @@ async function runInstall(config: RuntimeConfig, options: InstallOptions): Promi
   const serverPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
   if (serverPath) {
     console.log(`OpenViking server already installed: ${serverPath}`);
-    const repairReasons: string[] = [];
-    if ((await hasLocalEmbeddingDependency(serverPath)) === false) {
+    const localEmbeddingMissing = (await hasLocalEmbeddingDependency(serverPath)) === false;
+    const pythonSystemCertificatesMissing = (await hasPythonSystemCertificatesPatch(serverPath)) === false;
+    if (localEmbeddingMissing) {
+      const repairReasons: string[] = [];
       repairReasons.push('local embedding extra is missing');
-    }
-    if ((await hasPythonSystemCertificatesPatch(serverPath)) === false) {
-      repairReasons.push('Python system certificate bridge is missing');
-    }
-    if (repairReasons.length > 0) {
+      if (pythonSystemCertificatesMissing) {
+        repairReasons.push('Python system certificate bridge is missing');
+      }
       console.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`);
       await runInstallCommands(config, options.packageManager, true, options.dryRun === true);
+    } else if (pythonSystemCertificatesMissing) {
+      console.log('OpenViking install needs repair: Python system certificate bridge is missing.');
+      const installCommand = await getPythonSystemCertificatesInstallCommand(serverPath);
+      await maybeRun(options.dryRun === true, installCommand.executable, installCommand.args);
     }
   } else {
     await runInstallCommands(config, options.packageManager, false, options.dryRun === true);
@@ -1325,6 +1329,21 @@ async function runInstallCommands(
   for (const installCommand of installCommands) {
     await maybeRun(dryRun, installCommand.executable, installCommand.args);
   }
+}
+
+async function getPythonSystemCertificatesInstallCommand(serverPath: string): Promise<MappedCommand> {
+  const pythonPath = await siblingPythonForExecutable(serverPath);
+  if (!pythonPath) {
+    throw new Error(`Could not find the OpenViking Python environment for ${serverPath}`);
+  }
+  const uvPath = await findExecutable(['uv']);
+  if (uvPath) {
+    return {
+      executable: uvPath,
+      args: ['pip', 'install', '--native-tls', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
+    };
+  }
+  return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
 }
 
 async function getInstallCommands(

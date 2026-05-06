@@ -42,6 +42,14 @@ threadnote start
 Threadnote installs `pip-system-certs` into the OpenViking environment so Python `requests` can use certificates trusted
 by the operating system.
 
+If an older Threadnote release tries to reinstall all of OpenViking and fails while fetching packages such as `openai`,
+install the certificate bridge directly into the existing OpenViking environment:
+
+```bash
+uv pip install --native-tls --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
+threadnote start
+```
+
 ## Local Embedding Extra Missing
 
 The default OpenViking config uses the local embedding backend. If the server log says `llama-cpp-python` is missing,
