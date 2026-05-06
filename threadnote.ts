@@ -1703,7 +1703,7 @@ function buildMcpInstallCommand(
     if (agent === 'codex') {
       return {
         executable: 'codex',
-        args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', ...command],
+        args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', '/usr/bin/env', ...command],
       };
     }
     return {
