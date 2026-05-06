@@ -46,9 +46,9 @@ Create a handoff for the next agent before you stop.
 ```
 
 For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
-to the user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` files. That guidance tells agents to recall context at
-task start, store durable memories when explicitly asked or when a reusable workflow fact is learned, and create
-handoffs automatically before stopping meaningful work.
+to user-level Codex, Claude, and Cursor instruction files. That guidance tells agents to recall context at task start,
+store durable memories when explicitly asked or when a reusable workflow fact is learned, and create handoffs
+automatically before stopping meaningful work.
 
 ## Migration Steps
 
@@ -133,6 +133,15 @@ paths.
    Claude installs at user scope by default so it works from every repo/worktree. Use `--scope local` only when a
    repo-specific Claude MCP entry is intentional.
 
+   For Cursor:
+
+   ```bash
+   threadnote mcp-install cursor
+   threadnote mcp-install cursor --apply
+   ```
+
+   Cursor installs by updating the global `~/.cursor/mcp.json` file.
+
    Later, if the checkout that installed the MCP adapter is deleted or moved, repair it from any fresh checkout:
 
    ```bash
@@ -158,8 +167,7 @@ Remember this workflow note for future agents: ...
 Create a handoff now.
 ```
 
-Preferred agent behavior is automatic after `threadnote install` has updated the user-level Codex and Claude instruction
-files:
+Preferred agent behavior is automatic after `threadnote install` has updated the user-level instruction files:
 
 - On non-trivial task start, search OpenViking for recent handoffs and relevant repo guidance.
 - When the user says "remember", store the memory after checking that it contains no secret or customer data.

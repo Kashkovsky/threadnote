@@ -147,7 +147,7 @@ threadnote repair
 ```
 
 `repair` reinstalls the `threadnote` shim, repairs generated config files, starts OpenViking if needed, and rewrites
-Codex/Claude MCP configs to point at the current checkout.
+Codex/Claude/Cursor MCP configs to point at the current checkout.
 
 ## MCP Install Is Only Printing Commands
 
@@ -156,6 +156,15 @@ This is expected. Run with `--apply` after reviewing the command:
 ```bash
 threadnote mcp-install codex --apply
 ```
+
+For Cursor:
+
+```bash
+threadnote mcp-install cursor --apply
+```
+
+This updates the global `~/.cursor/mcp.json` file. Restart Cursor or open a fresh agent session after changing MCP
+config.
 
 ## Uninstall Without Losing Memories
 

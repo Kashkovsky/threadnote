@@ -28,8 +28,8 @@ Threadnote keeps that memory local and searchable without editing unrelated repo
 - Redaction: known config files such as `.mcp.json`, `config.toml`, and settings JSON are copied through a redactor
   before import.
 - Secret scanning: candidate files are skipped if common token or private-key patterns remain after redaction.
-- User instructions: `install` upserts a managed Threadnote block in `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`
-  without replacing existing personal instructions.
+- User instructions: `install` upserts a managed Threadnote block in `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and
+  `~/.cursor/rules/threadnote.md` without replacing existing personal instructions.
 - Agent config changes are explicit: `mcp-install` prints commands and snippets by default; use `--apply` to run them.
 
 ## Install
@@ -70,13 +70,15 @@ threadnote doctor --dry-run
 
 ### MCP
 
-Make the agents you use aware of Threadnote. Use only the MCP install lines for agents you actually use. Open a fresh Codex or Claude session after installing MCP so the new server registration is loaded.
+Make the agents you use aware of Threadnote. Use only the MCP install lines for agents you actually use. Open a fresh
+agent session after installing MCP so the new server registration is loaded.
 
 Dry-run examples:
 
 ```bash
 threadnote mcp-install codex
 threadnote mcp-install claude
+threadnote mcp-install cursor
 ```
 
 Apply after review:
@@ -84,10 +86,12 @@ Apply after review:
 ```bash
 threadnote mcp-install codex --apply
 threadnote mcp-install claude --apply
+threadnote mcp-install cursor --apply
 ```
 
 Claude installs at `user` scope by default so the same OpenViking MCP server is available from any repo or worktree.
 Use `--scope local` or `--scope project` only when you intentionally want repo-scoped Claude MCP config.
+Cursor installs by updating the global `~/.cursor/mcp.json` file.
 
 If the package or checkout that originally installed `threadnote` has moved, run repair:
 
@@ -105,6 +109,8 @@ HTTP route:
 codex mcp add threadnote -- threadnote-mcp-server
 claude mcp add threadnote -- threadnote-mcp-server
 ```
+
+Cursor uses the equivalent entry in `~/.cursor/mcp.json`.
 
 If a future OpenViking build exposes a healthy native endpoint, install it explicitly:
 
@@ -146,7 +152,7 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `doctor`: checks prerequisites, the generated command shim, manifest shape, templates, and local OpenViking health.
 - `install`: installs `openviking[local-embed]==0.3.12` if missing, creates `~/.openviking` config files if absent,
   writes the command shim, and upserts user-level agent instructions.
-- `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude MCP configs from the
+- `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor MCP configs from the
   current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
 - `stop`: stops the detached server pid or macOS LaunchAgent.
@@ -156,7 +162,7 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `seed`: imports curated repo guidance and docs from the manifest.
 - `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog. Use
   `seed-skills --native` only after configuring a working VLM provider.
-- `mcp-install codex|claude`: installs or prints OpenViking MCP configuration for Codex or Claude.
+- `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
 - `remember`: stores a durable memory.
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
   `skills for api service`; use `--uri` or `--no-infer-scope` to override.
@@ -178,7 +184,8 @@ npm run threadnote -- install
 ```
 
 `install` writes a small command shim to `~/.local/bin/threadnote` by default and upserts user-level agent guidance in
-`~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`. After that, use the short command from any repo or working directory:
+`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/rules/threadnote.md`. After that, use the short command from
+any repo or working directory:
 
 ```bash
 threadnote doctor --dry-run

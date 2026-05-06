@@ -51,6 +51,7 @@ const USER_MANIFEST_NAME = 'seed-manifest.yaml';
 const USER_AGENT_INSTRUCTION_TARGETS = [
   {label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
   {label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
+  {label: 'cursor user rule', path: '~/.cursor/rules/threadnote.md'},
 ] as const;
 const DEFAULT_SEED_PATTERNS = [
   'AGENTS.md',
@@ -69,7 +70,7 @@ const DEFAULT_SEED_PATTERNS = [
   'docs/**/*.md',
 ] as const;
 
-type AgentClient = 'claude' | 'codex';
+type AgentClient = 'claude' | 'codex' | 'cursor';
 type ClaudeMcpScope = 'local' | 'project' | 'user';
 type CommandStatus = 'fail' | 'ok' | 'warn';
 type PackageManager = 'pip' | 'pipx' | 'uv';
@@ -272,7 +273,7 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print the repair actions without making changes')
     .option(
       '--mcp <clients>',
-      'MCP clients to repair: available, all, none, codex, claude, or comma-separated list',
+      'MCP clients to repair: available, all, none, codex, claude, cursor, or comma-separated list',
       'available',
     )
     .option('--no-start', 'Do not start OpenViking if health is failing')
@@ -305,7 +306,7 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print uninstall actions without making changes')
     .option(
       '--mcp <clients>',
-      'MCP clients to remove: available, all, none, codex, claude, or comma-separated list',
+      'MCP clients to remove: available, all, none, codex, claude, cursor, or comma-separated list',
       'available',
     )
     .option('--preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)')
@@ -347,7 +348,7 @@ async function main(): Promise<void> {
   program
     .command('mcp-install')
     .description('Install OpenViking MCP config for a supported agent')
-    .argument('<agent>', 'codex or claude')
+    .argument('<agent>', 'codex, claude, or cursor')
     .option('--apply', 'Actually modify the selected agent config')
     .option('--name <name>', 'MCP server name', OPENVIKING_MCP_NAME)
     .option('--native-http', 'Install OpenViking native HTTP MCP endpoint instead of the local stdio adapter')
@@ -362,7 +363,7 @@ async function main(): Promise<void> {
     .command('remember')
     .description('Store a durable engineering memory in OpenViking')
     .option('--dry-run', 'Print memory and ov command without storing')
-    .option('--source-agent-client <name>', 'codex, claude, gemini, or another client name', 'codex')
+    .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
     .option('--stdin', 'Read memory text from stdin')
     .option('--text <text>', 'Memory text to store')
     .action(async (options: RememberOptions) => {
@@ -410,7 +411,7 @@ async function main(): Promise<void> {
     .option('--blockers <text>', 'Known blockers')
     .option('--dry-run', 'Print handoff without storing')
     .option('--next-step <text>', 'Suggested next step')
-    .option('--source-agent-client <name>', 'codex, claude, gemini, or another client name', 'codex')
+    .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
     .action(async (options: HandoffOptions) => {
@@ -941,13 +942,6 @@ async function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options:
   const url = options.url ?? `http://${config.host}:${config.port}/mcp`;
   const apply = options.apply === true;
   const nativeHttp = options.nativeHttp === true;
-  const command = buildMcpInstallCommand(config, agent, name, {
-    bearerTokenEnvVar: options.bearerTokenEnvVar,
-    nativeHttp,
-    scope: options.scope,
-    url,
-  });
-  const removeCommand = buildMcpRemoveCommand(agent, name);
 
   if (nativeHttp) {
     const mcpStatus = await readHttpStatus(url, 1200);
@@ -962,6 +956,24 @@ async function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options:
       console.log(`WARN OpenViking native MCP endpoint is not available at ${url}; default mcp-install uses stdio.`);
     }
   }
+
+  if (agent === 'cursor') {
+    await runCursorMcpInstall(config, name, {
+      apply,
+      bearerTokenEnvVar: options.bearerTokenEnvVar,
+      nativeHttp,
+      url,
+    });
+    return;
+  }
+
+  const command = buildMcpInstallCommand(config, agent, name, {
+    bearerTokenEnvVar: options.bearerTokenEnvVar,
+    nativeHttp,
+    scope: options.scope,
+    url,
+  });
+  const removeCommand = buildMcpRemoveCommand(agent, name);
 
   if (!apply) {
     console.log('Dry run. Re-run with --apply to modify the selected agent config.');
@@ -979,6 +991,44 @@ async function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options:
     cwd: removeCommand.cwd,
   });
   await maybeRun(false, command.executable, command.args, {cwd: command.cwd});
+}
+
+async function runCursorMcpInstall(
+  config: RuntimeConfig,
+  name: string,
+  options: {
+    readonly apply: boolean;
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly url: string;
+  },
+): Promise<void> {
+  const path = cursorMcpConfigPath();
+  const serverConfig = buildCursorMcpServerConfig(config, {
+    bearerTokenEnvVar: options.bearerTokenEnvVar,
+    nativeHttp: options.nativeHttp,
+    url: options.url,
+  });
+  const currentContent = await readFileIfExists(path);
+  const nextContent = renderCursorMcpConfig(currentContent, name, serverConfig);
+
+  if (!options.apply) {
+    console.log('Dry run. Re-run with --apply to modify Cursor MCP config.');
+    printCursorMcpSnippet(config, name, {
+      bearerTokenEnvVar: options.bearerTokenEnvVar,
+      nativeHttp: options.nativeHttp,
+      url: options.url,
+    });
+    return;
+  }
+
+  if (currentContent === nextContent) {
+    console.log(`Already configured: ${path}`);
+    return;
+  }
+  await ensureDirectory(dirname(path), false);
+  await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
+  console.log(currentContent === undefined ? `Wrote Cursor MCP config: ${path}` : `Updated Cursor MCP config: ${path}`);
 }
 
 async function runRemember(config: RuntimeConfig, options: RememberOptions): Promise<void> {
@@ -1654,6 +1704,10 @@ async function removeMcpConfigs(value: string, dryRun: boolean): Promise<void> {
     return;
   }
   for (const client of clients) {
+    if (client === 'cursor') {
+      await removeCursorMcpConfig(OPENVIKING_MCP_NAME, dryRun);
+      continue;
+    }
     const command = buildMcpRemoveCommand(client, OPENVIKING_MCP_NAME);
     await maybeRun(dryRun, command.executable, command.args, {allowFailure: true, cwd: command.cwd});
   }
@@ -1662,6 +1716,7 @@ async function removeMcpConfigs(value: string, dryRun: boolean): Promise<void> {
 async function removeMcpSnippets(config: RuntimeConfig, dryRun: boolean): Promise<void> {
   await removePathIfExists(join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.codex.toml`), 'MCP snippet', dryRun);
   await removePathIfExists(join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.claude.txt`), 'MCP snippet', dryRun);
+  await removePathIfExists(join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.cursor.json`), 'MCP snippet', dryRun);
 }
 
 async function eraseThreadnoteHome(path: string, dryRun: boolean): Promise<void> {
@@ -1818,6 +1873,9 @@ function buildMcpInstallCommand(
     readonly url: string;
   },
 ): MappedCommand {
+  if (agent === 'cursor') {
+    throw new Error('Cursor MCP config is written directly to ~/.cursor/mcp.json.');
+  }
   const claudeCwd = getInvocationCwd();
   const claudeScope = options.scope ?? 'user';
   if (!options.nativeHttp) {
@@ -1863,6 +1921,9 @@ function mcpAdapterCommand(): readonly string[] {
 }
 
 function buildMcpRemoveCommand(agent: AgentClient, name: string): MappedCommand {
+  if (agent === 'cursor') {
+    throw new Error('Cursor MCP config is removed directly from ~/.cursor/mcp.json.');
+  }
   return agent === 'codex'
     ? {executable: 'codex', args: ['mcp', 'remove', name]}
     : {executable: 'claude', args: ['mcp', 'remove', name], cwd: getInvocationCwd()};
@@ -1875,6 +1936,81 @@ function mcpEnvironment(config: RuntimeConfig): readonly string[] {
     `THREADNOTE_USER=${config.user}`,
     `THREADNOTE_AGENT_ID=${config.agentId}`,
   ];
+}
+
+function mcpEnvironmentObject(config: RuntimeConfig): JsonObject {
+  return {
+    THREADNOTE_ACCOUNT: config.account,
+    THREADNOTE_AGENT_ID: config.agentId,
+    THREADNOTE_HOME: config.agentContextHome,
+    THREADNOTE_USER: config.user,
+  };
+}
+
+function buildCursorMcpServerConfig(
+  config: RuntimeConfig,
+  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+): JsonObject {
+  if (options.nativeHttp) {
+    const server: Record<string, unknown> = {url: options.url};
+    if (options.bearerTokenEnvVar) {
+      server.headers = {Authorization: `Bearer \${env:${options.bearerTokenEnvVar}}`};
+    }
+    return server;
+  }
+  return {
+    args: [mcpAdapterCommand()[0]],
+    command: '/usr/bin/env',
+    env: mcpEnvironmentObject(config),
+  };
+}
+
+function renderCursorMcpConfig(
+  currentContent: string | undefined,
+  name: string,
+  serverConfig: JsonObject,
+): string {
+  const parsed = currentContent === undefined ? {} : parseJsonConfigObject(currentContent);
+  if (parsed === undefined) {
+    throw new Error(`${cursorMcpConfigPath()} exists but is not a JSON object; not modifying it.`);
+  }
+  if (parsed.mcpServers !== undefined && !isJsonObject(parsed.mcpServers)) {
+    throw new Error(`${cursorMcpConfigPath()} has a non-object mcpServers field; not modifying it.`);
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const mcpServers = isJsonObject(parsed.mcpServers) ? {...parsed.mcpServers} : {};
+  mcpServers[name] = serverConfig;
+  nextConfig.mcpServers = mcpServers;
+  return `${JSON.stringify(nextConfig, null, 2)}\n`;
+}
+
+async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<void> {
+  const path = cursorMcpConfigPath();
+  const currentContent = await readFileIfExists(path);
+  if (currentContent === undefined) {
+    console.log(`Already absent: ${path}`);
+    return;
+  }
+  const parsed = parseJsonConfigObject(currentContent);
+  if (parsed === undefined) {
+    console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
+    return;
+  }
+  if (!isJsonObject(parsed.mcpServers) || parsed.mcpServers[name] === undefined) {
+    console.log(`No Cursor MCP config found: ${path}`);
+    return;
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const mcpServers = {...parsed.mcpServers};
+  delete mcpServers[name];
+  nextConfig.mcpServers = mcpServers;
+  const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
+  if (dryRun) {
+    console.log(`Would update Cursor MCP config: ${path}`);
+    return;
+  }
+  await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
+  console.log(`Updated Cursor MCP config: ${path}`);
 }
 
 function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {
@@ -1899,6 +2035,10 @@ function printMcpSnippet(
   name: string,
   options: {readonly nativeHttp: boolean; readonly scope?: ClaudeMcpScope; readonly url: string},
 ): void {
+  if (agent === 'cursor') {
+    printCursorMcpSnippet(config, name, {nativeHttp: options.nativeHttp, url: options.url});
+    return;
+  }
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.${agent}.${agent === 'codex' ? 'toml' : 'txt'}`);
   const command = buildMcpInstallCommand(config, agent, name, {
     nativeHttp: options.nativeHttp,
@@ -1907,6 +2047,24 @@ function printMcpSnippet(
   });
   const snippet = `${formatShellCommand(command.executable, command.args)}\n`;
   console.log(`\nSnippet (${snippetPath}):\n${snippet}`);
+}
+
+function printCursorMcpSnippet(
+  config: RuntimeConfig,
+  name: string,
+  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+): void {
+  const snippetPath = join(config.agentContextHome, 'mcp', `${name}.cursor.json`);
+  const snippet = JSON.stringify(
+    {mcpServers: {[name]: buildCursorMcpServerConfig(config, options)}},
+    null,
+    2,
+  );
+  console.log(`\nSnippet (${snippetPath}; merge into ${cursorMcpConfigPath()}):\n${snippet}`);
+}
+
+function cursorMcpConfigPath(): string {
+  return expandPath('~/.cursor/mcp.json');
 }
 
 async function storeMemory(config: RuntimeConfig, memory: string, dryRun: boolean): Promise<void> {
@@ -2576,10 +2734,10 @@ function parsePackageManager(value: string): PackageManager {
 }
 
 function parseAgentClient(value: string): AgentClient {
-  if (value === 'codex' || value === 'claude') {
+  if (value === 'codex' || value === 'claude' || value === 'cursor') {
     return value;
   }
-  throw new Error(`Unsupported agent: ${value}. Expected codex or claude.`);
+  throw new Error(`Unsupported agent: ${value}. Expected codex, claude, or cursor.`);
 }
 
 function parseClaudeMcpScope(value: string): ClaudeMcpScope {
@@ -2597,7 +2755,7 @@ async function resolveMcpClients(value: string, action: 'remove' | 'repair'): Pr
 
   let requested: readonly AgentClient[];
   if (normalized === 'available' || normalized === 'all') {
-    requested = ['codex', 'claude'];
+    requested = ['codex', 'claude', 'cursor'];
   } else {
     requested = normalized
       .split(',')
@@ -2608,6 +2766,16 @@ async function resolveMcpClients(value: string, action: 'remove' | 'repair'): Pr
 
   const clients: AgentClient[] = [];
   for (const client of requested) {
+    if (client === 'cursor') {
+      if (!(await isCursorAvailable())) {
+        console.log(`WARN Cursor config not found; cannot ${action} cursor MCP config.`);
+        continue;
+      }
+      if (!clients.includes(client)) {
+        clients.push(client);
+      }
+      continue;
+    }
     if (!(await findExecutable([client]))) {
       console.log(`WARN ${client} command not found; cannot ${action} ${client} MCP config.`);
       continue;
@@ -2617,6 +2785,16 @@ async function resolveMcpClients(value: string, action: 'remove' | 'repair'): Pr
     }
   }
   return clients;
+}
+
+async function isCursorAvailable(): Promise<boolean> {
+  if (await exists(expandPath('~/.cursor'))) {
+    return true;
+  }
+  if (await findExecutable(['cursor', 'cursor-agent'])) {
+    return true;
+  }
+  return platform() === 'darwin' && (await exists('/Applications/Cursor.app'));
 }
 
 function assertVikingUri(uri: string): void {
