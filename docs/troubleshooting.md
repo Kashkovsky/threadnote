@@ -28,6 +28,20 @@ threadnote install --package-manager pipx
 threadnote install --package-manager pip
 ```
 
+## Model Download Fails With `CERTIFICATE_VERIFY_FAILED`
+
+On first start, OpenViking may download the local embedding model from Hugging Face. If `~/.openviking/logs/server.log`
+shows `SSLCertVerificationError`, `self-signed certificate in certificate chain`, or `Failed to download local embedding
+model`, repair the OpenViking Python environment and start again:
+
+```bash
+threadnote repair --package-manager uv
+threadnote start
+```
+
+Threadnote installs `pip-system-certs` into the OpenViking environment so Python `requests` can use certificates trusted
+by the operating system.
+
 ## Local Embedding Extra Missing
 
 The default OpenViking config uses the local embedding backend. If the server log says `llama-cpp-python` is missing,
@@ -41,6 +55,14 @@ The installer repairs this by installing `openviking[local-embed]`.
 
 ## Server Health Fails
 
+If `doctor` reports `WARN openviking health: connect ECONNREFUSED 127.0.0.1:1933`, the local server is not running.
+Start it and recheck:
+
+```bash
+threadnote start
+threadnote doctor --dry-run
+```
+
 Check whether the server is running:
 
 ```bash
@@ -52,6 +74,9 @@ For detached starts, logs are written to:
 ```text
 ~/.openviking/logs/server.log
 ```
+
+If `start` reports that OpenViking did not become healthy, open that log. Certificate failures during the first embedding
+model download are covered above.
 
 ## Port Already In Use
 

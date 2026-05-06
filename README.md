@@ -43,6 +43,15 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 This installs the published package from npmjs and runs `threadnote install`. It does not use npm `postinstall`,
 because setup writes local machine config and should be an explicit action.
 
+Start the local server and confirm it is healthy:
+
+```bash
+threadnote start
+threadnote doctor --dry-run
+```
+
+If install or health checks fail, see `docs/troubleshooting.md`.
+
 To force a runtime:
 
 ```bash
@@ -55,6 +64,7 @@ Or install manually:
 ```bash
 npm install --global threadnote
 threadnote install
+threadnote start
 threadnote doctor --dry-run
 ```
 
