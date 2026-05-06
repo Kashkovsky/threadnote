@@ -16,15 +16,20 @@ import type {
 import {
   assertVikingUri,
   expandPath,
+  exactRecallTerms,
   formatShellCommand,
   getInputText,
   getInvocationCwd,
   gitValue,
+  grepOutputHasMatches,
   maybeRun,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
+  runCommand,
   safeTimestamp,
+  sha256,
+  sleep,
   trimTrailingSlash,
 } from './utils.js';
 
@@ -56,6 +61,7 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
+  await printExactMemoryMatches(config, ov, options.query, options.dryRun === true);
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -147,18 +153,158 @@ async function inferProjectFromQuery(
   }
 }
 
+async function printExactMemoryMatches(
+  config: RuntimeConfig,
+  ov: string,
+  query: string,
+  dryRun: boolean,
+): Promise<void> {
+  const terms = exactRecallTerms(query);
+  if (terms.length === 0) {
+    return;
+  }
+  const scopes = [
+    `viking://user/${uriSegment(config.user)}/memories`,
+    `viking://agent/${uriSegment(config.agentId)}/memories`,
+  ];
+  const outputs: string[] = [];
+  for (const term of terms) {
+    for (const scope of scopes) {
+      const args = withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']);
+      if (dryRun) {
+        outputs.push(formatShellCommand(ov, args));
+        continue;
+      }
+      const result = await runCommand(ov, args, {allowFailure: true});
+      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
+        outputs.push(output);
+      }
+    }
+  }
+  if (outputs.length === 0) {
+    return;
+  }
+  console.log('\nExact durable memory matches:');
+  console.log(outputs.join('\n\n'));
+}
+
 async function storeMemory(config: RuntimeConfig, memory: string, dryRun: boolean): Promise<void> {
   const ov = await openVikingCliForMode(dryRun);
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
+  const memoryUri = durableMemoryUri(config, memory);
   if (dryRun) {
     console.log(memory);
     console.log('\nWould run:');
-    console.log(formatShellCommand(ov, withIdentity(config, ['add-memory', memory])));
+    console.log(
+      formatShellCommand(
+        ov,
+        withIdentity(config, [
+          'write',
+          memoryUri,
+          '--from-file',
+          memoryPath,
+          '--mode',
+          'create',
+          '--wait',
+          '--timeout',
+          '120',
+        ]),
+      ),
+    );
     return;
   }
   await writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600});
   await chmod(memoryPath, 0o600);
-  await maybeRun(false, ov, withIdentity(config, ['add-memory', memory]));
+  await ensureDurableMemoryDirectory(ov, config);
+  await writeDurableMemoryFile(ov, config, memoryUri, memoryPath);
+  console.log(`Stored durable memory: ${memoryUri}`);
+}
+
+async function writeDurableMemoryFile(
+  ov: string,
+  config: RuntimeConfig,
+  memoryUri: string,
+  memoryPath: string,
+): Promise<void> {
+  const args = withIdentity(config, [
+    'write',
+    memoryUri,
+    '--from-file',
+    memoryPath,
+    '--mode',
+    'create',
+    '--wait',
+    '--timeout',
+    '120',
+  ]);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      if (result.stderr.trim()) {
+        console.error(result.stderr.trim());
+      }
+      return;
+    }
+    if (await vikingResourceExists(ov, config, memoryUri)) {
+      console.log('OpenViking accepted the memory but returned before the wait completed; waiting for indexing.');
+      await waitForOpenVikingQueue(ov, config);
+      return;
+    }
+    if (!isResourceBusy(result.stderr, result.stdout) || attempt === 3) {
+      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+}
+
+async function waitForOpenVikingQueue(ov: string, config: RuntimeConfig): Promise<void> {
+  const result = await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
+  if (result.stdout.trim()) {
+    console.log(result.stdout.trim());
+  }
+  if (result.stderr.trim()) {
+    console.error(result.stderr.trim());
+  }
+}
+
+async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
+  const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+  return stat.exitCode === 0;
+}
+
+async function ensureDurableMemoryDirectory(ov: string, config: RuntimeConfig): Promise<void> {
+  const directoryUri = durableMemoryDirectoryUri(config);
+  const stat = await runCommand(ov, withIdentity(config, ['stat', directoryUri]), {allowFailure: true});
+  if (stat.exitCode === 0) {
+    return;
+  }
+  await maybeRun(
+    false,
+    ov,
+    withIdentity(config, [
+      'mkdir',
+      directoryUri,
+      '--description',
+      'Threadnote durable handoffs, memories, and cross-agent notes.',
+    ]),
+  );
+}
+
+function durableMemoryUri(config: RuntimeConfig, memory: string): string {
+  return `${durableMemoryDirectoryUri(config)}/threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+}
+
+function durableMemoryDirectoryUri(config: RuntimeConfig): string {
+  return `viking://user/${uriSegment(config.user)}/memories/events`;
+}
+
+function isResourceBusy(stderr: string, stdout: string): boolean {
+  return `${stderr}\n${stdout}`.includes('resource is busy');
 }
 
 async function buildHandoff(options: HandoffOptions): Promise<string> {

@@ -9,7 +9,16 @@ import {join} from 'node:path';
 import {realpath} from 'node:fs/promises';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
-import {errorMessage, findExecutable, runCommand} from './utils.js';
+import {
+  errorMessage,
+  exactRecallTerms,
+  findExecutable,
+  grepOutputHasMatches,
+  runCommand,
+  safeTimestamp,
+  sha256,
+  sleep,
+} from './utils.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -237,7 +246,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
+      return runRecallTool(config, [
         'search',
         checkedQuery.value,
         ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
@@ -245,6 +254,51 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       ]);
     },
   );
+}
+
+async function runRecallTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
+  const semanticResult = await runOpenVikingTool(config, args);
+  if (semanticResult.isError === true) {
+    return semanticResult;
+  }
+  const query = args[1];
+  const exactMatches = typeof query === 'string' ? await exactMemoryMatchesText(config, query) : undefined;
+  if (!exactMatches) {
+    return semanticResult;
+  }
+  const [firstContent] = semanticResult.content;
+  if (firstContent?.type !== 'text') {
+    return semanticResult;
+  }
+  return {
+    ...semanticResult,
+    content: [{type: 'text', text: `${firstContent.text}\n\nExact durable memory matches:\n${exactMatches}`}],
+  };
+}
+
+async function exactMemoryMatchesText(config: RuntimeConfig, query: string): Promise<string | undefined> {
+  const terms = exactRecallTerms(query);
+  if (terms.length === 0) {
+    return undefined;
+  }
+  const ov = await requiredOpenVikingCli();
+  const scopes = [
+    `viking://user/${uriSegment(config.user)}/memories`,
+    `viking://agent/${uriSegment(config.agentId)}/memories`,
+  ];
+  const outputs: string[] = [];
+  for (const term of terms) {
+    for (const scope of scopes) {
+      const result = await runCommand(ov, withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']), {
+        allowFailure: true,
+      });
+      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
+        outputs.push(output);
+      }
+    }
+  }
+  return outputs.length > 0 ? outputs.join('\n\n') : undefined;
 }
 
 function registerReadTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
@@ -314,8 +368,8 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
       if (!checkedText.ok) {
         return checkedText.error;
       }
-      return runOpenVikingTool(config, [
-        'add-memory',
+      return writeDurableMemory(
+        config,
         [
           'MEMORY',
           `source_agent_client: ${sourceAgentClient ?? 'mcp'}`,
@@ -323,9 +377,88 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
           '',
           checkedText.value,
         ].join('\n'),
-      ]);
+      );
     },
   );
+}
+
+async function writeDurableMemory(config: RuntimeConfig, memory: string): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const directoryUri = durableMemoryDirectoryUri(config);
+    const stat = await runCommand(ov, withIdentity(config, ['stat', directoryUri]), {allowFailure: true});
+    if (stat.exitCode !== 0) {
+      await runCommand(
+        ov,
+        withIdentity(config, [
+          'mkdir',
+          directoryUri,
+          '--description',
+          'Threadnote durable handoffs, memories, and cross-agent notes.',
+        ]),
+      );
+    }
+
+    const memoryUri = durableMemoryUri(config, memory);
+    const result = await runOpenVikingWriteWithRetry(
+      ov,
+      config,
+      memoryUri,
+      withIdentity(config, ['write', memoryUri, '--content', memory, '--mode', 'create', '--wait', '--timeout', '120']),
+    );
+    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+    return {content: [{type: 'text', text: [`Stored durable memory: ${memoryUri}`, text].filter(Boolean).join('\n')}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runOpenVikingWriteWithRetry(
+  ov: string,
+  config: RuntimeConfig,
+  memoryUri: string,
+  args: readonly string[],
+) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      return result;
+    }
+    if (await vikingResourceExists(ov, config, memoryUri)) {
+      await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
+      return {exitCode: 0, stdout: 'OpenViking accepted the memory and indexing wait completed.', stderr: ''};
+    }
+    if (!isResourceBusy(result.stderr, result.stdout) || attempt === 3) {
+      throw new Error(`${ov} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+  throw new Error(`${ov} ${args.join(' ')} failed.`);
+}
+
+async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
+  const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+  return stat.exitCode === 0;
+}
+
+function isResourceBusy(stderr: string, stdout: string): boolean {
+  return `${stderr}\n${stdout}`.includes('resource is busy');
+}
+
+function durableMemoryUri(config: RuntimeConfig, memory: string): string {
+  return `${durableMemoryDirectoryUri(config)}/threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+}
+
+function durableMemoryDirectoryUri(config: RuntimeConfig): string {
+  return `viking://user/${uriSegment(config.user)}/memories/events`;
+}
+
+function uriSegment(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized.length > 0 ? normalized : 'unknown';
 }
 
 function requiredText(

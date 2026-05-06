@@ -442,6 +442,60 @@ export function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+export function exactRecallTerms(query: string): readonly string[] {
+  const stopWords = new Set([
+    'about',
+    'after',
+    'agent',
+    'anything',
+    'branch',
+    'case',
+    'current',
+    'find',
+    'handoff',
+    'issue',
+    'issues',
+    'latest',
+    'memory',
+    'memories',
+    'recall',
+    'related',
+    'search',
+    'the',
+    'this',
+    'with',
+  ]);
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const match of query.matchAll(/[A-Za-z0-9_.-]{4,}/g)) {
+    const term = match[0];
+    const normalized = term.toLowerCase();
+    if (stopWords.has(normalized) || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    terms.push(term);
+  }
+  return terms.sort((left, right) => exactRecallTermScore(right) - exactRecallTermScore(left)).slice(0, 4);
+}
+
+export function grepOutputHasMatches(output: string): boolean {
+  return (
+    !output.includes('matches        []') && !output.includes('"matches":[]') && !output.includes('match_count    0')
+  );
+}
+
+function exactRecallTermScore(term: string): number {
+  let score = term.length;
+  if (/[A-Z]/.test(term)) {
+    score += 8;
+  }
+  if (/[0-9_.-]/.test(term)) {
+    score += 6;
+  }
+  return score;
+}
+
 export function safeTimestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
