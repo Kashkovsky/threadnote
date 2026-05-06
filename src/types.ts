@@ -2,6 +2,7 @@ export type AgentClient = 'claude' | 'codex' | 'cursor';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type PackageManager = 'pip' | 'pipx' | 'uv';
+export type UpdateRuntime = 'auto' | 'bun' | 'deno' | 'npm';
 
 export interface RuntimeConfig {
   readonly account: string;
@@ -79,6 +80,15 @@ export interface UninstallOptions {
   readonly eraseMemories?: boolean;
   readonly mcp?: string;
   readonly preserveMemories?: boolean;
+}
+
+export interface UpdateOptions {
+  readonly check?: boolean;
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly registry?: string;
+  readonly repair?: boolean;
+  readonly runtime?: UpdateRuntime;
 }
 
 export interface DoctorOptions {

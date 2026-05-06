@@ -18,6 +18,7 @@ import type {
   SeedOptions,
   StartOptions,
   UninstallOptions,
+  UpdateOptions,
 } from './types.js';
 import {collectOption, errorMessage, parsePort} from './utils.js';
 import {parseAgentClient, parseClaudeMcpScope, runMcpInstall} from './mcp.js';
@@ -34,6 +35,7 @@ import {
 } from './memory.js';
 import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
+import {maybeNotifyUpdate, parseUpdateRuntime, runUpdate} from './update.js';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -53,7 +55,9 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Show checks without writing anything')
     .option('--strict', 'Exit non-zero if any check fails')
     .action(async (options: DoctorOptions) => {
-      await runDoctor(getRuntimeConfig(program), options);
+      const config = getRuntimeConfig(program);
+      await runDoctor(config, options);
+      await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
     });
 
   program
@@ -62,7 +66,22 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print the actions without making changes')
     .option('--package-manager <manager>', 'pipx, uv, or pip', parsePackageManager)
     .action(async (options: InstallOptions) => {
-      await runInstall(getRuntimeConfig(program), options);
+      const config = getRuntimeConfig(program);
+      await runInstall(config, options);
+      await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
+    });
+
+  program
+    .command('update')
+    .description('Update the published Threadnote package, then repair local shims and MCP config')
+    .option('--check', 'Only check whether a newer version is available')
+    .option('--dry-run', 'Print update and repair commands without running them')
+    .option('--force', 'Run package-manager update even if this version is already current')
+    .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
+    .option('--runtime <runtime>', 'auto, npm, bun, or deno', parseUpdateRuntime, 'auto')
+    .option('--no-repair', 'Skip threadnote repair after updating the package')
+    .action(async (options: UpdateOptions) => {
+      await runUpdate(getRuntimeConfig(program), options);
     });
 
   program
@@ -77,7 +96,9 @@ async function main(): Promise<void> {
     .option('--no-start', 'Do not start OpenViking if health is failing')
     .option('--package-manager <manager>', 'pipx, uv, or pip', parsePackageManager)
     .action(async (options: RepairOptions) => {
-      await runRepair(getRuntimeConfig(program), options);
+      const config = getRuntimeConfig(program);
+      await runRepair(config, options);
+      await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
     });
 
   program
@@ -87,7 +108,9 @@ async function main(): Promise<void> {
     .option('--foreground', 'Run in the foreground instead of detaching')
     .option('--launchd', 'Install and start a macOS LaunchAgent')
     .action(async (options: StartOptions) => {
-      await runStart(getRuntimeConfig(program), options);
+      const config = getRuntimeConfig(program);
+      await runStart(config, options);
+      await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
     });
 
   program

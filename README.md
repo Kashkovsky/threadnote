@@ -68,6 +68,27 @@ threadnote start
 threadnote doctor --dry-run
 ```
 
+### Update
+
+Threadnote occasionally checks npm for a newer published version when you run human-facing commands such as `doctor`,
+`start`, `install`, or `repair`. The check is cached under `THREADNOTE_HOME` and never runs in CI or when
+`THREADNOTE_NO_UPDATE_CHECK` or `NO_UPDATE_NOTIFIER` is set.
+
+Update the package and refresh local shims, user instructions, and MCP config with one command:
+
+```bash
+threadnote update
+```
+
+Check without changing anything:
+
+```bash
+threadnote update --check
+threadnote update --dry-run
+```
+
+After updating, restart Cursor, Codex, Claude, or open a fresh agent session so MCP tools reload.
+
 ### MCP
 
 Make the agents you use aware of Threadnote. Use only the MCP install lines for agents you actually use. Open a fresh
@@ -152,6 +173,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `doctor`: checks prerequisites, the generated command shim, manifest shape, templates, and local OpenViking health.
 - `install`: installs `openviking[local-embed]==0.3.12` if missing, creates `~/.openviking` config files if absent,
   writes the command shim, and upserts user-level agent instructions.
+- `update`: updates the published Threadnote package, then runs `repair` so shims and MCP config point at the new
+  version.
 - `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor MCP configs from the
   current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
@@ -215,6 +238,8 @@ Environment variables:
 - `THREADNOTE_USER`: OpenViking user value, default local username.
 - `THREADNOTE_AGENT_ID`: shared agent identity, default `threadnote`.
 - `THREADNOTE_OPENVIKING_VERSION`: package version to install, default `0.3.12`.
+- `THREADNOTE_NPM_REGISTRY`: npm registry used by the installer and updater, default `https://registry.npmjs.org/`.
+- `THREADNOTE_NO_UPDATE_CHECK`: disables opportunistic update notifications.
 - `THREADNOTE_BIN_DIR`: directory for the `threadnote` shim, default `~/.local/bin`.
 - `THREADNOTE_HOST`: local bind host, default `127.0.0.1`.
 - `THREADNOTE_PORT`: local bind port, default `1933`.
