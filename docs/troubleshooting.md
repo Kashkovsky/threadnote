@@ -10,6 +10,24 @@ threadnote install
 
 The installer prefers `pipx`, then `uv`, then `python3 -m pip install --user`.
 
+## `uv` Fails With `UnknownIssuer`
+
+Some corporate machines trust PyPI through certificates installed in the system keychain. Threadnote passes
+`--native-tls` when it uses `uv` so those system certificates are loaded.
+
+If an older install still fails with `invalid peer certificate: UnknownIssuer`, retry with:
+
+```bash
+UV_NATIVE_TLS=1 threadnote install
+```
+
+Or use a different Python installer:
+
+```bash
+threadnote install --package-manager pipx
+threadnote install --package-manager pip
+```
+
 ## Local Embedding Extra Missing
 
 The default OpenViking config uses the local embedding backend. If the server log says `llama-cpp-python` is missing,

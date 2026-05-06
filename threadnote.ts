@@ -1256,9 +1256,10 @@ async function getInstallCommand(
     return {executable: 'pipx', args: force ? ['install', '--force', packageSpec] : ['install', packageSpec]};
   }
   if (manager === 'uv') {
+    const uvArgs = ['tool', 'install', '--native-tls'];
     return {
       executable: 'uv',
-      args: force ? ['tool', 'install', '--force', packageSpec] : ['tool', 'install', packageSpec],
+      args: force ? [...uvArgs, '--force', packageSpec] : [...uvArgs, packageSpec],
     };
   }
   const pipArgs = ['-m', 'pip', 'install', '--user'];
