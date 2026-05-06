@@ -166,6 +166,18 @@ threadnote mcp-install cursor --apply
 This updates the global `~/.cursor/mcp.json` file. Restart Cursor or open a fresh agent session after changing MCP
 config.
 
+## Cursor MCP Tool Says Query Is Missing
+
+If Cursor shows an error like `expected string, received undefined` for Threadnote `search`, the MCP server started but
+Cursor called the tool without JSON arguments. Prefer the Threadnote-named tool and pass a query explicitly:
+
+```json
+{"query": "current repo latest handoff"}
+```
+
+Current Threadnote adapters expose `recall_context` for this flow. Older adapters expose `search`; both require the same
+`query` argument. Run `threadnote repair` after upgrading if Cursor still lists only stale tools.
+
 ## Uninstall Without Losing Memories
 
 Run:

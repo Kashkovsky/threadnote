@@ -1,13 +1,18 @@
 # Agent Instructions
 
-Threadnote installs this as user-level agent guidance for Codex and Claude.
+Threadnote installs this as user-level agent guidance for Codex, Claude, and Cursor.
 
 ## Shared Context
 
 Use OpenViking through Threadnote as a shared local context and memory layer. Repo files remain authoritative: always
 follow the nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction file first.
 
-When OpenViking MCP tools are available, use them directly. If MCP is unavailable, use the `threadnote` CLI fallback.
+When OpenViking MCP tools are available, use them directly. Prefer Threadnote-named MCP tools when present:
+`recall_context`, `read_context`, `list_context`, and `remember_context`. Always pass JSON arguments to MCP tools, for
+example `recall_context({"query":"current repo latest handoff"})`. Older Threadnote MCP adapters may expose
+`search`, `read`, `list`, and `store` instead.
+
+If MCP is unavailable, use the `threadnote` CLI fallback.
 
 ## Recall
 

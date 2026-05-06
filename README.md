@@ -241,5 +241,6 @@ threadnote read viking://agent/threadnote/memories/.abstract.md
 threadnote list viking://agent/threadnote/memories --all --recursive
 ```
 
-When MCP is installed, the agent should use OpenViking MCP `search`, then `read` or `list` directly. The CLI commands
-are the fallback path.
+When MCP is installed, the agent should use Threadnote MCP `recall_context`, then `read_context` or `list_context`.
+Agents must pass JSON arguments, for example `recall_context({"query":"agent context"})`. Older adapters expose
+`search`, `read`, and `list` aliases. The CLI commands are the fallback path.
