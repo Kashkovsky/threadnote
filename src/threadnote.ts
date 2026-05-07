@@ -10,6 +10,7 @@ import type {
   InstallOptions,
   ListOptions,
   McpInstallOptions,
+  MigrateMemoriesOptions,
   PackOptions,
   ReadOptions,
   RecallOptions,
@@ -29,6 +30,7 @@ import {
   runHandoff,
   runImportPack,
   runList,
+  runMigrateMemories,
   runRead,
   runRecall,
   runRemember,
@@ -189,6 +191,22 @@ async function main(): Promise<void> {
     .option('--text <text>', 'Memory text to store')
     .action(async (options: RememberOptions) => {
       await runRemember(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('migrate-memories')
+    .description('Migrate legacy session-only Threadnote memories into durable memory files')
+    .option('--all-accounts', 'Scan all local OpenViking accounts under THREADNOTE_HOME')
+    .option('--dry-run', 'Print migration actions without writing memories')
+    .option('--limit <count>', 'Maximum number of memories to migrate')
+    .option(
+      '--source-account <account>',
+      'Source OpenViking account to scan; repeat for multiple accounts',
+      collectOption,
+      [],
+    )
+    .action(async (options: MigrateMemoriesOptions) => {
+      await runMigrateMemories(getRuntimeConfig(program), options);
     });
 
   program

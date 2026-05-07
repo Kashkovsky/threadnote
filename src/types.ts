@@ -124,6 +124,13 @@ export interface RememberOptions {
   readonly text?: string;
 }
 
+export interface MigrateMemoriesOptions {
+  readonly allAccounts?: boolean;
+  readonly dryRun?: boolean;
+  readonly limit?: string;
+  readonly sourceAccount?: readonly string[];
+}
+
 export interface RecallOptions {
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;

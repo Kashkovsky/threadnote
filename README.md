@@ -187,6 +187,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
   `seed-skills --native` only after configuring a working VLM provider.
 - `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
 - `remember`: stores a durable memory.
+- `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
+  `migrate-memories --dry-run` first; use `--all-accounts` when importing from older local OpenViking accounts.
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
   `skills for api service`; use `--uri` or `--no-infer-scope` to override.
 - `read`: reads a `viking://` URI returned by `recall` or `list`.
