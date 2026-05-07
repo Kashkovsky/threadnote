@@ -6,18 +6,21 @@ and it does not index whole repositories by default.
 
 ## Real-World Uses
 
-Want to continue work in a fresh agent session? `threadnote install` adds user-level Codex and Claude instructions so
-new agents automatically recall recent handoffs and relevant memories before they start changing code.
+**Want to continue work in a fresh agent session?**  
+`threadnote install` adds user-level Codex and Claude instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
 
-Implemented a feature a while ago and need to pick it up again? Ask the agent to recall the feature, branch, or repo.
-Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
+**Implemented a feature a while ago and need to pick it up again?**  
+Ask the agent to recall the feature, branch, or repo. Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
 
-Switching between Codex and Claude? Install the MCP adapter for both. The user-level instructions tell agents to store a
-handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
+**Switching between Codex and Claude?**  
+Install the MCP adapter for both. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
 from chat history.
 
-Found a durable workflow fact, like how a repo runs tests or where release notes live? Ask the agent to remember it.
-Threadnote keeps that memory local and searchable without editing unrelated repo files.
+**Working through a long task until the agent context window fills up?**  
+After compaction, the next agent turn can recall the relevant Threadnote memories and handoffs instead of relying only on the compressed conversation summary.
+
+**Found a durable workflow fact, like how a repo runs tests or where release notes live?**  
+Ask the agent to remember it. Threadnote keeps that memory local and searchable without editing unrelated repo files.
 
 ## Safety Model
 
