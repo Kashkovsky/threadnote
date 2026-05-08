@@ -22,6 +22,10 @@ After compaction, the next agent turn can recall the relevant Threadnote memorie
 **Found a durable workflow fact, like how a repo runs tests or where release notes live?**  
 Ask the agent to remember it. Threadnote keeps that memory local and searchable without editing unrelated repo files.
 
+**Recall returned several overlapping memories?**
+Agents are instructed to compact them into one concise replacement memory and forget only the clearly redundant originals,
+keeping future recall sharper without losing useful detail.
+
 ## Safety Model
 
 - Machine writes stay **locally** under `THREADNOTE_HOME`, which defaults to `~/.openviking`.

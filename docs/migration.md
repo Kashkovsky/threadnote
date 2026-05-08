@@ -171,6 +171,8 @@ Preferred agent behavior is automatic after `threadnote install` has updated the
 
 - On non-trivial task start, search OpenViking for recent handoffs and relevant repo guidance.
 - When the user says "remember", store the memory after checking that it contains no secret or customer data.
+- When recall surfaces clearly duplicate or stale memories, store one concise replacement memory and forget only the
+  redundant originals.
 - Before pausing, switching agents, or finishing meaningful code changes, store a concise handoff with status, tests,
   blockers, and next steps.
 
