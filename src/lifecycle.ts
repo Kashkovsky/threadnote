@@ -104,12 +104,13 @@ export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): 
 
 export async function runInstall(config: RuntimeConfig, options: InstallOptions): Promise<void> {
   const repairInvalidConfigs = options.repairInvalidConfigs === true;
-  await ensureDirectory(config.agentContextHome, options.dryRun === true);
-  await ensureDirectory(join(config.agentContextHome, 'logs'), options.dryRun === true);
-  await ensureDirectory(join(config.agentContextHome, 'redacted'), options.dryRun === true);
-  await ensureDirectory(join(config.agentContextHome, 'mcp'), options.dryRun === true);
-  await installCommandShim(options.dryRun === true);
-  await installUserAgentInstructions(options.dryRun === true);
+  const dryRun = options.dryRun === true;
+  await ensureDirectory(config.agentContextHome, dryRun);
+  await ensureDirectory(join(config.agentContextHome, 'logs'), dryRun);
+  await ensureDirectory(join(config.agentContextHome, 'redacted'), dryRun);
+  await ensureDirectory(join(config.agentContextHome, 'mcp'), dryRun);
+  await installCommandShim(dryRun);
+  await installUserAgentInstructions(dryRun);
 
   const serverPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
   if (serverPath) {
@@ -123,20 +124,20 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
         repairReasons.push('Python system certificate bridge is missing');
       }
       console.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`);
-      await runInstallCommands(config, options.packageManager, true, options.dryRun === true);
+      await runInstallCommands(config, options.packageManager, true, dryRun);
     } else if (pythonSystemCertificatesMissing) {
       console.log('OpenViking install needs repair: Python system certificate bridge is missing.');
       const installCommand = await getPythonSystemCertificatesInstallCommand(serverPath);
-      await maybeRun(options.dryRun === true, installCommand.executable, installCommand.args);
+      await maybeRun(dryRun, installCommand.executable, installCommand.args);
     }
   } else {
-    await runInstallCommands(config, options.packageManager, false, options.dryRun === true);
+    await runInstallCommands(config, options.packageManager, false, dryRun);
   }
 
   await writeTemplateIfMissing({
     config,
     destinationPath: join(config.agentContextHome, 'ov.conf'),
-    dryRun: options.dryRun === true,
+    dryRun,
     shouldRepair: content =>
       shouldRepairOpenVikingConfig(content, config) ||
       (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
@@ -145,22 +146,35 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
   await writeTemplateIfMissing({
     config,
     destinationPath: join(config.agentContextHome, 'ovcli.conf'),
-    dryRun: options.dryRun === true,
+    dryRun,
     shouldRepair: content =>
       shouldRepairLegacyOvCliConfig(content) || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
     templatePath: join(toolRoot(), 'config', 'ovcli.conf.template.json'),
   });
 
-  console.log('Install complete. Run start, then doctor:');
-  console.log('  threadnote start');
-  console.log('  threadnote doctor');
+  if (options.start !== false) {
+    const healthy = await repairServerHealth(config, dryRun);
+    if (!healthy && !dryRun) {
+      throw new Error(`OpenViking did not become healthy. Check logs: ${openVikingLogPath(config)}`);
+    }
+  }
+
+  if (options.printNextSteps !== false) {
+    printInstallNextSteps({dryRun, startsServer: options.start !== false});
+  }
 }
 
 export async function runRepair(config: RuntimeConfig, options: RepairOptions): Promise<void> {
   const dryRun = options.dryRun === true;
   console.log('Repairing local OpenViking agent context from this checkout.');
 
-  await runInstall(config, {dryRun, packageManager: options.packageManager, repairInvalidConfigs: true});
+  await runInstall(config, {
+    dryRun,
+    packageManager: options.packageManager,
+    printNextSteps: false,
+    repairInvalidConfigs: true,
+    start: false,
+  });
   await repairManifest(config, dryRun);
 
   if (options.start !== false) {
@@ -265,18 +279,20 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
   console.log(`Wrote replacement manifest: ${config.manifestPath}`);
 }
 
-async function repairServerHealth(config: RuntimeConfig, dryRun: boolean): Promise<void> {
+async function repairServerHealth(config: RuntimeConfig, dryRun: boolean): Promise<boolean> {
   const existingHealth = await readOpenVikingHealthIfAvailable(config, 800);
   if (existingHealth) {
     console.log(`OpenViking health OK at http://${config.host}:${config.port}/health`);
-    return;
+    return true;
   }
 
   console.log(`OpenViking health is not responding at http://${config.host}:${config.port}/health; starting server.`);
   try {
     await runStart(config, {dryRun});
+    return true;
   } catch (err: unknown) {
     console.log(`WARN could not repair OpenViking health: ${errorMessage(err)}`);
+    return false;
   }
 }
 
@@ -663,13 +679,30 @@ async function getInstallCommands(
 }
 
 async function detectPackageManager(): Promise<PackageManager> {
-  if (await findExecutable(['pipx'])) {
-    return 'pipx';
-  }
   if (await findExecutable(['uv'])) {
     return 'uv';
   }
+  if (await findExecutable(['pipx'])) {
+    return 'pipx';
+  }
   return 'pip';
+}
+
+function printInstallNextSteps(options: {readonly dryRun: boolean; readonly startsServer: boolean}): void {
+  if (options.dryRun) {
+    console.log('Dry run complete. Run without --dry-run to install and start OpenViking.');
+    return;
+  }
+
+  if (options.startsServer) {
+    console.log('Install complete. OpenViking health is ready. Next:');
+    console.log('  threadnote doctor --dry-run');
+    return;
+  }
+
+  console.log('Install complete. Run start, then doctor:');
+  console.log('  threadnote start');
+  console.log('  threadnote doctor --dry-run');
 }
 
 async function writeTemplateIfMissing(options: {

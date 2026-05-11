@@ -65,7 +65,9 @@ export interface MappedCommand {
 export interface InstallOptions {
   readonly dryRun?: boolean;
   readonly packageManager?: PackageManager;
+  readonly printNextSteps?: boolean;
   readonly repairInvalidConfigs?: boolean;
+  readonly start?: boolean;
 }
 
 export interface RepairOptions {

@@ -90,10 +90,9 @@ paths.
    `--repo` can be repeated. Paths may be anywhere on the machine. If no `--repo` is provided, the current git repo is
    used. The manifest is written to `~/.openviking/seed-manifest.yaml` by default and is intentionally not checked in.
 
-4. Start the local service:
+4. Verify the local service:
 
    ```bash
-   threadnote start
    threadnote doctor --dry-run
    ```
 

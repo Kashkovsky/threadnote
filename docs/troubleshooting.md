@@ -8,7 +8,7 @@ Run:
 threadnote install
 ```
 
-The installer prefers `pipx`, then `uv`, then `python3 -m pip install --user`.
+The installer prefers `uv`, then `pipx`, then `python3 -m pip install --user`.
 
 ## `uv` Fails With `UnknownIssuer`
 
@@ -30,13 +30,13 @@ threadnote install --package-manager pip
 
 ## Model Download Fails With `CERTIFICATE_VERIFY_FAILED`
 
-On first start, OpenViking may download the local embedding model from Hugging Face. If `~/.openviking/logs/server.log`
-shows `SSLCertVerificationError`, `self-signed certificate in certificate chain`, or `Failed to download local embedding
-model`, repair the OpenViking Python environment and start again:
+On install or first start, OpenViking may download the local embedding model from Hugging Face. If
+`~/.openviking/logs/server.log` shows `SSLCertVerificationError`, `self-signed certificate in certificate chain`, or
+`Failed to download local embedding model`, repair the OpenViking Python environment and start again:
 
 ```bash
 threadnote repair --package-manager uv
-threadnote start
+threadnote doctor --dry-run
 ```
 
 Threadnote installs `pip-system-certs` into the OpenViking environment so Python `requests` can use certificates trusted
@@ -63,8 +63,8 @@ The installer repairs this by installing `openviking[local-embed]`.
 
 ## Server Health Fails
 
-If `doctor` reports `WARN openviking health: connect ECONNREFUSED 127.0.0.1:1933`, the local server is not running.
-Start it and recheck:
+Current Threadnote installs start the local server by default. If `doctor` reports
+`WARN openviking health: connect ECONNREFUSED 127.0.0.1:1933`, the local server is not running. Start it and recheck:
 
 ```bash
 threadnote start

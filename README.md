@@ -50,13 +50,13 @@ Install with one command:
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
 ```
 
-This installs the published package from npmjs and runs `threadnote install`. It does not use npm `postinstall`,
-because setup writes local machine config and should be an explicit action.
+This installs the published package from npmjs and runs `threadnote install`. The install command sets up local config,
+repairs the OpenViking Python environment, and starts the local server so health problems surface immediately. It does
+not use npm `postinstall`, because setup writes local machine config and should be an explicit action.
 
-Start the local server and confirm it is healthy:
+Confirm it is healthy:
 
 ```bash
-threadnote start
 threadnote doctor --dry-run
 ```
 
@@ -74,7 +74,6 @@ Or install manually:
 ```bash
 npm install --global threadnote
 threadnote install
-threadnote start
 threadnote doctor --dry-run
 ```
 
@@ -194,7 +193,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
 
 - `doctor`: checks prerequisites, the generated command shim, manifest shape, templates, and local OpenViking health.
 - `install`: installs `openviking[local-embed]==0.3.12` if missing, creates `~/.openviking` config files if absent,
-  writes the command shim, and upserts user-level agent instructions.
+  writes the command shim, upserts user-level agent instructions, and starts/checks OpenViking health by default. Use
+  `--no-start` to skip the health check.
 - `update`: updates the published Threadnote package, then runs `repair` so shims and MCP config point at the new
   version.
 - `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor MCP configs from the
@@ -240,7 +240,6 @@ any repo or working directory:
 ```bash
 threadnote doctor --dry-run
 threadnote init-manifest --repo ~/src/my-service --repo ~/work/mobile-app
-threadnote start
 threadnote seed --dry-run
 threadnote seed-skills --dry-run
 ```

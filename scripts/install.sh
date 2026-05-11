@@ -126,7 +126,6 @@ fi
 
 say ""
 say "Threadnote is installed. Next:"
-say "  threadnote start"
 say "  threadnote doctor --dry-run"
 say "  threadnote mcp-install codex --apply    # if you use Codex"
 say "  threadnote mcp-install claude --apply   # if you use Claude"

@@ -66,7 +66,8 @@ async function main(): Promise<void> {
     .command('install')
     .description('Install OpenViking, local config files, command shim, and user-level agent instructions')
     .option('--dry-run', 'Print the actions without making changes')
-    .option('--package-manager <manager>', 'pipx, uv, or pip', parsePackageManager)
+    .option('--no-start', 'Do not start OpenViking or check server health after installing')
+    .option('--package-manager <manager>', 'uv, pipx, or pip', parsePackageManager)
     .action(async (options: InstallOptions) => {
       const config = getRuntimeConfig(program);
       await runInstall(config, options);
@@ -96,7 +97,7 @@ async function main(): Promise<void> {
       'available',
     )
     .option('--no-start', 'Do not start OpenViking if health is failing')
-    .option('--package-manager <manager>', 'pipx, uv, or pip', parsePackageManager)
+    .option('--package-manager <manager>', 'uv, pipx, or pip', parsePackageManager)
     .action(async (options: RepairOptions) => {
       const config = getRuntimeConfig(program);
       await runRepair(config, options);
