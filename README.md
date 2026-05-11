@@ -29,6 +29,28 @@ Run `threadnote seed-skills` to make local `SKILL.md` guidance discoverable thro
 Agents are instructed to compact them into one concise replacement memory and forget only the clearly redundant originals,
 keeping future recall sharper without losing useful detail.
 
+**Still working on the same issue?**
+Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
+instead of accumulating near-duplicate progress notes.
+
+## Why Not Just CLAUDE.md Or AGENTS.md?
+
+Use them. Threadnote is not a replacement for checked-in instructions.
+
+`CLAUDE.md`, `AGENTS.md`, Cursor rules, and repo docs are the right place for stable, canonical guidance: coding
+standards, test commands, review rules, architecture notes, and anything the whole team should version and discuss.
+
+They are less ideal for living context: what happened in the last agent session, which branch was halfway through a
+refactor, what an on-call investigation concluded, which workaround was verified on one machine, or which duplicate
+memories should be compacted. Putting that history into instruction files makes them noisy, stale, and expensive to load
+into every context window.
+
+Threadnote keeps that moving layer local, searchable, and shared across agents. Agents recall only the relevant memories,
+handoffs, and skill/resource pointers when they need them, while the source files stay authoritative for project rules.
+
+The split is simple: put durable repo policy in `CLAUDE.md`/`AGENTS.md`; put task history, handoffs, personal workflow
+facts, and local cross-agent memory in Threadnote.
+
 ## Safety Model
 
 - Machine writes stay **locally** under `THREADNOTE_HOME`, which defaults to `~/.openviking`.
@@ -208,14 +230,16 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog so agents can discover
   reusable workflow guidance. Use `seed-skills --native` only after configuring a working VLM provider.
 - `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
-- `remember`: stores a durable memory.
+- `remember`: stores a durable memory. Use `--replace <uri>` to store an updated memory and remove a superseded one
+  after the new memory succeeds.
 - `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
   `migrate-memories --dry-run` first; use `--all-accounts` when importing from older local OpenViking accounts.
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
   `skills for api service`; use `--uri` or `--no-infer-scope` to override.
 - `read`: reads a `viking://` URI returned by `recall` or `list`.
 - `list` / `ls`: lists a `viking://` directory.
-- `handoff`: stores current git state and next-step notes as a durable handoff.
+- `handoff`: stores current git state and next-step notes as a durable handoff. Use `--replace <uri>` to update the
+  current handoff for the same active issue.
 - `forget`: removes a `viking://` URI.
 - `export-pack` / `import-pack`: moves local context through `.ovpack` files.
 

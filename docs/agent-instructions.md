@@ -38,6 +38,11 @@ canonical docs. Prefer updating checked-in docs for canonical repo rules.
 
 ## Memory Compaction
 
+When working on the same active issue, prefer keeping one current-state memory updated instead of creating many small
+progress memories. If an existing memory is clearly the current state for the issue, store the updated version with
+`remember_context({"text":"...","replaceUri":"<uri>"})`, `threadnote remember --replace <uri>`, or
+`threadnote handoff --replace <uri>` so the old memory is removed only after the replacement is stored.
+
 When recall/read surfaces several memories that describe the same durable fact, incident, branch, or handoff, compact
 them when it is safe:
 
@@ -72,6 +77,7 @@ threadnote recall --query "last handoff for this branch"
 threadnote read viking://agent/threadnote/memories/.abstract.md
 threadnote list viking://agent/threadnote/memories --all --recursive
 threadnote remember --text "Durable engineering note..."
+threadnote remember --replace viking://user/example/memories/events/current.md --text "Updated durable engineering note..."
 threadnote forget viking://user/example/memories/events/duplicate.md
 threadnote handoff --task "short task summary" --tests "checks run" --next-step "what to do next"
 ```

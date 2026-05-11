@@ -49,14 +49,16 @@ export async function runRemember(config: RuntimeConfig, options: RememberOption
   if (!text.trim()) {
     throw new Error('Provide memory text with --text or --stdin.');
   }
-  const memory = [
+  const header = [
     'MEMORY',
     `source_agent_client: ${options.sourceAgentClient ?? 'codex'}`,
     `timestamp: ${new Date().toISOString()}`,
-    '',
-    text.trim(),
-  ].join('\n');
-  await storeMemory(config, memory, options.dryRun === true);
+  ];
+  if (options.replace) {
+    header.push(`supersedes: ${options.replace}`);
+  }
+  const memory = [...header, '', text.trim()].join('\n');
+  await storeMemory(config, memory, {dryRun: options.dryRun === true, replaceUri: options.replace});
 }
 
 export async function runMigrateMemories(config: RuntimeConfig, options: MigrateMemoriesOptions): Promise<void> {
@@ -187,7 +189,7 @@ export async function runList(config: RuntimeConfig, uri: string, options: ListO
 
 export async function runHandoff(config: RuntimeConfig, options: HandoffOptions): Promise<void> {
   const handoff = await buildHandoff(options);
-  await storeMemory(config, handoff, options.dryRun === true);
+  await storeMemory(config, handoff, {dryRun: options.dryRun === true, replaceUri: options.replace});
 }
 
 export async function runForget(config: RuntimeConfig, uri: string, options: ForgetOptions): Promise<void> {
@@ -276,11 +278,18 @@ async function printExactMemoryMatches(
   console.log(outputs.join('\n\n'));
 }
 
-async function storeMemory(config: RuntimeConfig, memory: string, dryRun: boolean): Promise<void> {
-  const ov = await openVikingCliForMode(dryRun);
+async function storeMemory(
+  config: RuntimeConfig,
+  memory: string,
+  options: {readonly dryRun: boolean; readonly replaceUri?: string},
+): Promise<void> {
+  if (options.replaceUri) {
+    assertVikingUri(options.replaceUri);
+  }
+  const ov = await openVikingCliForMode(options.dryRun);
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
   const memoryUri = durableMemoryUri(config, memory);
-  if (dryRun) {
+  if (options.dryRun) {
     console.log(memory);
     console.log('\nWould run:');
     console.log(
@@ -299,6 +308,9 @@ async function storeMemory(config: RuntimeConfig, memory: string, dryRun: boolea
         ]),
       ),
     );
+    if (options.replaceUri) {
+      console.log(formatShellCommand(ov, withIdentity(config, ['rm', options.replaceUri])));
+    }
     return;
   }
   await writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600});
@@ -306,6 +318,10 @@ async function storeMemory(config: RuntimeConfig, memory: string, dryRun: boolea
   await ensureDurableMemoryDirectory(ov, config);
   await writeDurableMemoryFile(ov, config, memoryUri, memoryPath);
   console.log(`Stored durable memory: ${memoryUri}`);
+  if (options.replaceUri) {
+    await maybeRun(false, ov, withIdentity(config, ['rm', options.replaceUri]));
+    console.log(`Forgot replaced memory: ${options.replaceUri}`);
+  }
 }
 
 async function writeDurableMemoryFile(
@@ -585,13 +601,19 @@ async function buildHandoff(options: HandoffOptions): Promise<string> {
   const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
   const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
   const touchedFiles = await gitTouchedFiles(repoRoot);
-  return [
+  const header = [
     'HANDOFF',
     `repo: ${basename(repoRoot)}`,
     `repo_path: ${repoRoot}`,
     `branch: ${branch || 'unknown'}`,
     `source_agent_client: ${options.sourceAgentClient ?? 'codex'}`,
     `timestamp: ${new Date().toISOString()}`,
+  ];
+  if (options.replace) {
+    header.push(`supersedes: ${options.replace}`);
+  }
+  return [
+    ...header,
     `task: ${options.task ?? 'unspecified'}`,
     '',
     'files_touched:',

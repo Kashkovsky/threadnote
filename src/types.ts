@@ -121,6 +121,7 @@ export interface McpInstallOptions {
 
 export interface RememberOptions {
   readonly dryRun?: boolean;
+  readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly stdin?: boolean;
   readonly text?: string;
@@ -157,6 +158,7 @@ export interface HandoffOptions {
   readonly blockers?: string;
   readonly dryRun?: boolean;
   readonly nextStep?: string;
+  readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly task?: string;
   readonly tests?: string;

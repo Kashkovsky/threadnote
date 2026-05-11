@@ -58,6 +58,7 @@ async function main(): Promise<void> {
         'Prefer `recall_context` to find candidate viking:// URIs, then `read_context` files or `list_context` directories.',
         'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff"}).',
         'Older clients may use the compatibility aliases `search`, `read`, and `list`.',
+        'When updating the same active issue, pass replaceUri to remember_context so the superseded memory is forgotten after the replacement is stored.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
     },
@@ -356,33 +357,44 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
   server.registerTool(
     name,
     {
-      annotations: {readOnlyHint: false, destructiveHint: false},
+      annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
+        replaceUri: z
+          .string()
+          .optional()
+          .describe('Optional viking:// memory URI to forget after the new memory is safely stored'),
         text: z.string().optional().describe('Required memory text to store'),
         sourceAgentClient: z.string().optional().describe('Originating client, for example cursor, codex, or claude'),
       },
     },
-    async ({sourceAgentClient, text}) => {
+    async ({replaceUri, sourceAgentClient, text}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
       }
-      return writeDurableMemory(
-        config,
-        [
-          'MEMORY',
-          `source_agent_client: ${sourceAgentClient ?? 'mcp'}`,
-          `timestamp: ${new Date().toISOString()}`,
-          '',
-          checkedText.value,
-        ].join('\n'),
-      );
+      const checkedReplaceUri = optionalVikingUri(replaceUri, name);
+      if (!checkedReplaceUri.ok) {
+        return checkedReplaceUri.error;
+      }
+      const header = [
+        'MEMORY',
+        `source_agent_client: ${sourceAgentClient ?? 'mcp'}`,
+        `timestamp: ${new Date().toISOString()}`,
+      ];
+      if (checkedReplaceUri.value) {
+        header.push(`supersedes: ${checkedReplaceUri.value}`);
+      }
+      return writeDurableMemory(config, [...header, '', checkedText.value].join('\n'), checkedReplaceUri.value);
     },
   );
 }
 
-async function writeDurableMemory(config: RuntimeConfig, memory: string): Promise<CallToolResult> {
+async function writeDurableMemory(
+  config: RuntimeConfig,
+  memory: string,
+  replaceUri: string | undefined,
+): Promise<CallToolResult> {
   try {
     const ov = await requiredOpenVikingCli();
     const directoryUri = durableMemoryDirectoryUri(config);
@@ -406,8 +418,13 @@ async function writeDurableMemory(config: RuntimeConfig, memory: string): Promis
       memoryUri,
       withIdentity(config, ['write', memoryUri, '--content', memory, '--mode', 'create', '--wait', '--timeout', '120']),
     );
+    const messages = [`Stored durable memory: ${memoryUri}`];
+    if (replaceUri) {
+      await runCommand(ov, withIdentity(config, ['rm', replaceUri]));
+      messages.push(`Forgot replaced memory: ${replaceUri}`);
+    }
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: [`Stored durable memory: ${memoryUri}`, text].filter(Boolean).join('\n')}]};
+    return {content: [{type: 'text', text: [...messages, text].filter(Boolean).join('\n')}]};
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }

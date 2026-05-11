@@ -170,6 +170,8 @@ Preferred agent behavior is automatic after `threadnote install` has updated the
 
 - On non-trivial task start, search OpenViking for recent handoffs and relevant repo guidance.
 - When the user says "remember", store the memory after checking that it contains no secret or customer data.
+- When continuing the same active issue, update the current-state memory with `remember --replace <uri>` or
+  `handoff --replace <uri>` instead of creating another near-duplicate progress memory.
 - When recall surfaces clearly duplicate or stale memories, store one concise replacement memory and forget only the
   redundant originals.
 - Before pausing, switching agents, or finishing meaningful code changes, store a concise handoff with status, tests,
@@ -180,6 +182,7 @@ Manual CLI remains available for scripts and emergencies:
 ```bash
 threadnote recall --query "last handoff for this branch"
 threadnote remember --text "Durable engineering note..."
+threadnote remember --replace viking://user/example/memories/events/current.md --text "Updated durable engineering note..."
 threadnote handoff --task "short task summary" --tests "checks run" --next-step "what the next agent should do"
 ```
 
