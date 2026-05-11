@@ -7,13 +7,13 @@ and it does not index whole repositories by default.
 ## Real-World Uses
 
 **Want to continue work in a fresh agent session?**  
-`threadnote install` adds user-level Codex and Claude instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
+`threadnote install` adds user-level Codex, Claude, and Cursor instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
 
 **Implemented a feature a while ago and need to pick it up again?**  
 Ask the agent to recall the feature, branch, or repo. Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
 
-**Switching between Codex and Claude?**  
-Install the MCP adapter for both. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
+**Switching between Codex, Claude, and Cursor?**\
+Install the MCP adapter for each agent you use. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
 from chat history.
 
 **Working through a long task until the agent context window fills up?**  
@@ -21,6 +21,9 @@ After compaction, the next agent turn can recall the relevant Threadnote memorie
 
 **Found a durable workflow fact, like how a repo runs tests or where release notes live?**  
 Ask the agent to remember it. Threadnote keeps that memory local and searchable without editing unrelated repo files.
+
+**Have reusable agent workflows already installed as skills?**\
+Run `threadnote seed-skills` to make local `SKILL.md` guidance discoverable through recall. Agents can find relevant testing, release, on-call, debugging, or plugin-provided workflows without you reopening the same skill files by hand.
 
 **Recall returned several overlapping memories?**
 Agents are instructed to compact them into one concise replacement memory and forget only the clearly redundant originals,
@@ -57,7 +60,7 @@ threadnote start
 threadnote doctor --dry-run
 ```
 
-If install or health checks fail, see `docs/troubleshooting.md`.
+If install or health checks fail, see [Troubleshooting](docs/troubleshooting.md).
 
 To force a runtime:
 
@@ -164,7 +167,19 @@ threadnote seed --dry-run
 threadnote seed
 ```
 
-Optionally seed shared and repo-local skills:
+For Git worktrees, seed the stable checkout by default:
+
+```bash
+threadnote init-manifest --repo ~/src/coda
+```
+
+You usually do not need to add every temporary worktree such as `~/src/worktrees/coda/my-branch`. Threadnote treats each
+worktree path as its own manifest project today, so adding every worktree can duplicate seeded repo resources and make
+recall noisier. Add a worktree only when it is long-lived or has branch-specific docs, instructions, or repo-local skills
+that should be recalled separately.
+
+Optionally seed shared and repo-local skills. This imports existing `SKILL.md` files as a searchable resource catalog so
+agents can discover relevant workflow guidance; it does not install or activate skills in the agent runtime.
 
 ```bash
 threadnote seed-skills --dry-run
@@ -190,8 +205,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
   preserved by default; pass `--erase-memories` to delete `THREADNOTE_HOME`.
 - `init-manifest`: creates or updates `~/.openviking/seed-manifest.yaml` from one or more developer repo roots.
 - `seed`: imports curated repo guidance and docs from the manifest.
-- `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog. Use
-  `seed-skills --native` only after configuring a working VLM provider.
+- `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog so agents can discover
+  reusable workflow guidance. Use `seed-skills --native` only after configuring a working VLM provider.
 - `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
 - `remember`: stores a durable memory.
 - `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
