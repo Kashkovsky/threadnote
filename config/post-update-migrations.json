@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "migrations": [
+    {
+      "id": "memory-lifecycle-handoff-archive-v1",
+      "introducedIn": "0.3.7",
+      "title": "Move legacy handoff memories into lifecycle archive paths",
+      "description": [
+        "Threadnote now separates current durable knowledge from the historical handoff trail.",
+        "This migration scans legacy viking://user/<you>/memories/events/*.md files for clear handoff records only.",
+        "Matching handoffs are copied to viking://user/<you>/memories/handoffs/archived/<project>/legacy-<hash>.md with lifecycle metadata.",
+        "After each archived copy is stored, Threadnote removes the original legacy events file to reduce duplicate recall results.",
+        "Ambiguous MEMORY records, preferences, durable facts, incidents, and sensitive-looking content are left untouched for manual review."
+      ],
+      "commandArgs": ["migrate-lifecycle", "--apply"],
+      "instructions": [
+        "Post-update lifecycle migration finished. Future agents should store durable facts with --kind durable --project <name> --topic <topic> and active work logs with handoff --project <name> --topic <topic>.",
+        "If Threadnote reported any original files were still being processed, rerun the printed threadnote forget <uri> command later."
+      ],
+      "requiresLegacyHandoffs": true
+    }
+  ]
+}

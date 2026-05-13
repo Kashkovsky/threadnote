@@ -2,7 +2,10 @@ import {constants as fsConstants} from 'node:fs';
 import {access, readFile, writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import type {RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
+import {createInterface} from 'node:readline/promises';
+import {stdin as input, stdout as output} from 'node:process';
+import {hasLegacyLifecycleHandoffCandidates} from './memory.js';
+import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
 import {
   ensureDirectory,
   errorMessage,
@@ -11,12 +14,16 @@ import {
   maybeRun,
   readFileIfExists,
   runCommand,
+  runInteractive,
   toolRoot,
+  formatShellCommand,
 } from './utils.js';
 
 const NPM_PACKAGE_NAME = 'threadnote';
 const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
+const POST_UPDATE_MIGRATIONS_FILE = 'post-update-migrations.json';
+const POST_UPDATE_STATE_FILE = 'post-update-state.json';
 
 interface UpdateInfo {
   readonly currentVersion: string;
@@ -29,6 +36,20 @@ interface UpdateCache {
   readonly checkedAt: string;
   readonly latestVersion: string;
   readonly registry: string;
+}
+
+interface PostUpdateMigration {
+  readonly commandArgs: readonly string[];
+  readonly description: readonly string[];
+  readonly id: string;
+  readonly instructions: readonly string[];
+  readonly introducedIn: string;
+  readonly requiresLegacyHandoffs?: boolean;
+  readonly title: string;
+}
+
+interface PostUpdateState {
+  readonly handledMigrationIds: readonly string[];
 }
 
 export function parseUpdateRuntime(value: string): UpdateRuntime {
@@ -102,8 +123,76 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
   }
 
   const threadnoteCommand = await installedThreadnoteCommand(runtime);
-  await maybeRun(options.dryRun === true, threadnoteCommand, ['repair']);
+  await maybeRun(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+  if (options.postUpdate !== false) {
+    const postUpdateArgs = [
+      'post-update',
+      '--from-version',
+      info.currentVersion,
+      '--to-version',
+      info.latestVersion,
+      ...(options.yes === true ? ['--yes'] : []),
+    ];
+    if (options.dryRun === true) {
+      await maybeRun(true, threadnoteCommand, postUpdateArgs);
+    } else {
+      console.log(`Running: ${formatShellCommand(threadnoteCommand, postUpdateArgs)}`);
+      const postUpdateExitCode = await runInteractive(threadnoteCommand, postUpdateArgs);
+      if (postUpdateExitCode !== 0) {
+        throw new Error(`${formatShellCommand(threadnoteCommand, postUpdateArgs)} exited with ${postUpdateExitCode}.`);
+      }
+    }
+  } else {
+    console.log('Skipping post-update migration prompts because --no-post-update was provided.');
+  }
   console.log('Update complete. Restart Cursor, Codex, Claude, or open a fresh agent session so MCP tools reload.');
+}
+
+export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOptions): Promise<void> {
+  if (!options.fromVersion || !options.toVersion) {
+    throw new Error('Provide --from-version and --to-version for post-update.');
+  }
+  await runApplicablePostUpdateMigrations(config, {
+    dryRun: options.dryRun === true,
+    fromVersion: options.fromVersion,
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    markHandled: true,
+    toVersion: options.toVersion,
+    yes: options.yes === true,
+  });
+}
+
+export async function maybeRunPostUpdateAfterRepair(
+  config: RuntimeConfig,
+  options: {readonly dryRun: boolean},
+): Promise<void> {
+  const toVersion = await currentPackageVersion();
+  const state = await readPostUpdateState(config);
+  const migrations = await applicablePostUpdateMigrations(config, {
+    fromVersion: '0.0.0',
+    handledMigrationIds: state.handledMigrationIds,
+    toVersion,
+  });
+  if (migrations.length === 0) {
+    return;
+  }
+  console.log('');
+  console.log('Repair found package post-update migrations.');
+  console.log('This also covers updates launched by older Threadnote versions that only knew how to run repair.');
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    console.log(
+      'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
+    );
+    console.log(`Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`);
+  }
+  await runApplicablePostUpdateMigrations(config, {
+    dryRun: options.dryRun,
+    fromVersion: '0.0.0',
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    markHandled: true,
+    toVersion,
+    yes: false,
+  });
 }
 
 async function getUpdateInfo(
@@ -192,6 +281,187 @@ async function writeUpdateCache(config: RuntimeConfig, cache: UpdateCache): Prom
 
 function updateCachePath(config: RuntimeConfig): string {
   return join(config.agentContextHome, 'update-check.json');
+}
+
+async function runApplicablePostUpdateMigrations(
+  config: RuntimeConfig,
+  options: {
+    readonly dryRun: boolean;
+    readonly fromVersion: string;
+    readonly interactive: boolean;
+    readonly markHandled: boolean;
+    readonly toVersion: string;
+    readonly yes: boolean;
+  },
+): Promise<void> {
+  const state = await readPostUpdateState(config);
+  const migrations = await applicablePostUpdateMigrations(config, {
+    fromVersion: options.fromVersion,
+    handledMigrationIds: state.handledMigrationIds,
+    toVersion: options.toVersion,
+  });
+  if (migrations.length === 0) {
+    console.log('No post-update memory migrations apply.');
+    return;
+  }
+
+  console.log('');
+  console.log('Post-update memory migrations are available.');
+  const threadnoteCommand =
+    currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
+  const handledMigrationIds = new Set(state.handledMigrationIds);
+  for (const migration of migrations) {
+    printPostUpdateMigration(migration);
+    const accepted =
+      options.dryRun ||
+      options.yes ||
+      (options.interactive && (await confirmPostUpdateMigration('Apply this migration now? [y/N] ')));
+    if (!accepted) {
+      console.log('Skipped. Run manually later:');
+      console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
+      continue;
+    }
+    await maybeRun(options.dryRun, threadnoteCommand, migration.commandArgs);
+    if (!options.dryRun) {
+      handledMigrationIds.add(migration.id);
+      for (const instruction of migration.instructions) {
+        console.log(instruction);
+      }
+    } else {
+      console.log('After this migration succeeds, Threadnote will print:');
+      for (const instruction of migration.instructions) {
+        console.log(`  ${instruction}`);
+      }
+    }
+  }
+
+  if (!options.dryRun && options.markHandled) {
+    await writePostUpdateState(config, {handledMigrationIds: [...handledMigrationIds].sort()});
+  }
+}
+
+async function applicablePostUpdateMigrations(
+  config: RuntimeConfig,
+  options: {
+    readonly fromVersion: string;
+    readonly handledMigrationIds: readonly string[];
+    readonly toVersion: string;
+  },
+): Promise<readonly PostUpdateMigration[]> {
+  const migrations = await readPostUpdateMigrations();
+  const handled = new Set(options.handledMigrationIds);
+  const applicable: PostUpdateMigration[] = [];
+  for (const migration of migrations) {
+    if (handled.has(migration.id)) {
+      continue;
+    }
+    if (compareVersions(options.fromVersion, migration.introducedIn) >= 0) {
+      continue;
+    }
+    if (compareVersions(migration.introducedIn, options.toVersion) > 0) {
+      continue;
+    }
+    if (migration.requiresLegacyHandoffs === true && !(await hasLegacyLifecycleHandoffCandidates(config))) {
+      continue;
+    }
+    applicable.push(migration);
+  }
+  return applicable;
+}
+
+async function readPostUpdateMigrations(): Promise<readonly PostUpdateMigration[]> {
+  const raw = await readFileIfExists(join(toolRoot(), 'config', POST_UPDATE_MIGRATIONS_FILE));
+  if (!raw) {
+    return [];
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (!isJsonObject(parsed) || !Array.isArray(parsed.migrations)) {
+    throw new Error(`${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`);
+  }
+  return parsed.migrations.map(parsePostUpdateMigration);
+}
+
+function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
+  if (
+    !isJsonObject(value) ||
+    typeof value.id !== 'string' ||
+    typeof value.introducedIn !== 'string' ||
+    typeof value.title !== 'string' ||
+    !Array.isArray(value.description) ||
+    !Array.isArray(value.commandArgs) ||
+    !Array.isArray(value.instructions)
+  ) {
+    throw new Error(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+  }
+  return {
+    commandArgs: stringArray(value, 'commandArgs'),
+    description: stringArray(value, 'description'),
+    id: value.id,
+    instructions: stringArray(value, 'instructions'),
+    introducedIn: value.introducedIn,
+    requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
+    title: value.title,
+  };
+}
+
+function stringArray(value: JsonObject, key: string): readonly string[] {
+  const raw = value[key];
+  if (!Array.isArray(raw) || !raw.every(item => typeof item === 'string')) {
+    throw new Error(`Invalid ${key} in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+  }
+  return raw;
+}
+
+function printPostUpdateMigration(migration: PostUpdateMigration): void {
+  console.log('');
+  console.log(`${migration.title} (${migration.introducedIn})`);
+  for (const line of migration.description) {
+    console.log(`- ${line}`);
+  }
+}
+
+async function confirmPostUpdateMigration(prompt: string): Promise<boolean> {
+  const readline = createInterface({input, output});
+  try {
+    const answer = (await readline.question(prompt)).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    readline.close();
+  }
+}
+
+function formatMigrationCommand(executable: string, args: readonly string[]): string {
+  return [executable, ...args].map(part => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ');
+}
+
+function currentThreadnoteCommand(): string | undefined {
+  const entrypoint = process.argv[1]?.trim();
+  return entrypoint ? entrypoint : undefined;
+}
+
+async function readPostUpdateState(config: RuntimeConfig): Promise<PostUpdateState> {
+  const raw = await readFileIfExists(postUpdateStatePath(config));
+  if (!raw) {
+    return {handledMigrationIds: []};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
+      return {handledMigrationIds: []};
+    }
+    return {handledMigrationIds: parsed.handledMigrationIds.filter((id): id is string => typeof id === 'string')};
+  } catch (_err: unknown) {
+    return {handledMigrationIds: []};
+  }
+}
+
+async function writePostUpdateState(config: RuntimeConfig, state: PostUpdateState): Promise<void> {
+  await ensureDirectory(config.agentContextHome, false);
+  await writeFile(postUpdateStatePath(config), `${JSON.stringify(state, null, 2)}\n`, {encoding: 'utf8', mode: 0o600});
+}
+
+function postUpdateStatePath(config: RuntimeConfig): string {
+  return join(config.agentContextHome, POST_UPDATE_STATE_FILE);
 }
 
 async function resolveUpdateRuntime(runtime: UpdateRuntime): Promise<Exclude<UpdateRuntime, 'auto'>> {

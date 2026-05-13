@@ -26,6 +26,20 @@ interface RuntimeConfig {
   readonly user: string;
 }
 
+type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
+type MemoryStatus = 'active' | 'archived' | 'superseded';
+
+interface MemoryMetadata {
+  readonly archivedFrom?: string;
+  readonly kind: MemoryKind;
+  readonly project?: string;
+  readonly sourceAgentClient: string;
+  readonly status: MemoryStatus;
+  readonly supersedes?: string;
+  readonly timestamp: string;
+  readonly topic?: string;
+}
+
 type CheckedText =
   | {
       readonly ok: true;
@@ -58,7 +72,8 @@ async function main(): Promise<void> {
         'Prefer `recall_context` to find candidate viking:// URIs, then `read_context` files or `list_context` directories.',
         'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff"}).',
         'Older clients may use the compatibility aliases `search`, `read`, and `list`.',
-        'When updating the same active issue, pass replaceUri to remember_context so the superseded memory is forgotten after the replacement is stored.',
+        'For durable facts, store kind="durable"; for current work logs, store kind="handoff" with project/topic so Threadnote keeps one active memory updated.',
+        'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate handoffs do not accumulate.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
     },
@@ -110,6 +125,14 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
   );
   registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
 
+  registerArchiveTool(
+    server,
+    config,
+    'archive_context',
+    'Archive a memory so it remains readable as provenance but is no longer current working context.',
+  );
+  registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
+
   server.registerTool(
     'forget',
     {
@@ -124,7 +147,23 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, ['rm', checkedUri.value]);
+      try {
+        const ov = await requiredOpenVikingCli();
+        const removed = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: removed
+                ? `Removed: ${checkedUri.value}`
+                : `Resource is still being processed; retry later: ${checkedUri.value}`,
+            },
+          ],
+          isError: !removed,
+        };
+      } catch (err: unknown) {
+        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+      }
     },
   );
 
@@ -236,9 +275,10 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
         query: z.string().optional().describe('Required search query, for example "unity-ui-ccc latest handoff"'),
         uri: z.string().optional().describe('Optional viking:// subtree to search'),
         nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
+        includeArchived: z.boolean().optional().describe('Include archived memories in exact durable-memory matches'),
       },
     },
-    async ({nodeLimit, query, uri}) => {
+    async ({includeArchived, nodeLimit, query, uri}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -247,23 +287,32 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runRecallTool(config, [
-        'search',
-        checkedQuery.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
-      ]);
+      return runRecallTool(
+        config,
+        [
+          'search',
+          checkedQuery.value,
+          ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
+          ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
+        ],
+        includeArchived === true,
+      );
     },
   );
 }
 
-async function runRecallTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
+async function runRecallTool(
+  config: RuntimeConfig,
+  args: readonly string[],
+  includeArchived: boolean,
+): Promise<CallToolResult> {
   const semanticResult = await runOpenVikingTool(config, args);
   if (semanticResult.isError === true) {
     return semanticResult;
   }
   const query = args[1];
-  const exactMatches = typeof query === 'string' ? await exactMemoryMatchesText(config, query) : undefined;
+  const exactMatches =
+    typeof query === 'string' ? await exactMemoryMatchesText(config, query, includeArchived) : undefined;
   if (!exactMatches) {
     return semanticResult;
   }
@@ -277,16 +326,17 @@ async function runRecallTool(config: RuntimeConfig, args: readonly string[]): Pr
   };
 }
 
-async function exactMemoryMatchesText(config: RuntimeConfig, query: string): Promise<string | undefined> {
+async function exactMemoryMatchesText(
+  config: RuntimeConfig,
+  query: string,
+  includeArchived: boolean,
+): Promise<string | undefined> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return undefined;
   }
   const ov = await requiredOpenVikingCli();
-  const scopes = [
-    `viking://user/${uriSegment(config.user)}/memories`,
-    `viking://agent/${uriSegment(config.agentId)}/memories`,
-  ];
+  const scopes = exactMemoryScopes(config, includeArchived);
   const outputs: string[] = [];
   for (const term of terms) {
     for (const scope of scopes) {
@@ -360,15 +410,22 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
+        kind: z
+          .enum(['durable', 'handoff', 'incident', 'preference', 'smoke'])
+          .optional()
+          .describe('Memory lifecycle kind; durable facts and handoffs are most common'),
+        project: z.string().optional().describe('Project/repo namespace, for example threadnote or mobile-native'),
         replaceUri: z
           .string()
           .optional()
           .describe('Optional viking:// memory URI to forget after the new memory is safely stored'),
         text: z.string().optional().describe('Required memory text to store'),
         sourceAgentClient: z.string().optional().describe('Originating client, for example cursor, codex, or claude'),
+        status: z.enum(['active', 'archived', 'superseded']).optional().describe('Memory lifecycle status'),
+        topic: z.string().optional().describe('Stable topic; active project/topic memories update one file'),
       },
     },
-    async ({replaceUri, sourceAgentClient, text}) => {
+    async ({kind, project, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -377,15 +434,87 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
       if (!checkedReplaceUri.ok) {
         return checkedReplaceUri.error;
       }
-      const header = [
-        'MEMORY',
-        `source_agent_client: ${sourceAgentClient ?? 'mcp'}`,
-        `timestamp: ${new Date().toISOString()}`,
-      ];
-      if (checkedReplaceUri.value) {
-        header.push(`supersedes: ${checkedReplaceUri.value}`);
+      const metadata: MemoryMetadata = {
+        kind: kind ?? 'durable',
+        project: normalizeOptionalMetadata(project),
+        sourceAgentClient: sourceAgentClient ?? 'mcp',
+        status: status ?? 'active',
+        supersedes: checkedReplaceUri.value,
+        timestamp: new Date().toISOString(),
+        topic: normalizeOptionalMetadata(topic),
+      };
+      return writeDurableMemory(
+        config,
+        formatMemoryDocument('MEMORY', metadata, checkedText.value),
+        metadata,
+        checkedReplaceUri.value,
+      );
+    },
+  );
+}
+
+function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+  server.registerTool(
+    name,
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description: `${description} The archive is written before the original URI is removed.`,
+      inputSchema: {
+        kind: z.enum(['durable', 'handoff', 'incident', 'preference', 'smoke']).optional(),
+        project: z.string().optional().describe('Project/repo namespace for the archived copy'),
+        topic: z.string().optional().describe('Topic for the archived copy'),
+        uri: z.string().optional().describe('Required viking:// memory URI to archive'),
+      },
+    },
+    async ({kind, project, topic, uri}) => {
+      const checkedUri = requiredVikingUri(uri, name, 'viking://user/example/memories/handoffs/active/repo/topic.md');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
       }
-      return writeDurableMemory(config, [...header, '', checkedText.value].join('\n'), checkedReplaceUri.value);
+      try {
+        const ov = await requiredOpenVikingCli();
+        const readResult = await runCommand(ov, withIdentity(config, ['read', checkedUri.value]));
+        const original = readResult.stdout.trim();
+        if (!original) {
+          return {
+            content: [{type: 'text', text: `Could not read ${checkedUri.value} before archiving.`}],
+            isError: true,
+          };
+        }
+        const metadata: MemoryMetadata = {
+          archivedFrom: checkedUri.value,
+          kind: kind ?? 'handoff',
+          project: normalizeOptionalMetadata(project),
+          sourceAgentClient: 'mcp',
+          status: 'archived',
+          timestamp: new Date().toISOString(),
+          topic: normalizeOptionalMetadata(topic),
+        };
+        const archiveResult = await writeDurableMemory(
+          config,
+          formatMemoryDocument('MEMORY', metadata, ['Archived original Threadnote memory.', '', original].join('\n')),
+          metadata,
+          undefined,
+        );
+        if (archiveResult.isError === true) {
+          return archiveResult;
+        }
+        const removedOriginal = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
+        const [content] = archiveResult.content;
+        const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: removedOriginal
+                ? `${text}\nArchived original memory: ${checkedUri.value}`
+                : `${text}\nArchive stored, but original memory is still processing. Retry later with forget: ${checkedUri.value}`,
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+      }
     },
   );
 }
@@ -393,35 +522,42 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
 async function writeDurableMemory(
   config: RuntimeConfig,
   memory: string,
+  metadata: MemoryMetadata,
   replaceUri: string | undefined,
 ): Promise<CallToolResult> {
   try {
     const ov = await requiredOpenVikingCli();
-    const directoryUri = durableMemoryDirectoryUri(config);
-    const stat = await runCommand(ov, withIdentity(config, ['stat', directoryUri]), {allowFailure: true});
-    if (stat.exitCode !== 0) {
-      await runCommand(
-        ov,
-        withIdentity(config, [
-          'mkdir',
-          directoryUri,
-          '--description',
-          'Threadnote durable handoffs, memories, and cross-agent notes.',
-        ]),
-      );
-    }
+    const directoryUri = memoryDirectoryUri(config, metadata);
+    await ensureMemoryDirectory(ov, config, directoryUri);
 
-    const memoryUri = durableMemoryUri(config, memory);
+    const memoryUri = memoryUriFor(config, memory, metadata);
+    const writeMode = await memoryWriteMode(ov, config, memoryUri, metadata);
     const result = await runOpenVikingWriteWithRetry(
       ov,
       config,
       memoryUri,
-      withIdentity(config, ['write', memoryUri, '--content', memory, '--mode', 'create', '--wait', '--timeout', '120']),
+      withIdentity(config, [
+        'write',
+        memoryUri,
+        '--content',
+        memory,
+        '--mode',
+        writeMode,
+        '--wait',
+        '--timeout',
+        '120',
+      ]),
     );
-    const messages = [`Stored durable memory: ${memoryUri}`];
-    if (replaceUri) {
-      await runCommand(ov, withIdentity(config, ['rm', replaceUri]));
-      messages.push(`Forgot replaced memory: ${replaceUri}`);
+    const messages = [`Stored memory: ${memoryUri}`];
+    if (replaceUri && replaceUri !== memoryUri) {
+      const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, replaceUri);
+      messages.push(
+        removedReplacedMemory
+          ? `Forgot replaced memory: ${replaceUri}`
+          : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${replaceUri}`,
+      );
+    } else if (replaceUri === memoryUri) {
+      messages.push(`Updated existing memory in place: ${memoryUri}`);
     }
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
     return {content: [{type: 'text', text: [...messages, text].filter(Boolean).join('\n')}]};
@@ -458,16 +594,133 @@ async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: stri
   return stat.exitCode === 0;
 }
 
+async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
+  const args = withIdentity(config, ['rm', uri]);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      return true;
+    }
+    if (isResourceBusy(result.stderr, result.stdout) && attempt === 3) {
+      return false;
+    }
+    if (!isResourceBusy(result.stderr, result.stdout)) {
+      throw new Error(`${ov} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+  return false;
+}
+
 function isResourceBusy(stderr: string, stdout: string): boolean {
-  return `${stderr}\n${stdout}`.includes('resource is busy');
+  const output = `${stderr}\n${stdout}`.toLowerCase();
+  return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
-function durableMemoryUri(config: RuntimeConfig, memory: string): string {
-  return `${durableMemoryDirectoryUri(config)}/threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+async function ensureMemoryDirectory(ov: string, config: RuntimeConfig, directoryUri: string): Promise<void> {
+  for (const uri of vikingDirectoryChain(directoryUri)) {
+    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    if (statResult.exitCode === 0) {
+      continue;
+    }
+    await runCommand(
+      ov,
+      withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
+    );
+  }
 }
 
-function durableMemoryDirectoryUri(config: RuntimeConfig): string {
-  return `viking://user/${uriSegment(config.user)}/memories/events`;
+function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {
+  const filename = shouldUseStableMemoryUri(metadata)
+    ? `${uriSegment(metadata.topic ?? 'current')}.md`
+    : `threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+  return `${memoryDirectoryUri(config, metadata)}/${filename}`;
+}
+
+function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
+  const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(metadata.project ?? 'general');
+  switch (metadata.kind) {
+    case 'preference':
+      return metadata.status === 'active'
+        ? `${baseUri}/preferences`
+        : `${baseUri}/preferences/${uriSegment(metadata.status)}`;
+    case 'handoff':
+      return `${baseUri}/handoffs/${uriSegment(metadata.status)}/${projectSegment}`;
+    case 'incident':
+      return `${baseUri}/incidents/${uriSegment(metadata.status)}/${projectSegment}`;
+    case 'smoke':
+      return `${baseUri}/smoke/${uriSegment(metadata.status)}`;
+    case 'durable':
+      return metadata.status === 'active'
+        ? `${baseUri}/durable/projects/${projectSegment}`
+        : `${baseUri}/durable/${uriSegment(metadata.status)}/${projectSegment}`;
+  }
+}
+
+function shouldUseStableMemoryUri(metadata: MemoryMetadata): boolean {
+  return metadata.status === 'active' && metadata.topic !== undefined && metadata.kind !== 'smoke';
+}
+
+async function memoryWriteMode(
+  ov: string,
+  config: RuntimeConfig,
+  memoryUri: string,
+  metadata: MemoryMetadata,
+): Promise<'create' | 'replace'> {
+  if (!shouldUseStableMemoryUri(metadata)) {
+    return 'create';
+  }
+  return (await vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+}
+
+function vikingDirectoryChain(directoryUri: string): readonly string[] {
+  const prefix = 'viking://';
+  if (!directoryUri.startsWith(prefix)) {
+    return [directoryUri];
+  }
+  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
+  const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
+  const chain: string[] = [];
+  for (let index = startIndex; index <= parts.length; index += 1) {
+    chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
+  }
+  return chain;
+}
+
+function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
+  const userBase = `viking://user/${uriSegment(config.user)}/memories`;
+  const scopes = [
+    `${userBase}/preferences`,
+    `${userBase}/durable/projects`,
+    `${userBase}/handoffs/active`,
+    `${userBase}/incidents/active`,
+    `${userBase}/events`,
+    `viking://agent/${uriSegment(config.agentId)}/memories`,
+  ];
+  return includeArchived
+    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
+    : scopes;
+}
+
+function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {
+  const header = [
+    title,
+    `kind: ${metadata.kind}`,
+    `status: ${metadata.status}`,
+    metadata.project ? `project: ${metadata.project}` : undefined,
+    metadata.topic ? `topic: ${metadata.topic}` : undefined,
+    `source_agent_client: ${metadata.sourceAgentClient}`,
+    `timestamp: ${metadata.timestamp}`,
+    metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
+    metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+  ].filter((line): line is string => line !== undefined);
+  return [...header, '', body.trim()].join('\n');
+}
+
+function normalizeOptionalMetadata(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function uriSegment(value: string): string {

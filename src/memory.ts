@@ -3,9 +3,13 @@ import {basename, join, sep} from 'node:path';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
+  ArchiveOptions,
   ForgetOptions,
   HandoffOptions,
   ListOptions,
+  MigrateLifecycleOptions,
+  MemoryKind,
+  MemoryStatus,
   MigrateMemoriesOptions,
   PackOptions,
   ProjectManifest,
@@ -44,21 +48,59 @@ interface LegacyMemoryCandidate {
   readonly text: string;
 }
 
+interface MemoryMetadata {
+  readonly archivedFrom?: string;
+  readonly kind: MemoryKind;
+  readonly project?: string;
+  readonly sourceAgentClient: string;
+  readonly status: MemoryStatus;
+  readonly supersedes?: string;
+  readonly timestamp: string;
+  readonly topic?: string;
+}
+
+interface StoreMemoryOptions {
+  readonly dryRun: boolean;
+  readonly metadata: MemoryMetadata;
+  readonly replaceUri?: string;
+}
+
+interface LifecycleHandoffCandidate {
+  readonly metadata: MemoryMetadata;
+  readonly original: string;
+  readonly sourceUri: string;
+}
+
+export function parseMemoryKind(value: string): MemoryKind {
+  if (['durable', 'handoff', 'incident', 'preference', 'smoke'].includes(value)) {
+    return value as MemoryKind;
+  }
+  throw new Error(`Unsupported memory kind "${value}". Expected durable, handoff, incident, preference, or smoke.`);
+}
+
+export function parseMemoryStatus(value: string): MemoryStatus {
+  if (['active', 'archived', 'superseded'].includes(value)) {
+    return value as MemoryStatus;
+  }
+  throw new Error(`Unsupported memory status "${value}". Expected active, archived, or superseded.`);
+}
+
 export async function runRemember(config: RuntimeConfig, options: RememberOptions): Promise<void> {
   const text = await getInputText(options.text, options.stdin === true);
   if (!text.trim()) {
     throw new Error('Provide memory text with --text or --stdin.');
   }
-  const header = [
-    'MEMORY',
-    `source_agent_client: ${options.sourceAgentClient ?? 'codex'}`,
-    `timestamp: ${new Date().toISOString()}`,
-  ];
-  if (options.replace) {
-    header.push(`supersedes: ${options.replace}`);
-  }
-  const memory = [...header, '', text.trim()].join('\n');
-  await storeMemory(config, memory, {dryRun: options.dryRun === true, replaceUri: options.replace});
+  const metadata: MemoryMetadata = {
+    kind: options.kind ?? 'durable',
+    project: normalizeOptionalMetadata(options.project),
+    sourceAgentClient: options.sourceAgentClient ?? 'codex',
+    status: options.status ?? 'active',
+    supersedes: options.replace,
+    timestamp: new Date().toISOString(),
+    topic: normalizeOptionalMetadata(options.topic),
+  };
+  const memory = formatMemoryDocument('MEMORY', metadata, text.trim());
+  await storeMemory(config, memory, {dryRun: options.dryRun === true, metadata, replaceUri: options.replace});
 }
 
 export async function runMigrateMemories(config: RuntimeConfig, options: MigrateMemoriesOptions): Promise<void> {
@@ -115,7 +157,7 @@ export async function runMigrateMemories(config: RuntimeConfig, options: Migrate
       if (!dryRun) {
         await writeFile(migrationPath, candidate.text, {encoding: 'utf8', mode: 0o600});
         await chmod(migrationPath, 0o600);
-        await writeDurableMemoryFile(ov, config, memoryUri, migrationPath);
+        await writeDurableMemoryFile(ov, config, memoryUri, migrationPath, 'create');
         existingHashes.add(candidate.hash);
       }
       migratedCount += 1;
@@ -137,6 +179,68 @@ export async function runMigrateMemories(config: RuntimeConfig, options: Migrate
   );
 }
 
+export async function runMigrateLifecycle(config: RuntimeConfig, options: MigrateLifecycleOptions): Promise<void> {
+  const dryRun = options.dryRun === true || options.apply !== true;
+  const limit = options.limit ? parsePositiveInteger(options.limit, 'lifecycle migration limit') : undefined;
+  const ov = await openVikingCliForMode(dryRun);
+  const candidates = await legacyLifecycleHandoffCandidates(config);
+  const migrationPath = join(config.agentContextHome, 'lifecycle-memory-migration.txt');
+  let existingCount = 0;
+  let migratedCount = 0;
+  let skippedCount = 0;
+
+  try {
+    for (const candidate of candidates) {
+      if (limit !== undefined && migratedCount >= limit) {
+        break;
+      }
+      const destinationUri = lifecycleMigrationUri(config, candidate.metadata, sha256(candidate.original.trim()));
+      const migratedMemory = formatMemoryDocument(
+        'HANDOFF',
+        candidate.metadata,
+        ['Migrated legacy handoff from the historical events trail.', '', candidate.original.trim()].join('\n'),
+      );
+
+      console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${candidate.sourceUri} -> ${destinationUri}`);
+      if (!dryRun) {
+        if (await vikingResourceExists(ov, config, destinationUri)) {
+          existingCount += 1;
+          console.log(`Archived copy already exists; cleaning up legacy source: ${candidate.sourceUri}`);
+        } else {
+          await writeFile(migrationPath, migratedMemory, {encoding: 'utf8', mode: 0o600});
+          await chmod(migrationPath, 0o600);
+          await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata));
+          await writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create');
+        }
+        const removedOriginal = await removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        if (!removedOriginal) {
+          console.error(
+            `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
+          );
+          skippedCount += 1;
+        }
+      }
+      migratedCount += 1;
+    }
+  } finally {
+    if (!dryRun) {
+      await rm(migrationPath, {force: true});
+    }
+  }
+
+  console.log(
+    [
+      `Lifecycle migration summary: ${migratedCount} clear legacy handoff(s) ${dryRun ? 'would be migrated' : 'migrated'}`,
+      `${existingCount} existing archived copy/copies reused`,
+      `${skippedCount} legacy source(s) still processing`,
+      `${candidates.length} clear legacy handoff candidate(s) found`,
+      dryRun ? 'Run with --apply to perform this migration.' : undefined,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join('; '),
+  );
+}
+
 export async function runRecall(config: RuntimeConfig, options: RecallOptions): Promise<void> {
   const ov = await openVikingCliForMode(options.dryRun === true);
   const inferredUri =
@@ -150,7 +254,10 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  await printExactMemoryMatches(config, ov, options.query, options.dryRun === true);
+  await printExactMemoryMatches(config, ov, options.query, {
+    dryRun: options.dryRun === true,
+    includeArchived: options.includeArchived === true,
+  });
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -188,14 +295,73 @@ export async function runList(config: RuntimeConfig, uri: string, options: ListO
 }
 
 export async function runHandoff(config: RuntimeConfig, options: HandoffOptions): Promise<void> {
-  const handoff = await buildHandoff(options);
-  await storeMemory(config, handoff, {dryRun: options.dryRun === true, replaceUri: options.replace});
+  const {handoff, metadata} = await buildHandoff(options);
+  await storeMemory(config, handoff, {dryRun: options.dryRun === true, metadata, replaceUri: options.replace});
+}
+
+export async function runArchive(config: RuntimeConfig, uri: string, options: ArchiveOptions): Promise<void> {
+  assertVikingUri(uri);
+  const ov = await openVikingCliForMode(options.dryRun === true);
+  const readResult = await maybeRun(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
+  const original = readResult?.stdout.trim();
+  if (options.dryRun === true) {
+    const fallbackMetadata: MemoryMetadata = {
+      archivedFrom: uri,
+      kind: options.kind ?? 'handoff',
+      project: normalizeOptionalMetadata(options.project),
+      sourceAgentClient: 'threadnote',
+      status: 'archived',
+      timestamp: new Date().toISOString(),
+      topic: normalizeOptionalMetadata(options.topic),
+    };
+    const archiveMemory = formatMemoryDocument(
+      'MEMORY',
+      fallbackMetadata,
+      ['Archived original Threadnote memory.', '', '<original memory content would be read here>'].join('\n'),
+    );
+    await storeMemory(config, archiveMemory, {dryRun: true, metadata: fallbackMetadata});
+    console.log(formatShellCommand(ov, withIdentity(config, ['rm', uri])));
+    return;
+  }
+  if (!original) {
+    throw new Error(`Could not read ${uri} before archiving.`);
+  }
+
+  const inferredMetadata = inferMemoryMetadata(original);
+  const metadata: MemoryMetadata = {
+    archivedFrom: uri,
+    kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
+    project: normalizeOptionalMetadata(options.project) ?? inferredMetadata.project,
+    sourceAgentClient: 'threadnote',
+    status: 'archived',
+    timestamp: new Date().toISOString(),
+    topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
+  };
+  const archiveMemory = formatMemoryDocument(
+    'MEMORY',
+    metadata,
+    ['Archived original Threadnote memory.', '', original].join('\n'),
+  );
+  await storeMemory(config, archiveMemory, {dryRun: false, metadata});
+  const removedOriginal = await removeVikingResourceWithRetry(ov, config, uri);
+  if (removedOriginal) {
+    console.log(`Archived original memory: ${uri}`);
+  } else {
+    console.error(`Archive stored, but original memory is still processing. Retry later: threadnote forget ${uri}`);
+  }
 }
 
 export async function runForget(config: RuntimeConfig, uri: string, options: ForgetOptions): Promise<void> {
   assertVikingUri(uri);
   const ov = await openVikingCliForMode(options.dryRun === true);
-  await maybeRun(options.dryRun === true, ov, withIdentity(config, ['rm', uri]));
+  if (options.dryRun === true) {
+    await maybeRun(true, ov, withIdentity(config, ['rm', uri]));
+    return;
+  }
+  const removed = await removeVikingResourceWithRetry(ov, config, uri);
+  if (!removed) {
+    throw new Error(`Resource is still being processed; retry later: threadnote forget ${uri}`);
+  }
 }
 
 export async function runExportPack(config: RuntimeConfig, options: PackOptions): Promise<void> {
@@ -246,21 +412,18 @@ async function printExactMemoryMatches(
   config: RuntimeConfig,
   ov: string,
   query: string,
-  dryRun: boolean,
+  options: {readonly dryRun: boolean; readonly includeArchived: boolean},
 ): Promise<void> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return;
   }
-  const scopes = [
-    `viking://user/${uriSegment(config.user)}/memories`,
-    `viking://agent/${uriSegment(config.agentId)}/memories`,
-  ];
+  const scopes = exactMemoryScopes(config, options.includeArchived);
   const outputs: string[] = [];
   for (const term of terms) {
     for (const scope of scopes) {
       const args = withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']);
-      if (dryRun) {
+      if (options.dryRun) {
         outputs.push(formatShellCommand(ov, args));
         continue;
       }
@@ -278,17 +441,14 @@ async function printExactMemoryMatches(
   console.log(outputs.join('\n\n'));
 }
 
-async function storeMemory(
-  config: RuntimeConfig,
-  memory: string,
-  options: {readonly dryRun: boolean; readonly replaceUri?: string},
-): Promise<void> {
+async function storeMemory(config: RuntimeConfig, memory: string, options: StoreMemoryOptions): Promise<void> {
   if (options.replaceUri) {
     assertVikingUri(options.replaceUri);
   }
   const ov = await openVikingCliForMode(options.dryRun);
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
-  const memoryUri = durableMemoryUri(config, memory);
+  const memoryUri = memoryUriFor(config, memory, options.metadata);
+  const writeMode = await memoryWriteMode(ov, config, memoryUri, options.metadata);
   if (options.dryRun) {
     console.log(memory);
     console.log('\nWould run:');
@@ -301,26 +461,34 @@ async function storeMemory(
           '--from-file',
           memoryPath,
           '--mode',
-          'create',
+          writeMode,
           '--wait',
           '--timeout',
           '120',
         ]),
       ),
     );
-    if (options.replaceUri) {
+    if (options.replaceUri && options.replaceUri !== memoryUri) {
       console.log(formatShellCommand(ov, withIdentity(config, ['rm', options.replaceUri])));
     }
     return;
   }
   await writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600});
   await chmod(memoryPath, 0o600);
-  await ensureDurableMemoryDirectory(ov, config);
-  await writeDurableMemoryFile(ov, config, memoryUri, memoryPath);
-  console.log(`Stored durable memory: ${memoryUri}`);
-  if (options.replaceUri) {
-    await maybeRun(false, ov, withIdentity(config, ['rm', options.replaceUri]));
-    console.log(`Forgot replaced memory: ${options.replaceUri}`);
+  await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, options.metadata));
+  await writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode);
+  console.log(`Stored memory: ${memoryUri}`);
+  if (options.replaceUri && options.replaceUri !== memoryUri) {
+    const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, options.replaceUri);
+    if (removedReplacedMemory) {
+      console.log(`Forgot replaced memory: ${options.replaceUri}`);
+    } else {
+      console.error(
+        `Replacement stored, but the superseded memory is still processing. Retry later: threadnote forget ${options.replaceUri}`,
+      );
+    }
+  } else if (options.replaceUri === memoryUri) {
+    console.log(`Updated existing memory in place: ${memoryUri}`);
   }
 }
 
@@ -329,6 +497,7 @@ async function writeDurableMemoryFile(
   config: RuntimeConfig,
   memoryUri: string,
   memoryPath: string,
+  writeMode: 'create' | 'replace',
 ): Promise<void> {
   const args = withIdentity(config, [
     'write',
@@ -336,7 +505,7 @@ async function writeDurableMemoryFile(
     '--from-file',
     memoryPath,
     '--mode',
-    'create',
+    writeMode,
     '--wait',
     '--timeout',
     '120',
@@ -375,31 +544,52 @@ async function waitForOpenVikingQueue(ov: string, config: RuntimeConfig): Promis
   }
 }
 
+async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
+  const args = withIdentity(config, ['rm', uri]);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      if (result.stderr.trim()) {
+        console.error(result.stderr.trim());
+      }
+      return true;
+    }
+    if (isResourceBusy(result.stderr, result.stdout) && attempt === 3) {
+      return false;
+    }
+    if (!isResourceBusy(result.stderr, result.stdout)) {
+      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+  return false;
+}
+
 async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
   const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
   return stat.exitCode === 0;
 }
 
 async function ensureDurableMemoryDirectory(ov: string, config: RuntimeConfig): Promise<void> {
-  const directoryUri = durableMemoryDirectoryUri(config);
-  const stat = await runCommand(ov, withIdentity(config, ['stat', directoryUri]), {allowFailure: true});
-  if (stat.exitCode === 0) {
-    return;
-  }
-  await maybeRun(
-    false,
-    ov,
-    withIdentity(config, [
-      'mkdir',
-      directoryUri,
-      '--description',
-      'Threadnote durable handoffs, memories, and cross-agent notes.',
-    ]),
-  );
+  await ensureMemoryDirectory(ov, config, durableMemoryDirectoryUri(config));
 }
 
-function durableMemoryUri(config: RuntimeConfig, memory: string): string {
-  return `${durableMemoryDirectoryUri(config)}/threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+async function ensureMemoryDirectory(ov: string, config: RuntimeConfig, directoryUri: string): Promise<void> {
+  for (const uri of vikingDirectoryChain(directoryUri)) {
+    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    if (statResult.exitCode === 0) {
+      continue;
+    }
+    await maybeRun(
+      false,
+      ov,
+      withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
+    );
+  }
 }
 
 function durableMemoryDirectoryUri(config: RuntimeConfig): string {
@@ -408,6 +598,233 @@ function durableMemoryDirectoryUri(config: RuntimeConfig): string {
 
 function migratedDurableMemoryUri(config: RuntimeConfig, hash: string): string {
   return `${durableMemoryDirectoryUri(config)}/threadnote-migrated-${hash.slice(0, 16)}.md`;
+}
+
+export async function hasLegacyLifecycleHandoffCandidates(config: RuntimeConfig): Promise<boolean> {
+  return (await legacyLifecycleHandoffCandidates(config, 1)).length > 0;
+}
+
+async function legacyLifecycleHandoffCandidates(
+  config: RuntimeConfig,
+  limit?: number,
+): Promise<readonly LifecycleHandoffCandidate[]> {
+  const eventsRoot = join(localUserMemoriesRoot(config), 'events');
+  let entries;
+  try {
+    entries = await readdir(eventsRoot, {withFileTypes: true});
+  } catch (_err: unknown) {
+    return [];
+  }
+
+  const candidates: LifecycleHandoffCandidate[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+      continue;
+    }
+    const sourcePath = join(eventsRoot, entry.name);
+    const original = await readTextIfExists(sourcePath);
+    if (!original || !isClearLegacyHandoffMemory(original) || sensitiveMemoryReason(original)) {
+      continue;
+    }
+    const sourceUri = `${durableMemoryDirectoryUri(config)}/${entry.name}`;
+    candidates.push({
+      metadata: {
+        archivedFrom: sourceUri,
+        kind: 'handoff',
+        project: inferLegacyProject(original),
+        sourceAgentClient: 'threadnote',
+        status: 'archived',
+        timestamp: new Date().toISOString(),
+      },
+      original,
+      sourceUri,
+    });
+    if (limit !== undefined && candidates.length >= limit) {
+      break;
+    }
+  }
+  return candidates;
+}
+
+function lifecycleMigrationUri(config: RuntimeConfig, metadata: MemoryMetadata, hash: string): string {
+  return `${memoryDirectoryUri(config, metadata)}/legacy-${hash.slice(0, 16)}.md`;
+}
+
+function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
+  const userBase = `viking://user/${uriSegment(config.user)}/memories`;
+  const scopes = [
+    `${userBase}/preferences`,
+    `${userBase}/durable/projects`,
+    `${userBase}/handoffs/active`,
+    `${userBase}/incidents/active`,
+    `${userBase}/events`,
+    `viking://agent/${uriSegment(config.agentId)}/memories`,
+  ];
+  return includeArchived
+    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
+    : scopes;
+}
+
+function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {
+  const filename = shouldUseStableMemoryUri(metadata)
+    ? `${uriSegment(metadata.topic ?? 'current')}.md`
+    : `threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+  return `${memoryDirectoryUri(config, metadata)}/${filename}`;
+}
+
+function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
+  const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(metadata.project ?? 'general');
+  switch (metadata.kind) {
+    case 'preference':
+      return metadata.status === 'active'
+        ? `${baseUri}/preferences`
+        : `${baseUri}/preferences/${uriSegment(metadata.status)}`;
+    case 'handoff':
+      return `${baseUri}/handoffs/${uriSegment(metadata.status)}/${projectSegment}`;
+    case 'incident':
+      return `${baseUri}/incidents/${uriSegment(metadata.status)}/${projectSegment}`;
+    case 'smoke':
+      return `${baseUri}/smoke/${uriSegment(metadata.status)}`;
+    case 'durable':
+      return metadata.status === 'active'
+        ? `${baseUri}/durable/projects/${projectSegment}`
+        : `${baseUri}/durable/${uriSegment(metadata.status)}/${projectSegment}`;
+  }
+}
+
+function shouldUseStableMemoryUri(metadata: MemoryMetadata): boolean {
+  return metadata.status === 'active' && metadata.topic !== undefined && metadata.kind !== 'smoke';
+}
+
+async function memoryWriteMode(
+  ov: string,
+  config: RuntimeConfig,
+  memoryUri: string,
+  metadata: MemoryMetadata,
+): Promise<'create' | 'replace'> {
+  if (!shouldUseStableMemoryUri(metadata)) {
+    return 'create';
+  }
+  return (await vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+}
+
+function vikingDirectoryChain(directoryUri: string): readonly string[] {
+  const prefix = 'viking://';
+  if (!directoryUri.startsWith(prefix)) {
+    return [directoryUri];
+  }
+  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
+  const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
+  const chain: string[] = [];
+  for (let index = startIndex; index <= parts.length; index += 1) {
+    chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
+  }
+  return chain;
+}
+
+function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
+  const header = [
+    title,
+    `kind: ${metadata.kind}`,
+    `status: ${metadata.status}`,
+    metadata.project ? `project: ${metadata.project}` : undefined,
+    metadata.topic ? `topic: ${metadata.topic}` : undefined,
+    `source_agent_client: ${metadata.sourceAgentClient}`,
+    `timestamp: ${metadata.timestamp}`,
+    metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
+    metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+  ].filter((line): line is string => line !== undefined);
+  return [...header, '', body.trim()].join('\n');
+}
+
+function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
+  const header = memory.slice(0, Math.max(0, memory.indexOf('\n\n')) || memory.length);
+  const firstLine = header.split('\n')[0]?.trim();
+  const kind =
+    parseOptionalMemoryKind(parseHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined);
+  const status = parseOptionalMemoryStatus(parseHeaderValue(header, 'status'));
+  const project =
+    normalizeOptionalMetadata(parseHeaderValue(header, 'project')) ??
+    normalizeOptionalMetadata(parseHeaderValue(header, 'repo'));
+  const topic =
+    normalizeOptionalMetadata(parseHeaderValue(header, 'topic')) ??
+    normalizeOptionalMetadata(parseHeaderValue(header, 'task'));
+  return {
+    kind,
+    project,
+    sourceAgentClient: parseHeaderValue(header, 'source_agent_client') ?? undefined,
+    status,
+    topic,
+  };
+}
+
+function parseHeaderValue(header: string, key: string): string | undefined {
+  const prefix = `${key}:`;
+  return header
+    .split('\n')
+    .find(line => line.startsWith(prefix))
+    ?.slice(prefix.length)
+    .trim();
+}
+
+function isClearLegacyHandoffMemory(memory: string): boolean {
+  if (/^kind:\s*/m.test(memory) || /^status:\s*/m.test(memory)) {
+    return false;
+  }
+  const trimmed = memory.trim();
+  if (trimmed.startsWith('HANDOFF\n')) {
+    return true;
+  }
+  if (!trimmed.startsWith('MEMORY\n')) {
+    return false;
+  }
+  return /^(?:#+\s*)?(?:final\s+)?handoff(?:\s+update)?\b/i.test(memoryBody(trimmed));
+}
+
+function memoryBody(memory: string): string {
+  const separatorIndex = memory.indexOf('\n\n');
+  return separatorIndex === -1 ? '' : memory.slice(separatorIndex + 2).trim();
+}
+
+function inferLegacyProject(memory: string): string {
+  const explicit =
+    parseHeaderValue(memory, 'project') ??
+    parseHeaderValue(memory, 'repo') ??
+    parseHeaderValue(memory, 'repo_path') ??
+    /\brepo(?:_path)?\s+([~/A-Za-z0-9_.:/-]+)/.exec(memory)?.[1];
+  if (!explicit) {
+    return 'general';
+  }
+  const trimmed = explicit.trim().replace(/[`.,;]+$/g, '');
+  return trimmed.includes('/') ? basename(trimmed) : trimmed;
+}
+
+function parseOptionalMemoryKind(value: string | undefined): MemoryKind | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return parseMemoryKind(value);
+  } catch (_err: unknown) {
+    return undefined;
+  }
+}
+
+function parseOptionalMemoryStatus(value: string | undefined): MemoryStatus | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return parseMemoryStatus(value);
+  } catch (_err: unknown) {
+    return undefined;
+  }
+}
+
+function normalizeOptionalMetadata(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 async function legacySourceAccounts(
@@ -587,33 +1004,41 @@ function localVikingDataRoot(config: RuntimeConfig): string {
   return join(config.agentContextHome, 'data', 'viking');
 }
 
+function localUserMemoriesRoot(config: RuntimeConfig): string {
+  return join(localVikingDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
+}
+
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort();
 }
 
 function isResourceBusy(stderr: string, stdout: string): boolean {
-  return `${stderr}\n${stdout}`.includes('resource is busy');
+  const output = `${stderr}\n${stdout}`.toLowerCase();
+  return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
-async function buildHandoff(options: HandoffOptions): Promise<string> {
+async function buildHandoff(
+  options: HandoffOptions,
+): Promise<{readonly handoff: string; readonly metadata: MemoryMetadata}> {
   const repoRoot = (await gitValue(['rev-parse', '--show-toplevel'])) ?? getInvocationCwd();
   const branch = (await gitValue(['branch', '--show-current'], repoRoot)) ?? 'unknown';
   const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
   const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
   const touchedFiles = await gitTouchedFiles(repoRoot);
-  const header = [
-    'HANDOFF',
-    `repo: ${basename(repoRoot)}`,
+  const repoName = basename(repoRoot);
+  const metadata: MemoryMetadata = {
+    kind: 'handoff',
+    project: normalizeOptionalMetadata(options.project) ?? repoName,
+    sourceAgentClient: options.sourceAgentClient ?? 'codex',
+    status: 'active',
+    supersedes: options.replace,
+    timestamp: new Date().toISOString(),
+    topic: normalizeOptionalMetadata(options.topic),
+  };
+  const body = [
+    `repo: ${repoName}`,
     `repo_path: ${repoRoot}`,
     `branch: ${branch || 'unknown'}`,
-    `source_agent_client: ${options.sourceAgentClient ?? 'codex'}`,
-    `timestamp: ${new Date().toISOString()}`,
-  ];
-  if (options.replace) {
-    header.push(`supersedes: ${options.replace}`);
-  }
-  return [
-    ...header,
     `task: ${options.task ?? 'unspecified'}`,
     '',
     'files_touched:',
@@ -634,6 +1059,7 @@ async function buildHandoff(options: HandoffOptions): Promise<string> {
     'next_step:',
     options.nextStep ?? '- inspect the current repo state and continue from this handoff',
   ].join('\n');
+  return {handoff: formatMemoryDocument('HANDOFF', metadata, body), metadata};
 }
 
 async function gitTouchedFiles(cwd: string): Promise<string> {

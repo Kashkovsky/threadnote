@@ -33,6 +33,33 @@ keeping future recall sharper without losing useful detail.
 Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
 instead of accumulating near-duplicate progress notes.
 
+## Memory Lifecycle
+
+Threadnote separates current durable knowledge from the historical handoff trail.
+
+New `remember` records default to `kind: durable` and `status: active`. New `handoff` records use `kind: handoff` and
+`status: active`. Add `--project` and `--topic` when the memory represents an ongoing issue or stable fact:
+
+```bash
+threadnote remember --project threadnote --topic install-health --text "Install/repair waits for OpenViking health."
+threadnote handoff --project threadnote --topic lifecycle-storage --task "Implement lifecycle-aware memories"
+```
+
+Active memories with the same project/topic write to a stable lifecycle path, so later updates replace the current
+version instead of creating another timestamped note. Untagged memories still use timestamped files when you want a
+historical trail.
+
+Use `archive` when an old handoff is useful for provenance but should stop being treated as current working context:
+
+```bash
+threadnote archive viking://user/example/memories/handoffs/active/threadnote/lifecycle-storage.md
+threadnote recall --query "threadnote lifecycle storage"
+threadnote recall --query "threadnote lifecycle storage" --include-archived
+```
+
+If OpenViking is still processing the original file, `archive` keeps the archived copy and tells you to retry
+`threadnote forget <uri>` later.
+
 ## Why Not Just CLAUDE.md Or AGENTS.md?
 
 Use them. Threadnote is not a replacement for checked-in instructions.
@@ -119,6 +146,15 @@ threadnote update --dry-run
 ```
 
 After updating, restart Cursor, Codex, Claude, or open a fresh agent session so MCP tools reload.
+
+Some releases include post-update memory migrations. `threadnote update` runs the new package's migration prompt after
+repair, explains what will change, and asks before applying it. Use `threadnote update --yes` for unattended local
+migrations or `threadnote update --no-post-update` to skip them.
+
+Applied migrations are tracked by id under `THREADNOTE_HOME`, and migration commands are written to be safe to rerun.
+
+If you update from an older Threadnote version that only knew how to run `repair`, the new repair step will still detect
+applicable migrations and print the manual command to run next.
 
 ### MCP
 
@@ -231,15 +267,20 @@ This is it! Start working with your agents as usual. The agent will automaticall
   reusable workflow guidance. Use `seed-skills --native` only after configuring a working VLM provider.
 - `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
 - `remember`: stores a durable memory. Use `--replace <uri>` to store an updated memory and remove a superseded one
-  after the new memory succeeds.
+  after the new memory succeeds. Use `--kind`, `--project`, and `--topic` to store lifecycle-aware current knowledge.
 - `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
   `migrate-memories --dry-run` first; use `--all-accounts` when importing from older local OpenViking accounts.
+- `migrate-lifecycle`: moves clear legacy handoff memories from the old events path into archived lifecycle handoff
+  paths. It dry-runs by default; use `--apply` after reviewing the output.
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
-  `skills for api service`; use `--uri` or `--no-infer-scope` to override.
+  `skills for api service`; use `--uri` or `--no-infer-scope` to override. Exact durable-memory matches skip archived
+  lifecycle paths unless `--include-archived` is passed.
 - `read`: reads a `viking://` URI returned by `recall` or `list`.
 - `list` / `ls`: lists a `viking://` directory.
 - `handoff`: stores current git state and next-step notes as a durable handoff. Use `--replace <uri>` to update the
-  current handoff for the same active issue.
+  current handoff for the same active issue, or `--project` and `--topic` to keep one active handoff file updated.
+- `archive`: copies a memory into the archived lifecycle tree, then removes the original after the archive write
+  succeeds.
 - `forget`: removes a `viking://` URI.
 - `export-pack` / `import-pack`: moves local context through `.ovpack` files.
 

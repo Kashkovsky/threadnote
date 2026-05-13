@@ -3,15 +3,18 @@
 import {Command} from 'commander';
 import {DEFAULT_HOST, DEFAULT_PORT, OPENVIKING_MCP_NAME} from './constants.js';
 import type {
+  ArchiveOptions,
   DoctorOptions,
   ForgetOptions,
   HandoffOptions,
   InitManifestOptions,
   InstallOptions,
   ListOptions,
+  MigrateLifecycleOptions,
   McpInstallOptions,
   MigrateMemoriesOptions,
   PackOptions,
+  PostUpdateOptions,
   ReadOptions,
   RecallOptions,
   RememberOptions,
@@ -25,11 +28,15 @@ import {collectOption, errorMessage, parsePort} from './utils.js';
 import {parseAgentClient, parseClaudeMcpScope, runMcpInstall} from './mcp.js';
 import {getRuntimeConfig} from './runtime.js';
 import {
+  parseMemoryKind,
+  parseMemoryStatus,
+  runArchive,
   runExportPack,
   runForget,
   runHandoff,
   runImportPack,
   runList,
+  runMigrateLifecycle,
   runMigrateMemories,
   runRead,
   runRecall,
@@ -37,7 +44,7 @@ import {
 } from './memory.js';
 import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
-import {maybeNotifyUpdate, parseUpdateRuntime, runUpdate} from './update.js';
+import {maybeNotifyUpdate, parseUpdateRuntime, runPostUpdate, runUpdate} from './update.js';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -83,8 +90,21 @@ async function main(): Promise<void> {
     .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
     .option('--runtime <runtime>', 'auto, npm, bun, or deno', parseUpdateRuntime, 'auto')
     .option('--no-repair', 'Skip threadnote repair after updating the package')
+    .option('--no-post-update', 'Skip post-update migration prompts')
+    .option('--yes', 'Accept applicable post-update migrations without prompting')
     .action(async (options: UpdateOptions) => {
       await runUpdate(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('post-update', {hidden: true})
+    .description('Run packaged post-update migration prompts')
+    .requiredOption('--from-version <version>', 'Version before update')
+    .requiredOption('--to-version <version>', 'Version after update')
+    .option('--dry-run', 'Print post-update actions without running them')
+    .option('--yes', 'Accept applicable post-update migrations without prompting')
+    .action(async (options: PostUpdateOptions) => {
+      await runPostUpdate(getRuntimeConfig(program), options);
     });
 
   program
@@ -97,6 +117,7 @@ async function main(): Promise<void> {
       'available',
     )
     .option('--no-start', 'Do not start OpenViking if health is failing')
+    .option('--no-post-update', 'Skip post-update migration prompts after repair')
     .option('--package-manager <manager>', 'uv, pipx, or pip', parsePackageManager)
     .action(async (options: RepairOptions) => {
       const config = getRuntimeConfig(program);
@@ -187,10 +208,14 @@ async function main(): Promise<void> {
     .command('remember')
     .description('Store a durable engineering memory in OpenViking')
     .option('--dry-run', 'Print memory and ov command without storing')
+    .option('--kind <kind>', 'durable, handoff, incident, preference, or smoke', parseMemoryKind, 'durable')
+    .option('--project <name>', 'Project/repo/topic namespace for lifecycle-aware storage')
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new memory is stored')
     .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
+    .option('--status <status>', 'active, archived, or superseded', parseMemoryStatus, 'active')
     .option('--stdin', 'Read memory text from stdin')
     .option('--text <text>', 'Memory text to store')
+    .option('--topic <name>', 'Stable topic name; active memories with the same project/topic update one file')
     .action(async (options: RememberOptions) => {
       await runRemember(getRuntimeConfig(program), options);
     });
@@ -212,10 +237,21 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('migrate-lifecycle')
+    .description('Move clear legacy handoff memories into lifecycle-aware archive paths')
+    .option('--apply', 'Perform the migration; without this, prints a dry run')
+    .option('--dry-run', 'Print migration actions without writing or removing memories')
+    .option('--limit <count>', 'Maximum number of legacy handoffs to migrate')
+    .action(async (options: MigrateLifecycleOptions) => {
+      await runMigrateLifecycle(getRuntimeConfig(program), options);
+    });
+
+  program
     .command('recall')
     .description('Search shared OpenViking context')
     .requiredOption('--query <query>', 'Search query')
     .option('--dry-run', 'Print ov command without searching')
+    .option('--include-archived', 'Include archived memories in exact durable-memory matches')
     .option('-n, --node-limit <count>', 'Maximum number of search results')
     .option('--no-infer-scope', 'Disable query-based scope inference')
     .option('--uri <uri>', 'Restrict search to a viking:// URI')
@@ -252,12 +288,26 @@ async function main(): Promise<void> {
     .option('--blockers <text>', 'Known blockers')
     .option('--dry-run', 'Print handoff without storing')
     .option('--next-step <text>', 'Suggested next step')
+    .option('--project <name>', 'Project/repo namespace; defaults to current repo basename')
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new handoff is stored')
     .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
+    .option('--topic <name>', 'Stable topic name; active handoffs with the same project/topic update one file')
     .action(async (options: HandoffOptions) => {
       await runHandoff(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('archive')
+    .description('Move a memory into the archived lifecycle tree, then remove the original after the archive is stored')
+    .argument('<uri>', 'viking:// memory URI to archive')
+    .option('--dry-run', 'Print archive content and ov commands without changing anything')
+    .option('--kind <kind>', 'durable, handoff, incident, preference, or smoke', parseMemoryKind)
+    .option('--project <name>', 'Override inferred project/repo namespace')
+    .option('--topic <name>', 'Override inferred topic')
+    .action(async (uri: string, options: ArchiveOptions) => {
+      await runArchive(getRuntimeConfig(program), uri, options);
     });
 
   program

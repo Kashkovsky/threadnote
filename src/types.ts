@@ -1,6 +1,8 @@
 export type AgentClient = 'claude' | 'codex' | 'cursor';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
+export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
+export type MemoryStatus = 'active' | 'archived' | 'superseded';
 export type PackageManager = 'pip' | 'pipx' | 'uv';
 export type UpdateRuntime = 'auto' | 'bun' | 'deno' | 'npm';
 
@@ -74,6 +76,7 @@ export interface RepairOptions {
   readonly dryRun?: boolean;
   readonly mcp?: string;
   readonly packageManager?: PackageManager;
+  readonly postUpdate?: boolean;
   readonly start?: boolean;
 }
 
@@ -88,9 +91,18 @@ export interface UpdateOptions {
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
+  readonly postUpdate?: boolean;
   readonly registry?: string;
   readonly repair?: boolean;
   readonly runtime?: UpdateRuntime;
+  readonly yes?: boolean;
+}
+
+export interface PostUpdateOptions {
+  readonly dryRun?: boolean;
+  readonly fromVersion?: string;
+  readonly toVersion?: string;
+  readonly yes?: boolean;
 }
 
 export interface DoctorOptions {
@@ -121,10 +133,14 @@ export interface McpInstallOptions {
 
 export interface RememberOptions {
   readonly dryRun?: boolean;
+  readonly kind?: MemoryKind;
+  readonly project?: string;
   readonly replace?: string;
   readonly sourceAgentClient?: string;
+  readonly status?: MemoryStatus;
   readonly stdin?: boolean;
   readonly text?: string;
+  readonly topic?: string;
 }
 
 export interface MigrateMemoriesOptions {
@@ -134,9 +150,16 @@ export interface MigrateMemoriesOptions {
   readonly sourceAccount?: readonly string[];
 }
 
+export interface MigrateLifecycleOptions {
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly limit?: string;
+}
+
 export interface RecallOptions {
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;
+  readonly includeArchived?: boolean;
   readonly nodeLimit?: string;
   readonly query: string;
   readonly uri?: string;
@@ -158,10 +181,19 @@ export interface HandoffOptions {
   readonly blockers?: string;
   readonly dryRun?: boolean;
   readonly nextStep?: string;
+  readonly project?: string;
   readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly task?: string;
   readonly tests?: string;
+  readonly topic?: string;
+}
+
+export interface ArchiveOptions {
+  readonly dryRun?: boolean;
+  readonly kind?: MemoryKind;
+  readonly project?: string;
+  readonly topic?: string;
 }
 
 export interface PackOptions {

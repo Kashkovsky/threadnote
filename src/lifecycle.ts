@@ -20,6 +20,7 @@ import {
 } from './constants.js';
 import {readSeedManifest} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
+import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {
   builtInExampleManifestPath,
   openVikingHealthUrl,
@@ -195,6 +196,9 @@ export async function runRepair(config: RuntimeConfig, options: RepairOptions): 
 
   console.log('\nPost-repair doctor:');
   await runDoctor(config, {dryRun, strict: false});
+  if (options.postUpdate !== false) {
+    await maybeRunPostUpdateAfterRepair(config, {dryRun});
+  }
 }
 
 export async function runUninstall(config: RuntimeConfig, options: UninstallOptions): Promise<void> {
