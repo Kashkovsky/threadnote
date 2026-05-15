@@ -1,3 +1,4 @@
+import {statSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {platform} from 'node:os';
@@ -52,6 +53,15 @@ export async function runMcpInstall(
 
   if (agent === 'cursor') {
     await runCursorMcpInstall(config, name, {
+      apply,
+      bearerTokenEnvVar: options.bearerTokenEnvVar,
+      nativeHttp,
+      url,
+    });
+    return;
+  }
+  if (agent === 'copilot') {
+    await runCopilotMcpInstall(config, name, {
       apply,
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp,
@@ -124,6 +134,48 @@ async function runCursorMcpInstall(
   console.log(currentContent === undefined ? `Wrote Cursor MCP config: ${path}` : `Updated Cursor MCP config: ${path}`);
 }
 
+async function runCopilotMcpInstall(
+  config: RuntimeConfig,
+  name: string,
+  options: {
+    readonly apply: boolean;
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly url: string;
+  },
+): Promise<void> {
+  const path = copilotMcpConfigPath();
+  const serverConfig = buildCopilotMcpServerConfig(config, {
+    bearerTokenEnvVar: options.bearerTokenEnvVar,
+    nativeHttp: options.nativeHttp,
+    url: options.url,
+  });
+  const currentContent = await readFileIfExists(path);
+  const nextContent = renderCopilotMcpConfig(currentContent, name, serverConfig);
+
+  if (!options.apply) {
+    console.log('Dry run. Re-run with --apply to modify GitHub Copilot MCP config.');
+    printCopilotMcpSnippet(config, name, {
+      bearerTokenEnvVar: options.bearerTokenEnvVar,
+      nativeHttp: options.nativeHttp,
+      url: options.url,
+    });
+    return;
+  }
+
+  if (currentContent === nextContent) {
+    console.log(`Already configured: ${path}`);
+    return;
+  }
+  await ensureDirectory(dirname(path), false);
+  await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
+  console.log(
+    currentContent === undefined
+      ? `Wrote GitHub Copilot MCP config: ${path}`
+      : `Updated GitHub Copilot MCP config: ${path}`,
+  );
+}
+
 export async function removeMcpConfigs(value: string, dryRun: boolean): Promise<void> {
   const clients = await resolveMcpClients(value, 'remove');
   if (clients.length === 0) {
@@ -133,6 +185,10 @@ export async function removeMcpConfigs(value: string, dryRun: boolean): Promise<
   for (const client of clients) {
     if (client === 'cursor') {
       await removeCursorMcpConfig(OPENVIKING_MCP_NAME, dryRun);
+      continue;
+    }
+    if (client === 'copilot') {
+      await removeCopilotMcpConfig(OPENVIKING_MCP_NAME, dryRun);
       continue;
     }
     const command = buildMcpRemoveCommand(client, OPENVIKING_MCP_NAME);
@@ -156,6 +212,11 @@ export async function removeMcpSnippets(config: RuntimeConfig, dryRun: boolean):
     'MCP snippet',
     dryRun,
   );
+  await removePathIfExists(
+    join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.copilot.json`),
+    'MCP snippet',
+    dryRun,
+  );
 }
 
 function buildMcpInstallCommand(
@@ -171,6 +232,9 @@ function buildMcpInstallCommand(
 ): MappedCommand {
   if (agent === 'cursor') {
     throw new Error('Cursor MCP config is written directly to ~/.cursor/mcp.json.');
+  }
+  if (agent === 'copilot') {
+    throw new Error('GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.');
   }
   const claudeCwd = getInvocationCwd();
   const claudeScope = options.scope ?? 'user';
@@ -220,6 +284,9 @@ function buildMcpRemoveCommand(agent: AgentClient, name: string): MappedCommand 
   if (agent === 'cursor') {
     throw new Error('Cursor MCP config is removed directly from ~/.cursor/mcp.json.');
   }
+  if (agent === 'copilot') {
+    throw new Error('GitHub Copilot MCP config is removed directly from the VS Code user mcp.json file.');
+  }
   return agent === 'codex'
     ? {executable: 'codex', args: ['mcp', 'remove', name]}
     : {executable: 'claude', args: ['mcp', 'remove', name], cwd: getInvocationCwd()};
@@ -261,6 +328,25 @@ function buildCursorMcpServerConfig(
   };
 }
 
+function buildCopilotMcpServerConfig(
+  config: RuntimeConfig,
+  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+): JsonObject {
+  if (options.nativeHttp) {
+    const server: Record<string, unknown> = {type: 'http', url: options.url};
+    if (options.bearerTokenEnvVar) {
+      server.headers = {Authorization: `Bearer \${env:${options.bearerTokenEnvVar}}`};
+    }
+    return server;
+  }
+  return {
+    args: [mcpAdapterCommand()[0]],
+    command: '/usr/bin/env',
+    env: mcpEnvironmentObject(config),
+    type: 'stdio',
+  };
+}
+
 function renderCursorMcpConfig(currentContent: string | undefined, name: string, serverConfig: JsonObject): string {
   const parsed = currentContent === undefined ? {} : parseJsonConfigObject(currentContent);
   if (parsed === undefined) {
@@ -273,6 +359,21 @@ function renderCursorMcpConfig(currentContent: string | undefined, name: string,
   const mcpServers = isJsonObject(parsed.mcpServers) ? {...parsed.mcpServers} : {};
   mcpServers[name] = serverConfig;
   nextConfig.mcpServers = mcpServers;
+  return `${JSON.stringify(nextConfig, null, 2)}\n`;
+}
+
+function renderCopilotMcpConfig(currentContent: string | undefined, name: string, serverConfig: JsonObject): string {
+  const parsed = currentContent === undefined ? {} : parseJsonConfigObject(currentContent);
+  if (parsed === undefined) {
+    throw new Error(`${copilotMcpConfigPath()} exists but is not a JSON object; not modifying it.`);
+  }
+  if (parsed.servers !== undefined && !isJsonObject(parsed.servers)) {
+    throw new Error(`${copilotMcpConfigPath()} has a non-object servers field; not modifying it.`);
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const servers = isJsonObject(parsed.servers) ? {...parsed.servers} : {};
+  servers[name] = serverConfig;
+  nextConfig.servers = servers;
   return `${JSON.stringify(nextConfig, null, 2)}\n`;
 }
 
@@ -305,6 +406,35 @@ async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<voi
   console.log(`Updated Cursor MCP config: ${path}`);
 }
 
+async function removeCopilotMcpConfig(name: string, dryRun: boolean): Promise<void> {
+  const path = copilotMcpConfigPath();
+  const currentContent = await readFileIfExists(path);
+  if (currentContent === undefined) {
+    console.log(`Already absent: ${path}`);
+    return;
+  }
+  const parsed = parseJsonConfigObject(currentContent);
+  if (parsed === undefined) {
+    console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
+    return;
+  }
+  if (!isJsonObject(parsed.servers) || parsed.servers[name] === undefined) {
+    console.log(`No GitHub Copilot MCP config found: ${path}`);
+    return;
+  }
+  const nextConfig: Record<string, unknown> = {...parsed};
+  const servers = {...parsed.servers};
+  delete servers[name];
+  nextConfig.servers = servers;
+  const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
+  if (dryRun) {
+    console.log(`Would update GitHub Copilot MCP config: ${path}`);
+    return;
+  }
+  await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
+  console.log(`Updated GitHub Copilot MCP config: ${path}`);
+}
+
 function printMcpSnippet(
   config: RuntimeConfig,
   agent: AgentClient,
@@ -313,6 +443,10 @@ function printMcpSnippet(
 ): void {
   if (agent === 'cursor') {
     printCursorMcpSnippet(config, name, {nativeHttp: options.nativeHttp, url: options.url});
+    return;
+  }
+  if (agent === 'copilot') {
+    printCopilotMcpSnippet(config, name, {nativeHttp: options.nativeHttp, url: options.url});
     return;
   }
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.${agent}.${agent === 'codex' ? 'toml' : 'txt'}`);
@@ -335,15 +469,44 @@ function printCursorMcpSnippet(
   console.log(`\nSnippet (${snippetPath}; merge into ${cursorMcpConfigPath()}):\n${snippet}`);
 }
 
+function printCopilotMcpSnippet(
+  config: RuntimeConfig,
+  name: string,
+  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+): void {
+  const snippetPath = join(config.agentContextHome, 'mcp', `${name}.copilot.json`);
+  const snippet = JSON.stringify({servers: {[name]: buildCopilotMcpServerConfig(config, options)}}, null, 2);
+  console.log(`\nSnippet (${snippetPath}; merge into ${copilotMcpConfigPath()}):\n${snippet}`);
+}
+
 function cursorMcpConfigPath(): string {
   return expandPath('~/.cursor/mcp.json');
 }
 
+function copilotMcpConfigPath(): string {
+  if (process.env.THREADNOTE_COPILOT_MCP_CONFIG) {
+    return expandPath(process.env.THREADNOTE_COPILOT_MCP_CONFIG);
+  }
+  if (platform() === 'darwin') {
+    const stablePath = expandPath('~/Library/Application Support/Code/User/mcp.json');
+    const insidersPath = expandPath('~/Library/Application Support/Code - Insiders/User/mcp.json');
+    return existsSyncDirectory(dirname(stablePath)) || !existsSyncDirectory(dirname(insidersPath))
+      ? stablePath
+      : insidersPath;
+  }
+  if (platform() === 'win32') {
+    const appData = process.env.APPDATA;
+    return appData ? join(appData, 'Code', 'User', 'mcp.json') : expandPath('~/AppData/Roaming/Code/User/mcp.json');
+  }
+  const configHome = process.env.XDG_CONFIG_HOME ? expandPath(process.env.XDG_CONFIG_HOME) : expandPath('~/.config');
+  return join(configHome, 'Code', 'User', 'mcp.json');
+}
+
 export function parseAgentClient(value: string): AgentClient {
-  if (value === 'codex' || value === 'claude' || value === 'cursor') {
+  if (value === 'codex' || value === 'claude' || value === 'copilot' || value === 'cursor') {
     return value;
   }
-  throw new Error(`Unsupported agent: ${value}. Expected codex, claude, or cursor.`);
+  throw new Error(`Unsupported agent: ${value}. Expected codex, claude, copilot, or cursor.`);
 }
 
 export function parseClaudeMcpScope(value: string): ClaudeMcpScope {
@@ -361,7 +524,7 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
 
   let requested: readonly AgentClient[];
   if (normalized === 'available' || normalized === 'all') {
-    requested = ['codex', 'claude', 'cursor'];
+    requested = ['codex', 'claude', 'cursor', 'copilot'];
   } else {
     requested = normalized
       .split(',')
@@ -375,6 +538,16 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
     if (client === 'cursor') {
       if (!(await isCursorAvailable())) {
         console.log(`WARN Cursor config not found; cannot ${action} cursor MCP config.`);
+        continue;
+      }
+      if (!clients.includes(client)) {
+        clients.push(client);
+      }
+      continue;
+    }
+    if (client === 'copilot') {
+      if (!(await isCopilotAvailable())) {
+        console.log(`WARN VS Code/Copilot config not found; cannot ${action} copilot MCP config.`);
         continue;
       }
       if (!clients.includes(client)) {
@@ -401,4 +574,25 @@ async function isCursorAvailable(): Promise<boolean> {
     return true;
   }
   return platform() === 'darwin' && (await exists('/Applications/Cursor.app'));
+}
+
+async function isCopilotAvailable(): Promise<boolean> {
+  if (process.env.THREADNOTE_COPILOT_MCP_CONFIG) {
+    return true;
+  }
+  if (await exists(dirname(copilotMcpConfigPath()))) {
+    return true;
+  }
+  if (await findExecutable(['code', 'code-insiders'])) {
+    return true;
+  }
+  return platform() === 'darwin' && (await exists('/Applications/Visual Studio Code.app'));
+}
+
+function existsSyncDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch (_err: unknown) {
+    return false;
+  }
 }

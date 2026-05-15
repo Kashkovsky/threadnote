@@ -145,7 +145,9 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
   } else {
     console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
-  console.log('Update complete. Restart Cursor, Codex, Claude, or open a fresh agent session so MCP tools reload.');
+  console.log(
+    'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
+  );
 }
 
 export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOptions): Promise<void> {

@@ -420,7 +420,10 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
           .optional()
           .describe('Optional viking:// memory URI to forget after the new memory is safely stored'),
         text: z.string().optional().describe('Required memory text to store'),
-        sourceAgentClient: z.string().optional().describe('Originating client, for example cursor, codex, or claude'),
+        sourceAgentClient: z
+          .string()
+          .optional()
+          .describe('Originating client, for example cursor, copilot, codex, or claude'),
         status: z.enum(['active', 'archived', 'superseded']).optional().describe('Memory lifecycle status'),
         topic: z.string().optional().describe('Stable topic; active project/topic memories update one file'),
       },

@@ -30,8 +30,8 @@ Developers should not need to run `recall`, `remember`, or `handoff` as a normal
 
 The intended workflow has three layers:
 
-- Agent-first: Codex, Claude, or another MCP-enabled agent calls OpenViking tools when the task calls for shared
-  context.
+- Agent-first: Codex, Claude, Copilot, or another MCP-enabled agent calls OpenViking tools when the task calls for
+  shared context.
 - Short CLI fallback: humans and scripts can run `threadnote recall`, `threadnote remember`, or
   `threadnote handoff` from any repo.
 - Checkout-local command: `npm run threadnote -- ...` is the bootstrap and debugging path before the short command shim
@@ -46,8 +46,8 @@ Create a handoff for the next agent before you stop.
 ```
 
 For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
-to user-level Codex, Claude, and Cursor instruction files. That guidance tells agents to recall context at task start,
-store durable memories when explicitly asked or when a reusable workflow fact is learned, and create handoffs
+to user-level Codex, Claude, Cursor, and Copilot instruction files. That guidance tells agents to recall context at task
+start, store durable memories when explicitly asked or when a reusable workflow fact is learned, and create handoffs
 automatically before stopping meaningful work.
 
 ## Migration Steps
@@ -140,6 +140,16 @@ paths.
    ```
 
    Cursor installs by updating the global `~/.cursor/mcp.json` file.
+
+   For GitHub Copilot in VS Code:
+
+   ```bash
+   threadnote mcp-install copilot
+   threadnote mcp-install copilot --apply
+   ```
+
+   Copilot installs by updating the VS Code user-profile `mcp.json` file. If VS Code uses a custom profile path, set
+   `THREADNOTE_COPILOT_MCP_CONFIG` to that `mcp.json` path before running `mcp-install copilot`.
 
    Later, if the checkout that installed the MCP adapter is deleted or moved, repair it from any fresh checkout:
 

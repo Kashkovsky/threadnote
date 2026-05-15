@@ -147,7 +147,7 @@ threadnote repair
 ```
 
 `repair` reinstalls the `threadnote` shim, repairs generated config files, starts OpenViking if needed, and rewrites
-Codex/Claude/Cursor MCP configs to point at the current checkout.
+Codex/Claude/Cursor/Copilot MCP configs to point at the current checkout.
 
 ## MCP Install Is Only Printing Commands
 
@@ -165,6 +165,16 @@ threadnote mcp-install cursor --apply
 
 This updates the global `~/.cursor/mcp.json` file. Restart Cursor or open a fresh agent session after changing MCP
 config.
+
+For GitHub Copilot in VS Code:
+
+```bash
+threadnote mcp-install copilot --apply
+```
+
+This updates the VS Code user-profile `mcp.json` file. Restart VS Code or run `MCP: List Servers` from the Command
+Palette after changing MCP config. If VS Code uses a custom profile path, set `THREADNOTE_COPILOT_MCP_CONFIG` to that
+`mcp.json` path before running the command.
 
 ## Cursor MCP Tool Says Query Is Missing
 

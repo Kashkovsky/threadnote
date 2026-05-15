@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print the repair actions without making changes')
     .option(
       '--mcp <clients>',
-      'MCP clients to repair: available, all, none, codex, claude, cursor, or comma-separated list',
+      'MCP clients to repair: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     )
     .option('--no-start', 'Do not start OpenViking if health is failing')
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print uninstall actions without making changes')
     .option(
       '--mcp <clients>',
-      'MCP clients to remove: available, all, none, codex, claude, cursor, or comma-separated list',
+      'MCP clients to remove: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     )
     .option('--preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)')
@@ -193,7 +193,7 @@ async function main(): Promise<void> {
   program
     .command('mcp-install')
     .description('Install OpenViking MCP config for a supported agent')
-    .argument('<agent>', 'codex, claude, or cursor')
+    .argument('<agent>', 'codex, claude, cursor, or copilot')
     .option('--apply', 'Actually modify the selected agent config')
     .option('--name <name>', 'MCP server name', OPENVIKING_MCP_NAME)
     .option('--native-http', 'Install OpenViking native HTTP MCP endpoint instead of the local stdio adapter')
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
     .option('--kind <kind>', 'durable, handoff, incident, preference, or smoke', parseMemoryKind, 'durable')
     .option('--project <name>', 'Project/repo/topic namespace for lifecycle-aware storage')
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new memory is stored')
-    .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
+    .option('--source-agent-client <name>', 'codex, claude, cursor, copilot, or another client name', 'codex')
     .option('--status <status>', 'active, archived, or superseded', parseMemoryStatus, 'active')
     .option('--stdin', 'Read memory text from stdin')
     .option('--text <text>', 'Memory text to store')
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     .option('--next-step <text>', 'Suggested next step')
     .option('--project <name>', 'Project/repo namespace; defaults to current repo basename')
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new handoff is stored')
-    .option('--source-agent-client <name>', 'codex, claude, cursor, gemini, or another client name', 'codex')
+    .option('--source-agent-client <name>', 'codex, claude, cursor, copilot, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
     .option('--topic <name>', 'Stable topic name; active handoffs with the same project/topic update one file')

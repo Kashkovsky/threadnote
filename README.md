@@ -7,12 +7,12 @@ and it does not index whole repositories by default.
 ## Real-World Uses
 
 **Want to continue work in a fresh agent session?**  
-`threadnote install` adds user-level Codex, Claude, and Cursor instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
+`threadnote install` adds user-level Codex, Claude, Cursor, and Copilot instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
 
 **Implemented a feature a while ago and need to pick it up again?**  
 Ask the agent to recall the feature, branch, or repo. Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
 
-**Switching between Codex, Claude, and Cursor?**\
+**Switching between Codex, Claude, Cursor, and Copilot?**\
 Install the MCP adapter for each agent you use. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
 from chat history.
 
@@ -87,8 +87,9 @@ facts, and local cross-agent memory in Threadnote.
 - Redaction: known config files such as `.mcp.json`, `config.toml`, and settings JSON are copied through a redactor
   before import.
 - Secret scanning: candidate files are skipped if common token or private-key patterns remain after redaction.
-- User instructions: `install` upserts a managed Threadnote block in `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and
-  `~/.cursor/rules/threadnote.md` without replacing existing personal instructions.
+- User instructions: `install` upserts managed Threadnote guidance in `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`,
+  `~/.cursor/rules/threadnote.md`, and `~/.copilot/instructions/threadnote.instructions.md` without replacing existing
+  personal instructions.
 - Agent config changes are explicit: `mcp-install` prints commands and snippets by default; use `--apply` to run them.
 
 ## Install
@@ -145,7 +146,7 @@ threadnote update --check
 threadnote update --dry-run
 ```
 
-After updating, restart Cursor, Codex, Claude, or open a fresh agent session so MCP tools reload.
+After updating, restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.
 
 Some releases include post-update memory migrations. `threadnote update` runs the new package's migration prompt after
 repair, explains what will change, and asks before applying it. Use `threadnote update --yes` for unattended local
@@ -167,6 +168,7 @@ Dry-run examples:
 threadnote mcp-install codex
 threadnote mcp-install claude
 threadnote mcp-install cursor
+threadnote mcp-install copilot
 ```
 
 Apply after review:
@@ -175,11 +177,14 @@ Apply after review:
 threadnote mcp-install codex --apply
 threadnote mcp-install claude --apply
 threadnote mcp-install cursor --apply
+threadnote mcp-install copilot --apply
 ```
 
 Claude installs at `user` scope by default so the same OpenViking MCP server is available from any repo or worktree.
 Use `--scope local` or `--scope project` only when you intentionally want repo-scoped Claude MCP config.
 Cursor installs by updating the global `~/.cursor/mcp.json` file.
+Copilot installs by updating the VS Code user-profile `mcp.json` file. Set `THREADNOTE_COPILOT_MCP_CONFIG` if you use a
+custom VS Code profile or want to test against a temporary file.
 
 If the package or checkout that originally installed `threadnote` has moved, run repair:
 
@@ -199,6 +204,7 @@ claude mcp add threadnote -- threadnote-mcp-server
 ```
 
 Cursor uses the equivalent entry in `~/.cursor/mcp.json`.
+Copilot uses the VS Code MCP `servers` entry in the user-profile `mcp.json`.
 
 If a future OpenViking build exposes a healthy native endpoint, install it explicitly:
 
@@ -255,8 +261,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
   `--no-start` to skip the health check.
 - `update`: updates the published Threadnote package, then runs `repair` so shims and MCP config point at the new
   version.
-- `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor MCP configs from the
-  current checkout.
+- `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor/Copilot MCP configs
+  from the current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
 - `stop`: stops the detached server pid or macOS LaunchAgent.
 - `uninstall`: removes Threadnote shims, MCP config, launchd config, and managed user instructions. Memories are
@@ -265,7 +271,8 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `seed`: imports curated repo guidance and docs from the manifest.
 - `seed-skills`: imports global and repo-local `SKILL.md` files as a searchable resource catalog so agents can discover
   reusable workflow guidance. Use `seed-skills --native` only after configuring a working VLM provider.
-- `mcp-install codex|claude|cursor`: installs or prints OpenViking MCP configuration for Codex, Claude, or Cursor.
+- `mcp-install codex|claude|cursor|copilot`: installs or prints OpenViking MCP configuration for Codex, Claude, Cursor,
+  or GitHub Copilot in VS Code.
 - `remember`: stores a durable memory. Use `--replace <uri>` to store an updated memory and remove a superseded one
   after the new memory succeeds. Use `--kind`, `--project`, and `--topic` to store lifecycle-aware current knowledge.
 - `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
@@ -299,8 +306,9 @@ npm run threadnote -- install
 ```
 
 `install` writes a small command shim to `~/.local/bin/threadnote` by default and upserts user-level agent guidance in
-`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/rules/threadnote.md`. After that, use the short command from
-any repo or working directory:
+`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.cursor/rules/threadnote.md`, and
+`~/.copilot/instructions/threadnote.instructions.md`. After that, use the short command from any repo or working
+directory:
 
 ```bash
 threadnote doctor --dry-run
@@ -329,6 +337,7 @@ Environment variables:
 - `THREADNOTE_NPM_REGISTRY`: npm registry used by the installer and updater, default `https://registry.npmjs.org/`.
 - `THREADNOTE_NO_UPDATE_CHECK`: disables opportunistic update notifications.
 - `THREADNOTE_BIN_DIR`: directory for the `threadnote` shim, default `~/.local/bin`.
+- `THREADNOTE_COPILOT_MCP_CONFIG`: explicit VS Code/Copilot `mcp.json` path for `mcp-install copilot`.
 - `THREADNOTE_HOST`: local bind host, default `127.0.0.1`.
 - `THREADNOTE_PORT`: local bind port, default `1933`.
 

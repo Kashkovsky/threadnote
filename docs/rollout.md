@@ -18,7 +18,7 @@ Start with a local-only pilot.
 
 - Install completes in under 10 minutes after prerequisites.
 - `doctor` reports clear actionable checks.
-- Codex, Claude, or Cursor can store and recall a shared handoff after MCP setup.
+- Codex, Claude, Cursor, or Copilot can store and recall a shared handoff after MCP setup.
 - Seeding curated guidance does not import known secret patterns.
 - Fresh agents can recall repo testing guidance and discover relevant skills.
 - `uninstall --dry-run` previews removal, and `uninstall` leaves memories intact unless `--erase-memories` is explicit.

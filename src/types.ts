@@ -1,4 +1,4 @@
-export type AgentClient = 'claude' | 'codex' | 'cursor';
+export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';

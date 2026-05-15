@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Threadnote installs this as user-level agent guidance for Codex, Claude, and Cursor.
+Threadnote installs this as user-level agent guidance for Codex, Claude, Cursor, and Copilot.
 
 ## Shared Context
 

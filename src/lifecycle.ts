@@ -70,6 +70,8 @@ import {
   toolRoot,
 } from './utils.js';
 
+type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
+
 export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): Promise<void> {
   const checks: DoctorCheck[] = [];
   checks.push({name: 'mode', status: 'ok', detail: options.dryRun ? 'dry run; no writes' : 'read-only checks'});
@@ -510,9 +512,9 @@ async function commandShimCheck(): Promise<DoctorCheck> {
 }
 
 async function userAgentInstructionsChecks(): Promise<DoctorCheck[]> {
-  const expectedBlock = await renderUserAgentInstructionsBlock();
   return Promise.all(
     USER_AGENT_INSTRUCTION_TARGETS.map(async target => {
+      const expectedInstructions = await renderUserAgentInstructions(target);
       const targetPath = expandPath(target.path);
       const content = await readFileIfExists(targetPath);
       if (content === undefined) {
@@ -526,7 +528,10 @@ async function userAgentInstructionsChecks(): Promise<DoctorCheck[]> {
           detail: `${targetPath} missing threadnote block; install will add it`,
         };
       }
-      if (existingBlock !== expectedBlock) {
+      if (
+        (target.kind === 'file' && content !== expectedInstructions) ||
+        (target.kind === 'block' && existingBlock !== expectedInstructions)
+      ) {
         return {
           name: target.label,
           status: 'warn',
@@ -786,11 +791,15 @@ async function removeCommandShim(dryRun: boolean): Promise<void> {
 }
 
 async function installUserAgentInstructions(dryRun: boolean): Promise<void> {
-  const block = await renderUserAgentInstructionsBlock();
   for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
+    const instructions = await renderUserAgentInstructions(target);
     const targetPath = expandPath(target.path);
     const currentContent = await readFileIfExists(targetPath);
-    const nextContent = upsertManagedBlock(currentContent ?? '', block);
+    if (target.kind === 'file' && currentContent !== undefined && extractManagedBlock(currentContent) === undefined) {
+      console.log(`WARN ${targetPath} is not managed by threadnote; not modifying it`);
+      continue;
+    }
+    const nextContent = target.kind === 'file' ? instructions : upsertManagedBlock(currentContent ?? '', instructions);
     if (nextContent === undefined) {
       console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
       continue;
@@ -817,6 +826,14 @@ async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
       console.log(`Already absent: ${targetPath}`);
       continue;
     }
+    if (target.kind === 'file') {
+      if (extractManagedBlock(currentContent) === undefined) {
+        console.log(`WARN ${targetPath} is not managed by threadnote; not removing it`);
+        continue;
+      }
+      await removePath(targetPath, target.label, dryRun);
+      continue;
+    }
     const nextContent = removeManagedBlock(currentContent);
     if (nextContent === undefined) {
       console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
@@ -837,6 +854,22 @@ async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
     await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
     console.log(`Updated ${targetPath}`);
   }
+}
+
+async function renderUserAgentInstructions(target: UserAgentInstructionTarget): Promise<string> {
+  const block = await renderUserAgentInstructionsBlock();
+  if (target.kind === 'block') {
+    return block;
+  }
+  return [
+    '---',
+    'name: Threadnote',
+    'description: Shared local context and handoffs through Threadnote',
+    'applyTo: "**"',
+    '---',
+    '',
+    block,
+  ].join('\n');
 }
 
 async function renderUserAgentInstructionsBlock(): Promise<string> {

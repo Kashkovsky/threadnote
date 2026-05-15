@@ -17,9 +17,14 @@ export const USER_INSTRUCTIONS_START_MARKER = '<!-- BEGIN THREADNOTE USER INSTRU
 export const USER_INSTRUCTIONS_END_MARKER = '<!-- END THREADNOTE USER INSTRUCTIONS -->';
 export const USER_MANIFEST_NAME = 'seed-manifest.yaml';
 export const USER_AGENT_INSTRUCTION_TARGETS = [
-  {label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
-  {label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
-  {label: 'cursor user rule', path: '~/.cursor/rules/threadnote.md'},
+  {kind: 'block', label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
+  {kind: 'block', label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
+  {kind: 'block', label: 'cursor user rule', path: '~/.cursor/rules/threadnote.md'},
+  {
+    kind: 'file',
+    label: 'copilot user instructions',
+    path: '~/.copilot/instructions/threadnote.instructions.md',
+  },
 ] as const;
 export const DEFAULT_SEED_PATTERNS = [
   'AGENTS.md',
