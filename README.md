@@ -1,6 +1,6 @@
 # Threadnote
 
-`threadnote` is a safe local workflow for using OpenViking as shared, agent-neutral context for development work.
+`threadnote` is a safe local workflow for using [OpenViking](https://openviking.ai/) as shared, agent-neutral context for development work.
 It is intentionally scoped to curated docs, memories, skills, and handoffs. It is not a source-navigation replacement,
 and it does not index whole repositories by default.
 
