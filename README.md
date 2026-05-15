@@ -9,6 +9,11 @@ and it does not index whole repositories by default.
 **Want to continue work in a fresh agent session?**  
 `threadnote install` adds user-level Codex, Claude, Cursor, and Copilot instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
 
+**Working on a feature branch over several sessions?**
+Agents recall the branch handoff for current status, then recall durable feature memories for the design, decisions,
+interfaces, and gotchas behind the feature. As useful implementation knowledge appears, agents update the durable feature
+memory instead of leaving everything buried in transient handoffs.
+
 **Implemented a feature a while ago and need to pick it up again?**  
 Ask the agent to recall the feature, branch, or repo. Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
 
@@ -49,6 +54,16 @@ Active memories with the same project/topic write to a stable lifecycle path, so
 version instead of creating another timestamped note. Untagged memories still use timestamped files when you want a
 historical trail.
 
+For feature branches, keep a durable feature memory and an active handoff side by side with the same project/topic:
+
+```bash
+threadnote remember --kind durable --project my-repo --topic feature-x --text "Feature knowledge: ..."
+threadnote handoff --project my-repo --topic feature-x --task "Current status for feature X"
+```
+
+Agents should update the durable feature memory when valuable implementation knowledge changes, and update the handoff
+when current status, tests, blockers, or next steps change.
+
 Use `archive` when an old handoff is useful for provenance but should stop being treated as current working context:
 
 ```bash
@@ -72,11 +87,12 @@ refactor, what an on-call investigation concluded, which workaround was verified
 memories should be compacted. Putting that history into instruction files makes them noisy, stale, and expensive to load
 into every context window.
 
-Threadnote keeps that moving layer local, searchable, and shared across agents. Agents recall only the relevant memories,
-handoffs, and skill/resource pointers when they need them, while the source files stay authoritative for project rules.
+Threadnote keeps that moving layer local, searchable, and shared across agents. Agents recall only the relevant durable
+feature memories, handoffs, and skill/resource pointers when they need them, while the source files stay authoritative
+for project rules.
 
-The split is simple: put durable repo policy in `CLAUDE.md`/`AGENTS.md`; put task history, handoffs, personal workflow
-facts, and local cross-agent memory in Threadnote.
+The split is simple: put durable repo policy in `CLAUDE.md`/`AGENTS.md`; put feature knowledge, task history, handoffs,
+personal workflow facts, and local cross-agent memory in Threadnote.
 
 ## Safety Model
 

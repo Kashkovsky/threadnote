@@ -172,16 +172,21 @@ Preferred developer behavior is conversational:
 
 ```text
 Recall anything relevant for this branch before you start.
-Remember this workflow note for future agents: ...
+Remember this feature decision for future agents: ...
 Create a handoff now.
 ```
 
 Preferred agent behavior is automatic after `threadnote install` has updated the user-level instruction files:
 
-- On non-trivial task start, search OpenViking for recent handoffs and relevant repo guidance.
+- On non-trivial task start, search OpenViking for recent handoffs, durable feature memories for the branch/topic, and
+  relevant repo guidance.
 - When the user says "remember", store the memory after checking that it contains no secret or customer data.
-- When continuing the same active issue, update the current-state memory with `remember --replace <uri>` or
-  `handoff --replace <uri>` instead of creating another near-duplicate progress memory.
+- When continuing the same active issue, keep two current-state records when useful: a durable feature memory for design,
+  decisions, interfaces, and gotchas, plus a handoff for status, tests, blockers, and next steps.
+- When valuable feature knowledge changes, update the durable feature memory with the same project/topic or
+  `remember --replace <uri>` instead of burying that knowledge only in a handoff.
+- When current status changes, update the active handoff with the same project/topic or `handoff --replace <uri>` instead
+  of creating another near-duplicate progress memory.
 - When recall surfaces clearly duplicate or stale memories, store one concise replacement memory and forget only the
   redundant originals.
 - Before pausing, switching agents, or finishing meaningful code changes, store a concise handoff with status, tests,
@@ -191,9 +196,10 @@ Manual CLI remains available for scripts and emergencies:
 
 ```bash
 threadnote recall --query "last handoff for this branch"
-threadnote remember --text "Durable engineering note..."
+threadnote recall --query "durable feature knowledge for this branch"
+threadnote remember --kind durable --project example --topic active-feature --text "Feature knowledge..."
 threadnote remember --replace viking://user/example/memories/events/current.md --text "Updated durable engineering note..."
-threadnote handoff --task "short task summary" --tests "checks run" --next-step "what the next agent should do"
+threadnote handoff --project example --topic active-feature --task "short task summary" --tests "checks run" --next-step "what the next agent should do"
 ```
 
 ## Repo Paths
