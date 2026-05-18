@@ -3,6 +3,8 @@ import {closeSync, openSync} from 'node:fs';
 import {chmod, readFile, realpath, writeFile} from 'node:fs/promises';
 import {platform} from 'node:os';
 import {dirname, join} from 'node:path';
+import {stdin as processStdin, stdout as processStdout} from 'node:process';
+import {createInterface} from 'node:readline/promises';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -630,10 +632,95 @@ async function runInstallCommands(
   force: boolean,
   dryRun: boolean,
 ): Promise<void> {
-  const installCommands = await getInstallCommands(config, preferred, force);
+  // When the user didn't ask for a specific manager and detection fell back
+  // to plain `pip`, offer to install `uv` first — `pip install --user` is
+  // refused under PEP 668 on Homebrew / system-managed Python, which is most
+  // macOS and modern Linux setups.
+  let manager = preferred;
+  if (manager === undefined && !dryRun) {
+    const detected = await detectPackageManager();
+    if (detected === 'pip' && (await offerToInstallUv())) {
+      const rediscovered = await detectPackageManager();
+      if (rediscovered === 'uv') {
+        manager = 'uv';
+      }
+    }
+  }
+  const installCommands = await getInstallCommands(config, manager, force);
   for (const installCommand of installCommands) {
     await maybeRun(dryRun, installCommand.executable, installCommand.args);
   }
+}
+
+async function offerToInstallUv(): Promise<boolean> {
+  if (processStdin.isTTY !== true || processStdout.isTTY !== true) {
+    console.warn(
+      'Neither uv nor pipx was found on PATH. Falling back to `python3 -m pip install --user`, which fails on PEP 668 (Homebrew/system) Python.\n' +
+        'Re-run with --package-manager uv after installing uv (brew install uv), or pass --package-manager pipx.',
+    );
+    return false;
+  }
+  const readline = createInterface({input: processStdin, output: processStdout});
+  let answer: string;
+  try {
+    answer = (
+      await readline.question(
+        'OpenViking installs into Python; neither uv nor pipx is on PATH so threadnote would fall back to `pip install --user`, which fails on PEP 668 setups.\nInstall uv now? [Y/n] ',
+      )
+    )
+      .trim()
+      .toLowerCase();
+  } finally {
+    readline.close();
+  }
+  if (answer === 'n' || answer === 'no') {
+    console.log('Continuing with `python3 -m pip install --user`. You may hit PEP 668 errors on managed Pythons.');
+    return false;
+  }
+  return await installUv();
+}
+
+async function installUv(): Promise<boolean> {
+  const brew = await findExecutable(['brew']);
+  if (brew) {
+    console.log('Installing uv via Homebrew...');
+    const result = await runCommand(brew, ['install', 'uv'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      if (await findExecutable(['uv'])) {
+        return true;
+      }
+    } else {
+      console.warn(`brew install uv failed: ${(result.stderr || result.stdout).trim()}`);
+    }
+  }
+  // Fall back to the official install script. Requires curl + sh; honors any
+  // proxy env vars the user already has.
+  if ((await findExecutable(['curl'])) && (await findExecutable(['sh']))) {
+    console.log('Installing uv via the official install script (curl -LsSf https://astral.sh/uv/install.sh | sh)...');
+    const result = await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], {
+      allowFailure: true,
+    });
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      if (await findExecutable(['uv'])) {
+        return true;
+      }
+      console.warn(
+        'uv installed, but the new binary is not yet on this shell PATH. Open a new shell (or `source ~/.zshrc` / `source ~/.bashrc`) and re-run `threadnote install`.',
+      );
+      return false;
+    }
+    console.warn(`uv install script failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  console.warn(
+    'Could not install uv automatically. Install it manually (brew install uv) and re-run threadnote install.',
+  );
+  return false;
 }
 
 async function getPythonSystemCertificatesInstallCommand(serverPath: string): Promise<MappedCommand> {
