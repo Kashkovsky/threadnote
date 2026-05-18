@@ -20,6 +20,13 @@ import type {
   RememberOptions,
   RepairOptions,
   SeedOptions,
+  ShareInitOptions,
+  ShareListOptions,
+  SharePublishOptions,
+  ShareRemoveOptions,
+  ShareStatusOptions,
+  ShareSyncOptions,
+  ShareUnpublishOptions,
   StartOptions,
   UninstallOptions,
   UpdateOptions,
@@ -43,6 +50,15 @@ import {
   runRemember,
 } from './memory.js';
 import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
+import {
+  runShareInit,
+  runShareList,
+  runSharePublish,
+  runShareRemove,
+  runShareStatus,
+  runShareSync,
+  runShareUnpublish,
+} from './share.js';
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
 import {maybeNotifyUpdate, parseUpdateRuntime, runPostUpdate, runUpdate} from './update.js';
 
@@ -317,6 +333,88 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print ov command without deleting')
     .action(async (uri: string, options: ForgetOptions) => {
       await runForget(getRuntimeConfig(program), uri, options);
+    });
+
+  const share = program
+    .command('share')
+    .description('Share durable memories with teammates through a git-backed repository');
+
+  share
+    .command('init')
+    .description('Configure a shared memories repo for a team (clones the remote into the local memory tree)')
+    .argument('<remote-url>', 'git remote URL of the shared memories repo')
+    .option('--team <name>', 'Team name; defaults to "default"')
+    .option('--set-default', 'Mark this team as the default for future share commands')
+    .option(
+      '--no-push',
+      'Do not push the auto-generated .gitignore housekeeping commit. Does not affect future publishes.',
+    )
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (remoteUrl: string, options: ShareInitOptions) => {
+      await runShareInit(getRuntimeConfig(program), remoteUrl, options);
+    });
+
+  share
+    .command('status')
+    .description('Show git status and ahead/behind counts for a shared team')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--dry-run', 'Print git commands without running them')
+    .action(async (options: ShareStatusOptions) => {
+      await runShareStatus(getRuntimeConfig(program), options);
+    });
+
+  share
+    .command('sync')
+    .description('Pull, reindex, and push the shared memories repo for a team')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--message <text>', 'Commit message when auto-committing local edits')
+    .option('--no-auto-commit', 'Refuse to sync if there are uncommitted local changes')
+    .option('--no-push', 'Skip the push step after pulling and reindexing')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (options: ShareSyncOptions) => {
+      await runShareSync(getRuntimeConfig(program), options);
+    });
+
+  share
+    .command('publish')
+    .description('Move a personal memory into the shared team namespace, commit and push')
+    .argument('<viking-uri>', 'viking:// memory URI to publish')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--message <text>', 'Commit message override')
+    .option('--no-push', 'Skip the push step')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (uri: string, options: SharePublishOptions) => {
+      await runSharePublish(getRuntimeConfig(program), uri, options);
+    });
+
+  share
+    .command('unpublish')
+    .description('Pull a shared memory back into the personal namespace, commit removal and push')
+    .argument('<viking-uri>', 'viking:// memory URI inside a team shared subtree')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--message <text>', 'Commit message override')
+    .option('--no-push', 'Skip the push step')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (uri: string, options: ShareUnpublishOptions) => {
+      await runShareUnpublish(getRuntimeConfig(program), uri, options);
+    });
+
+  share
+    .command('list')
+    .description('List configured shared teams')
+    .option('--dry-run', 'Print without side effects (no-op for list)')
+    .action(async (options: ShareListOptions) => {
+      await runShareList(getRuntimeConfig(program), options);
+    });
+
+  share
+    .command('remove')
+    .description('Forget a configured team and optionally delete its worktree/gitdir')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--keep-files', 'Keep the worktree and gitdir on disk; only forget the team entry')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (options: ShareRemoveOptions) => {
+      await runShareRemove(getRuntimeConfig(program), options);
     });
 
   program

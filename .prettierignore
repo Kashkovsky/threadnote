@@ -1,3 +1,4 @@
+.context/
 build/
 coverage/
 dist/

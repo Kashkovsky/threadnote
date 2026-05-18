@@ -57,7 +57,13 @@ export function openVikingServerArgs(config: RuntimeConfig): readonly string[] {
   return ['--config', join(config.agentContextHome, 'ov.conf'), '--host', config.host, '--port', String(config.port)];
 }
 
-export function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {
+export interface AgentIdentity {
+  readonly account: string;
+  readonly agentId: string;
+  readonly user: string;
+}
+
+export function withIdentity(config: AgentIdentity, args: readonly string[]): readonly string[] {
   return [...args, '--account', config.account, '--user', config.user, '--agent-id', config.agentId];
 }
 

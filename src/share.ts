@@ -1,0 +1,991 @@
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {dirname, join, relative, sep} from 'node:path';
+import {uriSegment} from './manifest.js';
+import {withIdentity} from './runtime.js';
+import type {
+  ShareInitOptions,
+  ShareListOptions,
+  SharePublishOptions,
+  ShareRemoveOptions,
+  ShareRuntime,
+  ShareStatusOptions,
+  ShareSyncOptions,
+  ShareTeamConfig,
+  ShareTeamsFile,
+  ShareUnpublishOptions,
+} from './types.js';
+import {
+  assertVikingUri,
+  ensureDirectory,
+  exists,
+  formatShellCommand,
+  isDirectory,
+  isFile,
+  maybeRun,
+  openVikingCliForMode,
+  parseJsonConfigObject,
+  portablePath,
+  readFileIfExists,
+  removePath,
+  requiredExecutable,
+  runCommand,
+  sleep,
+} from './utils.js';
+
+const TEAMS_FILE_VERSION = 1;
+const SHARED_SEGMENT = 'shared';
+const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
+export const DEFAULT_GIT_REMOTE_NAME = 'origin';
+
+const SCRUBBER_PATTERNS: readonly {readonly name: string; readonly regex: RegExp}[] = [
+  {name: 'private key', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/},
+  {name: 'API key (sk-...)', regex: /\bsk-[A-Za-z0-9_-]{16,}/},
+  {name: 'GitHub token', regex: /\bgh[pousr]_[A-Za-z0-9_]{16,}/},
+  {name: 'GitHub fine-grained PAT', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}/},
+  {name: 'GitLab PAT', regex: /\bglpat-[A-Za-z0-9_-]{20,}/},
+  {name: 'bearer token', regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i},
+  // Matches bare JWTs (three base64url segments). May surface a JWE token in
+  // legitimate docs; if that becomes noisy we can switch to warn-only.
+  {name: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/},
+  {name: 'AWS access key', regex: /\bAKIA[0-9A-Z]{16}\b/},
+  // Slack tokens: xoxa/xoxb/xoxc (configuration)/xoxd (legacy user cookie)/
+  // xoxe (refresh)/xoxp/xoxr/xoxs, with optional -N- segment for the workspace tier.
+  {name: 'Slack token', regex: /\bxox[abcdeprs](?:-\d-)?[A-Za-z0-9._-]{10,}/i},
+];
+
+export interface ResolvedTeam {
+  readonly config: ShareTeamConfig;
+  readonly name: string;
+}
+
+interface ChangedFile {
+  readonly path: string;
+  readonly relativePath: string;
+  readonly status: 'added' | 'removed' | 'modified';
+}
+
+export async function runShareInit(config: ShareRuntime, remoteUrl: string, options: ShareInitOptions): Promise<void> {
+  if (!remoteUrl.trim()) {
+    throw new Error('Provide a git remote URL for the shared memories repo.');
+  }
+  const dryRun = options.dryRun === true;
+  const teamName = normalizeTeamName(options.team);
+  const teamsFile = await readTeamsFile(config);
+  if (teamsFile.teams[teamName]) {
+    throw new Error(
+      `Team "${teamName}" is already configured (remote ${teamsFile.teams[teamName].remote}). Remove it first with: threadnote share remove --team ${teamName}`,
+    );
+  }
+  const worktree = teamWorktreePath(config, teamName);
+  const gitdir = teamGitdirPath(config, teamName);
+  await assertWorktreeUsable(worktree);
+  if (await exists(gitdir)) {
+    throw new Error(`Gitdir already exists at ${gitdir}; remove it or pick a different team name.`);
+  }
+
+  await ensureDirectory(dirname(worktree), dryRun);
+  await ensureDirectory(dirname(gitdir), dryRun);
+
+  const git = await requiredExecutable('git');
+  await maybeRun(dryRun, git, ['clone', `--separate-git-dir=${gitdir}`, '--', remoteUrl, worktree]);
+
+  const newConfig: ShareTeamConfig = {
+    addedAt: new Date().toISOString(),
+    gitdir,
+    name: teamName,
+    remote: remoteUrl,
+    worktree,
+  };
+  const updatedTeams: ShareTeamsFile = {
+    defaultTeam: shouldSetDefault(options, teamsFile) ? teamName : (teamsFile.defaultTeam ?? teamName),
+    teams: {...teamsFile.teams, [teamName]: newConfig},
+    version: TEAMS_FILE_VERSION,
+  };
+  if (dryRun) {
+    console.log(`Would write teams file: ${teamsFilePath(config)}`);
+    console.log(`Would set ${teamName} as default? ${updatedTeams.defaultTeam === teamName}`);
+  } else {
+    await writeTeamsFile(config, updatedTeams);
+    console.log(`Configured shared team "${teamName}" -> ${portablePath(worktree)}`);
+  }
+
+  if (!dryRun) {
+    await ensureSharedGitignore(worktree, git, options.push !== false);
+    const ingested = await ingestWorktreeFiles(config, newConfig, 'create');
+    console.log(`Ingested ${ingested} shared memory file(s) into OpenViking.`);
+  }
+}
+
+const SHARED_GITIGNORE_PATTERNS = ['**/.abstract.md', '**/.overview.md'];
+const SHARED_GITIGNORE_HEADER = '# Threadnote: ignore OpenViking-generated directory summaries.';
+
+async function ensureSharedGitignore(worktree: string, git: string, push: boolean): Promise<void> {
+  // Idempotently ensure the OpenViking-summary patterns are in the worktree's
+  // .gitignore. There's no opt-out: these two patterns describe files that OV
+  // writes into every shared directory on every mkdir, are not memories, and
+  // would only pollute git history if tracked. Users who insist on tracking
+  // them can `git update-index --skip-worktree .gitignore` to suppress this.
+  const gitignorePath = join(worktree, '.gitignore');
+  const existing = (await readFileIfExists(gitignorePath)) ?? '';
+  const lines = existing.split('\n').map(line => line.trim());
+  const missingPatterns = SHARED_GITIGNORE_PATTERNS.filter(pattern => !lines.includes(pattern));
+  if (missingPatterns.length === 0) {
+    return;
+  }
+  // Reuse the existing header if one is already in the file; only add a fresh
+  // header on the first run so repeated calls don't accumulate duplicate
+  // comment lines.
+  const hasHeader = lines.includes(SHARED_GITIGNORE_HEADER);
+  const segments: string[] = [];
+  if (existing.length > 0 && !existing.endsWith('\n')) {
+    segments.push('\n');
+  }
+  if (existing.length > 0) {
+    segments.push('\n');
+  }
+  if (!hasHeader) {
+    segments.push(SHARED_GITIGNORE_HEADER, '\n');
+  }
+  segments.push(missingPatterns.join('\n'), '\n');
+  await writeFile(gitignorePath, `${existing}${segments.join('')}`, {encoding: 'utf8'});
+  console.log(`Added ${missingPatterns.join(', ')} to ${portablePath(gitignorePath)}`);
+  await maybeRun(false, git, ['-C', worktree, 'add', '.gitignore']);
+  const commitResult = await runCommand(
+    git,
+    ['-C', worktree, 'commit', '-m', 'share: ignore OpenViking directory summaries'],
+    {allowFailure: true},
+  );
+  if (commitResult.exitCode !== 0) {
+    const detail = commitResult.stderr.trim() || commitResult.stdout.trim();
+    if (!/nothing to commit|no changes added/i.test(detail)) {
+      console.warn(
+        `.gitignore housekeeping commit was rejected (${detail || 'unknown'}); it will be retried on the next share sync.`,
+      );
+      return;
+    }
+  }
+  if (push) {
+    await maybeRun(false, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  }
+}
+
+export async function runShareStatus(config: ShareRuntime, options: ShareStatusOptions): Promise<void> {
+  const team = await resolveTeam(config, options.team);
+  const git = await requiredExecutable('git');
+  console.log(`Team: ${team.name}`);
+  console.log(`Remote: ${team.config.remote}`);
+  console.log(`Worktree: ${portablePath(team.config.worktree)}`);
+  console.log(`Gitdir: ${portablePath(team.config.gitdir)}`);
+  await maybeRun(options.dryRun === true, git, ['-C', team.config.worktree, 'status', '--short', '--branch']);
+  await maybeRun(options.dryRun === true, git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
+    allowFailure: true,
+  });
+  const ahead = await gitOutput(team.config.worktree, ['rev-list', '--count', '@{u}..HEAD'], options.dryRun === true);
+  const behind = await gitOutput(team.config.worktree, ['rev-list', '--count', 'HEAD..@{u}'], options.dryRun === true);
+  if (ahead !== undefined) {
+    console.log(`Ahead of upstream: ${ahead}`);
+  }
+  if (behind !== undefined) {
+    console.log(`Behind upstream: ${behind}`);
+  }
+}
+
+export async function runShareSync(config: ShareRuntime, options: ShareSyncOptions): Promise<void> {
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  const git = await requiredExecutable('git');
+  const worktree = team.config.worktree;
+
+  if (!dryRun) {
+    // Don't push here — sync's final push step (below) will deliver any
+    // .gitignore housekeeping commit, avoiding a double-push round trip.
+    await ensureSharedGitignore(worktree, git, false);
+  }
+
+  if (await hasUncommittedChanges(worktree)) {
+    if (options.autoCommit === false) {
+      throw new Error(
+        `Worktree ${worktree} has uncommitted changes. Commit them yourself or rerun without --no-auto-commit.`,
+      );
+    }
+    const message = options.message ?? `share: sync ${new Date().toISOString()}`;
+    await stageShareableChanges(dryRun, git, worktree);
+    await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
+  }
+
+  const beforeRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
+  await maybeRun(dryRun, git, ['-C', worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME]);
+  const pullResult = dryRun
+    ? undefined
+    : await runCommand(git, ['-C', worktree, 'pull', '--rebase', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  if (dryRun) {
+    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'pull', '--rebase', DEFAULT_GIT_REMOTE_NAME])}`);
+  } else if (pullResult && pullResult.exitCode !== 0) {
+    // Detect mid-rebase state via filesystem markers rather than parsing git's
+    // output — both because git's English phrasing varies by version and
+    // because non-English LC_MESSAGES rewrites the human-readable strings.
+    // share teams clone with --separate-git-dir so <worktree>/.git is a gitfile,
+    // not a directory; the rebase markers live in the real gitdir.
+    if (
+      (await exists(join(team.config.gitdir, 'rebase-merge'))) ||
+      (await exists(join(team.config.gitdir, 'rebase-apply')))
+    ) {
+      throw new Error(
+        `git pull --rebase reported conflicts in ${worktree}. The worktree is in a rebase-in-progress state.\nResolve the conflicts in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then re-run \`threadnote share sync\`.`,
+      );
+    }
+    throw new Error(
+      `git pull --rebase failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
+    );
+  }
+  const afterRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
+
+  if (!dryRun && beforeRev && afterRev && beforeRev !== afterRev) {
+    const changes = await listChangedFiles(worktree, beforeRev, afterRev);
+    await applyChangesToOpenViking(config, team.config, changes);
+    console.log(`Reindexed ${changes.length} file change(s) into OpenViking.`);
+  } else if (!dryRun) {
+    console.log('No upstream changes to reindex.');
+  }
+
+  if (options.push !== false) {
+    await maybeRun(dryRun, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  }
+}
+
+async function stageShareableChanges(dryRun: boolean, git: string, worktree: string): Promise<void> {
+  // Stage repo metadata (README, .gitignore) plus every shareable kind dir.
+  // OpenViking-generated summaries (.abstract.md, .overview.md) are excluded
+  // via the repo's .gitignore (ensureSharedGitignore self-heals it on every
+  // sync), so they never get staged even by an unscoped `git add`.
+  const pathspecs = [':(top)README.md', ':(top).gitignore', ...SHAREABLE_MEMORY_KIND_DIRS.map(dir => `:(top)${dir}`)];
+  await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', ...pathspecs], {allowFailure: true});
+}
+
+export async function runSharePublish(
+  config: ShareRuntime,
+  sourceUri: string,
+  options: SharePublishOptions,
+): Promise<void> {
+  assertVikingUri(sourceUri);
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  if (isInSharedNamespace(config, sourceUri)) {
+    throw new Error(`Memory ${sourceUri} is already in the shared namespace.`);
+  }
+  const ov = await openVikingCliForMode(dryRun);
+  const content = await readMemoryContent(config, ov, sourceUri, dryRun);
+  const blocker = scrubberBlocker(content);
+  if (blocker) {
+    throw new Error(`Refusing to publish ${sourceUri}: possible ${blocker}. Strip the sensitive value, then retry.`);
+  }
+
+  const targetUri = sharedUriFor(config, sourceUri, team.name);
+  if (!dryRun && (await vikingResourceExists(ov, config, targetUri))) {
+    throw new Error(
+      `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
+    );
+  }
+  await ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
+  await writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
+  await removeWithRollback(config, ov, sourceUri, targetUri, team.config.worktree, dryRun, 'publish');
+
+  const git = await requiredExecutable('git');
+  const worktree = team.config.worktree;
+  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+  const message = options.message ?? `share: publish ${relativePath}`;
+  await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', relativePath]);
+  await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
+  if (options.push !== false) {
+    const pushResult = dryRun
+      ? undefined
+      : await runCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+    if (dryRun) {
+      console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
+    } else if (pushResult && pushResult.exitCode !== 0) {
+      const detail = pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error';
+      throw new Error(
+        `Memory was committed locally but git push failed: ${detail}\nResolve the remote issue (auth, network, branch protection), then run: threadnote share sync`,
+      );
+    }
+  }
+  console.log(`Published ${sourceUri} -> ${targetUri}`);
+}
+
+export async function runShareUnpublish(
+  config: ShareRuntime,
+  sourceUri: string,
+  options: ShareUnpublishOptions,
+): Promise<void> {
+  assertVikingUri(sourceUri);
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  if (!isInTeamNamespace(config, sourceUri, team.name)) {
+    throw new Error(`Memory ${sourceUri} is not in team "${team.name}" shared namespace.`);
+  }
+  const ov = await openVikingCliForMode(dryRun);
+  const content = await readMemoryContent(config, ov, sourceUri, dryRun);
+  const targetUri = personalUriFor(config, sourceUri, team.name);
+  if (!dryRun && (await vikingResourceExists(ov, config, targetUri))) {
+    throw new Error(
+      `Refusing to unpublish: a personal memory already exists at ${targetUri}. Move or forget it first, then retry.`,
+    );
+  }
+  await writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
+  await removeWithRollback(config, ov, sourceUri, targetUri, team.config.worktree, dryRun, 'unpublish');
+
+  const git = await requiredExecutable('git');
+  const worktree = team.config.worktree;
+  const relativePath = vikingUriToWorktreeRelative(config, sourceUri, team.name);
+  const message = options.message ?? `share: unpublish ${relativePath}`;
+  await maybeRun(dryRun, git, ['-C', worktree, 'rm', relativePath], {allowFailure: true});
+  await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
+  if (options.push !== false) {
+    await maybeRun(dryRun, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  }
+  console.log(`Unpublished ${sourceUri} -> ${targetUri}`);
+}
+
+export async function runShareList(config: ShareRuntime, _options: ShareListOptions): Promise<void> {
+  const teams = await readTeamsFile(config);
+  const entries = Object.values(teams.teams);
+  if (entries.length === 0) {
+    console.log('No shared teams configured. Run: threadnote share init <remote-url>');
+    return;
+  }
+  for (const team of entries) {
+    const marker = team.name === teams.defaultTeam ? ' (default)' : '';
+    console.log(`- ${team.name}${marker}`);
+    console.log(`    remote: ${team.remote}`);
+    console.log(`    worktree: ${portablePath(team.worktree)}`);
+    console.log(`    gitdir: ${portablePath(team.gitdir)}`);
+    console.log(`    added: ${team.addedAt}`);
+  }
+}
+
+export async function runShareRemove(config: ShareRuntime, options: ShareRemoveOptions): Promise<void> {
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  const teamsFile = await readTeamsFile(config);
+  const remaining: Record<string, ShareTeamConfig> = {};
+  for (const [name, value] of Object.entries(teamsFile.teams)) {
+    if (name !== team.name) {
+      remaining[name] = value;
+    }
+  }
+  const remainingNames = Object.keys(remaining);
+  const nextDefault = teamsFile.defaultTeam === team.name ? remainingNames[0] : teamsFile.defaultTeam;
+  const updated: ShareTeamsFile = {defaultTeam: nextDefault, teams: remaining, version: TEAMS_FILE_VERSION};
+  if (dryRun) {
+    console.log(`Would update teams file: ${teamsFilePath(config)}`);
+  } else {
+    await writeTeamsFile(config, updated);
+    console.log(`Removed team "${team.name}" from teams.json.`);
+  }
+  if (options.keepFiles !== true) {
+    await removePath(team.config.worktree, 'shared worktree', dryRun);
+    await removePath(team.config.gitdir, 'shared gitdir', dryRun);
+  } else {
+    console.log(`Keeping files at ${portablePath(team.config.worktree)} and ${portablePath(team.config.gitdir)}`);
+  }
+}
+
+function normalizeTeamName(input: string | undefined): string {
+  const candidate = (input ?? 'default').trim();
+  if (!candidate) {
+    return 'default';
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(candidate) || /^\.+$/.test(candidate)) {
+    throw new Error(
+      `Invalid team name "${input}". Team names must start with a lowercase letter or digit and contain only [a-z0-9._-]. Single-dot or dot-only names are rejected so they don't collapse to the shared-root or parent directory.`,
+    );
+  }
+  return candidate;
+}
+
+function teamsFilePath(config: ShareRuntime): string {
+  return join(config.agentContextHome, 'share', 'teams.json');
+}
+
+function teamWorktreePath(config: ShareRuntime, team: string): string {
+  return join(
+    config.agentContextHome,
+    'data',
+    'viking',
+    config.account,
+    'user',
+    uriSegment(config.user),
+    'memories',
+    SHARED_SEGMENT,
+    team,
+  );
+}
+
+function teamGitdirPath(config: ShareRuntime, team: string): string {
+  return join(config.agentContextHome, 'share', 'teams', `${team}.gitdir`);
+}
+
+export async function readTeamsFile(config: ShareRuntime): Promise<ShareTeamsFile> {
+  const path = teamsFilePath(config);
+  const raw = await readFileIfExists(path);
+  if (!raw) {
+    return {teams: {}, version: TEAMS_FILE_VERSION};
+  }
+  const parsed = parseJsonConfigObject(raw);
+  if (!parsed) {
+    throw new Error(`Could not parse teams file ${path}`);
+  }
+  if (typeof parsed.version === 'number' && parsed.version > TEAMS_FILE_VERSION) {
+    throw new Error(
+      `Teams file ${path} was written with version ${parsed.version}; this Threadnote binary understands up to version ${TEAMS_FILE_VERSION}. Upgrade Threadnote (\`threadnote update\`) before continuing.`,
+    );
+  }
+  const teams: Record<string, ShareTeamConfig> = {};
+  if (typeof parsed.teams === 'object' && parsed.teams !== null && !Array.isArray(parsed.teams)) {
+    for (const [name, value] of Object.entries(parsed.teams)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        console.warn(`Skipping non-object team entry "${name}" in ${path}.`);
+        continue;
+      }
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.remote !== 'string' || entry.remote.length === 0) {
+        console.warn(`Skipping team entry "${name}" in ${path}: missing or empty "remote" field.`);
+        continue;
+      }
+      teams[name] = {
+        addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date(0).toISOString(),
+        gitdir: typeof entry.gitdir === 'string' ? entry.gitdir : teamGitdirPath(config, name),
+        name,
+        remote: entry.remote,
+        worktree: typeof entry.worktree === 'string' ? entry.worktree : teamWorktreePath(config, name),
+      };
+    }
+  }
+  const defaultTeam = typeof parsed.defaultTeam === 'string' ? parsed.defaultTeam : undefined;
+  return {defaultTeam, teams, version: TEAMS_FILE_VERSION};
+}
+
+async function writeTeamsFile(config: ShareRuntime, contents: ShareTeamsFile): Promise<void> {
+  const path = teamsFilePath(config);
+  await mkdir(dirname(path), {recursive: true});
+  const serializable = {
+    defaultTeam: contents.defaultTeam,
+    teams: contents.teams,
+    version: contents.version,
+  };
+  await writeFile(path, `${JSON.stringify(serializable, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
+}
+
+export async function resolveTeam(config: ShareRuntime, requested: string | undefined): Promise<ResolvedTeam> {
+  const teamsFile = await readTeamsFile(config);
+  const entries = Object.entries(teamsFile.teams);
+  if (entries.length === 0) {
+    throw new Error('No shared teams configured. Run: threadnote share init <remote-url>');
+  }
+  const wantName = requested ? normalizeTeamName(requested) : (teamsFile.defaultTeam ?? entries[0][0]);
+  const found = teamsFile.teams[wantName];
+  if (!found) {
+    const known = entries.map(([name]) => name).join(', ');
+    throw new Error(`Team "${wantName}" is not configured. Known teams: ${known}`);
+  }
+  return {config: found, name: wantName};
+}
+
+function shouldSetDefault(options: ShareInitOptions, existing: ShareTeamsFile): boolean {
+  if (options.setDefault === true) {
+    return true;
+  }
+  return existing.defaultTeam === undefined;
+}
+
+async function assertWorktreeUsable(worktree: string): Promise<void> {
+  if (!(await exists(worktree))) {
+    return;
+  }
+  if (!(await isDirectory(worktree))) {
+    throw new Error(`Cannot use ${worktree} as a worktree: not a directory.`);
+  }
+  const entries = await readdir(worktree);
+  if (entries.length > 0) {
+    const preview = entries.slice(0, 5).join(', ');
+    const suffix = entries.length > 5 ? `, +${entries.length - 5} more` : '';
+    throw new Error(
+      `Worktree ${worktree} is not empty (contains: ${preview}${suffix}). Move or remove its contents, then retry threadnote share init.`,
+    );
+  }
+}
+
+async function ingestWorktreeFiles(
+  config: ShareRuntime,
+  team: ShareTeamConfig,
+  initialMode: 'create' | 'replace',
+): Promise<number> {
+  const ov = await openVikingCliForMode(false);
+  const files = await walkMemoryFiles(team.worktree);
+  for (const file of files) {
+    const uri = workfileToVikingUri(config, team, file);
+    await ensureSharedDirectoryChain(config, ov, uri, false);
+    await ingestSingleFile(ov, config, uri, file, initialMode);
+  }
+  return files.length;
+}
+
+async function walkMemoryFiles(root: string): Promise<readonly string[]> {
+  const out: string[] = [];
+  async function visit(path: string, depth: number): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(path, {withFileTypes: true});
+    } catch (err: unknown) {
+      console.warn(`Skipping ${path} during shared-tree walk: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === '.git') {
+        continue;
+      }
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) {
+        if (depth === 0 && !SHAREABLE_MEMORY_KIND_DIRS.includes(entry.name)) {
+          continue;
+        }
+        await visit(full, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      if (depth === 0) {
+        continue;
+      }
+      if (!entry.name.endsWith('.md')) {
+        continue;
+      }
+      out.push(full);
+    }
+  }
+  await visit(root, 0);
+  return out;
+}
+
+function workfileToVikingUri(config: ShareRuntime, team: ShareTeamConfig, filePath: string): string {
+  const rel = relative(team.worktree, filePath).split(sep).join('/');
+  return `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team.name}/${rel}`;
+}
+
+export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean {
+  return uri.startsWith(`viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`);
+}
+
+function isInTeamNamespace(config: ShareRuntime, uri: string, team: string): boolean {
+  return uri.startsWith(`viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`);
+}
+
+export function sharedUriFor(config: ShareRuntime, personalUri: string, team: string): string {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  if (!personalUri.startsWith(prefix)) {
+    throw new Error(`Refusing to publish memory outside the current user namespace: ${personalUri}`);
+  }
+  const rest = personalUri.slice(prefix.length);
+  return `${prefix}${SHARED_SEGMENT}/${team}/${rest}`;
+}
+
+function personalUriFor(config: ShareRuntime, sharedUri: string, team: string): string {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!sharedUri.startsWith(prefix)) {
+    throw new Error(`Refusing to unpublish a URI outside team "${team}" shared namespace: ${sharedUri}`);
+  }
+  const rest = sharedUri.slice(prefix.length);
+  return `viking://user/${uriSegment(config.user)}/memories/${rest}`;
+}
+
+export function vikingUriToWorktreeRelative(config: ShareRuntime, uri: string, team: string): string {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!uri.startsWith(prefix)) {
+    throw new Error(`URI ${uri} is not inside team "${team}" shared subtree.`);
+  }
+  return uri.slice(prefix.length);
+}
+
+export function scrubberBlocker(content: string): string | undefined {
+  return SCRUBBER_PATTERNS.find(pattern => pattern.regex.test(content))?.name;
+}
+
+async function readMemoryContent(config: ShareRuntime, ov: string, uri: string, dryRun: boolean): Promise<string> {
+  const args = withIdentity(config, ['read', uri]);
+  if (dryRun) {
+    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    return '<dry-run memory body>';
+  }
+  const result = await runCommand(ov, args);
+  if (!result.stdout.trim()) {
+    throw new Error(`Refusing to publish empty memory at ${uri}`);
+  }
+  return result.stdout;
+}
+
+export async function ensureSharedDirectoryChain(
+  config: ShareRuntime,
+  ov: string,
+  memoryUri: string,
+  dryRun: boolean,
+): Promise<void> {
+  const directoryUri = parentUri(memoryUri);
+  for (const uri of sharedDirectoryChain(config, directoryUri)) {
+    const args = withIdentity(config, ['stat', uri]);
+    if (dryRun) {
+      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      continue;
+    }
+    const statResult = await runCommand(ov, args, {allowFailure: true});
+    if (statResult.exitCode === 0) {
+      continue;
+    }
+    await maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+  }
+}
+
+export function parentUri(uri: string): string {
+  const lastSlash = uri.lastIndexOf('/');
+  return lastSlash === -1 ? uri : uri.slice(0, lastSlash);
+}
+
+export function sharedDirectoryChain(config: ShareRuntime, directoryUri: string): readonly string[] {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!directoryUri.startsWith(prefix)) {
+    return [directoryUri];
+  }
+  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
+  const chain: string[] = [];
+  for (let index = 1; index <= parts.length; index += 1) {
+    chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
+  }
+  return chain;
+}
+
+export async function writeMemoryFile(
+  config: ShareRuntime,
+  ov: string,
+  uri: string,
+  content: string,
+  initialMode: 'create' | 'replace',
+  dryRun: boolean,
+): Promise<void> {
+  if (dryRun) {
+    const args = withIdentity(config, [
+      'write',
+      uri,
+      '--from-file',
+      '<staged temp file>',
+      '--mode',
+      initialMode,
+      '--wait',
+      '--timeout',
+      '120',
+    ]);
+    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    return;
+  }
+  // Stage the body in a dedicated temp directory so the memory body never
+  // lives at the root of THREADNOTE_HOME, and if the process is killed
+  // mid-write the leftover is in /tmp which the OS cleans up routinely.
+  // mkdtemp already guarantees a unique parent directory; the inner filename
+  // can be fixed.
+  const stagingDir = await mkdtemp(join(tmpdir(), 'threadnote-share-'));
+  const tempPath = join(stagingDir, 'body.txt');
+  try {
+    await writeFile(tempPath, content, {encoding: 'utf8', mode: 0o600});
+    await writeOvFileWithRetry(config, ov, uri, tempPath, initialMode);
+  } finally {
+    await rm(stagingDir, {force: true, recursive: true});
+  }
+}
+
+async function writeOvFileWithRetry(
+  config: ShareRuntime,
+  ov: string,
+  uri: string,
+  fromFile: string,
+  initialMode: 'create' | 'replace',
+): Promise<void> {
+  const maxAttempts = 4;
+  // Snapshot existence ONCE before the first attempt so a teammate's
+  // concurrent publish landing between attempts can't trick us into flipping
+  // to 'replace' and silently overwriting their content. Only an exists-now-
+  // but-didn't-exist-before transition can be attributed to our own write.
+  const existedBeforeWrite = await vikingResourceExists(ov, config, uri);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const existsNow = attempt === 0 ? existedBeforeWrite : await vikingResourceExists(ov, config, uri);
+    const ourWriteLanded = existsNow && !existedBeforeWrite;
+    // First attempt honors the caller's intent. If create fails because the
+    // target already exists, OV returns a non-transient error and we surface
+    // it loudly rather than silently overwriting. The flip to "replace" only
+    // happens on retries where the resource appeared between attempts (i.e.,
+    // our own previous attempt landed despite a transient post-write error).
+    const mode = attempt === 0 ? initialMode : ourWriteLanded ? 'replace' : initialMode;
+    const args = withIdentity(config, [
+      'write',
+      uri,
+      '--from-file',
+      fromFile,
+      '--mode',
+      mode,
+      '--wait',
+      '--timeout',
+      '120',
+    ]);
+    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      if (result.stderr.trim()) {
+        console.error(result.stderr.trim());
+      }
+      return;
+    }
+    if (
+      isTransientOvFailure(result.stderr, result.stdout) &&
+      (await vikingResourceExists(ov, config, uri)) &&
+      !existedBeforeWrite
+    ) {
+      // The write succeeded server-side (URI now exists where it didn't before
+      // this call started) even though OV returned an error before the --wait
+      // completed. Drain the queue and treat the write as durable.
+      console.log('OpenViking accepted the write but returned an error before the wait completed; draining the queue.');
+      await waitForOvQueue(ov, config);
+      return;
+    }
+    if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
+      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+}
+
+async function waitForOvQueue(ov: string, config: ShareRuntime): Promise<void> {
+  const result = await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
+  if (result.stdout.trim()) {
+    console.log(result.stdout.trim());
+  }
+  if (result.stderr.trim()) {
+    console.error(result.stderr.trim());
+  }
+}
+
+function isTransientOvFailure(stderr: string, stdout: string): boolean {
+  const output = `${stderr}\n${stdout}`.toLowerCase();
+  return (
+    output.includes('resource is busy') ||
+    output.includes('resource is being processed') ||
+    output.includes('network error') ||
+    output.includes('error sending request') ||
+    output.includes('http request failed') ||
+    output.includes('connection refused') ||
+    output.includes('connection reset') ||
+    output.includes('timed out')
+  );
+}
+
+async function ingestSingleFile(
+  ov: string,
+  config: ShareRuntime,
+  uri: string,
+  filePath: string,
+  initialMode: 'create' | 'replace',
+): Promise<void> {
+  const content = await readFile(filePath, 'utf8');
+  await writeMemoryFile(config, ov, uri, content, initialMode, false);
+}
+
+/**
+ * Removes `sourceUri` from OpenViking. If removal fails, rolls back the prior
+ * write at `rollbackUri` so the system is back to its pre-publish/unpublish
+ * state instead of half-published. The `label` controls error wording and
+ * whether the worktree file at `rollbackUri` is also deleted (only on the
+ * publish path; on unpublish the rollback URI is personal so there is no
+ * worktree file to clean).
+ *
+ * Throws the original source-removal error so callers see what failed.
+ */
+export async function removeWithRollback(
+  config: ShareRuntime,
+  ov: string,
+  sourceUri: string,
+  rollbackUri: string,
+  worktree: string,
+  dryRun: boolean,
+  label: 'publish' | 'unpublish',
+): Promise<void> {
+  try {
+    await removeMemoryUri(config, ov, sourceUri, dryRun);
+  } catch (sourceErr: unknown) {
+    if (dryRun) {
+      throw sourceErr;
+    }
+    console.error(
+      `Source removal failed during ${label}; rolling back ${rollbackUri} so the system is back to the pre-${label} state.`,
+    );
+    try {
+      await removeMemoryUri(config, ov, rollbackUri, false);
+    } catch (rollbackErr: unknown) {
+      console.error(
+        `Rollback of ${rollbackUri} also failed. Manual cleanup needed via: threadnote forget ${rollbackUri}\nRollback error: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+      );
+    }
+    await bestEffortRemoveWorktreeFile(rollbackUri, worktree, label);
+    throw sourceErr;
+  }
+}
+
+async function bestEffortRemoveWorktreeFile(
+  rollbackUri: string,
+  worktree: string,
+  label: 'publish' | 'unpublish',
+): Promise<void> {
+  if (label !== 'publish') {
+    return;
+  }
+  const prefix = 'viking://';
+  if (!rollbackUri.startsWith(prefix)) {
+    return;
+  }
+  const parts = rollbackUri.slice(prefix.length).split('/');
+  const sharedIndex = parts.indexOf('shared');
+  if (sharedIndex === -1 || sharedIndex + 2 >= parts.length) {
+    return;
+  }
+  const relative = parts.slice(sharedIndex + 2).join('/');
+  if (!relative) {
+    return;
+  }
+  await rm(join(worktree, relative), {force: true});
+}
+
+export async function removeMemoryUri(config: ShareRuntime, ov: string, uri: string, dryRun: boolean): Promise<void> {
+  const args = withIdentity(config, ['rm', uri]);
+  if (dryRun) {
+    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    return;
+  }
+  const maxAttempts = 4;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const result = await runCommand(ov, args, {allowFailure: true});
+    if (result.exitCode === 0) {
+      if (result.stdout.trim()) {
+        console.log(result.stdout.trim());
+      }
+      return;
+    }
+    if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
+      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
+    }
+    await sleep(1000 * (attempt + 1));
+  }
+}
+
+export async function vikingResourceExists(ov: string, config: ShareRuntime, uri: string): Promise<boolean> {
+  const result = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+  return result.exitCode === 0;
+}
+
+async function hasUncommittedChanges(worktree: string): Promise<boolean> {
+  // Read-only check; always run, even in dry-run, so the preamble reflects
+  // what a non-dry-run sync would actually have to commit.
+  const result = await runCommand('git', ['-C', worktree, 'status', '--porcelain'], {allowFailure: true});
+  return result.stdout.trim().length > 0;
+}
+
+/** Returns the trimmed stdout of `git -C <worktree> <args>` on success, or `undefined` on dry-run / non-zero exit. */
+async function gitOutput(worktree: string, args: readonly string[], dryRun: boolean): Promise<string | undefined> {
+  if (dryRun) {
+    return undefined;
+  }
+  const result = await runCommand('git', ['-C', worktree, ...args], {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+  return result.stdout.trim();
+}
+
+async function listChangedFiles(
+  worktree: string,
+  beforeRev: string,
+  afterRev: string,
+): Promise<readonly ChangedFile[]> {
+  const result = await runCommand('git', ['-C', worktree, 'diff', '--name-status', '-z', `${beforeRev}..${afterRev}`], {
+    allowFailure: true,
+  });
+  if (result.exitCode !== 0) {
+    return [];
+  }
+  const entries = result.stdout.split('\0').filter(part => part.length > 0);
+  const changes: ChangedFile[] = [];
+  for (let index = 0; index < entries.length; ) {
+    const raw = entries[index];
+    const head = raw.slice(0, 1);
+    if (head === 'R' || head === 'C') {
+      const oldRel = entries[index + 1];
+      const newRel = entries[index + 2];
+      if (oldRel && newRel) {
+        changes.push({path: join(worktree, oldRel), relativePath: oldRel, status: 'removed'});
+        changes.push({path: join(worktree, newRel), relativePath: newRel, status: 'added'});
+      }
+      index += 3;
+      continue;
+    }
+    const rel = entries[index + 1];
+    if (rel) {
+      const status = head === 'A' ? 'added' : head === 'D' ? 'removed' : 'modified';
+      changes.push({path: join(worktree, rel), relativePath: rel, status});
+    }
+    index += 2;
+  }
+  return changes;
+}
+
+// applyChangesToOpenViking only reflects changes to files under the shareable
+// kind directories (currently just `durable/`). For renames that cross kind
+// directories (e.g., handoffs/x.md -> durable/y.md), listChangedFiles emits a
+// 'removed' for the old path and an 'added' for the new path; both are
+// processed independently here. The 'removed' entry for a non-shareable kind
+// is filtered out by the firstSegment check, which is the desired outcome
+// because non-shareable kinds are never reflected into OV's shared subtree.
+async function applyChangesToOpenViking(
+  config: ShareRuntime,
+  team: ShareTeamConfig,
+  changes: readonly ChangedFile[],
+): Promise<void> {
+  const ov = await openVikingCliForMode(false);
+  for (const change of changes) {
+    if (!change.relativePath.endsWith('.md')) {
+      continue;
+    }
+    const firstSegment = change.relativePath.split('/')[0];
+    if (!SHAREABLE_MEMORY_KIND_DIRS.includes(firstSegment)) {
+      continue;
+    }
+    const uri = workfileToVikingUri(config, team, change.path);
+    if (change.status === 'removed') {
+      await removeMemoryUri(config, ov, uri, false);
+      continue;
+    }
+    if (!(await isFile(change.path))) {
+      continue;
+    }
+    if (change.status === 'modified' && (await vikingResourceExists(ov, config, uri))) {
+      console.warn(
+        `share sync: overwriting local ${uri} with the upstream version (local edits to the shared subtree are not preserved across sync).`,
+      );
+    }
+    await ensureSharedDirectoryChain(config, ov, uri, false);
+    // 'modified' means the upstream pull changed the file; the OV resource
+    // already exists, so the write must be 'replace'. Passing 'create' would
+    // burn every retry attempt against an existedBeforeWrite=true snapshot
+    // and then throw.
+    const writeMode: 'create' | 'replace' = change.status === 'modified' ? 'replace' : 'create';
+    await ingestSingleFile(ov, config, uri, change.path, writeMode);
+  }
+}

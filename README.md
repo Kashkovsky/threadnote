@@ -306,6 +306,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
   succeeds.
 - `forget`: removes a `viking://` URI.
 - `export-pack` / `import-pack`: moves local context through `.ovpack` files.
+- `share init|status|sync|publish|unpublish|list|remove`: opts a curated subset of durable memories into a team git
+  repo so teammates can pull them. Personal handoffs and preferences stay local. See `docs/share.md` for the full
+  workflow and the publish-time scrubber rules.
 
 ## Source Checkout
 

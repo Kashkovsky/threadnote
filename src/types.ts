@@ -217,3 +217,68 @@ export interface InitManifestOptions {
 export interface JsonObject {
   readonly [key: string]: unknown;
 }
+
+export interface ShareRuntime {
+  readonly account: string;
+  readonly agentContextHome: string;
+  readonly agentId: string;
+  readonly user: string;
+}
+
+export interface ShareTeamConfig {
+  readonly addedAt: string;
+  readonly gitdir: string;
+  readonly name: string;
+  readonly remote: string;
+  readonly worktree: string;
+}
+
+export interface ShareTeamsFile {
+  readonly defaultTeam?: string;
+  readonly teams: Readonly<Record<string, ShareTeamConfig>>;
+  readonly version: number;
+}
+
+export interface ShareInitOptions {
+  readonly dryRun?: boolean;
+  readonly push?: boolean;
+  readonly setDefault?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareStatusOptions {
+  readonly dryRun?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareSyncOptions {
+  readonly autoCommit?: boolean;
+  readonly dryRun?: boolean;
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly team?: string;
+}
+
+export interface SharePublishOptions {
+  readonly dryRun?: boolean;
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareUnpublishOptions {
+  readonly dryRun?: boolean;
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareListOptions {
+  readonly dryRun?: boolean;
+}
+
+export interface ShareRemoveOptions {
+  readonly dryRun?: boolean;
+  readonly keepFiles?: boolean;
+  readonly team?: string;
+}

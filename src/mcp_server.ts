@@ -3,15 +3,27 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
-import {access} from 'node:fs/promises';
+import {access, realpath} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {realpath} from 'node:fs/promises';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
 import {
+  DEFAULT_GIT_REMOTE_NAME,
+  ensureSharedDirectoryChain,
+  isInSharedNamespace,
+  removeWithRollback as removeWithRollbackShared,
+  resolveTeam,
+  scrubberBlocker,
+  sharedUriFor,
+  vikingResourceExists as sharedVikingResourceExists,
+  vikingUriToWorktreeRelative,
+  writeMemoryFile,
+} from './share.js';
+import {
   errorMessage,
   exactRecallTerms,
+  expandPath,
   findExecutable,
   grepOutputHasMatches,
   runCommand,
@@ -22,6 +34,7 @@ import {
 
 interface RuntimeConfig {
   readonly account: string;
+  readonly agentContextHome: string;
   readonly agentId: string;
   readonly user: string;
 }
@@ -76,6 +89,7 @@ async function main(): Promise<void> {
         'When a handoff describes an active branch or feature, recall durable feature memories for the same branch/topic before coding.',
         'During feature work, update durable feature knowledge when valuable implementation details, decisions, interfaces, or gotchas change.',
         'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
+        'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish is destructive: it scrubs for secrets, moves the memory into the shared subtree, removes the personal copy, and pushes a git commit. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
     },
@@ -89,6 +103,7 @@ async function main(): Promise<void> {
 function getRuntimeConfig(): RuntimeConfig {
   return {
     account: process.env.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
+    agentContextHome: expandPath(process.env.THREADNOTE_HOME ?? '~/.openviking'),
     agentId: process.env.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
     user: process.env.THREADNOTE_USER ?? process.env.USER ?? 'unknown',
   };
@@ -264,6 +279,32 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       inputSchema: {},
     },
     async () => runOpenVikingTool(config, ['health']),
+  );
+
+  server.registerTool(
+    'share_publish',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        "Publish a personal memory into a team's shared memories git repo. Reads the memory, refuses publish if it matches secret patterns, copies it into the shared subtree, removes the personal original, and commits/pushes. Default team is used unless team is provided.",
+      inputSchema: {
+        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
+        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        uri: z.string().optional().describe('Required viking:// memory URI to publish'),
+      },
+    },
+    async ({message, push, team, uri}) => {
+      const checkedUri = requiredVikingUri(
+        uri,
+        'share_publish',
+        'viking://user/example/memories/durable/projects/foo/bar.md',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runSharePublishTool(config, checkedUri.value, {message, push, team});
+    },
   );
 }
 
@@ -701,6 +742,7 @@ function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): rea
     `${userBase}/handoffs/active`,
     `${userBase}/incidents/active`,
     `${userBase}/events`,
+    `${userBase}/shared`,
     `viking://agent/${uriSegment(config.agentId)}/memories`,
   ];
   return includeArchived
@@ -801,6 +843,128 @@ async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[])
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
+}
+
+interface SharePublishToolOptions {
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly team?: string;
+}
+
+async function runSharePublishTool(
+  config: RuntimeConfig,
+  sourceUri: string,
+  options: SharePublishToolOptions,
+): Promise<CallToolResult> {
+  try {
+    if (isInSharedNamespace(config, sourceUri)) {
+      return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
+    }
+    const resolved = await resolveTeam(config, options.team);
+    const ov = await requiredOpenVikingCli();
+    const readResult = await runCommand(ov, withIdentity(config, ['read', sourceUri]), {allowFailure: true});
+    if (readResult.exitCode !== 0 || !readResult.stdout.trim()) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Could not read ${sourceUri}: ${readResult.stderr.trim() || readResult.stdout.trim() || 'unknown error'}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const content = readResult.stdout;
+    const blocker = scrubberBlocker(content);
+    if (blocker) {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: possible ${blocker}. Strip the sensitive value, then retry.`,
+      );
+    }
+    const targetUri = sharedUriFor(config, sourceUri, resolved.name);
+    // Refuse to silently overwrite an existing shared memory (e.g., a teammate
+    // already published the same project/topic). Mirrors the CLI publish path.
+    if (await sharedVikingResourceExists(ov, config, targetUri)) {
+      return argumentError(
+        `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
+      );
+    }
+    await ensureSharedDirectoryChain(config, ov, targetUri, false);
+    // Stage the body via writeMemoryFile (writes a tmpdir file + --from-file)
+    // so large bodies and embedded NUL bytes don't blow past argv limits.
+    await writeMemoryFile(config, ov, targetUri, content, 'create', false);
+    try {
+      await removeWithRollbackShared(config, ov, sourceUri, targetUri, resolved.config.worktree, false, 'publish');
+    } catch (sourceErr: unknown) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: [
+              `Refused to leave a half-published state: could not remove ${sourceUri}.`,
+              `Rolled back ${targetUri} so the system is back to the pre-publish state.`,
+              `Retry the publish once OpenViking's queue settles.`,
+              sourceErr instanceof Error ? sourceErr.message : String(sourceErr),
+            ].join('\n'),
+          },
+        ],
+        isError: true,
+      };
+    }
+    const messages = [`Published ${sourceUri} -> ${targetUri}`];
+    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+    const commitMessage = options.message ?? `share: publish ${relativePath}`;
+    const gitMessages = await gitPublishWorkflow(
+      resolved.config.worktree,
+      relativePath,
+      commitMessage,
+      options.push !== false,
+    );
+    return {
+      content: [{type: 'text', text: [...messages, ...gitMessages].join('\n')}],
+      isError: false,
+    };
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function gitPublishWorkflow(
+  worktree: string,
+  relativePath: string,
+  commitMessage: string,
+  push: boolean,
+): Promise<readonly string[]> {
+  const messages: string[] = [];
+  const add = await runCommand('git', ['-C', worktree, 'add', relativePath], {allowFailure: true});
+  if (add.exitCode !== 0) {
+    messages.push(`git add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+    return messages;
+  }
+  const commit = await runCommand('git', ['-C', worktree, 'commit', '-m', commitMessage], {allowFailure: true});
+  if (commit.exitCode !== 0) {
+    const detail = commit.stdout.trim() || commit.stderr.trim();
+    if (/nothing to commit|no changes added/i.test(detail)) {
+      messages.push('git commit: nothing to commit (file already in tree)');
+    } else {
+      messages.push(`git commit failed: ${detail}`);
+      return messages;
+    }
+  } else {
+    messages.push(`git commit: ${commit.stdout.trim().split('\n').slice(0, 2).join(' ')}`);
+  }
+  if (!push) {
+    messages.push('git push skipped (push=false)');
+    return messages;
+  }
+  const pushResult = await runCommand('git', ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  const pushDetail = pushResult.stdout.trim() || pushResult.stderr.trim();
+  if (pushResult.exitCode !== 0) {
+    messages.push(`git push failed: ${pushDetail}`);
+  } else {
+    messages.push(`git push: ${pushDetail || 'ok'}`);
+  }
+  return messages;
 }
 
 function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {

@@ -8,9 +8,9 @@ Use OpenViking through Threadnote as a shared local context and memory layer. Re
 follow the nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction file first.
 
 When OpenViking MCP tools are available, use them directly. Prefer Threadnote-named MCP tools when present:
-`recall_context`, `read_context`, `list_context`, and `remember_context`. Always pass JSON arguments to MCP tools, for
-example `recall_context({"query":"current repo latest handoff"})`. Older Threadnote MCP adapters may expose
-`search`, `read`, `list`, and `store` instead.
+`recall_context`, `read_context`, `list_context`, `remember_context`, and `share_publish`. Always pass JSON arguments to
+MCP tools, for example `recall_context({"query":"current repo latest handoff"})`. Older Threadnote MCP adapters may
+expose `search`, `read`, `list`, and `store` instead.
 
 If MCP is unavailable, use the `threadnote` CLI fallback.
 
@@ -93,6 +93,34 @@ them when it is safe:
 
 Never compact secrets, credentials, customer data, raw production logs, or checked-in canonical docs into memory.
 
+## Sharing memories with teammates
+
+Threadnote can publish a curated subset of durable memories into a team git repo so other engineers' agents can pull them.
+The mechanism lives under the `viking://user/<you>/memories/shared/<team>/...` subtree; only memories that are explicitly
+published leave the machine. Personal handoffs, preferences, and unpublished durable notes always stay local.
+
+Publish a durable memory when its content is useful to other engineers working on the same project (intended behavior,
+design decisions, API contracts, gotchas) and is safe to share. Do NOT publish:
+
+- handoffs or anything carrying machine-local paths, branch state, or in-flight task context;
+- memories under `memories/preferences/`;
+- anything mentioning secrets, customer data, raw logs, or material a teammate's git history shouldn't carry.
+
+The MCP tool `share_publish` runs the same scrubber as the CLI and refuses to publish memories containing common secret
+patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It is a destructive
+operation: it removes the personal copy after the shared copy is committed.
+
+When a teammate's memory needs to come into your own working set, run `threadnote share sync` (no MCP equivalent yet) to
+pull and reindex.
+
+```
+# MCP call shape
+share_publish({"uri":"viking://user/you/memories/durable/projects/foo/bar.md"})
+share_publish({"uri":"viking://user/you/memories/durable/projects/foo/bar.md","team":"friends","push":false})
+```
+
+Before publishing, confirm with the user unless they have already instructed you to share durable memories autonomously.
+
 ## Handoff
 
 Before pausing, switching agents, or ending meaningful work with local changes, store a concise handoff. Include:
@@ -123,4 +151,7 @@ threadnote remember --replace viking://user/example/memories/durable/projects/ex
 threadnote archive viking://user/example/memories/handoffs/active/example/old-issue.md
 threadnote forget viking://user/example/memories/events/duplicate.md
 threadnote handoff --project example --topic active-issue --task "short task summary" --tests "checks run" --next-step "what to do next"
+threadnote share init git@github.com:org/team-memories.git
+threadnote share publish viking://user/example/memories/durable/projects/foo/bar.md
+threadnote share sync
 ```

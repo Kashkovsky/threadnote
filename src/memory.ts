@@ -658,6 +658,7 @@ function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): rea
     `${userBase}/handoffs/active`,
     `${userBase}/incidents/active`,
     `${userBase}/events`,
+    `${userBase}/shared`,
     `viking://agent/${uriSegment(config.agentId)}/memories`,
   ];
   return includeArchived
