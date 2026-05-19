@@ -224,6 +224,39 @@ claude mcp add threadnote -- threadnote-mcp-server
 Cursor uses the equivalent entry in `~/.cursor/mcp.json`.
 Copilot uses the VS Code MCP `servers` entry in the user-profile `mcp.json`.
 
+### Agent hooks (optional, opt-in)
+
+The instruction files (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, etc.) are the **cross-agent guidance floor** — they
+ask agents to recall context, store handoffs, and so on, and they work for every supported agent. They rely on the
+agent to comply.
+
+For deterministic moments where the agent shouldn't have to remember, Threadnote can also install agent-side
+**hooks** — currently for Claude Code (the only supported agent that exposes a hook surface today):
+
+- **`PreCompact`** auto-stores a handoff snapshot for the current repo right before Claude compacts the conversation,
+  so the next turn can recall it even if the agent forgot to write a handoff manually.
+- **`SessionStart`** preloads the latest threadnote handoff/feature memory for the current repo into the new session
+  context, so the first turn already knows where you left off.
+
+Install them per agent (Codex / Cursor / Copilot are no-ops today — Threadnote prints a clear explanation):
+
+```bash
+threadnote install-hooks claude --dry-run   # preview the change
+threadnote install-hooks claude --apply     # add managed entries to ~/.claude/settings.json
+threadnote install-hooks claude --remove --apply  # take them out again
+```
+
+Or opt in at install time and let Threadnote drive every supported agent in one shot:
+
+```bash
+threadnote install --with-hooks
+```
+
+Managed entries are tagged with `"_threadnote": "managed"` so `threadnote repair` and `threadnote uninstall` can find
+and rewrite/remove only those entries without touching any of your own hooks. Hooks complement, not replace, the
+instruction files: the soft guidance covers semantic decisions ("is this memory durable?", "is this work meaningful
+enough to publish?"); hooks cover deterministic moments the agent shouldn't be trusted to remember.
+
 If a future OpenViking build exposes a healthy native endpoint, install it explicitly:
 
 ```bash
