@@ -4,6 +4,9 @@
 It is intentionally scoped to curated docs, memories, skills, and handoffs. It is not a source-navigation replacement,
 and it does not index whole repositories by default.
 
+> **Walkthrough deck:** https://kashkovsky.github.io/threadnote/ — the problem statement, how it works, the safety
+> model, install/seeding/updates, real-world use cases, and team sharing, in scroll-snap slide form.
+
 ## Real-World Uses
 
 **Want to continue work in a fresh agent session?**  
