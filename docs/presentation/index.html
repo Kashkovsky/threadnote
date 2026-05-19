@@ -1,0 +1,1531 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Threadnote — shared local context for development agents</title>
+    <meta
+      name="description"
+      content="Threadnote is a safe local workflow for using OpenViking as shared, agent-neutral context for development work — across Codex, Claude, Cursor, and Copilot."
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --bg: #0a0a0d;
+        --bg-elev: #14141a;
+        --bg-elev-2: #1c1c24;
+        --line: #2a2a35;
+        --text: #ececf1;
+        --muted: #8a8a96;
+        --dim: #5c5c68;
+        --accent: #5ee0c5;
+        --accent-soft: rgba(94, 224, 197, 0.12);
+        --accent-line: rgba(94, 224, 197, 0.35);
+        --warn: #ffb86b;
+        --danger: #ff7a7a;
+        --code-bg: #101019;
+        --radius-lg: 16px;
+        --radius-md: 10px;
+        --radius-sm: 6px;
+        --maxw: 1080px;
+        --section-pad: clamp(2rem, 6vh, 5rem) clamp(1.25rem, 6vw, 5rem);
+        --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', system-ui, sans-serif;
+        --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-sans);
+        font-feature-settings: 'cv02', 'cv11', 'ss01';
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        scroll-snap-type: y mandatory;
+        scroll-behavior: smooth;
+        scroll-padding-top: 0;
+      }
+
+      body {
+        line-height: 1.55;
+        font-size: clamp(15px, 1.05vw, 17px);
+        overflow-x: hidden;
+      }
+
+      ::selection {
+        background: var(--accent-soft);
+        color: var(--text);
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s ease;
+      }
+
+      a:hover {
+        border-bottom-color: var(--accent-line);
+      }
+
+      code {
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        background: var(--code-bg);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+        color: #d6d6e0;
+      }
+
+      pre {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+        background: var(--code-bg);
+        color: #d6d6e0;
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: var(--radius-md);
+        padding: 1em 1.2em;
+        overflow-x: auto;
+        line-height: 1.55;
+      }
+
+      pre code {
+        background: transparent;
+        padding: 0;
+        font-size: 1em;
+      }
+
+      .deck {
+        position: relative;
+      }
+
+      .slide {
+        min-height: 100vh;
+        scroll-snap-align: start;
+        padding: var(--section-pad);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 1.5rem;
+        position: relative;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .slide-inner {
+        width: 100%;
+        max-width: var(--maxw);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+
+      .slide-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6em;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 1rem;
+      }
+
+      .slide-eyebrow::before {
+        content: '';
+        width: 1.5em;
+        height: 1px;
+        background: var(--accent);
+        display: inline-block;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        line-height: 1.15;
+        letter-spacing: -0.018em;
+      }
+
+      h1 {
+        font-size: clamp(2.5rem, 6.5vw, 4.5rem);
+        font-weight: 800;
+      }
+
+      h2 {
+        font-size: clamp(1.85rem, 4vw, 2.75rem);
+        font-weight: 700;
+        margin-bottom: 1.25rem;
+      }
+
+      h3 {
+        font-size: 1.15rem;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 0.35rem;
+      }
+
+      .lead {
+        font-size: clamp(1.1rem, 1.6vw, 1.35rem);
+        color: var(--muted);
+        max-width: 56ch;
+        margin-top: 1.25rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .dim {
+        color: var(--dim);
+      }
+
+      /* hero */
+      #hero {
+        background: radial-gradient(circle at 25% 30%, rgba(94, 224, 197, 0.08), transparent 55%),
+          radial-gradient(circle at 75% 70%, rgba(124, 140, 255, 0.05), transparent 55%), var(--bg);
+        place-items: center;
+      }
+
+      #hero .slide-inner {
+        align-items: flex-start;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .brand-mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--accent), #7c8cff);
+        display: grid;
+        place-items: center;
+        color: #0a0a0d;
+        font-family: var(--font-mono);
+        font-weight: 700;
+        font-size: 14px;
+      }
+
+      .brand-name {
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        color: var(--muted);
+      }
+
+      .hero-title-gradient {
+        background: linear-gradient(180deg, #ffffff, #b8b8c8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .hero-accent {
+        color: var(--accent);
+        font-style: normal;
+      }
+
+      .scroll-cue {
+        position: absolute;
+        bottom: 2rem;
+        left: 50%;
+        transform: translateX(-50%);
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--dim);
+        animation: drift 2.4s ease-in-out infinite;
+      }
+
+      @keyframes drift {
+        0%,
+        100% {
+          transform: translate(-50%, 0);
+          opacity: 0.7;
+        }
+        50% {
+          transform: translate(-50%, 6px);
+          opacity: 1;
+        }
+      }
+
+      /* grids */
+      .grid {
+        display: grid;
+        gap: 1.25rem;
+      }
+
+      .grid-2 {
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+
+      .grid-3 {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+
+      .card {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem 1.5rem 1.4rem;
+        transition: border-color 0.2s ease, transform 0.2s ease;
+      }
+
+      .card:hover {
+        border-color: var(--accent-line);
+        transform: translateY(-2px);
+      }
+
+      .card .card-kicker {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 0.6rem;
+        display: block;
+      }
+
+      .card p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .pill {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 0.2em 0.6em;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        border: 1px solid var(--accent-line);
+      }
+
+      ul.flat {
+        list-style: none;
+        padding: 0;
+        margin: 0.5rem 0 0;
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      ul.flat > li {
+        position: relative;
+        padding-left: 1.4rem;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      ul.flat > li::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.65em;
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        border-radius: 2px;
+      }
+
+      ul.flat > li strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      /* comparison split */
+      .compare {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1.5rem;
+        margin-top: 1.5rem;
+      }
+
+      .compare-col {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem;
+      }
+
+      .compare-col h3 {
+        margin-bottom: 0.75rem;
+        font-size: 1rem;
+        font-family: var(--font-mono);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .compare-col h3.warm {
+        color: var(--warn);
+      }
+
+      .compare-col ul {
+        margin-top: 0.5rem;
+      }
+
+      /* architecture diagram */
+      .architecture {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1.75rem;
+        margin-top: 1.5rem;
+      }
+
+      .architecture svg {
+        width: 100%;
+        height: auto;
+        display: block;
+        max-height: 56vh;
+      }
+
+      .architecture-legend {
+        margin-top: 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--muted);
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .architecture-legend strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      /* terminal */
+      .terminal {
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+
+      .terminal-bar {
+        display: flex;
+        gap: 0.4em;
+        padding: 0.65rem 0.9rem;
+        background: var(--bg-elev-2);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .terminal-bar span {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--dim);
+        opacity: 0.7;
+      }
+
+      .terminal-bar span:nth-child(1) {
+        background: #ff5f56;
+      }
+
+      .terminal-bar span:nth-child(2) {
+        background: #ffbd2e;
+      }
+
+      .terminal-bar span:nth-child(3) {
+        background: #27c93f;
+      }
+
+      .terminal pre {
+        margin: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        padding: 1.1rem 1.2rem;
+      }
+
+      .terminal .cmd {
+        color: var(--accent);
+      }
+
+      .terminal .out {
+        color: var(--muted);
+      }
+
+      .terminal .out-strong {
+        color: var(--text);
+      }
+
+      .terminal .err {
+        color: var(--danger);
+      }
+
+      /* vignette use-case cards */
+      .vignettes {
+        display: grid;
+        gap: 1.25rem;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        margin-top: 1.5rem;
+      }
+
+      .vignette {
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1.5rem;
+        display: grid;
+        gap: 0.6rem;
+        transition: border-color 0.2s ease;
+      }
+
+      .vignette:hover {
+        border-color: var(--accent-line);
+      }
+
+      .vignette .v-prompt {
+        font-style: italic;
+        color: var(--text);
+        font-size: 1rem;
+      }
+
+      .vignette .v-answer {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .vignette .v-cmd {
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--accent);
+        padding: 0.45rem 0.75rem;
+        background: var(--code-bg);
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        white-space: nowrap;
+        overflow-x: auto;
+      }
+
+      /* side nav dots */
+      .deck-nav {
+        position: fixed;
+        right: max(1rem, 2.5vw);
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 0.7rem;
+        z-index: 50;
+      }
+
+      .deck-nav a {
+        position: relative;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--line);
+        border: 0;
+        display: block;
+        transition: background-color 0.2s ease, transform 0.2s ease;
+      }
+      .deck-nav a::after {
+        content: '';
+        position: absolute;
+        inset: -8px;
+      }
+
+      .deck-nav a.active {
+        background: var(--accent);
+        transform: scale(1.4);
+      }
+
+      .deck-nav a:hover {
+        background: var(--accent-line);
+      }
+
+      .deck-nav a span {
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        white-space: nowrap;
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        color: var(--dim);
+        opacity: 0;
+        transition: opacity 0.15s ease;
+        pointer-events: none;
+      }
+
+      .deck-nav a:hover span,
+      .deck-nav a.active span {
+        opacity: 1;
+      }
+
+      /* progress bar */
+      .progress {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 2px;
+        background: transparent;
+        z-index: 60;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), #7c8cff);
+        width: 0;
+        transition: width 0.1s linear;
+      }
+
+      /* footer-ish closing */
+      #close .slide-inner {
+        align-items: flex-start;
+      }
+
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 2rem;
+      }
+
+      .cta {
+        display: inline-block;
+        padding: 0.8rem 1.4rem;
+        background: var(--accent);
+        color: #0a0a0d;
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        font-weight: 600;
+        border-radius: 8px;
+        text-decoration: none;
+        border: 0;
+        transition: transform 0.15s ease;
+      }
+
+      .cta:hover {
+        transform: translateY(-1px);
+        border-bottom: 0;
+      }
+
+      .cta.outline {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent-line);
+      }
+
+      .colophon {
+        font-family: var(--font-mono);
+        color: var(--dim);
+        font-size: 0.82rem;
+        margin-top: 3rem;
+      }
+
+      .kbd {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 0.78em;
+        padding: 0.1em 0.45em;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--bg-elev);
+        color: var(--text);
+        line-height: 1.4;
+      }
+
+      /* reveal animation */
+      .reveal {
+        opacity: 0;
+        transform: translateY(14px);
+        transition: opacity 0.6s ease, transform 0.6s ease;
+      }
+
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+
+      @media (max-width: 720px) {
+        .deck-nav {
+          display: none;
+        }
+        .slide {
+          min-height: auto;
+          padding: 3rem 1.25rem;
+        }
+        html {
+          scroll-snap-type: none;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+
+    <nav class="deck-nav" aria-label="Section progress">
+      <a href="#hero" data-label="Intro"><span>Intro</span></a>
+      <a href="#problem" data-label="Problem"><span>Problem</span></a>
+      <a href="#meet" data-label="Meet threadnote"><span>Meet</span></a>
+      <a href="#vs-instructions" data-label="vs CLAUDE.md / AGENTS.md"><span>vs instructions</span></a>
+      <a href="#how" data-label="How it works"><span>How</span></a>
+      <a href="#safety" data-label="Safety model"><span>Safety</span></a>
+      <a href="#install" data-label="Install"><span>Install</span></a>
+      <a href="#seed" data-label="Seed"><span>Seed</span></a>
+      <a href="#update" data-label="Update"><span>Update</span></a>
+      <a href="#lifecycle" data-label="Lifecycle"><span>Lifecycle</span></a>
+      <a href="#use-cases" data-label="Use cases"><span>Use cases</span></a>
+      <a href="#share" data-label="Share"><span>Share</span></a>
+      <a href="#close" data-label="Get started"><span>Start</span></a>
+    </nav>
+
+    <main class="deck">
+      <!-- 1. HERO -->
+      <section id="hero" class="slide">
+        <div class="slide-inner">
+          <div class="brand">
+            <div class="brand-mark">t</div>
+            <span class="brand-name">threadnote</span>
+          </div>
+          <h1 class="hero-title-gradient">
+            Shared local context<br />for <em class="hero-accent">development agents</em>.
+          </h1>
+          <p class="lead">
+            One memory layer Codex, Claude, Cursor, and Copilot all see. Durable feature knowledge, recent handoffs, and
+            team-shared decisions — recallable from any session, on any agent, in any worktree.
+          </p>
+          <div class="cta-row">
+            <span class="pill">v0.4.1 · local-first · MIT</span>
+          </div>
+        </div>
+        <div class="scroll-cue">scroll ↓ &nbsp;·&nbsp; <span class="kbd">↓</span> / <span class="kbd">j</span></div>
+      </section>
+
+      <!-- 2. PROBLEM -->
+      <section id="problem" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">01 · The problem</span>
+          <h2>Agent context is ephemeral. <span class="muted">You aren't.</span></h2>
+          <p class="lead">
+            Every new session your agent starts from zero. You re-explain the same architecture, repaste the same
+            handoff, and rediscover the same gotchas. Across four different agents this multiplies.
+          </p>
+          <ul class="flat reveal" style="margin-top: 2rem">
+            <li><strong>Conversation history evaporates.</strong> Compaction summarizes; the nuance is lost.</li>
+            <li>
+              <strong>Each agent has its own memory.</strong> Switching from Codex to Claude means starting over.
+            </li>
+            <li>
+              <strong>CLAUDE.md/AGENTS.md is per-repo and static.</strong> It can't carry an in-flight feature's design
+              decisions across sessions, much less across agents or repos.
+            </li>
+            <li>
+              <strong>Hand-typed handoffs rot.</strong> The next session needs them, but you only remember to write them
+              half the time.
+            </li>
+            <li>
+              <strong>Team knowledge stays in DMs.</strong> Decisions made in Slack thread #1842 don't reach your
+              teammate's agent.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 3. MEET THREADNOTE -->
+      <section id="meet" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">02 · Meet threadnote</span>
+          <h2>A safe local memory layer for the agents you already use.</h2>
+          <p class="lead">
+            Threadnote sits between your agents and a local
+            <a href="https://openviking.ai/" target="_blank" rel="noopener">OpenViking</a> store. One stdio MCP adapter,
+            one URI scheme, one set of commands. Everything stays on your machine until you explicitly publish it.
+          </p>
+
+          <div class="grid grid-2" style="margin-top: 2rem">
+            <div class="card reveal">
+              <span class="card-kicker">Cross-agent</span>
+              <h3>One memory, four agents</h3>
+              <p>
+                Codex, Claude Code, Cursor, and Copilot all recall and write into the same OpenViking store via the
+                threadnote MCP adapter.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Cross-session</span>
+              <h3>Survives compaction</h3>
+              <p>
+                After the context window fills up, the next turn recalls durable feature memories and the latest handoff
+                instead of relying on the compressed summary alone.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Lifecycle-aware</span>
+              <h3>Durable vs handoff</h3>
+              <p>
+                <code>kind: durable</code> for facts that should outlive a session. <code>kind: handoff</code> for
+                current work logs. One stable file per <code>project/topic</code>; updates replace rather than
+                accumulate.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Local-first</span>
+              <h3>Yours, on your machine</h3>
+              <p>
+                Nothing leaves <code>~/.openviking</code> unless you explicitly <code>share publish</code> a curated
+                memory to a team git repo. No telemetry, no SaaS, no network egress.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. vs CLAUDE.md / AGENTS.md -->
+      <section id="vs-instructions" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">03 · Why not just CLAUDE.md or AGENTS.md?</span>
+          <h2>Use them. Threadnote is not a replacement.</h2>
+          <p class="lead">
+            They are perfect for stable, canonical, version-controlled rules. They are wrong for living context — what
+            happened in the last session, which branch is mid-refactor, which on-call workaround actually shipped.
+          </p>
+
+          <div class="compare">
+            <div class="compare-col reveal">
+              <h3 class="warm">CLAUDE.md · AGENTS.md · Cursor rules</h3>
+              <ul class="flat">
+                <li><strong>Where it lives:</strong> in the repo, versioned, shared via PR.</li>
+                <li>
+                  <strong>Best for:</strong> coding standards, test commands, review rules, architecture invariants.
+                </li>
+                <li><strong>Read pattern:</strong> loaded into every agent context window in this repo.</li>
+                <li><strong>Edit cost:</strong> human writes; PR review; high friction (which is the point).</li>
+                <li><strong>Lifecycle:</strong> long-lived. Stale entries hurt every session.</li>
+              </ul>
+            </div>
+
+            <div class="compare-col reveal">
+              <h3>Threadnote</h3>
+              <ul class="flat">
+                <li>
+                  <strong>Where it lives:</strong> local OpenViking store, cross-repo, cross-agent. Optionally published
+                  to a team git repo.
+                </li>
+                <li>
+                  <strong>Best for:</strong> feature knowledge, handoffs, branch state, prod-on-call findings, personal
+                  workflow facts.
+                </li>
+                <li>
+                  <strong>Read pattern:</strong> recalled on demand; only the relevant URIs enter the context window.
+                </li>
+                <li><strong>Edit cost:</strong> agents write; humans guide; low friction by design.</li>
+                <li><strong>Lifecycle:</strong> durable / handoff / archived. Compact in place, never accrete.</li>
+              </ul>
+            </div>
+          </div>
+
+          <p class="muted" style="margin-top: 1.5rem">
+            <strong style="color: var(--text)">The split:</strong> put repo policy in the .md files. Put feature
+            history, in-flight task state, handoffs, and personal workflow facts in threadnote.
+          </p>
+        </div>
+      </section>
+
+      <!-- 5. HOW IT WORKS -->
+      <section id="how" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">04 · How it works</span>
+          <h2>One MCP adapter, one URI scheme, one local store.</h2>
+
+          <div class="architecture reveal">
+            <svg viewBox="0 0 880 380" role="img" aria-label="Threadnote architecture diagram">
+              <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M0,0 L10,5 L0,10 z" fill="#5ee0c5" />
+                </marker>
+                <linearGradient id="agentGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#1c1c24" />
+                  <stop offset="1" stop-color="#15151a" />
+                </linearGradient>
+              </defs>
+
+              <!-- agents row -->
+              <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
+                <rect x="20" y="20" width="170" height="64" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
+                <text x="105" y="48" text-anchor="middle">Codex CLI</text>
+                <text x="105" y="68" text-anchor="middle" fill="#8a8a96" font-size="11">stdio MCP</text>
+
+                <rect x="210" y="20" width="170" height="64" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
+                <text x="295" y="48" text-anchor="middle">Claude Code</text>
+                <text x="295" y="68" text-anchor="middle" fill="#8a8a96" font-size="11">stdio MCP</text>
+
+                <rect x="400" y="20" width="170" height="64" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
+                <text x="485" y="48" text-anchor="middle">Cursor</text>
+                <text x="485" y="68" text-anchor="middle" fill="#8a8a96" font-size="11">stdio MCP</text>
+
+                <rect x="590" y="20" width="170" height="64" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
+                <text x="675" y="48" text-anchor="middle">Copilot (VS Code)</text>
+                <text x="675" y="68" text-anchor="middle" fill="#8a8a96" font-size="11">stdio MCP</text>
+              </g>
+
+              <!-- arrows down -->
+              <g stroke="#5ee0c5" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.7">
+                <line x1="105" y1="84" x2="380" y2="148" />
+                <line x1="295" y1="84" x2="400" y2="148" />
+                <line x1="485" y1="84" x2="480" y2="148" />
+                <line x1="675" y1="84" x2="500" y2="148" />
+              </g>
+
+              <!-- threadnote MCP -->
+              <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
+                <rect x="340" y="150" width="200" height="60" rx="10" fill="#5ee0c5" />
+                <text x="440" y="178" text-anchor="middle" fill="#0a0a0d" font-weight="600">threadnote-mcp-server</text>
+                <text x="440" y="196" text-anchor="middle" fill="#0a0a0d" opacity="0.7" font-size="11">
+                  recall · read · list · remember · share
+                </text>
+              </g>
+
+              <!-- arrow to OV -->
+              <g stroke="#5ee0c5" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.7">
+                <line x1="440" y1="210" x2="440" y2="244" />
+              </g>
+
+              <!-- OpenViking -->
+              <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
+                <rect x="290" y="246" width="300" height="60" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
+                <text x="440" y="272" text-anchor="middle">openviking-server</text>
+                <text x="440" y="290" text-anchor="middle" fill="#8a8a96" font-size="11">
+                  127.0.0.1:1933 · python · uv-managed
+                </text>
+              </g>
+
+              <!-- arrows to storage -->
+              <g stroke="#5ee0c5" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.7">
+                <line x1="380" y1="306" x2="240" y2="340" />
+                <line x1="500" y1="306" x2="640" y2="340" />
+              </g>
+
+              <!-- storage -->
+              <g font-family="JetBrains Mono, monospace" font-size="12" fill="#ececf1">
+                <rect x="60" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
+                <text x="240" y="361" text-anchor="middle">~/.openviking/data/viking/&lt;account&gt;/...</text>
+
+                <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
+                <text x="640" y="361" text-anchor="middle">vectordb (LevelDB · semantic index)</text>
+              </g>
+            </svg>
+            <div class="architecture-legend">
+              <div><strong>One adapter, one URI scheme.</strong> Every agent calls the same MCP tools.</div>
+              <div>
+                <strong>URIs are stable.</strong> A memory at <code>viking://user/&lt;you&gt;/...</code> is the same
+                pointer from every session.
+              </div>
+              <div>
+                <strong>Storage is plain markdown</strong> on your filesystem. The vectordb is regenerable; the source
+                of truth is on disk.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. SAFETY -->
+      <section id="safety" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">05 · Safety model</span>
+          <h2>Local by default. Explicit when it isn't.</h2>
+          <p class="lead">
+            Threadnote is designed for an environment where agents write to your memory. The defaults assume that's
+            untrusted and that mistakes happen.
+          </p>
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="card reveal">
+              <span class="card-kicker">Local</span>
+              <h3>Writes stay on disk</h3>
+              <p>
+                Every <code>remember</code> / <code>handoff</code> writes under <code>THREADNOTE_HOME</code> (defaults
+                to <code>~/.openviking</code>). Nothing leaves the machine without explicit user action.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Curated</span>
+              <h3>Manifest-scoped seeding</h3>
+              <p>
+                <code>threadnote seed</code> imports only paths declared in a seed manifest. It does not index whole
+                repos. The default patterns target <code>CLAUDE.md</code>, <code>AGENTS.md</code>,
+                <code>SKILL.md</code>, and <code>docs/**</code>.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Filtered</span>
+              <h3>Built-in ignore + redaction</h3>
+              <p>
+                <code>.threadnoteignore</code> excludes build output, binaries, env files, and logs. Known config files
+                (<code>.mcp.json</code>, <code>config.toml</code>, settings JSON) pass through a redactor before import.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Scanned</span>
+              <h3>Secret-pattern scrubber</h3>
+              <p>
+                Candidate files are skipped if common token shapes survive redaction. The
+                <code>share publish</code> path refuses to push memories that contain PEM keys,
+                <code>sk-…</code> / <code>github_pat_…</code> / <code>glpat-…</code>, JWTs, AWS keys, or Slack tokens.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Explicit</span>
+              <h3>Agent configs are opt-in</h3>
+              <p>
+                <code>mcp-install &lt;agent&gt;</code> prints the commands by default. Pass <code>--apply</code> to
+                actually modify Codex/Claude/Cursor/Copilot config. User-level instruction blocks are surrounded by
+                markers and only their managed region is rewritten.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Transactional</span>
+              <h3>No half-published state</h3>
+              <p>
+                If <code>share publish</code> can't remove the personal copy after writing the shared copy, it rolls the
+                shared write back. You either publish cleanly or you publish nothing.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. INSTALL -->
+      <section id="install" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">06 · Install</span>
+          <h2>One command. Then point your agents at it.</h2>
+          <p class="lead">
+            The installer wires up the npm package, the OpenViking Python environment, and the local server. After
+            that, <code>mcp-install</code> per agent and you're done.
+          </p>
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="reveal">
+              <h3 style="margin-bottom: 0.5rem">1. Install threadnote</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</span>
+
+<span class="out">Installed threadnote@0.4.1</span>
+<span class="out">Already exists: ~/.local/bin/threadnote</span>
+<span class="out">OpenViking installs into Python; neither uv nor pipx is</span>
+<span class="out">on PATH so threadnote would fall back to `pip install</span>
+<span class="out">--user`, which fails on PEP 668 setups.</span>
+<span class="out">Install uv now? [Y/n] </span><span class="out-strong">Y</span>
+<span class="out">Installing uv via Homebrew…</span>
+<span class="out-strong">OK   openviking 0.3.12 ready · server healthy</span></pre>
+              </div>
+              <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
+                Or manually: <code>npm install -g threadnote && threadnote install</code>. On a fresh macOS / modern
+                Linux machine the installer offers to <code>brew install uv</code> for you (avoids PEP 668 errors).
+              </p>
+            </div>
+
+            <div class="reveal">
+              <h3 style="margin-bottom: 0.5rem">2. Wire up each agent (pick what you use)</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote mcp-install codex --apply</span>
+<span class="cmd">$ threadnote mcp-install claude --apply</span>
+<span class="cmd">$ threadnote mcp-install cursor --apply</span>
+<span class="cmd">$ threadnote mcp-install copilot --apply</span>
+<span class="out">Installed MCP server `threadnote` for codex, claude,</span>
+<span class="out">cursor, copilot. Restart agent sessions to pick up.</span>
+
+<span class="cmd">$ threadnote doctor --dry-run</span>
+<span class="out-strong">Summary: 0 failure(s), 0 warning(s)</span></pre>
+              </div>
+              <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
+                Without <code>--apply</code>, each command prints a dry run so you can review before changing your agent
+                configs. Run <code>doctor</code> anytime to verify.
+              </p>
+            </div>
+          </div>
+
+          <p class="muted" style="margin-top: 2rem">
+            Open a fresh agent session after installing MCP — the tool list reloads at session start.
+          </p>
+        </div>
+      </section>
+
+      <!-- 8. SEEDING -->
+      <section id="seed" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">07 · Seeding repo context</span>
+          <h2>Pull just the curated docs into recall.</h2>
+          <p class="lead">
+            Threadnote does not index whole repos. Instead, point it at a seed manifest of paths you actually want
+            agents to recall — typically <code>AGENTS.md</code>, <code>CLAUDE.md</code>, repo docs, and
+            <code>SKILL.md</code> guidance.
+          </p>
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="reveal">
+              <h3>Generate a manifest</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote init-manifest \
+    --repo ~/src/web-app \
+    --repo ~/src/mobile-app</span>
+<span class="out">Wrote ~/.openviking/seed-manifest.yaml (2 project(s))</span>
+
+<span class="cmd">$ threadnote seed</span>
+<span class="out-strong">Imported 47 curated path(s); skipped 6 secret-flagged.</span>
+
+<span class="cmd">$ threadnote seed-skills</span>
+<span class="out-strong">Imported SKILL.md catalog from Codex, Claude, repos.</span></pre>
+              </div>
+            </div>
+
+            <div class="reveal">
+              <h3>What the manifest looks like</h3>
+              <pre><code>version: 1
+projects:
+  - name: web-app
+    path: ~/src/web-app
+    uri: viking://resources/repos/web-app
+    seed:
+      - AGENTS.md
+      - CLAUDE.md
+      - docs/**/*.md
+      - .claude/skills/**/SKILL.md
+  - name: mobile-app
+    path: ~/src/mobile-app
+    uri: viking://resources/repos/mobile-app
+    seed:
+      - AGENTS.md
+      - docs/**/*.md</code></pre>
+            </div>
+          </div>
+
+          <ul class="flat reveal" style="margin-top: 2rem">
+            <li>
+              <strong>Recall is smart enough to scope by query.</strong> Ask "web-app durable feature memories" and
+              recall prefers <code>viking://resources/repos/web-app</code> first.
+            </li>
+            <li>
+              <strong>Seeding is opt-in and re-runnable.</strong> <code>threadnote seed</code> never deletes; it
+              upserts.
+            </li>
+            <li>
+              <strong>Skills are a first-class catalog.</strong> <code>seed-skills</code> makes reusable workflows
+              discoverable: testing, release, on-call, debugging, plugin guidance.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 9. UPDATES -->
+      <section id="update" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">08 · Updates &amp; repair</span>
+          <h2>Always one command from a clean state.</h2>
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="reveal">
+              <h3>Routine update</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote update</span>
+<span class="out">Latest: threadnote@0.4.1 (installed: 0.4.0)</span>
+<span class="out">Running: npm install -g threadnote@0.4.1</span>
+<span class="out">Running: threadnote repair</span>
+<span class="out-strong">All checks passed. Restart agents to reload MCP.</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
+                <code>update --check</code> reports what's available. <code>update --dry-run</code> shows the plan.
+                Releases may include post-update memory migrations that prompt before applying.
+              </p>
+            </div>
+
+            <div class="reveal">
+              <h3>Repair after a moved checkout</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote repair</span>
+<span class="out">OK   threadnote shim: ~/.local/bin/threadnote</span>
+<span class="out">OK   codex / claude / cursor / copilot user instructions</span>
+<span class="out">OK   manifest, ignore file, templates</span>
+<span class="out">OK   openviking health</span>
+<span class="out-strong">Summary: 0 failure(s), 0 warning(s)</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
+                Rewrites the threadnote shim and every agent's MCP config to point at the current install. Run after
+                deleting an old npm prefix or moving the package between Node versions.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 10. LIFECYCLE -->
+      <section id="lifecycle" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">09 · Memory lifecycle</span>
+          <h2>Durable. Handoff. Archived.</h2>
+          <p class="lead">
+            Three lifecycle states, one stable URI per <code>project/topic</code>. Updates replace, never accrete.
+          </p>
+
+          <div class="grid grid-3" style="margin-top: 1.5rem">
+            <div class="card reveal">
+              <span class="card-kicker">kind: durable</span>
+              <h3>Long-lived feature knowledge</h3>
+              <p>
+                Design decisions, API contracts, gotchas, intended behavior. The kind that should outlive a session and
+                travel across agents. Default for <code>threadnote remember</code>.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">kind: handoff</span>
+              <h3>Current work logs</h3>
+              <p>
+                Repo, branch, files touched, tests run, blockers, next step. The kind your next agent recalls first.
+                <code>threadnote handoff</code> captures git state automatically.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">status: archived</span>
+              <h3>Provenance only</h3>
+              <p>
+                Old handoffs that helped at the time but shouldn't be current working context. <code>archive</code>
+                moves them out of the active recall scope; <code>--include-archived</code> still finds them.
+              </p>
+            </div>
+          </div>
+
+          <div style="margin-top: 2rem" class="reveal">
+            <h3 style="margin-bottom: 0.75rem">One file per project/topic</h3>
+            <pre><code># Capture an in-flight feature memory and its current handoff side by side:
+threadnote remember \
+  --kind durable --project web-app --topic auth-token-refresh \
+  --text "Architecture: provider-only token client, JWT helpers in jwt.ts..."
+
+threadnote handoff \
+  --project web-app --topic auth-token-refresh \
+  --task "Address reviewer comments on token refresh PR" \
+  --tests "make lint-lite; mocha auth_client_test 77 passing" \
+  --next-step "Push and request re-review"
+
+# Later, update the durable memory in place (no timestamped duplicates):
+threadnote remember \
+  --kind durable --project web-app --topic auth-token-refresh \
+  --replace viking://user/&lt;you&gt;/memories/durable/projects/web-app/auth-token-refresh.md \
+  --text "..."</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 11. USE CASES -->
+      <section id="use-cases" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">10 · Real-world use cases</span>
+          <h2>Where it actually pays off.</h2>
+
+          <div class="vignettes">
+            <div class="vignette reveal">
+              <div class="v-prompt">"Continue the feature from yesterday."</div>
+              <div class="v-answer">
+                Fresh session, fresh agent. Threadnote recalls the active handoff for the branch plus the durable
+                feature memory: design decisions, the open PR, what's left, what just failed in CI. No re-explaining.
+              </div>
+              <div class="v-cmd">threadnote recall --query "&lt;branch&gt; latest handoff"</div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-prompt">"What did we conclude about that prod-on-call thing?"</div>
+              <div class="v-answer">
+                The sanitized handoff from the on-call escalation is still there. Re-open the same Slack thread three
+                weeks later; the durable feature memory points your agent at the right files and the resolution.
+              </div>
+              <div class="v-cmd">threadnote recall --query "export workflow timeout on-call findings"</div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-prompt">"Switch from Codex to Claude mid-task."</div>
+              <div class="v-answer">
+                Codex stores a handoff before pausing. Claude opens the same MCP layer, recalls the handoff plus the
+                durable memory, picks up the test command and the open blocker without you typing them again.
+              </div>
+              <div class="v-cmd">threadnote handoff --task "..." --next-step "..."</div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-prompt">"Onboard a new teammate to a feature."</div>
+              <div class="v-answer">
+                Publish the feature's durable memory to the team repo with <code>share publish</code>. Their agent
+                pulls it on the next <code>share sync</code> and recall surfaces it alongside their own personal
+                memories — no DM forwarding, no PDF dumping.
+              </div>
+              <div class="v-cmd">threadnote share publish viking://user/&lt;you&gt;/memories/durable/...</div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-prompt">"Compaction is about to nuke the context."</div>
+              <div class="v-answer">
+                Before context fills up, the agent stores a handoff. The next turn after compaction recalls it — the
+                summary covers the conversation arc, threadnote covers the durable facts the summary couldn't keep.
+              </div>
+              <div class="v-cmd">threadnote handoff --project &lt;repo&gt; --topic &lt;feature&gt; ...</div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-prompt">"Where does this repo run its release notes?"</div>
+              <div class="v-answer">
+                You discovered it the hard way last time. Tell your agent to <code>remember</code> the fact. Next time
+                anyone asks, the agent finds it in two seconds without grepping the wiki.
+              </div>
+              <div class="v-cmd">threadnote remember --kind durable --topic release-process ...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 12. SHARE -->
+      <section id="share" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">11 · Sharing across the team</span>
+          <h2>Curated memories. Yours to push. Theirs to pull.</h2>
+          <p class="lead">
+            <code>threadnote share</code> publishes a subset of durable memories into a git repo so other engineers'
+            agents can recall them. Personal handoffs, preferences, and unpublished durables always stay local.
+          </p>
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="reveal">
+              <h3>One-time setup</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote share init git@github.com:org/team-memories.git</span>
+<span class="out">Cloned into ~/.openviking/data/.../memories/shared/default/</span>
+<span class="out">Ingested 12 shared memory file(s) into OpenViking.</span>
+<span class="out">Added .gitignore exclusions for OV directory summaries.</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
+                Working tree lives inside the OV data tree so recall sees it. The git directory is moved aside via
+                <code>--separate-git-dir</code> so OV never sees git internals.
+              </p>
+            </div>
+
+            <div class="reveal">
+              <h3>Publish a durable memory</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote share publish \
+    viking://user/&lt;you&gt;/memories/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
+<span class="out">Scrubber: no secret patterns detected.</span>
+<span class="out">git commit -m 'share: publish durable/projects/&lt;p&gt;/&lt;t&gt;.md'</span>
+<span class="out-strong">Published. Pushed to origin/main.</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
+                Refuses to publish if the memory matches secret patterns (PEM, <code>sk-</code>, <code>gh*_</code>,
+                <code>github_pat_</code>, <code>glpat-</code>, JWTs, AWS keys, Slack tokens). Refuses to silently
+                overwrite an existing shared URI.
+              </p>
+            </div>
+
+            <div class="reveal">
+              <h3>Pull teammates' updates</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote share sync</span>
+<span class="out">git pull --rebase</span>
+<span class="out">Reindexed 3 file change(s) into OpenViking.</span>
+<span class="out-strong">Recall now finds new shared memories alongside personal.</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
+                Recall sees the shared subtree by default. Both semantic search and exact-token grep cover
+                <code>viking://user/&lt;you&gt;/memories/shared/&lt;team&gt;/...</code> alongside your personal memories.
+              </p>
+            </div>
+
+            <div class="reveal">
+              <h3>Take it back</h3>
+              <div class="terminal">
+                <div class="terminal-bar"><span></span><span></span><span></span></div>
+                <pre><span class="cmd">$ threadnote share unpublish &lt;shared-uri&gt;</span>
+<span class="out">Wrote back to personal namespace.</span>
+<span class="out-strong">git rm + commit + push.</span></pre>
+              </div>
+              <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
+                The publish flow is transactional: if removing the personal copy fails after the shared write, the
+                shared write is rolled back. You never end up half-published.
+              </p>
+            </div>
+          </div>
+
+          <ul class="flat reveal" style="margin-top: 2rem">
+            <li>
+              <strong>Only <code>durable/</code> memories are shareable.</strong> Handoffs, preferences, incidents, and
+              everything else stays local by construction.
+            </li>
+            <li>
+              <strong>Concurrent-publish safe.</strong> If two teammates publish the same <code>project/topic</code> at
+              the same time, the retry path won't silently overwrite the other's write.
+            </li>
+            <li>
+              <strong>MCP-native too.</strong> Agents can call the <code>share_publish</code> tool directly when they
+              decide a memory is teammate-worthy.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 13. CLOSE -->
+      <section id="close" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">12 · Get started</span>
+          <h2>Try it on your machine in 90 seconds.</h2>
+
+          <pre style="margin-top: 1.5rem">
+<code>curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+threadnote mcp-install codex --apply       # or claude / cursor / copilot
+threadnote doctor --dry-run</code></pre>
+
+          <div class="cta-row">
+            <a class="cta" href="https://github.com/Kashkovsky/threadnote" target="_blank" rel="noopener">
+              GitHub →
+            </a>
+            <a class="cta outline" href="https://www.npmjs.com/package/threadnote" target="_blank" rel="noopener">
+              npm
+            </a>
+            <a
+              class="cta outline"
+              href="https://github.com/Kashkovsky/threadnote/blob/main/docs/share.md"
+              target="_blank"
+              rel="noopener"
+            >
+              docs/share.md
+            </a>
+          </div>
+
+          <p class="colophon">
+            threadnote · MIT · built on OpenViking 0.3.12 · use <span class="kbd">↑</span> <span class="kbd">↓</span> /
+            <span class="kbd">j</span> <span class="kbd">k</span> to navigate
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      // Section progress + scroll spy + keyboard nav.
+      (function () {
+        const slides = Array.from(document.querySelectorAll('.slide'));
+        const dots = Array.from(document.querySelectorAll('.deck-nav a'));
+        const progressBar = document.getElementById('progressBar');
+
+        // Map dot href -> dot element for spy.
+        const dotByHash = new Map(dots.map(d => [d.getAttribute('href'), d]));
+
+        const io = new IntersectionObserver(
+          entries => {
+            entries.forEach(entry => {
+              if (entry.isIntersecting && entry.intersectionRatio > 0.55) {
+                dots.forEach(d => d.classList.remove('active'));
+                const dot = dotByHash.get('#' + entry.target.id);
+                if (dot) dot.classList.add('active');
+              }
+            });
+          },
+          {threshold: [0.55, 0.75]},
+        );
+        slides.forEach(s => io.observe(s));
+
+        // Reveal-on-enter for any element with .reveal
+        const revealIo = new IntersectionObserver(
+          entries => {
+            entries.forEach(entry => {
+              if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+                revealIo.unobserve(entry.target);
+              }
+            });
+          },
+          {threshold: 0.15},
+        );
+        document.querySelectorAll('.reveal').forEach(el => revealIo.observe(el));
+
+        // Progress bar fills as you scroll through the deck.
+        const updateProgress = () => {
+          const scrolled = window.scrollY;
+          const max = document.documentElement.scrollHeight - window.innerHeight;
+          progressBar.style.width = `${Math.min(100, (scrolled / Math.max(1, max)) * 100)}%`;
+        };
+        window.addEventListener('scroll', updateProgress, {passive: true});
+        updateProgress();
+
+        // Keyboard navigation: ↑/↓/j/k/Space/PgUp/PgDn jump between slides.
+        const goTo = idx => {
+          const i = Math.max(0, Math.min(slides.length - 1, idx));
+          slides[i].scrollIntoView({behavior: 'smooth'});
+        };
+        const currentIdx = () => {
+          const y = window.scrollY + window.innerHeight / 2;
+          for (let i = 0; i < slides.length; i += 1) {
+            const r = slides[i].getBoundingClientRect();
+            const top = r.top + window.scrollY;
+            if (y >= top && y < top + r.height) return i;
+          }
+          return 0;
+        };
+        window.addEventListener('keydown', e => {
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          const tag = (e.target && e.target.tagName) || '';
+          if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+          const i = currentIdx();
+          switch (e.key) {
+            case 'ArrowDown':
+            case 'j':
+            case ' ':
+            case 'PageDown':
+              e.preventDefault();
+              goTo(i + 1);
+              break;
+            case 'ArrowUp':
+            case 'k':
+            case 'PageUp':
+              e.preventDefault();
+              goTo(i - 1);
+              break;
+            case 'Home':
+              e.preventDefault();
+              goTo(0);
+              break;
+            case 'End':
+              e.preventDefault();
+              goTo(slides.length - 1);
+              break;
+            default:
+              break;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
