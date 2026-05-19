@@ -20,6 +20,7 @@ import {
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
+import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {readSeedManifest} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
@@ -198,6 +199,14 @@ export async function runRepair(config: RuntimeConfig, options: RepairOptions): 
     }
   }
 
+  // Re-install agent hooks only if the user opted in previously (a managed
+  // entry already exists). Never adds them unsolicited — `install-hooks` or
+  // `install --with-hooks` is the opt-in.
+  if (await hasManagedClaudeHooks()) {
+    console.log('\nRepairing claude hooks (re-asserting threadnote-managed entries).');
+    await runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
+  }
+
   console.log('\nPost-repair doctor:');
   await runDoctor(config, {dryRun, strict: false});
   if (options.postUpdate !== false) {
@@ -217,6 +226,9 @@ export async function runUninstall(config: RuntimeConfig, options: UninstallOpti
   await removeLaunchAgent(dryRun);
   await removeMcpConfigs(options.mcp ?? 'available', dryRun);
   await removeMcpSnippets(config, dryRun);
+  if (await hasManagedClaudeHooks()) {
+    await runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
+  }
   await removeCommandShim(dryRun);
   await removeUserAgentInstructions(dryRun);
 

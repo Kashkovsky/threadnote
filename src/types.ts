@@ -70,6 +70,17 @@ export interface InstallOptions {
   readonly printNextSteps?: boolean;
   readonly repairInvalidConfigs?: boolean;
   readonly start?: boolean;
+  readonly withHooks?: boolean;
+}
+
+export interface HooksInstallOptions {
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly remove?: boolean;
+}
+
+export interface HookRunnerOptions {
+  readonly dryRun?: boolean;
 }
 
 export interface RepairOptions {

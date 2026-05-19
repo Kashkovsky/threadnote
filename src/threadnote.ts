@@ -7,6 +7,8 @@ import type {
   DoctorOptions,
   ForgetOptions,
   HandoffOptions,
+  HookRunnerOptions,
+  HooksInstallOptions,
   InitManifestOptions,
   InstallOptions,
   ListOptions,
@@ -31,6 +33,7 @@ import type {
   UninstallOptions,
   UpdateOptions,
 } from './types.js';
+import {parseHookClient, runHooksInstall, runPreCompactHook, runSessionStartHook} from './hooks.js';
 import {collectOption, errorMessage, parsePort} from './utils.js';
 import {parseAgentClient, parseClaudeMcpScope, runMcpInstall} from './mcp.js';
 import {getRuntimeConfig} from './runtime.js';
@@ -91,9 +94,20 @@ async function main(): Promise<void> {
     .option('--dry-run', 'Print the actions without making changes')
     .option('--no-start', 'Do not start OpenViking or check server health after installing')
     .option('--package-manager <manager>', 'uv, pipx, or pip', parsePackageManager)
+    .option(
+      '--with-hooks',
+      'Also install agent-side hooks (Claude PreCompact + SessionStart) for deterministic handoff snapshots and context preload',
+    )
     .action(async (options: InstallOptions) => {
       const config = getRuntimeConfig(program);
       await runInstall(config, options);
+      if (options.withHooks === true) {
+        const dryRun = options.dryRun === true;
+        for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
+          console.log(`\n--- ${agent} hooks ---`);
+          await runHooksInstall(config, agent, {apply: !dryRun, dryRun});
+        }
+      }
       await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
     });
 
@@ -218,6 +232,39 @@ async function main(): Promise<void> {
     .option('--bearer-token-env-var <name>', 'Environment variable containing the local API key')
     .action(async (agent: string, options: McpInstallOptions) => {
       await runMcpInstall(getRuntimeConfig(program), parseAgentClient(agent), options);
+    });
+
+  program
+    .command('install-hooks')
+    .description(
+      'Install deterministic agent hooks (Claude PreCompact + SessionStart). Soft instruction files remain the cross-agent guidance surface; hooks add a deterministic safety net where the agent supports it.',
+    )
+    .argument('<agent>', 'codex, claude, cursor, or copilot')
+    .option('--apply', 'Actually modify the selected agent config')
+    .option('--dry-run', 'Print the planned change without applying it')
+    .option('--remove', 'Remove threadnote-managed hook entries instead of adding them')
+    .action(async (agent: string, options: HooksInstallOptions) => {
+      await runHooksInstall(getRuntimeConfig(program), parseHookClient(agent), options);
+    });
+
+  program
+    .command('pre-compact-hook', {hidden: true})
+    .description(
+      'Hook entry point: store a handoff snapshot before context compaction. Used by `install-hooks claude`.',
+    )
+    .option('--dry-run', 'Print the handoff payload without writing it')
+    .action(async (options: HookRunnerOptions) => {
+      await runPreCompactHook(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('session-start-hook', {hidden: true})
+    .description(
+      'Hook entry point: print the latest threadnote handoff/feature memory for the current repo so Claude can preload it.',
+    )
+    .option('--dry-run', 'Print the planned ov command without running it')
+    .action(async (options: HookRunnerOptions) => {
+      await runSessionStartHook(getRuntimeConfig(program), options);
     });
 
   program
