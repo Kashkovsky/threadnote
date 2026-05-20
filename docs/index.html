@@ -78,7 +78,11 @@
       body {
         line-height: 1.55;
         font-size: clamp(15px, 1.05vw, 17px);
-        overflow-x: hidden;
+        overflow-x: clip;
+      }
+
+      html {
+        overflow-x: clip;
       }
 
       ::selection {
@@ -239,11 +243,11 @@
       }
 
       @media (max-width: 720px) {
+        /* Hide the fixed brand watermark on mobile — the hero title already
+           carries the brand mark via the inline `threadnote` tooltip, and at
+           phone-viewport sizes the fixed logo just occludes the heading. */
         .page-logo {
-          width: 120px;
-          height: 120px;
-          top: 1rem;
-          left: 1rem;
+          display: none;
         }
       }
 
@@ -506,6 +510,11 @@
         display: grid;
         gap: 0.6rem;
         transition: border-color 0.2s ease;
+        /* Let the grid track shrink to its container width rather than to the
+           widest nowrap child (the inner .v-cmd). Without this, long command
+           lines push the grid item past viewport and the page scrolls
+           horizontally on mobile. */
+        min-width: 0;
       }
 
       .vignette:hover {
@@ -533,6 +542,10 @@
         border: 1px solid var(--line);
         white-space: nowrap;
         overflow-x: auto;
+        /* Belt-and-braces: paired with min-width: 0 on the parent vignette
+           grid, this confines the nowrap line to its own scrollable box on
+           mobile rather than dictating its parent's width. */
+        max-width: 100%;
       }
 
       /* side nav dots */
