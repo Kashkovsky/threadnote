@@ -231,6 +231,9 @@
         width: clamp(140px, 18vw, 220px);
         height: auto;
         margin-bottom: 1.5rem;
+        /* Override `#hero .slide-inner { align-items: flex-start }` for just
+           this child so the logo sits centered above the left-aligned title. */
+        align-self: center;
       }
 
       .hero-title-gradient {
