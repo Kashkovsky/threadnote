@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/threadnote-logo.svg" alt="Threadnote logo" width="200">
+</p>
+
 # Threadnote
 
 `threadnote` is a safe local workflow for using [OpenViking](https://openviking.ai/) as shared, agent-neutral context for development work.
