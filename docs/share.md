@@ -48,15 +48,28 @@ threadnote share status --team friends
 
 ```bash
 # 1. Identify the personal URI you want to publish (use recall/list as usual).
-# 2. Publish:
+# 2. Preview the would-be-published bytes before committing:
+threadnote share publish viking://user/you/memories/durable/projects/foo/bar.md --preview
+# 3. Publish:
 threadnote share publish viking://user/you/memories/durable/projects/foo/bar.md
-# Optional flags: --team <name>, --message "...", --no-push, --dry-run.
+# Optional flags:
+#   --preview       Read + strip + scrub the memory and print the exact bytes
+#                   that would land in git; no writes, no commits, no pushes.
+#                   Use this before any publish to catch leaks by inspection.
+#   --redact        Replace soft-leak matches (local home paths) with
+#                   placeholders and continue. Credentials still block.
+#   --team <name>, --message "...", --no-push, --dry-run.
 ```
 
 `share publish` moves the memory from your personal namespace into the team's
 shared subtree, commits with the message
 `share: publish <relative-path>`, and pushes. The memory's recall path becomes
 `viking://user/you/memories/shared/<team>/durable/projects/foo/bar.md`.
+
+Before writing, `share publish` strips `supersedes:` and `archived_from:`
+lines from the memory's header block. Those pointers only resolve on the
+publisher's machine — teammates pull via git and cannot dereference them — so
+keeping them would just leak local-only provenance into team git history.
 
 ### Pull teammates' updates
 
@@ -113,8 +126,14 @@ otherwise unpublished work is lost.
   - Slack tokens (`xoxa`, `xoxb`, `xoxc`, `xoxd`, `xoxe`, `xoxp`, `xoxr`,
     `xoxs`, with optional `-N-` segment markers — covers bot, user,
     configuration, legacy cookie, refresh, app, and similar shapes)
+- `share publish` also blocks on soft-leak patterns that show up routinely in
+  curated memories. These are redactable: pass `--redact` to replace each
+  match with a generic placeholder and continue. Credentials always block
+  regardless of `--redact`.
+  - macOS home paths (`/Users/<you>/...`) → `<local-path>`
+  - linux home paths (`/home/<you>/...`) → `<local-path>`
 - The scrubber complements but does not replace human review. Strip the value,
-  then retry.
+  preview with `--preview`, and then publish.
 - Only the `durable/` kind is shareable. `handoffs/`, `preferences/`,
   `incidents/`, and other lifecycle kinds stay local by construction — both
   the initial ingest (`share init`) and the sync-pull reindex (`share sync`)
@@ -145,7 +164,9 @@ Each user clones into their own user-namespaced path. A memory authored on
 machine A as `viking://user/alice/memories/shared/team/durable/projects/foo/bar.md`
 shows up on machine B as
 `viking://user/bob/memories/shared/team/durable/projects/foo/bar.md`. The file
-content (including any `supersedes:` URIs that reference the original author) is
-identical, but explicit URI cross-references will point at the author's
+content is identical. `supersedes:` / `archived_from:` lines are stripped at
+the publish boundary so cross-machine URI references don't pollute team git
+history; explicit `viking://` references inside the body will point at the
+author's
 namespace. For now, prefer narrative references ("see the foo memory under
 shared/team") over URI links in shared content.

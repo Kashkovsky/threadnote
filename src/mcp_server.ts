@@ -14,8 +14,9 @@ import {
   isInSharedNamespace,
   removeWithRollback as removeWithRollbackShared,
   resolveTeam,
-  scrubberBlocker,
+  applyScrubber,
   sharedUriFor,
+  stripPersonalProvenance,
   vikingResourceExists as sharedVikingResourceExists,
   vikingUriToWorktreeRelative,
   writeMemoryFile,
@@ -286,15 +287,25 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        "Publish a personal memory into a team's shared memories git repo. Reads the memory, refuses publish if it matches secret patterns, copies it into the shared subtree, removes the personal original, and commits/pushes. Default team is used unless team is provided.",
+        "Publish a personal memory into a team's shared memories git repo. Reads the memory, strips local-only provenance frontmatter (supersedes:, archived_from:), refuses publish if it matches secret patterns, copies it into the shared subtree, removes the personal original, and commits/pushes. Default team is used unless team is provided. Pass preview=true to return the would-be-published bytes without writing or committing.",
       inputSchema: {
         message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
+        preview: z
+          .boolean()
+          .optional()
+          .describe(
+            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
+          ),
         push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
+        redact: z
+          .boolean()
+          .optional()
+          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
         team: z.string().optional().describe('Team name; defaults to the configured default team'),
         uri: z.string().optional().describe('Required viking:// memory URI to publish'),
       },
     },
-    async ({message, push, team, uri}) => {
+    async ({message, preview, push, redact, team, uri}) => {
       const checkedUri = requiredVikingUri(
         uri,
         'share_publish',
@@ -303,7 +314,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runSharePublishTool(config, checkedUri.value, {message, push, team});
+      return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
     },
   );
 }
@@ -485,16 +496,14 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         project: normalizeOptionalMetadata(project),
         sourceAgentClient: sourceAgentClient ?? 'mcp',
         status: status ?? 'active',
-        supersedes: checkedReplaceUri.value,
         timestamp: new Date().toISOString(),
         topic: normalizeOptionalMetadata(topic),
       };
-      return writeDurableMemory(
-        config,
-        formatMemoryDocument('MEMORY', metadata, checkedText.value),
+      return writeDurableMemory(config, {
+        bodyText: checkedText.value,
         metadata,
-        checkedReplaceUri.value,
-      );
+        replaceUri: checkedReplaceUri.value,
+      });
     },
   );
 }
@@ -536,12 +545,10 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
           timestamp: new Date().toISOString(),
           topic: normalizeOptionalMetadata(topic),
         };
-        const archiveResult = await writeDurableMemory(
-          config,
-          formatMemoryDocument('MEMORY', metadata, ['Archived original Threadnote memory.', '', original].join('\n')),
+        const archiveResult = await writeDurableMemory(config, {
+          bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
           metadata,
-          undefined,
-        );
+        });
         if (archiveResult.isError === true) {
           return archiveResult;
         }
@@ -565,19 +572,30 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
   );
 }
 
-async function writeDurableMemory(
-  config: RuntimeConfig,
-  memory: string,
-  metadata: MemoryMetadata,
-  replaceUri: string | undefined,
-): Promise<CallToolResult> {
+interface WriteDurableMemoryParams {
+  readonly bodyText: string;
+  readonly metadata: MemoryMetadata;
+  readonly replaceUri?: string;
+}
+
+async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams): Promise<CallToolResult> {
   try {
     const ov = await requiredOpenVikingCli();
-    const directoryUri = memoryDirectoryUri(config, metadata);
+    const directoryUri = memoryDirectoryUri(config, params.metadata);
     await ensureMemoryDirectory(ov, config, directoryUri);
 
-    const memoryUri = memoryUriFor(config, memory, metadata);
-    const writeMode = await memoryWriteMode(ov, config, memoryUri, metadata);
+    // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
+    // Drops the supersedes line when replaceUri points at the URI we're about
+    // to write to (in-place update).
+    const candidateMetadata: MemoryMetadata = {...params.metadata, supersedes: params.replaceUri};
+    const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
+    const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
+    const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
+    const finalMetadata: MemoryMetadata = isInPlaceUpdate
+      ? {...params.metadata, supersedes: undefined}
+      : candidateMetadata;
+    const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
+    const writeMode = await memoryWriteMode(ov, config, memoryUri, finalMetadata);
     const result = await runOpenVikingWriteWithRetry(
       ov,
       config,
@@ -595,14 +613,14 @@ async function writeDurableMemory(
       ]),
     );
     const messages = [`Stored memory: ${memoryUri}`];
-    if (replaceUri && replaceUri !== memoryUri) {
-      const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, replaceUri);
+    if (params.replaceUri && !isInPlaceUpdate) {
+      const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, params.replaceUri);
       messages.push(
         removedReplacedMemory
-          ? `Forgot replaced memory: ${replaceUri}`
-          : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${replaceUri}`,
+          ? `Forgot replaced memory: ${params.replaceUri}`
+          : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${params.replaceUri}`,
       );
-    } else if (replaceUri === memoryUri) {
+    } else if (isInPlaceUpdate) {
       messages.push(`Updated existing memory in place: ${memoryUri}`);
     }
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
@@ -847,7 +865,9 @@ async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[])
 
 interface SharePublishToolOptions {
   readonly message?: string;
+  readonly preview?: boolean;
   readonly push?: boolean;
+  readonly redact?: boolean;
   readonly team?: string;
 }
 
@@ -874,14 +894,33 @@ async function runSharePublishTool(
         isError: true,
       };
     }
-    const content = readResult.stdout;
-    const blocker = scrubberBlocker(content);
-    if (blocker) {
+    const stripped = stripPersonalProvenance(readResult.stdout);
+    const scrub = applyScrubber(stripped, {redact: options.redact === true});
+    const targetUri = sharedUriFor(config, sourceUri, resolved.name);
+
+    if (options.preview === true) {
+      const previewLines = [`PREVIEW source: ${sourceUri}`, `PREVIEW destination: ${targetUri}`];
+      if (scrub.blocker) {
+        previewLines.push(
+          `PREVIEW BLOCKED: ${scrub.blocker}. Strip the sensitive value or pass redact=true for soft-leak patterns.`,
+        );
+        return {content: [{type: 'text', text: previewLines.join('\n')}]};
+      }
+      for (const redaction of scrub.redactions) {
+        previewLines.push(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
+      }
+      previewLines.push('-----BEGIN PREVIEW-----');
+      previewLines.push(scrub.cleaned);
+      previewLines.push('-----END PREVIEW-----');
+      return {content: [{type: 'text', text: previewLines.join('\n')}]};
+    }
+
+    if (scrub.blocker) {
       return argumentError(
-        `Refusing to publish ${sourceUri}: possible ${blocker}. Strip the sensitive value, then retry.`,
+        `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass redact=true for soft-leak patterns.`,
       );
     }
-    const targetUri = sharedUriFor(config, sourceUri, resolved.name);
+    const content = scrub.cleaned;
     // Refuse to silently overwrite an existing shared memory (e.g., a teammate
     // already published the same project/topic). Mirrors the CLI publish path.
     if (await sharedVikingResourceExists(ov, config, targetUri)) {
@@ -912,6 +951,9 @@ async function runSharePublishTool(
       };
     }
     const messages = [`Published ${sourceUri} -> ${targetUri}`];
+    for (const redaction of scrub.redactions) {
+      messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
+    }
     const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
     const commitMessage = options.message ?? `share: publish ${relativePath}`;
     const gitMessages = await gitPublishWorkflow(

@@ -430,6 +430,14 @@ async function main(): Promise<void> {
     .option('--message <text>', 'Commit message override')
     .option('--no-push', 'Skip the push step')
     .option('--dry-run', 'Print actions without running them')
+    .option(
+      '--preview',
+      'Print the exact bytes that would land in the shared git repo (after frontmatter strip and scrubber redaction) without writing, committing, or pushing',
+    )
+    .option(
+      '--redact',
+      'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block',
+    )
     .action(async (uri: string, options: SharePublishOptions) => {
       await runSharePublish(getRuntimeConfig(program), uri, options);
     });

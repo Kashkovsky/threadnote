@@ -38,7 +38,18 @@ const SHARED_SEGMENT = 'shared';
 const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
-const SCRUBBER_PATTERNS: readonly {readonly name: string; readonly regex: RegExp}[] = [
+interface ScrubberPattern {
+  readonly name: string;
+  // When present, the pattern is redactable: `--redact` (CLI) / `redact: true`
+  // (MCP) replaces every match with this string instead of blocking. When
+  // absent, the pattern always blocks regardless of --redact.
+  readonly placeholder?: string;
+  readonly regex: RegExp;
+}
+
+const SCRUBBER_PATTERNS: readonly ScrubberPattern[] = [
+  // Credentials: never redactable. Blocking is the only safe response —
+  // automated redaction risks false negatives that leave material in git.
   {name: 'private key', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/},
   {name: 'API key (sk-...)', regex: /\bsk-[A-Za-z0-9_-]{16,}/},
   {name: 'GitHub token', regex: /\bgh[pousr]_[A-Za-z0-9_]{16,}/},
@@ -52,7 +63,51 @@ const SCRUBBER_PATTERNS: readonly {readonly name: string; readonly regex: RegExp
   // Slack tokens: xoxa/xoxb/xoxc (configuration)/xoxd (legacy user cookie)/
   // xoxe (refresh)/xoxp/xoxr/xoxs, with optional -N- segment for the workspace tier.
   {name: 'Slack token', regex: /\bxox[abcdeprs](?:-\d-)?[A-Za-z0-9._-]{10,}/i},
+
+  // Soft leaks: block by default (so the agent sees them and decides), but
+  // allow opt-in redaction so curated memories with incidental matches can
+  // ship without a manual rewrite. Local home paths are the recurring
+  // real-world leak; the regexes greedily consume the whole path segment
+  // (including subdirectories) up to whitespace or common closing punctuation
+  // so redaction collapses an entire path to a single placeholder rather than
+  // leaving the subpath visible.
+  {name: 'macOS home path', placeholder: '<local-path>', regex: /\/Users\/[^\s)>"'`,]+/},
+  {name: 'linux home path', placeholder: '<local-path>', regex: /\b\/home\/[^\s)>"'`,]+/},
 ];
+
+export interface ScrubberResult {
+  readonly blocker?: string;
+  readonly cleaned: string;
+  readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
+}
+
+/**
+ * Runs `content` through {@link SCRUBBER_PATTERNS}. Credentials always block;
+ * soft-leak patterns block by default and redact only when `redact` is true.
+ *
+ * On block: `blocker` is set to the first matching pattern name; `cleaned`
+ * equals the input. On redact: `cleaned` is the rewritten body with each match
+ * replaced by its `placeholder`, and `redactions` lists the pattern names plus
+ * match counts so the caller can warn the user about what changed.
+ */
+export function applyScrubber(content: string, {redact}: {readonly redact: boolean}): ScrubberResult {
+  let cleaned = content;
+  const redactions: Array<{count: number; name: string}> = [];
+  for (const pattern of SCRUBBER_PATTERNS) {
+    if (!pattern.regex.test(cleaned)) {
+      continue;
+    }
+    if (!pattern.placeholder || !redact) {
+      return {blocker: pattern.name, cleaned: content, redactions: []};
+    }
+    const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : `${pattern.regex.flags}g`;
+    const globalRegex = new RegExp(pattern.regex.source, flags);
+    const matches = cleaned.match(globalRegex) ?? [];
+    cleaned = cleaned.replace(globalRegex, pattern.placeholder);
+    redactions.push({count: matches.length, name: pattern.name});
+  }
+  return {cleaned, redactions};
+}
 
 export interface ResolvedTeam {
   readonly config: ShareTeamConfig;
@@ -271,17 +326,44 @@ export async function runSharePublish(
   assertVikingUri(sourceUri);
   const team = await resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
+  const preview = options.preview === true;
   if (isInSharedNamespace(config, sourceUri)) {
     throw new Error(`Memory ${sourceUri} is already in the shared namespace.`);
   }
   const ov = await openVikingCliForMode(dryRun);
-  const content = await readMemoryContent(config, ov, sourceUri, dryRun);
-  const blocker = scrubberBlocker(content);
-  if (blocker) {
-    throw new Error(`Refusing to publish ${sourceUri}: possible ${blocker}. Strip the sensitive value, then retry.`);
+  const rawContent = await readMemoryContent(config, ov, sourceUri, dryRun);
+  const stripped = stripPersonalProvenance(rawContent);
+  const scrub = applyScrubber(stripped, {redact: options.redact === true});
+  const targetUri = sharedUriFor(config, sourceUri, team.name);
+
+  if (preview) {
+    console.log(`PREVIEW source: ${sourceUri}`);
+    console.log(`PREVIEW destination: ${targetUri}`);
+    if (scrub.blocker) {
+      console.log(
+        `PREVIEW BLOCKED: ${scrub.blocker}. Strip the sensitive value or rerun with --redact for soft-leak patterns.`,
+      );
+      return;
+    }
+    for (const redaction of scrub.redactions) {
+      console.log(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
+    }
+    console.log('-----BEGIN PREVIEW-----');
+    console.log(scrub.cleaned);
+    console.log('-----END PREVIEW-----');
+    return;
   }
 
-  const targetUri = sharedUriFor(config, sourceUri, team.name);
+  if (scrub.blocker) {
+    throw new Error(
+      `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
+    );
+  }
+  for (const redaction of scrub.redactions) {
+    console.log(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
+  }
+  const content = scrub.cleaned;
+
   if (!dryRun && (await vikingResourceExists(ov, config, targetUri))) {
     throw new Error(
       `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
@@ -609,7 +691,43 @@ export function vikingUriToWorktreeRelative(config: ShareRuntime, uri: string, t
 }
 
 export function scrubberBlocker(content: string): string | undefined {
-  return SCRUBBER_PATTERNS.find(pattern => pattern.regex.test(content))?.name;
+  return applyScrubber(content, {redact: false}).blocker;
+}
+
+/**
+ * Removes `supersedes:` and `archived_from:` lines from the header block of
+ * a memory document before it's published to a team's shared git repo. Those
+ * lines point at viking:// URIs that only resolve on the publisher's machine —
+ * teammates pull via git and have no way to dereference them — so they are
+ * always noise at the publish boundary. They also frequently leak the
+ * publisher's personal-namespace path or a stale self-reference (the
+ * remember --replace <self> bug fixed in storeMemory). Defence-in-depth: even
+ * if a regression re-introduces a supersedes-self line, it stops here.
+ *
+ * Operates only on the contiguous header block (everything up to the first
+ * blank line). Prose mentions of "supersedes:" elsewhere in the body are
+ * untouched.
+ */
+export function stripPersonalProvenance(content: string): string {
+  const lines = content.split('\n');
+  let headerEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() === '') {
+      headerEnd = index;
+      break;
+    }
+  }
+  const cleaned: string[] = [];
+  for (let index = 0; index < headerEnd; index += 1) {
+    if (/^(?:supersedes|archived_from):\s/.test(lines[index])) {
+      continue;
+    }
+    cleaned.push(lines[index]);
+  }
+  for (let index = headerEnd; index < lines.length; index += 1) {
+    cleaned.push(lines[index]);
+  }
+  return cleaned.join('\n');
 }
 
 async function readMemoryContent(config: ShareRuntime, ov: string, uri: string, dryRun: boolean): Promise<string> {

@@ -60,9 +60,11 @@ interface MemoryMetadata {
 }
 
 interface StoreMemoryOptions {
+  readonly bodyText: string;
   readonly dryRun: boolean;
   readonly metadata: MemoryMetadata;
   readonly replaceUri?: string;
+  readonly title: 'MEMORY' | 'HANDOFF';
 }
 
 interface LifecycleHandoffCandidate {
@@ -95,12 +97,16 @@ export async function runRemember(config: RuntimeConfig, options: RememberOption
     project: normalizeOptionalMetadata(options.project),
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: options.status ?? 'active',
-    supersedes: options.replace,
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic),
   };
-  const memory = formatMemoryDocument('MEMORY', metadata, text.trim());
-  await storeMemory(config, memory, {dryRun: options.dryRun === true, metadata, replaceUri: options.replace});
+  await storeMemory(config, {
+    bodyText: text.trim(),
+    dryRun: options.dryRun === true,
+    metadata,
+    replaceUri: options.replace,
+    title: 'MEMORY',
+  });
 }
 
 export async function runMigrateMemories(config: RuntimeConfig, options: MigrateMemoriesOptions): Promise<void> {
@@ -295,8 +301,14 @@ export async function runList(config: RuntimeConfig, uri: string, options: ListO
 }
 
 export async function runHandoff(config: RuntimeConfig, options: HandoffOptions): Promise<void> {
-  const {handoff, metadata} = await buildHandoff(options);
-  await storeMemory(config, handoff, {dryRun: options.dryRun === true, metadata, replaceUri: options.replace});
+  const {bodyText, metadata} = await buildHandoff(options);
+  await storeMemory(config, {
+    bodyText,
+    dryRun: options.dryRun === true,
+    metadata,
+    replaceUri: options.replace,
+    title: 'HANDOFF',
+  });
 }
 
 export async function runArchive(config: RuntimeConfig, uri: string, options: ArchiveOptions): Promise<void> {
@@ -314,12 +326,12 @@ export async function runArchive(config: RuntimeConfig, uri: string, options: Ar
       timestamp: new Date().toISOString(),
       topic: normalizeOptionalMetadata(options.topic),
     };
-    const archiveMemory = formatMemoryDocument(
-      'MEMORY',
-      fallbackMetadata,
-      ['Archived original Threadnote memory.', '', '<original memory content would be read here>'].join('\n'),
-    );
-    await storeMemory(config, archiveMemory, {dryRun: true, metadata: fallbackMetadata});
+    await storeMemory(config, {
+      bodyText: ['Archived original Threadnote memory.', '', '<original memory content would be read here>'].join('\n'),
+      dryRun: true,
+      metadata: fallbackMetadata,
+      title: 'MEMORY',
+    });
     console.log(formatShellCommand(ov, withIdentity(config, ['rm', uri])));
     return;
   }
@@ -337,12 +349,12 @@ export async function runArchive(config: RuntimeConfig, uri: string, options: Ar
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
   };
-  const archiveMemory = formatMemoryDocument(
-    'MEMORY',
+  await storeMemory(config, {
+    bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+    dryRun: false,
     metadata,
-    ['Archived original Threadnote memory.', '', original].join('\n'),
-  );
-  await storeMemory(config, archiveMemory, {dryRun: false, metadata});
+    title: 'MEMORY',
+  });
   const removedOriginal = await removeVikingResourceWithRetry(ov, config, uri);
   if (removedOriginal) {
     console.log(`Archived original memory: ${uri}`);
@@ -441,14 +453,29 @@ async function printExactMemoryMatches(
   console.log(outputs.join('\n\n'));
 }
 
-async function storeMemory(config: RuntimeConfig, memory: string, options: StoreMemoryOptions): Promise<void> {
+async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): Promise<void> {
   if (options.replaceUri) {
     assertVikingUri(options.replaceUri);
   }
   const ov = await openVikingCliForMode(options.dryRun);
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
-  const memoryUri = memoryUriFor(config, memory, options.metadata);
-  const writeMode = await memoryWriteMode(ov, config, memoryUri, options.metadata);
+
+  // Two-pass formatting: assume the caller's replaceUri is a true supersede,
+  // compute the destination URI, then drop the supersedes line if it points
+  // at the URI we are about to write to (an in-place update). Without this,
+  // `--replace <self>` would bake a self-supersedes line into the body that
+  // also leaks to teammates when the memory is later published.
+  const candidateMetadata: MemoryMetadata = {...options.metadata, supersedes: options.replaceUri};
+  const candidateMemory = formatMemoryDocument(options.title, candidateMetadata, options.bodyText);
+  const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
+  const isInPlaceUpdate = options.replaceUri !== undefined && options.replaceUri === memoryUri;
+  const finalMetadata: MemoryMetadata = isInPlaceUpdate
+    ? {...options.metadata, supersedes: undefined}
+    : candidateMetadata;
+  const memory = isInPlaceUpdate
+    ? formatMemoryDocument(options.title, finalMetadata, options.bodyText)
+    : candidateMemory;
+  const writeMode = await memoryWriteMode(ov, config, memoryUri, finalMetadata);
   if (options.dryRun) {
     console.log(memory);
     console.log('\nWould run:');
@@ -468,17 +495,17 @@ async function storeMemory(config: RuntimeConfig, memory: string, options: Store
         ]),
       ),
     );
-    if (options.replaceUri && options.replaceUri !== memoryUri) {
+    if (options.replaceUri && !isInPlaceUpdate) {
       console.log(formatShellCommand(ov, withIdentity(config, ['rm', options.replaceUri])));
     }
     return;
   }
   await writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600});
   await chmod(memoryPath, 0o600);
-  await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, options.metadata));
+  await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata));
   await writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode);
   console.log(`Stored memory: ${memoryUri}`);
-  if (options.replaceUri && options.replaceUri !== memoryUri) {
+  if (options.replaceUri && !isInPlaceUpdate) {
     const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, options.replaceUri);
     if (removedReplacedMemory) {
       console.log(`Forgot replaced memory: ${options.replaceUri}`);
@@ -487,7 +514,7 @@ async function storeMemory(config: RuntimeConfig, memory: string, options: Store
         `Replacement stored, but the superseded memory is still processing. Retry later: threadnote forget ${options.replaceUri}`,
       );
     }
-  } else if (options.replaceUri === memoryUri) {
+  } else if (isInPlaceUpdate) {
     console.log(`Updated existing memory in place: ${memoryUri}`);
   }
 }
@@ -1020,7 +1047,7 @@ function isResourceBusy(stderr: string, stdout: string): boolean {
 
 async function buildHandoff(
   options: HandoffOptions,
-): Promise<{readonly handoff: string; readonly metadata: MemoryMetadata}> {
+): Promise<{readonly bodyText: string; readonly metadata: MemoryMetadata}> {
   const repoRoot = (await gitValue(['rev-parse', '--show-toplevel'])) ?? getInvocationCwd();
   const branch = (await gitValue(['branch', '--show-current'], repoRoot)) ?? 'unknown';
   const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
@@ -1032,11 +1059,10 @@ async function buildHandoff(
     project: normalizeOptionalMetadata(options.project) ?? repoName,
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: 'active',
-    supersedes: options.replace,
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic),
   };
-  const body = [
+  const bodyText = [
     `repo: ${repoName}`,
     `repo_path: ${repoRoot}`,
     `branch: ${branch || 'unknown'}`,
@@ -1060,7 +1086,7 @@ async function buildHandoff(
     'next_step:',
     options.nextStep ?? '- inspect the current repo state and continue from this handoff',
   ].join('\n');
-  return {handoff: formatMemoryDocument('HANDOFF', metadata, body), metadata};
+  return {bodyText, metadata};
 }
 
 async function gitTouchedFiles(cwd: string): Promise<string> {

@@ -273,7 +273,9 @@ export interface ShareSyncOptions {
 export interface SharePublishOptions {
   readonly dryRun?: boolean;
   readonly message?: string;
+  readonly preview?: boolean;
   readonly push?: boolean;
+  readonly redact?: boolean;
   readonly team?: string;
 }
 
