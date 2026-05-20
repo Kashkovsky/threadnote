@@ -10,6 +10,18 @@
       content="Threadnote is a safe local workflow for using OpenViking as shared, agent-neutral context for development work — across Codex, Claude, Cursor, and Copilot."
     />
 
+    <link rel="icon" type="image/svg+xml" href="threadnote-logo.svg" />
+
+    <meta property="og:title" content="Threadnote — shared local context for development agents" />
+    <meta
+      property="og:description"
+      content="One shared memory for Codex, Claude, Cursor, and Copilot. Local-first, cross-session, cross-agent."
+    />
+    <meta property="og:image" content="threadnote-logo.svg" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:image" content="threadnote-logo.svg" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -213,21 +225,15 @@
       .brand {
         display: inline-flex;
         align-items: center;
-        gap: 0.6rem;
+        gap: 0.7rem;
         margin-bottom: 1.5rem;
       }
 
       .brand-mark {
-        width: 32px;
-        height: 32px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, var(--accent), #7c8cff);
-        display: grid;
-        place-items: center;
-        color: #0a0a0d;
-        font-family: var(--font-mono);
-        font-weight: 700;
-        font-size: 14px;
+        width: 44px;
+        height: 44px;
+        display: block;
+        flex: 0 0 auto;
       }
 
       .brand-name {
@@ -705,7 +711,7 @@
       <section id="hero" class="slide">
         <div class="slide-inner">
           <div class="brand">
-            <div class="brand-mark">t</div>
+            <img src="threadnote-logo.svg" alt="Threadnote logo" class="brand-mark" width="44" height="44" />
             <span class="brand-name">threadnote</span>
           </div>
           <h1 class="hero-title-gradient">
