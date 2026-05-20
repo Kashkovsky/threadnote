@@ -240,7 +240,11 @@ For deterministic moments where the agent shouldn't have to remember, Threadnote
 - **`PreCompact`** auto-stores a handoff snapshot for the current repo right before Claude compacts the conversation,
   so the next turn can recall it even if the agent forgot to write a handoff manually.
 - **`SessionStart`** preloads the latest threadnote handoff/feature memory for the current repo into the new session
-  context, so the first turn already knows where you left off.
+  context, so the first turn already knows where you left off. The same hook also runs a daily-cached check against
+  the npm registry and prints a one-line `[threadnote] vX.Y.Z available; run threadnote update` banner when the
+  installed version is behind, so you stop missing releases. Set `THREADNOTE_AUTO_UPDATE=1` to skip the nag and have
+  the hook spawn `threadnote update --yes` in the background instead — the new version takes effect on the next
+  session.
 
 Install them per agent (Codex / Cursor / Copilot are no-ops today — Threadnote prints a clear explanation):
 

@@ -1,5 +1,5 @@
 import {chmod, mkdir, readFile, writeFile} from 'node:fs/promises';
-import {basename, dirname} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 import {
   CLAUDE_SETTINGS_PATH,
   HOOK_AUTO_PRECOMPACT_TOPIC,
@@ -11,7 +11,9 @@ import {
 import {parseAgentClient} from './mcp.js';
 import {runHandoff, runRecall} from './memory.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
+import {checkForThreadnoteUpdate, spawnDetachedAutoUpdate} from './update-check.js';
 import {expandPath, exists, gitValue, isJsonObject, parseJsonConfigObject} from './utils.js';
+import {getThreadnoteVersion} from './version.js';
 
 type HookEvent = 'PreCompact' | 'SessionStart';
 
@@ -219,6 +221,7 @@ export async function runSessionStartHook(config: RuntimeConfig, options: HookRu
       return;
     }
     const project = basename(repoRoot);
+    await emitUpdateBannerIfOutdated(config);
     process.stdout.write(`## Threadnote — latest context for ${project}\n\n`);
     await runRecall(config, {
       dryRun: options.dryRun === true,
@@ -230,5 +233,35 @@ export async function runSessionStartHook(config: RuntimeConfig, options: HookRu
     process.stderr.write(
       `threadnote session-start-hook: recall skipped (${err instanceof Error ? err.message : String(err)})\n`,
     );
+  }
+}
+
+async function emitUpdateBannerIfOutdated(config: RuntimeConfig): Promise<void> {
+  // Cheap, daily-cached check that nags users to upgrade. The check is wrapped
+  // in try/catch so a flaky registry or unreachable network never breaks the
+  // session-start path. With THREADNOTE_AUTO_UPDATE=1, the same code path
+  // spawns `threadnote update --yes` as a detached background process and
+  // tells the user the new version will be active next session.
+  try {
+    const result = await checkForThreadnoteUpdate({
+      cachePath: join(config.agentContextHome, '.update-state.json'),
+      currentVersion: getThreadnoteVersion(),
+    });
+    if (!result || !result.outdated) {
+      return;
+    }
+    if (process.env.THREADNOTE_AUTO_UPDATE === '1') {
+      process.stdout.write(
+        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n\n`,
+      );
+      spawnDetachedAutoUpdate();
+      return;
+    }
+    process.stdout.write(
+      `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n\n`,
+    );
+  } catch {
+    // Silent: the update banner is a nice-to-have, not a session-start
+    // requirement.
   }
 }
