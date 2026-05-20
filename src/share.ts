@@ -1093,17 +1093,24 @@ async function applyChangesToOpenViking(
     if (!(await isFile(change.path))) {
       continue;
     }
-    if (change.status === 'modified' && (await vikingResourceExists(ov, config, uri))) {
-      console.warn(
-        `share sync: overwriting local ${uri} with the upstream version (local edits to the shared subtree are not preserved across sync).`,
-      );
+    // Either 'modified' or 'added' from git's perspective; the file on disk
+    // was just rewritten by the pull-rebase and OV's index needs to catch up.
+    // Both cases collapse to the same OV-side rule: if the URI already exists,
+    // we must write with 'replace' (the create path's retry loop snapshots
+    // existedBeforeWrite=true and would burn every attempt against an
+    // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
+    // earlier path — a prior share init/sync, or a local publish that wrote
+    // the URI before the corresponding upstream commit landed in this clone.
+    const ovHasResource = await vikingResourceExists(ov, config, uri);
+    if (ovHasResource) {
+      const reason =
+        change.status === 'modified'
+          ? 'overwriting local with upstream (local edits to the shared subtree are not preserved across sync)'
+          : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
+      console.warn(`share sync: ${uri}: ${reason}.`);
     }
     await ensureSharedDirectoryChain(config, ov, uri, false);
-    // 'modified' means the upstream pull changed the file; the OV resource
-    // already exists, so the write must be 'replace'. Passing 'create' would
-    // burn every retry attempt against an existedBeforeWrite=true snapshot
-    // and then throw.
-    const writeMode: 'create' | 'replace' = change.status === 'modified' ? 'replace' : 'create';
+    const writeMode: 'create' | 'replace' = ovHasResource ? 'replace' : 'create';
     await ingestSingleFile(ov, config, uri, change.path, writeMode);
   }
 }
