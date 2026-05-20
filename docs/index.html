@@ -121,6 +121,10 @@
         padding: 1em 1.2em;
         overflow-x: auto;
         line-height: 1.55;
+        /* Without this, a single long unbreakable line (curl URLs, etc.)
+           pushes the pre wider than its container and out of the viewport on
+           mobile. With it, the pre scrolls internally instead. */
+        max-width: 100%;
       }
 
       pre code {
@@ -152,6 +156,10 @@
         display: flex;
         flex-direction: column;
         justify-content: center;
+        /* Default flex/block intrinsic min-width is the widest child, which
+           lets long unbreakable mono lines (URLs, MCP calls) make the inner
+           wider than its declared 100%. Hard-cap it. */
+        min-width: 0;
       }
 
       .slide-eyebrow {
@@ -493,12 +501,12 @@
         border-radius: var(--radius-lg);
         padding: 1.5rem;
         display: grid;
-        gap: 0.6rem;
+        gap: 0.75rem;
         transition: border-color 0.2s ease;
         /* Let the grid track shrink to its container width rather than to the
-           widest nowrap child (the inner .v-cmd). Without this, long command
-           lines push the grid item past viewport and the page scrolls
-           horizontally on mobile. */
+           widest mono child. Without this, long MCP call/response lines push
+           the grid item past viewport and the page scrolls horizontally on
+           mobile. */
         min-width: 0;
       }
 
@@ -506,31 +514,76 @@
         border-color: var(--accent-line);
       }
 
-      .vignette .v-prompt {
+      .vignette .v-say {
         font-style: italic;
+        font-size: 0.96rem;
         color: var(--text);
-        font-size: 1rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-left: 3px solid var(--accent);
+        border-radius: 4px;
+        padding: 0.55rem 0.85rem;
+      }
+
+      .vignette .v-auto {
+        font-style: italic;
+        color: var(--muted);
+      }
+
+      .vignette pre.v-call,
+      .vignette pre.v-response {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        background: var(--code-bg);
+        padding: 0.55rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        border-left: 1px solid var(--line);
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-x: auto;
+        max-width: 100%;
+        line-height: 1.45;
+        margin: 0;
+      }
+
+      .vignette .v-call {
+        color: var(--accent);
+      }
+
+      .vignette .v-response {
+        color: var(--muted);
+      }
+
+      .vignette .v-say::before,
+      .vignette .v-call::before,
+      .vignette .v-response::before {
+        display: block;
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-style: normal;
+        margin-bottom: 0.35rem;
+      }
+
+      .vignette .v-say::before {
+        content: 'You ask';
+        color: var(--accent);
+      }
+
+      .vignette .v-call::before {
+        content: 'Agent calls';
+      }
+
+      .vignette .v-response::before {
+        content: 'MCP returns';
       }
 
       .vignette .v-answer {
         color: var(--muted);
         font-size: 0.95rem;
-      }
-
-      .vignette .v-cmd {
-        font-family: var(--font-mono);
-        font-size: 0.82rem;
-        color: var(--accent);
-        padding: 0.45rem 0.75rem;
-        background: var(--code-bg);
-        border-radius: 6px;
-        border: 1px solid var(--line);
-        white-space: nowrap;
-        overflow-x: auto;
-        /* Belt-and-braces: paired with min-width: 0 on the parent vignette
-           grid, this confines the nowrap line to its own scrollable box on
-           mobile rather than dictating its parent's width. */
-        max-width: 100%;
+        margin-top: 0.25rem;
       }
 
       /* side nav dots */
@@ -704,8 +757,8 @@
       <a href="#seed" data-label="Seed"><span>Seed</span></a>
       <a href="#update" data-label="Update"><span>Update</span></a>
       <a href="#lifecycle" data-label="Lifecycle"><span>Lifecycle</span></a>
-      <a href="#use-cases" data-label="Use cases"><span>Use cases</span></a>
       <a href="#share" data-label="Share"><span>Share</span></a>
+      <a href="#use-cases" data-label="Use cases"><span>Use cases</span></a>
       <a href="#close" data-label="Get started"><span>Start</span></a>
     </nav>
 
@@ -1249,75 +1302,10 @@ threadnote remember \
         </div>
       </section>
 
-      <!-- 11. USE CASES -->
-      <section id="use-cases" class="slide">
-        <div class="slide-inner">
-          <span class="slide-eyebrow">10 · Real-world use cases</span>
-          <h2>Where it actually pays off.</h2>
-
-          <div class="vignettes">
-            <div class="vignette reveal">
-              <div class="v-prompt">"Continue the feature from yesterday."</div>
-              <div class="v-answer">
-                Fresh session, fresh agent. Threadnote recalls the active handoff for the branch plus the durable
-                feature memory: design decisions, the open PR, what's left, what just failed in CI. No re-explaining.
-              </div>
-              <div class="v-cmd">threadnote recall --query "&lt;branch&gt; latest handoff"</div>
-            </div>
-
-            <div class="vignette reveal">
-              <div class="v-prompt">"What did we conclude about that prod-on-call thing?"</div>
-              <div class="v-answer">
-                The sanitized handoff from the on-call escalation is still there. Re-open the same Slack thread three
-                weeks later; the durable feature memory points your agent at the right files and the resolution.
-              </div>
-              <div class="v-cmd">threadnote recall --query "export workflow timeout on-call findings"</div>
-            </div>
-
-            <div class="vignette reveal">
-              <div class="v-prompt">"Switch from Codex to Claude mid-task."</div>
-              <div class="v-answer">
-                Codex stores a handoff before pausing. Claude opens the same MCP layer, recalls the handoff plus the
-                durable memory, picks up the test command and the open blocker without you typing them again.
-              </div>
-              <div class="v-cmd">threadnote handoff --task "..." --next-step "..."</div>
-            </div>
-
-            <div class="vignette reveal">
-              <div class="v-prompt">"Onboard a new teammate to a feature."</div>
-              <div class="v-answer">
-                Publish the feature's durable memory to the team repo with <code>share publish</code>. Their agent
-                pulls it on the next <code>share sync</code> and recall surfaces it alongside their own personal
-                memories — no DM forwarding, no PDF dumping.
-              </div>
-              <div class="v-cmd">threadnote share publish viking://user/&lt;you&gt;/memories/durable/...</div>
-            </div>
-
-            <div class="vignette reveal">
-              <div class="v-prompt">"Compaction is about to nuke the context."</div>
-              <div class="v-answer">
-                Before context fills up, the agent stores a handoff. The next turn after compaction recalls it — the
-                summary covers the conversation arc, threadnote covers the durable facts the summary couldn't keep.
-              </div>
-              <div class="v-cmd">threadnote handoff --project &lt;repo&gt; --topic &lt;feature&gt; ...</div>
-            </div>
-
-            <div class="vignette reveal">
-              <div class="v-prompt">"Where does this repo run its release notes?"</div>
-              <div class="v-answer">
-                You discovered it the hard way last time. Tell your agent to <code>remember</code> the fact. Next time
-                anyone asks, the agent finds it in two seconds without grepping the wiki.
-              </div>
-              <div class="v-cmd">threadnote remember --kind durable --topic release-process ...</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 12. SHARE -->
+      <!-- 11. SHARE -->
       <section id="share" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">11 · Sharing across the team</span>
+          <span class="slide-eyebrow">10 · Sharing across the team</span>
           <h2>Curated memories. Yours to push. Theirs to pull.</h2>
           <p class="lead">
             <code>threadnote share</code> publishes a subset of durable memories into a git repo so other engineers'
@@ -1401,6 +1389,81 @@ threadnote remember \
               decide a memory is teammate-worthy.
             </li>
           </ul>
+        </div>
+      </section>
+
+      <!-- 12. USE CASES -->
+      <section id="use-cases" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">11 · Real-world use cases</span>
+          <h2>What you say. What the agent does.</h2>
+          <p class="lead">
+            You don't run threadnote commands yourself. You talk to your agent the way you already do; the agent calls
+            the MCP layer and the memory stays in sync across sessions, agents, and teammates.
+          </p>
+
+          <div class="vignettes">
+            <div class="vignette reveal">
+              <div class="v-say">Continue where we left off on this branch.</div>
+              <pre class="v-call">recall_context({query: "&lt;branch&gt; latest handoff durable feature memory"})</pre>
+              <pre class="v-response">→ viking://user/you/memories/handoffs/active/&lt;branch&gt;/auto-precompact.md
+→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+              <div class="v-answer">
+                Fresh session, fresh agent. It reads both pointers, picks up the design decisions, the open PR, what's
+                left to test, and what just failed in CI. No re-explaining.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say">Save where we are — I'm switching to another agent.</div>
+              <pre class="v-call">remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre>
+              <pre class="v-response">Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+              <div class="v-answer">
+                Open the next agent — the SessionStart hook recalls the same handoff and the durable memory. It picks
+                up the test command and the open blocker without you retyping them.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say">Share this feature's design memory with the team.</div>
+              <pre class="v-call">share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre>
+              <pre class="v-response">Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
+git push: ok</pre>
+              <div class="v-answer">
+                The memory lands in the team git repo. A teammate's next <code>share sync</code> pulls it; their
+                recall surfaces it alongside their own memories — no DM forwarding, no PDF dumping.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say v-auto">(automatic — the PreCompact hook fires before context compaction)</div>
+              <pre class="v-call">remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre>
+              <pre class="v-response">Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre>
+              <div class="v-answer">
+                Compaction summarizes the conversation arc but loses the durable facts. Threadnote's hook captures them
+                first; the post-compaction turn recalls them and resumes without amnesia.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say">Remember that this repo cuts release notes from CI via gh release create.</div>
+              <pre class="v-call">remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre>
+              <pre class="v-response">Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre>
+              <div class="v-answer">
+                Next time anyone asks where releases happen, the agent finds it in two seconds. No grepping the wiki.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say">What did we conclude about the export-workflow timeout?</div>
+              <pre class="v-call">recall_context({query: "export workflow timeout findings"})</pre>
+              <pre class="v-response">→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre>
+              <div class="v-answer">
+                Re-open the same investigation three weeks later; the durable memory points your agent at the right
+                files and the resolution. The trail doesn't decay.
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
