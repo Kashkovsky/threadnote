@@ -222,24 +222,29 @@
         align-items: flex-start;
       }
 
-      .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.7rem;
-        margin-bottom: 1.5rem;
+      .page-logo {
+        position: fixed;
+        top: 1.5rem;
+        left: 1.5rem;
+        width: 220px;
+        height: 220px;
+        z-index: 40;
+        pointer-events: none;
       }
 
-      .brand-mark {
-        width: 44px;
-        height: 44px;
+      .page-logo img {
+        width: 100%;
+        height: 100%;
         display: block;
-        flex: 0 0 auto;
       }
 
-      .brand-name {
-        font-family: var(--font-mono);
-        font-size: 0.95rem;
-        color: var(--muted);
+      @media (max-width: 720px) {
+        .page-logo {
+          width: 120px;
+          height: 120px;
+          top: 1rem;
+          left: 1rem;
+        }
       }
 
       .hero-title-gradient {
@@ -690,6 +695,10 @@
   <body>
     <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
 
+    <div class="page-logo" aria-hidden="true">
+      <img src="threadnote-logo-inverted.svg" alt="" />
+    </div>
+
     <nav class="deck-nav" aria-label="Section progress">
       <a href="#hero" data-label="Intro"><span>Intro</span></a>
       <a href="#problem" data-label="Problem"><span>Problem</span></a>
@@ -710,10 +719,6 @@
       <!-- 1. HERO -->
       <section id="hero" class="slide">
         <div class="slide-inner">
-          <div class="brand">
-            <img src="threadnote-logo.svg" alt="Threadnote logo" class="brand-mark" width="44" height="44" />
-            <span class="brand-name">threadnote</span>
-          </div>
           <h1 class="hero-title-gradient">
             Shared local context<br />for <em class="hero-accent">development agents</em>.
           </h1>
