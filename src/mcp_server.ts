@@ -88,6 +88,7 @@ async function main(): Promise<void> {
         'Stdio MCP adapter for Threadnote shared local context.',
         'Prefer `recall_context` to find candidate viking:// URIs, then `read_context` files or `list_context` directories.',
         'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff"}).',
+        'recall_context also surfaces seeded project resources under viking://resources/repos/<project> when the query mentions a project from the seed manifest. See its tool description for the query convention.',
         'Older clients may use the compatibility aliases `search`, `read`, and `list`.',
         'For durable facts, store kind="durable"; for current work logs, store kind="handoff" with project/topic so Threadnote keeps one active memory updated.',
         'When a handoff describes an active branch or feature, recall durable feature memories for the same branch/topic before coding.',
@@ -119,13 +120,13 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     server,
     config,
     'recall_context',
-    'Search Threadnote context. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
+    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Include the repo or project name in the query to make the project-guidance pass fire. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
   );
   registerSearchTool(
     server,
     config,
     'search',
-    'Compatibility alias for recall_context. Required: pass JSON arguments with a non-empty query.',
+    'Compatibility alias for recall_context. Searches both personal memories and seeded project resources; see recall_context for the query conventions.',
   );
 
   registerReadTool(

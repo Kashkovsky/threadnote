@@ -21,8 +21,16 @@ At the start of a non-trivial task, recall relevant context before making change
 - the current repo and branch;
 - recent handoffs;
 - durable feature memories for the branch, feature name, project/topic, or issue;
+- seeded project guidance under `viking://resources/repos/<project>` — README, AGENTS.md, CLAUDE.md, SKILL.md, docs/\*\*
+  — for canonical conventions, test commands, release process, on-call runbooks, and anything the team has checked into
+  the repo;
 - task-specific skills or workflow guidance;
 - user or team preferences that may affect the work.
+
+Include the repo or project name as a token in the recall query so the project-guidance pass fires. `recall_context`
+runs a parallel scoped search against `viking://resources/repos/<project>` whenever the query mentions a seeded project
+name, so memories AND project documentation come back in the same response. Treat seeded resources as the canonical
+source for "how does this repo do X" and personal memories as in-flight or per-author context layered on top.
 
 When a recalled handoff describes an active branch or feature, do a second recall for durable memories about that
 feature before coding. The handoff tells you the current work state; durable feature memories tell you the design,
