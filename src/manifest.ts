@@ -11,6 +11,22 @@ export function uriSegment(value: string): string {
   return normalized.length > 0 ? normalized : 'unknown';
 }
 
+/**
+ * Returns the seed manifest project whose name appears as a token in `query`.
+ * Both manifest and query are lowercased before comparison; returns `undefined`
+ * when no project matches or the manifest can't be read. Callers use the
+ * matched project's `uri` to scope a recall search at the right seeded subtree.
+ */
+export async function inferProjectFromQuery(manifestPath: string, query: string): Promise<ProjectManifest | undefined> {
+  try {
+    const manifest = await readSeedManifest(manifestPath);
+    const normalized = query.toLowerCase();
+    return manifest.projects.find(project => normalized.includes(project.name.toLowerCase()));
+  } catch {
+    return undefined;
+  }
+}
+
 export async function readSeedManifest(path: string): Promise<SeedManifest> {
   const raw = await readFile(path, 'utf8');
   const loaded = yaml.load(raw);

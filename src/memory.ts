@@ -1,6 +1,6 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
-import {readSeedManifest, uriSegment} from './manifest.js';
+import {inferProjectFromQuery, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
   ArchiveOptions,
@@ -12,7 +12,6 @@ import type {
   MemoryStatus,
   MigrateMemoriesOptions,
   PackOptions,
-  ProjectManifest,
   ReadOptions,
   RecallOptions,
   RememberOptions,
@@ -260,10 +259,52 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
+  await augmentRecallWithSeededResources(config, ov, options, inferredUri);
   await printExactMemoryMatches(config, ov, options.query, {
     dryRun: options.dryRun === true,
     includeArchived: options.includeArchived === true,
   });
+}
+
+/**
+ * If the query mentions a seeded project, run a second search scoped to that
+ * project's resources URI and print results below the base search. The base
+ * search is biased toward memory-shaped vocabulary ("handoff", "durable") and
+ * with a small node-limit it crowds out seeded README/AGENTS.md/SKILL.md
+ * content — running a scoped pass guarantees that seeded guidance surfaces
+ * alongside personal memories on every recall.
+ *
+ * Skips the augmentation when the caller pinned the search to a specific URI
+ * (they asked for that scope; honor it) or when the inferred scope already
+ * targets the same resources subtree (no need to duplicate).
+ */
+async function augmentRecallWithSeededResources(
+  config: RuntimeConfig,
+  ov: string,
+  options: RecallOptions,
+  inferredUri: string | undefined,
+): Promise<void> {
+  // `--no-infer-scope` (options.inferScope === false) disables the base scope
+  // inference; honoring it here too keeps the flag's meaning consistent —
+  // augmenting with a project-scoped search would silently re-introduce what
+  // the user disabled. A caller-pinned --uri is also explicit intent we honor.
+  if (options.uri || options.inferScope === false) {
+    return;
+  }
+  const project = await inferProjectFromQuery(config.manifestPath, options.query);
+  if (!project) {
+    return;
+  }
+  const projectResourceUri = trimTrailingSlash(project.uri);
+  if (!projectResourceUri.startsWith('viking://') || projectResourceUri === inferredUri) {
+    return;
+  }
+  const args = ['search', options.query, '--uri', projectResourceUri];
+  if (options.nodeLimit) {
+    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
+  }
+  console.log(`\nAlso searching seeded resources: ${projectResourceUri}`);
+  await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -396,28 +437,20 @@ export async function runImportPack(config: RuntimeConfig, options: PackOptions)
 }
 
 async function inferRecallUri(config: RuntimeConfig, query: string): Promise<string | undefined> {
-  const normalizedQuery = query.toLowerCase();
-  if (/\bskills?\b/.test(normalizedQuery)) {
-    const project = await inferProjectFromQuery(config, normalizedQuery);
-    return project
-      ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
-      : 'viking://resources/agent-skills';
-  }
-
-  const project = await inferProjectFromQuery(config, normalizedQuery);
-  return project ? trimTrailingSlash(project.uri) : undefined;
-}
-
-async function inferProjectFromQuery(
-  config: RuntimeConfig,
-  normalizedQuery: string,
-): Promise<ProjectManifest | undefined> {
-  try {
-    const manifest = await readSeedManifest(config.manifestPath);
-    return manifest.projects.find(project => normalizedQuery.includes(project.name.toLowerCase()));
-  } catch (_err: unknown) {
+  // Only scope the base search when the query has an explicit "skills" intent —
+  // that narrowing matches user expectation ("find me a skill for X"). For
+  // general project-name matches we no longer scope the base search, because
+  // doing so used to exclude personal memories whenever the project name
+  // appeared in the query. Seeded resources are now surfaced via a parallel
+  // scoped pass in `augmentRecallWithSeededResources` so memories and seeded
+  // guidance both appear.
+  if (!/\bskills?\b/.test(query.toLowerCase())) {
     return undefined;
   }
+  const project = await inferProjectFromQuery(config.manifestPath, query);
+  return project
+    ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
+    : 'viking://resources/agent-skills';
 }
 
 async function printExactMemoryMatches(
@@ -687,6 +720,10 @@ function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): rea
     `${userBase}/events`,
     `${userBase}/shared`,
     `viking://agent/${uriSegment(config.agentId)}/memories`,
+    // Seeded project resources (READMEs, AGENTS.md, SKILL.md, docs/**) live
+    // under viking://resources/repos/<project>. Include them so an exact-term
+    // grep in a recall surfaces matches in seeded guidance, not only memories.
+    'viking://resources/repos',
   ];
   return includeArchived
     ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]

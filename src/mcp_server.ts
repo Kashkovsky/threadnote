@@ -8,6 +8,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
+import {inferProjectFromQuery} from './manifest.js';
 import {
   DEFAULT_GIT_REMOTE_NAME,
   ensureSharedDirectoryChain,
@@ -31,12 +32,14 @@ import {
   safeTimestamp,
   sha256,
   sleep,
+  trimTrailingSlash,
 } from './utils.js';
 
 interface RuntimeConfig {
   readonly account: string;
   readonly agentContextHome: string;
   readonly agentId: string;
+  readonly manifestPath: string;
   readonly user: string;
 }
 
@@ -106,6 +109,7 @@ function getRuntimeConfig(): RuntimeConfig {
     account: process.env.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
     agentContextHome: expandPath(process.env.THREADNOTE_HOME ?? '~/.openviking'),
     agentId: process.env.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
+    manifestPath: expandPath(process.env.THREADNOTE_MANIFEST ?? '~/.openviking/seed-manifest.yaml'),
     user: process.env.THREADNOTE_USER ?? process.env.USER ?? 'unknown',
   };
 }
@@ -341,43 +345,97 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runRecallTool(
-        config,
-        [
-          'search',
-          checkedQuery.value,
-          ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-          ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
-        ],
-        includeArchived === true,
-      );
+      return runRecallTool(config, {
+        query: checkedQuery.value,
+        pinnedUri: checkedUri.value,
+        nodeLimit,
+        includeArchived: includeArchived === true,
+      });
     },
   );
 }
 
-async function runRecallTool(
-  config: RuntimeConfig,
-  args: readonly string[],
-  includeArchived: boolean,
-): Promise<CallToolResult> {
-  const semanticResult = await runOpenVikingTool(config, args);
+interface RecallToolParams {
+  readonly includeArchived: boolean;
+  readonly nodeLimit: number | undefined;
+  readonly pinnedUri: string | undefined;
+  readonly query: string;
+}
+
+async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
+  const baseArgs = [
+    'search',
+    params.query,
+    ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
+    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
+  ];
+  const semanticResult = await runOpenVikingTool(config, baseArgs);
   if (semanticResult.isError === true) {
-    return semanticResult;
-  }
-  const query = args[1];
-  const exactMatches =
-    typeof query === 'string' ? await exactMemoryMatchesText(config, query, includeArchived) : undefined;
-  if (!exactMatches) {
     return semanticResult;
   }
   const [firstContent] = semanticResult.content;
   if (firstContent?.type !== 'text') {
     return semanticResult;
   }
-  return {
-    ...semanticResult,
-    content: [{type: 'text', text: `${firstContent.text}\n\nExact durable memory matches:\n${exactMatches}`}],
-  };
+  const sections: string[] = [];
+  if (firstContent.text) {
+    sections.push(firstContent.text);
+  }
+  const seededSection = await seededResourcesSection(config, params);
+  if (seededSection) {
+    sections.push(seededSection);
+  }
+  const exactMatches = await exactMemoryMatchesText(config, params.query, params.includeArchived);
+  if (exactMatches) {
+    sections.push(`Exact durable memory matches:\n${exactMatches}`);
+  }
+  if (sections.length <= 1) {
+    return semanticResult;
+  }
+  return {...semanticResult, content: [{type: 'text', text: sections.join('\n\n')}]};
+}
+
+/**
+ * Runs a second `ov search` scoped to the seeded project's resources when the
+ * query mentions a project name from the manifest. The base semantic search
+ * tends to rank memory-shaped hits above seeded READMEs/AGENTS.md/SKILL.md, so
+ * this parallel pass guarantees that seeded guidance surfaces alongside
+ * memories on every agent's recall — not only Claude's via the SessionStart
+ * hook. Skipped when the caller pinned a URI (they asked for that scope;
+ * honor it). The MCP server doesn't currently do scope inference of its own
+ * the way the CLI's `runRecall` does, so there's no `inferredUri`-vs-
+ * `projectResourceUri` dedupe check here — if MCP later grows inference, mirror
+ * the CLI's `augmentRecallWithSeededResources` guard.
+ */
+async function seededResourcesSection(config: RuntimeConfig, params: RecallToolParams): Promise<string | undefined> {
+  if (params.pinnedUri) {
+    return undefined;
+  }
+  const project = await inferProjectFromQuery(config.manifestPath, params.query);
+  if (!project) {
+    return undefined;
+  }
+  const projectResourceUri = trimTrailingSlash(project.uri);
+  if (!projectResourceUri.startsWith('viking://')) {
+    return undefined;
+  }
+  const ov = await requiredOpenVikingCli();
+  const args = [
+    'search',
+    params.query,
+    '--uri',
+    projectResourceUri,
+    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
+  ];
+  const result = await runCommand(ov, withIdentity(config, args), {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+  const body = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+  if (!body) {
+    return undefined;
+  }
+  return `Seeded project resources (${projectResourceUri}):\n${body}`;
 }
 
 async function exactMemoryMatchesText(
@@ -762,6 +820,10 @@ function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): rea
     `${userBase}/events`,
     `${userBase}/shared`,
     `viking://agent/${uriSegment(config.agentId)}/memories`,
+    // Seeded project resources live outside the user/memories tree. Include
+    // them so exact-term grep surfaces matches in seeded READMEs, AGENTS.md,
+    // SKILL.md, and docs/** alongside personal memory hits.
+    'viking://resources/repos',
   ];
   return includeArchived
     ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
