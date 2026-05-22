@@ -194,7 +194,14 @@ async function main(): Promise<void> {
     .command('seed')
     .description('Seed curated context from the manifest; never indexes whole repos by default')
     .option('--dry-run', 'Print files and ov commands without importing')
+    .option('--force', 'Re-upload every candidate even if mtime+size match the recorded state')
     .option('--manifest <path>', 'Manifest path for this seed run')
+    .option(
+      '--only <project>',
+      'Restrict seeding to one or more manifest projects by name; repeat for multiple',
+      collectOption,
+      [],
+    )
     .action(async (options: SeedOptions) => {
       await runSeed(getRuntimeConfig(program, options.manifest), options);
     });

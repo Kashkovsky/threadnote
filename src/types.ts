@@ -129,8 +129,10 @@ export interface StartOptions {
 
 export interface SeedOptions {
   readonly dryRun?: boolean;
+  readonly force?: boolean;
   readonly manifest?: string;
   readonly native?: boolean;
+  readonly only?: readonly string[];
 }
 
 export interface McpInstallOptions {

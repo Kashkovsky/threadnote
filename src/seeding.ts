@@ -1,7 +1,7 @@
-import {chmod, readFile, realpath, writeFile} from 'node:fs/promises';
+import {chmod, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {basename, dirname, join, relative} from 'node:path';
 import yaml from 'js-yaml';
-import {DEFAULT_SEED_PATTERNS, MAX_SECRET_MATCHES_TO_PRINT, USER_MANIFEST_NAME} from './constants.js';
+import {DEFAULT_SEED_PATTERNS, MAX_SECRET_MATCHES_TO_PRINT, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -36,14 +36,29 @@ import {
   walkFiles,
 } from './utils.js';
 
+interface SeedStateEntry {
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
+interface SeedStateFile {
+  readonly files: Record<string, SeedStateEntry>;
+  readonly version: 1;
+}
+
 export async function runSeed(config: RuntimeConfig, options: SeedOptions): Promise<void> {
   const manifest = await readSeedManifest(config.manifestPath);
   const ignorePatterns = await loadIgnorePatterns();
   const ov = await openVikingCliForMode(options.dryRun === true);
+  const statePath = join(config.agentContextHome, SEED_STATE_FILE);
+  const state: {files: Record<string, SeedStateEntry>; version: 1} =
+    options.force === true ? {files: {}, version: 1} : await readSeedState(statePath);
+  const projects = filterProjects(manifest.projects, options.only);
   let importedCount = 0;
   let skippedCount = 0;
+  let unchangedCount = 0;
 
-  for (const project of manifest.projects) {
+  for (const project of projects) {
     const projectRoot = expandPath(project.path);
     if (!(await exists(projectRoot))) {
       console.log(`WARN project missing: ${project.name} (${projectRoot})`);
@@ -52,6 +67,12 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
 
     const candidates = await collectSeedCandidates(project, projectRoot, ignorePatterns);
     for (const candidate of candidates) {
+      const fileStat = await statSeedFile(candidate.filePath);
+      const recorded = state.files[candidate.destinationUri];
+      if (fileStat && recorded && recorded.mtimeMs === fileStat.mtimeMs && recorded.size === fileStat.size) {
+        unchangedCount += 1;
+        continue;
+      }
       const importPath = await prepareSeedFile(config, candidate, options.dryRun === true);
       if (!importPath) {
         skippedCount += 1;
@@ -60,10 +81,68 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
       const args = withIdentity(config, ['add-resource', importPath, '--to', candidate.destinationUri, '--wait']);
       await maybeRun(options.dryRun === true, ov, args);
       importedCount += 1;
+      if (fileStat && options.dryRun !== true) {
+        state.files[candidate.destinationUri] = {mtimeMs: fileStat.mtimeMs, size: fileStat.size};
+      }
     }
   }
 
-  console.log(`Seed complete: ${importedCount} candidate(s), ${skippedCount} skipped for safety.`);
+  if (options.dryRun !== true) {
+    await writeSeedState(statePath, state);
+  }
+  console.log(
+    `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${skippedCount} skipped for safety.`,
+  );
+}
+
+function filterProjects(
+  projects: readonly ProjectManifest[],
+  only: readonly string[] | undefined,
+): readonly ProjectManifest[] {
+  if (!only || only.length === 0) {
+    return projects;
+  }
+  const known = new Set(projects.map(project => project.name));
+  const missing = only.filter(name => !known.has(name));
+  if (missing.length > 0) {
+    const all = [...known].join(', ');
+    throw new Error(`Unknown project(s) in --only: ${missing.join(', ')}. Manifest projects: ${all}`);
+  }
+  const want = new Set(only);
+  return projects.filter(project => want.has(project.name));
+}
+
+async function statSeedFile(path: string): Promise<{readonly mtimeMs: number; readonly size: number} | undefined> {
+  try {
+    const result = await stat(path);
+    return {mtimeMs: result.mtimeMs, size: result.size};
+  } catch (_err: unknown) {
+    return undefined;
+  }
+}
+
+async function readSeedState(path: string): Promise<{files: Record<string, SeedStateEntry>; version: 1}> {
+  try {
+    const raw = await readFile(path, 'utf8');
+    const parsed = JSON.parse(raw) as Partial<SeedStateFile>;
+    if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
+      return {files: {}, version: 1};
+    }
+    const files: Record<string, SeedStateEntry> = {};
+    for (const [uri, entry] of Object.entries(parsed.files)) {
+      if (isJsonObject(entry) && typeof entry.mtimeMs === 'number' && typeof entry.size === 'number') {
+        files[uri] = {mtimeMs: entry.mtimeMs, size: entry.size};
+      }
+    }
+    return {files, version: 1};
+  } catch (_err: unknown) {
+    return {files: {}, version: 1};
+  }
+}
+
+async function writeSeedState(path: string, state: SeedStateFile): Promise<void> {
+  await ensureDirectory(dirname(path), false);
+  await writeFile(path, `${JSON.stringify(state, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
 }
 
 export async function runInitManifest(config: RuntimeConfig, options: InitManifestOptions): Promise<void> {
