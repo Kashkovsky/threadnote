@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join, relative, sep} from 'node:path';
 import {uriSegment} from './manifest.js';
@@ -36,6 +36,7 @@ import {
 const TEAMS_FILE_VERSION = 1;
 const SHARED_SEGMENT = 'shared';
 const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
+const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
 interface ScrubberPattern {
@@ -118,6 +119,41 @@ interface ChangedFile {
   readonly path: string;
   readonly relativePath: string;
   readonly status: 'added' | 'removed' | 'modified';
+}
+
+interface AutoShareState {
+  behindTeams: ReadonlySet<string>;
+  lastCheckedAt: number;
+  operationPromise?: Promise<unknown>;
+  pendingReindexes: Map<string, readonly ChangedFile[]>;
+  timer?: ReturnType<typeof setInterval>;
+}
+
+const autoShareStates = new Map<string, AutoShareState>();
+
+export interface AutoShareSyncResult {
+  readonly syncedTeams: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+interface ShareUpdateStatus {
+  readonly behind: number;
+  readonly team: string;
+  readonly warning?: string;
+}
+
+interface PendingReindexFile {
+  readonly teams: Readonly<Record<string, readonly ChangedFile[]>>;
+  readonly version: number;
+}
+
+export function clearAutoShareStateForTest(): void {
+  for (const state of autoShareStates.values()) {
+    if (state.timer) {
+      clearInterval(state.timer);
+    }
+  }
+  autoShareStates.clear();
 }
 
 export async function runShareInit(config: ShareRuntime, remoteUrl: string, options: ShareInitOptions): Promise<void> {
@@ -246,6 +282,202 @@ export async function runShareStatus(config: ShareRuntime, options: ShareStatusO
   }
 }
 
+export function startShareBackgroundFetch(config: ShareRuntime): void {
+  const state = autoShareState(config);
+  if (state.timer) {
+    return;
+  }
+  void refreshShareUpdateState(config, {force: true}).catch(err => {
+    console.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  state.timer = setInterval(() => {
+    void refreshShareUpdateState(config, {force: false}).catch(err => {
+      console.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, AUTO_SHARE_FETCH_INTERVAL_MS);
+  state.timer.unref?.();
+}
+
+export async function syncSharedReposBeforeAgentRead(config: ShareRuntime): Promise<AutoShareSyncResult> {
+  const state = autoShareState(config);
+  return enqueueShareOperation(state, async () => {
+    await loadPendingReindexes(config, state);
+    const warnings = await refreshShareUpdateStateLocked(config, state, {force: false});
+    const syncTeams = new Set([...state.behindTeams, ...state.pendingReindexes.keys()]);
+    if (syncTeams.size === 0) {
+      return {syncedTeams: [], warnings};
+    }
+
+    const syncedTeams: string[] = [];
+    const remainingBehind = new Set(state.behindTeams);
+    for (const team of syncTeams) {
+      try {
+        const warning = await runShareSyncQuiet(config, state, {team});
+        if (warning) {
+          warnings.push(warning);
+        } else {
+          remainingBehind.delete(team);
+          syncedTeams.push(team);
+        }
+      } catch (err: unknown) {
+        warnings.push(
+          `Auto-sync for shared team "${team}" failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    state.behindTeams = remainingBehind;
+    state.lastCheckedAt = Date.now();
+    return {syncedTeams, warnings};
+  });
+}
+
+function autoShareState(config: ShareRuntime): AutoShareState {
+  const key = `${config.agentContextHome}:${config.account}:${config.user}`;
+  let state = autoShareStates.get(key);
+  if (!state) {
+    state = {behindTeams: new Set(), lastCheckedAt: 0, pendingReindexes: new Map()};
+    autoShareStates.set(key, state);
+  }
+  return state;
+}
+
+function pendingReindexesPath(config: ShareRuntime): string {
+  return join(config.agentContextHome, 'share', 'auto-sync-pending-reindexes.json');
+}
+
+async function loadPendingReindexes(config: ShareRuntime, state: AutoShareState): Promise<void> {
+  const raw = await readFileIfExists(pendingReindexesPath(config));
+  if (!raw) {
+    state.pendingReindexes = new Map();
+    return;
+  }
+  const parsed = parseJsonConfigObject(raw);
+  if (!parsed || typeof parsed.teams !== 'object' || parsed.teams === null || Array.isArray(parsed.teams)) {
+    state.pendingReindexes = new Map();
+    return;
+  }
+  const pending = new Map<string, readonly ChangedFile[]>();
+  for (const [team, value] of Object.entries(parsed.teams)) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    const changes: ChangedFile[] = [];
+    for (const item of value) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        continue;
+      }
+      const entry = item as Record<string, unknown>;
+      if (
+        typeof entry.path === 'string' &&
+        typeof entry.relativePath === 'string' &&
+        (entry.status === 'added' || entry.status === 'removed' || entry.status === 'modified')
+      ) {
+        changes.push({path: entry.path, relativePath: entry.relativePath, status: entry.status});
+      }
+    }
+    if (changes.length > 0) {
+      pending.set(team, changes);
+    }
+  }
+  state.pendingReindexes = pending;
+}
+
+async function writePendingReindexes(config: ShareRuntime, state: AutoShareState): Promise<void> {
+  const path = pendingReindexesPath(config);
+  if (state.pendingReindexes.size === 0) {
+    await rm(path, {force: true});
+    return;
+  }
+  const contents: PendingReindexFile = {
+    teams: Object.fromEntries(state.pendingReindexes),
+    version: 1,
+  };
+  await mkdir(dirname(path), {recursive: true});
+  const tempPath = `${path}.${process.pid}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(contents, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
+  await rename(tempPath, path);
+}
+
+async function refreshShareUpdateState(config: ShareRuntime, options: {readonly force: boolean}): Promise<void> {
+  const state = autoShareState(config);
+  const warnings = await enqueueShareOperation(state, async () =>
+    refreshShareUpdateStateLocked(config, state, options),
+  );
+  for (const warning of warnings) {
+    console.error(warning);
+  }
+}
+
+async function refreshShareUpdateStateLocked(
+  config: ShareRuntime,
+  state: AutoShareState,
+  options: {readonly force: boolean},
+): Promise<string[]> {
+  const now = Date.now();
+  if (!options.force && state.lastCheckedAt > 0 && now - state.lastCheckedAt < AUTO_SHARE_FETCH_INTERVAL_MS) {
+    return [];
+  }
+  try {
+    const statuses = await fetchShareUpdateStatuses(config);
+    const nextBehindTeams = new Set(state.behindTeams);
+    for (const status of statuses) {
+      if (status.warning) {
+        continue;
+      }
+      if (status.behind > 0) {
+        nextBehindTeams.add(status.team);
+      } else {
+        nextBehindTeams.delete(status.team);
+      }
+    }
+    state.behindTeams = nextBehindTeams;
+    return statuses.flatMap(status => (status.warning ? [status.warning] : []));
+  } finally {
+    state.lastCheckedAt = Date.now();
+  }
+}
+
+function enqueueShareOperation<T>(state: AutoShareState, action: () => Promise<T>): Promise<T> {
+  const previous = state.operationPromise ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(action);
+  state.operationPromise = current.catch(() => undefined);
+  return current;
+}
+
+async function fetchShareUpdateStatuses(config: ShareRuntime): Promise<readonly ShareUpdateStatus[]> {
+  const teamsFile = await readTeamsFile(config);
+  const teams = Object.entries(teamsFile.teams);
+  if (teams.length === 0) {
+    return [];
+  }
+  const git = await requiredExecutable('git');
+  const statuses: ShareUpdateStatus[] = [];
+  for (const [name, team] of teams) {
+    const fetchResult = await runCommand(git, ['-C', team.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
+      allowFailure: true,
+    });
+    if (fetchResult.exitCode !== 0) {
+      statuses.push({
+        behind: 0,
+        team: name,
+        warning: `Auto-sync check for shared team "${name}" failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim() || 'unknown git fetch error'}`,
+      });
+      continue;
+    }
+    const behind = await gitOutput(team.worktree, ['rev-list', '--count', 'HEAD..@{u}'], false);
+    if (behind === undefined) {
+      statuses.push({
+        behind: 0,
+        team: name,
+        warning: `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`,
+      });
+      continue;
+    }
+    statuses.push({behind: Number.parseInt(behind, 10) || 0, team: name});
+  }
+  return statuses;
+}
+
 export async function runShareSync(config: ShareRuntime, options: ShareSyncOptions): Promise<void> {
   const team = await resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
@@ -307,6 +539,63 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
   if (options.push !== false) {
     await maybeRun(dryRun, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
   }
+}
+
+async function runShareSyncQuiet(
+  config: ShareRuntime,
+  state: AutoShareState,
+  options: {readonly team: string},
+): Promise<string | undefined> {
+  const team = await resolveTeam(config, options.team);
+  const git = await requiredExecutable('git');
+  const worktree = team.config.worktree;
+
+  const pendingChanges = state.pendingReindexes.get(team.name);
+  if (pendingChanges) {
+    await applyChangesToOpenViking(config, team.config, pendingChanges, {quiet: true});
+    state.pendingReindexes.delete(team.name);
+    await writePendingReindexes(config, state);
+  }
+
+  if (await hasUncommittedChanges(worktree)) {
+    return `Shared team "${team.name}" has uncommitted changes; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or resolve them.`;
+  }
+
+  const ahead = await gitOutput(worktree, ['rev-list', '--count', '@{u}..HEAD'], false);
+  if (ahead === undefined) {
+    return `Shared team "${team.name}" upstream status is unknown; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to inspect and resolve it.`;
+  }
+  if ((Number.parseInt(ahead, 10) || 0) > 0) {
+    return `Shared team "${team.name}" has local commits ahead of upstream; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or reconcile them.`;
+  }
+
+  const beforeRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], false);
+  const pullResult = await runCommand(git, ['-C', worktree, 'rebase', '@{u}'], {allowFailure: true});
+  if (pullResult.exitCode !== 0) {
+    if (
+      (await exists(join(team.config.gitdir, 'rebase-merge'))) ||
+      (await exists(join(team.config.gitdir, 'rebase-apply')))
+    ) {
+      throw new Error(
+        `Automatic share sync hit git conflicts in ${worktree}. Resolve them in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then rerun recall/read.`,
+      );
+    }
+    throw new Error(
+      `Automatic share sync failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
+    );
+  }
+  const afterRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], false);
+  if (beforeRev && afterRev && beforeRev !== afterRev) {
+    const changes = await listChangedFiles(worktree, beforeRev, afterRev);
+    if (changes.length > 0) {
+      state.pendingReindexes.set(team.name, changes);
+      await writePendingReindexes(config, state);
+      await applyChangesToOpenViking(config, team.config, changes, {quiet: true});
+      state.pendingReindexes.delete(team.name);
+      await writePendingReindexes(config, state);
+    }
+  }
+  return undefined;
 }
 
 async function stageShareableChanges(dryRun: boolean, git: string, worktree: string): Promise<void> {
@@ -748,19 +1037,26 @@ export async function ensureSharedDirectoryChain(
   ov: string,
   memoryUri: string,
   dryRun: boolean,
+  options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
   const directoryUri = parentUri(memoryUri);
   for (const uri of sharedDirectoryChain(config, directoryUri)) {
     const args = withIdentity(config, ['stat', uri]);
     if (dryRun) {
-      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      if (options.quiet !== true) {
+        console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      }
       continue;
     }
     const statResult = await runCommand(ov, args, {allowFailure: true});
     if (statResult.exitCode === 0) {
       continue;
     }
-    await maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+    if (options.quiet === true) {
+      await runCommand(ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+    } else {
+      await maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+    }
   }
 }
 
@@ -789,6 +1085,7 @@ export async function writeMemoryFile(
   content: string,
   initialMode: 'create' | 'replace',
   dryRun: boolean,
+  options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
   if (dryRun) {
     const args = withIdentity(config, [
@@ -802,7 +1099,9 @@ export async function writeMemoryFile(
       '--timeout',
       '120',
     ]);
-    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    if (options.quiet !== true) {
+      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    }
     return;
   }
   // Stage the body in a dedicated temp directory so the memory body never
@@ -814,7 +1113,7 @@ export async function writeMemoryFile(
   const tempPath = join(stagingDir, 'body.txt');
   try {
     await writeFile(tempPath, content, {encoding: 'utf8', mode: 0o600});
-    await writeOvFileWithRetry(config, ov, uri, tempPath, initialMode);
+    await writeOvFileWithRetry(config, ov, uri, tempPath, initialMode, options);
   } finally {
     await rm(stagingDir, {force: true, recursive: true});
   }
@@ -826,6 +1125,7 @@ async function writeOvFileWithRetry(
   uri: string,
   fromFile: string,
   initialMode: 'create' | 'replace',
+  options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
   const maxAttempts = 4;
   // Snapshot existence ONCE before the first attempt so a teammate's
@@ -853,13 +1153,15 @@ async function writeOvFileWithRetry(
       '--timeout',
       '120',
     ]);
-    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+    if (options.quiet !== true) {
+      console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+    }
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
-      if (result.stdout.trim()) {
+      if (options.quiet !== true && result.stdout.trim()) {
         console.log(result.stdout.trim());
       }
-      if (result.stderr.trim()) {
+      if (options.quiet !== true && result.stderr.trim()) {
         console.error(result.stderr.trim());
       }
       return;
@@ -872,8 +1174,12 @@ async function writeOvFileWithRetry(
       // The write succeeded server-side (URI now exists where it didn't before
       // this call started) even though OV returned an error before the --wait
       // completed. Drain the queue and treat the write as durable.
-      console.log('OpenViking accepted the write but returned an error before the wait completed; draining the queue.');
-      await waitForOvQueue(ov, config);
+      if (options.quiet !== true) {
+        console.log(
+          'OpenViking accepted the write but returned an error before the wait completed; draining the queue.',
+        );
+      }
+      await waitForOvQueue(ov, config, options);
       return;
     }
     if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
@@ -883,12 +1189,16 @@ async function writeOvFileWithRetry(
   }
 }
 
-async function waitForOvQueue(ov: string, config: ShareRuntime): Promise<void> {
+async function waitForOvQueue(
+  ov: string,
+  config: ShareRuntime,
+  options: {readonly quiet?: boolean} = {},
+): Promise<void> {
   const result = await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
-  if (result.stdout.trim()) {
+  if (options.quiet !== true && result.stdout.trim()) {
     console.log(result.stdout.trim());
   }
-  if (result.stderr.trim()) {
+  if (options.quiet !== true && result.stderr.trim()) {
     console.error(result.stderr.trim());
   }
 }
@@ -913,9 +1223,10 @@ async function ingestSingleFile(
   uri: string,
   filePath: string,
   initialMode: 'create' | 'replace',
+  options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
   const content = await readFile(filePath, 'utf8');
-  await writeMemoryFile(config, ov, uri, content, initialMode, false);
+  await writeMemoryFile(config, ov, uri, content, initialMode, false, options);
 }
 
 /**
@@ -982,17 +1293,25 @@ async function bestEffortRemoveWorktreeFile(
   await rm(join(worktree, relative), {force: true});
 }
 
-export async function removeMemoryUri(config: ShareRuntime, ov: string, uri: string, dryRun: boolean): Promise<void> {
+export async function removeMemoryUri(
+  config: ShareRuntime,
+  ov: string,
+  uri: string,
+  dryRun: boolean,
+  options: {readonly quiet?: boolean} = {},
+): Promise<void> {
   const args = withIdentity(config, ['rm', uri]);
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    if (options.quiet !== true) {
+      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    }
     return;
   }
   const maxAttempts = 4;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
-      if (result.stdout.trim()) {
+      if (options.quiet !== true && result.stdout.trim()) {
         console.log(result.stdout.trim());
       }
       return;
@@ -1075,6 +1394,7 @@ async function applyChangesToOpenViking(
   config: ShareRuntime,
   team: ShareTeamConfig,
   changes: readonly ChangedFile[],
+  options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
   const ov = await openVikingCliForMode(false);
   for (const change of changes) {
@@ -1087,7 +1407,7 @@ async function applyChangesToOpenViking(
     }
     const uri = workfileToVikingUri(config, team, change.path);
     if (change.status === 'removed') {
-      await removeMemoryUri(config, ov, uri, false);
+      await removeMemoryUri(config, ov, uri, false, options);
       continue;
     }
     if (!(await isFile(change.path))) {
@@ -1107,10 +1427,12 @@ async function applyChangesToOpenViking(
         change.status === 'modified'
           ? 'overwriting local with upstream (local edits to the shared subtree are not preserved across sync)'
           : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
-      console.warn(`share sync: ${uri}: ${reason}.`);
+      if (options.quiet !== true) {
+        console.warn(`share sync: ${uri}: ${reason}.`);
+      }
     }
-    await ensureSharedDirectoryChain(config, ov, uri, false);
+    await ensureSharedDirectoryChain(config, ov, uri, false, options);
     const writeMode: 'create' | 'replace' = ovHasResource ? 'replace' : 'create';
-    await ingestSingleFile(ov, config, uri, change.path, writeMode);
+    await ingestSingleFile(ov, config, uri, change.path, writeMode, options);
   }
 }

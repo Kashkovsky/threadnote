@@ -37,6 +37,7 @@ import {
   sleep,
   trimTrailingSlash,
 } from './utils.js';
+import {syncSharedReposBeforeAgentRead} from './share.js';
 
 interface LegacyMemoryCandidate {
   readonly comparableHash: string;
@@ -247,6 +248,9 @@ export async function runMigrateLifecycle(config: RuntimeConfig, options: Migrat
 }
 
 export async function runRecall(config: RuntimeConfig, options: RecallOptions): Promise<void> {
+  if (options.dryRun !== true) {
+    await syncSharedReposAndLog(config);
+  }
   const ov = await openVikingCliForMode(options.dryRun === true);
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, options.query));
@@ -309,6 +313,9 @@ async function augmentRecallWithSeededResources(
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
   assertVikingUri(uri);
+  if (options.dryRun !== true) {
+    await syncSharedReposAndLog(config);
+  }
   const ov = await openVikingCliForMode(options.dryRun === true);
   const result = await maybeRun(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
   if (
@@ -319,6 +326,20 @@ export async function runRead(config: RuntimeConfig, uri: string, options: ReadO
     const parentUri = parentVikingUri(uri);
     console.log('\nThis is a generated summary placeholder. To read the underlying content, inspect leaf nodes:');
     console.log(`  threadnote list ${parentUri} --all --recursive`);
+  }
+}
+
+async function syncSharedReposAndLog(config: RuntimeConfig): Promise<void> {
+  try {
+    const syncResult = await syncSharedReposBeforeAgentRead(config);
+    if (syncResult.syncedTeams.length > 0) {
+      console.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
+    }
+    for (const warning of syncResult.warnings) {
+      console.error(`Auto-sync warning: ${warning}`);
+    }
+  } catch (err: unknown) {
+    console.error(`Auto-sync warning: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

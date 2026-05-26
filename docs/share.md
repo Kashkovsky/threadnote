@@ -71,7 +71,18 @@ lines from the memory's header block. Those pointers only resolve on the
 publisher's machine — teammates pull via git and cannot dereference them — so
 keeping them would just leak local-only provenance into team git history.
 
-### Pull teammates' updates
+### Keep teammates' updates current
+
+Threadnote does a periodic background `git fetch` for configured share teams.
+When an agent calls MCP `recall_context` / `read_context`, or the CLI
+`threadnote recall` / `threadnote read`, Threadnote checks whether a shared
+repo is behind. If it is, Threadnote rebases the clean worktree, reindexes the
+pulled markdown files into OpenViking, and then returns the requested
+recall/read result. Sync errors degrade to warnings so memory access still
+works with the best local data available.
+
+Manual sync remains useful when you want to publish local edits, clear a dirty
+shared worktree, resolve git conflicts, or force a sync immediately:
 
 ```bash
 threadnote share sync                  # default team
@@ -82,7 +93,9 @@ threadnote share sync --no-push        # pull only
 `share sync` will auto-commit any uncommitted edits in the worktree, fetch and
 rebase from the remote, reindex pulled markdown files into OpenViking (so
 `recall` finds them immediately), and push. Pass `--no-auto-commit` to refuse
-syncing when the worktree is dirty.
+syncing when the worktree is dirty. Automatic recall/read sync never commits a
+dirty shared worktree; it warns and leaves that case for explicit
+`threadnote share sync`.
 
 ### Take a memory back
 

@@ -350,8 +350,10 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `forget`: removes a `viking://` URI.
 - `export-pack` / `import-pack`: moves local context through `.ovpack` files.
 - `share init|status|sync|publish|unpublish|list|remove`: opts a curated subset of durable memories into a team git
-  repo so teammates can pull them. Personal handoffs and preferences stay local. See `docs/share.md` for the full
-  workflow and the publish-time scrubber rules.
+  repo. Threadnote periodically fetches configured share repos and automatically syncs clean incoming changes before
+  agent recall/read; use `share sync` for dirty worktrees, conflicts, explicit pushes, or immediate manual sync.
+  Personal handoffs and preferences stay local. See `docs/share.md` for the full workflow and the publish-time scrubber
+  rules.
 
 ## Source Checkout
 
@@ -427,4 +429,6 @@ threadnote list viking://agent/threadnote/memories --all --recursive
 
 When MCP is installed, the agent should use Threadnote MCP `recall_context`, then `read_context` or `list_context`.
 Agents must pass JSON arguments, for example `recall_context({"query":"agent context"})`. Older adapters expose
-`search`, `read`, and `list` aliases. The CLI commands are the fallback path.
+`search`, `read`, and `list` aliases. Before recall/read returns, Threadnote automatically syncs clean incoming shared
+memory updates when a configured share repo is behind; failures are reported as warnings and the local read still
+continues. The CLI commands are the fallback path.

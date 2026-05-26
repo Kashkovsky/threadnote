@@ -1346,17 +1346,19 @@ threadnote remember \
             </div>
 
             <div class="reveal">
-              <h3>Pull teammates' updates</h3>
+              <h3>Teammates' updates auto-sync</h3>
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
-                <pre><span class="cmd">$ threadnote share sync</span>
-<span class="out">git pull --rebase</span>
-<span class="out">Reindexed 3 file change(s) into OpenViking.</span>
+                <pre><span class="cmd">$ recall_context({query: "shared feature memory"})</span>
+<span class="out">→ viking://user/you/memories/shared/default/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
+<span class="out">Auto-synced shared memories: default</span>
 <span class="out-strong">Recall now finds new shared memories alongside personal.</span></pre>
               </div>
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
-                Recall sees the shared subtree by default. Both semantic search and exact-token grep cover
-                <code>viking://user/&lt;you&gt;/memories/shared/&lt;team&gt;/...</code> alongside your personal memories.
+                The MCP server periodically fetches share repos and syncs clean incoming updates before
+                <code>recall_context</code> or <code>read_context</code> returns. Manual
+                <code>threadnote share sync</code> is still there for dirty worktrees, conflicts, explicit pushes, or
+                immediate operator control.
               </p>
             </div>
 
@@ -1430,8 +1432,8 @@ threadnote remember \
               <pre class="v-response">Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
 git push: ok</pre>
               <div class="v-answer">
-                The memory lands in the team git repo. A teammate's next <code>share sync</code> pulls it; their
-                recall surfaces it alongside their own memories — no DM forwarding, no PDF dumping.
+                The memory lands in the team git repo. Their agent's next recall/read auto-syncs clean incoming changes
+                and surfaces it alongside their own memories — no DM forwarding, no PDF dumping.
               </div>
             </div>
 

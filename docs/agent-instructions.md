@@ -118,8 +118,9 @@ The MCP tool `share_publish` runs the same scrubber as the CLI and refuses to pu
 patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It is a destructive
 operation: it removes the personal copy after the shared copy is committed.
 
-When a teammate's memory needs to come into your own working set, run `threadnote share sync` (no MCP equivalent yet) to
-pull and reindex.
+Incoming shared memories are normally fetched and synced automatically before MCP `recall_context` / `read_context` and
+CLI `threadnote recall` / `threadnote read` return. If automatic sync reports a dirty worktree, a conflict, or another
+git issue, run `threadnote share sync` after resolving the local state to pull, reindex, and push explicitly.
 
 ```
 # MCP call shape

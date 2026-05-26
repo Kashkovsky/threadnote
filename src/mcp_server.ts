@@ -17,7 +17,9 @@ import {
   resolveTeam,
   applyScrubber,
   sharedUriFor,
+  startShareBackgroundFetch,
   stripPersonalProvenance,
+  syncSharedReposBeforeAgentRead,
   vikingResourceExists as sharedVikingResourceExists,
   vikingUriToWorktreeRelative,
   writeMemoryFile,
@@ -101,6 +103,7 @@ async function main(): Promise<void> {
   );
 
   registerTools(server, config);
+  startShareBackgroundFetch(config);
   await server.connect(new StdioServerTransport());
   process.stderr.write('Threadnote local MCP adapter running\n');
 }
@@ -364,6 +367,15 @@ interface RecallToolParams {
 }
 
 async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
+  let syncedTeams: readonly string[] = [];
+  const syncWarnings: string[] = [];
+  try {
+    const syncResult = await syncSharedReposBeforeAgentRead(config);
+    syncedTeams = syncResult.syncedTeams;
+    syncWarnings.push(...syncResult.warnings);
+  } catch (err: unknown) {
+    syncWarnings.push(errorMessage(err));
+  }
   const baseArgs = [
     'search',
     params.query,
@@ -389,6 +401,12 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   const exactMatches = await exactMemoryMatchesText(config, params.query, params.includeArchived);
   if (exactMatches) {
     sections.push(`Exact durable memory matches:\n${exactMatches}`);
+  }
+  if (syncedTeams.length > 0) {
+    sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
+  }
+  for (const warning of syncWarnings) {
+    sections.push(`Auto-sync warning: ${warning}`);
   }
   if (sections.length <= 1) {
     return semanticResult;
@@ -480,7 +498,27 @@ function registerReadTool(server: McpServer, config: RuntimeConfig, name: string
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, ['read', checkedUri.value]);
+      let syncedTeams: readonly string[] = [];
+      const syncWarnings: string[] = [];
+      try {
+        const syncResult = await syncSharedReposBeforeAgentRead(config);
+        syncedTeams = syncResult.syncedTeams;
+        syncWarnings.push(...syncResult.warnings);
+      } catch (err: unknown) {
+        syncWarnings.push(errorMessage(err));
+      }
+      const result = await runOpenVikingTool(config, ['read', checkedUri.value]);
+      if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
+        return result;
+      }
+      const syncMessages = [
+        syncedTeams.length > 0 ? `Auto-synced shared memories: ${syncedTeams.join(', ')}` : undefined,
+        ...syncWarnings.map(warning => `Auto-sync warning: ${warning}`),
+      ].filter((part): part is string => part !== undefined);
+      return {
+        ...result,
+        content: [...result.content, {type: 'text', text: syncMessages.join('\n')}],
+      };
     },
   );
 }
