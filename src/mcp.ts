@@ -347,8 +347,12 @@ function buildCopilotMcpServerConfig(
   };
 }
 
+function isEmptyConfigContent(content: string | undefined): boolean {
+  return content === undefined || content.trim().length === 0;
+}
+
 function renderCursorMcpConfig(currentContent: string | undefined, name: string, serverConfig: JsonObject): string {
-  const parsed = currentContent === undefined ? {} : parseJsonConfigObject(currentContent);
+  const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     throw new Error(`${cursorMcpConfigPath()} exists but is not a JSON object; not modifying it.`);
   }
@@ -363,7 +367,7 @@ function renderCursorMcpConfig(currentContent: string | undefined, name: string,
 }
 
 function renderCopilotMcpConfig(currentContent: string | undefined, name: string, serverConfig: JsonObject): string {
-  const parsed = currentContent === undefined ? {} : parseJsonConfigObject(currentContent);
+  const parsed = isEmptyConfigContent(currentContent) ? {} : parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     throw new Error(`${copilotMcpConfigPath()} exists but is not a JSON object; not modifying it.`);
   }
@@ -380,11 +384,11 @@ function renderCopilotMcpConfig(currentContent: string | undefined, name: string
 async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<void> {
   const path = cursorMcpConfigPath();
   const currentContent = await readFileIfExists(path);
-  if (currentContent === undefined) {
+  if (isEmptyConfigContent(currentContent)) {
     console.log(`Already absent: ${path}`);
     return;
   }
-  const parsed = parseJsonConfigObject(currentContent);
+  const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
     return;
@@ -409,11 +413,11 @@ async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<voi
 async function removeCopilotMcpConfig(name: string, dryRun: boolean): Promise<void> {
   const path = copilotMcpConfigPath();
   const currentContent = await readFileIfExists(path);
-  if (currentContent === undefined) {
+  if (isEmptyConfigContent(currentContent)) {
     console.log(`Already absent: ${path}`);
     return;
   }
-  const parsed = parseJsonConfigObject(currentContent);
+  const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
     return;
