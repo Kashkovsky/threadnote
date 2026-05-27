@@ -123,7 +123,10 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
     console.log(`OpenViking server already installed: ${serverPath}`);
     const localEmbeddingMissing = (await hasLocalEmbeddingDependency(serverPath)) === false;
     const pythonSystemCertificatesMissing = (await hasPythonSystemCertificatesPatch(serverPath)) === false;
-    if (localEmbeddingMissing) {
+    if (options.force === true) {
+      console.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`);
+      await runInstallCommands(config, options.packageManager, true, dryRun);
+    } else if (localEmbeddingMissing) {
       const repairReasons: string[] = [];
       repairReasons.push('local embedding extra is missing');
       if (pythonSystemCertificatesMissing) {

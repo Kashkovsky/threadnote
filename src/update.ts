@@ -7,6 +7,7 @@ import {stdin as input, stdout as output} from 'node:process';
 import {hasLegacyLifecycleHandoffCandidates} from './memory.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
 import {
+  compareVersions,
   ensureDirectory,
   errorMessage,
   findExecutable,
@@ -154,10 +155,16 @@ export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOp
   if (!options.fromVersion || !options.toVersion) {
     throw new Error('Provide --from-version and --to-version for post-update.');
   }
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  await ensurePinnedOpenVikingInstalled(config, {
+    dryRun: options.dryRun === true,
+    interactive,
+    yes: options.yes === true,
+  });
   await runApplicablePostUpdateMigrations(config, {
     dryRun: options.dryRun === true,
     fromVersion: options.fromVersion,
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    interactive,
     markHandled: true,
     toVersion: options.toVersion,
     yes: options.yes === true,
@@ -169,6 +176,8 @@ export async function maybeRunPostUpdateAfterRepair(
   options: {readonly dryRun: boolean},
 ): Promise<void> {
   const toVersion = await currentPackageVersion();
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun, interactive, yes: false});
   const state = await readPostUpdateState(config);
   const migrations = await applicablePostUpdateMigrations(config, {
     fromVersion: '0.0.0',
@@ -181,7 +190,7 @@ export async function maybeRunPostUpdateAfterRepair(
   console.log('');
   console.log('Repair found package post-update migrations.');
   console.log('This also covers updates launched by older Threadnote versions that only knew how to run repair.');
-  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+  if (!interactive) {
     console.log(
       'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
     );
@@ -190,11 +199,74 @@ export async function maybeRunPostUpdateAfterRepair(
   await runApplicablePostUpdateMigrations(config, {
     dryRun: options.dryRun,
     fromVersion: '0.0.0',
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    interactive,
     markHandled: true,
     toVersion,
     yes: false,
   });
+}
+
+/**
+ * Detects the installed OpenViking CLI version and, if it's older than the
+ * pinned `config.openVikingVersion`, prompts (or auto-runs when `yes` is set)
+ * a `threadnote install --force` to bring it up to date.
+ *
+ * No-ops if OV is not installed at all (the install command path covers that),
+ * if the installed version is unparseable (we'd rather warn than break the
+ * update), or if the installed version is already at-or-above the pin.
+ *
+ * Lives in update.ts (not lifecycle.ts) to avoid a lifecycle <-> update import
+ * cycle; calls into install via subprocess on the same threadnote binary,
+ * mirroring how migration entries spawn subcommands.
+ */
+async function ensurePinnedOpenVikingInstalled(
+  config: RuntimeConfig,
+  options: {readonly dryRun: boolean; readonly interactive: boolean; readonly yes: boolean},
+): Promise<void> {
+  const ov = await findExecutable(['ov', 'openviking']);
+  if (!ov) {
+    return;
+  }
+  const installedVersion = await readOpenVikingCliVersion(ov);
+  if (!installedVersion) {
+    console.log(`Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`);
+    return;
+  }
+  const pinned = config.openVikingVersion;
+  if (compareVersions(installedVersion, pinned) >= 0) {
+    return;
+  }
+  console.log('');
+  console.log(`OpenViking ${installedVersion} is older than the pinned version ${pinned}.`);
+  console.log(
+    'Upgrading picks up upstream fixes for share-sync reliability (reindex lock acquisition, ov wait timeout).',
+  );
+  const threadnoteCommand =
+    currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
+  const installArgs = ['install', '--force', '--no-start'];
+  const accepted =
+    options.dryRun ||
+    options.yes ||
+    (options.interactive && (await confirmPostUpdateMigration(`Upgrade OpenViking to ${pinned} now? [Y/n] `, true)));
+  if (!accepted) {
+    console.log(`Skipped. Run manually later: ${formatMigrationCommand(threadnoteCommand, installArgs)}`);
+    return;
+  }
+  await maybeRun(options.dryRun, threadnoteCommand, installArgs);
+}
+
+async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
+  const result = await runCommand(ov, ['version'], {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+  // `ov version` output:
+  //   CLI:     0.3.12
+  //   Server:  0.3.12
+  // Match the CLI line specifically; ignore the server line in case the
+  // server is briefly out of sync with the CLI during an upgrade.
+  const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);
+  return match ? match[1] : undefined;
 }
 
 async function getUpdateInfo(
@@ -422,10 +494,13 @@ function printPostUpdateMigration(migration: PostUpdateMigration): void {
   }
 }
 
-async function confirmPostUpdateMigration(prompt: string): Promise<boolean> {
+async function confirmPostUpdateMigration(prompt: string, defaultYes = false): Promise<boolean> {
   const readline = createInterface({input, output});
   try {
     const answer = (await readline.question(prompt)).trim().toLowerCase();
+    if (answer === '') {
+      return defaultYes;
+    }
     return answer === 'y' || answer === 'yes';
   } finally {
     readline.close();
@@ -563,42 +638,4 @@ function isUpdateNotificationDisabled(): boolean {
     process.env.NO_UPDATE_NOTIFIER !== undefined ||
     process.env.THREADNOTE_NO_UPDATE_CHECK !== undefined
   );
-}
-
-function compareVersions(currentVersion: string, latestVersion: string): number {
-  const current = parseVersion(currentVersion);
-  const latest = parseVersion(latestVersion);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = current.numbers[index] - latest.numbers[index];
-    if (difference !== 0) {
-      return difference;
-    }
-  }
-  if (current.prerelease === latest.prerelease) {
-    return 0;
-  }
-  if (current.prerelease === undefined) {
-    return 1;
-  }
-  if (latest.prerelease === undefined) {
-    return -1;
-  }
-  return current.prerelease.localeCompare(latest.prerelease);
-}
-
-function parseVersion(version: string): {
-  readonly numbers: readonly [number, number, number];
-  readonly prerelease?: string;
-} {
-  const normalized = version.trim().replace(/^v/, '');
-  const [core, prerelease] = normalized.split('-', 2);
-  const parts = core.split('.').map(part => Number(part));
-  return {
-    numbers: [safeVersionNumber(parts[0]), safeVersionNumber(parts[1]), safeVersionNumber(parts[2])],
-    prerelease,
-  };
-}
-
-function safeVersionNumber(value: number | undefined): number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
 }

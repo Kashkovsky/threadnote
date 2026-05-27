@@ -245,6 +245,50 @@ export async function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * Compare two semver-ish versions. Returns positive if `a > b`, negative if
+ * `a < b`, zero if equal. Handles a single dash-prefixed prerelease segment
+ * (e.g., `1.2.3-rc1`); a missing prerelease is treated as newer than any
+ * prerelease, matching npm semver semantics.
+ */
+export function compareVersions(a: string, b: string): number {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = left.numbers[index] - right.numbers[index];
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  if (left.prerelease === right.prerelease) {
+    return 0;
+  }
+  if (left.prerelease === undefined) {
+    return 1;
+  }
+  if (right.prerelease === undefined) {
+    return -1;
+  }
+  return left.prerelease.localeCompare(right.prerelease);
+}
+
+function parseVersion(version: string): {
+  readonly numbers: readonly [number, number, number];
+  readonly prerelease?: string;
+} {
+  const normalized = version.trim().replace(/^v/, '');
+  const [core, prerelease] = normalized.split('-', 2);
+  const parts = core.split('.').map(part => Number(part));
+  return {
+    numbers: [safeVersionNumber(parts[0]), safeVersionNumber(parts[1]), safeVersionNumber(parts[2])],
+    prerelease,
+  };
+}
+
+function safeVersionNumber(value: number | undefined): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export async function readHttpStatus(url: string, timeoutMs: number): Promise<number | undefined> {
   return new Promise(resolvePromise => {
     const request = httpGet(url, response => {

@@ -92,6 +92,7 @@ async function main(): Promise<void> {
     .command('install')
     .description('Install OpenViking, local config files, command shim, and user-level agent instructions')
     .option('--dry-run', 'Print the actions without making changes')
+    .option('--force', 'Reinstall OpenViking at the pinned version even if a working install is already present')
     .option('--no-start', 'Do not start OpenViking or check server health after installing')
     .option('--package-manager <manager>', 'uv, pipx, or pip', parsePackageManager)
     .option(
