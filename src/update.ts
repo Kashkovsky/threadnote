@@ -156,11 +156,7 @@ export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOp
     throw new Error('Provide --from-version and --to-version for post-update.');
   }
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  await ensurePinnedOpenVikingInstalled(config, {
-    dryRun: options.dryRun === true,
-    interactive,
-    yes: options.yes === true,
-  });
+  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun === true});
   await runApplicablePostUpdateMigrations(config, {
     dryRun: options.dryRun === true,
     fromVersion: options.fromVersion,
@@ -177,7 +173,7 @@ export async function maybeRunPostUpdateAfterRepair(
 ): Promise<void> {
   const toVersion = await currentPackageVersion();
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun, interactive, yes: false});
+  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun});
   const state = await readPostUpdateState(config);
   const migrations = await applicablePostUpdateMigrations(config, {
     fromVersion: '0.0.0',
@@ -208,20 +204,24 @@ export async function maybeRunPostUpdateAfterRepair(
 
 /**
  * Detects the installed OpenViking CLI version and, if it's older than the
- * pinned `config.openVikingVersion`, prompts (or auto-runs when `yes` is set)
- * a `threadnote install --force` to bring it up to date.
+ * pinned `config.openVikingVersion`, transparently upgrades by spawning
+ * `threadnote install --force --no-start` and then restarting the OV server
+ * so the new binary takes effect. No prompt — `threadnote update` is the
+ * user's signal that they want the whole stack brought up to date, and a
+ * stale OV binary breaks `doctor`/share-sync until restarted.
  *
- * No-ops if OV is not installed at all (the install command path covers that),
- * if the installed version is unparseable (we'd rather warn than break the
- * update), or if the installed version is already at-or-above the pin.
+ * No-ops if OV is not installed at all (the install command path covers
+ * fresh installs), if the installed version is unparseable, or if the
+ * installed version is already at-or-above the pin.
  *
- * Lives in update.ts (not lifecycle.ts) to avoid a lifecycle <-> update import
- * cycle; calls into install via subprocess on the same threadnote binary,
- * mirroring how migration entries spawn subcommands.
+ * Lives in update.ts (not lifecycle.ts) to avoid a lifecycle <-> update
+ * import cycle; restarts via threadnote subcommands, or `launchctl` direct
+ * when a LaunchAgent is in play (so the user's launchd setup is preserved
+ * instead of getting silently shifted to a detached process).
  */
 async function ensurePinnedOpenVikingInstalled(
   config: RuntimeConfig,
-  options: {readonly dryRun: boolean; readonly interactive: boolean; readonly yes: boolean},
+  options: {readonly dryRun: boolean},
 ): Promise<void> {
   const ov = await findExecutable(['ov', 'openviking']);
   if (!ov) {
@@ -237,22 +237,96 @@ async function ensurePinnedOpenVikingInstalled(
     return;
   }
   console.log('');
-  console.log(`OpenViking ${installedVersion} is older than the pinned version ${pinned}.`);
-  console.log(
-    'Upgrading picks up upstream fixes for share-sync reliability (reindex lock acquisition, ov wait timeout).',
-  );
+  console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
+  console.log('Picks up upstream fixes for share-sync reliability (reindex lock acquisition, ov wait timeout).');
+
+  // Capture the server state BEFORE we swap binaries so we know what to
+  // restart afterward. install --no-start leaves the existing process
+  // untouched, but that process is still the pre-upgrade binary, so the
+  // user would otherwise need to manually `threadnote stop && threadnote
+  // start` to actually be on the new version.
+  const wasRunning = await isOpenVikingHealthy(config);
+  const usingLaunchd = await isLaunchAgentInstalled();
+
   const threadnoteCommand =
     currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-  const installArgs = ['install', '--force', '--no-start'];
-  const accepted =
-    options.dryRun ||
-    options.yes ||
-    (options.interactive && (await confirmPostUpdateMigration(`Upgrade OpenViking to ${pinned} now? [Y/n] `, true)));
-  if (!accepted) {
-    console.log(`Skipped. Run manually later: ${formatMigrationCommand(threadnoteCommand, installArgs)}`);
+  await maybeRun(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
+
+  if (options.dryRun) {
+    if (wasRunning || usingLaunchd) {
+      console.log('Would restart OpenViking server so the new binary takes effect.');
+    }
     return;
   }
-  await maybeRun(options.dryRun, threadnoteCommand, installArgs);
+
+  if (!wasRunning && !usingLaunchd) {
+    return;
+  }
+
+  console.log('Restarting OpenViking server so the new binary takes effect.');
+  if (usingLaunchd) {
+    const launchAgentPath = launchAgentPlistPath();
+    await runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true});
+    await runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
+  } else {
+    await maybeRun(false, threadnoteCommand, ['stop']);
+    await maybeRun(false, threadnoteCommand, ['start']);
+  }
+  const healthyAfter = await waitForOpenVikingHealthy(config, 10_000);
+  if (!healthyAfter) {
+    console.log(
+      `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
+    );
+    console.log('Check the server log or run: threadnote start');
+  }
+}
+
+function openVikingHealthEndpoint(config: RuntimeConfig): string {
+  return `http://${config.host}:${config.port}/health`;
+}
+
+async function isOpenVikingHealthy(config: RuntimeConfig): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, 800);
+  try {
+    const response = await fetch(openVikingHealthEndpoint(config), {signal: controller.signal});
+    return response.ok;
+  } catch (_err: unknown) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isOpenVikingHealthy(config)) {
+      return true;
+    }
+    await new Promise(resolvePromise => {
+      setTimeout(resolvePromise, 500);
+    });
+  }
+  return isOpenVikingHealthy(config);
+}
+
+function launchAgentPlistPath(): string {
+  return join(homedir(), 'Library', 'LaunchAgents', 'io.threadnote.openviking.plist');
+}
+
+async function isLaunchAgentInstalled(): Promise<boolean> {
+  if (process.platform !== 'darwin') {
+    return false;
+  }
+  try {
+    await access(launchAgentPlistPath(), fsConstants.F_OK);
+    return true;
+  } catch (_err: unknown) {
+    return false;
+  }
 }
 
 async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
