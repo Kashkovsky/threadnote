@@ -115,7 +115,7 @@ export interface ResolvedTeam {
   readonly name: string;
 }
 
-interface ChangedFile {
+export interface ChangedFile {
   readonly path: string;
   readonly relativePath: string;
   readonly status: 'added' | 'removed' | 'modified';
@@ -1236,7 +1236,7 @@ async function waitForOvQueue(
   }
 }
 
-function isTransientOvFailure(stderr: string, stdout: string): boolean {
+export function isTransientOvFailure(stderr: string, stdout: string): boolean {
   const output = `${stderr}\n${stdout}`.toLowerCase();
   return (
     output.includes('resource is busy') ||
@@ -1250,7 +1250,7 @@ function isTransientOvFailure(stderr: string, stdout: string): boolean {
   );
 }
 
-function isResourceBusyFailure(stderr: string, stdout: string): boolean {
+export function isResourceBusyFailure(stderr: string, stdout: string): boolean {
   const output = `${stderr}\n${stdout}`.toLowerCase();
   return output.includes('resource is busy') || output.includes('resource is being processed');
 }
@@ -1500,7 +1500,7 @@ async function applyChangesToOpenViking(
   return {failed};
 }
 
-function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {
+export function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {
   const map = new Map<string, ChangedFile>();
   for (const list of lists) {
     for (const change of list) {
