@@ -1185,7 +1185,18 @@ async function writeOvFileWithRetry(
     if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
       throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
     }
-    await sleep(1000 * (attempt + 1));
+    // Resource-busy / being-processed errors mean OV still holds the URI's
+    // per-resource lock from a background semantic/embedding index from an
+    // earlier write (e.g., a prior share sync that pulled the previous
+    // version of the same URI). A short fixed sleep can expire before that
+    // lock releases — drain the queue so we proceed exactly when OV is
+    // ready. For network-class transients, fall back to the fixed sleep
+    // since `ov wait` would hit the same connectivity issue.
+    if (isResourceBusyFailure(result.stderr, result.stdout)) {
+      await waitForOvQueue(ov, config, options);
+    } else {
+      await sleep(1000 * (attempt + 1));
+    }
   }
 }
 
@@ -1215,6 +1226,11 @@ function isTransientOvFailure(stderr: string, stdout: string): boolean {
     output.includes('connection reset') ||
     output.includes('timed out')
   );
+}
+
+function isResourceBusyFailure(stderr: string, stdout: string): boolean {
+  const output = `${stderr}\n${stdout}`.toLowerCase();
+  return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
 async function ingestSingleFile(
@@ -1319,7 +1335,11 @@ export async function removeMemoryUri(
     if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
       throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
     }
-    await sleep(1000 * (attempt + 1));
+    if (isResourceBusyFailure(result.stderr, result.stdout)) {
+      await waitForOvQueue(ov, config, options);
+    } else {
+      await sleep(1000 * (attempt + 1));
+    }
   }
 }
 
