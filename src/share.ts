@@ -528,12 +528,25 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
   }
   const afterRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
 
-  if (!dryRun && beforeRev && afterRev && beforeRev !== afterRev) {
-    const changes = await listChangedFiles(worktree, beforeRev, afterRev);
-    await applyChangesToOpenViking(config, team.config, changes);
-    console.log(`Reindexed ${changes.length} file change(s) into OpenViking.`);
-  } else if (!dryRun) {
-    console.log('No upstream changes to reindex.');
+  if (!dryRun) {
+    const state = autoShareState(config);
+    await loadPendingReindexes(config, state);
+    const previouslyPending = state.pendingReindexes.get(team.name) ?? [];
+    const newChanges =
+      beforeRev && afterRev && beforeRev !== afterRev ? await listChangedFiles(worktree, beforeRev, afterRev) : [];
+    const combined = mergeChanges(previouslyPending, newChanges);
+    if (combined.length === 0) {
+      console.log('No upstream changes to reindex.');
+    } else {
+      const result = await applyAndPersistChanges(config, team.config, state, combined);
+      const succeeded = combined.length - result.failed.length;
+      console.log(`Reindexed ${succeeded} file change(s) into OpenViking.`);
+      if (result.failed.length > 0) {
+        console.warn(
+          `share sync: ${result.failed.length} file(s) could not be ingested on this run; they are persisted and will be retried on the next sync or agent recall/read.`,
+        );
+      }
+    }
   }
 
   if (options.push !== false) {
@@ -551,10 +564,8 @@ async function runShareSyncQuiet(
   const worktree = team.config.worktree;
 
   const pendingChanges = state.pendingReindexes.get(team.name);
-  if (pendingChanges) {
-    await applyChangesToOpenViking(config, team.config, pendingChanges, {quiet: true});
-    state.pendingReindexes.delete(team.name);
-    await writePendingReindexes(config, state);
+  if (pendingChanges && pendingChanges.length > 0) {
+    await applyAndPersistChanges(config, team.config, state, pendingChanges, {quiet: true});
   }
 
   if (await hasUncommittedChanges(worktree)) {
@@ -588,11 +599,11 @@ async function runShareSyncQuiet(
   if (beforeRev && afterRev && beforeRev !== afterRev) {
     const changes = await listChangedFiles(worktree, beforeRev, afterRev);
     if (changes.length > 0) {
-      state.pendingReindexes.set(team.name, changes);
-      await writePendingReindexes(config, state);
-      await applyChangesToOpenViking(config, team.config, changes, {quiet: true});
-      state.pendingReindexes.delete(team.name);
-      await writePendingReindexes(config, state);
+      // Merge with anything still pending from the drain above so a failed
+      // drain item doesn't get clobbered when we persist the new changes.
+      const stillPending = state.pendingReindexes.get(team.name) ?? [];
+      const combined = mergeChanges(stillPending, changes);
+      await applyAndPersistChanges(config, team.config, state, combined, {quiet: true});
     }
   }
   return undefined;
@@ -1119,6 +1130,14 @@ export async function writeMemoryFile(
   }
 }
 
+// Busy-retry backoff: read sequentially between attempts (between 0-1, 1-2, ...).
+// `ov wait` returns immediately when the queue is already drained, so without an
+// explicit sleep the 4 retries would burn in milliseconds. We need real elapsed
+// time to give the OV background indexer that's holding the per-URI lock a
+// chance to finish — the lock isn't observable via `ov wait`, only by actually
+// waiting.
+const BUSY_RETRY_BACKOFF_MS: readonly number[] = [2000, 5000, 10000, 20000, 30000];
+
 async function writeOvFileWithRetry(
   config: ShareRuntime,
   ov: string,
@@ -1127,7 +1146,7 @@ async function writeOvFileWithRetry(
   initialMode: 'create' | 'replace',
   options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
-  const maxAttempts = 4;
+  const maxAttempts = BUSY_RETRY_BACKOFF_MS.length + 1;
   // Snapshot existence ONCE before the first attempt so a teammate's
   // concurrent publish landing between attempts can't trick us into flipping
   // to 'replace' and silently overwriting their content. Only an exists-now-
@@ -1186,14 +1205,17 @@ async function writeOvFileWithRetry(
       throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
     }
     // Resource-busy / being-processed errors mean OV still holds the URI's
-    // per-resource lock from a background semantic/embedding index from an
-    // earlier write (e.g., a prior share sync that pulled the previous
-    // version of the same URI). A short fixed sleep can expire before that
-    // lock releases — drain the queue so we proceed exactly when OV is
-    // ready. For network-class transients, fall back to the fixed sleep
+    // per-resource lock from a background semantic/embedding indexer (e.g.,
+    // a prior share sync that pulled the previous version of the same URI).
+    // The lock isn't drained by `ov wait` because the worker has already
+    // pulled its task from the queue and is processing — `ov wait` would
+    // return immediately. Drain the queue first in case more work is
+    // pending, then sleep real time so the indexer has a chance to release.
+    // For network-class transients, fall back to the short fixed sleep
     // since `ov wait` would hit the same connectivity issue.
     if (isResourceBusyFailure(result.stderr, result.stdout)) {
       await waitForOvQueue(ov, config, options);
+      await sleep(BUSY_RETRY_BACKOFF_MS[attempt] ?? 30000);
     } else {
       await sleep(1000 * (attempt + 1));
     }
@@ -1323,7 +1345,7 @@ export async function removeMemoryUri(
     }
     return;
   }
-  const maxAttempts = 4;
+  const maxAttempts = BUSY_RETRY_BACKOFF_MS.length + 1;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
@@ -1337,6 +1359,7 @@ export async function removeMemoryUri(
     }
     if (isResourceBusyFailure(result.stderr, result.stdout)) {
       await waitForOvQueue(ov, config, options);
+      await sleep(BUSY_RETRY_BACKOFF_MS[attempt] ?? 30000);
     } else {
       await sleep(1000 * (attempt + 1));
     }
@@ -1403,6 +1426,10 @@ async function listChangedFiles(
   return changes;
 }
 
+interface ApplyChangesResult {
+  readonly failed: readonly ChangedFile[];
+}
+
 // applyChangesToOpenViking only reflects changes to files under the shareable
 // kind directories (currently just `durable/`). For renames that cross kind
 // directories (e.g., handoffs/x.md -> durable/y.md), listChangedFiles emits a
@@ -1410,13 +1437,20 @@ async function listChangedFiles(
 // processed independently here. The 'removed' entry for a non-shareable kind
 // is filtered out by the firstSegment check, which is the desired outcome
 // because non-shareable kinds are never reflected into OV's shared subtree.
+//
+// Per-change failures are non-fatal: we log a warning and continue with the
+// other changes, returning the failed list so the caller can re-persist them
+// to pendingReindexes for the next sync attempt. A single stuck URI (e.g.,
+// OV holding a per-resource lock longer than our retry window) must not
+// cause a whole sync to lose all the other files it could have applied.
 async function applyChangesToOpenViking(
   config: ShareRuntime,
   team: ShareTeamConfig,
   changes: readonly ChangedFile[],
   options: {readonly quiet?: boolean} = {},
-): Promise<void> {
+): Promise<ApplyChangesResult> {
   const ov = await openVikingCliForMode(false);
+  const failed: ChangedFile[] = [];
   for (const change of changes) {
     if (!change.relativePath.endsWith('.md')) {
       continue;
@@ -1426,33 +1460,75 @@ async function applyChangesToOpenViking(
       continue;
     }
     const uri = workfileToVikingUri(config, team, change.path);
-    if (change.status === 'removed') {
-      await removeMemoryUri(config, ov, uri, false, options);
-      continue;
-    }
-    if (!(await isFile(change.path))) {
-      continue;
-    }
-    // Either 'modified' or 'added' from git's perspective; the file on disk
-    // was just rewritten by the pull-rebase and OV's index needs to catch up.
-    // Both cases collapse to the same OV-side rule: if the URI already exists,
-    // we must write with 'replace' (the create path's retry loop snapshots
-    // existedBeforeWrite=true and would burn every attempt against an
-    // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
-    // earlier path — a prior share init/sync, or a local publish that wrote
-    // the URI before the corresponding upstream commit landed in this clone.
-    const ovHasResource = await vikingResourceExists(ov, config, uri);
-    if (ovHasResource) {
-      const reason =
-        change.status === 'modified'
-          ? 'overwriting local with upstream (local edits to the shared subtree are not preserved across sync)'
-          : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
-      if (options.quiet !== true) {
-        console.warn(`share sync: ${uri}: ${reason}.`);
+    try {
+      if (change.status === 'removed') {
+        await removeMemoryUri(config, ov, uri, false, options);
+        continue;
       }
+      if (!(await isFile(change.path))) {
+        continue;
+      }
+      // Either 'modified' or 'added' from git's perspective; the file on disk
+      // was just rewritten by the pull-rebase and OV's index needs to catch up.
+      // Both cases collapse to the same OV-side rule: if the URI already exists,
+      // we must write with 'replace' (the create path's retry loop snapshots
+      // existedBeforeWrite=true and would burn every attempt against an
+      // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
+      // earlier path — a prior share init/sync, or a local publish that wrote
+      // the URI before the corresponding upstream commit landed in this clone.
+      const ovHasResource = await vikingResourceExists(ov, config, uri);
+      if (ovHasResource) {
+        const reason =
+          change.status === 'modified'
+            ? 'overwriting local with upstream (local edits to the shared subtree are not preserved across sync)'
+            : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
+        if (options.quiet !== true) {
+          console.warn(`share sync: ${uri}: ${reason}.`);
+        }
+      }
+      await ensureSharedDirectoryChain(config, ov, uri, false, options);
+      const writeMode: 'create' | 'replace' = ovHasResource ? 'replace' : 'create';
+      await ingestSingleFile(ov, config, uri, change.path, writeMode, options);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (options.quiet !== true) {
+        console.warn(`share sync: ${uri}: ingest failed — will retry on the next sync. ${message}`);
+      }
+      failed.push(change);
     }
-    await ensureSharedDirectoryChain(config, ov, uri, false, options);
-    const writeMode: 'create' | 'replace' = ovHasResource ? 'replace' : 'create';
-    await ingestSingleFile(ov, config, uri, change.path, writeMode, options);
   }
+  return {failed};
+}
+
+function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {
+  const map = new Map<string, ChangedFile>();
+  for (const list of lists) {
+    for (const change of list) {
+      map.set(change.relativePath, change);
+    }
+  }
+  return [...map.values()];
+}
+
+async function applyAndPersistChanges(
+  config: ShareRuntime,
+  team: ShareTeamConfig,
+  state: AutoShareState,
+  changes: readonly ChangedFile[],
+  options: {readonly quiet?: boolean} = {},
+): Promise<ApplyChangesResult> {
+  if (changes.length === 0) {
+    return {failed: []};
+  }
+  // Persist intent BEFORE applying so a crash mid-apply doesn't lose state.
+  state.pendingReindexes.set(team.name, changes);
+  await writePendingReindexes(config, state);
+  const result = await applyChangesToOpenViking(config, team, changes, options);
+  if (result.failed.length > 0) {
+    state.pendingReindexes.set(team.name, result.failed);
+  } else {
+    state.pendingReindexes.delete(team.name);
+  }
+  await writePendingReindexes(config, state);
+  return result;
 }
