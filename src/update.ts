@@ -11,6 +11,7 @@ import {
   ensureDirectory,
   errorMessage,
   findExecutable,
+  isExecutable,
   isJsonObject,
   maybeRun,
   readFileIfExists,
@@ -654,15 +655,6 @@ async function runtimeThreadnoteBin(runtime: Exclude<UpdateRuntime, 'auto'>): Pr
     return binDir ? join(binDir, NPM_PACKAGE_NAME) : undefined;
   }
   return join(process.env.DENO_INSTALL ?? join(homedir(), '.deno'), 'bin', NPM_PACKAGE_NAME);
-}
-
-async function isExecutable(path: string): Promise<boolean> {
-  try {
-    await access(path, fsConstants.X_OK);
-    return true;
-  } catch (_err: unknown) {
-    return false;
-  }
 }
 
 function updatePackageCommand(

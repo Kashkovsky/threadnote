@@ -1,4 +1,7 @@
-import {describe, expect, it} from 'vitest';
+import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   compareVersions,
   escapeRegExp,
@@ -6,10 +9,12 @@ import {
   getGlobBase,
   globToRegExp,
   hasGlob,
+  isExecutable,
   isJsonObject,
   parseJsonConfigObject,
   redactText,
   shellQuote,
+  suggestedShellRc,
 } from '../../src/utils.js';
 
 describe('compareVersions', () => {
@@ -198,5 +203,62 @@ describe('formatShellCommand', () => {
     const formatted = formatShellCommand('curl', ['-H', 'Authorization: Bearer abc123def456']);
     expect(formatted).toContain('[REDACTED]');
     expect(formatted).not.toContain('abc123def456');
+  });
+});
+
+describe('isExecutable', () => {
+  let tmpRoot: string;
+  let executablePath: string;
+  let plainPath: string;
+
+  beforeAll(async () => {
+    tmpRoot = await mkdtemp(join(tmpdir(), 'threadnote-isexec-'));
+    executablePath = join(tmpRoot, 'runnable');
+    plainPath = join(tmpRoot, 'plain');
+    await writeFile(executablePath, '#!/bin/sh\nexit 0\n');
+    await chmod(executablePath, 0o755);
+    await writeFile(plainPath, 'not executable');
+    await chmod(plainPath, 0o644);
+  });
+
+  afterAll(async () => {
+    await rm(tmpRoot, {recursive: true, force: true});
+  });
+
+  it('returns true for files with the executable bit set', async () => {
+    expect(await isExecutable(executablePath)).toBe(true);
+  });
+
+  it('returns false for files without the executable bit', async () => {
+    expect(await isExecutable(plainPath)).toBe(false);
+  });
+
+  it('returns false for nonexistent paths', async () => {
+    expect(await isExecutable(join(tmpRoot, 'does-not-exist'))).toBe(false);
+  });
+});
+
+describe('suggestedShellRc', () => {
+  it('returns ~/.zshrc for zsh', () => {
+    expect(suggestedShellRc('/bin/zsh', 'darwin')).toBe('~/.zshrc');
+    expect(suggestedShellRc('/usr/local/bin/zsh', 'linux')).toBe('~/.zshrc');
+  });
+
+  it('returns ~/.bash_profile for bash on macOS', () => {
+    expect(suggestedShellRc('/bin/bash', 'darwin')).toBe('~/.bash_profile');
+  });
+
+  it('returns ~/.bashrc for bash on Linux', () => {
+    expect(suggestedShellRc('/bin/bash', 'linux')).toBe('~/.bashrc');
+  });
+
+  it('returns fish config path for fish', () => {
+    expect(suggestedShellRc('/opt/homebrew/bin/fish', 'darwin')).toBe('~/.config/fish/config.fish');
+  });
+
+  it('falls back to a generic message for unknown or empty shells', () => {
+    expect(suggestedShellRc(undefined, 'darwin')).toBe('your shell rc');
+    expect(suggestedShellRc('', 'linux')).toBe('your shell rc');
+    expect(suggestedShellRc('/usr/local/bin/something-else', 'darwin')).toBe('your shell rc');
   });
 });

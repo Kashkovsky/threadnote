@@ -67,12 +67,23 @@ export function withIdentity(config: AgentIdentity, args: readonly string[]): re
   return [...args, '--account', config.account, '--user', config.user, '--agent-id', config.agentId];
 }
 
-export function renderTemplate(template: string, config: RuntimeConfig): string {
-  return template
+export function renderTemplate(
+  template: string,
+  config: RuntimeConfig,
+  extras: Readonly<Record<string, string>> = {},
+): string {
+  let rendered = template
     .replaceAll('{{THREADNOTE_HOME}}', config.agentContextHome)
     .replaceAll('{{OPENVIKING_ACCOUNT}}', config.account)
     .replaceAll('{{OPENVIKING_AGENT_ID}}', config.agentId)
     .replaceAll('{{OPENVIKING_HOST}}', config.host)
     .replaceAll('{{OPENVIKING_PORT}}', String(config.port))
     .replaceAll('{{OPENVIKING_USER}}', config.user);
+  for (const [key, value] of Object.entries(extras)) {
+    // Replacement is a literal string — use the function form to bypass
+    // String.replaceAll's $-pattern interpretation, so absolute paths
+    // containing characters like `$&` render correctly.
+    rendered = rendered.replaceAll(`{{${key}}}`, () => value);
+  }
+  return rendered;
 }

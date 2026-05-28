@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {existsSync} from 'node:fs';
+import {constants as fsConstants, existsSync} from 'node:fs';
 import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promises';
 import {get as httpGet} from 'node:http';
 import {createConnection} from 'node:net';
@@ -363,6 +363,29 @@ export async function exists(path: string): Promise<boolean> {
   } catch (_err: unknown) {
     return false;
   }
+}
+
+export async function isExecutable(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.X_OK);
+    return true;
+  } catch (_err: unknown) {
+    return false;
+  }
+}
+
+export function suggestedShellRc(shellPath: string | undefined, currentPlatform: NodeJS.Platform): string {
+  const shell = shellPath ?? '';
+  if (shell.endsWith('/zsh')) {
+    return '~/.zshrc';
+  }
+  if (shell.endsWith('/bash')) {
+    return currentPlatform === 'darwin' ? '~/.bash_profile' : '~/.bashrc';
+  }
+  if (shell.endsWith('/fish')) {
+    return '~/.config/fish/config.fish';
+  }
+  return 'your shell rc';
 }
 
 export async function isFile(path: string): Promise<boolean> {

@@ -57,6 +57,7 @@ import {
   formatStatus,
   getInvocationCwd,
   httpGetText,
+  isExecutable,
   isJsonObject,
   isTcpPortOpen,
   maybeRun,
@@ -64,12 +65,12 @@ import {
   readFileIfExists,
   removePath,
   removePathIfExists,
-  requiredExecutable,
   runCommand,
   runInteractive,
   safeTimestamp,
   shellQuote,
   sleep,
+  suggestedShellRc,
   toolRoot,
 } from './utils.js';
 
@@ -81,7 +82,7 @@ export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): 
   checks.push({name: 'platform', status: platform() === 'darwin' ? 'ok' : 'warn', detail: platform()});
   checks.push(await commandCheck('node', ['--version']));
   checks.push(await commandCheck('python3', ['--version']));
-  checks.push(await commandCheck('openviking-server', ['--help']));
+  checks.push(await openVikingServerCheck());
   checks.push(await firstCommandCheck('openviking cli', ['ov', 'openviking'], ['--help']));
   checks.push(await localEmbeddingCheck());
   checks.push(await pythonSystemCertificatesCheck());
@@ -118,7 +119,12 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
   await installCommandShim(dryRun);
   await installUserAgentInstructions(dryRun);
 
-  const serverPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  const serverPath = await findOpenVikingServer();
+  // True only when an install/repair could have moved or created the
+  // openviking-server binary itself. The python-certs branch patches the
+  // existing Python env in place, so it does not flip this — the server
+  // path is unchanged and the earlier resolution is still valid.
+  let serverInstallRan = false;
   if (serverPath) {
     console.log(`OpenViking server already installed: ${serverPath}`);
     const localEmbeddingMissing = (await hasLocalEmbeddingDependency(serverPath)) === false;
@@ -126,6 +132,7 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
     if (options.force === true) {
       console.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`);
       await runInstallCommands(config, options.packageManager, true, dryRun);
+      serverInstallRan = true;
     } else if (localEmbeddingMissing) {
       const repairReasons: string[] = [];
       repairReasons.push('local embedding extra is missing');
@@ -134,6 +141,7 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
       }
       console.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`);
       await runInstallCommands(config, options.packageManager, true, dryRun);
+      serverInstallRan = true;
     } else if (pythonSystemCertificatesMissing) {
       console.log('OpenViking install needs repair: Python system certificate bridge is missing.');
       const installCommand = await getPythonSystemCertificatesInstallCommand(serverPath);
@@ -141,6 +149,11 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
     }
   } else {
     await runInstallCommands(config, options.packageManager, false, dryRun);
+    serverInstallRan = true;
+  }
+  const resolvedServerPath = serverInstallRan ? await findOpenVikingServer() : serverPath;
+  if (resolvedServerPath && !dryRun) {
+    await maybePrintOpenVikingPathHint(resolvedServerPath);
   }
 
   await writeTemplateIfMissing({
@@ -302,6 +315,84 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
   console.log(`Wrote replacement manifest: ${config.manifestPath}`);
 }
 
+/**
+ * Locate the openviking-server binary even when its install directory is not on
+ * PATH — which is the default state on a fresh macOS shell after `uv tool install`.
+ *
+ * Resolution order: shell PATH, then `uv tool dir --bin`, then $UV_TOOL_BIN_DIR,
+ * then ~/.local/bin (the default for uv tool install, pipx, and pip --user).
+ *
+ * The candidate directories are memoised for the lifetime of the process so a
+ * single `threadnote doctor` invocation does not spawn `uv tool dir --bin`
+ * three times. The resolved path itself is not memoised: a `threadnote install`
+ * may create the binary mid-process and the second resolution must see it.
+ */
+async function findOpenVikingServer(): Promise<string | undefined> {
+  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  if (onPath) {
+    return onPath;
+  }
+  for (const candidateDir of await openVikingServerCandidateDirs()) {
+    const candidate = join(candidateDir, OPENVIKING_SERVER_COMMAND);
+    if (await isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+let candidateDirsPromise: Promise<readonly string[]> | undefined;
+
+async function openVikingServerCandidateDirs(): Promise<readonly string[]> {
+  if (!candidateDirsPromise) {
+    candidateDirsPromise = computeOpenVikingServerCandidateDirs();
+  }
+  return candidateDirsPromise;
+}
+
+async function computeOpenVikingServerCandidateDirs(): Promise<readonly string[]> {
+  const dirs: string[] = [];
+  const uv = await findExecutable(['uv']);
+  if (uv) {
+    const result = await runCommand(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      const dir = result.stdout.trim();
+      if (dir) {
+        dirs.push(dir);
+      }
+    }
+  }
+  if (process.env.UV_TOOL_BIN_DIR) {
+    dirs.push(process.env.UV_TOOL_BIN_DIR);
+  }
+  dirs.push(expandPath('~/.local/bin'));
+  return Array.from(new Set(dirs));
+}
+
+async function requireOpenVikingServer(): Promise<string> {
+  const resolved = await findOpenVikingServer();
+  if (!resolved) {
+    throw new Error(
+      `${OPENVIKING_SERVER_COMMAND} was not found in PATH, uv tool bin dir, ` +
+        '$UV_TOOL_BIN_DIR, or ~/.local/bin. Run `threadnote install` first.',
+    );
+  }
+  return resolved;
+}
+
+async function maybePrintOpenVikingPathHint(serverPath: string): Promise<void> {
+  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  if (onPath) {
+    return;
+  }
+  const binDir = dirname(serverPath);
+  const rcHint = suggestedShellRc(process.env.SHELL, platform());
+  console.log(
+    `Note: ${serverPath} is installed but ${binDir} is not on this shell's PATH. ` +
+      `Add \`export PATH="${binDir}:$PATH"\` to ${rcHint} so other tools can find openviking-server.`,
+  );
+}
+
 async function repairServerHealth(config: RuntimeConfig, dryRun: boolean): Promise<boolean> {
   const existingHealth = await readOpenVikingHealthIfAvailable(config, 800);
   if (existingHealth) {
@@ -327,8 +418,8 @@ export async function runStart(config: RuntimeConfig, options: StartOptions): Pr
 
   const server =
     options.dryRun === true
-      ? ((await findExecutable([OPENVIKING_SERVER_COMMAND])) ?? OPENVIKING_SERVER_COMMAND)
-      : await requiredExecutable(OPENVIKING_SERVER_COMMAND);
+      ? ((await findOpenVikingServer()) ?? OPENVIKING_SERVER_COMMAND)
+      : await requireOpenVikingServer();
   const args = openVikingServerArgs(config);
   if (options.dryRun === true) {
     console.log(formatShellCommand(server, args));
@@ -432,6 +523,22 @@ async function commandCheck(name: string, args: readonly string[]): Promise<Doct
   };
 }
 
+async function openVikingServerCheck(): Promise<DoctorCheck> {
+  const name = OPENVIKING_SERVER_COMMAND;
+  const executable = await findOpenVikingServer();
+  if (!executable) {
+    return {name, status: 'fail', detail: 'missing; install will fetch it via uv or pipx'};
+  }
+  const result = await runCommand(executable, ['--help'], {allowFailure: true});
+  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  const detail = onPath ? executable : `${executable} (found outside PATH; add ${dirname(executable)} to PATH)`;
+  return {
+    name,
+    status: result.exitCode === 0 ? 'ok' : 'warn',
+    detail: result.exitCode === 0 ? detail : firstLine(result.stderr || result.stdout) || detail,
+  };
+}
+
 async function commandPresenceCheck(name: string, args: readonly string[]): Promise<DoctorCheck> {
   const executable = await findExecutable([name]);
   if (!executable) {
@@ -466,7 +573,7 @@ async function firstCommandCheck(
 }
 
 async function localEmbeddingCheck(): Promise<DoctorCheck> {
-  const serverPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  const serverPath = await findOpenVikingServer();
   if (!serverPath) {
     return {name: 'local embedding extra', status: 'warn', detail: 'openviking-server missing'};
   }
@@ -488,7 +595,7 @@ async function localEmbeddingCheck(): Promise<DoctorCheck> {
 }
 
 async function pythonSystemCertificatesCheck(): Promise<DoctorCheck> {
-  const serverPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+  const serverPath = await findOpenVikingServer();
   if (!serverPath) {
     return {name: 'python system certs', status: 'warn', detail: 'openviking-server missing'};
   }
@@ -705,6 +812,9 @@ async function installUv(): Promise<boolean> {
         console.log(result.stdout.trim());
       }
       if (await findExecutable(['uv'])) {
+        // Drop the candidate-dirs cache so subsequent openviking-server
+        // resolutions can query `uv tool dir --bin` now that uv is on PATH.
+        candidateDirsPromise = undefined;
         return true;
       }
     } else {
@@ -723,6 +833,7 @@ async function installUv(): Promise<boolean> {
         console.log(result.stdout.trim());
       }
       if (await findExecutable(['uv'])) {
+        candidateDirsPromise = undefined;
         return true;
       }
       console.warn(
@@ -1057,10 +1168,25 @@ async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promi
   if (platform() !== 'darwin') {
     throw new Error('launchd autostart is only supported on macOS.');
   }
+  // launchd uses a minimal default PATH (/usr/bin:/bin:/usr/sbin:/sbin) and
+  // does not source the user's shell rc, so the plist must reference the
+  // absolute path to openviking-server — otherwise a LaunchAgent on a fresh
+  // macOS box would exit 127.
+  const resolvedServer = await findOpenVikingServer();
+  if (!resolvedServer && !dryRun) {
+    throw new Error(
+      `Cannot install LaunchAgent: ${OPENVIKING_SERVER_COMMAND} was not found in PATH, ` +
+        'uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. Run `threadnote install` first.',
+    );
+  }
   const source = join(toolRoot(), 'config', 'launchd', `${LAUNCHD_LABEL}.plist.template`);
   const destination = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
-  const rendered = renderTemplate(await readFile(source, 'utf8'), config);
+  const rendered = renderTemplate(await readFile(source, 'utf8'), config, {
+    OPENVIKING_SERVER_PATH: resolvedServer ?? OPENVIKING_SERVER_COMMAND,
+  });
   if (dryRun) {
+    const resolutionDetail = resolvedServer ?? `<not found; would use bare \`${OPENVIKING_SERVER_COMMAND}\`>`;
+    console.log(`Resolved openviking-server: ${resolutionDetail}`);
     console.log(`Would write ${destination}`);
     console.log(`Would run: launchctl unload ${destination}`);
     console.log(`Would run: launchctl load ${destination}`);
