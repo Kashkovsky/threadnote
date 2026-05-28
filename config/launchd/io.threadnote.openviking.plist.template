@@ -6,7 +6,7 @@
   <string>io.threadnote.openviking</string>
   <key>ProgramArguments</key>
   <array>
-    <string>openviking-server</string>
+    <string>{{OPENVIKING_SERVER_PATH}}</string>
     <string>--config</string>
     <string>{{THREADNOTE_HOME}}/ov.conf</string>
     <string>--host</string>
