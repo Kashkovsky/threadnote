@@ -5,7 +5,7 @@ import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promise
 import {get as httpGet} from 'node:http';
 import {createConnection} from 'node:net';
 import {homedir} from 'node:os';
-import {dirname, isAbsolute, join, resolve, sep} from 'node:path';
+import {basename, dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -491,6 +491,81 @@ export function getInvocationCwd(): string {
   return process.env.THREADNOTE_CALLER_CWD ?? process.cwd();
 }
 
+export function recallQueryRequestsWorkspaceContext(query: string): boolean {
+  const normalized = query.toLowerCase();
+  return /\b(?:this|current)\s+(?:branch|repo|repository|workspace|worktree)\b/.test(normalized);
+}
+
+export async function enrichRecallQueryWithWorkspaceContext(
+  query: string,
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
+): Promise<string> {
+  return enrichRecallQueryWithWorkspaceTerms(query, options, true);
+}
+
+export async function enrichRecallQueryWithWorkspaceProjectContext(
+  query: string,
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
+): Promise<string> {
+  return enrichRecallQueryWithWorkspaceTerms(query, options, false);
+}
+
+async function enrichRecallQueryWithWorkspaceTerms(
+  query: string,
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
+  includeBranch: boolean,
+): Promise<string> {
+  if (!recallQueryRequestsWorkspaceContext(query)) {
+    return query;
+  }
+  const terms = await currentWorkspaceRecallTerms(options, includeBranch);
+  const additions = terms.filter(term => !query.toLowerCase().includes(term.toLowerCase()));
+  return additions.length > 0 ? `${query} ${additions.join(' ')}` : query;
+}
+
+async function currentWorkspaceRecallTerms(
+  options: {
+    readonly cwd?: string;
+    readonly includeProcessCwd?: boolean;
+  },
+  includeBranch: boolean,
+): Promise<readonly string[]> {
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : getInvocationCwd());
+  if (!cwd || !isAbsolute(cwd)) {
+    return [];
+  }
+  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+  if (!repoRoot) {
+    return [];
+  }
+  const branch = await gitValue(['branch', '--show-current'], repoRoot);
+  const parent = dirname(repoRoot);
+  return uniqueUsefulWorkspaceTerms([
+    {source: 'branch', value: includeBranch ? branch : undefined},
+    {source: 'path', value: basename(repoRoot)},
+    {source: 'path', value: parent === homedir() ? undefined : basename(parent)},
+  ]);
+}
+
+export function uniqueUsefulWorkspaceTerms(
+  values: readonly {readonly source: 'branch' | 'path'; readonly value: string | undefined}[],
+): readonly string[] {
+  const ignored = new Set(['repos', 'repositories', 'workspaces', 'worktrees']);
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const {source, value} of values) {
+    const term = value?.trim();
+    const normalized = term?.toLowerCase();
+    const tooShort = source === 'branch' ? false : (term?.length ?? 0) < 4;
+    if (!term || !normalized || tooShort || ignored.has(normalized) || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    terms.push(term);
+  }
+  return terms;
+}
+
 export function toPosixPath(path: string): string {
   return path.split(sep).join('/');
 }
@@ -518,19 +593,29 @@ export function exactRecallTerms(query: string): readonly string[] {
     'branch',
     'case',
     'current',
+    'durable',
     'find',
+    'feature',
+    'features',
     'handoff',
     'issue',
     'issues',
+    'knowledge',
     'latest',
     'memory',
     'memories',
+    'project',
     'recall',
+    'repo',
+    'repository',
     'related',
     'search',
-    'the',
+    'stored',
     'this',
+    'the',
     'with',
+    'workspace',
+    'worktree',
   ]);
   const seen = new Set<string>();
   const terms: string[] = [];

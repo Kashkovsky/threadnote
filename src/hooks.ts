@@ -227,7 +227,8 @@ export async function runSessionStartHook(config: RuntimeConfig, options: HookRu
       dryRun: options.dryRun === true,
       inferScope: true,
       nodeLimit: '5',
-      query: `${project} latest handoff durable feature memory`,
+      // Keep "current branch" here so recall enriches the query with local git/workspace terms.
+      query: `${project} current branch latest handoff durable feature memory`,
     });
   } catch (err: unknown) {
     process.stderr.write(

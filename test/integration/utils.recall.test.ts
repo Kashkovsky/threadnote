@@ -1,0 +1,63 @@
+import {mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {basename, join} from 'node:path';
+import {describe, expect, it} from 'vitest';
+import {
+  enrichRecallQueryWithWorkspaceContext,
+  enrichRecallQueryWithWorkspaceProjectContext,
+  runCommand,
+} from '../../src/utils.js';
+
+describe('workspace recall enrichment', () => {
+  it('uses absolute caller cwd and keeps branch terms out of project inference context', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'threadnote-recall-repo-'));
+    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+    delete process.env.THREADNOTE_CALLER_CWD;
+    for (const key of gitEnvKeys) {
+      delete process.env[key];
+    }
+    try {
+      await runCommand('git', ['init'], {cwd: repoRoot});
+      await runCommand('git', ['symbolic-ref', 'HEAD', 'refs/heads/mobile-feedback-results-fix'], {cwd: repoRoot});
+
+      await expect(
+        enrichRecallQueryWithWorkspaceContext('current repo latest handoff', {
+          cwd: repoRoot,
+          includeProcessCwd: false,
+        }),
+      ).resolves.toContain('mobile-feedback-results-fix');
+      await expect(
+        enrichRecallQueryWithWorkspaceProjectContext('current repo latest handoff', {
+          cwd: repoRoot,
+          includeProcessCwd: false,
+        }),
+      ).resolves.toBe(`current repo latest handoff ${basename(repoRoot)}`);
+      await expect(
+        enrichRecallQueryWithWorkspaceContext('current repo latest handoff', {includeProcessCwd: false}),
+      ).resolves.toBe('current repo latest handoff');
+      await expect(
+        enrichRecallQueryWithWorkspaceContext('current repo latest handoff', {
+          cwd: '.',
+          includeProcessCwd: false,
+        }),
+      ).resolves.toBe('current repo latest handoff');
+    } finally {
+      if (previousCallerCwd === undefined) {
+        delete process.env.THREADNOTE_CALLER_CWD;
+      } else {
+        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+      }
+      for (const key of gitEnvKeys) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+      await rm(repoRoot, {recursive: true, force: true});
+    }
+  });
+});

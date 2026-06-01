@@ -4,7 +4,9 @@ import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   compareVersions,
+  enrichRecallQueryWithWorkspaceContext,
   escapeRegExp,
+  exactRecallTerms,
   formatShellCommand,
   getGlobBase,
   globToRegExp,
@@ -12,9 +14,11 @@ import {
   isExecutable,
   isJsonObject,
   parseJsonConfigObject,
+  recallQueryRequestsWorkspaceContext,
   redactText,
   shellQuote,
   suggestedShellRc,
+  uniqueUsefulWorkspaceTerms,
 } from '../../src/utils.js';
 
 describe('compareVersions', () => {
@@ -174,6 +178,72 @@ describe('escapeRegExp', () => {
     expect(escapeRegExp('a.b')).toBe('a\\.b');
     expect(escapeRegExp('(x)')).toBe('\\(x\\)');
     expect(escapeRegExp('a|b')).toBe('a\\|b');
+  });
+});
+
+describe('exactRecallTerms', () => {
+  it('keeps branch/topic-shaped terms and drops generic recall words', () => {
+    expect(exactRecallTerms('coda latest handoff durable feature memory valencia-v1')).toEqual(['valencia-v1', 'coda']);
+  });
+
+  it('keeps stable issue topic slugs', () => {
+    expect(exactRecallTerms('recall mobile-checkbox-clipped-table-cell handoff')).toEqual([
+      'mobile-checkbox-clipped-table-cell',
+    ]);
+  });
+});
+
+describe('recallQueryRequestsWorkspaceContext', () => {
+  it('detects current branch and repo wording', () => {
+    for (const phrase of [
+      'this branch',
+      'current branch',
+      'this repo',
+      'current repo',
+      'this repository',
+      'current repository',
+      'this workspace',
+      'current workspace',
+      'this worktree',
+      'current worktree',
+    ]) {
+      expect(recallQueryRequestsWorkspaceContext(`latest handoff for ${phrase}`)).toBe(true);
+    }
+  });
+
+  it('leaves explicit recall queries alone', () => {
+    expect(recallQueryRequestsWorkspaceContext('coda valencia-v1 latest handoff')).toBe(false);
+  });
+});
+
+describe('enrichRecallQueryWithWorkspaceContext', () => {
+  it('returns explicit queries unchanged', async () => {
+    await expect(enrichRecallQueryWithWorkspaceContext('coda valencia-v1 latest handoff')).resolves.toBe(
+      'coda valencia-v1 latest handoff',
+    );
+  });
+});
+
+describe('uniqueUsefulWorkspaceTerms', () => {
+  it('keeps short branch names but drops short path terms', () => {
+    expect(
+      uniqueUsefulWorkspaceTerms([
+        {source: 'branch', value: 'v1'},
+        {source: 'path', value: 'v1'},
+        {source: 'path', value: 'coda'},
+      ]),
+    ).toEqual(['v1', 'coda']);
+  });
+
+  it('drops ignored path terms and deduplicates case-insensitively', () => {
+    expect(
+      uniqueUsefulWorkspaceTerms([
+        {source: 'path', value: 'repos'},
+        {source: 'path', value: 'workspaces'},
+        {source: 'branch', value: 'Fix'},
+        {source: 'path', value: 'fix'},
+      ]),
+    ).toEqual(['Fix']);
   });
 });
 

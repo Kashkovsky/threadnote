@@ -9,8 +9,9 @@ follow the nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction fil
 
 When OpenViking MCP tools are available, use them directly. Prefer Threadnote-named MCP tools when present:
 `recall_context`, `read_context`, `list_context`, `remember_context`, and `share_publish`. Always pass JSON arguments to
-MCP tools, for example `recall_context({"query":"current repo latest handoff"})`. Older Threadnote MCP adapters may
-expose `search`, `read`, `list`, and `store` instead.
+MCP tools. When a recall query says "current repo" or "this branch", include the current workspace path as `callerCwd`,
+for example `recall_context({"query":"current repo latest handoff","callerCwd":"/absolute/workspace/path"})`. Older
+Threadnote MCP adapters may expose `search`, `read`, `list`, and `store` instead.
 
 If MCP is unavailable, use the `threadnote` CLI fallback.
 

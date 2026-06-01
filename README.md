@@ -339,8 +339,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `migrate-lifecycle`: moves clear legacy handoff memories from the old events path into archived lifecycle handoff
   paths. It dry-runs by default; use `--apply` after reviewing the output.
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
-  `skills for api service`; use `--uri` or `--no-infer-scope` to override. Exact durable-memory matches skip archived
-  lifecycle paths unless `--include-archived` is passed.
+  `skills for api service`; use `--uri` or `--no-infer-scope` to override. Queries that mention `this branch` or
+  `current branch` are enriched with local git/workspace terms when available. Exact memory/resource matches skip
+  archived lifecycle paths unless `--include-archived` is passed.
 - `read`: reads a `viking://` URI returned by `recall` or `list`.
 - `list` / `ls`: lists a `viking://` directory.
 - `handoff`: stores current git state and next-step notes as a durable handoff. Use `--replace <uri>` to update the
@@ -428,7 +429,9 @@ threadnote list viking://agent/threadnote/memories --all --recursive
 ```
 
 When MCP is installed, the agent should use Threadnote MCP `recall_context`, then `read_context` or `list_context`.
-Agents must pass JSON arguments, for example `recall_context({"query":"agent context"})`. Older adapters expose
-`search`, `read`, and `list` aliases. Before recall/read returns, Threadnote automatically syncs clean incoming shared
-memory updates when a configured share repo is behind; failures are reported as warnings and the local read still
-continues. The CLI commands are the fallback path.
+Agents must pass JSON arguments, for example `recall_context({"query":"agent context"})`. For MCP recall queries that
+say "current repo" or "this branch", pass the current workspace path as `callerCwd` so Threadnote can resolve branch and
+workspace terms without guessing from the MCP server's launch directory. Older adapters expose `search`, `read`, and
+`list` aliases. Before recall/read returns, Threadnote automatically syncs clean incoming shared memory updates when a
+configured share repo is behind; failures are reported as warnings and the local read still continues. The CLI commands
+are the fallback path.

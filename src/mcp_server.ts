@@ -26,6 +26,8 @@ import {
 } from './share.js';
 import {
   errorMessage,
+  enrichRecallQueryWithWorkspaceContext,
+  enrichRecallQueryWithWorkspaceProjectContext,
   exactRecallTerms,
   expandPath,
   findExecutable,
@@ -89,7 +91,7 @@ async function main(): Promise<void> {
         '',
         'Stdio MCP adapter for Threadnote shared local context.',
         'Prefer `recall_context` to find candidate viking:// URIs, then `read_context` files or `list_context` directories.',
-        'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff"}).',
+        'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff","callerCwd":"/absolute/workspace/path"}).',
         'recall_context also surfaces seeded project resources under viking://resources/repos/<project> when the query mentions a project from the seed manifest. See its tool description for the query convention.',
         'Older clients may use the compatibility aliases `search`, `read`, and `list`.',
         'For durable facts, store kind="durable"; for current work logs, store kind="handoff" with project/topic so Threadnote keeps one active memory updated.',
@@ -123,7 +125,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     server,
     config,
     'recall_context',
-    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Include the repo or project name in the query to make the project-guidance pass fire. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
+    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
   );
   registerSearchTool(
     server,
@@ -336,11 +338,15 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       inputSchema: {
         query: z.string().optional().describe('Required search query, for example "unity-ui-ccc latest handoff"'),
         uri: z.string().optional().describe('Optional viking:// subtree to search'),
+        callerCwd: z
+          .string()
+          .optional()
+          .describe('Optional absolute caller workspace path used to resolve this/current branch queries'),
         nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
-        includeArchived: z.boolean().optional().describe('Include archived memories in exact durable-memory matches'),
+        includeArchived: z.boolean().optional().describe('Include archived memories in exact memory/resource matches'),
       },
     },
-    async ({includeArchived, nodeLimit, query, uri}) => {
+    async ({callerCwd, includeArchived, nodeLimit, query, uri}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -350,6 +356,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
         return checkedUri.error;
       }
       return runRecallTool(config, {
+        callerCwd,
         query: checkedQuery.value,
         pinnedUri: checkedUri.value,
         nodeLimit,
@@ -360,6 +367,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
 }
 
 interface RecallToolParams {
+  readonly callerCwd: string | undefined;
   readonly includeArchived: boolean;
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
@@ -376,9 +384,18 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   } catch (err: unknown) {
     syncWarnings.push(errorMessage(err));
   }
+  const query = await enrichRecallQueryWithWorkspaceContext(params.query, {
+    cwd: params.callerCwd,
+    includeProcessCwd: false,
+  });
+  const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(params.query, {
+    cwd: params.callerCwd,
+    includeProcessCwd: false,
+  });
+  const contextualParams: RecallToolParams = {...params, query};
   const baseArgs = [
     'search',
-    params.query,
+    query,
     ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
     ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
   ];
@@ -394,13 +411,13 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (firstContent.text) {
     sections.push(firstContent.text);
   }
-  const seededSection = await seededResourcesSection(config, params);
+  const seededSection = await seededResourcesSection(config, contextualParams, projectQuery);
   if (seededSection) {
     sections.push(seededSection);
   }
-  const exactMatches = await exactMemoryMatchesText(config, params.query, params.includeArchived);
+  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived);
   if (exactMatches) {
-    sections.push(`Exact durable memory matches:\n${exactMatches}`);
+    sections.push(`Exact memory/resource matches:\n${exactMatches}`);
   }
   if (syncedTeams.length > 0) {
     sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
@@ -426,11 +443,15 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
  * `projectResourceUri` dedupe check here — if MCP later grows inference, mirror
  * the CLI's `augmentRecallWithSeededResources` guard.
  */
-async function seededResourcesSection(config: RuntimeConfig, params: RecallToolParams): Promise<string | undefined> {
+async function seededResourcesSection(
+  config: RuntimeConfig,
+  params: RecallToolParams,
+  projectQuery: string,
+): Promise<string | undefined> {
   if (params.pinnedUri) {
     return undefined;
   }
-  const project = await inferProjectFromQuery(config.manifestPath, params.query);
+  const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
   if (!project) {
     return undefined;
   }

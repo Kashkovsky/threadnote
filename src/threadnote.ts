@@ -322,7 +322,7 @@ async function main(): Promise<void> {
     .description('Search shared OpenViking context')
     .requiredOption('--query <query>', 'Search query')
     .option('--dry-run', 'Print ov command without searching')
-    .option('--include-archived', 'Include archived memories in exact durable-memory matches')
+    .option('--include-archived', 'Include archived memories in exact memory/resource matches')
     .option('-n, --node-limit <count>', 'Maximum number of search results')
     .option('--no-infer-scope', 'Disable query-based scope inference')
     .option('--uri <uri>', 'Restrict search to a viking:// URI')

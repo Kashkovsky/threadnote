@@ -19,6 +19,8 @@ import type {
 } from './types.js';
 import {
   assertVikingUri,
+  enrichRecallQueryWithWorkspaceContext,
+  enrichRecallQueryWithWorkspaceProjectContext,
   expandPath,
   exactRecallTerms,
   formatShellCommand,
@@ -252,9 +254,11 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     await syncSharedReposAndLog(config);
   }
   const ov = await openVikingCliForMode(options.dryRun === true);
+  const query = await enrichRecallQueryWithWorkspaceContext(options.query);
+  const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(options.query);
   const inferredUri =
-    options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, options.query));
-  const args = ['search', options.query];
+    options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
+  const args = ['search', query];
   if (inferredUri) {
     args.push('--uri', inferredUri);
     console.log(`Recall scope: ${inferredUri}`);
@@ -263,8 +267,8 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  await augmentRecallWithSeededResources(config, ov, options, inferredUri);
-  await printExactMemoryMatches(config, ov, options.query, {
+  await augmentRecallWithSeededResources(config, ov, {...options, query}, inferredUri, projectQuery);
+  await printExactMemoryMatches(config, ov, query, {
     dryRun: options.dryRun === true,
     includeArchived: options.includeArchived === true,
   });
@@ -287,6 +291,7 @@ async function augmentRecallWithSeededResources(
   ov: string,
   options: RecallOptions,
   inferredUri: string | undefined,
+  projectQuery = options.query,
 ): Promise<void> {
   // `--no-infer-scope` (options.inferScope === false) disables the base scope
   // inference; honoring it here too keeps the flag's meaning consistent —
@@ -295,7 +300,7 @@ async function augmentRecallWithSeededResources(
   if (options.uri || options.inferScope === false) {
     return;
   }
-  const project = await inferProjectFromQuery(config.manifestPath, options.query);
+  const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
   if (!project) {
     return;
   }
@@ -503,7 +508,7 @@ async function printExactMemoryMatches(
   if (outputs.length === 0) {
     return;
   }
-  console.log('\nExact durable memory matches:');
+  console.log('\nExact memory/resource matches:');
   console.log(outputs.join('\n\n'));
 }
 
