@@ -4,6 +4,7 @@ import {Command} from 'commander';
 import {DEFAULT_HOST, DEFAULT_PORT, OPENVIKING_MCP_NAME} from './constants.js';
 import type {
   ArchiveOptions,
+  CompactOptions,
   DoctorOptions,
   ForgetOptions,
   HandoffOptions,
@@ -38,9 +39,11 @@ import {collectOption, errorMessage, parsePort} from './utils.js';
 import {parseAgentClient, parseClaudeMcpScope, runMcpInstall} from './mcp.js';
 import {getRuntimeConfig} from './runtime.js';
 import {
+  parseCompactKind,
   parseMemoryKind,
   parseMemoryStatus,
   runArchive,
+  runCompact,
   runExportPack,
   runForget,
   runHandoff,
@@ -331,6 +334,18 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('compact')
+    .description('Plan or apply scoped memory hygiene for active personal memories')
+    .requiredOption('--project <name>', 'Project/repo namespace to inspect')
+    .option('--apply', 'Apply the compact plan; without this, prints a dry run')
+    .option('--dry-run', 'Print the compact plan without changing anything')
+    .option('--kind <kind>', 'durable, handoff, or incident', parseCompactKind)
+    .option('--topic <name>', 'Stable topic name to inspect')
+    .action(async (options: CompactOptions) => {
+      await runCompact(getRuntimeConfig(program), options);
+    });
+
+  program
     .command('read')
     .description('Read a viking:// URI returned by recall or list')
     .argument('<uri>', 'viking:// URI to read')
@@ -364,6 +379,7 @@ async function main(): Promise<void> {
     .option('--source-agent-client <name>', 'codex, claude, cursor, copilot, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
+    .option('--timestamped', 'Store a historical timestamped handoff instead of updating the current branch handoff')
     .option('--topic <name>', 'Stable topic name; active handoffs with the same project/topic update one file')
     .action(async (options: HandoffOptions) => {
       await runHandoff(getRuntimeConfig(program), options);

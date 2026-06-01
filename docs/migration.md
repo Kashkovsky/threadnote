@@ -187,8 +187,9 @@ Preferred agent behavior is automatic after `threadnote install` has updated the
   `remember --replace <uri>` instead of burying that knowledge only in a handoff.
 - When current status changes, update the active handoff with the same project/topic or `handoff --replace <uri>` instead
   of creating another near-duplicate progress memory.
-- When recall surfaces clearly duplicate or stale memories, store one concise replacement memory and forget only the
-  redundant originals.
+- When recall surfaces clearly duplicate or stale memories, run `threadnote compact --project <name> --topic <topic>
+--dry-run` or `compact_context({"project":"<name>","topic":"<topic>","dryRun":true})`. Keep cleanup scoped to the
+  current project/topic; archive stale handoffs by default and forget only exact redundant duplicates.
 - Before pausing, switching agents, or finishing meaningful code changes, store a concise handoff with status, tests,
   blockers, and next steps.
 
@@ -199,6 +200,7 @@ threadnote recall --query "last handoff for this branch"
 threadnote recall --query "durable feature knowledge for this branch"
 threadnote remember --kind durable --project example --topic active-feature --text "Feature knowledge..."
 threadnote remember --replace viking://user/example/memories/events/current.md --text "Updated durable engineering note..."
+threadnote compact --project example --topic active-feature --dry-run
 threadnote handoff --project example --topic active-feature --task "short task summary" --tests "checks run" --next-step "what the next agent should do"
 ```
 

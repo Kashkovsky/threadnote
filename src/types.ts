@@ -157,6 +157,14 @@ export interface RememberOptions {
   readonly topic?: string;
 }
 
+export interface CompactOptions {
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly kind?: Extract<MemoryKind, 'durable' | 'handoff' | 'incident'>;
+  readonly project?: string;
+  readonly topic?: string;
+}
+
 export interface MigrateMemoriesOptions {
   readonly allAccounts?: boolean;
   readonly dryRun?: boolean;
@@ -200,6 +208,7 @@ export interface HandoffOptions {
   readonly sourceAgentClient?: string;
   readonly task?: string;
   readonly tests?: string;
+  readonly timestamped?: boolean;
   readonly topic?: string;
 }
 

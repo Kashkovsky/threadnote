@@ -1,9 +1,20 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
 import {inferProjectFromQuery, uriSegment} from './manifest.js';
+import {
+  activePersonalMemoryUrisFromText,
+  buildCompactPlan,
+  type CompactableMemoryKind,
+  formatCompactPlan,
+  handoffTopicForBranch,
+  parseMemoryDocument,
+  recallHygieneNudges,
+  type MemoryRecord,
+} from './memory_hygiene.js';
 import {withIdentity} from './runtime.js';
 import type {
   ArchiveOptions,
+  CompactOptions,
   ForgetOptions,
   HandoffOptions,
   ListOptions,
@@ -87,6 +98,13 @@ export function parseMemoryStatus(value: string): MemoryStatus {
     return value as MemoryStatus;
   }
   throw new Error(`Unsupported memory status "${value}". Expected active, archived, or superseded.`);
+}
+
+export function parseCompactKind(value: string): CompactableMemoryKind {
+  if (['durable', 'handoff', 'incident'].includes(value)) {
+    return value as CompactableMemoryKind;
+  }
+  throw new Error(`Unsupported compact kind "${value}". Expected durable, handoff, or incident.`);
 }
 
 export async function runRemember(config: RuntimeConfig, options: RememberOptions): Promise<void> {
@@ -266,12 +284,29 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   if (options.nodeLimit) {
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
-  await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  await augmentRecallWithSeededResources(config, ov, {...options, query}, inferredUri, projectQuery);
-  await printExactMemoryMatches(config, ov, query, {
+  const recallOutputs: string[] = [];
+  const baseResult = await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
+  if (baseResult) {
+    recallOutputs.push([baseResult.stdout.trim(), baseResult.stderr.trim()].filter(Boolean).join('\n'));
+  }
+  const seededOutput = await augmentRecallWithSeededResources(
+    config,
+    ov,
+    {...options, query},
+    inferredUri,
+    projectQuery,
+  );
+  if (seededOutput) {
+    recallOutputs.push(seededOutput);
+  }
+  const exactOutput = await printExactMemoryMatches(config, ov, query, {
     dryRun: options.dryRun === true,
     includeArchived: options.includeArchived === true,
   });
+  if (exactOutput) {
+    recallOutputs.push(exactOutput);
+  }
+  await printRecallHygieneNudges(config, recallOutputs.join('\n'));
 }
 
 /**
@@ -292,28 +327,29 @@ async function augmentRecallWithSeededResources(
   options: RecallOptions,
   inferredUri: string | undefined,
   projectQuery = options.query,
-): Promise<void> {
+): Promise<string | undefined> {
   // `--no-infer-scope` (options.inferScope === false) disables the base scope
   // inference; honoring it here too keeps the flag's meaning consistent —
   // augmenting with a project-scoped search would silently re-introduce what
   // the user disabled. A caller-pinned --uri is also explicit intent we honor.
   if (options.uri || options.inferScope === false) {
-    return;
+    return undefined;
   }
   const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
   if (!project) {
-    return;
+    return undefined;
   }
   const projectResourceUri = trimTrailingSlash(project.uri);
   if (!projectResourceUri.startsWith('viking://') || projectResourceUri === inferredUri) {
-    return;
+    return undefined;
   }
   const args = ['search', options.query, '--uri', projectResourceUri];
   if (options.nodeLimit) {
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   console.log(`\nAlso searching seeded resources: ${projectResourceUri}`);
-  await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
+  const result = await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
+  return result ? [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n') : undefined;
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -346,6 +382,162 @@ async function syncSharedReposAndLog(config: RuntimeConfig): Promise<void> {
   } catch (err: unknown) {
     console.error(`Auto-sync warning: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+async function printRecallHygieneNudges(config: RuntimeConfig, recallOutput: string): Promise<void> {
+  const uris = activePersonalMemoryUrisFromText(recallOutput, config.user);
+  if (uris.length === 0) {
+    return;
+  }
+  const records = await readMemoryRecordsByUri(config, uris);
+  const nudges = recallHygieneNudges(recallOutput, {records, user: config.user});
+  if (nudges.length === 0) {
+    return;
+  }
+  console.log('\nMemory hygiene hints:');
+  for (const nudge of nudges) {
+    console.log(`- ${nudge}`);
+  }
+}
+
+export async function runCompact(config: RuntimeConfig, options: CompactOptions): Promise<void> {
+  const project = normalizeOptionalMetadata(options.project);
+  if (!project) {
+    throw new Error('Provide --project for scoped memory hygiene.');
+  }
+  if (options.apply === true && options.dryRun === true) {
+    throw new Error('Cannot combine --apply with --dry-run.');
+  }
+  const apply = options.apply === true;
+  const records = await scopedCompactRecords(config, {
+    kind: options.kind,
+    project,
+  });
+  const plan = buildCompactPlan(records, {
+    kind: options.kind,
+    project,
+    topic: normalizeOptionalMetadata(options.topic),
+  });
+  console.log(formatCompactPlan(plan, {apply}));
+  if (!apply) {
+    return;
+  }
+
+  const ov = await openVikingCliForMode(false);
+  const updatePath = join(config.agentContextHome, 'compact-memory-update.txt');
+  try {
+    for (const action of plan.keepUpdates) {
+      await writeFile(updatePath, action.content, {encoding: 'utf8', mode: 0o600});
+      await chmod(updatePath, 0o600);
+      await writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace');
+    }
+  } finally {
+    await rm(updatePath, {force: true});
+  }
+
+  for (const action of plan.archives) {
+    await runArchive(config, action.uri, {
+      dryRun: false,
+      kind: action.kind,
+      project: action.project,
+      topic: action.topic,
+    });
+  }
+  for (const action of plan.forgets) {
+    await runForget(config, action.uri, {dryRun: false});
+  }
+}
+
+async function scopedCompactRecords(
+  config: RuntimeConfig,
+  options: {readonly kind?: CompactableMemoryKind; readonly project: string},
+): Promise<readonly MemoryRecord[]> {
+  const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
+  const records: MemoryRecord[] = [];
+  for (const kind of kinds) {
+    const directory = localMemoryDirectoryForCompact(config, kind, options.project);
+    const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
+    let entries;
+    try {
+      entries = await readdir(directory, {withFileTypes: true});
+    } catch (_err: unknown) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+        continue;
+      }
+      const content = await readTextIfExists(join(directory, entry.name));
+      if (!content) {
+        continue;
+      }
+      const record = parseMemoryDocument(`${uriDirectory}/${entry.name}`, content);
+      if (record) {
+        records.push(record);
+      }
+    }
+  }
+  return records;
+}
+
+async function readMemoryRecordsByUri(
+  config: RuntimeConfig,
+  uris: readonly string[],
+): Promise<readonly MemoryRecord[]> {
+  const records: MemoryRecord[] = [];
+  for (const uri of uris) {
+    const localPath = localMemoryPathForUri(config, uri);
+    if (!localPath) {
+      continue;
+    }
+    const content = await readTextIfExists(localPath);
+    if (!content) {
+      continue;
+    }
+    const record = parseMemoryDocument(uri, content);
+    if (record) {
+      records.push(record);
+    }
+  }
+  return records;
+}
+
+function localMemoryDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
+  const root = localUserMemoriesRoot(config);
+  const projectSegment = uriSegment(project);
+  switch (kind) {
+    case 'durable':
+      return join(root, 'durable', 'projects', projectSegment);
+    case 'handoff':
+      return join(root, 'handoffs', 'active', projectSegment);
+    case 'incident':
+      return join(root, 'incidents', 'active', projectSegment);
+  }
+}
+
+function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
+  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(project);
+  switch (kind) {
+    case 'durable':
+      return `${base}/durable/projects/${projectSegment}`;
+    case 'handoff':
+      return `${base}/handoffs/active/${projectSegment}`;
+    case 'incident':
+      return `${base}/incidents/active/${projectSegment}`;
+  }
+}
+
+function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  if (!uri.startsWith(prefix) || uri.includes('/shared/')) {
+    return undefined;
+  }
+  const relative = uri.slice(prefix.length);
+  if (relative.includes('..') || relative.startsWith('/')) {
+    return undefined;
+  }
+  return join(localUserMemoriesRoot(config), ...relative.split('/'));
 }
 
 export async function runList(config: RuntimeConfig, uri: string, options: ListOptions): Promise<void> {
@@ -484,10 +676,10 @@ async function printExactMemoryMatches(
   ov: string,
   query: string,
   options: {readonly dryRun: boolean; readonly includeArchived: boolean},
-): Promise<void> {
+): Promise<string | undefined> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
-    return;
+    return undefined;
   }
   const scopes = exactMemoryScopes(config, options.includeArchived);
   const outputs: string[] = [];
@@ -506,10 +698,12 @@ async function printExactMemoryMatches(
     }
   }
   if (outputs.length === 0) {
-    return;
+    return undefined;
   }
   console.log('\nExact memory/resource matches:');
-  console.log(outputs.join('\n\n'));
+  const output = outputs.join('\n\n');
+  console.log(output);
+  return output;
 }
 
 async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): Promise<void> {
@@ -1117,13 +1311,14 @@ async function buildHandoff(
   const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
   const touchedFiles = await gitTouchedFiles(repoRoot);
   const repoName = basename(repoRoot);
+  const topicBranch = branch && branch !== 'unknown' ? branch : 'current';
   const metadata: MemoryMetadata = {
     kind: 'handoff',
     project: normalizeOptionalMetadata(options.project) ?? repoName,
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: 'active',
     timestamp: new Date().toISOString(),
-    topic: normalizeOptionalMetadata(options.topic),
+    topic: handoffTopicForBranch(topicBranch, {timestamped: options.timestamped, topic: options.topic}),
   };
   const bodyText = [
     `repo: ${repoName}`,

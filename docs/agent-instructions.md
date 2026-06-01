@@ -8,10 +8,11 @@ Use OpenViking through Threadnote as a shared local context and memory layer. Re
 follow the nearest `AGENTS.md`, `CLAUDE.md`, or other checked-in instruction file first.
 
 When OpenViking MCP tools are available, use them directly. Prefer Threadnote-named MCP tools when present:
-`recall_context`, `read_context`, `list_context`, `remember_context`, and `share_publish`. Always pass JSON arguments to
-MCP tools. When a recall query says "current repo" or "this branch", include the current workspace path as `callerCwd`,
-for example `recall_context({"query":"current repo latest handoff","callerCwd":"/absolute/workspace/path"})`. Older
-Threadnote MCP adapters may expose `search`, `read`, `list`, and `store` instead.
+`recall_context`, `read_context`, `list_context`, `remember_context`, `compact_context`, and `share_publish`. Always
+pass JSON arguments to MCP tools. When a recall query says "current repo" or "this branch", include the current
+workspace path as `callerCwd`, for example
+`recall_context({"query":"current repo latest handoff","callerCwd":"/absolute/workspace/path"})`. Older Threadnote MCP
+adapters may expose `search`, `read`, `list`, and `store` instead.
 
 If MCP is unavailable, use the `threadnote` CLI fallback.
 
@@ -89,8 +90,19 @@ threadnote remember --kind durable --project my-repo --topic active-bug --text "
 threadnote handoff --project my-repo --topic active-bug --task "..." --tests "..."
 ```
 
-When recall/read surfaces several memories that describe the same durable fact, incident, branch, or handoff, compact
-them when it is safe:
+Bare `threadnote handoff` stores the current repo/current branch handoff by default. Use `threadnote handoff
+--timestamped` only when you intentionally want a historical note instead of updating the active branch handoff.
+
+When recall/read surfaces several memories that describe the same durable fact, incident, branch, or handoff, run a
+scoped hygiene dry-run before deciding what to change:
+
+```bash
+threadnote compact --project my-repo --topic active-bug --dry-run
+```
+
+```text
+compact_context({"project":"my-repo","topic":"active-bug","dryRun":true})
+```
 
 - Store one concise replacement memory that preserves the current status, the important facts, and the source `viking://`
   URIs you merged.
@@ -98,6 +110,8 @@ them when it is safe:
   no unique useful detail.
 - Use `threadnote archive <uri>` instead of `forget` when the old handoff still has provenance value but should no
   longer be treated as current context.
+- Keep hygiene scoped to the current project/topic. Do not run global cleanup.
+- For cross-repo features, link related durable memories explicitly in the body so recall can bridge the projects.
 - If the memories disagree or you are not sure what can be deleted, keep them and mention the possible cleanup instead.
 
 Never compact secrets, credentials, customer data, raw production logs, or checked-in canonical docs into memory.
@@ -143,6 +157,9 @@ Before pausing, switching agents, or ending meaningful work with local changes, 
 - blockers;
 - next suggested step.
 
+If you wrote or read multiple memories for the same project/topic during the task, run a scoped hygiene dry-run before
+the handoff. Do not do global memory cleanup.
+
 Do not store long diffs, secrets, raw logs, or customer data in handoffs.
 
 ## CLI Fallback
@@ -158,6 +175,7 @@ threadnote list viking://agent/threadnote/memories --all --recursive
 threadnote remember --kind durable --project example --topic workflow --text "Durable engineering note..."
 threadnote remember --kind durable --project example --topic active-issue --text "Feature knowledge..."
 threadnote remember --replace viking://user/example/memories/durable/projects/example/workflow.md --text "Updated durable engineering note..."
+threadnote compact --project example --topic active-issue --dry-run
 threadnote archive viking://user/example/memories/handoffs/active/example/old-issue.md
 threadnote forget viking://user/example/memories/events/duplicate.md
 threadnote handoff --project example --topic active-issue --task "short task summary" --tests "checks run" --next-step "what to do next"

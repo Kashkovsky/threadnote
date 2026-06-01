@@ -3,12 +3,22 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
-import {access, realpath} from 'node:fs/promises';
+import {access, readdir, readFile, realpath} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
 import {inferProjectFromQuery} from './manifest.js';
+import {
+  activePersonalMemoryUrisFromText,
+  type ArchiveAction,
+  buildCompactPlan,
+  type CompactableMemoryKind,
+  formatCompactPlan,
+  parseMemoryDocument,
+  recallHygieneNudges,
+  type MemoryRecord,
+} from './memory_hygiene.js';
 import {
   DEFAULT_GIT_REMOTE_NAME,
   ensureSharedDirectoryChain,
@@ -98,6 +108,7 @@ async function main(): Promise<void> {
         'When a handoff describes an active branch or feature, recall durable feature memories for the same branch/topic before coding.',
         'During feature work, update durable feature knowledge when valuable implementation details, decisions, interfaces, or gotchas change.',
         'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
+        'Use compact_context with dryRun=true for scoped memory hygiene when recall surfaces overlapping active memories.',
         'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish is destructive: it scrubs for secrets, moves the memory into the shared subtree, removes the personal copy, and pushes a git commit. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
@@ -160,6 +171,8 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     'Archive a memory so it remains readable as provenance but is no longer current working context.',
   );
   registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
+
+  registerCompactTool(server, config);
 
   server.registerTool(
     'forget',
@@ -419,6 +432,10 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (exactMatches) {
     sections.push(`Exact memory/resource matches:\n${exactMatches}`);
   }
+  const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
+  if (hygieneHints) {
+    sections.push(hygieneHints);
+  }
   if (syncedTeams.length > 0) {
     sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
   }
@@ -429,6 +446,16 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     return semanticResult;
   }
   return {...semanticResult, content: [{type: 'text', text: sections.join('\n\n')}]};
+}
+
+async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
+  const uris = activePersonalMemoryUrisFromText(recallText, config.user);
+  if (uris.length === 0) {
+    return undefined;
+  }
+  const records = await readMemoryRecordsByUri(config, uris);
+  const nudges = recallHygieneNudges(recallText, {records, user: config.user});
+  return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
 }
 
 /**
@@ -688,6 +715,250 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
       }
     },
   );
+}
+
+function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
+  server.registerTool(
+    'compact_context',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        'Plan or apply scoped Threadnote memory hygiene. Defaults to dry-run; pass apply=true to archive stale handoffs and forget exact duplicates.',
+      inputSchema: {
+        apply: z.boolean().optional().describe('Apply the compact plan; defaults to false'),
+        dryRun: z.boolean().optional().describe('Keep the call read-only; defaults to true unless apply=true'),
+        kind: z.enum(['durable', 'handoff', 'incident']).optional().describe('Optional memory kind filter'),
+        project: z.string().optional().describe('Required project/repo namespace, for example threadnote'),
+        topic: z.string().optional().describe('Optional stable topic name'),
+      },
+    },
+    async ({apply, dryRun, kind, project, topic}) => {
+      const checkedProject = requiredText(project, 'compact_context', 'project', {project: 'threadnote'});
+      if (!checkedProject.ok) {
+        return checkedProject.error;
+      }
+      if (apply === true && dryRun === true) {
+        return {
+          content: [{type: 'text', text: 'compact_context cannot combine apply=true with dryRun=true.'}],
+          isError: true,
+        };
+      }
+      try {
+        const records = await scopedCompactRecords(config, {
+          kind: kind as CompactableMemoryKind | undefined,
+          project: checkedProject.value,
+        });
+        const plan = buildCompactPlan(records, {
+          kind: kind as CompactableMemoryKind | undefined,
+          project: checkedProject.value,
+          topic: normalizeOptionalMetadata(topic),
+        });
+        const shouldApply = apply === true;
+        const planText = formatCompactPlan(plan, {apply: shouldApply});
+        if (!shouldApply) {
+          return {content: [{type: 'text', text: planText}]};
+        }
+
+        const ov = await requiredOpenVikingCli();
+        const appliedMessages: string[] = [];
+        for (const action of plan.keepUpdates) {
+          const result = await runOpenVikingWriteWithRetry(
+            ov,
+            config,
+            action.uri,
+            withIdentity(config, [
+              'write',
+              action.uri,
+              '--content',
+              action.content,
+              '--mode',
+              'replace',
+              '--wait',
+              '--timeout',
+              '120',
+            ]),
+          );
+          appliedMessages.push(`Updated kept memory: ${action.uri}`);
+          const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+          if (output) {
+            appliedMessages.push(output);
+          }
+        }
+        for (const action of plan.archives) {
+          const archiveResult = await archiveMemoryForCompact(config, ov, action);
+          if (archiveResult.isError === true) {
+            return archiveResult;
+          }
+          const [content] = archiveResult.content;
+          if (content?.type === 'text') {
+            appliedMessages.push(content.text);
+          }
+        }
+        for (const action of plan.forgets) {
+          const removed = await removeVikingResourceWithRetry(ov, config, action.uri);
+          appliedMessages.push(
+            removed
+              ? `Forgot exact duplicate: ${action.uri}`
+              : `Exact duplicate is still processing; retry later with forget: ${action.uri}`,
+          );
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: [planText, '', 'Applied actions:', ...appliedMessages.map(message => `- ${message}`)].join('\n'),
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+      }
+    },
+  );
+}
+
+async function archiveMemoryForCompact(
+  config: RuntimeConfig,
+  ov: string,
+  action: ArchiveAction,
+): Promise<CallToolResult> {
+  const readResult = await runCommand(ov, withIdentity(config, ['read', action.uri]));
+  const original = readResult.stdout.trim();
+  if (!original) {
+    return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
+  }
+  const archiveResult = await writeDurableMemory(config, {
+    bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+    metadata: {
+      archivedFrom: action.uri,
+      kind: action.kind,
+      project: action.project,
+      sourceAgentClient: 'mcp',
+      status: 'archived',
+      timestamp: new Date().toISOString(),
+      topic: action.topic,
+    },
+  });
+  if (archiveResult.isError === true) {
+    return archiveResult;
+  }
+  const removedOriginal = await removeVikingResourceWithRetry(ov, config, action.uri);
+  const [content] = archiveResult.content;
+  const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
+  return {
+    content: [
+      {
+        type: 'text',
+        text: removedOriginal
+          ? `${text}\nArchived original memory: ${action.uri}`
+          : `${text}\nArchive stored, but original memory is still processing. Retry later with forget: ${action.uri}`,
+      },
+    ],
+  };
+}
+
+async function scopedCompactRecords(
+  config: RuntimeConfig,
+  options: {readonly kind?: CompactableMemoryKind; readonly project: string},
+): Promise<readonly MemoryRecord[]> {
+  const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
+  const records: MemoryRecord[] = [];
+  for (const kind of kinds) {
+    const directory = localMemoryDirectoryForCompact(config, kind, options.project);
+    const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
+    let entries;
+    try {
+      entries = await readdir(directory, {withFileTypes: true});
+    } catch (_err: unknown) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+        continue;
+      }
+      const content = await readTextIfExists(join(directory, entry.name));
+      if (!content) {
+        continue;
+      }
+      const record = parseMemoryDocument(`${uriDirectory}/${entry.name}`, content);
+      if (record) {
+        records.push(record);
+      }
+    }
+  }
+  return records;
+}
+
+async function readMemoryRecordsByUri(
+  config: RuntimeConfig,
+  uris: readonly string[],
+): Promise<readonly MemoryRecord[]> {
+  const records: MemoryRecord[] = [];
+  for (const uri of uris) {
+    const localPath = localMemoryPathForUri(config, uri);
+    if (!localPath) {
+      continue;
+    }
+    const content = await readTextIfExists(localPath);
+    if (!content) {
+      continue;
+    }
+    const record = parseMemoryDocument(uri, content);
+    if (record) {
+      records.push(record);
+    }
+  }
+  return records;
+}
+
+function localMemoryDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
+  const root = localUserMemoriesRoot(config);
+  const projectSegment = uriSegment(project);
+  switch (kind) {
+    case 'durable':
+      return join(root, 'durable', 'projects', projectSegment);
+    case 'handoff':
+      return join(root, 'handoffs', 'active', projectSegment);
+    case 'incident':
+      return join(root, 'incidents', 'active', projectSegment);
+  }
+}
+
+function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
+  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(project);
+  switch (kind) {
+    case 'durable':
+      return `${base}/durable/projects/${projectSegment}`;
+    case 'handoff':
+      return `${base}/handoffs/active/${projectSegment}`;
+    case 'incident':
+      return `${base}/incidents/active/${projectSegment}`;
+  }
+}
+
+function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  if (!uri.startsWith(prefix) || uri.includes('/shared/')) {
+    return undefined;
+  }
+  const relative = uri.slice(prefix.length);
+  if (relative.includes('..') || relative.startsWith('/')) {
+    return undefined;
+  }
+  return join(localUserMemoriesRoot(config), ...relative.split('/'));
+}
+
+function localUserMemoriesRoot(config: RuntimeConfig): string {
+  return join(config.agentContextHome, 'data', 'viking', config.account, 'user', uriSegment(config.user), 'memories');
+}
+
+async function readTextIfExists(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (_err: unknown) {
+    return undefined;
+  }
 }
 
 interface WriteDurableMemoryParams {

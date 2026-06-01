@@ -37,8 +37,9 @@ Ask the agent to remember it. Threadnote keeps that memory local and searchable 
 Run `threadnote seed-skills` to make local `SKILL.md` guidance discoverable through recall. Agents can find relevant testing, release, on-call, debugging, or plugin-provided workflows without you reopening the same skill files by hand.
 
 **Recall returned several overlapping memories?**
-Agents are instructed to compact them into one concise replacement memory and forget only the clearly redundant originals,
-keeping future recall sharper without losing useful detail.
+Run `threadnote compact --project <repo> --topic <issue> --dry-run` or ask the agent to use
+`compact_context({"project":"<repo>","topic":"<issue>","dryRun":true})`. Threadnote produces a scoped plan first:
+which memory to keep/update, which old handoffs to archive, and which exact duplicates are safe to forget.
 
 **Still working on the same issue?**
 Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
@@ -69,6 +70,20 @@ threadnote handoff --project my-repo --topic feature-x --task "Current status fo
 
 Agents should update the durable feature memory when valuable implementation knowledge changes, and update the handoff
 when current status, tests, blockers, or next steps change.
+
+Bare `threadnote handoff` defaults to the current repo and current git branch as its stable project/topic, so routine
+handoffs update one active branch record. Use `threadnote handoff --timestamped` only when you intentionally want a
+historical note.
+
+Use `compact` when active memories for a project/topic start to overlap:
+
+```bash
+threadnote compact --project my-repo --topic feature-x --dry-run
+threadnote compact --project my-repo --topic feature-x --apply
+```
+
+The dry-run plan is the default. Applying archives stale handoffs, forgets only exact duplicates, and preserves source
+`viking://` URIs in the kept memory. Ambiguous durable or incident memories are left for manual review.
 
 Use `archive` when an old handoff is useful for provenance but should stop being treated as current working context:
 
@@ -341,11 +356,15 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `recall`: searches shared OpenViking context. It infers repo or skill scope from queries like
   `skills for api service`; use `--uri` or `--no-infer-scope` to override. Queries that mention `this branch` or
   `current branch` are enriched with local git/workspace terms when available. Exact memory/resource matches skip
-  archived lifecycle paths unless `--include-archived` is passed.
+  archived lifecycle paths unless `--include-archived` is passed. Recall also nudges scoped cleanup when many active
+  handoffs or overlapping returned memories surface.
+- `compact`: prints or applies scoped memory hygiene for active personal memories. It dry-runs by default; use `--apply`
+  after reviewing the plan. It archives stale handoffs, forgets exact duplicates, and leaves ambiguous durable memories
+  for manual review.
 - `read`: reads a `viking://` URI returned by `recall` or `list`.
 - `list` / `ls`: lists a `viking://` directory.
-- `handoff`: stores current git state and next-step notes as a durable handoff. Use `--replace <uri>` to update the
-  current handoff for the same active issue, or `--project` and `--topic` to keep one active handoff file updated.
+- `handoff`: stores current git state and next-step notes as a durable handoff. Bare handoffs use the current repo and
+  current branch as stable project/topic; use `--timestamped` for historical notes or `--project` / `--topic` to override.
 - `archive`: copies a memory into the archived lifecycle tree, then removes the original after the archive write
   succeeds.
 - `forget`: removes a `viking://` URI.
@@ -431,7 +450,8 @@ threadnote list viking://agent/threadnote/memories --all --recursive
 When MCP is installed, the agent should use Threadnote MCP `recall_context`, then `read_context` or `list_context`.
 Agents must pass JSON arguments, for example `recall_context({"query":"agent context"})`. For MCP recall queries that
 say "current repo" or "this branch", pass the current workspace path as `callerCwd` so Threadnote can resolve branch and
-workspace terms without guessing from the MCP server's launch directory. Older adapters expose `search`, `read`, and
-`list` aliases. Before recall/read returns, Threadnote automatically syncs clean incoming shared memory updates when a
+workspace terms without guessing from the MCP server's launch directory. Use `compact_context` for scoped memory hygiene
+dry-runs before applying cleanup. Older adapters expose `search`, `read`, and `list` aliases. Before recall/read returns,
+Threadnote automatically syncs clean incoming shared memory updates when a
 configured share repo is behind; failures are reported as warnings and the local read still continues. The CLI commands
 are the fallback path.
