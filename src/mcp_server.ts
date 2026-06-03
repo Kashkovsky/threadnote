@@ -26,6 +26,8 @@ import {
   removeWithRollback as removeWithRollbackShared,
   resolveTeam,
   applyScrubber,
+  sharedMemoryUriParts,
+  sharedTeamNameForUri,
   sharedUriFor,
   startShareBackgroundFetch,
   stripPersonalProvenance,
@@ -617,7 +619,9 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         replaceUri: z
           .string()
           .optional()
-          .describe('Optional viking:// memory URI to forget after the new memory is safely stored'),
+          .describe(
+            'Optional viking:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
+          ),
         text: z.string().optional().describe('Required memory text to store'),
         sourceAgentClient: z
           .string()
@@ -970,6 +974,9 @@ interface WriteDurableMemoryParams {
 async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams): Promise<CallToolResult> {
   try {
     const ov = await requiredOpenVikingCli();
+    if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
+      return await writeSharedMemoryReplacement(config, ov, params, params.replaceUri);
+    }
     const directoryUri = memoryDirectoryUri(config, params.metadata);
     await ensureMemoryDirectory(ov, config, directoryUri);
 
@@ -1017,6 +1024,48 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
+}
+
+async function writeSharedMemoryReplacement(
+  config: RuntimeConfig,
+  ov: string,
+  params: WriteDurableMemoryParams,
+  targetUri: string,
+): Promise<CallToolResult> {
+  if (params.metadata.kind !== 'durable') {
+    return argumentError('Shared memory replacement only supports durable memories.');
+  }
+  const teamName = sharedTeamNameForUri(config, targetUri);
+  if (!teamName) {
+    return argumentError(`Memory ${targetUri} is not in the shared namespace.`);
+  }
+  const resolved = await resolveTeam(config, teamName);
+  const inferred = sharedMemoryUriParts(config, targetUri);
+  const metadata: MemoryMetadata = {
+    ...params.metadata,
+    project: params.metadata.project ?? inferred?.project,
+    topic: params.metadata.topic ?? inferred?.topic,
+  };
+  const rawMemory = formatMemoryDocument('MEMORY', metadata, params.bodyText);
+  const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
+  if (scrub.blocker) {
+    return argumentError(
+      `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+    );
+  }
+
+  await ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
+  await writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
+
+  const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+  const messages = [`Updated shared memory: ${targetUri}`];
+  for (const redaction of scrub.redactions) {
+    messages.push(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
+  }
+  messages.push(
+    ...(await gitPublishWorkflow(resolved.config.worktree, relativePath, `share: update ${relativePath}`, true)),
+  );
+  return {content: [{type: 'text', text: messages.join('\n')}]};
 }
 
 async function runOpenVikingWriteWithRetry(

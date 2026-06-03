@@ -71,6 +71,21 @@ lines from the memory's header block. Those pointers only resolve on the
 publisher's machine — teammates pull via git and cannot dereference them — so
 keeping them would just leak local-only provenance into team git history.
 
+To update an existing shared durable memory, replace the shared URI directly:
+
+```bash
+threadnote remember \
+  --replace viking://user/you/memories/shared/default/durable/projects/foo/bar.md \
+  --project foo \
+  --topic bar \
+  --text "Updated shared knowledge."
+```
+
+For MCP, pass the same shared URI as `replaceUri` to `remember_context`.
+Threadnote rewrites the shared memory in place, strips local-only provenance
+headers, commits, and pushes the shared repo. You do not need to store a
+personal replacement and run `share publish` again.
+
 ### Keep teammates' updates current
 
 Threadnote does a periodic background `git fetch` for configured share teams.
@@ -155,7 +170,9 @@ otherwise unpublished work is lost.
   keep both, copy the memory to a new URI first (`ov read` then
   `threadnote remember`).
 - `share publish` refuses to overwrite an existing shared memory at the same
-  URI; forget the existing shared copy first or pick a different topic name.
+  URI; use `threadnote remember --replace <shared-uri>` or
+  `remember_context({replaceUri:"<shared-uri>"})` for updates, or pick a
+  different topic name.
 
 ## Conflict resolution
 

@@ -43,7 +43,8 @@ which memory to keep/update, which old handoffs to archive, and which exact dupl
 
 **Still working on the same issue?**
 Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
-instead of accumulating near-duplicate progress notes.
+instead of accumulating near-duplicate progress notes. Replacing a shared `durable/` URI updates that shared memory in
+place and pushes the shared repo, so you do not need a separate `share publish` step.
 
 ## Memory Lifecycle
 
@@ -347,8 +348,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
   reusable workflow guidance. Use `seed-skills --native` only after configuring a working VLM provider.
 - `mcp-install codex|claude|cursor|copilot`: installs or prints OpenViking MCP configuration for Codex, Claude, Cursor,
   or GitHub Copilot in VS Code.
-- `remember`: stores a durable memory. Use `--replace <uri>` to store an updated memory and remove a superseded one
-  after the new memory succeeds. Use `--kind`, `--project`, and `--topic` to store lifecycle-aware current knowledge.
+- `remember`: stores a durable memory. Use `--replace <uri>` to store an updated memory and remove a superseded personal
+  memory after the new memory succeeds; if `<uri>` is shared, Threadnote updates that shared memory in place and pushes
+  the shared repo. Use `--kind`, `--project`, and `--topic` to store lifecycle-aware current knowledge.
 - `migrate-memories`: migrates legacy session-only `MEMORY` and `HANDOFF` records into durable memory files. Run
   `migrate-memories --dry-run` first; use `--all-accounts` when importing from older local OpenViking accounts.
 - `migrate-lifecycle`: moves clear legacy handoff memories from the old events path into archived lifecycle handoff

@@ -121,6 +121,13 @@ export interface ChangedFile {
   readonly status: 'added' | 'removed' | 'modified';
 }
 
+export interface SharedMemoryUriParts {
+  readonly kind?: 'durable';
+  readonly project?: string;
+  readonly team: string;
+  readonly topic?: string;
+}
+
 interface AutoShareState {
   behindTeams: ReadonlySet<string>;
   lastCheckedAt: number;
@@ -957,7 +964,37 @@ function workfileToVikingUri(config: ShareRuntime, team: ShareTeamConfig, filePa
 }
 
 export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean {
-  return uri.startsWith(`viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`);
+  return sharedTeamNameForUri(config, uri) !== undefined;
+}
+
+export function sharedTeamNameForUri(config: ShareRuntime, uri: string): string | undefined {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!uri.startsWith(prefix)) {
+    return undefined;
+  }
+  const [team] = uri.slice(prefix.length).split('/');
+  return team || undefined;
+}
+
+export function sharedMemoryUriParts(config: ShareRuntime, uri: string): SharedMemoryUriParts | undefined {
+  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!uri.startsWith(prefix)) {
+    return undefined;
+  }
+  const [team, kind, scope, project, ...topicParts] = uri.slice(prefix.length).split('/');
+  if (!team) {
+    return undefined;
+  }
+  if (kind !== 'durable' || scope !== 'projects' || !project || topicParts.length === 0) {
+    return {team};
+  }
+  const topicPath = topicParts.join('/');
+  return {
+    kind,
+    project,
+    team,
+    topic: topicPath.endsWith('.md') ? topicPath.slice(0, -'.md'.length) : topicPath,
+  };
 }
 
 function isInTeamNamespace(config: ShareRuntime, uri: string, team: string): boolean {

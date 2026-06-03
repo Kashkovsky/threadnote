@@ -3,6 +3,8 @@ import {
   isInSharedNamespace,
   parentUri,
   sharedDirectoryChain,
+  sharedMemoryUriParts,
+  sharedTeamNameForUri,
   sharedUriFor,
   vikingUriToWorktreeRelative,
 } from '../../src/share.js';
@@ -29,6 +31,43 @@ describe('isInSharedNamespace', () => {
 
   it('returns false for another user namespace', () => {
     expect(isInSharedNamespace(runtime, 'viking://user/other/memories/shared/default/x.md')).toBe(false);
+  });
+});
+
+describe('sharedTeamNameForUri', () => {
+  it('returns the team segment for current-user shared URIs', () => {
+    expect(
+      sharedTeamNameForUri(
+        runtime,
+        'viking://user/denyskashkovskyi/memories/shared/friends/durable/projects/foo/bar.md',
+      ),
+    ).toBe('friends');
+  });
+
+  it('returns undefined for personal or other-user URIs', () => {
+    expect(
+      sharedTeamNameForUri(runtime, 'viking://user/denyskashkovskyi/memories/durable/projects/foo/bar.md'),
+    ).toBeUndefined();
+    expect(
+      sharedTeamNameForUri(runtime, 'viking://user/other/memories/shared/default/durable/projects/foo/bar.md'),
+    ).toBeUndefined();
+  });
+});
+
+describe('sharedMemoryUriParts', () => {
+  it('extracts team and durable project/topic metadata from shared URIs', () => {
+    expect(
+      sharedMemoryUriParts(
+        runtime,
+        'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md',
+      ),
+    ).toEqual({kind: 'durable', project: 'mobile-native', team: 'default', topic: 'auth'});
+  });
+
+  it('returns only the team when the shared URI shape is not a stable durable project memory', () => {
+    expect(sharedMemoryUriParts(runtime, 'viking://user/denyskashkovskyi/memories/shared/default/README.md')).toEqual({
+      team: 'default',
+    });
   });
 });
 

@@ -73,14 +73,17 @@ For branch feature work, prefer two stable memories with the same project and to
 - `kind: handoff` for current status, files touched, tests, blockers, and next step.
 
 If a durable feature memory already exists, update it in place with the same project/topic or with `--replace <uri>` /
-`replaceUri`. Avoid creating a new timestamped durable memory for every small progress note.
+`replaceUri`. When `replaceUri` points at a shared `durable/` URI, Threadnote updates that shared memory in place and
+pushes the shared repo; do not create a personal replacement and then run `share_publish` again. Avoid creating a new
+timestamped durable memory for every small progress note.
 
 ## Memory Compaction
 
 When working on the same active issue, prefer keeping one current-state memory updated instead of creating many small
 progress memories. If an existing memory is clearly the current state for the issue, store the updated version with
 `remember_context({"text":"...","replaceUri":"<uri>"})`, `threadnote remember --replace <uri>`, or
-`threadnote handoff --replace <uri>` so the old memory is removed only after the replacement is stored.
+`threadnote handoff --replace <uri>` so the old personal memory is removed only after the replacement is stored. Shared
+`durable/` replacements are updated in place and pushed instead.
 
 When the issue has a stable name, prefer project/topic storage over timestamped memories:
 

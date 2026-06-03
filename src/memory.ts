@@ -44,13 +44,26 @@ import {
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
+  requiredExecutable,
   runCommand,
   safeTimestamp,
   sha256,
   sleep,
   trimTrailingSlash,
 } from './utils.js';
-import {syncSharedReposBeforeAgentRead} from './share.js';
+import {
+  applyScrubber,
+  DEFAULT_GIT_REMOTE_NAME,
+  ensureSharedDirectoryChain,
+  isInSharedNamespace,
+  resolveTeam,
+  sharedMemoryUriParts,
+  sharedTeamNameForUri,
+  stripPersonalProvenance,
+  syncSharedReposBeforeAgentRead,
+  vikingUriToWorktreeRelative,
+  writeMemoryFile,
+} from './share.js';
 
 interface LegacyMemoryCandidate {
   readonly comparableHash: string;
@@ -711,6 +724,10 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
     assertVikingUri(options.replaceUri);
   }
   const ov = await openVikingCliForMode(options.dryRun);
+  if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
+    await storeSharedMemoryReplacement(config, ov, options, options.replaceUri);
+    return;
+  }
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
 
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
@@ -770,6 +787,58 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
   } else if (isInPlaceUpdate) {
     console.log(`Updated existing memory in place: ${memoryUri}`);
   }
+}
+
+async function storeSharedMemoryReplacement(
+  config: RuntimeConfig,
+  ov: string,
+  options: StoreMemoryOptions,
+  targetUri: string,
+): Promise<void> {
+  if (options.metadata.kind !== 'durable') {
+    throw new Error('Shared memory replacement only supports durable memories.');
+  }
+  const teamName = sharedTeamNameForUri(config, targetUri);
+  if (!teamName) {
+    throw new Error(`Memory ${targetUri} is not in the shared namespace.`);
+  }
+  const team = await resolveTeam(config, teamName);
+  const inferred = sharedMemoryUriParts(config, targetUri);
+  const metadata: MemoryMetadata = {
+    ...options.metadata,
+    project: options.metadata.project ?? inferred?.project,
+    topic: options.metadata.topic ?? inferred?.topic,
+  };
+  const rawMemory = formatMemoryDocument(options.title, metadata, options.bodyText);
+  const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
+  if (scrub.blocker) {
+    throw new Error(
+      `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+    );
+  }
+  const memory = scrub.cleaned;
+  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+
+  if (options.dryRun) {
+    console.log(memory);
+    console.log('\nWould run:');
+  }
+  await ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
+  await writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
+
+  const git = await requiredExecutable('git');
+  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'add', '--', relativePath]);
+  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'commit', '-m', `share: update ${relativePath}`], {
+    allowFailure: true,
+  });
+  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {
+    allowFailure: true,
+  });
+
+  for (const redaction of scrub.redactions) {
+    console.log(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
+  }
+  console.log(`Updated shared memory: ${targetUri}`);
 }
 
 async function writeDurableMemoryFile(
