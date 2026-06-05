@@ -48,5 +48,3 @@ which memory to keep/update, which old handoffs to archive, and which exact dupl
 Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
 instead of accumulating near-duplicate progress notes. Replacing a shared `durable/` URI updates that shared memory in
 place and pushes the shared repo, so you do not need a separate `share publish` step.
-
-
