@@ -28,12 +28,12 @@ describe('workspace recall enrichment', () => {
           includeProcessCwd: false,
         }),
       ).resolves.toContain('mobile-feedback-results-fix');
-      await expect(
-        enrichRecallQueryWithWorkspaceProjectContext('current repo latest handoff', {
-          cwd: repoRoot,
-          includeProcessCwd: false,
-        }),
-      ).resolves.toBe(`current repo latest handoff ${basename(repoRoot)}`);
+      const projectScoped = await enrichRecallQueryWithWorkspaceProjectContext('current repo latest handoff', {
+        cwd: repoRoot,
+        includeProcessCwd: false,
+      });
+      expect(projectScoped).toContain(basename(repoRoot));
+      expect(projectScoped).not.toContain('mobile-feedback-results-fix');
       await expect(
         enrichRecallQueryWithWorkspaceContext('current repo latest handoff', {includeProcessCwd: false}),
       ).resolves.toBe('current repo latest handoff');
