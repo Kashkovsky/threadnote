@@ -1139,7 +1139,6 @@ function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): rea
     `${userBase}/durable/projects`,
     `${userBase}/handoffs/active`,
     `${userBase}/incidents/active`,
-    `${userBase}/events`,
     `${userBase}/shared`,
     `viking://agent/${uriSegment(config.agentId)}/memories`,
     // Seeded project resources live outside the user/memories tree. Include
