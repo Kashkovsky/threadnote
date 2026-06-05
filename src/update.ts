@@ -4,7 +4,9 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline/promises';
 import {stdin as input, stdout as output} from 'node:process';
+import {heading, info as infoText, keyValue, success, warning, withSpinner} from './cli_ui.js';
 import {hasLegacyLifecycleHandoffCandidates} from './memory.js';
+import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
 import {
   compareVersions,
@@ -78,8 +80,8 @@ export async function maybeNotifyUpdate(
       return;
     }
     console.log('');
-    console.log(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`);
-    console.log('Run: threadnote update');
+    console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
+    console.log(`Run: ${infoText('threadnote update')}`);
   } catch (_err: unknown) {
     return;
   }
@@ -87,31 +89,34 @@ export async function maybeNotifyUpdate(
 
 export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): Promise<void> {
   const registry = normalizeRegistry(options.registry ?? updateRegistry());
-  const info = await getUpdateInfo(config, {
-    allowCacheWrite: options.dryRun !== true,
-    preferFresh: true,
-    registry,
-  });
+  const info = await withSpinner('Checking npm for latest threadnote version', () =>
+    getUpdateInfo(config, {
+      allowCacheWrite: options.dryRun !== true,
+      preferFresh: true,
+      registry,
+    }),
+  );
 
-  console.log(`Current version: ${info.currentVersion}`);
-  console.log(`Latest version:  ${info.latestVersion}`);
-  console.log(`Registry:        ${info.registry}`);
+  console.log(keyValue('Current version', infoText(info.currentVersion)));
+  console.log(keyValue('Latest version', infoText(info.latestVersion)));
+  console.log(keyValue('Registry', info.registry));
 
   if (options.check === true) {
     if (info.isUpdateAvailable) {
-      console.log(`Update available. Run: threadnote update`);
+      console.log(warning('Update available. Run: threadnote update'));
+      await printWhatsNewIfAvailable(info);
     } else {
       console.log(
         compareVersions(info.currentVersion, info.latestVersion) > 0
-          ? 'Current version is newer than npm latest.'
-          : 'Threadnote is up to date.',
+          ? warning('Current version is newer than npm latest.')
+          : success('Threadnote is up to date.'),
       );
     }
     return;
   }
 
   if (!info.isUpdateAvailable && options.force !== true) {
-    console.log('Threadnote is up to date.');
+    console.log(success('Threadnote is up to date.'));
     return;
   }
 
@@ -121,6 +126,7 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
 
   if (options.repair === false) {
     console.log('Skipping repair because --no-repair was provided.');
+    await printWhatsNewIfAvailable(info);
     return;
   }
 
@@ -150,6 +156,20 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
   console.log(
     'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
   );
+  await printWhatsNewIfAvailable(info);
+}
+
+async function printWhatsNewIfAvailable(info: UpdateInfo): Promise<void> {
+  if (!info.isUpdateAvailable) {
+    return;
+  }
+  console.log('');
+  const whatsNew = await withSpinner('Fetching GitHub release notes', () =>
+    whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion),
+  );
+  for (const line of whatsNew) {
+    console.log(line === "What's new:" ? heading(line) : line);
+  }
 }
 
 export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOptions): Promise<void> {
@@ -366,7 +386,7 @@ async function getUpdateInfo(
   };
 }
 
-async function currentPackageVersion(): Promise<string> {
+export async function currentPackageVersion(): Promise<string> {
   const rawPackage = await readFile(join(toolRoot(), 'package.json'), 'utf8');
   const parsed: unknown = JSON.parse(rawPackage);
   if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
@@ -375,7 +395,7 @@ async function currentPackageVersion(): Promise<string> {
   return parsed.version;
 }
 
-async function fetchLatestVersion(registry: string): Promise<string> {
+export async function fetchLatestVersion(registry: string): Promise<string> {
   const url = new URL(`${NPM_PACKAGE_NAME}/latest`, normalizeRegistry(registry));
   const controller = new AbortController();
   const timeout = setTimeout(() => {
@@ -690,11 +710,11 @@ function updatePackageCommand(
   };
 }
 
-function normalizeRegistry(registry: string): string {
+export function normalizeRegistry(registry: string): string {
   return registry.endsWith('/') ? registry : `${registry}/`;
 }
 
-function updateRegistry(): string {
+export function updateRegistry(): string {
   return normalizeRegistry(process.env.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
 }
 

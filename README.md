@@ -180,9 +180,13 @@ threadnote update
 Check without changing anything:
 
 ```bash
+threadnote version
 threadnote update --check
 threadnote update --dry-run
 ```
+
+`threadnote version` prints the installed version, latest npm version, and GitHub release notes for every version newer
+than the installed one. `threadnote update` prints the same full "What's new" diff when an update is available.
 
 After updating, restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.
 
@@ -334,8 +338,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `install`: installs `openviking[local-embed]==0.3.12` if missing, creates `~/.openviking` config files if absent,
   writes the command shim, upserts user-level agent instructions, and starts/checks OpenViking health by default. Use
   `--no-start` to skip the health check.
+- `version`: prints the installed Threadnote version, latest npm version, and release notes for newer GitHub releases.
 - `update`: updates the published Threadnote package, then runs `repair` so shims and MCP config point at the new
-  version.
+  version. When an update is available, it prints release notes for the full version diff.
 - `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor/Copilot MCP configs
   from the current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.

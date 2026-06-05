@@ -110,6 +110,10 @@ export interface UpdateOptions {
   readonly yes?: boolean;
 }
 
+export interface VersionOptions {
+  readonly registry?: string;
+}
+
 export interface PostUpdateOptions {
   readonly dryRun?: boolean;
   readonly fromVersion?: string;

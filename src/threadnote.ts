@@ -33,6 +33,7 @@ import type {
   StartOptions,
   UninstallOptions,
   UpdateOptions,
+  VersionOptions,
 } from './types.js';
 import {parseHookClient, runHooksInstall, runPreCompactHook, runSessionStartHook} from './hooks.js';
 import {collectOption, errorMessage, parsePort} from './utils.js';
@@ -67,6 +68,7 @@ import {
 } from './share.js';
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
 import {maybeNotifyUpdate, parseUpdateRuntime, runPostUpdate, runUpdate} from './update.js';
+import {runVersion} from './version_command.js';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -113,6 +115,14 @@ async function main(): Promise<void> {
         }
       }
       await maybeNotifyUpdate(config, {dryRun: options.dryRun === true});
+    });
+
+  program
+    .command('version')
+    .description('Print the installed Threadnote version, latest npm version, and release notes for newer versions')
+    .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
+    .action(async (options: VersionOptions) => {
+      await runVersion(getRuntimeConfig(program), options);
     });
 
   program

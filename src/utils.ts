@@ -6,6 +6,7 @@ import {get as httpGet} from 'node:http';
 import {createConnection} from 'node:net';
 import {homedir} from 'node:os';
 import {basename, dirname, isAbsolute, join, resolve, sep} from 'node:path';
+import {command as commandText, failure, info, success, warning} from './cli_ui.js';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -148,7 +149,8 @@ export async function maybeRun(
   options: {readonly allowFailure?: boolean; readonly cwd?: string} = {},
 ): Promise<CommandResult | undefined> {
   const cwdSuffix = options.cwd ? ` (cwd: ${options.cwd})` : '';
-  console.log(`${dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(executable, args)}${cwdSuffix}`);
+  const label = dryRun ? warning('Would run') : info('Running');
+  console.log(`${label}: ${commandText(formatShellCommand(executable, args))}${cwdSuffix}`);
   if (dryRun) {
     return undefined;
   }
@@ -658,12 +660,12 @@ export function firstLine(value: string): string {
 
 export function formatStatus(status: CommandStatus): string {
   if (status === 'ok') {
-    return 'OK  ';
+    return success('OK  ');
   }
   if (status === 'warn') {
-    return 'WARN';
+    return warning('WARN');
   }
-  return 'FAIL';
+  return failure('FAIL');
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {
