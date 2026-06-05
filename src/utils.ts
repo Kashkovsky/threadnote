@@ -295,6 +295,34 @@ export async function gitValue(args: readonly string[], cwd = getInvocationCwd()
   return result.stdout.trim();
 }
 
+/**
+ * Resolves the canonical repository name for `cwd`, returning undefined when it
+ * is not inside a git repository.
+ *
+ * From a linked worktree (`git worktree add`, Conductor workspaces, …) the
+ * top-level path basename is the worktree/branch name, not the project — so a
+ * handoff would file under e.g. `algiers` instead of `threadnote`. The shared
+ * `--git-common-dir` always points at the primary worktree's `.git`, so the
+ * project name is derived from there to stay consistent with what the primary
+ * checkout produces.
+ */
+export async function resolveRepoName(cwd = getInvocationCwd()): Promise<string | undefined> {
+  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+  if (!repoRoot) {
+    return undefined;
+  }
+  const commonDir = await gitValue(['rev-parse', '--git-common-dir'], repoRoot);
+  if (commonDir) {
+    const absoluteCommonDir = isAbsolute(commonDir) ? commonDir : resolve(repoRoot, commonDir);
+    const primaryRoot = basename(absoluteCommonDir) === '.git' ? dirname(absoluteCommonDir) : absoluteCommonDir;
+    const name = basename(primaryRoot).replace(/\.git$/, '');
+    if (name && name !== '.') {
+      return name;
+    }
+  }
+  return basename(repoRoot);
+}
+
 export async function runInteractive(executable: string, args: readonly string[]): Promise<number> {
   return new Promise(resolvePromise => {
     const child = spawn(executable, args, {stdio: 'inherit'});

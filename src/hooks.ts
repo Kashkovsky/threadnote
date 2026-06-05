@@ -1,5 +1,5 @@
 import {chmod, mkdir, readFile, writeFile} from 'node:fs/promises';
-import {basename, dirname, join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {
   CLAUDE_SETTINGS_PATH,
   HOOK_AUTO_PRECOMPACT_TOPIC,
@@ -12,7 +12,7 @@ import {parseAgentClient} from './mcp.js';
 import {runHandoff, runRecall} from './memory.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
 import {checkForThreadnoteUpdate, spawnDetachedAutoUpdate} from './update-check.js';
-import {expandPath, exists, gitValue, isJsonObject, parseJsonConfigObject} from './utils.js';
+import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
 import {getThreadnoteVersion} from './version.js';
 
 type HookEvent = 'PreCompact' | 'SessionStart';
@@ -192,8 +192,7 @@ export async function runPreCompactHook(config: RuntimeConfig, options: HookRunn
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
   try {
-    const repoRoot = await gitValue(['rev-parse', '--show-toplevel']);
-    const project = repoRoot ? basename(repoRoot) : 'general';
+    const project = (await resolveRepoName()) ?? 'general';
     await runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
@@ -216,11 +215,10 @@ export async function runSessionStartHook(config: RuntimeConfig, options: HookRu
   // Hooks must never block session start. Failures fall through quietly so the
   // user just gets a normal session without injected context.
   try {
-    const repoRoot = await gitValue(['rev-parse', '--show-toplevel']);
-    if (!repoRoot) {
+    const project = await resolveRepoName();
+    if (!project) {
       return;
     }
-    const project = basename(repoRoot);
     await emitUpdateBannerIfOutdated(config);
     process.stdout.write(`## Threadnote — latest context for ${project}\n\n`);
     await runRecall(config, {

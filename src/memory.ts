@@ -45,6 +45,7 @@ import {
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
+  resolveRepoName,
   runCommand,
   safeTimestamp,
   sha256,
@@ -1374,7 +1375,7 @@ async function buildHandoff(
   const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
   const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
   const touchedFiles = await gitTouchedFiles(repoRoot);
-  const repoName = basename(repoRoot);
+  const repoName = (await resolveRepoName(repoRoot)) ?? basename(repoRoot);
   const topicBranch = branch && branch !== 'unknown' ? branch : 'current';
   const metadata: MemoryMetadata = {
     kind: 'handoff',
