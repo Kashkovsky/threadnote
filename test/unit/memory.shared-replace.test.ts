@@ -1,9 +1,25 @@
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {afterEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runRemember} from '../../src/memory.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import type {CommandResult, RuntimeConfig} from '../../src/types.js';
+import * as utils from '../../src/utils.js';
+
+vi.mock('../../src/utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/utils.js')>();
+  return {
+    ...actual,
+    maybeRun: vi.fn(),
+    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
+    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    runCommand: vi.fn(),
+    sleep: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
+const fail = (stderr: string): CommandResult => ({exitCode: 1, stdout: '', stderr});
 
 async function makeRuntime(): Promise<RuntimeConfig> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-shared-replace-'));
@@ -44,6 +60,15 @@ async function makeRuntime(): Promise<RuntimeConfig> {
 
 describe('remember shared replacement', () => {
   const homes: string[] = [];
+
+  beforeEach(() => {
+    vi.mocked(utils.maybeRun).mockImplementation(async (dryRun, executable, args, options) =>
+      dryRun ? undefined : vi.mocked(utils.runCommand)(executable, args, options),
+    );
+    vi.mocked(utils.openVikingCliForMode).mockResolvedValue('/ov');
+    vi.mocked(utils.requiredExecutable).mockResolvedValue('git');
+    vi.mocked(utils.runCommand).mockReset();
+  });
 
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -90,5 +115,38 @@ describe('remember shared replacement', () => {
         text: 'Not shareable.',
       }),
     ).rejects.toThrow(/only supports durable/);
+  });
+
+  it('surfaces git push failures instead of reporting a successful shared update', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+      if (executable === '/ov' && args[0] === 'stat') {
+        return ok();
+      }
+      if (executable === '/ov' && args[0] === 'write') {
+        return ok('written');
+      }
+      if (executable === 'git' && args.includes('add')) {
+        return ok();
+      }
+      if (executable === 'git' && args.includes('commit')) {
+        return ok('[main abc123] share');
+      }
+      if (executable === 'git' && args.includes('push')) {
+        return fail('permission denied');
+      }
+      return ok();
+    });
+
+    await expect(
+      runRemember(config, {
+        kind: 'durable',
+        replace: sharedUri,
+        sourceAgentClient: 'codex',
+        text: 'Updated shared auth memory.',
+      }),
+    ).rejects.toThrow(/git push failed/);
   });
 });

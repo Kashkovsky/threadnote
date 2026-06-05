@@ -16,6 +16,7 @@ import {
   parseJsonConfigObject,
   recallQueryRequestsWorkspaceContext,
   redactText,
+  runCommand,
   shellQuote,
   suggestedShellRc,
   uniqueUsefulWorkspaceTerms,
@@ -118,6 +119,37 @@ describe('redactText', () => {
 
   it('leaves non-secret text untouched', () => {
     expect(redactText('hello world')).toBe('hello world');
+  });
+});
+
+describe('runCommand guardrails', () => {
+  it('rejects when a command exceeds the configured timeout', async () => {
+    await expect(
+      runCommand(process.execPath, ['-e', 'setTimeout(() => undefined, 5000)'], {timeoutMs: 50}),
+    ).rejects.toThrow(/timed out after 50ms/);
+  });
+
+  it('returns a timeout result when allowFailure is set', async () => {
+    const result = await runCommand(process.execPath, ['-e', 'setTimeout(() => undefined, 5000)'], {
+      allowFailure: true,
+      timeoutMs: 50,
+    });
+    expect(result.exitCode).toBe(124);
+    expect(result.stderr).toContain('timed out after 50ms');
+  });
+
+  it('caps accumulated output', async () => {
+    const script = 'process.stdout.write("x".repeat(1024));';
+    const result = await runCommand(process.execPath, ['-e', script], {allowFailure: true, maxOutputBytes: 16});
+    expect(result.exitCode).toBe(124);
+    expect(result.stderr).toContain('exceeded output limit of 16 bytes');
+  });
+
+  it('escalates after timeout when the child ignores SIGTERM', async () => {
+    const script = 'process.on("SIGTERM", () => undefined); setInterval(() => undefined, 1000);';
+    const result = await runCommand(process.execPath, ['-e', script], {allowFailure: true, timeoutMs: 20});
+    expect(result.exitCode).toBe(124);
+    expect(result.stderr).toContain('timed out after 20ms');
   });
 });
 

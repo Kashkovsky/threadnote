@@ -4,6 +4,7 @@ import {dirname, join, relative, sep} from 'node:path';
 import {uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
+  CommandResult,
   ShareInitOptions,
   ShareListOptions,
   SharePublishOptions,
@@ -557,7 +558,16 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
   }
 
   if (options.push !== false) {
-    await maybeRun(dryRun, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+    const pushResult = dryRun
+      ? undefined
+      : await runCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+    if (dryRun) {
+      console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
+    } else if (pushResult && pushResult.exitCode !== 0) {
+      throw new Error(
+        `git push failed in ${worktree}: ${pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error'}`,
+      );
+    }
   }
 }
 
@@ -625,6 +635,76 @@ async function stageShareableChanges(dryRun: boolean, git: string, worktree: str
   await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', ...pathspecs], {allowFailure: true});
 }
 
+export async function publishShareGitChange(
+  worktree: string,
+  relativePath: string,
+  commitMessage: string,
+  options: {
+    readonly dryRun?: boolean;
+    readonly push?: boolean;
+    readonly verb?: 'add' | 'rm';
+  } = {},
+): Promise<readonly string[]> {
+  const dryRun = options.dryRun === true;
+  const push = options.push !== false;
+  const verb = options.verb ?? 'add';
+  const git = await requiredExecutable('git');
+  const messages: string[] = [];
+  const stageArgs = verb === 'rm' ? ['-C', worktree, 'rm', relativePath] : ['-C', worktree, 'add', '--', relativePath];
+  const stageResult = await runGitCommand(dryRun, git, stageArgs, `git ${verb} failed`);
+  if (stageResult) {
+    messages.push(`git ${verb}: ${stageResult.stdout.trim() || 'ok'}`);
+  }
+
+  if (dryRun) {
+    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'commit', '-m', commitMessage])}`);
+  } else {
+    const commitResult = await runCommand(git, ['-C', worktree, 'commit', '-m', commitMessage], {allowFailure: true});
+    if (commitResult.exitCode !== 0) {
+      const detail = commitResult.stdout.trim() || commitResult.stderr.trim();
+      if (/nothing to commit|no changes added/i.test(detail)) {
+        messages.push('git commit: nothing to commit (file already in tree)');
+      } else {
+        throw new Error(`git commit failed: ${detail || 'unknown error'}`);
+      }
+    } else {
+      messages.push(`git commit: ${commitResult.stdout.trim().split('\n').slice(0, 2).join(' ')}`);
+    }
+  }
+
+  if (!push) {
+    messages.push('git push skipped (push=false)');
+    return messages;
+  }
+  const pushResult = await runGitCommand(
+    dryRun,
+    git,
+    ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME],
+    'git push failed',
+  );
+  if (pushResult) {
+    messages.push(`git push: ${pushResult.stdout.trim() || pushResult.stderr.trim() || 'ok'}`);
+  }
+  return messages;
+}
+
+async function runGitCommand(
+  dryRun: boolean,
+  git: string,
+  args: readonly string[],
+  failureLabel: string,
+): Promise<CommandResult | undefined> {
+  if (dryRun) {
+    console.log(`Would run: ${formatShellCommand(git, args)}`);
+    return undefined;
+  }
+  const result = await runCommand(git, args, {allowFailure: true});
+  if (result.exitCode !== 0) {
+    throw new Error(`${failureLabel}: ${result.stderr.trim() || result.stdout.trim() || 'unknown error'}`);
+  }
+  return result;
+}
+
 export async function runSharePublish(
   config: ShareRuntime,
   sourceUri: string,
@@ -678,26 +758,24 @@ export async function runSharePublish(
   }
   await ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
   await writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
-  await removeWithRollback(config, ov, sourceUri, targetUri, team.config.worktree, dryRun, 'publish');
 
-  const git = await requiredExecutable('git');
   const worktree = team.config.worktree;
   const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
   const message = options.message ?? `share: publish ${relativePath}`;
-  await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', relativePath]);
-  await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
-  if (options.push !== false) {
-    const pushResult = dryRun
-      ? undefined
-      : await runCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
-    if (dryRun) {
-      console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
-    } else if (pushResult && pushResult.exitCode !== 0) {
-      const detail = pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error';
-      throw new Error(
-        `Memory was committed locally but git push failed: ${detail}\nResolve the remote issue (auth, network, branch protection), then run: threadnote share sync`,
-      );
-    }
+  const gitMessages = await publishShareGitChange(worktree, relativePath, message, {
+    dryRun,
+    push: options.push,
+  });
+  for (const gitMessage of gitMessages) {
+    console.log(gitMessage);
+  }
+  try {
+    await removeMemoryUri(config, ov, sourceUri, dryRun);
+  } catch (err: unknown) {
+    throw new Error(
+      `Published ${sourceUri} -> ${targetUri}, but could not remove the personal source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
+      {cause: err},
+    );
   }
   console.log(`Published ${sourceUri} -> ${targetUri}`);
 }
@@ -722,16 +800,25 @@ export async function runShareUnpublish(
     );
   }
   await writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
-  await removeWithRollback(config, ov, sourceUri, targetUri, team.config.worktree, dryRun, 'unpublish');
 
-  const git = await requiredExecutable('git');
   const worktree = team.config.worktree;
   const relativePath = vikingUriToWorktreeRelative(config, sourceUri, team.name);
   const message = options.message ?? `share: unpublish ${relativePath}`;
-  await maybeRun(dryRun, git, ['-C', worktree, 'rm', relativePath], {allowFailure: true});
-  await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
-  if (options.push !== false) {
-    await maybeRun(dryRun, git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+  const gitMessages = await publishShareGitChange(worktree, relativePath, message, {
+    dryRun,
+    push: options.push,
+    verb: 'rm',
+  });
+  for (const gitMessage of gitMessages) {
+    console.log(gitMessage);
+  }
+  try {
+    await removeMemoryUri(config, ov, sourceUri, dryRun);
+  } catch (err: unknown) {
+    throw new Error(
+      `Unpublished ${sourceUri} -> ${targetUri}, but could not remove the shared OpenViking source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
+      {cause: err},
+    );
   }
   console.log(`Unpublished ${sourceUri} -> ${targetUri}`);
 }
@@ -1302,70 +1389,6 @@ async function ingestSingleFile(
 ): Promise<void> {
   const content = await readFile(filePath, 'utf8');
   await writeMemoryFile(config, ov, uri, content, initialMode, false, options);
-}
-
-/**
- * Removes `sourceUri` from OpenViking. If removal fails, rolls back the prior
- * write at `rollbackUri` so the system is back to its pre-publish/unpublish
- * state instead of half-published. The `label` controls error wording and
- * whether the worktree file at `rollbackUri` is also deleted (only on the
- * publish path; on unpublish the rollback URI is personal so there is no
- * worktree file to clean).
- *
- * Throws the original source-removal error so callers see what failed.
- */
-export async function removeWithRollback(
-  config: ShareRuntime,
-  ov: string,
-  sourceUri: string,
-  rollbackUri: string,
-  worktree: string,
-  dryRun: boolean,
-  label: 'publish' | 'unpublish',
-): Promise<void> {
-  try {
-    await removeMemoryUri(config, ov, sourceUri, dryRun);
-  } catch (sourceErr: unknown) {
-    if (dryRun) {
-      throw sourceErr;
-    }
-    console.error(
-      `Source removal failed during ${label}; rolling back ${rollbackUri} so the system is back to the pre-${label} state.`,
-    );
-    try {
-      await removeMemoryUri(config, ov, rollbackUri, false);
-    } catch (rollbackErr: unknown) {
-      console.error(
-        `Rollback of ${rollbackUri} also failed. Manual cleanup needed via: threadnote forget ${rollbackUri}\nRollback error: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
-      );
-    }
-    await bestEffortRemoveWorktreeFile(rollbackUri, worktree, label);
-    throw sourceErr;
-  }
-}
-
-async function bestEffortRemoveWorktreeFile(
-  rollbackUri: string,
-  worktree: string,
-  label: 'publish' | 'unpublish',
-): Promise<void> {
-  if (label !== 'publish') {
-    return;
-  }
-  const prefix = 'viking://';
-  if (!rollbackUri.startsWith(prefix)) {
-    return;
-  }
-  const parts = rollbackUri.slice(prefix.length).split('/');
-  const sharedIndex = parts.indexOf('shared');
-  if (sharedIndex === -1 || sharedIndex + 2 >= parts.length) {
-    return;
-  }
-  const relative = parts.slice(sharedIndex + 2).join('/');
-  if (!relative) {
-    return;
-  }
-  await rm(join(worktree, relative), {force: true});
 }
 
 export async function removeMemoryUri(

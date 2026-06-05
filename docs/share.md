@@ -61,9 +61,9 @@ threadnote share publish viking://user/you/memories/durable/projects/foo/bar.md
 #   --team <name>, --message "...", --no-push, --dry-run.
 ```
 
-`share publish` moves the memory from your personal namespace into the team's
-shared subtree, commits with the message
-`share: publish <relative-path>`, and pushes. The memory's recall path becomes
+`share publish` writes the memory into the team's shared subtree, commits with
+the message `share: publish <relative-path>`, pushes, then removes the personal
+copy after the push succeeds. The memory's recall path becomes
 `viking://user/you/memories/shared/<team>/durable/projects/foo/bar.md`.
 
 Before writing, `share publish` strips `supersedes:` and `archived_from:`

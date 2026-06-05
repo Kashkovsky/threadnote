@@ -44,7 +44,6 @@ import {
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
-  requiredExecutable,
   runCommand,
   safeTimestamp,
   sha256,
@@ -53,9 +52,9 @@ import {
 } from './utils.js';
 import {
   applyScrubber,
-  DEFAULT_GIT_REMOTE_NAME,
   ensureSharedDirectoryChain,
   isInSharedNamespace,
+  publishShareGitChange,
   resolveTeam,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
@@ -826,14 +825,12 @@ async function storeSharedMemoryReplacement(
   await ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
   await writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
 
-  const git = await requiredExecutable('git');
-  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'add', '--', relativePath]);
-  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'commit', '-m', `share: update ${relativePath}`], {
-    allowFailure: true,
+  const gitMessages = await publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`, {
+    dryRun: options.dryRun,
   });
-  await maybeRun(options.dryRun, git, ['-C', team.config.worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {
-    allowFailure: true,
-  });
+  for (const message of gitMessages) {
+    console.log(message);
+  }
 
   for (const redaction of scrub.redactions) {
     console.log(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
@@ -848,49 +845,8 @@ async function writeDurableMemoryFile(
   memoryPath: string,
   writeMode: 'create' | 'replace',
 ): Promise<void> {
-  const args = withIdentity(config, [
-    'write',
-    memoryUri,
-    '--from-file',
-    memoryPath,
-    '--mode',
-    writeMode,
-    '--wait',
-    '--timeout',
-    '120',
-  ]);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
-    const result = await runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      if (result.stdout.trim()) {
-        console.log(result.stdout.trim());
-      }
-      if (result.stderr.trim()) {
-        console.error(result.stderr.trim());
-      }
-      return;
-    }
-    if (await vikingResourceExists(ov, config, memoryUri)) {
-      console.log('OpenViking accepted the memory but returned before the wait completed; waiting for indexing.');
-      await waitForOpenVikingQueue(ov, config);
-      return;
-    }
-    if (!isResourceBusy(result.stderr, result.stdout) || attempt === 3) {
-      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
-    }
-    await sleep(1000 * (attempt + 1));
-  }
-}
-
-async function waitForOpenVikingQueue(ov: string, config: RuntimeConfig): Promise<void> {
-  const result = await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
-  if (result.stdout.trim()) {
-    console.log(result.stdout.trim());
-  }
-  if (result.stderr.trim()) {
-    console.error(result.stderr.trim());
-  }
+  const content = await readFile(memoryPath, 'utf8');
+  await writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
 }
 
 async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {

@@ -225,7 +225,8 @@
 
       /* hero */
       #hero {
-        background: radial-gradient(circle at 25% 30%, rgba(94, 224, 197, 0.08), transparent 55%),
+        background:
+          radial-gradient(circle at 25% 30%, rgba(94, 224, 197, 0.08), transparent 55%),
           radial-gradient(circle at 75% 70%, rgba(124, 140, 255, 0.05), transparent 55%), var(--bg);
         place-items: center;
       }
@@ -298,7 +299,9 @@
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
         padding: 1.5rem 1.5rem 1.4rem;
-        transition: border-color 0.2s ease, transform 0.2s ease;
+        transition:
+          border-color 0.2s ease,
+          transform 0.2s ease;
       }
 
       .card:hover {
@@ -606,7 +609,9 @@
         background: var(--line);
         border: 0;
         display: block;
-        transition: background-color 0.2s ease, transform 0.2s ease;
+        transition:
+          background-color 0.2s ease,
+          transform 0.2s ease;
       }
       .deck-nav a::after {
         content: '';
@@ -720,7 +725,9 @@
       .reveal {
         opacity: 0;
         transform: translateY(14px);
-        transition: opacity 0.6s ease, transform 0.6s ease;
+        transition:
+          opacity 0.6s ease,
+          transform 0.6s ease;
       }
 
       .reveal.visible {
@@ -792,9 +799,7 @@
           </p>
           <ul class="flat reveal" style="margin-top: 2rem">
             <li><strong>Conversation history evaporates.</strong> Compaction summarizes; the nuance is lost.</li>
-            <li>
-              <strong>Each agent has its own memory.</strong> Switching from Codex to Claude means starting over.
-            </li>
+            <li><strong>Each agent has its own memory.</strong> Switching from Codex to Claude means starting over.</li>
             <li>
               <strong>CLAUDE.md/AGENTS.md is per-repo and static.</strong> It can't carry an in-flight feature's design
               decisions across sessions, much less across agents or repos.
@@ -1050,8 +1055,8 @@
               <h3>Secret-pattern scrubber</h3>
               <p>
                 Candidate files are skipped if common token shapes survive redaction. The
-                <code>share publish</code> path refuses to push memories that contain PEM keys,
-                <code>sk-…</code> / <code>github_pat_…</code> / <code>glpat-…</code>, JWTs, AWS keys, or Slack tokens.
+                <code>share publish</code> path refuses to push memories that contain PEM keys, <code>sk-…</code> /
+                <code>github_pat_…</code> / <code>glpat-…</code>, JWTs, AWS keys, or Slack tokens.
               </p>
             </div>
             <div class="card reveal">
@@ -1067,8 +1072,8 @@
               <span class="card-kicker">Transactional</span>
               <h3>No half-published state</h3>
               <p>
-                If <code>share publish</code> can't remove the personal copy after writing the shared copy, it rolls the
-                shared write back. You either publish cleanly or you publish nothing.
+                <code>share publish</code> writes, commits, and pushes the shared copy before removing the personal
+                source. A git failure leaves the original memory in place with an actionable error.
               </p>
             </div>
           </div>
@@ -1081,8 +1086,8 @@
           <span class="slide-eyebrow">06 · Install</span>
           <h2>One command. Then point your agents at it.</h2>
           <p class="lead">
-            The installer wires up the npm package, the OpenViking Python environment, and the local server. After
-            that, <code>mcp-install</code> per agent and you're done.
+            The installer wires up the npm package, the OpenViking Python environment, and the local server. After that,
+            <code>mcp-install</code> per agent and you're done.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1274,8 +1279,9 @@ projects:
               <span class="card-kicker">status: archived</span>
               <h3>Provenance only</h3>
               <p>
-                Old handoffs that helped at the time but shouldn't be current working context. <code>archive</code>
-                moves them out of the active recall scope; <code>--include-archived</code> still finds them.
+                Old handoffs that helped at the time but shouldn't be current working context.
+                <code>archive</code> moves them out of the active recall scope; <code>--include-archived</code> still
+                finds them.
               </p>
             </div>
           </div>
@@ -1408,8 +1414,10 @@ threadnote remember \
             <div class="vignette reveal">
               <div class="v-say">Continue where we left off on this branch.</div>
               <pre class="v-call">recall_context({query: "&lt;branch&gt; latest handoff durable feature memory"})</pre>
-              <pre class="v-response">→ viking://user/you/memories/handoffs/active/&lt;branch&gt;/auto-precompact.md
-→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+              <pre class="v-response">
+→ viking://user/you/memories/handoffs/active/&lt;branch&gt;/auto-precompact.md
+→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre
+              >
               <div class="v-answer">
                 Fresh session, fresh agent. It reads both pointers, picks up the design decisions, the open PR, what's
                 left to test, and what just failed in CI. No re-explaining.
@@ -1418,19 +1426,27 @@ threadnote remember \
 
             <div class="vignette reveal">
               <div class="v-say">Save where we are — I'm switching to another agent.</div>
-              <pre class="v-call">remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre>
-              <pre class="v-response">Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+              <pre class="v-call">
+remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre
+              >
+              <pre class="v-response">
+Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre
+              >
               <div class="v-answer">
-                Open the next agent — the SessionStart hook recalls the same handoff and the durable memory. It picks
-                up the test command and the open blocker without you retyping them.
+                Open the next agent — the SessionStart hook recalls the same handoff and the durable memory. It picks up
+                the test command and the open blocker without you retyping them.
               </div>
             </div>
 
             <div class="vignette reveal">
               <div class="v-say">Share this feature's design memory with the team.</div>
-              <pre class="v-call">share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre>
-              <pre class="v-response">Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
-git push: ok</pre>
+              <pre class="v-call">
+share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre
+              >
+              <pre class="v-response">
+Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
+git push: ok</pre
+              >
               <div class="v-answer">
                 The memory lands in the team git repo. Their agent's next recall/read auto-syncs clean incoming changes
                 and surfaces it alongside their own memories — no DM forwarding, no PDF dumping.
@@ -1439,8 +1455,12 @@ git push: ok</pre>
 
             <div class="vignette reveal">
               <div class="v-say v-auto">(automatic — the PreCompact hook fires before context compaction)</div>
-              <pre class="v-call">remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre>
-              <pre class="v-response">Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre>
+              <pre class="v-call">
+remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre
+              >
+              <pre class="v-response">
+Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre
+              >
               <div class="v-answer">
                 Compaction summarizes the conversation arc but loses the durable facts. Threadnote's hook captures them
                 first; the post-compaction turn recalls them and resumes without amnesia.
@@ -1449,8 +1469,12 @@ git push: ok</pre>
 
             <div class="vignette reveal">
               <div class="v-say">Remember that this repo cuts release notes from CI via gh release create.</div>
-              <pre class="v-call">remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre>
-              <pre class="v-response">Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre>
+              <pre class="v-call">
+remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre
+              >
+              <pre class="v-response">
+Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre
+              >
               <div class="v-answer">
                 Next time anyone asks where releases happen, the agent finds it in two seconds. No grepping the wiki.
               </div>
@@ -1459,7 +1483,9 @@ git push: ok</pre>
             <div class="vignette reveal">
               <div class="v-say">What did we conclude about the export-workflow timeout?</div>
               <pre class="v-call">recall_context({query: "export workflow timeout findings"})</pre>
-              <pre class="v-response">→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre>
+              <pre class="v-response">
+→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre
+              >
               <div class="v-answer">
                 Re-open the same investigation three weeks later; the durable memory points your agent at the right
                 files and the resolution. The trail doesn't decay.
@@ -1481,9 +1507,7 @@ threadnote mcp-install codex --apply       # or claude / cursor / copilot
 threadnote doctor --dry-run</code></pre>
 
           <div class="cta-row">
-            <a class="cta" href="https://github.com/Kashkovsky/threadnote" target="_blank" rel="noopener">
-              GitHub →
-            </a>
+            <a class="cta" href="https://github.com/Kashkovsky/threadnote" target="_blank" rel="noopener"> GitHub → </a>
             <a class="cta outline" href="https://www.npmjs.com/package/threadnote" target="_blank" rel="noopener">
               npm
             </a>

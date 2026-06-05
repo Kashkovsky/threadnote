@@ -133,8 +133,8 @@ design decisions, API contracts, gotchas) and is safe to share. Do NOT publish:
 - anything mentioning secrets, customer data, raw logs, or material a teammate's git history shouldn't carry.
 
 The MCP tool `share_publish` runs the same scrubber as the CLI and refuses to publish memories containing common secret
-patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It is a destructive
-operation: it removes the personal copy after the shared copy is committed.
+patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It writes and pushes
+the shared copy first, then removes the personal copy after the push succeeds.
 
 Incoming shared memories are normally fetched and synced automatically before MCP `recall_context` / `read_context` and
 CLI `threadnote recall` / `threadnote read` return. If automatic sync reports a dirty worktree, a conflict, or another

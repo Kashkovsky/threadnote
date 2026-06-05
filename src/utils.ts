@@ -167,38 +167,124 @@ export async function maybeRun(
 export async function runCommand(
   executable: string,
   args: readonly string[],
-  options: {readonly allowFailure?: boolean; readonly cwd?: string} = {},
+  options: {
+    readonly allowFailure?: boolean;
+    readonly cwd?: string;
+    readonly maxOutputBytes?: number;
+    readonly timeoutMs?: number;
+  } = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(executable, args, {cwd: options.cwd});
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
-    child.stdout.on('data', chunk => {
-      stdoutChunks.push(String(chunk));
-    });
-    child.stderr.on('data', chunk => {
-      stderrChunks.push(String(chunk));
-    });
-    child.on('error', err => {
-      if (options.allowFailure === true) {
-        resolvePromise({exitCode: 127, stderr: errorMessage(err), stdout: ''});
-      } else {
-        rejectPromise(err);
+    const maxOutputBytes = options.maxOutputBytes ?? defaultCommandMaxOutputBytes();
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let finished = false;
+    let failureResult: CommandResult | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let sentTerminationSignal = false;
+    const timeoutMs = options.timeoutMs ?? defaultCommandTimeoutMs();
+    const finish = (result: CommandResult): void => {
+      if (finished) {
+        return;
       }
-    });
-    child.on('close', code => {
-      const result = {
-        exitCode: code ?? 1,
-        stderr: stderrChunks.join(''),
-        stdout: stdoutChunks.join(''),
-      };
+      finished = true;
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
       if (result.exitCode !== 0 && options.allowFailure !== true) {
         rejectPromise(new Error(`${formatShellCommand(executable, args)} failed: ${result.stderr || result.stdout}`));
         return;
       }
       resolvePromise(result);
+    };
+    const failAndKill = (message: string): void => {
+      if (failureResult) {
+        return;
+      }
+      failureResult = {exitCode: 124, stderr: message, stdout: stdoutChunks.join('')};
+      if (!sentTerminationSignal) {
+        sentTerminationSignal = true;
+        child.kill('SIGTERM');
+      }
+      setTimeout(() => {
+        if (!finished) {
+          child.kill('SIGKILL');
+        }
+      }, 1000).unref?.();
+    };
+    if (timeoutMs > 0) {
+      killTimer = setTimeout(() => {
+        failAndKill(`${formatShellCommand(executable, args)} timed out after ${timeoutMs}ms`);
+      }, timeoutMs);
+      killTimer.unref?.();
+    }
+    child.stdout.on('data', chunk => {
+      if (failureResult) {
+        return;
+      }
+      const text = String(chunk);
+      stdoutBytes += Buffer.byteLength(text);
+      if (stdoutBytes + stderrBytes > maxOutputBytes) {
+        failAndKill(`${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`);
+        return;
+      }
+      stdoutChunks.push(text);
+    });
+    child.stderr.on('data', chunk => {
+      if (failureResult) {
+        return;
+      }
+      const text = String(chunk);
+      stderrBytes += Buffer.byteLength(text);
+      if (stdoutBytes + stderrBytes > maxOutputBytes) {
+        failAndKill(`${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`);
+        return;
+      }
+      stderrChunks.push(text);
+    });
+    child.on('error', err => {
+      if (finished) {
+        return;
+      }
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      if (options.allowFailure === true) {
+        finish({exitCode: 127, stderr: errorMessage(err), stdout: ''});
+      } else {
+        finished = true;
+        rejectPromise(err);
+      }
+    });
+    child.on('close', code => {
+      const result = failureResult ?? {
+        exitCode: code ?? 1,
+        stderr: stderrChunks.join(''),
+        stdout: stdoutChunks.join(''),
+      };
+      finish(result);
     });
   });
+}
+
+function defaultCommandTimeoutMs(): number {
+  return positiveIntegerFromEnv('THREADNOTE_COMMAND_TIMEOUT_MS') ?? 10 * 60 * 1000;
+}
+
+function defaultCommandMaxOutputBytes(): number {
+  return positiveIntegerFromEnv('THREADNOTE_COMMAND_MAX_OUTPUT_BYTES') ?? 5 * 1024 * 1024;
+}
+
+function positiveIntegerFromEnv(name: string): number | undefined {
+  const value = process.env[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 export async function gitValue(args: readonly string[], cwd = getInvocationCwd()): Promise<string | undefined> {

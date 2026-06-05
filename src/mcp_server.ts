@@ -20,10 +20,10 @@ import {
   type MemoryRecord,
 } from './memory_hygiene.js';
 import {
-  DEFAULT_GIT_REMOTE_NAME,
   ensureSharedDirectoryChain,
   isInSharedNamespace,
-  removeWithRollback as removeWithRollbackShared,
+  publishShareGitChange,
+  removeMemoryUri,
   resolveTeam,
   applyScrubber,
   sharedMemoryUriParts,
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
         'During feature work, update durable feature knowledge when valuable implementation details, decisions, interfaces, or gotchas change.',
         'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
         'Use compact_context with dryRun=true for scoped memory hygiene when recall surfaces overlapping active memories.',
-        'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish is destructive: it scrubs for secrets, moves the memory into the shared subtree, removes the personal copy, and pushes a git commit. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
+        'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish scrubs for secrets, writes and pushes the shared copy first, then removes the personal copy after the push succeeds. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
     },
@@ -312,7 +312,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        "Publish a personal memory into a team's shared memories git repo. Reads the memory, strips local-only provenance frontmatter (supersedes:, archived_from:), refuses publish if it matches secret patterns, copies it into the shared subtree, removes the personal original, and commits/pushes. Default team is used unless team is provided. Pass preview=true to return the would-be-published bytes without writing or committing.",
+        "Publish a personal memory into a team's shared memories git repo. Reads the memory, strips local-only provenance frontmatter (supersedes:, archived_from:), refuses publish if it matches secret patterns, writes and pushes the shared copy first, then removes the personal original. Default team is used unless team is provided. Pass preview=true to return the would-be-published bytes without writing or committing.",
       inputSchema: {
         message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
         preview: z
@@ -766,27 +766,8 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
         const ov = await requiredOpenVikingCli();
         const appliedMessages: string[] = [];
         for (const action of plan.keepUpdates) {
-          const result = await runOpenVikingWriteWithRetry(
-            ov,
-            config,
-            action.uri,
-            withIdentity(config, [
-              'write',
-              action.uri,
-              '--content',
-              action.content,
-              '--mode',
-              'replace',
-              '--wait',
-              '--timeout',
-              '120',
-            ]),
-          );
+          await writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true});
           appliedMessages.push(`Updated kept memory: ${action.uri}`);
-          const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-          if (output) {
-            appliedMessages.push(output);
-          }
         }
         for (const action of plan.archives) {
           const archiveResult = await archiveMemoryForCompact(config, ov, action);
@@ -992,22 +973,7 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
       : candidateMetadata;
     const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
     const writeMode = await memoryWriteMode(ov, config, memoryUri, finalMetadata);
-    const result = await runOpenVikingWriteWithRetry(
-      ov,
-      config,
-      memoryUri,
-      withIdentity(config, [
-        'write',
-        memoryUri,
-        '--content',
-        memory,
-        '--mode',
-        writeMode,
-        '--wait',
-        '--timeout',
-        '120',
-      ]),
-    );
+    await writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
     const messages = [`Stored memory: ${memoryUri}`];
     if (params.replaceUri && !isInPlaceUpdate) {
       const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, params.replaceUri);
@@ -1019,8 +985,7 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
     } else if (isInPlaceUpdate) {
       messages.push(`Updated existing memory in place: ${memoryUri}`);
     }
-    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: [...messages, text].filter(Boolean).join('\n')}]};
+    return {content: [{type: 'text', text: messages.join('\n')}]};
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
@@ -1063,32 +1028,9 @@ async function writeSharedMemoryReplacement(
     messages.push(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
   }
   messages.push(
-    ...(await gitPublishWorkflow(resolved.config.worktree, relativePath, `share: update ${relativePath}`, true)),
+    ...(await publishShareGitChange(resolved.config.worktree, relativePath, `share: update ${relativePath}`)),
   );
   return {content: [{type: 'text', text: messages.join('\n')}]};
-}
-
-async function runOpenVikingWriteWithRetry(
-  ov: string,
-  config: RuntimeConfig,
-  memoryUri: string,
-  args: readonly string[],
-) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      return result;
-    }
-    if (await vikingResourceExists(ov, config, memoryUri)) {
-      await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
-      return {exitCode: 0, stdout: 'OpenViking accepted the memory and indexing wait completed.', stderr: ''};
-    }
-    if (!isResourceBusy(result.stderr, result.stdout) || attempt === 3) {
-      throw new Error(`${ov} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
-    }
-    await sleep(1000 * (attempt + 1));
-  }
-  throw new Error(`${ov} ${args.join(' ')} failed.`);
 }
 
 async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
@@ -1371,20 +1313,28 @@ async function runSharePublishTool(
       );
     }
     await ensureSharedDirectoryChain(config, ov, targetUri, false);
-    // Stage the body via writeMemoryFile (writes a tmpdir file + --from-file)
-    // so large bodies and embedded NUL bytes don't blow past argv limits.
     await writeMemoryFile(config, ov, targetUri, content, 'create', false);
+    const messages = [`Published ${sourceUri} -> ${targetUri}`];
+    for (const redaction of scrub.redactions) {
+      messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
+    }
+    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+    const commitMessage = options.message ?? `share: publish ${relativePath}`;
+    const gitMessages = await publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
+      push: options.push,
+    });
     try {
-      await removeWithRollbackShared(config, ov, sourceUri, targetUri, resolved.config.worktree, false, 'publish');
+      await removeMemoryUri(config, ov, sourceUri, false, {quiet: true});
     } catch (sourceErr: unknown) {
       return {
         content: [
           {
             type: 'text',
             text: [
-              `Refused to leave a half-published state: could not remove ${sourceUri}.`,
-              `Rolled back ${targetUri} so the system is back to the pre-publish state.`,
-              `Retry the publish once OpenViking's queue settles.`,
+              ...messages,
+              ...gitMessages,
+              `Could not remove the personal source after publish: ${sourceUri}.`,
+              `Retry cleanup later with: threadnote forget ${sourceUri}`,
               sourceErr instanceof Error ? sourceErr.message : String(sourceErr),
             ].join('\n'),
           },
@@ -1392,18 +1342,6 @@ async function runSharePublishTool(
         isError: true,
       };
     }
-    const messages = [`Published ${sourceUri} -> ${targetUri}`];
-    for (const redaction of scrub.redactions) {
-      messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
-    }
-    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
-    const commitMessage = options.message ?? `share: publish ${relativePath}`;
-    const gitMessages = await gitPublishWorkflow(
-      resolved.config.worktree,
-      relativePath,
-      commitMessage,
-      options.push !== false,
-    );
     return {
       content: [{type: 'text', text: [...messages, ...gitMessages].join('\n')}],
       isError: false,
@@ -1411,44 +1349,6 @@ async function runSharePublishTool(
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
-}
-
-async function gitPublishWorkflow(
-  worktree: string,
-  relativePath: string,
-  commitMessage: string,
-  push: boolean,
-): Promise<readonly string[]> {
-  const messages: string[] = [];
-  const add = await runCommand('git', ['-C', worktree, 'add', relativePath], {allowFailure: true});
-  if (add.exitCode !== 0) {
-    messages.push(`git add failed: ${add.stderr.trim() || add.stdout.trim()}`);
-    return messages;
-  }
-  const commit = await runCommand('git', ['-C', worktree, 'commit', '-m', commitMessage], {allowFailure: true});
-  if (commit.exitCode !== 0) {
-    const detail = commit.stdout.trim() || commit.stderr.trim();
-    if (/nothing to commit|no changes added/i.test(detail)) {
-      messages.push('git commit: nothing to commit (file already in tree)');
-    } else {
-      messages.push(`git commit failed: ${detail}`);
-      return messages;
-    }
-  } else {
-    messages.push(`git commit: ${commit.stdout.trim().split('\n').slice(0, 2).join(' ')}`);
-  }
-  if (!push) {
-    messages.push('git push skipped (push=false)');
-    return messages;
-  }
-  const pushResult = await runCommand('git', ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
-  const pushDetail = pushResult.stdout.trim() || pushResult.stderr.trim();
-  if (pushResult.exitCode !== 0) {
-    messages.push(`git push failed: ${pushDetail}`);
-  } else {
-    messages.push(`git push: ${pushDetail || 'ok'}`);
-  }
-  return messages;
 }
 
 function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {
