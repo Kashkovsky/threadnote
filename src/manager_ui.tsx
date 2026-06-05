@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -27,7 +27,7 @@ interface MemoryMetadata {
   readonly topic?: string;
 }
 
-interface TreeNode {
+export interface TreeNode {
   readonly children?: readonly TreeNode[];
   readonly isDir: boolean;
   readonly isShared: boolean;
@@ -106,6 +106,13 @@ interface ConsolidationJob {
   readonly status: 'completed' | 'failed' | 'running';
 }
 
+interface BulkItemResult {
+  readonly error?: string;
+  readonly ok: boolean;
+  readonly output?: string;
+  readonly uri: string;
+}
+
 interface TargetForm {
   kind: MemoryKind;
   project: string;
@@ -120,7 +127,7 @@ interface DropdownOption {
   readonly value: string;
 }
 
-const token = new URLSearchParams(window.location.search).get('token') ?? '';
+const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
 
 function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
@@ -132,12 +139,13 @@ function loadSidebarWidth(): number {
 }
 
 function App(): React.ReactElement {
-  const [panel, setPanel] = useState<PanelName>('memory');
+  const [panel, setPanel] = useState<PanelName>('doctor');
   const [state, setState] = useState<StateResponse | undefined>();
   const [tree, setTree] = useState<TreeNode | undefined>();
   const [shares, setShares] = useState<readonly ShareSummary[]>([]);
   const [doctor, setDoctor] = useState<readonly DoctorCheck[]>([]);
   const [doctorOutput, setDoctorOutput] = useState('');
+  const [doctorAction, setDoctorAction] = useState<string | undefined>();
   const [selectedUri, setSelectedUri] = useState<string | undefined>();
   const [selectedUris, setSelectedUris] = useState<ReadonlySet<string>>(new Set());
   const [memory, setMemory] = useState<MemoryResponse | undefined>();
@@ -173,11 +181,22 @@ function App(): React.ReactElement {
   const [draftingConsolidation, setDraftingConsolidation] = useState(false);
   const [applyingConsolidation, setApplyingConsolidation] = useState(false);
   const [consolidationSourceUris, setConsolidationSourceUris] = useState<readonly string[]>([]);
+  const [bulkAction, setBulkAction] = useState<'archive' | 'forget' | 'publish' | undefined>();
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
 
   useEffect(() => {
     void refreshAll();
   }, []);
+
+  useEffect(() => {
+    if (panel === 'doctor') {
+      void loadDoctor(false);
+    }
+  }, [panel]);
+
+  useEffect(() => {
+    setSelectedUris(current => pruneSelectedMemoryUris(current, tree, {filter, showSystem}));
+  }, [filter, showSystem, tree]);
 
   useEffect(() => {
     if (!selectedUri) {
@@ -208,7 +227,11 @@ function App(): React.ReactElement {
     () => (tree && selectedUri ? findNode(tree, selectedUri) : undefined),
     [tree, selectedUri],
   );
-  const selectedList = useMemo(() => [...selectedUris], [selectedUris]);
+  const visibleSelectedUris = useMemo(
+    () => pruneSelectedMemoryUris(selectedUris, tree, {filter, showSystem}),
+    [filter, selectedUris, showSystem, tree],
+  );
+  const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
   const outputUris = useMemo(() => vikingUrisFromText(output), [output]);
 
   async function refreshAll(): Promise<void> {
@@ -282,14 +305,24 @@ function App(): React.ReactElement {
     }
   }
 
-  async function runDoctorAction(label: string, action: () => Promise<{readonly output?: string}>): Promise<void> {
+  async function runDoctorAction(
+    label: string,
+    busyLabel: string,
+    action: () => Promise<{readonly output?: string}>,
+  ): Promise<void> {
+    if (doctorAction) {
+      return;
+    }
+    setDoctorAction(busyLabel);
     try {
       const result = await action();
       setDoctorOutput(result.output ?? '');
       toastMessage(label);
-      await loadDoctor();
+      await loadDoctorChecks();
     } catch (err) {
       toastMessage(errorMessage(err));
+    } finally {
+      setDoctorAction(undefined);
     }
   }
 
@@ -430,11 +463,48 @@ function App(): React.ReactElement {
   }
 
   async function bulk(action: 'archive' | 'forget' | 'publish'): Promise<void> {
-    if (selectedList.length === 0 || !window.confirm(`${action} ${selectedList.length} selected memories?`)) {
+    if (
+      bulkAction ||
+      selectedList.length === 0 ||
+      !window.confirm(`${action} ${selectedList.length} selected memories?`)
+    ) {
       return;
     }
-    const team = action === 'publish' ? (window.prompt('Team name', 'default') ?? '') : undefined;
-    await runAction('Bulk action complete', () => api('/api/bulk', {action, confirm: true, team, uris: selectedList}));
+    const team = action === 'publish' ? (window.prompt('Team name', 'default')?.trim() ?? '') : undefined;
+    if (action === 'publish' && !team) {
+      return;
+    }
+    const currentSelectedUri = selectedUri;
+    setBulkAction(action);
+    try {
+      const result = await api<{readonly results: readonly BulkItemResult[]}>('/api/bulk', {
+        action,
+        confirm: true,
+        team,
+        uris: selectedList,
+      });
+      setOutput(formatBulkResults(action, result.results));
+      const failedUris = result.results.filter(item => !item.ok).map(item => item.uri);
+      setSelectedUris(new Set(failedUris));
+      if (currentSelectedUri && selectedList.includes(currentSelectedUri)) {
+        if (failedUris.includes(currentSelectedUri)) {
+          await loadMemory(currentSelectedUri).catch(() => undefined);
+        } else {
+          setSelectedUri(undefined);
+          setMemory(undefined);
+          setContent('');
+          setMemoryViewMode('edit');
+        }
+      } else if (currentSelectedUri) {
+        await loadMemory(currentSelectedUri).catch(() => undefined);
+      }
+      await refreshTreeOnly();
+      toastMessage(failedUris.length === 0 ? 'Bulk action complete' : 'Bulk action completed with failures');
+    } catch (err) {
+      toastMessage(errorMessage(err));
+    } finally {
+      setBulkAction(undefined);
+    }
   }
 
   async function loadShares(): Promise<void> {
@@ -443,11 +513,27 @@ function App(): React.ReactElement {
     toastMessage('Shares refreshed');
   }
 
-  async function loadDoctor(): Promise<void> {
+  async function loadDoctorChecks(showToast = false): Promise<void> {
     const next = await api<{checks: readonly DoctorCheck[]; shares: readonly ShareSummary[]}>('/api/doctor');
     setDoctor(next.checks);
     setShares(next.shares);
-    toastMessage('Doctor complete');
+    if (showToast) {
+      toastMessage('Doctor complete');
+    }
+  }
+
+  async function loadDoctor(showToast = true): Promise<void> {
+    if (doctorAction) {
+      return;
+    }
+    setDoctorAction('Running doctor');
+    try {
+      await loadDoctorChecks(showToast);
+    } catch (err) {
+      toastMessage(errorMessage(err));
+    } finally {
+      setDoctorAction(undefined);
+    }
   }
 
   async function draftConsolidation(): Promise<void> {
@@ -602,6 +688,13 @@ function App(): React.ReactElement {
   const canMutate = Boolean(selectedUri && !selectedIsDir);
   const canRemoveFolder = Boolean(selectedNode?.isDir && selectedNode.relativePath && !selectedNode.isShared);
   const consolidationBusy = draftingConsolidation || applyingConsolidation;
+  const doctorBusy = doctorAction !== undefined;
+  const controlsBlocked = bulkAction !== undefined;
+  const busyOverlayMessage = bulkAction
+    ? `${actionProgressLabel(bulkAction)} ${selectedList.length} selected ${selectedList.length === 1 ? 'memory' : 'memories'}...`
+    : '';
+  const doctorBusyMessage = doctorAction ? `${doctorAction}...` : '';
+  const metadataFieldsDisabled = Boolean(memory || selectedIsDir);
   const appStyle = {'--sidebar-width': `${sidebarWidth}px`} as React.CSSProperties;
 
   return (
@@ -609,24 +702,36 @@ function App(): React.ReactElement {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-title">
-            <img alt="" className="brand-logo" src="/threadnote-logo.svg" />
+            <img alt="" className="brand-logo" src="/threadnote-logo-inverted.svg" />
             <div>
               <h1>Threadnote</h1>
               <p>{state ? `${state.config.user} · ${state.config.account} · v${state.version}` : 'Loading manager'}</p>
             </div>
           </div>
-          <button className="icon-button" onClick={() => void refreshAll()} title="Refresh" aria-label="Refresh">
+          <button
+            className="icon-button"
+            disabled={controlsBlocked}
+            onClick={() => void refreshAll()}
+            title="Refresh"
+            aria-label="Refresh"
+          >
             ↻
           </button>
         </div>
         <input
+          disabled={controlsBlocked}
           value={filter}
           onChange={event => setFilter(event.target.value)}
           placeholder="Filter memories"
           type="search"
         />
         <label className="check-row">
-          <input checked={showSystem} onChange={event => setShowSystem(event.target.checked)} type="checkbox" />
+          <input
+            checked={showSystem}
+            disabled={controlsBlocked}
+            onChange={event => setShowSystem(event.target.checked)}
+            type="checkbox"
+          />
           <span>Show system files</span>
         </label>
         <nav className="tree" aria-label="Memory tree">
@@ -635,19 +740,22 @@ function App(): React.ReactElement {
               filter={filter}
               node={tree}
               onSelect={selectTreeUri}
-              onToggleSelection={(uri, checked) =>
+              onToggleSelection={(node, checked) =>
                 setSelectedUris(current => {
                   const next = new Set(current);
-                  if (checked) {
-                    next.add(uri);
-                  } else {
-                    next.delete(uri);
+                  for (const uri of selectableMemoryUris(node, {filter, showSystem})) {
+                    if (checked) {
+                      next.add(uri);
+                    } else {
+                      next.delete(uri);
+                    }
                   }
                   return next;
                 })
               }
               selectedUri={selectedUri}
               selectedUris={selectedUris}
+              selectionDisabled={bulkAction !== undefined}
               showSystem={showSystem}
             />
           ) : null}
@@ -671,7 +779,12 @@ function App(): React.ReactElement {
         <header className="topbar">
           <div className="tabs">
             {(['memory', 'shares', 'doctor', 'tools'] as const).map(name => (
-              <button className={`tab ${panel === name ? 'is-active' : ''}`} key={name} onClick={() => setPanel(name)}>
+              <button
+                className={`tab ${panel === name ? 'is-active' : ''}`}
+                disabled={controlsBlocked}
+                key={name}
+                onClick={() => setPanel(name)}
+              >
                 {tabTitle(name)}
               </button>
             ))}
@@ -679,10 +792,14 @@ function App(): React.ReactElement {
           {selectedList.length > 0 ? (
             <div className="selection-bar">
               <span>{selectedList.length} selected</span>
-              <button onClick={() => void bulk('archive')}>Archive</button>
-              <button onClick={() => void bulk('publish')}>Publish</button>
-              <button className="danger" onClick={() => void bulk('forget')}>
-                Forget
+              <button disabled={controlsBlocked} onClick={() => void bulk('archive')}>
+                {bulkAction === 'archive' ? 'Archiving...' : 'Archive'}
+              </button>
+              <button disabled={controlsBlocked} onClick={() => void bulk('publish')}>
+                {bulkAction === 'publish' ? 'Publishing...' : 'Publish'}
+              </button>
+              <button className="danger" disabled={controlsBlocked} onClick={() => void bulk('forget')}>
+                {bulkAction === 'forget' ? 'Forgetting...' : 'Forget'}
               </button>
             </div>
           ) : null}
@@ -701,50 +818,59 @@ function App(): React.ReactElement {
                     <div className="segmented-control" aria-label="Memory view mode">
                       <button
                         className={memoryViewMode === 'preview' ? 'is-active' : undefined}
-                        disabled={!selectedIsMarkdown || selectedIsDir}
+                        disabled={!selectedIsMarkdown || selectedIsDir || controlsBlocked}
                         onClick={() => setMemoryViewMode('preview')}
                       >
                         Preview
                       </button>
                       <button
                         className={memoryViewMode === 'edit' ? 'is-active' : undefined}
-                        disabled={selectedIsDir}
+                        disabled={selectedIsDir || controlsBlocked}
                         onClick={() => setMemoryViewMode('edit')}
                       >
                         Edit
                       </button>
                     </div>
-                    <button onClick={() => void newMemory()}>New</button>
-                    <button disabled={selectedIsDir} onClick={() => void (memory ? saveCurrent() : saveNew())}>
+                    <button disabled={controlsBlocked} onClick={() => void newMemory()}>
+                      New
+                    </button>
+                    <button
+                      disabled={selectedIsDir || controlsBlocked}
+                      onClick={() => void (memory ? saveCurrent() : saveNew())}
+                    >
                       Save
                     </button>
-                    <button disabled={!canMutate} onClick={() => void archiveCurrent()}>
+                    <button disabled={!canMutate || controlsBlocked} onClick={() => void archiveCurrent()}>
                       Archive
                     </button>
                     <button
-                      disabled={!canMutate || selectedNode?.isShared === true}
+                      disabled={!canMutate || selectedNode?.isShared === true || controlsBlocked}
                       onClick={() => void publishCurrent()}
                     >
                       Publish
                     </button>
                     <button
-                      disabled={!canMutate || selectedNode?.isShared !== true}
+                      disabled={!canMutate || selectedNode?.isShared !== true || controlsBlocked}
                       onClick={() => void unpublishCurrent()}
                     >
                       Unpublish
                     </button>
-                    <button disabled={!canMutate} onClick={() => void moveCurrent()}>
+                    <button disabled={!canMutate || controlsBlocked} onClick={() => void moveCurrent()}>
                       Move
                     </button>
                     <button
                       className="danger"
-                      disabled={!canRemoveFolder}
+                      disabled={!canRemoveFolder || controlsBlocked}
                       onClick={() => void removeFolderCurrent()}
                       title={selectedNode?.isShared ? 'Use Sharing to remove shared folders' : undefined}
                     >
                       Remove Folder
                     </button>
-                    <button className="danger" disabled={!canMutate} onClick={() => void forgetCurrent()}>
+                    <button
+                      className="danger"
+                      disabled={!canMutate || controlsBlocked}
+                      onClick={() => void forgetCurrent()}
+                    >
                       Forget
                     </button>
                   </div>
@@ -753,7 +879,7 @@ function App(): React.ReactElement {
                   <MarkdownViewer markdown={markdownPreview} />
                 ) : (
                   <textarea
-                    disabled={selectedIsDir}
+                    disabled={selectedIsDir || controlsBlocked}
                     onChange={event => setContent(event.target.value)}
                     placeholder={selectedIsDir ? 'Folder selected' : 'Memory content'}
                     spellCheck={false}
@@ -765,11 +891,13 @@ function App(): React.ReactElement {
               <aside className="inspector">
                 <h3>Metadata</h3>
                 <TargetFields
+                  disabled={metadataFieldsDisabled}
                   onChange={setTarget}
                   openSelect={openSelect}
                   setOpenSelect={setOpenSelect}
                   target={target}
                 />
+                {metadataFieldsDisabled ? <p className="muted">Metadata is read-only for existing entries.</p> : null}
                 <Metadata metadata={memory?.record?.metadata} node={memory?.node ?? selectedNode} />
                 <h3>Consolidate</h3>
                 <div className="field-row select-row">
@@ -786,19 +914,22 @@ function App(): React.ReactElement {
                     setOpenSelect={setOpenSelect}
                     value={agent}
                   />
-                  <button disabled={consolidationBusy} onClick={() => void draftConsolidation()}>
+                  <button disabled={consolidationBusy || controlsBlocked} onClick={() => void draftConsolidation()}>
                     {draftingConsolidation ? 'Drafting...' : 'Draft'}
                   </button>
                 </div>
                 <textarea
                   aria-busy={consolidationBusy}
                   placeholder={draftingConsolidation ? 'Generating draft...' : 'Draft preview'}
-                  readOnly={consolidationBusy}
+                  readOnly={consolidationBusy || controlsBlocked}
                   value={draft}
                   onChange={event => setDraft(event.target.value)}
                   spellCheck={false}
                 />
-                <button disabled={consolidationBusy || !jobId || !draft} onClick={() => void applyConsolidation()}>
+                <button
+                  disabled={consolidationBusy || controlsBlocked || !jobId || !draft}
+                  onClick={() => void applyConsolidation()}
+                >
                   {applyingConsolidation ? 'Applying...' : 'Apply draft'}
                 </button>
               </aside>
@@ -858,25 +989,40 @@ function App(): React.ReactElement {
         ) : null}
 
         {panel === 'doctor' ? (
-          <section className="panel is-active">
+          <section aria-busy={doctorBusy} className="panel is-active health-panel">
             <div className="pane-head">
               <h2>Health and Doctor</h2>
               <div className="action-row">
-                <button onClick={() => void loadDoctor()}>Run Doctor</button>
-                <button onClick={() => void runDoctorAction('Started OpenViking', () => api('/api/doctor/start', {}))}>
+                <button disabled={doctorBusy} onClick={() => void loadDoctor()}>
+                  {doctorAction === 'Running doctor' ? 'Running...' : 'Run Doctor'}
+                </button>
+                <button
+                  disabled={doctorBusy}
+                  onClick={() =>
+                    void runDoctorAction('Started OpenViking', 'Starting OpenViking', () =>
+                      api('/api/doctor/start', {}),
+                    )
+                  }
+                >
                   Start OpenViking
                 </button>
                 <button
+                  disabled={doctorBusy}
                   onClick={() =>
-                    void runDoctorAction('Repair dry run complete', () => api('/api/doctor/repair-dry-run', {}))
+                    void runDoctorAction('Repair dry run complete', 'Running repair dry run', () =>
+                      api('/api/doctor/repair-dry-run', {}),
+                    )
                   }
                 >
                   Repair Dry Run
                 </button>
                 <button
+                  disabled={doctorBusy}
                   onClick={() =>
                     window.confirm('Run Threadnote repair and write changes?')
-                      ? void runDoctorAction('Repair complete', () => api('/api/doctor/repair', {confirm: true}))
+                      ? void runDoctorAction('Repair complete', 'Running repair', () =>
+                          api('/api/doctor/repair', {confirm: true}),
+                        )
                       : undefined
                   }
                 >
@@ -884,6 +1030,12 @@ function App(): React.ReactElement {
                 </button>
               </div>
             </div>
+            {doctorBusyMessage ? (
+              <div aria-live="polite" className="loading-row" role="status">
+                <span className="spinner" aria-hidden="true" />
+                <span>{doctorBusyMessage}</span>
+              </div>
+            ) : null}
             {doctorOutput ? <pre className="output doctor-output">{doctorOutput}</pre> : null}
             <div className="checks">
               {doctor.map(check => (
@@ -1036,6 +1188,11 @@ function App(): React.ReactElement {
           </section>
         ) : null}
       </main>
+      {busyOverlayMessage ? (
+        <div aria-live="polite" className="busy-overlay" role="status">
+          <div className="busy-panel">{busyOverlayMessage}</div>
+        </div>
+      ) : null}
       {toast ? <div className="toast">{toast}</div> : null}
     </div>
   );
@@ -1045,9 +1202,10 @@ function Tree(props: {
   readonly filter: string;
   readonly node: TreeNode;
   readonly onSelect: (uri: string) => void;
-  readonly onToggleSelection: (uri: string, checked: boolean) => void;
+  readonly onToggleSelection: (node: TreeNode, checked: boolean) => void;
   readonly selectedUri?: string;
   readonly selectedUris: ReadonlySet<string>;
+  readonly selectionDisabled: boolean;
   readonly showSystem: boolean;
 }): React.ReactElement | null {
   if (!props.showSystem && props.node.isSystem) {
@@ -1057,6 +1215,10 @@ function Tree(props: {
     return null;
   }
   if (props.node.isDir) {
+    const selectableUris = selectableMemoryUris(props.node, {filter: props.filter, showSystem: props.showSystem});
+    const selectedCount = selectableUris.filter(uri => props.selectedUris.has(uri)).length;
+    const checked = selectableUris.length > 0 && selectedCount === selectableUris.length;
+    const indeterminate = selectedCount > 0 && selectedCount < selectableUris.length;
     return (
       <details open={props.node.relativePath.split('/').length < 3}>
         <summary
@@ -1064,6 +1226,12 @@ function Tree(props: {
           onClick={() => props.onSelect(props.node.uri)}
           title={props.node.uri}
         >
+          <TreeSelectionCheckbox
+            checked={checked}
+            disabled={props.selectionDisabled || selectableUris.length === 0}
+            indeterminate={indeterminate}
+            onChange={checked => props.onToggleSelection(props.node, checked)}
+          />
           <span aria-hidden="true" className="tree-caret" />
           <span className="tree-name">{props.node.name}</span>
         </summary>
@@ -1079,13 +1247,38 @@ function Tree(props: {
     <div className={`tree-row ${props.selectedUri === props.node.uri ? 'is-active' : ''}`}>
       <input
         checked={props.selectedUris.has(props.node.uri)}
-        onChange={event => props.onToggleSelection(props.node.uri, event.target.checked)}
+        disabled={props.selectionDisabled}
+        onChange={event => props.onToggleSelection(props.node, event.target.checked)}
         type="checkbox"
       />
       <button className="tree-file" onClick={() => props.onSelect(props.node.uri)} title={props.node.uri}>
         <span className="tree-name">{props.node.name}</span>
       </button>
     </div>
+  );
+}
+
+function TreeSelectionCheckbox(props: {
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly indeterminate: boolean;
+  readonly onChange: (checked: boolean) => void;
+}): React.ReactElement {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.indeterminate = props.indeterminate;
+    }
+  }, [props.indeterminate]);
+  return (
+    <input
+      checked={props.checked}
+      disabled={props.disabled}
+      onChange={event => props.onChange(event.target.checked)}
+      onClick={event => event.stopPropagation()}
+      ref={ref}
+      type="checkbox"
+    />
   );
 }
 
@@ -1121,6 +1314,7 @@ function MarkdownViewer(props: {readonly markdown: string}): React.ReactElement 
 }
 
 function TargetFields(props: {
+  readonly disabled: boolean;
   readonly onChange: (value: TargetForm) => void;
   readonly openSelect?: SelectId;
   readonly setOpenSelect: (value: SelectId | undefined) => void;
@@ -1130,6 +1324,7 @@ function TargetFields(props: {
   return (
     <div className="target-fields">
       <DropdownSelect
+        disabled={props.disabled}
         id="kind"
         label="Kind"
         onChange={value => set({kind: value as MemoryKind})}
@@ -1142,6 +1337,7 @@ function TargetFields(props: {
         value={props.target.kind}
       />
       <DropdownSelect
+        disabled={props.disabled}
         id="status"
         label="Status"
         onChange={value => set({status: value as MemoryStatus})}
@@ -1154,16 +1350,23 @@ function TargetFields(props: {
         value={props.target.status}
       />
       <input
+        disabled={props.disabled}
         value={props.target.project}
         onChange={event => set({project: event.target.value})}
         placeholder="project"
       />
-      <input value={props.target.topic} onChange={event => set({topic: event.target.value})} placeholder="topic" />
+      <input
+        disabled={props.disabled}
+        value={props.target.topic}
+        onChange={event => set({topic: event.target.value})}
+        placeholder="topic"
+      />
     </div>
   );
 }
 
 function DropdownSelect(props: {
+  readonly disabled?: boolean;
   readonly id: SelectId;
   readonly label: string;
   readonly onChange: (value: string) => void;
@@ -1172,7 +1375,7 @@ function DropdownSelect(props: {
   readonly setOpenSelect: (value: SelectId | undefined) => void;
   readonly value: string;
 }): React.ReactElement {
-  const isOpen = props.openSelect === props.id;
+  const isOpen = props.disabled !== true && props.openSelect === props.id;
   const selected = props.options.find(option => option.value === props.value);
   return (
     <div
@@ -1188,6 +1391,7 @@ function DropdownSelect(props: {
         aria-expanded={isOpen}
         aria-haspopup="listbox"
         className="select-button"
+        disabled={props.disabled === true}
         onClick={() => props.setOpenSelect(isOpen ? undefined : props.id)}
         type="button"
       >
@@ -1363,6 +1567,43 @@ function countFiles(node: TreeNode): number {
   return (node.children ?? []).reduce((total, child) => total + countFiles(child), 0);
 }
 
+export function selectableMemoryUris(
+  node: TreeNode,
+  options: {readonly filter: string; readonly showSystem: boolean},
+): readonly string[] {
+  if (!options.showSystem && node.isSystem) {
+    return [];
+  }
+  if (options.filter && !nodeMatches(node, options.filter)) {
+    return [];
+  }
+  if (!node.isDir) {
+    return [node.uri];
+  }
+  return (node.children ?? []).flatMap(child => selectableMemoryUris(child, options));
+}
+
+export function pruneSelectedMemoryUris(
+  selectedUris: ReadonlySet<string>,
+  tree: TreeNode | undefined,
+  options: {readonly filter: string; readonly showSystem: boolean},
+): ReadonlySet<string> {
+  if (!tree || selectedUris.size === 0) {
+    return selectedUris;
+  }
+  const selectableUris = new Set(selectableMemoryUris(tree, options));
+  let changed = false;
+  const next = new Set<string>();
+  for (const uri of selectedUris) {
+    if (selectableUris.has(uri)) {
+      next.add(uri);
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : selectedUris;
+}
+
 function isMarkdownNode(node: TreeNode): boolean {
   return !node.isDir && node.name.toLowerCase().endsWith('.md');
 }
@@ -1388,6 +1629,27 @@ function vikingUrisFromText(text: string): readonly string[] {
   return [...new Set(matches.map(uri => uri.replace(/[.,;:]+$/, '')))];
 }
 
+function formatBulkResults(action: string, results: readonly BulkItemResult[]): string {
+  const succeeded = results.filter(result => result.ok);
+  const failed = results.filter(result => !result.ok);
+  return [
+    `Bulk ${action} complete: ${succeeded.length} succeeded, ${failed.length} failed.`,
+    '',
+    ...results.map(result => `${result.ok ? 'OK' : 'FAIL'} ${result.uri}${result.error ? ` (${result.error})` : ''}`),
+  ].join('\n');
+}
+
+function actionProgressLabel(action: 'archive' | 'forget' | 'publish'): string {
+  switch (action) {
+    case 'archive':
+      return 'Archiving';
+    case 'forget':
+      return 'Forgetting';
+    case 'publish':
+      return 'Publishing';
+  }
+}
+
 function tabTitle(name: PanelName): string {
   switch (name) {
     case 'doctor':
@@ -1405,8 +1667,10 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-const root = document.getElementById('root');
-if (!root) {
-  throw new Error('Missing #root');
+if (typeof document !== 'undefined') {
+  const root = document.getElementById('root');
+  if (!root) {
+    throw new Error('Missing #root');
+  }
+  createRoot(root).render(<App />);
 }
-createRoot(root).render(<App />);

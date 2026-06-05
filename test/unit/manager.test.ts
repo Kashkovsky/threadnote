@@ -9,6 +9,7 @@ import {
   parseDoctorChecksFromOutput,
   readManagedMemory,
 } from '../../src/manager.js';
+import {pruneSelectedMemoryUris, selectableMemoryUris, type TreeNode} from '../../src/manager_ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
@@ -60,6 +61,17 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     openVikingVersion: '0.0.0',
     port: 1933,
     user: 'denys',
+  };
+}
+
+function fileNode(uri: string, name: string, isSystem = false): TreeNode {
+  return {
+    isDir: false,
+    isShared: false,
+    isSystem,
+    name,
+    relativePath: `durable/projects/threadnote/${name}`,
+    uri,
   };
 }
 
@@ -119,6 +131,52 @@ describe('manager catalog', () => {
     expect(result.content).toContain('Manager UI feature notes.');
     expect(result.record?.metadata.kind).toBe('durable');
     expect(result.node.isSystem).toBe(false);
+  });
+});
+
+describe('manager UI selection helpers', () => {
+  function selectionTree(): TreeNode {
+    return {
+      children: [
+        fileNode('viking://user/denys/memories/durable/projects/threadnote/first.md', 'first.md'),
+        fileNode('viking://user/denys/memories/durable/projects/threadnote/second.md', 'second.md'),
+        fileNode('viking://user/denys/memories/durable/projects/threadnote/.abstract.md', '.abstract.md', true),
+      ],
+      isDir: true,
+      isShared: false,
+      isSystem: false,
+      name: 'threadnote',
+      relativePath: 'durable/projects/threadnote',
+      uri: 'viking://user/denys/memories/durable/projects/threadnote',
+    };
+  }
+
+  it('limits folder selection to visible filtered memory files', () => {
+    const tree = selectionTree();
+
+    expect(selectableMemoryUris(tree, {filter: 'first', showSystem: false})).toEqual([
+      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+    ]);
+    expect(selectableMemoryUris(tree, {filter: '', showSystem: false})).toEqual([
+      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+      'viking://user/denys/memories/durable/projects/threadnote/second.md',
+    ]);
+  });
+
+  it('prunes hidden selected memories before bulk actions', () => {
+    const tree = selectionTree();
+    const selected = new Set([
+      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+      'viking://user/denys/memories/durable/projects/threadnote/second.md',
+      'viking://user/denys/memories/durable/projects/threadnote/.abstract.md',
+    ]);
+
+    expect([...pruneSelectedMemoryUris(selected, tree, {filter: 'first', showSystem: false})]).toEqual([
+      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+    ]);
+
+    const visibleOnly = new Set(['viking://user/denys/memories/durable/projects/threadnote/first.md']);
+    expect(pruneSelectedMemoryUris(visibleOnly, tree, {filter: 'first', showSystem: false})).toBe(visibleOnly);
   });
 });
 
@@ -201,6 +259,28 @@ describe('manager http API', () => {
       expect(response.status).toBe(200);
       expect(body.content).toContain('Manager UI feature notes.');
       expect(body.localMemory?.node.uri).toBe('viking://user/denys/memories/durable/projects/threadnote/manager-ui.md');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('adds scope diagnostics to compact output', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/compact`, {
+        body: JSON.stringify({project: 'threadnote', topic: 'manager-ui'}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      const body = (await response.json()) as {readonly output: string};
+
+      expect(response.status).toBe(200);
+      expect(body.output).toContain('Scope summary:');
+      expect(body.output).toContain('- active records matching topic: 1');
+      expect(body.output).toContain('Dry-run memory hygiene plan for project threadnote, topic manager-ui');
+      expect(body.output).toContain('Records scanned: 1');
     } finally {
       await server.close();
     }

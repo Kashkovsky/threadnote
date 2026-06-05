@@ -396,7 +396,7 @@ function groupableRecord(record: MemoryRecord): GroupedRecord | undefined {
   return {groupKey, project, record, topic};
 }
 
-function topicForRecord(record: MemoryRecord): string | undefined {
+export function topicForRecord(record: MemoryRecord): string | undefined {
   return (
     normalizeOptionalMetadata(record.metadata.topic) ??
     normalizeOptionalMetadata(branchFromBody(record.body)) ??

@@ -7,6 +7,7 @@ import {uriSegment} from './manifest.js';
 import {
   runArchive,
   runCompact,
+  runCompactDiagnostics,
   runExportPack,
   runForget,
   runImportPack,
@@ -116,6 +117,11 @@ const STATIC_FILES: Readonly<
   '/app.css': {contentType: 'text/css; charset=utf-8', path: 'app.css'},
   '/app.js': {contentType: 'text/javascript; charset=utf-8', path: 'app.js'},
   '/threadnote-logo.svg': {contentType: 'image/svg+xml; charset=utf-8', path: 'threadnote-logo.svg', root: 'docs'},
+  '/threadnote-logo-inverted.svg': {
+    contentType: 'image/svg+xml; charset=utf-8',
+    path: 'threadnote-logo-inverted.svg',
+    root: 'docs',
+  },
 };
 
 export async function runManage(config: RuntimeConfig, options: ManageOptions): Promise<void> {
@@ -348,7 +354,14 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
       if (body.apply === true) {
         requireConfirm(body);
       }
-      writeJson(response, 200, await runCaptured(() => runCompact(context.config, body)));
+      writeJson(
+        response,
+        200,
+        await runCaptured(async () => {
+          await runCompactDiagnostics(context.config, body);
+          await runCompact(context.config, body);
+        }),
+      );
       return;
     case '/api/recall':
       writeJson(

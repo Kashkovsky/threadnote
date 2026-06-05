@@ -196,9 +196,9 @@ body.is-resizing-sidebar * {
 
 .brand-logo {
   flex: 0 0 auto;
-  height: 42px;
+  height: 86px;
   object-fit: contain;
-  width: 42px;
+  width: 86px;
 }
 
 .brand h1,
@@ -264,7 +264,7 @@ body.is-resizing-sidebar * {
 
 .tree summary {
   cursor: pointer;
-  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-columns: 18px 14px minmax(0, 1fr);
   list-style: none;
 }
 
@@ -378,6 +378,10 @@ body.is-resizing-sidebar * {
 .panel.is-active {
   display: block;
   height: 100%;
+}
+
+.health-panel.panel.is-active {
+  overflow: auto;
 }
 
 .content-grid,
@@ -766,6 +770,34 @@ dd {
   overflow: auto;
 }
 
+.loading-row {
+  align-items: center;
+  background: var(--panel-alt);
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  color: var(--text);
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px 12px;
+}
+
+.spinner {
+  animation: spin 0.8s linear infinite;
+  border: 2px solid var(--accent-line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  height: 14px;
+  width: 14px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .output {
   background: var(--code-bg);
   border-radius: var(--radius);
@@ -779,7 +811,9 @@ dd {
 
 .doctor-output {
   margin: 12px 0 0;
+  max-height: min(34dvh, 360px);
   min-height: 120px;
+  overflow: auto;
 }
 
 .uri-list {
@@ -817,6 +851,24 @@ dd {
   position: fixed;
   transform: translateX(-50%);
   z-index: 10;
+}
+
+.busy-overlay {
+  align-items: center;
+  background: rgba(5, 5, 8, 0.34);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  z-index: 20;
+}
+
+.busy-panel {
+  background: #050508;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 12px 16px;
 }
 
 .danger-text {

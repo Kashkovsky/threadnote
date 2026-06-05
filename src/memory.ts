@@ -9,6 +9,7 @@ import {
   handoffTopicForBranch,
   parseMemoryDocument,
   recallHygieneNudges,
+  topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
 import {withIdentity} from './runtime.js';
@@ -460,6 +461,41 @@ export async function runCompact(config: RuntimeConfig, options: CompactOptions)
   }
 }
 
+export async function runCompactDiagnostics(config: RuntimeConfig, options: CompactOptions): Promise<void> {
+  const project = normalizeOptionalMetadata(options.project);
+  if (!project) {
+    throw new Error('Provide --project for scoped memory hygiene.');
+  }
+  const topic = normalizeOptionalMetadata(options.topic);
+  const records = await scopedCompactRecords(config, {
+    kind: options.kind,
+    project,
+  });
+  const activeRecords = records.filter(record => record.metadata.status === 'active');
+  const matchingRecords = activeRecords.filter(record => topic === undefined || topicForRecord(record) === topic);
+  const counts = new Map<CompactableMemoryKind, number>();
+  for (const record of matchingRecords) {
+    const kind = record.metadata.kind;
+    if (kind === 'durable' || kind === 'handoff' || kind === 'incident') {
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+  }
+  console.log(
+    [
+      'Scope summary:',
+      `- project: ${project}`,
+      `- topic: ${topic ?? '(all)'}`,
+      `- kind: ${options.kind ?? '(handoff, durable, incident)'}`,
+      `- stable records read: ${records.length}`,
+      `- active records in project: ${activeRecords.length}`,
+      `- active records matching topic: ${matchingRecords.length}`,
+      `- matching by kind: ${formatKindCounts(counts)}`,
+      '- skipped by design: archived memories, shared memories, preferences, smoke records, seeded resources, and non-stable timestamped/global paths',
+      '',
+    ].join('\n'),
+  );
+}
+
 async function scopedCompactRecords(
   config: RuntimeConfig,
   options: {readonly kind?: CompactableMemoryKind; readonly project: string},
@@ -490,6 +526,10 @@ async function scopedCompactRecords(
     }
   }
   return records;
+}
+
+function formatKindCounts(counts: ReadonlyMap<CompactableMemoryKind, number>): string {
+  return (['handoff', 'durable', 'incident'] as const).map(kind => `${kind} ${counts.get(kind) ?? 0}`).join(', ');
 }
 
 async function readMemoryRecordsByUri(
