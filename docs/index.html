@@ -765,6 +765,7 @@
       <a href="#update" data-label="Update"><span>Update</span></a>
       <a href="#lifecycle" data-label="Lifecycle"><span>Lifecycle</span></a>
       <a href="#share" data-label="Share"><span>Share</span></a>
+      <a href="#manager" data-label="Web manager"><span>Manager</span></a>
       <a href="#use-cases" data-label="Use cases"><span>Use cases</span></a>
       <a href="#close" data-label="Get started"><span>Start</span></a>
     </nav>
@@ -1400,10 +1401,72 @@ threadnote remember \
         </div>
       </section>
 
-      <!-- 12. USE CASES -->
+      <!-- 12. WEB MANAGER -->
+      <section id="manager" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">11 · Web manager</span>
+          <h2>A local web UI for the whole memory store.</h2>
+          <p class="lead">
+            Prefer a UI to the CLI? <code>threadnote manage</code> serves a local React app on
+            <code>127.0.0.1</code> with a per-session token. Browse the tree, edit Markdown, run health checks, and
+            manage shares — everything it does, the CLI and MCP do too.
+          </p>
+
+          <img
+            src="web-manager.png"
+            alt="Threadnote web manager — Health and Doctor view with the memory tree, Memory / Sharing / Health / Tools tabs, and Run Doctor / Start OpenViking / Repair controls"
+            loading="lazy"
+            style="
+              width: 100%;
+              height: auto;
+              display: block;
+              margin-top: 1.5rem;
+              border: 1px solid var(--line);
+              border-radius: var(--radius-lg);
+            "
+          />
+
+          <div class="grid grid-2" style="margin-top: 1.5rem">
+            <div class="card reveal">
+              <span class="card-kicker">Memory</span>
+              <h3>Browse &amp; edit the tree</h3>
+              <p>
+                Resizable, filterable navigation. Markdown preview by default, raw edit on demand, and
+                confirmation-gated bulk archive / publish / forget that never silently targets filtered-out files.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Health</span>
+              <h3>Doctor on open</h3>
+              <p>
+                The default tab runs <code>doctor</code> automatically. Run Doctor, Start OpenViking, and Repair stream
+                into a scrollable output pane — the view in the screenshot above.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Sharing</span>
+              <h3>Team repos, no CLI</h3>
+              <p>
+                Status, publish, sync, rename, set-url, remove, and preserve-local — full parity with
+                <code>threadnote share</code>.
+              </p>
+            </div>
+            <div class="card reveal">
+              <span class="card-kicker">Tools</span>
+              <h3>Recall, compact, consolidate</h3>
+              <p>
+                Recall and read, scoped compaction dry-runs, import/export packs, seeding, and AI-assisted consolidation
+                drafted by a local Codex or Claude CLI then applied on confirm.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 13. USE CASES -->
       <section id="use-cases" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">11 · Real-world use cases</span>
+          <span class="slide-eyebrow">12 · Real-world use cases</span>
           <h2>What you say. What the agent does.</h2>
           <p class="lead">
             You don't run threadnote commands yourself. You talk to your agent the way you already do; the agent calls
@@ -1495,10 +1558,10 @@ Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process
         </div>
       </section>
 
-      <!-- 13. CLOSE -->
+      <!-- 14. CLOSE -->
       <section id="close" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">12 · Get started</span>
+          <span class="slide-eyebrow">13 · Get started</span>
           <h2>Try it on your machine in 90 seconds.</h2>
 
           <pre style="margin-top: 1.5rem">
