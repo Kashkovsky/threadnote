@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {formatWhatsNew, releasesBetween, type ReleaseNote} from '../../src/release_notes.js';
+import {formatWhatsNew, releaseForVersion, releasesBetween, type ReleaseNote} from '../../src/release_notes.js';
 
 const releases: readonly ReleaseNote[] = [
   {
@@ -27,6 +27,12 @@ const releases: readonly ReleaseNote[] = [
 describe('releasesBetween', () => {
   it('returns newer releases up to latest in ascending order', () => {
     expect(releasesBetween(releases, '0.7.7', '0.7.9').map(release => release.version)).toEqual(['0.7.8', '0.7.9']);
+  });
+});
+
+describe('releaseForVersion', () => {
+  it('returns only the requested release', () => {
+    expect(releaseForVersion(releases, '0.7.7').map(release => release.version)).toEqual(['0.7.7']);
   });
 });
 

@@ -119,7 +119,7 @@ async function main(): Promise<void> {
 
   program
     .command('version')
-    .description('Print the installed Threadnote version, latest npm version, and release notes for newer versions')
+    .description('Print the installed Threadnote version, latest npm version, and release notes')
     .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
     .action(async (options: VersionOptions) => {
       await runVersion(getRuntimeConfig(program), options);

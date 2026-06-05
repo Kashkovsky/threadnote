@@ -2,7 +2,7 @@ import {heading, info, keyValue, success, warning, withSpinner} from './cli_ui.j
 import type {RuntimeConfig, VersionOptions} from './types.js';
 import {currentPackageVersion, fetchLatestVersion, normalizeRegistry, updateRegistry} from './update.js';
 import {compareVersions, errorMessage} from './utils.js';
-import {whatsNewLinesForVersionRange} from './release_notes.js';
+import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
 
 export async function runVersion(config: RuntimeConfig, options: VersionOptions): Promise<void> {
   const currentVersion = await currentPackageVersion();
@@ -28,6 +28,9 @@ export async function runVersion(config: RuntimeConfig, options: VersionOptions)
   const comparison = compareVersions(currentVersion, latestVersion);
   if (comparison >= 0) {
     console.log(success(comparison > 0 ? 'Current version is newer than npm latest.' : 'Threadnote is up to date.'));
+    console.log('');
+    const whatsNew = await withSpinner('Fetching GitHub release notes', () => whatsNewLinesForVersion(currentVersion));
+    printWhatsNew(whatsNew);
     return;
   }
 
@@ -35,6 +38,10 @@ export async function runVersion(config: RuntimeConfig, options: VersionOptions)
   const whatsNew = await withSpinner('Fetching GitHub release notes', () =>
     whatsNewLinesForVersionRange(currentVersion, latestVersion),
   );
+  printWhatsNew(whatsNew);
+}
+
+function printWhatsNew(whatsNew: readonly string[]): void {
   for (const line of whatsNew) {
     console.log(line === "What's new:" ? heading(line) : line);
   }

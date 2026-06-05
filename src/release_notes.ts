@@ -41,6 +41,10 @@ export function releasesBetween(
     .sort((left, right) => compareVersions(left.version, right.version));
 }
 
+export function releaseForVersion(releases: readonly ReleaseNote[], version: string): readonly ReleaseNote[] {
+  return releases.filter(release => compareVersions(release.version, version) === 0).slice(0, 1);
+}
+
 export function formatWhatsNew(releases: readonly ReleaseNote[]): readonly string[] {
   if (releases.length === 0) {
     return [];
@@ -53,6 +57,16 @@ export function formatWhatsNew(releases: readonly ReleaseNote[]): readonly strin
     }
   }
   return lines;
+}
+
+export async function whatsNewLinesForVersion(version: string): Promise<readonly string[]> {
+  try {
+    const releases = await fetchThreadnoteReleaseNotes();
+    const lines = formatWhatsNew(releaseForVersion(releases, version));
+    return lines.length > 0 ? lines : ["What's new:", `No GitHub release notes found for ${version}.`];
+  } catch (err: unknown) {
+    return [`What's new: unavailable (${errorMessage(err)})`];
+  }
 }
 
 export async function whatsNewLinesForVersionRange(

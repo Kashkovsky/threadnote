@@ -185,8 +185,9 @@ threadnote update --check
 threadnote update --dry-run
 ```
 
-`threadnote version` prints the installed version, latest npm version, and GitHub release notes for every version newer
-than the installed one. `threadnote update` prints the same full "What's new" diff when an update is available.
+`threadnote version` prints the installed version, latest npm version, and GitHub release notes. When no update is
+available, it shows the current release notes; when an update is available, it shows every newer version. `threadnote
+update` prints the same full "What's new" diff when an update is available.
 
 After updating, restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.
 
