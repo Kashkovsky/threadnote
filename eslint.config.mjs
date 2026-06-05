@@ -9,7 +9,7 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'src/**/*.tsx', 'test/**/*.ts'],
     languageOptions: {
       globals: globals.node,
     },
@@ -22,6 +22,12 @@ export default tseslint.config(
           varsIgnorePattern: '^_',
         },
       ],
+    },
+  },
+  {
+    files: ['src/manager_ui.tsx'],
+    languageOptions: {
+      globals: globals.browser,
     },
   },
 );

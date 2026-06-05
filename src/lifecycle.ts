@@ -77,6 +77,21 @@ import {
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
 export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): Promise<void> {
+  const checks = await collectDoctorChecks(config, options);
+
+  for (const check of checks) {
+    console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
+  }
+
+  const failureCount = checks.filter(check => check.status === 'fail').length;
+  const warningCount = checks.filter(check => check.status === 'warn').length;
+  console.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
+  if (options.strict === true && failureCount > 0) {
+    process.exitCode = 1;
+  }
+}
+
+export async function collectDoctorChecks(config: RuntimeConfig, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   checks.push({name: 'mode', status: 'ok', detail: options.dryRun ? 'dry run; no writes' : 'read-only checks'});
   checks.push({name: 'platform', status: platform() === 'darwin' ? 'ok' : 'warn', detail: platform()});
@@ -96,17 +111,7 @@ export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): 
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ov.conf.template.json'), 'server config template'));
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ovcli.conf.template.json'), 'cli config template'));
   checks.push(await healthCheck(config));
-
-  for (const check of checks) {
-    console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
-  }
-
-  const failureCount = checks.filter(check => check.status === 'fail').length;
-  const warningCount = checks.filter(check => check.status === 'warn').length;
-  console.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
-  if (options.strict === true && failureCount > 0) {
-    process.exitCode = 1;
-  }
+  return checks;
 }
 
 export async function runInstall(config: RuntimeConfig, options: InstallOptions): Promise<void> {

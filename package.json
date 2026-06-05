@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "type": "commonjs",
   "main": "dist/threadnote.cjs",
   "description": "Shared local context and handoffs for development agents",
@@ -35,21 +35,22 @@
     "dist/",
     "docs/",
     "LICENSE",
+    "manager/",
     "README.md",
     "scripts/"
   ],
   "scripts": {
-    "build": "npm run clean --silent && esbuild src/threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild src/mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs",
+    "build": "npm run clean --silent && esbuild src/threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild src/mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs && esbuild src/manager_ui.tsx --bundle --platform=browser --format=iife --target=es2020 --outfile=manager/app.js",
     "clean": "rm -rf dist",
     "dev": "tsx src/threadnote.ts",
     "dev:mcp-server": "tsx src/mcp_server.ts",
-    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
-    "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" --fix",
     "prepare": "husky",
     "precommit": "npm run lint && npm run prettier:check && npm run test",
     "prepack": "npm run build",
-    "prettier:check": "prettier --check \"**/*.{ts,js,cjs,json,md,yaml,yml}\"",
-    "prettier:write": "prettier --write \"**/*.{ts,js,cjs,json,md,yaml,yml}\"",
+    "prettier:check": "prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
+    "prettier:write": "prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -67,6 +68,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.7",
     "commander": "^14.0.3",
     "esbuild": "^0.27.7",
@@ -75,10 +78,16 @@
     "husky": "^9.1.7",
     "js-yaml": "^4.1.1",
     "prettier": "^3.8.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.2",
     "vitest": "^4.1.7",
     "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   }
 }

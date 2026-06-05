@@ -342,6 +342,9 @@ This is it! Start working with your agents as usual. The agent will automaticall
 - `version`: prints the installed Threadnote version, latest npm version, and release notes for newer GitHub releases.
 - `update`: updates the published Threadnote package, then runs `repair` so shims and MCP config point at the new
   version. When an update is available, it prints release notes for the full version diff.
+- `manage`: opens the local React web manager for browsing, recalling, reading, editing, archiving, forgetting,
+  publishing, consolidating, and diagnosing local/shared memories. It binds to `127.0.0.1` with a per-session token; use
+  `--no-open` to print the URL without opening a browser.
 - `repair`: fixes install/config/shim/manifest/server health issues and rewrites Codex/Claude/Cursor/Copilot MCP configs
   from the current checkout.
 - `start`: starts `openviking-server` on `127.0.0.1:1933`.
@@ -377,7 +380,7 @@ This is it! Start working with your agents as usual. The agent will automaticall
   succeeds.
 - `forget`: removes a `viking://` URI.
 - `export-pack` / `import-pack`: moves local context through `.ovpack` files.
-- `share init|status|sync|publish|unpublish|list|remove`: opts a curated subset of durable memories into a team git
+- `share init|status|sync|publish|unpublish|list|rename|set-url|remove`: opts a curated subset of durable memories into a team git
   repo. Threadnote periodically fetches configured share repos and automatically syncs clean incoming changes before
   agent recall/read; use `share sync` for dirty worktrees, conflicts, explicit pushes, or immediate manual sync.
   Personal handoffs and preferences stay local. See `docs/share.md` for the full workflow and the publish-time scrubber

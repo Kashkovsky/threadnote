@@ -13,6 +13,7 @@ import type {
   InitManifestOptions,
   InstallOptions,
   ListOptions,
+  ManageOptions,
   MigrateLifecycleOptions,
   McpInstallOptions,
   MigrateMemoriesOptions,
@@ -26,7 +27,9 @@ import type {
   ShareInitOptions,
   ShareListOptions,
   SharePublishOptions,
+  ShareRenameOptions,
   ShareRemoveOptions,
+  ShareSetUrlOptions,
   ShareStatusOptions,
   ShareSyncOptions,
   ShareUnpublishOptions,
@@ -61,7 +64,9 @@ import {
   runShareInit,
   runShareList,
   runSharePublish,
+  runShareRename,
   runShareRemove,
+  runShareSetUrl,
   runShareStatus,
   runShareSync,
   runShareUnpublish,
@@ -69,6 +74,7 @@ import {
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
 import {maybeNotifyUpdate, parseUpdateRuntime, runPostUpdate, runUpdate} from './update.js';
 import {runVersion} from './version_command.js';
+import {runManage} from './manager.js';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -81,6 +87,15 @@ async function main(): Promise<void> {
     .option('--manifest <path>', 'Override THREADNOTE_MANIFEST for this invocation')
     .option('--host <host>', 'OpenViking host', DEFAULT_HOST)
     .option('--port <port>', 'OpenViking port', parsePort, DEFAULT_PORT);
+
+  program
+    .command('manage')
+    .description('Open the local Threadnote web manager')
+    .option('--ui-port <port>', 'Port for the local manager UI; defaults to a random free port')
+    .option('--no-open', 'Start the manager without opening a browser')
+    .action(async (options: ManageOptions) => {
+      await runManage(getRuntimeConfig(program), options);
+    });
 
   program
     .command('doctor')
@@ -497,10 +512,31 @@ async function main(): Promise<void> {
     });
 
   share
+    .command('rename')
+    .description('Rename a configured shared team')
+    .requiredOption('--team <name>', 'Existing team name')
+    .requiredOption('--to <name>', 'New team name')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (options: ShareRenameOptions) => {
+      await runShareRename(getRuntimeConfig(program), options);
+    });
+
+  share
+    .command('set-url')
+    .description('Change the git remote URL for a configured shared team')
+    .argument('<remote-url>', 'New git remote URL')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--dry-run', 'Print actions without running them')
+    .action(async (remoteUrl: string, options: ShareSetUrlOptions) => {
+      await runShareSetUrl(getRuntimeConfig(program), remoteUrl, options);
+    });
+
+  share
     .command('remove')
     .description('Forget a configured team and optionally delete its worktree/gitdir')
     .option('--team <name>', 'Team name; defaults to the configured default team')
     .option('--keep-files', 'Keep the worktree and gitdir on disk; only forget the team entry')
+    .option('--preserve-local', 'Copy shared durable memories into the personal tree before removing the team')
     .option('--dry-run', 'Print actions without running them')
     .action(async (options: ShareRemoveOptions) => {
       await runShareRemove(getRuntimeConfig(program), options);

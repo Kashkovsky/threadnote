@@ -1,0 +1,137 @@
+import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {runShareRemove, runShareRename, runShareSetUrl} from '../../src/share.js';
+import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
+import * as utils from '../../src/utils.js';
+
+vi.mock('../../src/utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/utils.js')>();
+  return {
+    ...actual,
+    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
+    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    runCommand: vi.fn(),
+    sleep: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+const ok = (stdout = ''): CommandResult => ({exitCode: 0, stderr: '', stdout});
+
+async function makeRuntime(): Promise<ShareRuntime> {
+  const home = await mkdtemp(join(tmpdir(), 'threadnote-share-admin-'));
+  const worktree = join(home, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'default');
+  const gitdir = join(home, 'share', 'teams', 'default.gitdir');
+  await mkdir(join(worktree, 'durable', 'projects', 'threadnote'), {recursive: true});
+  await mkdir(gitdir, {recursive: true});
+  await writeFile(
+    join(worktree, 'durable', 'projects', 'threadnote', 'manager.md'),
+    'MEMORY\nkind: durable\nstatus: active\n\nBody\n',
+  );
+  await mkdir(join(home, 'share'), {recursive: true});
+  await writeFile(
+    join(home, 'share', 'teams.json'),
+    `${JSON.stringify(
+      {
+        defaultTeam: 'default',
+        teams: {
+          default: {
+            addedAt: '2026-06-05T00:00:00.000Z',
+            gitdir,
+            name: 'default',
+            remote: 'git@example.com:old/memories.git',
+            worktree,
+          },
+        },
+        version: 1,
+      },
+      undefined,
+      2,
+    )}\n`,
+  );
+  return {account: 'local', agentContextHome: home, agentId: 'threadnote', user: 'denys'};
+}
+
+async function readTeams(config: ShareRuntime): Promise<ShareTeamsFile> {
+  return JSON.parse(await readFile(join(config.agentContextHome, 'share', 'teams.json'), 'utf8')) as ShareTeamsFile;
+}
+
+describe('share administration', () => {
+  const homes: string[] = [];
+
+  beforeEach(() => {
+    vi.mocked(utils.openVikingCliForMode).mockResolvedValue('/ov');
+    vi.mocked(utils.requiredExecutable).mockResolvedValue('git');
+    vi.mocked(utils.runCommand).mockImplementation(async () => ok());
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('renames a share team, moves its worktree/gitdir, and updates teams.json', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    await runShareRename(config, {team: 'default', to: 'friends'});
+
+    const teams = await readTeams(config);
+    expect(teams.defaultTeam).toBe('friends');
+    expect(teams.teams.friends?.name).toBe('friends');
+    expect(teams.teams.default).toBeUndefined();
+    await expect(
+      access(
+        join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'friends'),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(access(join(config.agentContextHome, 'share', 'teams', 'friends.gitdir'))).resolves.toBeUndefined();
+  });
+
+  it('changes the configured remote URL and verifies it with fetch', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    await runShareSetUrl(config, 'git@example.com:new/memories.git', {team: 'default'});
+
+    const teams = await readTeams(config);
+    expect(teams.teams.default?.remote).toBe('git@example.com:new/memories.git');
+    expect(
+      vi
+        .mocked(utils.runCommand)
+        .mock.calls.some(([executable, args]) => executable === 'git' && args.includes('set-url')),
+    ).toBe(true);
+    expect(
+      vi
+        .mocked(utils.runCommand)
+        .mock.calls.some(([executable, args]) => executable === 'git' && args.includes('fetch')),
+    ).toBe(true);
+  });
+
+  it('can preserve shared durable memories locally before removing a share', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    await runShareRemove(config, {preserveLocal: true, team: 'default'});
+
+    const teams = await readTeams(config);
+    expect(teams.teams.default).toBeUndefined();
+    expect(
+      vi
+        .mocked(utils.runCommand)
+        .mock.calls.some(
+          ([executable, args]) =>
+            executable === '/ov' &&
+            args[0] === 'write' &&
+            args[1] === 'viking://user/denys/memories/durable/projects/threadnote/manager.md',
+        ),
+    ).toBe(true);
+    await expect(
+      access(
+        join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'default'),
+      ),
+    ).rejects.toThrow();
+  });
+});

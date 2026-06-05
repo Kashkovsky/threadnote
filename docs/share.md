@@ -126,11 +126,25 @@ shared repo.
 ```bash
 threadnote share remove --team friends             # deletes worktree + gitdir
 threadnote share remove --team friends --keep-files
+threadnote share remove --team friends --preserve-local
 ```
 
-`share remove` without `--keep-files` deletes the local checkout. Push any
-unpushed commits first (`threadnote share sync` or `git -C <worktree> push`),
-otherwise unpublished work is lost.
+`share remove --preserve-local` copies shared durable memories back into the
+personal durable tree before removing the team config. It does not delete remote
+git history. `share remove` without `--keep-files` deletes the local checkout.
+Push any unpushed commits first (`threadnote share sync` or
+`git -C <worktree> push`), otherwise unpublished work is lost.
+
+### Rename or move a team remote
+
+```bash
+threadnote share rename --team friends --to platform
+threadnote share set-url --team platform git@github.com:org/platform-threadnote.git
+```
+
+`share rename` moves the local worktree/gitdir, updates `teams.json`, and
+reindexes the shared memory namespace under the new team name. `share set-url`
+updates the git `origin` URL and verifies it with `git fetch`.
 
 ## Privacy & safety rules
 

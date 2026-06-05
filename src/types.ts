@@ -126,6 +126,11 @@ export interface DoctorOptions {
   readonly strict?: boolean;
 }
 
+export interface ManageOptions {
+  readonly open?: boolean;
+  readonly uiPort?: string;
+}
+
 export interface StartOptions {
   readonly dryRun?: boolean;
   readonly foreground?: boolean;
@@ -306,8 +311,20 @@ export interface ShareListOptions {
   readonly dryRun?: boolean;
 }
 
+export interface ShareRenameOptions {
+  readonly dryRun?: boolean;
+  readonly team?: string;
+  readonly to?: string;
+}
+
+export interface ShareSetUrlOptions {
+  readonly dryRun?: boolean;
+  readonly team?: string;
+}
+
 export interface ShareRemoveOptions {
   readonly dryRun?: boolean;
   readonly keepFiles?: boolean;
+  readonly preserveLocal?: boolean;
   readonly team?: string;
 }

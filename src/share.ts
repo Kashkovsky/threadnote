@@ -8,7 +8,9 @@ import type {
   ShareInitOptions,
   ShareListOptions,
   SharePublishOptions,
+  ShareRenameOptions,
   ShareRemoveOptions,
+  ShareSetUrlOptions,
   ShareRuntime,
   ShareStatusOptions,
   ShareSyncOptions,
@@ -840,9 +842,107 @@ export async function runShareList(config: ShareRuntime, _options: ShareListOpti
   }
 }
 
+export async function runShareRename(config: ShareRuntime, options: ShareRenameOptions): Promise<void> {
+  const oldTeam = await resolveTeam(config, options.team);
+  const newName = normalizeTeamName(options.to);
+  if (newName === oldTeam.name) {
+    throw new Error(`Team is already named "${newName}".`);
+  }
+  const dryRun = options.dryRun === true;
+  const teamsFile = await readTeamsFile(config);
+  if (teamsFile.teams[newName]) {
+    throw new Error(`Team "${newName}" is already configured.`);
+  }
+
+  const newWorktree = teamWorktreePath(config, newName);
+  const newGitdir = teamGitdirPath(config, newName);
+  await assertDestinationAbsent(newWorktree, 'worktree');
+  await assertDestinationAbsent(newGitdir, 'gitdir');
+  const updatedTeam: ShareTeamConfig = {
+    ...oldTeam.config,
+    gitdir: newGitdir,
+    name: newName,
+    worktree: newWorktree,
+  };
+  const updatedTeams: Record<string, ShareTeamConfig> = {};
+  for (const [name, value] of Object.entries(teamsFile.teams)) {
+    if (name === oldTeam.name) {
+      updatedTeams[newName] = updatedTeam;
+    } else {
+      updatedTeams[name] = value;
+    }
+  }
+  const updatedFile: ShareTeamsFile = {
+    defaultTeam: teamsFile.defaultTeam === oldTeam.name ? newName : teamsFile.defaultTeam,
+    teams: updatedTeams,
+    version: TEAMS_FILE_VERSION,
+  };
+
+  if (dryRun) {
+    console.log(`Would rename worktree: ${portablePath(oldTeam.config.worktree)} -> ${portablePath(newWorktree)}`);
+    console.log(`Would rename gitdir: ${portablePath(oldTeam.config.gitdir)} -> ${portablePath(newGitdir)}`);
+    console.log(`Would update git core.worktree for team "${newName}".`);
+    console.log(`Would reindex shared memories under team "${newName}" and remove old shared URI tree.`);
+    console.log(`Would write teams file: ${teamsFilePath(config)}`);
+    return;
+  }
+
+  await rename(oldTeam.config.worktree, newWorktree);
+  await rename(oldTeam.config.gitdir, newGitdir);
+  await writeTeamsFile(config, updatedFile);
+  const git = await requiredExecutable('git');
+  await runCommand(git, ['-C', newWorktree, 'config', 'core.worktree', newWorktree]);
+  const ingested = await ingestWorktreeFiles(config, updatedTeam, 'replace');
+  const ov = await openVikingCliForMode(false);
+  await removeMemoryUri(
+    config,
+    ov,
+    `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
+    false,
+  );
+  console.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
+  console.log(`Reindexed ${ingested} shared memory file(s).`);
+}
+
+export async function runShareSetUrl(
+  config: ShareRuntime,
+  remoteUrl: string,
+  options: ShareSetUrlOptions,
+): Promise<void> {
+  if (!remoteUrl.trim()) {
+    throw new Error('Provide a git remote URL.');
+  }
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  const git = await requiredExecutable('git');
+  if (dryRun) {
+    console.log(
+      `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, remoteUrl])}`,
+    );
+    console.log(
+      `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME])}`,
+    );
+    console.log(`Would write teams file: ${teamsFilePath(config)}`);
+    return;
+  }
+  await runCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, remoteUrl]);
+  await runCommand(git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME]);
+  const teamsFile = await readTeamsFile(config);
+  const updatedTeam: ShareTeamConfig = {...team.config, remote: remoteUrl};
+  await writeTeamsFile(config, {
+    ...teamsFile,
+    teams: {...teamsFile.teams, [team.name]: updatedTeam},
+  });
+  console.log(`Updated shared team "${team.name}" remote: ${remoteUrl}`);
+}
+
 export async function runShareRemove(config: ShareRuntime, options: ShareRemoveOptions): Promise<void> {
   const team = await resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
+  if (options.preserveLocal === true) {
+    const preserved = await preserveSharedMemoriesLocally(config, team.config, dryRun);
+    console.log(`${dryRun ? 'Would preserve' : 'Preserved'} ${preserved} shared durable memory file(s) locally.`);
+  }
   const teamsFile = await readTeamsFile(config);
   const remaining: Record<string, ShareTeamConfig> = {};
   for (const [name, value] of Object.entries(teamsFile.teams)) {
@@ -864,6 +964,54 @@ export async function runShareRemove(config: ShareRuntime, options: ShareRemoveO
     await removePath(team.config.gitdir, 'shared gitdir', dryRun);
   } else {
     console.log(`Keeping files at ${portablePath(team.config.worktree)} and ${portablePath(team.config.gitdir)}`);
+  }
+}
+
+async function assertDestinationAbsent(path: string, label: string): Promise<void> {
+  if (await exists(path)) {
+    throw new Error(`Cannot rename share: destination ${label} already exists at ${path}.`);
+  }
+}
+
+async function preserveSharedMemoriesLocally(
+  config: ShareRuntime,
+  team: ShareTeamConfig,
+  dryRun: boolean,
+): Promise<number> {
+  const ov = await openVikingCliForMode(dryRun);
+  const files = await walkMemoryFiles(team.worktree);
+  let preserved = 0;
+  for (const file of files) {
+    const rel = relative(team.worktree, file).split(sep).join('/');
+    if (!rel.startsWith('durable/')) {
+      continue;
+    }
+    const targetUri = `viking://user/${uriSegment(config.user)}/memories/${rel}`;
+    const content = await readFile(file, 'utf8');
+    if (dryRun) {
+      console.log(`Would preserve ${rel} -> ${targetUri}`);
+    } else {
+      await ensurePersonalDirectoryChain(config, ov, parentUri(targetUri));
+      await writeMemoryFile(config, ov, targetUri, content, 'create', false);
+    }
+    preserved += 1;
+  }
+  return preserved;
+}
+
+async function ensurePersonalDirectoryChain(config: ShareRuntime, ov: string, directoryUri: string): Promise<void> {
+  const prefix = 'viking://';
+  const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
+  const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
+  for (let index = startIndex; index <= parts.length; index += 1) {
+    const uri = `${prefix}${parts.slice(0, index).join('/')}`;
+    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    if (statResult.exitCode !== 0) {
+      await runCommand(
+        ov,
+        withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
+      );
+    }
   }
 }
 
