@@ -1311,8 +1311,8 @@ async function runSharePublishTool(
         `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
       );
     }
-    await ensureSharedDirectoryChain(config, ov, targetUri, false);
-    await writeMemoryFile(config, ov, targetUri, content, 'create', false);
+    await ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
+    await writeMemoryFile(config, ov, targetUri, content, 'create', false, {quiet: true});
     const messages = [`Published ${sourceUri} -> ${targetUri}`];
     for (const redaction of scrub.redactions) {
       messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
