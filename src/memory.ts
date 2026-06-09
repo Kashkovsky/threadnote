@@ -1,6 +1,7 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
 import {inferProjectFromQuery, uriSegment} from './manifest.js';
+import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
   buildCompactPlan,
@@ -288,6 +289,19 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const ov = await openVikingCliForMode(options.dryRun === true);
   const query = await enrichRecallQueryWithWorkspaceContext(options.query);
   const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(options.query);
+  let indexRepairMessages: readonly string[];
+  try {
+    const indexRepair = await repairStaleRecallIndex(config, ov, {
+      dryRun: options.dryRun === true,
+      query: projectQuery,
+    });
+    indexRepairMessages = formatRecallIndexRepairMessages(indexRepair, {dryRun: options.dryRun === true});
+  } catch (err: unknown) {
+    indexRepairMessages = [`Auto-index repair warning: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  for (const message of indexRepairMessages) {
+    console.log(message);
+  }
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const args = ['search', query];
@@ -299,9 +313,9 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   const recallOutputs: string[] = [];
-  const baseResult = await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  if (baseResult) {
-    recallOutputs.push([baseResult.stdout.trim(), baseResult.stderr.trim()].filter(Boolean).join('\n'));
+  const baseOutput = await runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
+  if (baseOutput) {
+    recallOutputs.push(baseOutput);
   }
   const seededOutput = await augmentRecallWithSeededResources(
     config,
@@ -362,8 +376,26 @@ async function augmentRecallWithSeededResources(
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
   console.log(`\nAlso searching seeded resources: ${projectResourceUri}`);
-  const result = await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  return result ? [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n') : undefined;
+  return runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
+}
+
+async function runRecallSearch(
+  config: RuntimeConfig,
+  ov: string,
+  args: readonly string[],
+  options: {readonly dryRun: boolean},
+): Promise<string | undefined> {
+  const fullArgs = withIdentity(config, args);
+  console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, fullArgs)}`);
+  if (options.dryRun) {
+    return undefined;
+  }
+  const result = await runCommand(ov, fullArgs);
+  const output = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
+  if (output) {
+    console.log(output);
+  }
+  return output || undefined;
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -715,13 +747,30 @@ async function inferRecallUri(config: RuntimeConfig, query: string): Promise<str
   // appeared in the query. Seeded resources are now surfaced via a parallel
   // scoped pass in `augmentRecallWithSeededResources` so memories and seeded
   // guidance both appear.
-  if (!/\bskills?\b/.test(query.toLowerCase())) {
+  if (!hasAgentSkillCatalogIntent(query)) {
     return undefined;
   }
   const project = await inferProjectFromQuery(config.manifestPath, query);
   return project
     ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
     : 'viking://resources/agent-skills';
+}
+
+export function hasAgentSkillCatalogIntent(query: string): boolean {
+  const normalized = query.toLowerCase();
+  if (!/\bskills?\b/.test(normalized)) {
+    return false;
+  }
+  if (/\bseed[- ]skills?\b/.test(normalized) || /\bskills?\s+seed(?:ing)?\b/.test(normalized)) {
+    return false;
+  }
+  if (/^\s*skills?\s*$/.test(normalized)) {
+    return true;
+  }
+  return (
+    /\b(find|list|show|search|recall|use|choose|select)\b.{0,48}\bskills?\b/.test(normalized) ||
+    /\bskills?\b.{0,48}\b(for|to|that|which|about)\b/.test(normalized)
+  );
 }
 
 async function printExactMemoryMatches(

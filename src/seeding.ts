@@ -78,7 +78,15 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
         skippedCount += 1;
         continue;
       }
-      const args = withIdentity(config, ['add-resource', importPath, '--to', candidate.destinationUri, '--wait']);
+      const args = withIdentity(config, [
+        'add-resource',
+        importPath,
+        '--to',
+        candidate.destinationUri,
+        '--reason',
+        seedResourceReason(candidate),
+        '--wait',
+      ]);
       await maybeRun(options.dryRun === true, ov, args);
       importedCount += 1;
       if (fileStat && options.dryRun !== true) {
@@ -224,7 +232,15 @@ export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions)
     }
     const args = nativeMode
       ? ['add-skill', skill.filePath, '--wait']
-      : ['add-resource', skill.filePath, '--to', skillResourceUri(skill), '--wait'];
+      : [
+          'add-resource',
+          skill.filePath,
+          '--to',
+          skillResourceUri(skill),
+          '--reason',
+          skillResourceReason(skill),
+          '--wait',
+        ];
     await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
   }
   console.log(
@@ -348,6 +364,16 @@ async function prepareSeedFile(
   await writeFile(redactedPath, redactedContent, {encoding: 'utf8', mode: 0o600});
   await chmod(redactedPath, 0o600);
   return redactedPath;
+}
+
+function seedResourceReason(candidate: SeedCandidate): string {
+  return `Project guidance for ${candidate.projectName}: ${candidate.relativePath}`;
+}
+
+function skillResourceReason(skill: SkillCandidate): string {
+  return `${skill.kind === 'command' ? 'Agent command' : 'Agent skill'} catalog item from ${skill.source}: ${basename(
+    skill.filePath,
+  )}`;
 }
 
 async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly SkillCandidate[]> {

@@ -82,6 +82,8 @@ describe('seed-skills', () => {
     expect(output).toMatch(
       /viking:\/\/resources\/agent-skills\/repo-local-sample-repo-claude-commands\/review-pr-[a-f0-9]{12}\.md/,
     );
+    expect(output).toContain('--reason');
+    expect(output).toContain('Agent command catalog item from claude-commands-global: weekly.md');
     expect(output).toContain('Skill seed complete: 2 unique catalog item(s).');
   });
 });

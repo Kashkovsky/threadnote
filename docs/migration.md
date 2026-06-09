@@ -239,7 +239,7 @@ canonical instructions, active commands, active skills, MCP config, or anything 
 
 ## Cutover Checklist
 
-- `doctor --dry-run` reports a healthy OpenViking server.
+- `doctor --dry-run` reports a healthy OpenViking server and no stale recall index warnings.
 - `threadnote` works from a different repo or subdirectory.
 - `mcp-install` has been applied for the agent the developer actually uses.
 - `recall` returns seeded guidance.

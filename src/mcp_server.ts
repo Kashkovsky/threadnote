@@ -8,6 +8,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
+import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
 import {
   activePersonalMemoryUrisFromText,
@@ -407,6 +408,14 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     cwd: params.callerCwd,
     includeProcessCwd: false,
   });
+  let indexRepairMessages: readonly string[];
+  try {
+    const ov = await requiredOpenVikingCli();
+    const indexRepair = await repairStaleRecallIndex(config, ov, {query: projectQuery});
+    indexRepairMessages = formatRecallIndexRepairMessages(indexRepair);
+  } catch (err: unknown) {
+    indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
+  }
   const contextualParams: RecallToolParams = {...params, query};
   const baseArgs = [
     'search',
@@ -423,8 +432,13 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     return semanticResult;
   }
   const sections: string[] = [];
-  if (firstContent.text) {
-    sections.push(firstContent.text);
+  const semanticText = filterStaleRecallSummaryRows(firstContent.text);
+  const filteredSemanticText = semanticText !== firstContent.text.trim();
+  if (semanticText) {
+    sections.push(semanticText);
+  }
+  if (indexRepairMessages.length > 0) {
+    sections.push(indexRepairMessages.join('\n'));
   }
   const seededSection = await seededResourcesSection(config, contextualParams, projectQuery);
   if (seededSection) {
@@ -444,7 +458,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   for (const warning of syncWarnings) {
     sections.push(`Auto-sync warning: ${warning}`);
   }
-  if (sections.length <= 1) {
+  if (sections.length <= 1 && !filteredSemanticText) {
     return semanticResult;
   }
   return {...semanticResult, content: [{type: 'text', text: sections.join('\n\n')}]};
@@ -500,7 +514,7 @@ async function seededResourcesSection(
   if (result.exitCode !== 0) {
     return undefined;
   }
-  const body = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+  const body = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
   if (!body) {
     return undefined;
   }

@@ -1397,6 +1397,7 @@ export async function writeMemoryFile(
   try {
     await writeFile(tempPath, content, {encoding: 'utf8', mode: 0o600});
     await writeOvFileWithRetry(config, ov, uri, tempPath, initialMode, options);
+    await refreshMemoryIndex(config, ov, uri, options);
   } finally {
     await rm(stagingDir, {force: true, recursive: true});
   }
@@ -1491,6 +1492,33 @@ async function writeOvFileWithRetry(
     } else {
       await sleep(1000 * (attempt + 1));
     }
+  }
+}
+
+async function refreshMemoryIndex(
+  config: ShareRuntime,
+  ov: string,
+  uri: string,
+  options: {readonly quiet?: boolean} = {},
+): Promise<void> {
+  const result = await runCommand(
+    ov,
+    withIdentity(config, ['reindex', uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),
+    {allowFailure: true},
+  );
+  if (result.exitCode === 0) {
+    if (options.quiet !== true && result.stdout.trim()) {
+      console.log(result.stdout.trim());
+    }
+    if (options.quiet !== true && result.stderr.trim()) {
+      console.error(result.stderr.trim());
+    }
+    return;
+  }
+  if (options.quiet !== true) {
+    console.error(
+      `Memory stored, but index refresh failed for ${uri}: ${result.stderr.trim() || result.stdout.trim()}`,
+    );
   }
 }
 

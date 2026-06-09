@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {removeMemoryUri} from '../../src/share.js';
+import {removeMemoryUri, writeMemoryFile} from '../../src/share.js';
 import * as utils from '../../src/utils.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 
@@ -106,5 +106,63 @@ describe('removeMemoryUri retry behavior', () => {
   it('is a no-op in dry-run mode', async () => {
     await removeMemoryUri(runtime, '/ov', 'viking://user/me/memories/durable/x.md', true);
     expect(vi.mocked(utils.runCommand)).not.toHaveBeenCalled();
+  });
+});
+
+describe('writeMemoryFile index refresh', () => {
+  beforeEach(() => {
+    vi.mocked(utils.runCommand).mockReset();
+    vi.mocked(utils.sleep).mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('runs a file-level semantic/vector reindex after a successful write', async () => {
+    commandSequence(
+      fail('not found'), // stat before write
+      ok('written'),
+      ok('reindexed'),
+    );
+    await writeMemoryFile(
+      runtime,
+      '/ov',
+      'viking://user/me/memories/durable/projects/threadnote/x.md',
+      'body',
+      'create',
+      false,
+      {quiet: true},
+    );
+    const runCommand = vi.mocked(utils.runCommand);
+    expect(runCommand).toHaveBeenCalledTimes(3);
+    expect(runCommand.mock.calls[1]?.[1]).toEqual(expect.arrayContaining(['write']));
+    expect(runCommand.mock.calls[2]?.[1]).toEqual(
+      expect.arrayContaining([
+        'reindex',
+        'viking://user/me/memories/durable/projects/threadnote/x.md',
+        '--mode',
+        'semantic_and_vectors',
+      ]),
+    );
+  });
+
+  it('does not fail the stored write when the defensive reindex fails', async () => {
+    commandSequence(
+      fail('not found'), // stat before write
+      ok('written'),
+      fail('temporary reindex failure'),
+    );
+    await expect(
+      writeMemoryFile(
+        runtime,
+        '/ov',
+        'viking://user/me/memories/durable/projects/threadnote/x.md',
+        'body',
+        'create',
+        false,
+        {quiet: true},
+      ),
+    ).resolves.toBeUndefined();
   });
 });

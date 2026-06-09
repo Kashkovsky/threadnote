@@ -21,6 +21,12 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {
+  findStaleRecallIndexTargets,
+  formatRecallIndexRepairMessages,
+  MAINTENANCE_MAX_REPAIR_TARGETS,
+  repairStaleRecallIndex,
+} from './index_repair.js';
 import {readSeedManifest} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
@@ -47,6 +53,7 @@ import type {
 } from './types.js';
 import {
   assertSafeThreadnoteHomeForErase,
+  compareVersions,
   ensureDirectory,
   errorMessage,
   exists,
@@ -107,6 +114,7 @@ export async function collectDoctorChecks(config: RuntimeConfig, options: Doctor
   checks.push(await commandShimCheck());
   checks.push(...(await userAgentInstructionsChecks()));
   checks.push(await manifestCheck(config.manifestPath));
+  checks.push(await recallIndexFreshnessCheck(config));
   checks.push(await fileCheck(join(toolRoot(), '.threadnoteignore'), 'ignore file'));
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ov.conf.template.json'), 'server config template'));
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ovcli.conf.template.json'), 'cli config template'));
@@ -178,6 +186,7 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
       shouldRepairLegacyOvCliConfig(content) || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
     templatePath: join(toolRoot(), 'config', 'ovcli.conf.template.json'),
   });
+  await configureOpenVikingCliLanguage(config, dryRun);
 
   if (options.start !== false) {
     const healthy = await repairServerHealth(config, dryRun);
@@ -209,6 +218,7 @@ export async function runRepair(config: RuntimeConfig, options: RepairOptions): 
   } else {
     console.log('Skipping server health repair because --no-start was provided.');
   }
+  await repairRecallIndex(config, dryRun);
 
   const mcpClients = await resolveMcpClients(options.mcp ?? 'available', 'repair');
   if (mcpClients.length === 0) {
@@ -318,6 +328,62 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
   await writeFile(config.manifestPath, output, {encoding: 'utf8', mode: 0o600});
   await chmod(config.manifestPath, 0o600);
   console.log(`Wrote replacement manifest: ${config.manifestPath}`);
+}
+
+async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promise<void> {
+  console.log('\nRepairing recall index freshness.');
+  const ov = dryRun
+    ? ((await findExecutable(['ov', 'openviking'])) ?? 'ov')
+    : await findExecutable(['ov', 'openviking']);
+  if (!ov) {
+    console.log('Skipping recall index repair: neither ov nor openviking was found in PATH.');
+    return;
+  }
+
+  try {
+    const result = await repairStaleRecallIndex(config, ov, {
+      collapseToRoots: true,
+      dryRun,
+      ignoreBackoff: true,
+      includeAgentSkills: true,
+      includeManifestResources: true,
+      maxTargets: MAINTENANCE_MAX_REPAIR_TARGETS,
+    });
+    const messages = formatRecallIndexRepairMessages(result, {dryRun});
+    if (messages.length === 0) {
+      console.log('Recall index freshness OK.');
+      return;
+    }
+    for (const message of messages) {
+      console.log(message);
+    }
+  } catch (err: unknown) {
+    console.log(`WARN could not repair recall index freshness: ${errorMessage(err)}`);
+  }
+}
+
+async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boolean): Promise<void> {
+  const ov = dryRun
+    ? ((await findExecutable(['ov', 'openviking'])) ?? 'ov')
+    : await findExecutable(['ov', 'openviking']);
+  if (!ov) {
+    return;
+  }
+  const installedVersion = dryRun ? undefined : await readOpenVikingCliVersion(ov);
+  const effectiveVersion = installedVersion ?? config.openVikingVersion;
+  if (compareVersions(effectiveVersion, '0.3.23') < 0) {
+    return;
+  }
+  await maybeRun(dryRun, ov, ['language', 'en'], {allowFailure: true});
+}
+
+async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
+  const result = await runCommand(ov, ['version'], {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+  const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);
+  return match ? match[1] : undefined;
 }
 
 /**
@@ -706,6 +772,30 @@ async function manifestCheck(path: string): Promise<DoctorCheck> {
     return {name: 'manifest', status: 'ok', detail: `${path} (${manifest.projects.length} project(s))`};
   } catch (err: unknown) {
     return {name: 'manifest', status: 'fail', detail: errorMessage(err)};
+  }
+}
+
+async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorCheck> {
+  try {
+    const targets = await findStaleRecallIndexTargets(config, {
+      collapseToRoots: true,
+      includeAgentSkills: true,
+      includeManifestResources: true,
+    });
+    if (targets.length === 0) {
+      return {name: 'recall index freshness', status: 'ok', detail: 'no stale generated summaries found'};
+    }
+    const staleSummaryCount = targets.reduce((total, target) => total + target.staleCount, 0);
+    const sampleUris = targets.slice(0, 3).map(target => target.uri);
+    const extraCount = targets.length - sampleUris.length;
+    const sample = `${sampleUris.join(', ')}${extraCount > 0 ? `, +${extraCount} more` : ''}`;
+    return {
+      name: 'recall index freshness',
+      status: 'warn',
+      detail: `${staleSummaryCount} stale generated summary file(s) under ${targets.length} scope(s); run repair to reindex ${sample}`,
+    };
+  } catch (err: unknown) {
+    return {name: 'recall index freshness', status: 'warn', detail: errorMessage(err)};
   }
 }
 

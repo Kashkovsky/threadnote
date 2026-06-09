@@ -259,7 +259,7 @@ async function ensurePinnedOpenVikingInstalled(
   }
   console.log('');
   console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
-  console.log('Picks up upstream fixes for share-sync reliability (reindex lock acquisition, ov wait timeout).');
+  console.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
 
   // Capture the server state BEFORE we swap binaries so we know what to
   // restart afterward. install --no-start leaves the existing process
@@ -356,8 +356,8 @@ async function readOpenVikingCliVersion(ov: string): Promise<string | undefined>
     return undefined;
   }
   // `ov version` output:
-  //   CLI:     0.3.12
-  //   Server:  0.3.12
+  //   CLI:     0.3.24
+  //   Server:  0.3.24
   // Match the CLI line specifically; ignore the server line in case the
   // server is briefly out of sync with the CLI during an upgrade.
   const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);

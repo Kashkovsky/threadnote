@@ -35,7 +35,7 @@ describe('compareVersions', () => {
   });
 
   it('returns negative when left < right', () => {
-    expect(compareVersions('0.3.12', '0.3.21')).toBeLessThan(0);
+    expect(compareVersions('0.3.23', '0.3.24')).toBeLessThan(0);
     expect(compareVersions('0.7.2', '0.7.4')).toBeLessThan(0);
   });
 

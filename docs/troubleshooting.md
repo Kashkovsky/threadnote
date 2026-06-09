@@ -120,8 +120,9 @@ threadnote start
 
 ## Claude MCP Fails While Health Is OK
 
-OpenViking `0.3.12` can be healthy at `/health` while returning `404` at `/mcp`. That means the stable server does not
-expose the native HTTP MCP endpoint.
+Threadnote uses its bundled stdio MCP adapter by default, even when the installed OpenViking server exposes native
+`/mcp`. The adapter adds Threadnote-specific tools and behavior such as shared-memory sync, exact recall fallback,
+seeded-resource recall augmentation, and recall-index repair.
 
 Use the default stdio adapter:
 
@@ -133,7 +134,7 @@ claude mcp list
 `mcp-install claude` writes user-scoped Claude config by default. This is intentional: local-scoped config only applies
 to one repo/project, and the `threadnote` shim runs the implementation from the checkout that installed it.
 
-Only use `--native-http` with an OpenViking build that actually exposes `/mcp`.
+Only use `--native-http` when you intentionally want the raw OpenViking HTTP endpoint instead of Threadnote's adapter.
 
 ## Worktree Was Deleted
 
@@ -146,8 +147,8 @@ From any fresh checkout, run:
 threadnote repair
 ```
 
-`repair` reinstalls the `threadnote` shim, repairs generated config files, starts OpenViking if needed, and rewrites
-Codex/Claude/Cursor/Copilot MCP configs to point at the current checkout.
+`repair` reinstalls the `threadnote` shim, repairs generated config files, starts OpenViking if needed, repairs stale
+recall indexes, and rewrites Codex/Claude/Cursor/Copilot MCP configs to point at the current checkout.
 
 ## MCP Install Is Only Printing Commands
 
