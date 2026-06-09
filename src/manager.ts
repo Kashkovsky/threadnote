@@ -74,6 +74,11 @@ interface ManagerTreeNode {
   readonly uri: string;
 }
 
+interface ReadTreeOptions {
+  readonly parseMemoryDocuments?: boolean;
+  readonly rootName?: string;
+}
+
 interface ApiContext {
   readonly config: RuntimeConfig;
   readonly jobs: Map<string, ConsolidationJob>;
@@ -155,6 +160,29 @@ export function createManagerServer(context: ApiContext): Server {
 export async function memoryTree(config: RuntimeConfig): Promise<ManagerTreeNode> {
   const root = localMemoriesRoot(config);
   return readTree(config, root, `viking://user/${uriSegment(config.user)}/memories`, '');
+}
+
+export async function resourcesTree(config: RuntimeConfig): Promise<ManagerTreeNode> {
+  const root = localResourcesRoot(config);
+  try {
+    return await readTree(config, root, 'viking://resources', '', {
+      parseMemoryDocuments: false,
+      rootName: 'resources',
+    });
+  } catch (err) {
+    if (isMissingPathError(err)) {
+      return {
+        children: [],
+        isDir: true,
+        isShared: false,
+        isSystem: false,
+        name: 'resources',
+        relativePath: '',
+        uri: 'viking://resources',
+      };
+    }
+    throw err;
+  }
 }
 
 export async function readManagedMemory(
@@ -261,7 +289,8 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/tree') {
-    writeJson(response, 200, {tree: await memoryTree(context.config)});
+    const [tree, resourceTree] = await Promise.all([memoryTree(context.config), resourcesTree(context.config)]);
+    writeJson(response, 200, {resourcesTree: resourceTree, tree});
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/memory') {
@@ -486,7 +515,7 @@ async function serveStatic(context: ApiContext, url: URL, response: ServerRespon
   const file = STATIC_FILES[url.pathname] ?? STATIC_FILES['/'];
   const content = await readFile(join(toolRoot(), file.root ?? 'manager', file.path));
   const headers: Record<string, string> = {'content-type': file.contentType};
-  if (url.pathname === '/' || url.pathname === '/index.html') {
+  if (file.root !== 'docs') {
     headers['cache-control'] = 'no-store';
   }
   response.writeHead(200, headers);
@@ -498,13 +527,16 @@ async function readTree(
   path: string,
   uri: string,
   relativePath: string,
+  options: ReadTreeOptions = {},
 ): Promise<ManagerTreeNode> {
   const pathStat = await stat(path);
-  const name = relativePath ? (relativePath.split('/').at(-1) ?? relativePath) : 'memories';
+  const name = relativePath ? (relativePath.split('/').at(-1) ?? relativePath) : (options.rootName ?? 'memories');
   const isDir = pathStat.isDirectory();
   if (!isDir) {
-    const content = await readFile(path, 'utf8').catch(() => '');
-    const record = parseMemoryDocument(uri, content);
+    const record =
+      options.parseMemoryDocuments === false
+        ? undefined
+        : parseMemoryDocument(uri, await readFile(path, 'utf8').catch(() => ''));
     return {
       isDir: false,
       isShared: isInSharedNamespace(config, uri),
@@ -527,7 +559,7 @@ async function readTree(
       )
       .map(entry => {
         const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-        return readTree(config, join(path, entry.name), `${uri}/${entry.name}`, childRelative);
+        return readTree(config, join(path, entry.name), `${uri}/${entry.name}`, childRelative, options);
       }),
   );
   return {
@@ -1064,6 +1096,10 @@ function localMemoriesRoot(config: RuntimeConfig): string {
   return join(config.agentContextHome, 'data', 'viking', config.account, 'user', uriSegment(config.user), 'memories');
 }
 
+function localResourcesRoot(config: RuntimeConfig): string {
+  return join(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+}
+
 function localPathForMemoryUri(config: RuntimeConfig, uri: string): string | undefined {
   const prefix = `viking://user/${uriSegment(config.user)}/memories`;
   if (uri !== prefix && !uri.startsWith(`${prefix}/`)) {
@@ -1075,6 +1111,10 @@ function localPathForMemoryUri(config: RuntimeConfig, uri: string): string | und
     return undefined;
   }
   return join(localMemoriesRoot(config), ...segments);
+}
+
+function isMissingPathError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 function localPathToMemoryUri(config: RuntimeConfig, path: string): string {

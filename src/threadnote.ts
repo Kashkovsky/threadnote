@@ -248,7 +248,7 @@ async function main(): Promise<void> {
 
   program
     .command('seed-skills')
-    .description('Seed Codex, Claude, and repo-local SKILL.md files as a searchable catalog')
+    .description('Seed Codex/Claude skills and Claude command markdown files as a searchable catalog')
     .option('--dry-run', 'Print skill files and ov commands without importing')
     .option('--manifest <path>', 'Manifest path for repo-local skill discovery')
     .option('--native', 'Use native OpenViking skill ingestion; requires a working VLM config')

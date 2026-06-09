@@ -8,11 +8,13 @@ import {
   memoryTree,
   parseDoctorChecksFromOutput,
   readManagedMemory,
+  resourcesTree,
 } from '../../src/manager.js';
 import {pruneSelectedMemoryUris, selectableMemoryUris, type TreeNode} from '../../src/manager_ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
+import * as seeding from '../../src/seeding.js';
 
 vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
@@ -30,6 +32,19 @@ vi.mock('../../src/memory.js', async importOriginal => {
     ...actual,
     runArchive: vi.fn(),
     runForget: vi.fn(),
+  };
+});
+
+vi.mock('../../src/seeding.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/seeding.js')>();
+  return {
+    ...actual,
+    runSeed: vi.fn(async (_config: RuntimeConfig, options: {readonly dryRun?: boolean}) => {
+      console.log(options.dryRun ? 'seed dry run' : 'seed applied');
+    }),
+    runSeedSkills: vi.fn(async (_config: RuntimeConfig, options: {readonly dryRun?: boolean}) => {
+      console.log(options.dryRun ? 'seed skills dry run' : 'seed skills applied');
+    }),
   };
 });
 
@@ -119,6 +134,25 @@ describe('manager catalog', () => {
     expect(leaf?.metadata?.topic).toBe('manager-ui');
   });
 
+  it('maps seeded resources into a read-only resources tree', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+    await mkdir(join(root, 'agent-skills', 'codex-global'), {recursive: true});
+    await writeFile(join(root, 'agent-skills', 'codex-global', 'threadnote-abc123.md'), 'Skill body');
+
+    const tree = await resourcesTree(config);
+    const skill = tree.children
+      ?.find(child => child.name === 'agent-skills')
+      ?.children?.find(child => child.name === 'codex-global')
+      ?.children?.find(child => child.name === 'threadnote-abc123.md');
+
+    expect(tree.name).toBe('resources');
+    expect(tree.uri).toBe('viking://resources');
+    expect(skill?.uri).toBe('viking://resources/agent-skills/codex-global/threadnote-abc123.md');
+    expect(skill?.metadata).toBeUndefined();
+  });
+
   it('reads a memory document and returns content plus metadata', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -187,6 +221,8 @@ describe('manager http API', () => {
     vi.mocked(lifecycle.runRepair).mockClear();
     vi.mocked(memory.runArchive).mockReset();
     vi.mocked(memory.runForget).mockReset();
+    vi.mocked(seeding.runSeed).mockClear();
+    vi.mocked(seeding.runSeedSkills).mockClear();
   });
 
   afterEach(async () => {
@@ -202,7 +238,10 @@ describe('manager http API', () => {
       expect(rejected.status).toBe(401);
 
       const accepted = await fetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
+      const body = (await accepted.json()) as {readonly resourcesTree?: TreeNode; readonly tree?: TreeNode};
       expect(accepted.status).toBe(200);
+      expect(body.tree?.uri).toBe('viking://user/denys/memories');
+      expect(body.resourcesTree?.uri).toBe('viking://resources');
     } finally {
       await server.close();
     }
@@ -354,6 +393,35 @@ describe('manager http API', () => {
       expect(accepted.status).toBe(200);
       expect(body.output).toBe('repair applied');
       expect(vi.mocked(lifecycle.runRepair)).toHaveBeenCalledWith(config, {dryRun: false});
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('runs seed and seed-skills in write mode by default', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const seedResponse = await fetch(`${server.url}/api/seed`, {
+        body: JSON.stringify({confirm: true}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      const seedBody = (await seedResponse.json()) as {readonly output: string};
+      expect(seedResponse.status).toBe(200);
+      expect(seedBody.output).toBe('seed applied');
+      expect(vi.mocked(seeding.runSeed)).toHaveBeenCalledWith(config, {dryRun: false});
+
+      const skillsResponse = await fetch(`${server.url}/api/seed`, {
+        body: JSON.stringify({confirm: true, skills: true}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      const skillsBody = (await skillsResponse.json()) as {readonly output: string};
+      expect(skillsResponse.status).toBe(200);
+      expect(skillsBody.output).toBe('seed skills applied');
+      expect(vi.mocked(seeding.runSeedSkills)).toHaveBeenCalledWith(config, {dryRun: false});
     } finally {
       await server.close();
     }

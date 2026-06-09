@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 type PanelName = 'doctor' | 'memory' | 'shares' | 'tools';
+type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 type MemoryStatus = 'active' | 'archived' | 'superseded';
@@ -56,6 +57,11 @@ interface ReadResponse {
   readonly content: string;
   readonly localMemory?: MemoryResponse;
   readonly output: string;
+}
+
+interface TreeResponse {
+  readonly resourcesTree: TreeNode;
+  readonly tree: TreeNode;
 }
 
 interface AgentOption {
@@ -128,6 +134,7 @@ interface DropdownOption {
 }
 
 const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
+const EMPTY_SELECTED_URIS: ReadonlySet<string> = new Set();
 
 function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
@@ -142,6 +149,7 @@ function App(): React.ReactElement {
   const [panel, setPanel] = useState<PanelName>('doctor');
   const [state, setState] = useState<StateResponse | undefined>();
   const [tree, setTree] = useState<TreeNode | undefined>();
+  const [resourceTree, setResourceTree] = useState<TreeNode | undefined>();
   const [shares, setShares] = useState<readonly ShareSummary[]>([]);
   const [doctor, setDoctor] = useState<readonly DoctorCheck[]>([]);
   const [doctorOutput, setDoctorOutput] = useState('');
@@ -154,6 +162,7 @@ function App(): React.ReactElement {
   const [openSelect, setOpenSelect] = useState<SelectId | undefined>();
   const [filter, setFilter] = useState('');
   const [showSystem, setShowSystem] = useState(false);
+  const [navTreeTab, setNavTreeTab] = useState<NavTreeTab>('memories');
   const [toast, setToast] = useState('');
   const [output, setOutput] = useState('');
   const [recallQuery, setRecallQuery] = useState('');
@@ -205,7 +214,7 @@ function App(): React.ReactElement {
       setMemoryViewMode('edit');
       return;
     }
-    const node = tree ? findNode(tree, selectedUri) : undefined;
+    const node = findNodeInTrees([tree, resourceTree], selectedUri);
     if (node?.isDir) {
       setMemory(undefined);
       setContent('');
@@ -213,8 +222,12 @@ function App(): React.ReactElement {
       setTarget({kind: 'durable', project: '', status: 'active', team: node.sharedTeam ?? '', topic: ''});
       return;
     }
+    if (isResourceUri(selectedUri)) {
+      void loadResource(selectedUri);
+      return;
+    }
     void loadMemory(selectedUri);
-  }, [selectedUri, tree]);
+  }, [resourceTree, selectedUri, tree]);
 
   useEffect(() => {
     const firstAvailable = state?.agents.find(item => item.available && (item.id === 'codex' || item.id === 'claude'));
@@ -224,12 +237,15 @@ function App(): React.ReactElement {
   }, [state]);
 
   const selectedNode = useMemo(
-    () => (tree && selectedUri ? findNode(tree, selectedUri) : undefined),
-    [tree, selectedUri],
+    () => (selectedUri ? findNodeInTrees([tree, resourceTree], selectedUri) : undefined),
+    [resourceTree, selectedUri, tree],
   );
   const visibleSelectedUris = useMemo(
-    () => pruneSelectedMemoryUris(selectedUris, tree, {filter, showSystem}),
-    [filter, selectedUris, showSystem, tree],
+    () =>
+      navTreeTab === 'memories'
+        ? pruneSelectedMemoryUris(selectedUris, tree, {filter, showSystem})
+        : EMPTY_SELECTED_URIS,
+    [filter, navTreeTab, selectedUris, showSystem, tree],
   );
   const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
   const outputUris = useMemo(() => vikingUrisFromText(output), [output]);
@@ -237,11 +253,12 @@ function App(): React.ReactElement {
   async function refreshAll(): Promise<void> {
     const [nextState, nextTree, nextShares] = await Promise.all([
       api<StateResponse>('/api/state'),
-      api<{tree: TreeNode}>('/api/tree'),
+      api<TreeResponse>('/api/tree'),
       api<{shares: readonly ShareSummary[]}>('/api/shares'),
     ]);
     setState(nextState);
     setTree(nextTree.tree);
+    setResourceTree(nextTree.resourcesTree);
     setShares(nextShares.shares);
     toastMessage('Refreshed');
   }
@@ -262,6 +279,16 @@ function App(): React.ReactElement {
       team: next.node.sharedTeam ?? '',
       topic: next.record?.metadata.topic ?? '',
     });
+  }
+
+  async function loadResource(uri: string): Promise<void> {
+    const result = await api<ReadResponse>('/api/read', {uri});
+    setMemory(undefined);
+    setContent(result.content || result.output);
+    setOutput(result.output || result.content);
+    setReadUri(uri);
+    setMemoryViewMode(isMarkdownUri(uri) ? 'preview' : 'edit');
+    setTarget({kind: 'durable', project: '', status: 'active', team: '', topic: ''});
   }
 
   async function readContext(uri: string): Promise<void> {
@@ -298,7 +325,7 @@ function App(): React.ReactElement {
       toastMessage(label);
       await refreshTreeOnly();
       if (selectedUri) {
-        await loadMemory(selectedUri).catch(() => undefined);
+        await reloadSelected(selectedUri);
       }
     } catch (err) {
       toastMessage(errorMessage(err));
@@ -327,8 +354,17 @@ function App(): React.ReactElement {
   }
 
   async function refreshTreeOnly(): Promise<void> {
-    const next = await api<{tree: TreeNode}>('/api/tree');
+    const next = await api<TreeResponse>('/api/tree');
     setTree(next.tree);
+    setResourceTree(next.resourcesTree);
+  }
+
+  async function reloadSelected(uri: string): Promise<void> {
+    if (isResourceUri(uri)) {
+      await loadResource(uri).catch(() => undefined);
+    } else {
+      await loadMemory(uri).catch(() => undefined);
+    }
   }
 
   async function saveCurrent(): Promise<void> {
@@ -488,7 +524,7 @@ function App(): React.ReactElement {
       setSelectedUris(new Set(failedUris));
       if (currentSelectedUri && selectedList.includes(currentSelectedUri)) {
         if (failedUris.includes(currentSelectedUri)) {
-          await loadMemory(currentSelectedUri).catch(() => undefined);
+          await reloadSelected(currentSelectedUri);
         } else {
           setSelectedUri(undefined);
           setMemory(undefined);
@@ -496,7 +532,7 @@ function App(): React.ReactElement {
           setMemoryViewMode('edit');
         }
       } else if (currentSelectedUri) {
-        await loadMemory(currentSelectedUri).catch(() => undefined);
+        await reloadSelected(currentSelectedUri);
       }
       await refreshTreeOnly();
       toastMessage(failedUris.length === 0 ? 'Bulk action complete' : 'Bulk action completed with failures');
@@ -540,7 +576,8 @@ function App(): React.ReactElement {
     if (draftingConsolidation || applyingConsolidation) {
       return;
     }
-    const uris = selectedList.length > 0 ? selectedList : selectedUri ? [selectedUri] : [];
+    const uris =
+      selectedList.length > 0 ? selectedList : selectedUri && !isResourceUri(selectedUri) ? [selectedUri] : [];
     if (uris.length < 2) {
       toastMessage('Select at least two memories');
       return;
@@ -613,7 +650,7 @@ function App(): React.ReactElement {
         setContent('');
         setMemoryViewMode('edit');
       } else if (currentSelectedUri) {
-        await loadMemory(currentSelectedUri).catch(() => undefined);
+        await reloadSelected(currentSelectedUri);
       }
       await refreshTreeOnly();
       toastMessage('Applied consolidation');
@@ -683,18 +720,22 @@ function App(): React.ReactElement {
   }
 
   const selectedIsDir = selectedNode?.isDir === true;
+  const selectedIsResource = selectedUri ? isResourceUri(selectedUri) : false;
   const selectedIsMarkdown = Boolean(selectedNode && isMarkdownNode(selectedNode));
   const markdownPreview = markdownBodyForPreview(content);
-  const canMutate = Boolean(selectedUri && !selectedIsDir);
-  const canRemoveFolder = Boolean(selectedNode?.isDir && selectedNode.relativePath && !selectedNode.isShared);
+  const canMutate = Boolean(selectedUri && !selectedIsDir && !selectedIsResource);
+  const canRemoveFolder = Boolean(
+    selectedNode?.isDir && selectedNode.relativePath && !selectedNode.isShared && !selectedIsResource,
+  );
   const consolidationBusy = draftingConsolidation || applyingConsolidation;
+  const canDraftConsolidation = selectedList.length > 0 || !selectedIsResource;
   const doctorBusy = doctorAction !== undefined;
   const controlsBlocked = bulkAction !== undefined;
   const busyOverlayMessage = bulkAction
     ? `${actionProgressLabel(bulkAction)} ${selectedList.length} selected ${selectedList.length === 1 ? 'memory' : 'memories'}...`
     : '';
   const doctorBusyMessage = doctorAction ? `${doctorAction}...` : '';
-  const metadataFieldsDisabled = Boolean(memory || selectedIsDir);
+  const metadataFieldsDisabled = Boolean(memory || selectedIsDir || selectedIsResource);
   const appStyle = {'--sidebar-width': `${sidebarWidth}px`} as React.CSSProperties;
 
   return (
@@ -722,7 +763,7 @@ function App(): React.ReactElement {
           disabled={controlsBlocked}
           value={filter}
           onChange={event => setFilter(event.target.value)}
-          placeholder="Filter memories"
+          placeholder="Filter memories and resources"
           type="search"
         />
         <label className="check-row">
@@ -734,8 +775,39 @@ function App(): React.ReactElement {
           />
           <span>Show system files</span>
         </label>
-        <nav className="tree" aria-label="Memory tree">
-          {tree ? (
+        <div className="nav-tree-tabs" aria-label="Navigation tree">
+          <button
+            className={navTreeTab === 'memories' ? 'is-active' : undefined}
+            disabled={controlsBlocked}
+            onClick={() => setNavTreeTab('memories')}
+            type="button"
+          >
+            Memories
+          </button>
+          <button
+            className={navTreeTab === 'resources' ? 'is-active' : undefined}
+            disabled={controlsBlocked}
+            onClick={() => setNavTreeTab('resources')}
+            type="button"
+          >
+            Resources
+          </button>
+        </div>
+        <nav className="tree" aria-label="Context tree">
+          {navTreeTab === 'resources' ? (
+            resourceTree ? (
+              <Tree
+                filter={filter}
+                node={resourceTree}
+                onSelect={selectTreeUri}
+                selectable={false}
+                selectedUri={selectedUri}
+                showSystem={showSystem}
+              />
+            ) : (
+              <p className="tree-empty">No resources</p>
+            )
+          ) : tree ? (
             <Tree
               filter={filter}
               node={tree}
@@ -758,7 +830,9 @@ function App(): React.ReactElement {
               selectionDisabled={bulkAction !== undefined}
               showSystem={showSystem}
             />
-          ) : null}
+          ) : (
+            <p className="tree-empty">No memories</p>
+          )}
         </nav>
       </aside>
       <div
@@ -825,7 +899,7 @@ function App(): React.ReactElement {
                       </button>
                       <button
                         className={memoryViewMode === 'edit' ? 'is-active' : undefined}
-                        disabled={selectedIsDir || controlsBlocked}
+                        disabled={selectedIsDir || selectedIsResource || controlsBlocked}
                         onClick={() => setMemoryViewMode('edit')}
                       >
                         Edit
@@ -835,7 +909,7 @@ function App(): React.ReactElement {
                       New
                     </button>
                     <button
-                      disabled={selectedIsDir || controlsBlocked}
+                      disabled={selectedIsDir || selectedIsResource || controlsBlocked}
                       onClick={() => void (memory ? saveCurrent() : saveNew())}
                     >
                       Save
@@ -879,9 +953,11 @@ function App(): React.ReactElement {
                   <MarkdownViewer markdown={markdownPreview} />
                 ) : (
                   <textarea
-                    disabled={selectedIsDir || controlsBlocked}
+                    disabled={selectedIsDir || selectedIsResource || controlsBlocked}
                     onChange={event => setContent(event.target.value)}
-                    placeholder={selectedIsDir ? 'Folder selected' : 'Memory content'}
+                    placeholder={
+                      selectedIsDir ? 'Folder selected' : selectedIsResource ? 'Resource content' : 'Memory content'
+                    }
                     spellCheck={false}
                     value={content}
                   />
@@ -914,7 +990,10 @@ function App(): React.ReactElement {
                     setOpenSelect={setOpenSelect}
                     value={agent}
                   />
-                  <button disabled={consolidationBusy || controlsBlocked} onClick={() => void draftConsolidation()}>
+                  <button
+                    disabled={consolidationBusy || controlsBlocked || !canDraftConsolidation}
+                    onClick={() => void draftConsolidation()}
+                  >
                     {draftingConsolidation ? 'Drafting...' : 'Draft'}
                   </button>
                 </div>
@@ -1167,19 +1246,23 @@ function App(): React.ReactElement {
                   <div className="button-row">
                     <button
                       onClick={() =>
-                        void runAction('Seed dry run complete', () => api('/api/seed', {confirm: true, dryRun: true}))
+                        window.confirm('Run Threadnote seed and write resources?')
+                          ? void runAction('Seed complete', () => api('/api/seed', {confirm: true}))
+                          : undefined
                       }
                     >
-                      Seed Dry Run
+                      Seed
                     </button>
                     <button
                       onClick={() =>
-                        void runAction('Seed skills dry run complete', () =>
-                          api('/api/seed', {confirm: true, dryRun: true, skills: true}),
-                        )
+                        window.confirm('Run Threadnote seed-skills and write resources?')
+                          ? void runAction('Seed skills complete', () =>
+                              api('/api/seed', {confirm: true, skills: true}),
+                            )
+                          : undefined
                       }
                     >
-                      Seed Skills Dry Run
+                      Seed Skills
                     </button>
                   </div>
                 </section>
@@ -1202,12 +1285,15 @@ function Tree(props: {
   readonly filter: string;
   readonly node: TreeNode;
   readonly onSelect: (uri: string) => void;
-  readonly onToggleSelection: (node: TreeNode, checked: boolean) => void;
+  readonly onToggleSelection?: (node: TreeNode, checked: boolean) => void;
+  readonly selectable?: boolean;
   readonly selectedUri?: string;
-  readonly selectedUris: ReadonlySet<string>;
-  readonly selectionDisabled: boolean;
+  readonly selectedUris?: ReadonlySet<string>;
+  readonly selectionDisabled?: boolean;
   readonly showSystem: boolean;
 }): React.ReactElement | null {
+  const selectable = props.selectable !== false;
+  const selectedUris = props.selectedUris ?? EMPTY_SELECTED_URIS;
   if (!props.showSystem && props.node.isSystem) {
     return null;
   }
@@ -1215,23 +1301,24 @@ function Tree(props: {
     return null;
   }
   if (props.node.isDir) {
-    const selectableUris = selectableMemoryUris(props.node, {filter: props.filter, showSystem: props.showSystem});
-    const selectedCount = selectableUris.filter(uri => props.selectedUris.has(uri)).length;
+    const selectableUris = selectable
+      ? selectableMemoryUris(props.node, {filter: props.filter, showSystem: props.showSystem})
+      : [];
+    const selectedCount = selectableUris.filter(uri => selectedUris.has(uri)).length;
     const checked = selectableUris.length > 0 && selectedCount === selectableUris.length;
     const indeterminate = selectedCount > 0 && selectedCount < selectableUris.length;
+    const summaryClass = treeItemClass(props.selectedUri === props.node.uri, !selectable);
     return (
       <details open={props.node.relativePath.split('/').length < 3}>
-        <summary
-          className={props.selectedUri === props.node.uri ? 'is-active' : undefined}
-          onClick={() => props.onSelect(props.node.uri)}
-          title={props.node.uri}
-        >
-          <TreeSelectionCheckbox
-            checked={checked}
-            disabled={props.selectionDisabled || selectableUris.length === 0}
-            indeterminate={indeterminate}
-            onChange={checked => props.onToggleSelection(props.node, checked)}
-          />
+        <summary className={summaryClass} onClick={() => props.onSelect(props.node.uri)} title={props.node.uri}>
+          {selectable ? (
+            <TreeSelectionCheckbox
+              checked={checked}
+              disabled={props.selectionDisabled === true || selectableUris.length === 0}
+              indeterminate={indeterminate}
+              onChange={checked => props.onToggleSelection?.(props.node, checked)}
+            />
+          ) : null}
           <span aria-hidden="true" className="tree-caret" />
           <span className="tree-name">{props.node.name}</span>
         </summary>
@@ -1243,14 +1330,17 @@ function Tree(props: {
       </details>
     );
   }
+  const rowClass = treeItemClass(props.selectedUri === props.node.uri, !selectable, 'tree-row');
   return (
-    <div className={`tree-row ${props.selectedUri === props.node.uri ? 'is-active' : ''}`}>
-      <input
-        checked={props.selectedUris.has(props.node.uri)}
-        disabled={props.selectionDisabled}
-        onChange={event => props.onToggleSelection(props.node, event.target.checked)}
-        type="checkbox"
-      />
+    <div className={rowClass}>
+      {selectable ? (
+        <input
+          checked={selectedUris.has(props.node.uri)}
+          disabled={props.selectionDisabled === true}
+          onChange={event => props.onToggleSelection?.(props.node, event.target.checked)}
+          type="checkbox"
+        />
+      ) : null}
       <button className="tree-file" onClick={() => props.onSelect(props.node.uri)} title={props.node.uri}>
         <span className="tree-name">{props.node.name}</span>
       </button>
@@ -1560,6 +1650,23 @@ function findNode(node: TreeNode, uri: string): TreeNode | undefined {
   return undefined;
 }
 
+function findNodeInTrees(trees: readonly (TreeNode | undefined)[], uri: string): TreeNode | undefined {
+  for (const tree of trees) {
+    const node = tree ? findNode(tree, uri) : undefined;
+    if (node) {
+      return node;
+    }
+  }
+  return undefined;
+}
+
+function treeItemClass(active: boolean, readOnly: boolean, base?: string): string | undefined {
+  const classes = [base, active ? 'is-active' : undefined, readOnly ? 'is-readonly' : undefined].filter(
+    (value): value is string => typeof value === 'string',
+  );
+  return classes.length > 0 ? classes.join(' ') : undefined;
+}
+
 function countFiles(node: TreeNode): number {
   if (!node.isDir) {
     return 1;
@@ -1605,7 +1712,15 @@ export function pruneSelectedMemoryUris(
 }
 
 function isMarkdownNode(node: TreeNode): boolean {
-  return !node.isDir && node.name.toLowerCase().endsWith('.md');
+  return !node.isDir && isMarkdownUri(node.name);
+}
+
+function isMarkdownUri(uri: string): boolean {
+  return uri.toLowerCase().endsWith('.md');
+}
+
+function isResourceUri(uri: string): boolean {
+  return uri === 'viking://resources' || uri.startsWith('viking://resources/');
 }
 
 function markdownBodyForPreview(content: string): string {

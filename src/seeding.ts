@@ -207,21 +207,31 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
 
 export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions): Promise<void> {
   const ov = await openVikingCliForMode(options.dryRun === true);
-  const skills = await collectSkillCandidates(config);
+  const catalogItems = await collectSkillCandidates(config);
   const nativeMode = options.native === true;
   console.log(
     nativeMode
       ? 'Skill seed mode: native OpenViking skills. This requires a working VLM config.'
       : 'Skill seed mode: resource catalog. Use --native only after configuring a working VLM provider.',
   );
-  for (const skill of skills) {
-    console.log(`Skill ${skill.source}: ${skill.filePath}`);
+  let skippedCount = 0;
+  for (const skill of catalogItems) {
+    console.log(`${skill.kind === 'command' ? 'Command' : 'Skill'} ${skill.source}: ${skill.filePath}`);
+    if (nativeMode && skill.kind === 'command') {
+      skippedCount += 1;
+      console.log(`SKIP command in native skill mode: ${skill.filePath}`);
+      continue;
+    }
     const args = nativeMode
       ? ['add-skill', skill.filePath, '--wait']
       : ['add-resource', skill.filePath, '--to', skillResourceUri(skill), '--wait'];
     await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
   }
-  console.log(`Skill seed complete: ${skills.length} unique skill(s).`);
+  console.log(
+    `Skill seed complete: ${catalogItems.length - skippedCount} unique catalog item(s)${
+      skippedCount > 0 ? `, ${skippedCount} skipped` : ''
+    }.`,
+  );
 }
 
 export async function resolveRepoRoot(repoInput: string): Promise<string> {
@@ -341,22 +351,33 @@ async function prepareSeedFile(
 }
 
 async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly SkillCandidate[]> {
-  const sources: Array<{readonly pattern: string; readonly source: string}> = [
-    {pattern: '~/.codex/skills/**/SKILL.md', source: 'codex-global'},
-    {pattern: '~/.codex/plugins/cache/**/skills/**/SKILL.md', source: 'codex-plugin-cache'},
-    {pattern: '~/.claude/skills/**/SKILL.md', source: 'claude-global'},
+  const sources: Array<{
+    readonly kind: SkillCandidate['kind'];
+    readonly pattern: string;
+    readonly source: string;
+  }> = [
+    {kind: 'skill', pattern: '~/.codex/skills/**/SKILL.md', source: 'codex-global'},
+    {kind: 'skill', pattern: '~/.codex/plugins/cache/**/skills/**/SKILL.md', source: 'codex-plugin-cache'},
+    {kind: 'skill', pattern: '~/.claude/skills/**/SKILL.md', source: 'claude-global'},
+    {kind: 'command', pattern: '~/.claude/commands/**/*.md', source: 'claude-commands-global'},
   ];
 
   try {
     const manifest = await readSeedManifest(config.manifestPath);
     for (const project of manifest.projects) {
       sources.push({
+        kind: 'skill',
         pattern: `${project.path}/.claude/skills/**/SKILL.md`,
         source: `repo-local:${project.name}`,
       });
+      sources.push({
+        kind: 'command',
+        pattern: `${project.path}/.claude/commands/**/*.md`,
+        source: `repo-local:${project.name}:claude-commands`,
+      });
     }
   } catch (err: unknown) {
-    console.log(`WARN cannot read manifest for repo-local skill discovery: ${errorMessage(err)}`);
+    console.log(`WARN cannot read manifest for repo-local skill/command discovery: ${errorMessage(err)}`);
   }
 
   const seenHashes = new Set<string>();
@@ -375,7 +396,7 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
         continue;
       }
       seenHashes.add(hash);
-      skills.push({filePath, hash, source: source.source});
+      skills.push({filePath, hash, kind: source.kind, source: source.source});
     }
   }
   return skills;
@@ -397,7 +418,17 @@ async function resolveAbsolutePattern(pattern: string): Promise<readonly string[
 }
 
 function skillResourceUri(skill: SkillCandidate): string {
-  return `viking://resources/agent-skills/${uriSegment(skill.source)}/${uriSegment(basename(dirname(skill.filePath)))}-${skill.hash.slice(0, 12)}.md`;
+  return `viking://resources/agent-skills/${uriSegment(skill.source)}/${skillResourceName(skill)}-${skill.hash.slice(0, 12)}.md`;
+}
+
+function skillResourceName(skill: SkillCandidate): string {
+  const fileName = basename(skill.filePath);
+  if (fileName.toLowerCase() === 'skill.md') {
+    return uriSegment(basename(dirname(skill.filePath)));
+  }
+  const extensionIndex = fileName.lastIndexOf('.');
+  const stem = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+  return uriSegment(stem);
 }
 
 async function loadIgnorePatterns(): Promise<readonly string[]> {

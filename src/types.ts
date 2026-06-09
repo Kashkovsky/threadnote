@@ -55,6 +55,7 @@ export interface SeedCandidate {
 export interface SkillCandidate {
   readonly filePath: string;
   readonly hash: string;
+  readonly kind: 'command' | 'skill';
   readonly source: string;
 }
 
