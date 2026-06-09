@@ -23,7 +23,12 @@ async function makeFakeBin(root: string): Promise<string> {
   await writeExecutable(
     join(bin, 'ov'),
     `#! /usr/bin/env node
-process.stdout.write(JSON.stringify(process.argv.slice(2)) + '\\n');
+const args = process.argv.slice(2);
+if (args.includes('viking://resources/needs-recursive') && !args.includes('--recursive')) {
+  process.stderr.write('missing recursive flag\\n');
+  process.exit(2);
+}
+process.stdout.write(JSON.stringify(args) + '\\n');
 `,
   );
   return bin;
@@ -80,6 +85,19 @@ function nativeMcpResponse(body: unknown): unknown {
   }
   if (request.method === 'tools/call') {
     const params = request.params as {arguments?: Record<string, unknown>; name?: string};
+    if (params.name === 'read') {
+      const uris = params.arguments?.uris;
+      const uriList = Array.isArray(uris) ? uris : [uris];
+      if (uriList.includes('viking://resources/native-missing.md')) {
+        return {
+          id: request.id,
+          jsonrpc: '2.0',
+          result: {
+            content: [{type: 'text', text: '(nothing found at viking://resources/native-missing.md)'}],
+          },
+        };
+      }
+    }
     return {
       id: request.id,
       jsonrpc: '2.0',
@@ -194,21 +212,15 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         limit: 4,
         min_score: 0.25,
         query: 'release notes',
-        uri: 'viking://resources/repos/threadnote',
+        target_uri: 'viking://resources/repos/threadnote',
       });
 
       const readOutput = await callText(client, 'ov_read', {
         uris: ['viking://resources/repos/threadnote/README.md', 'viking://resources/repos/threadnote/docs/share.md'],
       });
-      expect(
-        readOutput
-          .trim()
-          .split('\n')
-          .map(line => nativeArgs(line, 'read')),
-      ).toEqual([
-        {uri: 'viking://resources/repos/threadnote/README.md'},
-        {uri: 'viking://resources/repos/threadnote/docs/share.md'},
-      ]);
+      expect(nativeArgs(readOutput, 'read')).toEqual({
+        uris: ['viking://resources/repos/threadnote/README.md', 'viking://resources/repos/threadnote/docs/share.md'],
+      });
 
       expect(
         nativeArgs(
@@ -225,7 +237,6 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         description: 'Threadnote docs',
         path: 'https://github.com/Kashkovsky/threadnote.git',
         to: 'viking://resources/repos/threadnote',
-        wait: false,
         watch_interval: 30,
       });
 
@@ -247,14 +258,14 @@ describe('Threadnote MCP OpenViking parity tools', () => {
       });
 
       expect(
-        nativeArgs(
-          await callText(client, 'forget', {
-            recursive: true,
-            uri: 'viking://resources/repos/threadnote/tmp',
-          }),
-          'forget',
-        ),
-      ).toEqual({recursive: true, uri: 'viking://resources/repos/threadnote/tmp'});
+        await callText(client, 'forget', {
+          recursive: true,
+          uri: 'viking://resources/needs-recursive',
+        }),
+      ).toContain('Removed: viking://resources/needs-recursive');
+      expect(await callText(client, 'ov_forget', {uri: 'viking://resources/repos/threadnote/tmp'})).toContain(
+        'Removed: viking://resources/repos/threadnote/tmp',
+      );
     });
   });
 
@@ -293,6 +304,27 @@ describe('Threadnote MCP OpenViking parity tools', () => {
           'cancel_watch',
         ),
       ).toEqual({to_uri: 'viking://resources/repos/threadnote'});
+    });
+  });
+
+  it('falls back to CLI read when native MCP read misses a resource', async () => {
+    await withMcpClient(async client => {
+      expect(await callText(client, 'ov_read', {uri: 'viking://resources/native-missing.md'})).toContain(
+        '"read","viking://resources/native-missing.md"',
+      );
+      expect(await callText(client, 'read_context', {uri: 'viking://resources/native-missing.md'})).toContain(
+        '"read","viking://resources/native-missing.md"',
+      );
+      const mixedRead = await callText(client, 'read_context', {
+        uris: [
+          'viking://user/denyskashkovskyi/memories/durable/projects/threadnote/example.md',
+          'viking://resources/native-missing.md',
+        ],
+      });
+      expect(mixedRead).toContain(
+        'read:{"uris":["viking://user/denyskashkovskyi/memories/durable/projects/threadnote/example.md"]}',
+      );
+      expect(mixedRead).toContain('"read","viking://resources/native-missing.md"');
     });
   });
 

@@ -26,7 +26,6 @@ import {
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   publishShareGitChange,
-  removeMemoryUri,
   resolveTeam,
   applyScrubber,
   sharedMemoryUriParts,
@@ -209,26 +208,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      if (recursive === true) {
-        return runOpenVikingMcpTool(config, 'forget', {recursive: true, uri: checkedUri.value});
-      }
-      try {
-        const ov = await requiredOpenVikingCli();
-        const removed = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: removed
-                ? `Removed: ${checkedUri.value}`
-                : `Resource is still being processed; retry later: ${checkedUri.value}`,
-            },
-          ],
-          isError: !removed,
-        };
-      } catch (err: unknown) {
-        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-      }
+      return runOpenVikingRemoveTool(config, checkedUri.value, recursive === true);
     },
   );
 
@@ -384,12 +364,14 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
         peerId: z.string().optional().describe('Optional native peer id'),
         peer_id: z.string().optional().describe('Optional native peer id'),
         query: z.string().optional().describe('Required search query'),
+        sessionId: z.string().optional().describe('Optional native session id'),
+        session_id: z.string().optional().describe('Optional native session id'),
         targetUri: z.string().optional().describe('Optional target viking:// subtree'),
         target_uri: z.string().optional().describe('Optional target viking:// subtree'),
         uri: z.string().optional().describe('Compatibility alias for target_uri'),
       },
     },
-    async ({limit, minScore, min_score, peerId, peer_id, query, targetUri, target_uri, uri}) => {
+    async ({limit, minScore, min_score, query, sessionId, session_id, targetUri, target_uri, uri}) => {
       const checkedQuery = requiredText(query, 'ov_search', 'query', {query: 'current repo release notes'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -398,13 +380,13 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      const normalizedPeerId = (peerId ?? peer_id)?.trim();
+      const normalizedSessionId = (sessionId ?? session_id)?.trim();
       return runOpenVikingMcpTool(config, 'search', {
         limit,
         min_score: minScore ?? min_score,
-        peer_id: normalizedPeerId || undefined,
         query: checkedQuery.value,
-        uri: checkedUri.value,
+        session_id: normalizedSessionId || undefined,
+        target_uri: checkedUri.value,
       });
     },
   );
@@ -450,17 +432,14 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
         uri: z.string().optional().describe('Optional viking:// directory URI; defaults to viking://'),
       },
     },
-    async ({all, nodeLimit, node_limit, recursive, simple, uri}) => {
+    async ({recursive, uri}) => {
       const checkedUri = optionalVikingUri(uri, 'ov_list');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
       return runOpenVikingMcpTool(config, 'list', {
-        all,
-        node_limit: nodeLimit ?? node_limit,
         recursive,
-        simple,
-        uri: checkedUri.value,
+        uri: checkedUri.value ?? 'viking://',
       });
     },
   );
@@ -611,7 +590,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'forget', {recursive, uri: checkedUri.value});
+      return runOpenVikingRemoveTool(config, checkedUri.value, recursive === true);
     },
   );
 
@@ -718,14 +697,14 @@ function registerOpenVikingStoreTool(server: McpServer, config: RuntimeConfig, n
     },
     async ({content, messages, text}) => {
       if (messages && messages.length > 0) {
-        return runOpenVikingMcpTool(config, name === 'ov_remember' ? 'remember' : 'store', {messages});
+        return runOpenVikingMcpTool(config, 'remember', {messages});
       }
       const checkedContent = requiredText(content ?? text, name, 'content', {content: 'Remember this note'});
       if (!checkedContent.ok) {
         return checkedContent.error;
       }
-      return runOpenVikingMcpTool(config, name === 'ov_remember' ? 'remember' : 'store', {
-        content: checkedContent.value,
+      return runOpenVikingMcpTool(config, 'remember', {
+        messages: [{content: checkedContent.value, role: 'user'}],
       });
     },
   );
@@ -803,13 +782,11 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
   const contextualParams: RecallToolParams = {...params, query};
-  const baseArgs = [
-    'search',
+  const semanticResult = await runOpenVikingMcpTool(config, 'search', {
+    limit: params.nodeLimit,
     query,
-    ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
-  ];
-  const semanticResult = await runOpenVikingTool(config, baseArgs);
+    target_uri: params.pinnedUri,
+  });
   if (semanticResult.isError === true) {
     return semanticResult;
   }
@@ -888,19 +865,15 @@ async function seededResourcesSection(
   if (!projectResourceUri.startsWith('viking://')) {
     return undefined;
   }
-  const ov = await requiredOpenVikingCli();
-  const args = [
-    'search',
-    params.query,
-    '--uri',
-    projectResourceUri,
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
-  ];
-  const result = await runCommand(ov, withIdentity(config, args), {allowFailure: true});
-  if (result.exitCode !== 0) {
+  const result = await runOpenVikingMcpTool(config, 'search', {
+    limit: params.nodeLimit,
+    query: params.query,
+    target_uri: projectResourceUri,
+  });
+  if (result.isError === true) {
     return undefined;
   }
-  const body = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
+  const body = filterStaleRecallSummaryRows(textFromCallToolResult(result));
   if (!body) {
     return undefined;
   }
@@ -916,16 +889,13 @@ async function exactMemoryMatchesText(
   if (terms.length === 0) {
     return undefined;
   }
-  const ov = await requiredOpenVikingCli();
   const scopes = exactMemoryScopes(config, includeArchived);
   const outputs: string[] = [];
   for (const term of terms) {
     for (const scope of scopes) {
-      const result = await runCommand(ov, withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']), {
-        allowFailure: true,
-      });
-      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
+      const result = await runOpenVikingMcpTool(config, 'grep', {node_limit: 5, pattern: term, uri: scope});
+      const output = textFromCallToolResult(result);
+      if (result.isError !== true && grepOutputHasMatches(output)) {
         outputs.push(output);
       }
     }
@@ -992,19 +962,15 @@ function registerListTool(server: McpServer, config: RuntimeConfig, name: string
         node_limit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
       },
     },
-    async ({all, nodeLimit, node_limit, recursive, simple, uri}) => {
+    async ({recursive, uri}) => {
       const checkedUri = optionalVikingUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'ls',
-        checkedUri.value ?? 'viking://',
-        ...(all === true ? ['--all'] : []),
-        ...(recursive === true ? ['--recursive'] : []),
-        ...(simple === true ? ['--simple'] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'list', {
+        recursive,
+        uri: checkedUri.value ?? 'viking://',
+      });
     },
   );
 }
@@ -1081,9 +1047,8 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
         return checkedUri.error;
       }
       try {
-        const ov = await requiredOpenVikingCli();
-        const readResult = await runCommand(ov, withIdentity(config, ['read', checkedUri.value]));
-        const original = readResult.stdout.trim();
+        const readResult = await runOpenVikingReadTool(config, [checkedUri.value]);
+        const original = textFromCallToolResult(readResult);
         if (!original) {
           return {
             content: [{type: 'text', text: `Could not read ${checkedUri.value} before archiving.`}],
@@ -1106,7 +1071,7 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
+        const removedOriginal = await forgetVikingResourceWithRetry(config, checkedUri.value);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -1175,7 +1140,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           appliedMessages.push(`Updated kept memory: ${action.uri}`);
         }
         for (const action of plan.archives) {
-          const archiveResult = await archiveMemoryForCompact(config, ov, action);
+          const archiveResult = await archiveMemoryForCompact(config, action);
           if (archiveResult.isError === true) {
             return archiveResult;
           }
@@ -1185,7 +1150,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           }
         }
         for (const action of plan.forgets) {
-          const removed = await removeVikingResourceWithRetry(ov, config, action.uri);
+          const removed = await forgetVikingResourceWithRetry(config, action.uri);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -1207,13 +1172,9 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
   );
 }
 
-async function archiveMemoryForCompact(
-  config: RuntimeConfig,
-  ov: string,
-  action: ArchiveAction,
-): Promise<CallToolResult> {
-  const readResult = await runCommand(ov, withIdentity(config, ['read', action.uri]));
-  const original = readResult.stdout.trim();
+async function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction): Promise<CallToolResult> {
+  const readResult = await runOpenVikingReadTool(config, [action.uri]);
+  const original = textFromCallToolResult(readResult);
   if (!original) {
     return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
   }
@@ -1232,7 +1193,7 @@ async function archiveMemoryForCompact(
   if (archiveResult.isError === true) {
     return archiveResult;
   }
-  const removedOriginal = await removeVikingResourceWithRetry(ov, config, action.uri);
+  const removedOriginal = await forgetVikingResourceWithRetry(config, action.uri);
   const [content] = archiveResult.content;
   const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
   return {
@@ -1443,8 +1404,13 @@ async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: stri
   return stat.exitCode === 0;
 }
 
-async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
-  const args = withIdentity(config, ['rm', uri]);
+async function removeVikingResourceWithRetry(
+  ov: string,
+  config: RuntimeConfig,
+  uri: string,
+  recursive = false,
+): Promise<boolean> {
+  const args = withIdentity(config, ['rm', uri, ...(recursive ? ['--recursive'] : [])]);
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
@@ -1459,6 +1425,28 @@ async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, 
     await sleep(1000 * (attempt + 1));
   }
   return false;
+}
+
+async function runOpenVikingRemoveTool(
+  config: RuntimeConfig,
+  uri: string,
+  recursive: boolean,
+): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const removed = await removeVikingResourceWithRetry(ov, config, uri, recursive);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: removed ? `Removed: ${uri}` : `Resource is still being processed; retry later: ${uri}`,
+        },
+      ],
+      isError: !removed,
+    };
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
 }
 
 function isResourceBusy(stderr: string, stdout: string): boolean {
@@ -1669,10 +1657,6 @@ function argumentError(text: string): CallToolResult {
   return {content: [{type: 'text', text}], isError: true};
 }
 
-function numberFlag(name: string, value: number | undefined): readonly string[] {
-  return value === undefined ? [] : [name, String(value)];
-}
-
 interface OpenVikingAddResourceParams {
   readonly description?: string;
   readonly path?: string;
@@ -1719,26 +1703,53 @@ async function runOpenVikingAddResourceTool(
     description,
     path: source,
     to: checkedTo.value,
-    wait: params.wait,
     watch_interval: params.watchInterval,
   });
 }
 
 async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly string[]): Promise<CallToolResult> {
+  const result = await runOpenVikingMcpTool(config, 'read', {uris});
+  if (result.isError === true || !nativeReadMissedAnyUri(result, uris)) {
+    return result;
+  }
+  return runOpenVikingReadToolWithCliFallback(config, uris);
+}
+
+function nativeReadMissedAnyUri(result: CallToolResult, uris: readonly string[]): boolean {
+  const text = textFromCallToolResult(result);
+  return uris.some(uri => text.includes(`(nothing found at ${uri})`));
+}
+
+async function runOpenVikingReadToolWithCliFallback(
+  config: RuntimeConfig,
+  uris: readonly string[],
+): Promise<CallToolResult> {
   const outputs: string[] = [];
   for (const uri of uris) {
-    const result = await runOpenVikingMcpTool(config, 'read', {uri});
-    if (result.isError === true) {
-      return result;
+    const nativeResult = await runOpenVikingMcpTool(config, 'read', {uris: [uri]});
+    const nativeText = textFromCallToolResult(nativeResult);
+    let text = nativeText;
+    if (nativeResult.isError === true || nativeText.includes(`(nothing found at ${uri})`)) {
+      const cliResult = await runOpenVikingCliReadTool(config, uri);
+      if (cliResult.isError === true) {
+        return cliResult;
+      }
+      text = textFromCallToolResult(cliResult);
     }
-    outputs.push(
-      result.content
-        .map(content => (content.type === 'text' ? content.text : ''))
-        .join('\n')
-        .trim(),
-    );
+    outputs.push(uris.length === 1 ? text : `=== ${uri} ===\n${text}`);
   }
-  return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n') || 'OK'}]};
+  return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n\n') || 'OK'}]};
+}
+
+async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const result = await runCommand(ov, withIdentity(config, ['read', uri]));
+    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+    return {content: [{type: 'text', text: text || 'OK'}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
 }
 
 async function runOpenVikingMcpTool(
@@ -1794,15 +1805,16 @@ function normalizeCallToolResult(result: unknown): CallToolResult {
   return {content: [{type: 'text', text: JSON.stringify(result)}]};
 }
 
-async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
-  try {
-    const ov = await requiredOpenVikingCli();
-    const result = await runCommand(ov, withIdentity(config, args));
-    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: text || 'OK'}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+function textFromCallToolResult(result: CallToolResult): string {
+  return result.content
+    .map(content => (content.type === 'text' ? content.text : ''))
+    .join('\n')
+    .trim();
+}
+
+async function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string): Promise<boolean> {
+  const ov = await requiredOpenVikingCli();
+  return removeVikingResourceWithRetry(ov, config, uri);
 }
 
 interface SharePublishToolOptions {
@@ -1824,19 +1836,20 @@ async function runSharePublishTool(
     }
     const resolved = await resolveTeam(config, options.team);
     const ov = await requiredOpenVikingCli();
-    const readResult = await runCommand(ov, withIdentity(config, ['read', sourceUri]), {allowFailure: true});
-    if (readResult.exitCode !== 0 || !readResult.stdout.trim()) {
+    const readResult = await runOpenVikingReadTool(config, [sourceUri]);
+    const sourceText = textFromCallToolResult(readResult);
+    if (readResult.isError === true || !sourceText) {
       return {
         content: [
           {
             type: 'text',
-            text: `Could not read ${sourceUri}: ${readResult.stderr.trim() || readResult.stdout.trim() || 'unknown error'}`,
+            text: `Could not read ${sourceUri}: ${sourceText || 'unknown error'}`,
           },
         ],
         isError: true,
       };
     }
-    const stripped = stripPersonalProvenance(readResult.stdout);
+    const stripped = stripPersonalProvenance(sourceText);
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
     const targetUri = sharedUriFor(config, sourceUri, resolved.name);
 
@@ -1882,7 +1895,7 @@ async function runSharePublishTool(
       push: options.push,
     });
     try {
-      await removeMemoryUri(config, ov, sourceUri, false, {quiet: true});
+      await forgetVikingResourceWithRetry(config, sourceUri);
     } catch (sourceErr: unknown) {
       return {
         content: [
