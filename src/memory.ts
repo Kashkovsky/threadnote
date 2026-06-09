@@ -452,7 +452,7 @@ async function runRecallSearch(
   return output || undefined;
 }
 
-function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
+export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
   const stripped: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--threshold' || args[index] === '--level') {

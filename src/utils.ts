@@ -847,9 +847,12 @@ export interface ExactMatch {
 /**
  * Build the exact-term grep scopes for a recall. Intent (from
  * `exactRecallScopeIntents`) selects which scope types to search; a resolved
- * project narrows the project-specific scopes (durable, handoffs, incidents,
- * seeded resources) to that project, while preferences and shared stay global.
- * Empty intent falls back to the broad personal + shared + seeded set.
+ * project narrows the project-specific scopes (durable, handoffs, incidents) to
+ * that project, while preferences and shared stay global. Seeded resources
+ * (`viking://resources/repos`) are intentionally NOT exact-grepped for
+ * intent-classified queries — those are covered by the unscoped base semantic
+ * pass plus the project-scoped seeded pass, and grepping every repo per term is
+ * broad and low-signal. The broad fallback (unclear intent) does include them.
  */
 export function exactMemoryScopeUris(params: {
   readonly agentMemoriesUri: string;

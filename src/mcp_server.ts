@@ -818,18 +818,22 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     // search so one unsupported flag does not abort the entire recall.
     semanticResult = await runOpenVikingTool(config, ['search', query, ...pinnedArgs, ...limitArgs]);
   }
-  if (semanticResult.isError === true) {
-    return semanticResult;
-  }
-  const [firstContent] = semanticResult.content;
-  if (firstContent?.type !== 'text') {
-    return semanticResult;
-  }
+  const firstContent = semanticResult.content[0];
+  const semanticRaw = firstContent?.type === 'text' ? firstContent.text : '';
+  const semanticOk = semanticResult.isError !== true && firstContent?.type === 'text';
   const sections: string[] = [];
-  const semanticText = filterStaleRecallSummaryRows(firstContent.text);
-  const filteredSemanticText = semanticText !== firstContent.text.trim();
-  if (semanticText) {
-    sections.push(semanticText);
+  let filteredSemanticText = false;
+  if (semanticOk) {
+    const semanticText = filterStaleRecallSummaryRows(semanticRaw);
+    filteredSemanticText = semanticText !== semanticRaw.trim();
+    if (semanticText) {
+      sections.push(semanticText);
+    }
+  } else {
+    // Semantic search failed even after the plain fallback (e.g. ov is down).
+    // Degrade rather than abort: note it and still run seeded/exact so any
+    // available context is returned, matching the CLI recall path.
+    sections.push(`Recall semantic search unavailable: ${semanticRaw.trim() || 'ov search failed'}`);
   }
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
@@ -852,10 +856,12 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   for (const warning of syncWarnings) {
     sections.push(`Auto-sync warning: ${warning}`);
   }
+  // Nothing beyond the (possibly failed) semantic section — return the raw
+  // result so a genuine failure still surfaces as isError to the caller.
   if (sections.length <= 1 && !filteredSemanticText) {
     return semanticResult;
   }
-  return {...semanticResult, content: [{type: 'text', text: sections.join('\n\n')}]};
+  return {content: [{type: 'text', text: sections.join('\n\n')}], isError: false};
 }
 
 async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
