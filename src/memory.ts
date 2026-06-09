@@ -1,7 +1,7 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
 import {inferProjectFromQuery, uriSegment} from './manifest.js';
-import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
+import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
   buildCompactPlan,
@@ -41,15 +41,19 @@ import {
   exactRecallTerms,
   collectExactMatches,
   formatExactMatchPointers,
+  formatRecallHits,
   formatShellCommand,
   getInputText,
   getInvocationCwd,
   gitValue,
   isJsonObject,
   maybeRun,
+  mergeRecallHits,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
+  parseRecallHits,
+  type RecallHit,
   RECALL_SCORE_THRESHOLD,
   resolveRepoName,
   runCommand,
@@ -307,32 +311,47 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   for (const message of indexRepairMessages) {
     console.log(message);
   }
+  const dryRun = options.dryRun === true;
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
-  const args = ['search', query, '--threshold', options.threshold ?? RECALL_SCORE_THRESHOLD, '--level', '2'];
+  const nodeLimit = options.nodeLimit ? parsePositiveInteger(options.nodeLimit, 'node limit') : undefined;
+  const searchArgs = (scopeUri: string | undefined): readonly string[] => [
+    'search',
+    query,
+    '--threshold',
+    options.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
+    ...(scopeUri ? ['--uri', scopeUri] : []),
+    ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
+  ];
+
+  // Run the global base pass plus any scoped passes, then merge into one
+  // deduped ranked list so resources/memories the base already surfaced are not
+  // repeated by the scoped passes (and multiple chunks of one document collapse
+  // to a single entry).
   if (inferredUri) {
-    args.push('--uri', inferredUri);
     console.log(`Recall scope: ${inferredUri}`);
   }
-  if (options.nodeLimit) {
-    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
+  const passes: Array<readonly RecallHit[]> = [await recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun})];
+  if (options.project && project) {
+    const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
+    passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun}));
   }
+  const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
+  if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
+    passes.push(await recallSearchHits(config, ov, searchArgs(seededUri), {dryRun}));
+  }
+
   const recallOutputs: string[] = [];
-  const baseOutput = await runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
-  if (baseOutput) {
-    recallOutputs.push(baseOutput);
-  }
-  const projectMemoryOutput = await augmentRecallWithProjectMemories(config, ov, {...options, query}, project);
-  if (projectMemoryOutput) {
-    recallOutputs.push(projectMemoryOutput);
-  }
-  const seededOutput = await augmentRecallWithSeededResources(config, ov, {...options, query}, inferredUri, project);
-  if (seededOutput) {
-    recallOutputs.push(seededOutput);
+  const semanticSection = formatRecallHits(mergeRecallHits(passes), nodeLimit ?? 12);
+  if (semanticSection) {
+    console.log(`\n${semanticSection}`);
+    recallOutputs.push(semanticSection);
   }
   const exactOutput = await printExactMemoryMatches(config, ov, query, {
-    dryRun: options.dryRun === true,
+    dryRun,
     includeArchived: options.includeArchived === true,
     project,
   });
@@ -343,113 +362,34 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
 }
 
 /**
- * If the query mentions a seeded project, run a second search scoped to that
- * project's resources URI and print results below the base search. The base
- * search is biased toward memory-shaped vocabulary ("handoff", "durable") and
- * with a small node-limit it crowds out seeded README/AGENTS.md/SKILL.md
- * content — running a scoped pass guarantees that seeded guidance surfaces
- * alongside personal memories on every recall.
- *
- * Skips the augmentation when the caller pinned the search to a specific URI
- * (they asked for that scope; honor it) or when the inferred scope already
- * targets the same resources subtree (no need to duplicate).
+ * Run one recall search pass with `--output json` and return parsed hits.
+ * Falls back to a plain search (without --threshold/--level) on a non-zero
+ * exit so an older ov does not fail the whole recall. The merge in `runRecall`
+ * dedupes hits across passes, so scoped passes only contribute what the base
+ * pass missed.
  */
-/**
- * When the caller explicitly scopes recall to a project (the manager Project
- * field or `recall --project`), run an extra semantic pass over that project's
- * durable memories so project context is prioritized — without dropping the
- * global base pass that surfaces cross-project hits. A project merely inferred
- * from the workspace/query does NOT trigger this; only an explicit
- * `options.project` does.
- */
-async function augmentRecallWithProjectMemories(
-  config: RuntimeConfig,
-  ov: string,
-  options: RecallOptions,
-  project: ProjectManifest | undefined,
-): Promise<string | undefined> {
-  if (!options.project || !project) {
-    return undefined;
-  }
-  const scope = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
-  const args = [
-    'search',
-    options.query,
-    '--threshold',
-    options.threshold ?? RECALL_SCORE_THRESHOLD,
-    '--level',
-    '2',
-    '--uri',
-    scope,
-  ];
-  if (options.nodeLimit) {
-    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
-  }
-  console.log(`\nAlso searching ${project.name} project memories: ${scope}`);
-  return runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
-}
-
-async function augmentRecallWithSeededResources(
-  config: RuntimeConfig,
-  ov: string,
-  options: RecallOptions,
-  inferredUri: string | undefined,
-  project: ProjectManifest | undefined,
-): Promise<string | undefined> {
-  // `--no-infer-scope` (options.inferScope === false) disables the base scope
-  // inference; honoring it here too keeps the flag's meaning consistent —
-  // augmenting with a project-scoped search would silently re-introduce what
-  // the user disabled. A caller-pinned --uri is also explicit intent we honor.
-  if (options.uri || options.inferScope === false || !project) {
-    return undefined;
-  }
-  const projectResourceUri = trimTrailingSlash(project.uri);
-  if (!projectResourceUri.startsWith('viking://') || projectResourceUri === inferredUri) {
-    return undefined;
-  }
-  const args = [
-    'search',
-    options.query,
-    '--threshold',
-    options.threshold ?? RECALL_SCORE_THRESHOLD,
-    '--level',
-    '2',
-    '--uri',
-    projectResourceUri,
-  ];
-  if (options.nodeLimit) {
-    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
-  }
-  console.log(`\nAlso searching seeded resources: ${projectResourceUri}`);
-  return runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
-}
-
-async function runRecallSearch(
+async function recallSearchHits(
   config: RuntimeConfig,
   ov: string,
   args: readonly string[],
   options: {readonly dryRun: boolean},
-): Promise<string | undefined> {
-  const fullArgs = withIdentity(config, args);
-  console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, fullArgs)}`);
+): Promise<readonly RecallHit[]> {
+  const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
+  console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, jsonArgs)}`);
   if (options.dryRun) {
-    return undefined;
+    return [];
   }
-  let result = await runCommand(ov, fullArgs, {allowFailure: true});
+  let result = await runCommand(ov, jsonArgs, {allowFailure: true});
   if (result.exitCode !== 0) {
-    // Older ov builds may not support --threshold/--level; retry without them
-    // rather than failing the whole recall.
-    result = await runCommand(ov, withIdentity(config, stripAdvancedSearchFlags(args)), {allowFailure: true});
+    result = await runCommand(ov, withIdentity(config, [...stripAdvancedSearchFlags(args), '--output', 'json']), {
+      allowFailure: true,
+    });
   }
   if (result.exitCode !== 0) {
     console.log(`WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`);
-    return undefined;
+    return [];
   }
-  const output = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
-  if (output) {
-    console.log(output);
-  }
-  return output || undefined;
+  return parseRecallHits(result.stdout);
 }
 
 export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {

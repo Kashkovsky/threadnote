@@ -11,10 +11,13 @@ import {
   exactRecallScopeIntents,
   exactRecallTerms,
   formatExactMatchPointers,
+  formatRecallHits,
   formatShellCommand,
   getGlobBase,
   globToRegExp,
   grepUrisFromJson,
+  mergeRecallHits,
+  parseRecallHits,
   hasGlob,
   isExecutable,
   isJsonObject,
@@ -525,5 +528,64 @@ describe('collectExactMatches + formatExactMatchPointers', () => {
 
   it('returns undefined when there are no matches', () => {
     expect(formatExactMatchPointers([])).toBeUndefined();
+  });
+});
+
+describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
+  const json = (obj: unknown): string => `cmd: ov search ...\n${JSON.stringify(obj)}`;
+
+  it('parses memories + resources, drops sidecars, and trims snippets', () => {
+    const hits = parseRecallHits(
+      json({
+        ok: true,
+        result: {
+          memories: [{context_type: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, abstract: 'a  b\n c'}],
+          resources: [
+            {context_type: 'resource', uri: 'viking://r.md', score: 0.6, abstract: 'doc'},
+            {context_type: 'resource', uri: 'viking://r/.overview.md', score: 0.9, abstract: 'sidecar'},
+          ],
+          skills: [],
+        },
+      }),
+    );
+    expect(hits).toEqual([
+      {contextType: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
+      {contextType: 'resource', uri: 'viking://r.md', score: 0.6, snippet: 'doc'},
+    ]);
+  });
+
+  it('merges passes, collapses chunks to one document, keeps the best score, ranks desc', () => {
+    const base = parseRecallHits(
+      json({ok: true, result: {memories: [{uri: 'viking://doc.md#chunk_0000', score: 0.5, abstract: 'x'}]}}),
+    );
+    const scoped = parseRecallHits(
+      json({
+        ok: true,
+        result: {
+          memories: [
+            {uri: 'viking://doc.md#chunk_0009', score: 0.8, abstract: 'y'},
+            {uri: 'viking://other.md', score: 0.6, abstract: 'z'},
+          ],
+        },
+      }),
+    );
+    const merged = mergeRecallHits([base, scoped]);
+    expect(merged.map(hit => ({score: hit.score, uri: hit.uri}))).toEqual([
+      {score: 0.8, uri: 'viking://doc.md'},
+      {score: 0.6, uri: 'viking://other.md'},
+    ]);
+  });
+
+  it('formats a capped numbered list with overflow note', () => {
+    const hits = Array.from({length: 4}, (_unused, index) => ({
+      contextType: 'memory',
+      score: 0.5,
+      snippet: '',
+      uri: `viking://m${index}.md`,
+    }));
+    const text = formatRecallHits(hits, 2) ?? '';
+    expect(text).toContain('1. memory · score 0.50 · viking://m0.md');
+    expect(text).toContain('(+2 more');
+    expect(formatRecallHits([], 5)).toBeUndefined();
   });
 });

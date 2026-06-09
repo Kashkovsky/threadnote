@@ -10,7 +10,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
-import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
+import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
 import type {ProjectManifest} from './types.js';
 import {
@@ -50,7 +50,11 @@ import {
   expandPath,
   findExecutable,
   formatExactMatchPointers,
+  formatRecallHits,
+  mergeRecallHits,
   parsePort,
+  parseRecallHits,
+  type RecallHit,
   RECALL_SCORE_THRESHOLD,
   runCommand,
   safeTimestamp,
@@ -796,51 +800,37 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   } catch (err: unknown) {
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
-  const contextualParams: RecallToolParams = {...params, query};
   const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
-  const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
   const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
-  // --level 2 keeps real Level-2 content and drops the L0/L1 ".overview"/
-  // ".abstract" summary sidecars (permanent "[not ready]" placeholders when
-  // auto-generation is off), which are noise in recall.
-  let semanticResult = await runOpenVikingTool(config, [
-    'search',
-    query,
-    '--threshold',
-    params.threshold ?? RECALL_SCORE_THRESHOLD,
-    '--level',
-    '2',
-    ...pinnedArgs,
-    ...limitArgs,
-  ]);
-  if (semanticResult.isError === true) {
-    // Older ov builds may not support --threshold/--level; degrade to a plain
-    // search so one unsupported flag does not abort the entire recall.
-    semanticResult = await runOpenVikingTool(config, ['search', query, ...pinnedArgs, ...limitArgs]);
+  const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
+  // Run the global base pass plus a seeded project pass, then merge into one
+  // deduped ranked list (per document, chunk anchors stripped) so the seeded
+  // pass only adds project docs the base missed. --level 2 keeps Level-2
+  // content and drops the L0/L1 .overview/.abstract summary sidecars.
+  const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
+  const base = await recallSearchHits(config, ['search', query, ...pinnedArgs, ...limitArgs], threshold);
+  const passes: Array<readonly RecallHit[]> = [base.hits];
+  const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
+  if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
+    const seeded = await recallSearchHits(
+      config,
+      ['search', params.query, '--uri', seededUri, ...limitArgs],
+      threshold,
+    );
+    passes.push(seeded.hits);
   }
-  const firstContent = semanticResult.content[0];
-  const semanticRaw = firstContent?.type === 'text' ? firstContent.text : '';
-  const semanticOk = semanticResult.isError !== true && firstContent?.type === 'text';
+
   const sections: string[] = [];
-  let filteredSemanticText = false;
-  if (semanticOk) {
-    const semanticText = filterStaleRecallSummaryRows(semanticRaw);
-    filteredSemanticText = semanticText !== semanticRaw.trim();
-    if (semanticText) {
-      sections.push(semanticText);
-    }
-  } else {
-    // Semantic search failed even after the plain fallback (e.g. ov is down).
-    // Degrade rather than abort: note it and still run seeded/exact so any
-    // available context is returned, matching the CLI recall path.
-    sections.push(`Recall semantic search unavailable: ${semanticRaw.trim() || 'ov search failed'}`);
+  const semanticSection = formatRecallHits(mergeRecallHits(passes), params.nodeLimit ?? 12);
+  if (semanticSection) {
+    sections.push(semanticSection);
+  } else if (!base.ok) {
+    // Semantic search failed even after the plain fallback (e.g. ov down).
+    // Degrade rather than abort: note it and still run exact below.
+    sections.push(`Recall semantic search unavailable: ${base.errorText || 'ov search failed'}`);
   }
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
-  }
-  const seededSection = await seededResourcesSection(config, contextualParams, project);
-  if (seededSection) {
-    sections.push(seededSection);
   }
   const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived, project);
   if (exactMatches) {
@@ -856,12 +846,41 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   for (const warning of syncWarnings) {
     sections.push(`Auto-sync warning: ${warning}`);
   }
-  // Nothing beyond the (possibly failed) semantic section — return the raw
-  // result so a genuine failure still surfaces as isError to the caller.
-  if (sections.length <= 1 && !filteredSemanticText) {
-    return semanticResult;
+  if (sections.length === 0) {
+    return {content: [{type: 'text', text: 'No recall results found.'}]};
   }
-  return {content: [{type: 'text', text: sections.join('\n\n')}], isError: false};
+  const onlyErrorNote = !base.ok && !semanticSection && sections.length === 1;
+  return {content: [{type: 'text', text: sections.join('\n\n')}], isError: onlyErrorNote || undefined};
+}
+
+/**
+ * Run one recall search pass with `--output json` via the ov CLI and return
+ * parsed hits, falling back to a plain search (no --threshold/--level) on a
+ * non-zero exit so an older ov does not fail the recall.
+ */
+async function recallSearchHits(
+  config: RuntimeConfig,
+  searchArgs: readonly string[],
+  threshold: string,
+): Promise<{readonly errorText: string; readonly hits: readonly RecallHit[]; readonly ok: boolean}> {
+  let result = await runOpenVikingTool(config, [
+    ...searchArgs,
+    '--threshold',
+    threshold,
+    '--level',
+    '2',
+    '--output',
+    'json',
+  ]);
+  if (result.isError === true) {
+    result = await runOpenVikingTool(config, [...searchArgs, '--output', 'json']);
+  }
+  const firstContent = result.content[0];
+  const text = firstContent?.type === 'text' ? firstContent.text : '';
+  if (result.isError === true) {
+    return {errorText: text.trim(), hits: [], ok: false};
+  }
+  return {errorText: '', hits: parseRecallHits(text), ok: true};
 }
 
 async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
@@ -872,53 +891,6 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
   const records = await readMemoryRecordsByUri(config, uris);
   const nudges = recallHygieneNudges(recallText, {records, user: config.user});
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
-}
-
-/**
- * Runs a second `ov search` scoped to the seeded project's resources when the
- * query mentions a project name from the manifest. The base semantic search
- * tends to rank memory-shaped hits above seeded READMEs/AGENTS.md/SKILL.md, so
- * this parallel pass guarantees that seeded guidance surfaces alongside
- * memories on every agent's recall — not only Claude's via the SessionStart
- * hook. Skipped when the caller pinned a URI (they asked for that scope;
- * honor it). The MCP server doesn't currently do scope inference of its own
- * the way the CLI's `runRecall` does, so there's no `inferredUri`-vs-
- * `projectResourceUri` dedupe check here — if MCP later grows inference, mirror
- * the CLI's `augmentRecallWithSeededResources` guard.
- */
-async function seededResourcesSection(
-  config: RuntimeConfig,
-  params: RecallToolParams,
-  project: ProjectManifest | undefined,
-): Promise<string | undefined> {
-  if (params.pinnedUri || !project) {
-    return undefined;
-  }
-  const projectResourceUri = trimTrailingSlash(project.uri);
-  if (!projectResourceUri.startsWith('viking://')) {
-    return undefined;
-  }
-  const ov = await requiredOpenVikingCli();
-  const args = [
-    'search',
-    params.query,
-    '--threshold',
-    params.threshold ?? RECALL_SCORE_THRESHOLD,
-    '--level',
-    '2',
-    '--uri',
-    projectResourceUri,
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
-  ];
-  const result = await runCommand(ov, withIdentity(config, args), {allowFailure: true});
-  if (result.exitCode !== 0) {
-    return undefined;
-  }
-  const body = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
-  if (!body) {
-    return undefined;
-  }
-  return `Seeded project resources (${projectResourceUri}):\n${body}`;
 }
 
 async function exactMemoryMatchesText(

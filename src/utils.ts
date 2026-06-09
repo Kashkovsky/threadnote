@@ -844,6 +844,97 @@ export interface ExactMatch {
   readonly uri: string;
 }
 
+export interface RecallHit {
+  readonly contextType: string;
+  readonly score: number;
+  readonly snippet: string;
+  readonly uri: string;
+}
+
+function recallSnippet(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const oneLine = value.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 180 ? `${oneLine.slice(0, 180)}…` : oneLine;
+}
+
+/**
+ * Parse `ov search --output json` stdout into recall hits across the memories,
+ * resources, and skills result arrays, dropping summary sidecars and trimming
+ * each abstract to a short snippet. Tolerant of the leading `cmd:` banner and
+ * shape drift; returns [] on parse failure.
+ */
+export function parseRecallHits(output: string): readonly RecallHit[] {
+  const start = output.search(/^\{/m);
+  if (start < 0) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(output.slice(start));
+    const result = isJsonObject(parsed) ? parsed.result : undefined;
+    if (!isJsonObject(result)) {
+      return [];
+    }
+    const hits: RecallHit[] = [];
+    for (const key of ['memories', 'resources', 'skills']) {
+      const items = result[key];
+      if (!Array.isArray(items)) {
+        continue;
+      }
+      for (const item of items) {
+        if (!isJsonObject(item) || typeof item.uri !== 'string' || isSummarySidecarUri(item.uri)) {
+          continue;
+        }
+        hits.push({
+          contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
+          score: typeof item.score === 'number' ? item.score : 0,
+          snippet: recallSnippet(item.abstract ?? item.overview),
+          uri: item.uri,
+        });
+      }
+    }
+    return hits;
+  } catch (_err: unknown) {
+    return [];
+  }
+}
+
+/**
+ * Merge recall hits from several search passes into one ranked list, deduped to
+ * one entry per document (chunk anchors stripped), keeping the highest-scoring
+ * chunk. Lets the scoped project/seeded passes contribute only documents the
+ * global pass missed, and collapses multiple chunks of the same document.
+ */
+export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): readonly RecallHit[] {
+  const byDocument = new Map<string, RecallHit>();
+  for (const pass of passes) {
+    for (const hit of pass) {
+      const documentUri = hit.uri.replace(/#.*$/, '');
+      const existing = byDocument.get(documentUri);
+      if (!existing || hit.score > existing.score) {
+        byDocument.set(documentUri, {...hit, uri: documentUri});
+      }
+    }
+  }
+  return [...byDocument.values()].sort((left, right) => right.score - left.score);
+}
+
+export function formatRecallHits(hits: readonly RecallHit[], maxHits: number): string | undefined {
+  if (hits.length === 0) {
+    return undefined;
+  }
+  const shown = hits.slice(0, maxHits);
+  const lines = shown.flatMap((hit, index) => {
+    const head = `${index + 1}. ${hit.contextType} · score ${hit.score.toFixed(2)} · ${hit.uri}`;
+    return hit.snippet ? [head, `   ${hit.snippet}`] : [head];
+  });
+  if (hits.length > maxHits) {
+    lines.push(`(+${hits.length - maxHits} more — refine the query or read a URI above)`);
+  }
+  return lines.join('\n');
+}
+
 /**
  * Build the exact-term grep scopes for a recall. Intent (from
  * `exactRecallScopeIntents`) selects which scope types to search; a resolved
