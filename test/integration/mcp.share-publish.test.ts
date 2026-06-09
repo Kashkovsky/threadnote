@@ -16,9 +16,26 @@ interface TextContent {
 async function makeHome(root: string): Promise<string> {
   const home = join(root, 'home');
   const worktree = join(home, 'data', 'viking', 'local', 'user', 'denyskashkovskyi', 'memories', 'shared', 'default');
+  const sourceDir = join(
+    home,
+    'data',
+    'viking',
+    'local',
+    'user',
+    'denyskashkovskyi',
+    'memories',
+    'durable',
+    'projects',
+    'foo',
+  );
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(worktree, {recursive: true});
+  await mkdir(sourceDir, {recursive: true});
   await mkdir(join(home, 'share'), {recursive: true});
+  await writeFile(
+    join(sourceDir, 'bar.md'),
+    'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n',
+  );
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(

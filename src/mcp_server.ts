@@ -7,7 +7,7 @@ import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {access, readdir, readFile, realpath} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {join, sep} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -1712,7 +1712,7 @@ async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly strin
   if (result.isError !== true && !nativeReadMissedAnyUri(result, uris)) {
     return result;
   }
-  return runOpenVikingReadToolWithCliFallback(config, uris);
+  return runOpenVikingReadToolWithLocalFallback(config, uris);
 }
 
 function nativeReadMissedAnyUri(result: CallToolResult, uris: readonly string[]): boolean {
@@ -1720,7 +1720,7 @@ function nativeReadMissedAnyUri(result: CallToolResult, uris: readonly string[])
   return uris.some(uri => text.includes(`(nothing found at ${uri})`));
 }
 
-async function runOpenVikingReadToolWithCliFallback(
+async function runOpenVikingReadToolWithLocalFallback(
   config: RuntimeConfig,
   uris: readonly string[],
 ): Promise<CallToolResult> {
@@ -1730,25 +1730,30 @@ async function runOpenVikingReadToolWithCliFallback(
     const nativeText = textFromCallToolResult(nativeResult);
     let text = nativeText;
     if (nativeResult.isError === true || nativeText.includes(`(nothing found at ${uri})`)) {
-      const cliResult = await runOpenVikingCliReadTool(config, uri);
-      if (cliResult.isError === true) {
-        return cliResult;
+      const localText = await readLocalVikingFile(config, uri);
+      if (localText === undefined) {
+        if (nativeResult.isError === true) {
+          return nativeResult;
+        }
+      } else {
+        text = localText;
       }
-      text = textFromCallToolResult(cliResult);
     }
     outputs.push(uris.length === 1 ? text : `=== ${uri} ===\n${text}`);
   }
   return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n\n') || 'OK'}]};
 }
 
-async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Promise<CallToolResult> {
+async function readLocalVikingFile(config: RuntimeConfig, uri: string): Promise<string | undefined> {
   try {
-    const ov = await requiredOpenVikingCli();
-    const result = await runCommand(ov, withIdentity(config, ['read', uri]));
-    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: text || 'OK'}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+    const root = await realpath(join(config.agentContextHome, 'data', 'viking', config.account));
+    const candidate = await realpath(join(root, uri.slice('viking://'.length)));
+    if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+      return undefined;
+    }
+    return await readFile(candidate, 'utf8');
+  } catch (_err: unknown) {
+    return undefined;
   }
 }
 
