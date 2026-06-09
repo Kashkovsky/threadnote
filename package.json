@@ -35,6 +35,7 @@
     "dist/",
     "docs/",
     "LICENSE",
+    "THIRD_PARTY.md",
     "manager/",
     "README.md",
     "scripts/"

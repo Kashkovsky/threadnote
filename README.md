@@ -52,3 +52,17 @@ which memory to keep/update, which old handoffs to archive, and which exact dupl
 Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
 instead of accumulating near-duplicate progress notes. Replacing a shared `durable/` URI updates that shared memory in
 place and pushes the shared repo, so you do not need a separate `share publish` step.
+
+## Acknowledgments
+
+Threadnote is a workflow layer over [OpenViking](https://openviking.ai/) (AGPL-3.0).
+It installs OpenViking on your machine (via `uv tool install openviking[local-embed]`) and runs it as a **separate program** —
+shelling out to the `ov` CLI and talking to `openviking-server` over MCP. Threadnote does **not** bundle, modify, or
+redistribute OpenViking; its source and license reach you independently through PyPI. Threadnote's own license covers
+only Threadnote's code.
+
+See [`THIRD_PARTY.md`](./THIRD_PARTY.md) for the full attribution.
+
+## License
+
+Threadnote is licensed under [AGPL-3.0-or-later](./LICENSE).
