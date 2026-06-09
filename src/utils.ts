@@ -762,13 +762,13 @@ export function grepOutputHasMatches(output: string): boolean {
 /**
  * Minimum `ov search` relevance score for recall. A conservative floor that
  * drops only the clearly-irrelevant tail while keeping mid-relevance hits;
- * passed to `ov search --threshold`. Observed strong hits sit ~0.70+, so 0.5
+ * passed to `ov search --threshold`. Observed strong hits sit ~0.70+, so 0.45
  * trims noise without risking useful results on lower-scoring queries.
  * Overridable per-call (recall `--threshold` / the `threshold` MCP arg) and
  * globally via THREADNOTE_RECALL_THRESHOLD, matching the THREADNOTE_* env
  * convention used for command timeout/output caps.
  */
-export const RECALL_SCORE_THRESHOLD = process.env.THREADNOTE_RECALL_THRESHOLD?.trim() || '0.5';
+export const RECALL_SCORE_THRESHOLD = process.env.THREADNOTE_RECALL_THRESHOLD?.trim() || '0.45';
 
 export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
 

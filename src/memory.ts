@@ -323,6 +323,10 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   if (baseOutput) {
     recallOutputs.push(baseOutput);
   }
+  const projectMemoryOutput = await augmentRecallWithProjectMemories(config, ov, {...options, query}, project);
+  if (projectMemoryOutput) {
+    recallOutputs.push(projectMemoryOutput);
+  }
   const seededOutput = await augmentRecallWithSeededResources(config, ov, {...options, query}, inferredUri, project);
   if (seededOutput) {
     recallOutputs.push(seededOutput);
@@ -350,6 +354,41 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
  * (they asked for that scope; honor it) or when the inferred scope already
  * targets the same resources subtree (no need to duplicate).
  */
+/**
+ * When the caller explicitly scopes recall to a project (the manager Project
+ * field or `recall --project`), run an extra semantic pass over that project's
+ * durable memories so project context is prioritized — without dropping the
+ * global base pass that surfaces cross-project hits. A project merely inferred
+ * from the workspace/query does NOT trigger this; only an explicit
+ * `options.project` does.
+ */
+async function augmentRecallWithProjectMemories(
+  config: RuntimeConfig,
+  ov: string,
+  options: RecallOptions,
+  project: ProjectManifest | undefined,
+): Promise<string | undefined> {
+  if (!options.project || !project) {
+    return undefined;
+  }
+  const scope = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
+  const args = [
+    'search',
+    options.query,
+    '--threshold',
+    options.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
+    '--uri',
+    scope,
+  ];
+  if (options.nodeLimit) {
+    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
+  }
+  console.log(`\nAlso searching ${project.name} project memories: ${scope}`);
+  return runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
+}
+
 async function augmentRecallWithSeededResources(
   config: RuntimeConfig,
   ov: string,
