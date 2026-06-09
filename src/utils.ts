@@ -1,4 +1,4 @@
-import {spawn} from 'node:child_process';
+import {execFile, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {constants as fsConstants, existsSync} from 'node:fs';
 import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promises';
@@ -175,15 +175,11 @@ export async function runCommand(
   } = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(executable, args, {cwd: options.cwd});
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
     const maxOutputBytes = options.maxOutputBytes ?? defaultCommandMaxOutputBytes();
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
     let finished = false;
-    let failureResult: CommandResult | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
+    let failureMessage: string | undefined;
     let sentTerminationSignal = false;
     const timeoutMs = options.timeoutMs ?? defaultCommandTimeoutMs();
     const finish = (result: CommandResult): void => {
@@ -194,22 +190,47 @@ export async function runCommand(
       if (killTimer) {
         clearTimeout(killTimer);
       }
+      if (killEscalationTimer) {
+        clearTimeout(killEscalationTimer);
+      }
       if (result.exitCode !== 0 && options.allowFailure !== true) {
         rejectPromise(new Error(`${formatShellCommand(executable, args)} failed: ${result.stderr || result.stdout}`));
         return;
       }
       resolvePromise(result);
     };
+    const child = execFile(
+      executable,
+      [...args],
+      {
+        cwd: options.cwd,
+        encoding: 'utf8',
+        maxBuffer: maxOutputBytes,
+      },
+      (err, stdout, stderr) => {
+        finish(
+          commandResultFromExecFileCallback({
+            args,
+            err,
+            executable,
+            failureMessage,
+            maxOutputBytes,
+            stderr,
+            stdout,
+          }),
+        );
+      },
+    );
     const failAndKill = (message: string): void => {
-      if (failureResult) {
+      if (failureMessage) {
         return;
       }
-      failureResult = {exitCode: 124, stderr: message, stdout: stdoutChunks.join('')};
+      failureMessage = message;
       if (!sentTerminationSignal) {
         sentTerminationSignal = true;
         child.kill('SIGTERM');
       }
-      setTimeout(() => {
+      killEscalationTimer = setTimeout(() => {
         if (!finished) {
           child.kill('SIGKILL');
         }
@@ -221,53 +242,32 @@ export async function runCommand(
       }, timeoutMs);
       killTimer.unref?.();
     }
-    child.stdout.on('data', chunk => {
-      if (failureResult) {
-        return;
-      }
-      const text = String(chunk);
-      stdoutBytes += Buffer.byteLength(text);
-      if (stdoutBytes + stderrBytes > maxOutputBytes) {
-        failAndKill(`${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`);
-        return;
-      }
-      stdoutChunks.push(text);
-    });
-    child.stderr.on('data', chunk => {
-      if (failureResult) {
-        return;
-      }
-      const text = String(chunk);
-      stderrBytes += Buffer.byteLength(text);
-      if (stdoutBytes + stderrBytes > maxOutputBytes) {
-        failAndKill(`${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`);
-        return;
-      }
-      stderrChunks.push(text);
-    });
-    child.on('error', err => {
-      if (finished) {
-        return;
-      }
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
-      if (options.allowFailure === true) {
-        finish({exitCode: 127, stderr: errorMessage(err), stdout: ''});
-      } else {
-        finished = true;
-        rejectPromise(err);
-      }
-    });
-    child.on('close', code => {
-      const result = failureResult ?? {
-        exitCode: code ?? 1,
-        stderr: stderrChunks.join(''),
-        stdout: stdoutChunks.join(''),
-      };
-      finish(result);
-    });
   });
+}
+
+function commandResultFromExecFileCallback(params: {
+  readonly args: readonly string[];
+  readonly err: Error | null;
+  readonly executable: string;
+  readonly failureMessage?: string;
+  readonly maxOutputBytes: number;
+  readonly stderr: string;
+  readonly stdout: string;
+}): CommandResult {
+  if (params.failureMessage) {
+    return {exitCode: 124, stderr: params.failureMessage, stdout: params.stdout};
+  }
+  if (!params.err) {
+    return {exitCode: 0, stderr: params.stderr, stdout: params.stdout};
+  }
+  const error = params.err as Error & {readonly code?: number | string};
+  const exitCode =
+    typeof error.code === 'number' ? error.code : error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 124 : 127;
+  const stderr =
+    error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      ? `${formatShellCommand(params.executable, params.args)} exceeded output limit of ${params.maxOutputBytes} bytes`
+      : params.stderr || errorMessage(error);
+  return {exitCode, stderr, stdout: params.stdout};
 }
 
 function defaultCommandTimeoutMs(): number {
