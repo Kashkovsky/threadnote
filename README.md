@@ -7,8 +7,8 @@
 [![npm version](https://img.shields.io/npm/v/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![license](https://img.shields.io/npm/l/threadnote.svg)](./LICENSE) ![node version](https://img.shields.io/node/v/threadnote.svg)
 
 `threadnote` is a safe local workflow for using [OpenViking](https://openviking.ai/) as shared, agent-neutral context for development work.
-It is intentionally scoped to curated docs, memories, skills, and handoffs. It is not a source-navigation replacement,
-and it does not index whole repositories by default.
+It is intentionally scoped to curated docs, memories, skills, and handoffs.
+
 
 **Walkthrough:** https://kashkovsky.github.io/threadnote/  
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
