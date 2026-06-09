@@ -393,6 +393,17 @@ describe('exactRecallScopeIntents', () => {
     expect([...exactRecallScopeIntents('incident outage postmortem on-call')]).toEqual(['incidents']);
   });
 
+  it('accumulates multiple intents', () => {
+    expect([...exactRecallScopeIntents('writing style preference for the latest handoff status')].sort()).toEqual([
+      'handoffs',
+      'preferences',
+    ]);
+  });
+
+  it('does not classify incidental dev vocabulary as durable intent', () => {
+    expect(exactRecallScopeIntents('refactor the auth design and interface').size).toBe(0);
+  });
+
   it('returns an empty set when intent is unclear', () => {
     expect(exactRecallScopeIntents('threadnote release notes commit').size).toBe(0);
   });
@@ -404,13 +415,13 @@ describe('exactMemoryScopeUris', () => {
     userBase: 'viking://user/denys/memories',
   };
 
-  it('returns only the preferences scope for a preferences intent', () => {
+  it('searches preferences and shared for a preferences intent', () => {
     expect(exactMemoryScopeUris({...base, includeArchived: false, intents: new Set(['preferences'] as const)})).toEqual(
-      ['viking://user/denys/memories/preferences'],
+      ['viking://user/denys/memories/preferences', 'viking://user/denys/memories/shared'],
     );
   });
 
-  it('narrows project-specific scopes to the resolved project, leaving preferences global', () => {
+  it('narrows project-specific scopes to the resolved project, leaving preferences and shared global', () => {
     expect(
       exactMemoryScopeUris({
         ...base,
@@ -423,6 +434,15 @@ describe('exactMemoryScopeUris', () => {
       'viking://user/denys/memories/preferences',
       'viking://user/denys/memories/durable/projects/threadnote',
       'viking://user/denys/memories/handoffs/active/threadnote',
+      'viking://user/denys/memories/shared',
+    ]);
+  });
+
+  it('appends archived scopes for the present intents when includeArchived is set', () => {
+    expect(exactMemoryScopeUris({...base, includeArchived: true, intents: new Set(['durable'] as const)})).toEqual([
+      'viking://user/denys/memories/durable/projects',
+      'viking://user/denys/memories/shared',
+      'viking://user/denys/memories/durable/archived',
     ]);
   });
 
@@ -454,6 +474,12 @@ describe('grepUrisFromJson', () => {
     expect(grepUrisFromJson(output)).toEqual(['viking://a.md', 'viking://b.md']);
   });
 
+  it('drops .overview/.abstract summary sidecars', () => {
+    const output =
+      '{"ok":true,"result":{"matches":[{"line":1,"uri":"viking://a/.overview.md","content":"x"},{"line":2,"uri":"viking://a/real.md","content":"y"},{"line":3,"uri":"viking://a/.abstract.md","content":"z"}]}}';
+    expect(grepUrisFromJson(output)).toEqual(['viking://a/real.md']);
+  });
+
   it('returns [] on malformed output', () => {
     expect(grepUrisFromJson('cmd: ov grep\nnot json')).toEqual([]);
     expect(grepUrisFromJson('')).toEqual([]);
@@ -479,6 +505,15 @@ describe('collectExactMatches + formatExactMatchPointers', () => {
     const text = formatExactMatchPointers(matches);
     expect(text).toContain('Exact term matches (read the URI for full content):');
     expect(text).toContain('- viking://prefs.md (style, tone)');
+  });
+
+  it('does not double-count a term when the same URI matches it in two scopes', async () => {
+    const runGrep = async (term: string, scope: string): Promise<string> => {
+      const uris = scope === 'viking://a' ? ['viking://dup.md'] : scope === 'viking://b' ? ['viking://dup.md'] : [];
+      return JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}});
+    };
+    const matches = await collectExactMatches(['term'], ['viking://a', 'viking://b'], runGrep);
+    expect(matches).toEqual([{uri: 'viking://dup.md', terms: ['term']}]);
   });
 
   it('caps the pointer list and notes the overflow', () => {

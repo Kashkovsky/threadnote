@@ -195,6 +195,7 @@ export interface RecallOptions {
   readonly nodeLimit?: string;
   readonly project?: string;
   readonly query: string;
+  readonly threshold?: string;
   readonly uri?: string;
 }
 

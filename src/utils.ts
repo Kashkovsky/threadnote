@@ -760,22 +760,25 @@ export function grepOutputHasMatches(output: string): boolean {
 }
 
 /**
- * Minimum `ov search` relevance score for recall. Drops the low-signal tail so
- * recall returns fewer, higher-quality candidates. Passed to `ov search
- * --threshold`. Tuned against observed scores: strong hits sit ~0.70+, noise
- * trails below ~0.6.
+ * Minimum `ov search` relevance score for recall. A conservative floor that
+ * drops only the clearly-irrelevant tail while keeping mid-relevance hits;
+ * passed to `ov search --threshold`. Observed strong hits sit ~0.70+, so 0.5
+ * trims noise without risking useful results on lower-scoring queries.
+ * Overridable per-call (recall `--threshold` / the `threshold` MCP arg) and
+ * globally via THREADNOTE_RECALL_THRESHOLD, matching the THREADNOTE_* env
+ * convention used for command timeout/output caps.
  */
-export const RECALL_SCORE_THRESHOLD = '0.6';
+export const RECALL_SCORE_THRESHOLD = process.env.THREADNOTE_RECALL_THRESHOLD?.trim() || '0.5';
 
 export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
 
+// Patterns favour specific, intentful phrasing over common dev vocabulary so an
+// incidental "design"/"interface" mention does not narrow the grep to durable
+// only. The semantic pass stays unscoped, so a missed intent never hides a hit.
 const EXACT_SCOPE_INTENT_PATTERNS: ReadonlyArray<readonly [ExactScopeIntent, RegExp]> = [
   ['preferences', /\b(preferences?|prefer|styles?|tone|voice|writing|persona|communication)\b/i],
   ['handoffs', /\b(handoffs?|status|next step|in progress|wip|current work|where .* left)\b/i],
-  [
-    'durable',
-    /\b(durable|feature knowledge|design|decisions?|invariants?|contract|architecture|interface|gotchas?)\b/i,
-  ],
+  ['durable', /\b(durable|feature knowledge|design decisions?|invariants?|api contract|gotchas?)\b/i],
   ['incidents', /\b(incidents?|outage|post-?mortem|on-?call|escalation)\b/i],
 ];
 
@@ -797,12 +800,23 @@ export function exactRecallScopeIntents(query: string): ReadonlySet<ExactScopeIn
 }
 
 /**
- * Extract the matched resource URIs from `ov grep --output json` stdout. The
- * CLI prints a `cmd: ...` banner before the JSON, so parse from the first `{`.
- * Returns [] on any shape mismatch — exact matches are best-effort.
+ * A `.overview.md` (Level 1) or `.abstract.md` (Level 0) summary sidecar. With
+ * OpenViking summary auto-generation off (Threadnote's default) these are
+ * permanent "[Directory ... not ready]" placeholders, so they are noise in
+ * recall and must never surface as results or pointers.
+ */
+export function isSummarySidecarUri(uri: string): boolean {
+  return /\.(?:overview|abstract)\.md(?:#|$)/.test(uri);
+}
+
+/**
+ * Extract the matched resource URIs from `ov grep --output json` stdout, minus
+ * summary sidecars. The CLI prints a `cmd: ...` banner before the JSON, so
+ * parse from the first line that starts with `{` (robust to braces in the
+ * banner). Returns [] on any shape mismatch — exact matches are best-effort.
  */
 export function grepUrisFromJson(output: string): readonly string[] {
-  const start = output.indexOf('{');
+  const start = output.search(/^\{/m);
   if (start < 0) {
     return [];
   }
@@ -815,7 +829,7 @@ export function grepUrisFromJson(output: string): readonly string[] {
     }
     const uris: string[] = [];
     for (const match of matches) {
-      if (isJsonObject(match) && typeof match.uri === 'string') {
+      if (isJsonObject(match) && typeof match.uri === 'string' && !isSummarySidecarUri(match.uri)) {
         uris.push(match.uri);
       }
     }
@@ -863,6 +877,9 @@ export function exactMemoryScopeUris(params: {
     if (intents.has('incidents')) {
       scopes.push(incidents);
     }
+    // Shared team memories are cross-cutting (durable knowledge published by
+    // teammates), so always include them alongside the intent-specific scopes.
+    scopes.push(`${userBase}/shared`);
     if (includeArchived) {
       if (intents.has('durable')) {
         scopes.push(`${userBase}/durable/archived`);
@@ -902,22 +919,24 @@ export async function collectExactMatches(
   scopes: readonly string[],
   runGrep: (term: string, scope: string) => Promise<string | undefined>,
 ): Promise<readonly ExactMatch[]> {
+  // Run all term×scope greps concurrently, then fold the results in a fixed
+  // order so dedup ranking stays deterministic regardless of completion order.
+  const pairs = terms.flatMap(term => scopes.map(scope => ({scope, term})));
+  const outputs = await Promise.all(pairs.map(pair => runGrep(pair.term, pair.scope)));
   const byUri = new Map<string, {order: number; terms: Set<string>}>();
   let order = 0;
-  for (const term of terms) {
-    for (const scope of scopes) {
-      const json = await runGrep(term, scope);
-      if (!json) {
-        continue;
-      }
-      for (const raw of grepUrisFromJson(json)) {
-        const uri = raw.replace(/#chunk_\d+$/, '');
-        const existing = byUri.get(uri);
-        if (existing) {
-          existing.terms.add(term);
-        } else {
-          byUri.set(uri, {order: order++, terms: new Set([term])});
-        }
+  for (const [index, pair] of pairs.entries()) {
+    const json = outputs[index];
+    if (!json) {
+      continue;
+    }
+    for (const raw of grepUrisFromJson(json)) {
+      const uri = raw.replace(/#.*$/, '');
+      const existing = byUri.get(uri);
+      if (existing) {
+        existing.terms.add(pair.term);
+      } else {
+        byUri.set(uri, {order: order++, terms: new Set([pair.term])});
       }
     }
   }

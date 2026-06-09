@@ -310,7 +310,7 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
-  const args = ['search', query, '--threshold', RECALL_SCORE_THRESHOLD];
+  const args = ['search', query, '--threshold', options.threshold ?? RECALL_SCORE_THRESHOLD, '--level', '2'];
   if (inferredUri) {
     args.push('--uri', inferredUri);
     console.log(`Recall scope: ${inferredUri}`);
@@ -368,7 +368,16 @@ async function augmentRecallWithSeededResources(
   if (!projectResourceUri.startsWith('viking://') || projectResourceUri === inferredUri) {
     return undefined;
   }
-  const args = ['search', options.query, '--threshold', RECALL_SCORE_THRESHOLD, '--uri', projectResourceUri];
+  const args = [
+    'search',
+    options.query,
+    '--threshold',
+    options.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
+    '--uri',
+    projectResourceUri,
+  ];
   if (options.nodeLimit) {
     args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
   }
@@ -387,12 +396,33 @@ async function runRecallSearch(
   if (options.dryRun) {
     return undefined;
   }
-  const result = await runCommand(ov, fullArgs);
+  let result = await runCommand(ov, fullArgs, {allowFailure: true});
+  if (result.exitCode !== 0) {
+    // Older ov builds may not support --threshold/--level; retry without them
+    // rather than failing the whole recall.
+    result = await runCommand(ov, withIdentity(config, stripAdvancedSearchFlags(args)), {allowFailure: true});
+  }
+  if (result.exitCode !== 0) {
+    console.log(`WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`);
+    return undefined;
+  }
   const output = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
   if (output) {
     console.log(output);
   }
   return output || undefined;
+}
+
+function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
+  const stripped: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '--threshold' || args[index] === '--level') {
+      index += 1;
+      continue;
+    }
+    stripped.push(args[index]);
+  }
+  return stripped;
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {

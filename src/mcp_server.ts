@@ -160,7 +160,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     server,
     config,
     'recall_context',
-    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
+    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Results are filtered by a default relevance threshold (0.5); if a recall comes back empty or too sparse, retry with a lower threshold (e.g. {"query":"...","threshold":0.2}) to broaden. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
   );
   registerSearchTool(
     server,
@@ -730,9 +730,17 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           .describe('Optional absolute caller workspace path used to resolve this/current branch queries'),
         nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
         includeArchived: z.boolean().optional().describe('Include archived memories in exact memory/resource matches'),
+        threshold: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
+          ),
       },
     },
-    async ({callerCwd, includeArchived, nodeLimit, query, uri}) => {
+    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -747,6 +755,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
         pinnedUri: checkedUri.value,
         nodeLimit,
         includeArchived: includeArchived === true,
+        threshold: threshold === undefined ? undefined : String(threshold),
       });
     },
   );
@@ -758,6 +767,7 @@ interface RecallToolParams {
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
   readonly query: string;
+  readonly threshold: string | undefined;
 }
 
 async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
@@ -788,14 +798,26 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   }
   const contextualParams: RecallToolParams = {...params, query};
   const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
-  const semanticResult = await runOpenVikingTool(config, [
+  const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
+  const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
+  // --level 2 keeps real Level-2 content and drops the L0/L1 ".overview"/
+  // ".abstract" summary sidecars (permanent "[not ready]" placeholders when
+  // auto-generation is off), which are noise in recall.
+  let semanticResult = await runOpenVikingTool(config, [
     'search',
     query,
     '--threshold',
-    RECALL_SCORE_THRESHOLD,
-    ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
+    params.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
+    ...pinnedArgs,
+    ...limitArgs,
   ]);
+  if (semanticResult.isError === true) {
+    // Older ov builds may not support --threshold/--level; degrade to a plain
+    // search so one unsupported flag does not abort the entire recall.
+    semanticResult = await runOpenVikingTool(config, ['search', query, ...pinnedArgs, ...limitArgs]);
+  }
   if (semanticResult.isError === true) {
     return semanticResult;
   }
@@ -875,7 +897,9 @@ async function seededResourcesSection(
     'search',
     params.query,
     '--threshold',
-    RECALL_SCORE_THRESHOLD,
+    params.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
     '--uri',
     projectResourceUri,
     ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
