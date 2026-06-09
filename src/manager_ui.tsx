@@ -166,6 +166,7 @@ function App(): React.ReactElement {
   const [toast, setToast] = useState('');
   const [output, setOutput] = useState('');
   const [recallQuery, setRecallQuery] = useState('');
+  const [recallProject, setRecallProject] = useState('');
   const [readUri, setReadUri] = useState('');
   const [compactProject, setCompactProject] = useState('');
   const [compactTopic, setCompactTopic] = useState('');
@@ -1139,10 +1140,18 @@ function App(): React.ReactElement {
                     onChange={event => setRecallQuery(event.target.value)}
                     placeholder="Search memories and seeded resources"
                   />
+                  <input
+                    value={recallProject}
+                    onChange={event => setRecallProject(event.target.value)}
+                    placeholder="project scope (blank = all)"
+                  />
                   <button
                     onClick={() =>
                       void runAction('Recall complete', () =>
-                        api('/api/recall', {query: recallQuery}).then(result => result as {output: string}),
+                        api('/api/recall', {
+                          query: recallQuery,
+                          ...(recallProject.trim() ? {project: recallProject.trim()} : {}),
+                        }).then(result => result as {output: string}),
                       )
                     }
                   >

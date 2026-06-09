@@ -12,6 +12,7 @@ import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
+import type {ProjectManifest} from './types.js';
 import {
   activePersonalMemoryUrisFromText,
   type ArchiveAction,
@@ -39,14 +40,18 @@ import {
   writeMemoryFile,
 } from './share.js';
 import {
+  collectExactMatches,
   errorMessage,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
+  exactMemoryScopeUris,
+  exactRecallScopeIntents,
   exactRecallTerms,
   expandPath,
   findExecutable,
-  grepOutputHasMatches,
+  formatExactMatchPointers,
   parsePort,
+  RECALL_SCORE_THRESHOLD,
   runCommand,
   safeTimestamp,
   sha256,
@@ -782,9 +787,12 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
   const contextualParams: RecallToolParams = {...params, query};
+  const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
   const semanticResult = await runOpenVikingTool(config, [
     'search',
     query,
+    '--threshold',
+    RECALL_SCORE_THRESHOLD,
     ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
     ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
   ]);
@@ -804,13 +812,13 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
   }
-  const seededSection = await seededResourcesSection(config, contextualParams, projectQuery);
+  const seededSection = await seededResourcesSection(config, contextualParams, project);
   if (seededSection) {
     sections.push(seededSection);
   }
-  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived);
+  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived, project);
   if (exactMatches) {
-    sections.push(`Exact memory/resource matches:\n${exactMatches}`);
+    sections.push(exactMatches);
   }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {
@@ -853,13 +861,9 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
 async function seededResourcesSection(
   config: RuntimeConfig,
   params: RecallToolParams,
-  projectQuery: string,
+  project: ProjectManifest | undefined,
 ): Promise<string | undefined> {
-  if (params.pinnedUri) {
-    return undefined;
-  }
-  const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
-  if (!project) {
+  if (params.pinnedUri || !project) {
     return undefined;
   }
   const projectResourceUri = trimTrailingSlash(project.uri);
@@ -870,6 +874,8 @@ async function seededResourcesSection(
   const args = [
     'search',
     params.query,
+    '--threshold',
+    RECALL_SCORE_THRESHOLD,
     '--uri',
     projectResourceUri,
     ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
@@ -889,26 +895,23 @@ async function exactMemoryMatchesText(
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
+  project: ProjectManifest | undefined,
 ): Promise<string | undefined> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return undefined;
   }
   const ov = await requiredOpenVikingCli();
-  const scopes = exactMemoryScopes(config, includeArchived);
-  const outputs: string[] = [];
-  for (const term of terms) {
-    for (const scope of scopes) {
-      const result = await runCommand(ov, withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']), {
-        allowFailure: true,
-      });
-      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
-        outputs.push(output);
-      }
-    }
-  }
-  return outputs.length > 0 ? outputs.join('\n\n') : undefined;
+  const scopes = exactMemoryScopes(config, includeArchived, query, project);
+  const matches = await collectExactMatches(terms, scopes, async (term, scope) => {
+    const result = await runCommand(
+      ov,
+      withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']),
+      {allowFailure: true},
+    );
+    return result.exitCode === 0 ? result.stdout : undefined;
+  });
+  return formatExactMatchPointers(matches);
 }
 
 function registerReadTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
@@ -1533,23 +1536,20 @@ function vikingDirectoryChain(directoryUri: string): readonly string[] {
   return chain;
 }
 
-function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
-  const userBase = `viking://user/${uriSegment(config.user)}/memories`;
-  const scopes = [
-    `${userBase}/preferences`,
-    `${userBase}/durable/projects`,
-    `${userBase}/handoffs/active`,
-    `${userBase}/incidents/active`,
-    `${userBase}/shared`,
-    `viking://agent/${uriSegment(config.agentId)}/memories`,
-    // Seeded project resources live outside the user/memories tree. Include
-    // them so exact-term grep surfaces matches in seeded READMEs, AGENTS.md,
-    // SKILL.md, and docs/** alongside personal memory hits.
-    'viking://resources/repos',
-  ];
-  return includeArchived
-    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
-    : scopes;
+function exactMemoryScopes(
+  config: RuntimeConfig,
+  includeArchived: boolean,
+  query: string,
+  project: ProjectManifest | undefined,
+): readonly string[] {
+  return exactMemoryScopeUris({
+    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    includeArchived,
+    intents: exactRecallScopeIntents(query),
+    projectName: project ? uriSegment(project.name) : undefined,
+    projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
+    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+  });
 }
 
 function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {

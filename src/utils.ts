@@ -759,6 +759,185 @@ export function grepOutputHasMatches(output: string): boolean {
   );
 }
 
+/**
+ * Minimum `ov search` relevance score for recall. Drops the low-signal tail so
+ * recall returns fewer, higher-quality candidates. Passed to `ov search
+ * --threshold`. Tuned against observed scores: strong hits sit ~0.70+, noise
+ * trails below ~0.6.
+ */
+export const RECALL_SCORE_THRESHOLD = '0.6';
+
+export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
+
+const EXACT_SCOPE_INTENT_PATTERNS: ReadonlyArray<readonly [ExactScopeIntent, RegExp]> = [
+  ['preferences', /\b(preferences?|prefer|styles?|tone|voice|writing|persona|communication)\b/i],
+  ['handoffs', /\b(handoffs?|status|next step|in progress|wip|current work|where .* left)\b/i],
+  [
+    'durable',
+    /\b(durable|feature knowledge|design|decisions?|invariants?|contract|architecture|interface|gotchas?)\b/i,
+  ],
+  ['incidents', /\b(incidents?|outage|post-?mortem|on-?call|escalation)\b/i],
+];
+
+/**
+ * Infer which personal-memory scopes a recall query is actually about, so the
+ * exact-term grep targets e.g. `preferences` for a "writing style" query
+ * instead of every scope. Empty set means "intent unclear" — the caller should
+ * fall back to a broad search. The semantic pass stays unscoped regardless, so
+ * a wrong guess here only narrows the exact-match pointers, not retrieval.
+ */
+export function exactRecallScopeIntents(query: string): ReadonlySet<ExactScopeIntent> {
+  const intents = new Set<ExactScopeIntent>();
+  for (const [intent, pattern] of EXACT_SCOPE_INTENT_PATTERNS) {
+    if (pattern.test(query)) {
+      intents.add(intent);
+    }
+  }
+  return intents;
+}
+
+/**
+ * Extract the matched resource URIs from `ov grep --output json` stdout. The
+ * CLI prints a `cmd: ...` banner before the JSON, so parse from the first `{`.
+ * Returns [] on any shape mismatch — exact matches are best-effort.
+ */
+export function grepUrisFromJson(output: string): readonly string[] {
+  const start = output.indexOf('{');
+  if (start < 0) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(output.slice(start));
+    const result = isJsonObject(parsed) ? parsed.result : undefined;
+    const matches = isJsonObject(result) ? result.matches : undefined;
+    if (!Array.isArray(matches)) {
+      return [];
+    }
+    const uris: string[] = [];
+    for (const match of matches) {
+      if (isJsonObject(match) && typeof match.uri === 'string') {
+        uris.push(match.uri);
+      }
+    }
+    return uris;
+  } catch (_err: unknown) {
+    return [];
+  }
+}
+
+export interface ExactMatch {
+  readonly terms: readonly string[];
+  readonly uri: string;
+}
+
+/**
+ * Build the exact-term grep scopes for a recall. Intent (from
+ * `exactRecallScopeIntents`) selects which scope types to search; a resolved
+ * project narrows the project-specific scopes (durable, handoffs, incidents,
+ * seeded resources) to that project, while preferences and shared stay global.
+ * Empty intent falls back to the broad personal + shared + seeded set.
+ */
+export function exactMemoryScopeUris(params: {
+  readonly agentMemoriesUri: string;
+  readonly includeArchived: boolean;
+  readonly intents: ReadonlySet<ExactScopeIntent>;
+  readonly projectName?: string;
+  readonly projectResourceUri?: string;
+  readonly userBase: string;
+}): readonly string[] {
+  const {agentMemoriesUri, includeArchived, intents, projectName, projectResourceUri, userBase} = params;
+  const durable = projectName ? `${userBase}/durable/projects/${projectName}` : `${userBase}/durable/projects`;
+  const handoffs = projectName ? `${userBase}/handoffs/active/${projectName}` : `${userBase}/handoffs/active`;
+  const incidents = projectName ? `${userBase}/incidents/active/${projectName}` : `${userBase}/incidents/active`;
+  if (intents.size > 0) {
+    const scopes: string[] = [];
+    if (intents.has('preferences')) {
+      scopes.push(`${userBase}/preferences`);
+    }
+    if (intents.has('durable')) {
+      scopes.push(durable);
+    }
+    if (intents.has('handoffs')) {
+      scopes.push(handoffs);
+    }
+    if (intents.has('incidents')) {
+      scopes.push(incidents);
+    }
+    if (includeArchived) {
+      if (intents.has('durable')) {
+        scopes.push(`${userBase}/durable/archived`);
+      }
+      if (intents.has('handoffs')) {
+        scopes.push(`${userBase}/handoffs/archived`);
+      }
+      if (intents.has('incidents')) {
+        scopes.push(`${userBase}/incidents/archived`);
+      }
+    }
+    return scopes;
+  }
+  const scopes = [
+    `${userBase}/preferences`,
+    durable,
+    handoffs,
+    incidents,
+    `${userBase}/shared`,
+    agentMemoriesUri,
+    projectResourceUri ?? 'viking://resources/repos',
+  ];
+  return includeArchived
+    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
+    : scopes;
+}
+
+/**
+ * Run exact-term greps over scopes and collapse them to a deduped, ranked
+ * pointer list: one entry per matched URI (chunk anchors stripped), tagged with
+ * the terms that hit it, ranked by distinct-term count then first-seen. Keeps
+ * recall an index of pointers rather than a dump of matching lines. `runGrep`
+ * returns `ov grep --output json` stdout (or undefined on failure).
+ */
+export async function collectExactMatches(
+  terms: readonly string[],
+  scopes: readonly string[],
+  runGrep: (term: string, scope: string) => Promise<string | undefined>,
+): Promise<readonly ExactMatch[]> {
+  const byUri = new Map<string, {order: number; terms: Set<string>}>();
+  let order = 0;
+  for (const term of terms) {
+    for (const scope of scopes) {
+      const json = await runGrep(term, scope);
+      if (!json) {
+        continue;
+      }
+      for (const raw of grepUrisFromJson(json)) {
+        const uri = raw.replace(/#chunk_\d+$/, '');
+        const existing = byUri.get(uri);
+        if (existing) {
+          existing.terms.add(term);
+        } else {
+          byUri.set(uri, {order: order++, terms: new Set([term])});
+        }
+      }
+    }
+  }
+  return [...byUri.entries()]
+    .sort((left, right) => right[1].terms.size - left[1].terms.size || left[1].order - right[1].order)
+    .map(([uri, value]) => ({terms: [...value.terms], uri}));
+}
+
+export function formatExactMatchPointers(matches: readonly ExactMatch[], maxUris = 8): string | undefined {
+  if (matches.length === 0) {
+    return undefined;
+  }
+  const shown = matches.slice(0, maxUris);
+  const lines = shown.map(match => `- ${match.uri} (${match.terms.join(', ')})`);
+  if (matches.length > maxUris) {
+    lines.push(`(+${matches.length - maxUris} more exact matches — refine the query to narrow)`);
+  }
+  return ['Exact term matches (read the URI for full content):', ...lines].join('\n');
+}
+
 function exactRecallTermScore(term: string): number {
   let score = term.length;
   if (/[A-Z]/.test(term)) {
