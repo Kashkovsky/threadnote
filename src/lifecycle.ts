@@ -11,6 +11,7 @@ import {
   OPENVIKING_MCP_NAME,
   OPENVIKING_PACKAGE_NAME,
   OPENVIKING_SERVER_COMMAND,
+  OPENVIKING_TOOL_PYTHON,
   PYTHON_SYSTEM_CERTS_MODULE,
   PYTHON_SYSTEM_CERTS_PACKAGE,
   SHIM_MARKER,
@@ -169,6 +170,19 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
     serverInstallRan = true;
   }
   const resolvedServerPath = serverInstallRan ? await findOpenVikingServer() : serverPath;
+  if (serverInstallRan && !resolvedServerPath && !dryRun) {
+    // The install command reported success but the binary is unresolvable.
+    // Fail loudly for `install`; for `repair` (requireServerBinary === false)
+    // warn and continue so config/manifest/MCP/hook repairs still run.
+    const message =
+      `OpenViking install ran but ${OPENVIKING_SERVER_COMMAND} was not found on PATH, in the uv tool bin dir, or ~/.local/bin. ` +
+      'Re-run `threadnote install --force` (it streams the full build), then `threadnote doctor`.';
+    if (options.requireServerBinary === false) {
+      console.warn(`WARN ${message}`);
+    } else {
+      throw new Error(message);
+    }
+  }
   if (resolvedServerPath && !dryRun) {
     await maybePrintOpenVikingPathHint(resolvedServerPath);
   }
@@ -213,6 +227,7 @@ export async function runRepair(config: RuntimeConfig, options: RepairOptions): 
     packageManager: options.packageManager,
     printNextSteps: false,
     repairInvalidConfigs: true,
+    requireServerBinary: false,
     start: false,
   });
   await repairManifest(config, dryRun);
@@ -628,7 +643,12 @@ async function openVikingServerCheck(): Promise<DoctorCheck> {
   const name = OPENVIKING_SERVER_COMMAND;
   const executable = await findOpenVikingServer();
   if (!executable) {
-    return {name, status: 'fail', detail: 'missing; install will fetch it via uv or pipx'};
+    return {
+      name,
+      status: 'fail',
+      detail:
+        'missing; run `threadnote install` to fetch it via uv or pipx (local-embed may compile from source on first install)',
+    };
   }
   const result = await runCommand(executable, ['--help'], {allowFailure: true});
   const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
@@ -904,7 +924,43 @@ async function runInstallCommands(
   }
   const installCommands = await getInstallCommands(config, manager, force);
   for (const installCommand of installCommands) {
-    await maybeRun(dryRun, installCommand.executable, installCommand.args);
+    if (dryRun) {
+      await maybeRun(true, installCommand.executable, installCommand.args);
+      continue;
+    }
+    // Stream live instead of buffering through runCommand. openviking[local-embed]
+    // can compile llama-cpp-python from source (10-20 min, memory-heavy); buffering
+    // hides all progress and the 10-minute command timeout would SIGKILL a
+    // legitimate build. Because uv/pipx --force removes the existing tool env
+    // first, a killed reinstall leaves openviking-server missing — so we also
+    // print recovery guidance before failing.
+    console.log(`Running: ${formatShellCommand(installCommand.executable, installCommand.args)}`);
+    const exitCode = await runInteractive(installCommand.executable, installCommand.args);
+    if (exitCode !== 0) {
+      printOpenVikingInstallFailureHelp(installCommand);
+      throw new Error(`${formatShellCommand(installCommand.executable, installCommand.args)} exited with ${exitCode}.`);
+    }
+  }
+}
+
+function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand): void {
+  console.error('');
+  console.error('OpenViking install did not complete.');
+  console.error(
+    'openviking[local-embed] includes llama-cpp-python, which compiles from source when no prebuilt wheel matches your Python/platform — that build can run 10-20 minutes and is memory-heavy, so it may be killed by the OS (out of memory) or look stuck.',
+  );
+  console.error('Re-run it directly to see full output without any wrapper timeout:');
+  console.error(`  ${formatShellCommand(failedCommand.executable, failedCommand.args)}`);
+  console.error('Cap memory use during the compile with: CMAKE_BUILD_PARALLEL_LEVEL=2 <command above>');
+  if (failedCommand.executable === 'uv') {
+    if (failedCommand.args.includes('--python')) {
+      console.error(
+        'If uv could not fetch a managed CPython (offline or restricted network), drop the version pin and retry: THREADNOTE_OPENVIKING_PYTHON= threadnote install --force',
+      );
+    }
+    console.error('If it was killed mid-build, clear the partial install first, then retry:');
+    console.error('  uv cache clean');
+    console.error('  rm -rf "$(uv tool dir)/openviking"');
   }
 }
 
@@ -998,16 +1054,55 @@ async function getPythonSystemCertificatesInstallCommand(serverPath: string): Pr
   return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
 }
 
-async function getInstallCommands(
+/**
+ * Prebuilt llama-cpp-python wheel index for openviking[local-embed]. PyPI ships
+ * only an sdist, so without this every install compiles the native extension
+ * from source. The abetlen community index publishes per-backend wheels; we pick
+ * a sensible CPU/Metal default by platform. CUDA/ROCm users (or anyone needing
+ * to disable it, e.g. air-gapped) can override via THREADNOTE_LLAMA_WHEEL_INDEX;
+ * setting it empty turns the extra index off and restores a from-source build.
+ */
+export function localEmbedWheelIndexUrl(): string | undefined {
+  const override = process.env.THREADNOTE_LLAMA_WHEEL_INDEX;
+  if (override !== undefined) {
+    return override.trim() === '' ? undefined : override.trim();
+  }
+  const base = 'https://abetlen.github.io/llama-cpp-python/whl';
+  return platform() === 'darwin' ? `${base}/metal` : `${base}/cpu`;
+}
+
+/**
+ * CPython version the uv-managed OpenViking tool is pinned to, so local-embed
+ * resolves a prebuilt llama-cpp-python wheel instead of compiling. Defaults to
+ * the pinned {@link OPENVIKING_TOOL_PYTHON}. Override via THREADNOTE_OPENVIKING_PYTHON
+ * (e.g. a specific interpreter); set it empty to drop the pin and let uv use its
+ * default interpreter — useful in locked or offline environments where a managed
+ * CPython cannot be fetched.
+ */
+export function openVikingToolPython(): string | undefined {
+  const override = process.env.THREADNOTE_OPENVIKING_PYTHON;
+  if (override !== undefined) {
+    return override.trim() === '' ? undefined : override.trim();
+  }
+  return OPENVIKING_TOOL_PYTHON;
+}
+
+export async function getInstallCommands(
   config: RuntimeConfig,
   preferred: PackageManager | undefined,
   force: boolean,
 ): Promise<readonly MappedCommand[]> {
   const packageSpec = `${OPENVIKING_PACKAGE_NAME}==${config.openVikingVersion}`;
+  const wheelIndex = localEmbedWheelIndexUrl();
   const manager = preferred ?? (await detectPackageManager());
   if (manager === 'pipx') {
+    const installArgs = force ? ['install', '--force'] : ['install'];
+    if (wheelIndex) {
+      installArgs.push('--pip-args', `--extra-index-url ${wheelIndex}`);
+    }
+    installArgs.push(packageSpec);
     return [
-      {executable: 'pipx', args: force ? ['install', '--force', packageSpec] : ['install', packageSpec]},
+      {executable: 'pipx', args: installArgs},
       {
         executable: 'pipx',
         args: force
@@ -1017,7 +1112,19 @@ async function getInstallCommands(
     ];
   }
   if (manager === 'uv') {
-    const uvArgs = ['tool', 'install', '--native-tls', '--with', PYTHON_SYSTEM_CERTS_PACKAGE];
+    // --python pins the tool to a wheel-supported interpreter (uv fetches a
+    // managed CPython when none is present), so local-embed resolves a prebuilt
+    // wheel instead of compiling. --extra-index-url points at that wheel index.
+    const toolPython = openVikingToolPython();
+    const uvArgs = [
+      'tool',
+      'install',
+      '--native-tls',
+      ...(toolPython ? ['--python', toolPython] : []),
+      '--with',
+      PYTHON_SYSTEM_CERTS_PACKAGE,
+      ...(wheelIndex ? ['--extra-index-url', wheelIndex] : []),
+    ];
     return [
       {
         executable: 'uv',
@@ -1028,6 +1135,9 @@ async function getInstallCommands(
   const pipArgs = ['-m', 'pip', 'install', '--user'];
   if (force) {
     pipArgs.push('--upgrade', '--force-reinstall');
+  }
+  if (wheelIndex) {
+    pipArgs.push('--extra-index-url', wheelIndex);
   }
   pipArgs.push(PYTHON_SYSTEM_CERTS_PACKAGE);
   pipArgs.push(packageSpec);
