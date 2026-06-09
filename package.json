@@ -4,7 +4,7 @@
   "type": "commonjs",
   "main": "dist/threadnote.cjs",
   "description": "Shared local context and handoffs for development agents",
-  "license": "GPL-3.0-or-later",
+  "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/Kashkovsky/threadnote#readme",
   "bugs": {
     "url": "https://github.com/Kashkovsky/threadnote/issues"
