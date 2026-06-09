@@ -124,6 +124,10 @@ Threadnote uses its bundled stdio MCP adapter by default, even when the installe
 `/mcp`. The adapter adds Threadnote-specific tools and behavior such as shared-memory sync, exact recall fallback,
 seeded-resource recall augmentation, and recall-index repair.
 
+The adapter also exposes raw OpenViking parity tools with `ov_*` names for native behaviors such as code symbol
+navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and forget. Prefer
+Threadnote-named tools for memory workflows; use `ov_*` when you intentionally want native OpenViking behavior.
+
 Use the default stdio adapter:
 
 ```bash

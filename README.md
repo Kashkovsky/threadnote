@@ -30,6 +30,10 @@ Ask the agent to recall the feature, branch, or repo. Threadnote returns auditab
 Install the MCP adapter for each agent you use. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
 from chat history.
 
+The adapter keeps Threadnote workflow tools (`recall_context`, `remember_context`, `share_publish`, and related aliases)
+as the default surface, and also exposes raw OpenViking parity tools with `ov_*` names for native behaviors such as
+code symbol navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and forget.
+
 **Working through a long task until the agent context window fills up?**  
 After compaction, the next agent turn can recall the relevant Threadnote memories and handoffs instead of relying only on the compressed conversation summary.
 
