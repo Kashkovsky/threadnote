@@ -782,11 +782,12 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
   const contextualParams: RecallToolParams = {...params, query};
-  const semanticResult = await runOpenVikingMcpTool(config, 'search', {
-    limit: params.nodeLimit,
+  const semanticResult = await runOpenVikingTool(config, [
+    'search',
     query,
-    target_uri: params.pinnedUri,
-  });
+    ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
+    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
+  ]);
   if (semanticResult.isError === true) {
     return semanticResult;
   }
@@ -865,15 +866,19 @@ async function seededResourcesSection(
   if (!projectResourceUri.startsWith('viking://')) {
     return undefined;
   }
-  const result = await runOpenVikingMcpTool(config, 'search', {
-    limit: params.nodeLimit,
-    query: params.query,
-    target_uri: projectResourceUri,
-  });
-  if (result.isError === true) {
+  const ov = await requiredOpenVikingCli();
+  const args = [
+    'search',
+    params.query,
+    '--uri',
+    projectResourceUri,
+    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
+  ];
+  const result = await runCommand(ov, withIdentity(config, args), {allowFailure: true});
+  if (result.exitCode !== 0) {
     return undefined;
   }
-  const body = filterStaleRecallSummaryRows(textFromCallToolResult(result));
+  const body = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
   if (!body) {
     return undefined;
   }
@@ -889,13 +894,16 @@ async function exactMemoryMatchesText(
   if (terms.length === 0) {
     return undefined;
   }
+  const ov = await requiredOpenVikingCli();
   const scopes = exactMemoryScopes(config, includeArchived);
   const outputs: string[] = [];
   for (const term of terms) {
     for (const scope of scopes) {
-      const result = await runOpenVikingMcpTool(config, 'grep', {node_limit: 5, pattern: term, uri: scope});
-      const output = textFromCallToolResult(result);
-      if (result.isError !== true && grepOutputHasMatches(output)) {
+      const result = await runCommand(ov, withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']), {
+        allowFailure: true,
+      });
+      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
         outputs.push(output);
       }
     }
@@ -1745,6 +1753,24 @@ async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Pro
   try {
     const ov = await requiredOpenVikingCli();
     const result = await runCommand(ov, withIdentity(config, ['read', uri]));
+    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+    return {content: [{type: 'text', text: text || 'OK'}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+/**
+ * Run an `ov` CLI subcommand and wrap its output as a CallToolResult. Used by
+ * the enriched recall path (`recall_context`) so semantic search returns the
+ * compact ranked list (URI + score + short snippet) instead of the native
+ * `/mcp` search, which returns full Level-2 bodies and bloats recall ~15x.
+ * Goes through `runCommand` (no-shell `execFile`), so it stays injection-safe.
+ */
+async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const result = await runCommand(ov, withIdentity(config, args));
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
     return {content: [{type: 'text', text: text || 'OK'}]};
   } catch (err: unknown) {
