@@ -267,6 +267,128 @@ describe('recall index auto repair', () => {
     expect(failures).toEqual(['viking://user/denys/memories/durable/projects/threadnote']);
   });
 
+  it('treats not-ready summaries as fresh when OV summary auto-generation is disabled', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await writeFile(
+      join(config.agentContextHome, 'ov.conf'),
+      JSON.stringify({auto_generate_l0: false, auto_generate_l1: false}),
+    );
+    const summaryDir = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    await mkdir(summaryDir, {recursive: true});
+    await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
+
+    const targets = await findStaleRecallIndexTargets(config, {query: 'threadnote latest handoff'});
+    const result = await repairStaleRecallIndex(config, '/ov', {query: 'threadnote latest handoff'});
+
+    expect(targets).toEqual([]);
+    expect(result.repairedUris).toEqual([]);
+    expect(vi.mocked(utils.runCommand)).not.toHaveBeenCalled();
+  });
+
+  it('stops maintenance repair after the consecutive failure limit is reached', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    for (const project of ['alpha', 'beta', 'gamma', 'delta']) {
+      const summaryDir = join(
+        config.agentContextHome,
+        'data',
+        'viking',
+        'local',
+        'user',
+        'denys',
+        'memories',
+        'durable',
+        'projects',
+        project,
+      );
+      await mkdir(summaryDir, {recursive: true});
+      await writeFile(join(summaryDir, '.overview.md'), `# ${project}\n\n[Directory overview is not ready]`);
+    }
+    vi.mocked(utils.runCommand).mockResolvedValue({
+      exitCode: 1,
+      stderr: 'CONFLICT: Failed to acquire tree lock',
+      stdout: '',
+    });
+
+    const result = await repairStaleRecallIndex(config, '/ov', {consecutiveFailureLimit: 2, ignoreBackoff: true});
+
+    expect(vi.mocked(utils.runCommand)).toHaveBeenCalledTimes(2);
+    expect(result.repairedUris).toEqual([]);
+    expect(result.warnings.some(warning => warning.includes('Stopped recall index repair after 2'))).toBe(true);
+  });
+
+  it('still scans when only one summary auto-generation flag is disabled', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await writeFile(
+      join(config.agentContextHome, 'ov.conf'),
+      JSON.stringify({auto_generate_l0: false, auto_generate_l1: true}),
+    );
+    const summaryDir = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    await mkdir(summaryDir, {recursive: true});
+    await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
+
+    const targets = await findStaleRecallIndexTargets(config, {query: 'threadnote latest handoff'});
+
+    expect(targets.map(target => target.uri)).toEqual(['viking://user/denys/memories/durable/projects/threadnote']);
+  });
+
+  it('resets the consecutive failure counter on success and does not warn when the last target fails', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    for (const project of ['alpha', 'beta', 'gamma', 'delta']) {
+      const summaryDir = join(
+        config.agentContextHome,
+        'data',
+        'viking',
+        'local',
+        'user',
+        'denys',
+        'memories',
+        'durable',
+        'projects',
+        project,
+      );
+      await mkdir(summaryDir, {recursive: true});
+      await writeFile(join(summaryDir, '.overview.md'), `# ${project}\n\n[Directory overview is not ready]`);
+    }
+    const conflict = {exitCode: 1, stderr: 'CONFLICT: Failed to acquire tree lock', stdout: ''};
+    vi.mocked(utils.runCommand)
+      .mockResolvedValueOnce(conflict)
+      .mockResolvedValueOnce(ok('reindexed'))
+      .mockResolvedValueOnce(conflict)
+      .mockResolvedValueOnce(conflict);
+
+    const result = await repairStaleRecallIndex(config, '/ov', {consecutiveFailureLimit: 2, ignoreBackoff: true});
+
+    expect(vi.mocked(utils.runCommand)).toHaveBeenCalledTimes(4);
+    expect(result.repairedUris).toHaveLength(1);
+    expect(result.warnings.some(warning => warning.includes('Stopped recall index repair'))).toBe(false);
+  });
+
   it('does not write repair state in dry-run mode', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

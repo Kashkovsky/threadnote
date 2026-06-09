@@ -326,6 +326,12 @@ export async function resolveRepoName(cwd = getInvocationCwd()): Promise<string 
 export async function runInteractive(executable: string, args: readonly string[]): Promise<number> {
   return new Promise(resolvePromise => {
     const child = spawn(executable, args, {stdio: 'inherit'});
+    // `error` fires instead of `close` when the binary cannot be spawned
+    // (e.g. ENOENT). Resolve non-zero so callers surface a failure rather than
+    // hanging forever waiting for a `close` that never comes.
+    child.on('error', () => {
+      resolvePromise(1);
+    });
     child.on('close', code => {
       resolvePromise(code ?? 1);
     });

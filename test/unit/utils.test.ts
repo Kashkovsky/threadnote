@@ -17,6 +17,7 @@ import {
   recallQueryRequestsWorkspaceContext,
   redactText,
   runCommand,
+  runInteractive,
   shellQuote,
   suggestedShellRc,
   uniqueUsefulWorkspaceTerms,
@@ -150,6 +151,17 @@ describe('runCommand guardrails', () => {
     const result = await runCommand(process.execPath, ['-e', script], {allowFailure: true, timeoutMs: 20});
     expect(result.exitCode).toBe(124);
     expect(result.stderr).toContain('timed out after 20ms');
+  });
+});
+
+describe('runInteractive', () => {
+  it('returns the child exit code', async () => {
+    expect(await runInteractive(process.execPath, ['-e', 'process.exit(0)'])).toBe(0);
+    expect(await runInteractive(process.execPath, ['-e', 'process.exit(3)'])).toBe(3);
+  });
+
+  it('resolves non-zero instead of hanging when the binary cannot be spawned', async () => {
+    expect(await runInteractive('threadnote-nonexistent-binary-xyz', ['--version'])).toBe(1);
   });
 });
 

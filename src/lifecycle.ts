@@ -26,8 +26,10 @@ import {
   findStaleRecallIndexTargets,
   formatRecallIndexRepairMessages,
   MAINTENANCE_COLLAPSE_DEPTH,
+  MAINTENANCE_CONSECUTIVE_FAILURE_LIMIT,
   MAINTENANCE_MAX_REPAIR_TARGETS,
   repairStaleRecallIndex,
+  summaryAutoGenerationDisabled,
 } from './index_repair.js';
 import {readSeedManifest} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
@@ -347,15 +349,12 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
     const result = await repairStaleRecallIndex(config, ov, {
       collapseDepth: MAINTENANCE_COLLAPSE_DEPTH,
       collapseToRoots: true,
+      consecutiveFailureLimit: MAINTENANCE_CONSECUTIVE_FAILURE_LIMIT,
       dryRun,
       ignoreBackoff: true,
       includeAgentSkills: true,
       includeManifestResources: true,
       maxTargets: MAINTENANCE_MAX_REPAIR_TARGETS,
-      onRepairFailure: async () => {
-        progress.update('A recall index reindex failed; checking OpenViking health before continuing.');
-        await repairServerHealth(config, dryRun);
-      },
       onProgress: event => {
         if (event.type === 'scan-complete') {
           if (event.totalTargets === 0) {
@@ -808,6 +807,15 @@ async function manifestCheck(path: string): Promise<DoctorCheck> {
 
 async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorCheck> {
   try {
+    if (await summaryAutoGenerationDisabled(config)) {
+      return {
+        name: 'recall index freshness',
+        status: 'ok',
+        detail:
+          'OpenViking L0/L1 summary auto-generation disabled in ov.conf; ' +
+          'directory summary placeholders are expected and not reindexed',
+      };
+    }
     const targets = await findStaleRecallIndexTargets(config, {
       collapseToRoots: true,
       includeAgentSkills: true,
