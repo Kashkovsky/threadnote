@@ -5,6 +5,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   filterStaleRecallSummaryRows,
   findStaleRecallIndexTargets,
+  formatRecallIndexRepairMessages,
   repairStaleRecallIndex,
 } from '../../src/index_repair.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
@@ -201,6 +202,71 @@ describe('recall index auto repair', () => {
     ]);
   });
 
+  it('can collapse maintenance repairs to bounded child scopes instead of broad roots', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await writeFile(
+      config.manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: coda',
+        '    path: ~/src/coda',
+        '    uri: viking://resources/repos/coda',
+        '    seed: []',
+        '',
+      ].join('\n'),
+    );
+    const specsDir = join(config.agentContextHome, 'data', 'viking', 'local', 'resources', 'repos', 'coda', 'docs');
+    const skillsDir = join(config.agentContextHome, 'data', 'viking', 'local', 'resources', 'repos', 'coda', '.claude');
+    await mkdir(specsDir, {recursive: true});
+    await mkdir(skillsDir, {recursive: true});
+    await writeFile(join(specsDir, '.abstract.md'), '[Directory abstract is not ready]');
+    await writeFile(join(skillsDir, '.overview.md'), '[Directory overview is not ready]');
+
+    const targets = await findStaleRecallIndexTargets(config, {
+      collapseDepth: 1,
+      collapseToRoots: true,
+      includeManifestResources: true,
+    });
+
+    expect(targets.map(target => target.uri).sort()).toEqual([
+      'viking://resources/repos/coda/.claude',
+      'viking://resources/repos/coda/docs',
+    ]);
+  });
+
+  it('reports reindex failures to callers so repair can recover server health', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const summaryDir = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    await mkdir(summaryDir, {recursive: true});
+    await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
+    vi.mocked(utils.runCommand).mockResolvedValueOnce({exitCode: 1, stderr: 'INTERNAL', stdout: ''});
+    const failures: string[] = [];
+
+    const result = await repairStaleRecallIndex(config, '/ov', {
+      onRepairFailure: target => {
+        failures.push(target.uri);
+      },
+      query: 'threadnote latest handoff',
+    });
+
+    expect(result.warnings[0]).toContain('INTERNAL');
+    expect(failures).toEqual(['viking://user/denys/memories/durable/projects/threadnote']);
+  });
+
   it('does not write repair state in dry-run mode', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -225,9 +291,56 @@ describe('recall index auto repair', () => {
     expect(vi.mocked(utils.runCommand)).not.toHaveBeenCalled();
     await expect(readFile(join(config.agentContextHome, 'index-auto-repair.json'), 'utf8')).rejects.toThrow();
   });
+
+  it('reports scan and reindex progress for long maintenance repairs', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const summaryDir = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    await mkdir(summaryDir, {recursive: true});
+    await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
+    const progressTypes: string[] = [];
+
+    await repairStaleRecallIndex(config, '/ov', {
+      collapseToRoots: true,
+      onProgress: progress => {
+        progressTypes.push(progress.type);
+      },
+      query: 'threadnote latest handoff',
+    });
+
+    expect(progressTypes).toEqual(['scan-start', 'scan-complete', 'repair-start']);
+  });
 });
 
 describe('recall stale summary filtering', () => {
+  it('can cap long repair summaries', () => {
+    const messages = formatRecallIndexRepairMessages(
+      {
+        repairedUris: ['viking://one', 'viking://two', 'viking://three'],
+        skippedRecentUris: [],
+        warnings: [],
+      },
+      {dryRun: true, maxUris: 2},
+    );
+
+    expect(messages).toEqual([
+      'Would auto-reindex stale recall scope: viking://one',
+      'Would auto-reindex stale recall scope: viking://two',
+      'Would auto-reindex 1 more stale recall scope(s).',
+    ]);
+  });
+
   it('removes stale generated summary rows without dropping useful rows', () => {
     const output = [
       'context_type  uri  level  score  abstract  type',

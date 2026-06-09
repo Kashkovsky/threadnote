@@ -9,7 +9,8 @@ const AUTO_REPAIR_STATE_FILE = 'index-auto-repair.json';
 const AUTO_REPAIR_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_SCAN_DEPTH = 5;
 const MAX_REPAIR_TARGETS = 4;
-export const MAINTENANCE_MAX_REPAIR_TARGETS = 16;
+export const MAINTENANCE_COLLAPSE_DEPTH = 3;
+export const MAINTENANCE_MAX_REPAIR_TARGETS = 512;
 
 interface RecallIndexRepairConfig {
   readonly account: string;
@@ -41,20 +42,52 @@ export interface RecallIndexRepairResult {
   readonly warnings: readonly string[];
 }
 
+export type RecallIndexRepairProgress =
+  | {readonly type: 'scan-start'}
+  | {readonly repairTargetCount: number; readonly totalTargets: number; readonly type: 'scan-complete'}
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-start';
+    }
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-skip-recent';
+    }
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-dry-run';
+    };
+
 export async function repairStaleRecallIndex(
   config: RecallIndexRepairConfig,
   ov: string,
   options: {
     readonly collapseToRoots?: boolean;
+    readonly collapseDepth?: number;
     readonly dryRun?: boolean;
     readonly ignoreBackoff?: boolean;
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly maxTargets?: number;
+    readonly onRepairFailure?: (target: StaleIndexTarget, result: CommandResult) => Promise<void> | void;
+    readonly onProgress?: (progress: RecallIndexRepairProgress) => void;
     readonly query?: string;
   } = {},
 ): Promise<RecallIndexRepairResult> {
+  options.onProgress?.({type: 'scan-start'});
   const targets = await findStaleRecallIndexTargets(config, options);
+  const repairTargets = targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS);
+  options.onProgress?.({
+    repairTargetCount: repairTargets.length,
+    totalTargets: targets.length,
+    type: 'scan-complete',
+  });
   if (targets.length === 0) {
     return {repairedUris: [], skippedRecentUris: [], warnings: []};
   }
@@ -65,7 +98,8 @@ export async function repairStaleRecallIndex(
   const skippedRecentUris: string[] = [];
   const warnings: string[] = [];
 
-  for (const target of targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS)) {
+  for (const [targetIndex, target] of repairTargets.entries()) {
+    const progressBase = {index: targetIndex + 1, target, total: repairTargets.length};
     const previous = state.entries[target.uri];
     if (
       previous?.signature === target.signature &&
@@ -73,15 +107,18 @@ export async function repairStaleRecallIndex(
       options.dryRun !== true &&
       options.ignoreBackoff !== true
     ) {
+      options.onProgress?.({...progressBase, type: 'repair-skip-recent'});
       skippedRecentUris.push(target.uri);
       continue;
     }
 
     if (options.dryRun === true) {
+      options.onProgress?.({...progressBase, type: 'repair-dry-run'});
       repairedUris.push(target.uri);
       continue;
     }
 
+    options.onProgress?.({...progressBase, type: 'repair-start'});
     const result = await runCommand(
       ov,
       withIdentity(config, ['reindex', target.uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),
@@ -92,6 +129,7 @@ export async function repairStaleRecallIndex(
       state.entries[target.uri] = {repairedAt: new Date(now).toISOString(), signature: target.signature};
     } else {
       warnings.push(indexRepairWarning(target.uri, result));
+      await options.onRepairFailure?.(target, result);
     }
   }
 
@@ -106,6 +144,7 @@ export async function findStaleRecallIndexTargets(
   config: RecallIndexRepairConfig,
   options: {
     readonly collapseToRoots?: boolean;
+    readonly collapseDepth?: number;
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly query?: string;
@@ -119,15 +158,13 @@ export async function findStaleRecallIndexTargets(
     }
     const sidecars = await staleSidecars(root.path, root.uri);
     if (options.collapseToRoots === true) {
-      if (sidecars.length === 0) {
-        continue;
+      for (const sidecar of sidecars) {
+        const uri = collapseStaleSidecarUri(root.uri, sidecar.relativePath, options.collapseDepth);
+        const current = byUri.get(uri) ?? {parts: [], staleCount: 0, uri};
+        current.parts.push(`${sidecar.relativePath}\n${sidecar.content}`);
+        current.staleCount += 1;
+        byUri.set(uri, current);
       }
-      const parts = sidecars.map(sidecar => `${sidecar.relativePath}\n${sidecar.content}`);
-      byUri.set(root.uri, {
-        parts,
-        staleCount: sidecars.length,
-        uri: root.uri,
-      });
       continue;
     }
     for (const sidecar of sidecars) {
@@ -144,14 +181,33 @@ export async function findStaleRecallIndexTargets(
   }));
 }
 
+function collapseStaleSidecarUri(rootUri: string, relativePath: string, depth = 0): string {
+  const normalizedRootUri = trimLocalRootUri(rootUri);
+  if (depth <= 0) {
+    return normalizedRootUri;
+  }
+  const parentParts = relativePath.split('/').slice(0, -1);
+  const collapsedParts = parentParts.slice(0, depth);
+  return collapsedParts.length === 0 ? normalizedRootUri : `${normalizedRootUri}/${collapsedParts.join('/')}`;
+}
+
 export function formatRecallIndexRepairMessages(
   result: RecallIndexRepairResult,
-  options: {readonly dryRun?: boolean} = {},
+  options: {readonly dryRun?: boolean; readonly maxUris?: number} = {},
 ): readonly string[] {
   const messages: string[] = [];
-  for (const uri of result.repairedUris) {
+  const maxUris = options.maxUris ?? result.repairedUris.length;
+  for (const uri of result.repairedUris.slice(0, maxUris)) {
     messages.push(
       `${options.dryRun === true ? 'Would auto-reindex stale recall scope' : 'Auto-reindexed stale recall scope'}: ${uri}`,
+    );
+  }
+  const hiddenUriCount = result.repairedUris.length - maxUris;
+  if (hiddenUriCount > 0) {
+    messages.push(
+      options.dryRun === true
+        ? `Would auto-reindex ${hiddenUriCount} more stale recall scope(s).`
+        : `Auto-reindexed ${hiddenUriCount} more stale recall scope(s).`,
     );
   }
   for (const warning of result.warnings) {

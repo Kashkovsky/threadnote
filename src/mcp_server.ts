@@ -1,13 +1,15 @@
 #! /usr/bin/env node
 
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {access, readdir, readFile, realpath} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
-import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID} from './constants.js';
+import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
 import {
@@ -24,7 +26,6 @@ import {
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   publishShareGitChange,
-  removeMemoryUri,
   resolveTeam,
   applyScrubber,
   sharedMemoryUriParts,
@@ -45,6 +46,7 @@ import {
   expandPath,
   findExecutable,
   grepOutputHasMatches,
+  parsePort,
   runCommand,
   safeTimestamp,
   sha256,
@@ -57,6 +59,7 @@ interface RuntimeConfig {
   readonly agentContextHome: string;
   readonly agentId: string;
   readonly manifestPath: string;
+  readonly openVikingMcpUrl: string;
   readonly user: string;
 }
 
@@ -94,6 +97,16 @@ type CheckedOptionalText =
       readonly ok: false;
     };
 
+type CheckedTextArray =
+  | {
+      readonly ok: true;
+      readonly value: readonly string[];
+    }
+  | {
+      readonly error: CallToolResult;
+      readonly ok: false;
+    };
+
 async function main(): Promise<void> {
   const config = getRuntimeConfig();
   const server = new McpServer(
@@ -125,11 +138,14 @@ async function main(): Promise<void> {
 }
 
 function getRuntimeConfig(): RuntimeConfig {
+  const host = process.env.THREADNOTE_HOST ?? DEFAULT_HOST;
+  const port = parsePort(process.env.THREADNOTE_PORT ?? String(DEFAULT_PORT));
   return {
     account: process.env.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
     agentContextHome: expandPath(process.env.THREADNOTE_HOME ?? '~/.openviking'),
     agentId: process.env.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
     manifestPath: expandPath(process.env.THREADNOTE_MANIFEST ?? '~/.openviking/seed-manifest.yaml'),
+    openVikingMcpUrl: process.env.THREADNOTE_OPENVIKING_MCP_URL ?? `http://${host}:${port}/mcp`,
     user: process.env.THREADNOTE_USER ?? process.env.USER ?? 'unknown',
   };
 }
@@ -183,31 +199,16 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: 'Remove a viking:// URI from OpenViking.',
       inputSchema: {
+        recursive: z.boolean().optional().describe('Remove a directory recursively'),
         uri: z.string().optional().describe('Required viking:// URI to remove'),
       },
     },
-    async ({uri}) => {
+    async ({recursive, uri}) => {
       const checkedUri = requiredVikingUri(uri, 'forget', 'viking://agent/threadnote/memories/example.md');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      try {
-        const ov = await requiredOpenVikingCli();
-        const removed = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: removed
-                ? `Removed: ${checkedUri.value}`
-                : `Resource is still being processed; retry later: ${checkedUri.value}`,
-            },
-          ],
-          isError: !removed,
-        };
-      } catch (err: unknown) {
-        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-      }
+      return runOpenVikingRemoveTool(config, checkedUri.value, recursive === true);
     },
   );
 
@@ -217,31 +218,27 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description: 'Add a local file or directory to OpenViking as a resource.',
       inputSchema: {
+        description: z.string().optional().describe('Optional import reason/description'),
+        path: z.string().optional().describe('Local source file/directory or URL; native OpenViking MCP name'),
         sourcePath: z.string().optional().describe('Required local source file or directory'),
-        to: z.string().optional().describe('Required destination viking:// URI'),
+        source_path: z.string().optional().describe('Compatibility alias for path'),
+        tempFileId: z.string().optional().describe('Native progressive upload temp file id'),
+        temp_file_id: z.string().optional().describe('Native progressive upload temp file id'),
+        to: z.string().optional().describe('Optional destination viking:// URI'),
         wait: z.boolean().optional().describe('Wait for processing to finish'),
+        watchInterval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
+        watch_interval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
       },
     },
-    async ({sourcePath, to, wait}) => {
-      const checkedSourcePath = requiredText(sourcePath, 'add_resource', 'sourcePath', {
-        sourcePath: '/path/to/README.md',
-        to: 'viking://resource/my-repo/README.md',
-      });
-      if (!checkedSourcePath.ok) {
-        return checkedSourcePath.error;
-      }
-      const checkedTo = requiredVikingUri(to, 'add_resource', 'viking://resource/my-repo/README.md');
-      if (!checkedTo.ok) {
-        return checkedTo.error;
-      }
-      return runOpenVikingTool(config, [
-        'add-resource',
-        checkedSourcePath.value,
-        '--to',
-        checkedTo.value,
-        ...(wait === false ? [] : ['--wait']),
-      ]);
-    },
+    async args =>
+      runOpenVikingAddResourceTool(config, 'add_resource', {
+        description: args.description,
+        path: args.sourcePath ?? args.path ?? args.source_path,
+        tempFileId: args.tempFileId ?? args.temp_file_id,
+        to: args.to,
+        wait: args.wait,
+        watchInterval: args.watchInterval ?? args.watch_interval,
+      }),
   );
 
   server.registerTool(
@@ -250,11 +247,15 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Run exact text search in OpenViking.',
       inputSchema: {
+        caseInsensitive: z.boolean().optional().describe('Case-insensitive search'),
+        case_insensitive: z.boolean().optional().describe('Case-insensitive search'),
+        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
         pattern: z.string().optional().describe('Required text or regex pattern'),
         uri: z.string().optional().describe('Optional viking:// subtree'),
       },
     },
-    async ({pattern, uri}) => {
+    async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
       const checkedPattern = requiredText(pattern, 'grep', 'pattern', {pattern: 'unity-ui-ccc'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -263,11 +264,12 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'grep',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-      ]);
+      return runOpenVikingMcpTool(config, 'grep', {
+        case_insensitive: caseInsensitive ?? case_insensitive,
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -277,11 +279,13 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Run glob file search in OpenViking.',
       inputSchema: {
+        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
         pattern: z.string().optional().describe('Required glob pattern'),
         uri: z.string().optional().describe('Optional viking:// subtree'),
       },
     },
-    async ({pattern, uri}) => {
+    async ({nodeLimit, node_limit, pattern, uri}) => {
       const checkedPattern = requiredText(pattern, 'glob', 'pattern', {pattern: '**/AGENTS.md'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -290,11 +294,11 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'glob',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-      ]);
+      return runOpenVikingMcpTool(config, 'glob', {
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -305,8 +309,10 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       description: 'Check OpenViking server health through the CLI.',
       inputSchema: {},
     },
-    async () => runOpenVikingTool(config, ['health']),
+    async () => runOpenVikingMcpTool(config, 'health', {}),
   );
+
+  registerOpenVikingParityTools(server, config);
 
   server.registerTool(
     'share_publish',
@@ -341,6 +347,365 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         return checkedUri.error;
       }
       return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+    },
+  );
+}
+
+function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig): void {
+  server.registerTool(
+    'ov_search',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP search parity. Unlike search/recall_context, this does not enrich the query.',
+      inputSchema: {
+        limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        minScore: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
+        min_score: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
+        peerId: z.string().optional().describe('Optional native peer id'),
+        peer_id: z.string().optional().describe('Optional native peer id'),
+        query: z.string().optional().describe('Required search query'),
+        sessionId: z.string().optional().describe('Optional native session id'),
+        session_id: z.string().optional().describe('Optional native session id'),
+        targetUri: z.string().optional().describe('Optional target viking:// subtree'),
+        target_uri: z.string().optional().describe('Optional target viking:// subtree'),
+        uri: z.string().optional().describe('Compatibility alias for target_uri'),
+      },
+    },
+    async ({limit, minScore, min_score, query, sessionId, session_id, targetUri, target_uri, uri}) => {
+      const checkedQuery = requiredText(query, 'ov_search', 'query', {query: 'current repo release notes'});
+      if (!checkedQuery.ok) {
+        return checkedQuery.error;
+      }
+      const checkedUri = optionalVikingUri(targetUri ?? target_uri ?? uri, 'ov_search');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      const normalizedSessionId = (sessionId ?? session_id)?.trim();
+      return runOpenVikingMcpTool(config, 'search', {
+        limit,
+        min_score: minScore ?? min_score,
+        query: checkedQuery.value,
+        session_id: normalizedSessionId || undefined,
+        target_uri: checkedUri.value,
+      });
+    },
+  );
+
+  server.registerTool(
+    'ov_read',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        'Raw OpenViking MCP read parity. Reads one or more viking:// URIs without Threadnote shared-memory sync.',
+      inputSchema: {
+        uri: z.string().optional().describe('Single viking:// URI'),
+        uris: z
+          .union([z.string(), z.array(z.string())])
+          .optional()
+          .describe('Single viking:// URI or array of URIs'),
+      },
+    },
+    async ({uri, uris}) => {
+      const checkedUris = requiredVikingUriList(
+        uris ?? uri,
+        'ov_read',
+        'viking://resources/repos/threadnote/README.md',
+      );
+      if (!checkedUris.ok) {
+        return checkedUris.error;
+      }
+      return runOpenVikingReadTool(config, checkedUris.value);
+    },
+  );
+
+  server.registerTool(
+    'ov_list',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP list parity.',
+      inputSchema: {
+        all: z.boolean().optional().describe('Show hidden files like .abstract.md and .overview.md'),
+        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
+        recursive: z.boolean().optional().describe('List recursively'),
+        simple: z.boolean().optional().describe('Only return paths'),
+        uri: z.string().optional().describe('Optional viking:// directory URI; defaults to viking://'),
+      },
+    },
+    async ({recursive, uri}) => {
+      const checkedUri = optionalVikingUri(uri, 'ov_list');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'list', {
+        recursive,
+        uri: checkedUri.value ?? 'viking://',
+      });
+    },
+  );
+
+  registerOpenVikingStoreTool(server, config, 'ov_store');
+  registerOpenVikingStoreTool(server, config, 'ov_remember');
+
+  server.registerTool(
+    'ov_add_resource',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false},
+      description: 'Raw OpenViking MCP add_resource parity.',
+      inputSchema: {
+        description: z.string().optional().describe('Optional import reason/description'),
+        path: z.string().optional().describe('Local source file/directory or URL'),
+        sourcePath: z.string().optional().describe('Compatibility alias for path'),
+        source_path: z.string().optional().describe('Compatibility alias for path'),
+        tempFileId: z.string().optional().describe('Native progressive upload temp file id'),
+        temp_file_id: z.string().optional().describe('Native progressive upload temp file id'),
+        to: z.string().optional().describe('Optional destination viking:// URI'),
+        wait: z.boolean().optional().describe('Wait for processing to finish'),
+        watchInterval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
+        watch_interval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
+      },
+    },
+    async args =>
+      runOpenVikingAddResourceTool(config, 'ov_add_resource', {
+        description: args.description,
+        path: args.path ?? args.sourcePath ?? args.source_path,
+        tempFileId: args.tempFileId ?? args.temp_file_id,
+        to: args.to,
+        wait: args.wait,
+        watchInterval: args.watchInterval ?? args.watch_interval,
+      }),
+  );
+
+  server.registerTool(
+    'ov_list_watches',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP list_watches parity.',
+      inputSchema: {
+        activeOnly: z.boolean().optional().describe('Only show active watch tasks'),
+        active_only: z.boolean().optional().describe('Only show active watch tasks'),
+      },
+    },
+    async ({activeOnly, active_only}) =>
+      runOpenVikingMcpTool(config, 'list_watches', {active_only: activeOnly ?? active_only}),
+  );
+
+  server.registerTool(
+    'ov_cancel_watch',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description: 'Raw OpenViking MCP cancel_watch parity. Accepts to_uri, toUri, or uri.',
+      inputSchema: {
+        toUri: z.string().optional().describe('Watch target viking:// URI'),
+        to_uri: z.string().optional().describe('Watch target viking:// URI'),
+        uri: z.string().optional().describe('Compatibility alias for to_uri'),
+      },
+    },
+    async ({toUri, to_uri, uri}) => {
+      const checkedUri = requiredVikingUri(
+        toUri ?? to_uri ?? uri,
+        'ov_cancel_watch',
+        'viking://resources/repos/threadnote',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'cancel_watch', {to_uri: checkedUri.value});
+    },
+  );
+
+  server.registerTool(
+    'ov_grep',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP grep parity.',
+      inputSchema: {
+        caseInsensitive: z.boolean().optional().describe('Case-insensitive search'),
+        case_insensitive: z.boolean().optional().describe('Case-insensitive search'),
+        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        pattern: z.string().optional().describe('Required regex pattern'),
+        uri: z.string().optional().describe('Optional viking:// subtree'),
+      },
+    },
+    async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
+      const checkedPattern = requiredText(pattern, 'ov_grep', 'pattern', {pattern: 'threadnote'});
+      if (!checkedPattern.ok) {
+        return checkedPattern.error;
+      }
+      const checkedUri = optionalVikingUri(uri, 'ov_grep');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'grep', {
+        case_insensitive: caseInsensitive ?? case_insensitive,
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
+    },
+  );
+
+  server.registerTool(
+    'ov_glob',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP glob parity.',
+      inputSchema: {
+        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
+        pattern: z.string().optional().describe('Required glob pattern'),
+        uri: z.string().optional().describe('Optional viking:// subtree'),
+      },
+    },
+    async ({nodeLimit, node_limit, pattern, uri}) => {
+      const checkedPattern = requiredText(pattern, 'ov_glob', 'pattern', {pattern: '**/AGENTS.md'});
+      if (!checkedPattern.ok) {
+        return checkedPattern.error;
+      }
+      const checkedUri = optionalVikingUri(uri, 'ov_glob');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'glob', {
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
+    },
+  );
+
+  server.registerTool(
+    'ov_forget',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description: 'Raw OpenViking MCP forget parity.',
+      inputSchema: {
+        recursive: z.boolean().optional().describe('Remove a directory recursively'),
+        uri: z.string().optional().describe('Required viking:// URI to remove'),
+      },
+    },
+    async ({recursive, uri}) => {
+      const checkedUri = requiredVikingUri(uri, 'ov_forget', 'viking://resources/repos/threadnote/tmp');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingRemoveTool(config, checkedUri.value, recursive === true);
+    },
+  );
+
+  server.registerTool(
+    'ov_code_outline',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP code_outline parity. Requires a viking:// file URI.',
+      inputSchema: {
+        uri: z.string().optional().describe('Required viking:// file URI'),
+      },
+    },
+    async ({uri}) => {
+      const checkedUri = requiredVikingUri(
+        uri,
+        'ov_code_outline',
+        'viking://resources/repos/threadnote/src/mcp_server.ts',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'code_outline', {uri: checkedUri.value});
+    },
+  );
+
+  server.registerTool(
+    'ov_code_search',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP code_search parity. Requires a query and viking:// directory URI.',
+      inputSchema: {
+        query: z.string().optional().describe('Required symbol-name substring'),
+        uri: z.string().optional().describe('Required viking:// directory URI'),
+      },
+    },
+    async ({query, uri}) => {
+      const checkedQuery = requiredText(query, 'ov_code_search', 'query', {query: 'registerTools'});
+      if (!checkedQuery.ok) {
+        return checkedQuery.error;
+      }
+      const checkedUri = requiredVikingUri(uri, 'ov_code_search', 'viking://resources/repos/threadnote/src');
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runOpenVikingMcpTool(config, 'code_search', {
+        query: checkedQuery.value,
+        uri: checkedUri.value,
+      });
+    },
+  );
+
+  server.registerTool(
+    'ov_code_expand',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP code_expand parity. Requires a viking:// file URI and symbol.',
+      inputSchema: {
+        symbol: z.string().optional().describe('Required symbol name, e.g. bar or Foo.bar'),
+        uri: z.string().optional().describe('Required viking:// file URI'),
+      },
+    },
+    async ({symbol, uri}) => {
+      const checkedUri = requiredVikingUri(
+        uri,
+        'ov_code_expand',
+        'viking://resources/repos/threadnote/src/mcp_server.ts',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      const checkedSymbol = requiredText(symbol, 'ov_code_expand', 'symbol', {symbol: 'registerTools'});
+      if (!checkedSymbol.ok) {
+        return checkedSymbol.error;
+      }
+      return runOpenVikingMcpTool(config, 'code_expand', {symbol: checkedSymbol.value, uri: checkedUri.value});
+    },
+  );
+
+  server.registerTool(
+    'ov_health',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description: 'Raw OpenViking MCP health parity.',
+      inputSchema: {},
+    },
+    async () => runOpenVikingMcpTool(config, 'health', {}),
+  );
+}
+
+function registerOpenVikingStoreTool(server: McpServer, config: RuntimeConfig, name: 'ov_remember' | 'ov_store'): void {
+  server.registerTool(
+    name,
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description: `Raw OpenViking MCP ${name === 'ov_remember' ? 'remember' : 'store'} parity. Stores message(s) through ov add-memory.`,
+      inputSchema: {
+        content: z.string().optional().describe('Compatibility shortcut for a single user message'),
+        messages: z
+          .array(z.object({content: z.string(), role: z.string()}))
+          .optional()
+          .describe('Native messages array of {role, content}'),
+        text: z.string().optional().describe('Compatibility shortcut for a single user message'),
+      },
+    },
+    async ({content, messages, text}) => {
+      if (messages && messages.length > 0) {
+        return runOpenVikingMcpTool(config, 'remember', {messages});
+      }
+      const checkedContent = requiredText(content ?? text, name, 'content', {content: 'Remember this note'});
+      if (!checkedContent.ok) {
+        return checkedContent.error;
+      }
+      return runOpenVikingMcpTool(config, 'remember', {
+        messages: [{content: checkedContent.value, role: 'user'}],
+      });
     },
   );
 }
@@ -417,13 +782,11 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
   const contextualParams: RecallToolParams = {...params, query};
-  const baseArgs = [
-    'search',
+  const semanticResult = await runOpenVikingMcpTool(config, 'search', {
+    limit: params.nodeLimit,
     query,
-    ...(params.pinnedUri ? ['--uri', params.pinnedUri] : []),
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
-  ];
-  const semanticResult = await runOpenVikingTool(config, baseArgs);
+    target_uri: params.pinnedUri,
+  });
   if (semanticResult.isError === true) {
     return semanticResult;
   }
@@ -502,19 +865,15 @@ async function seededResourcesSection(
   if (!projectResourceUri.startsWith('viking://')) {
     return undefined;
   }
-  const ov = await requiredOpenVikingCli();
-  const args = [
-    'search',
-    params.query,
-    '--uri',
-    projectResourceUri,
-    ...(params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : []),
-  ];
-  const result = await runCommand(ov, withIdentity(config, args), {allowFailure: true});
-  if (result.exitCode !== 0) {
+  const result = await runOpenVikingMcpTool(config, 'search', {
+    limit: params.nodeLimit,
+    query: params.query,
+    target_uri: projectResourceUri,
+  });
+  if (result.isError === true) {
     return undefined;
   }
-  const body = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
+  const body = filterStaleRecallSummaryRows(textFromCallToolResult(result));
   if (!body) {
     return undefined;
   }
@@ -530,16 +889,13 @@ async function exactMemoryMatchesText(
   if (terms.length === 0) {
     return undefined;
   }
-  const ov = await requiredOpenVikingCli();
   const scopes = exactMemoryScopes(config, includeArchived);
   const outputs: string[] = [];
   for (const term of terms) {
     for (const scope of scopes) {
-      const result = await runCommand(ov, withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']), {
-        allowFailure: true,
-      });
-      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
+      const result = await runOpenVikingMcpTool(config, 'grep', {node_limit: 5, pattern: term, uri: scope});
+      const output = textFromCallToolResult(result);
+      if (result.isError !== true && grepOutputHasMatches(output)) {
         outputs.push(output);
       }
     }
@@ -552,15 +908,19 @@ function registerReadTool(server: McpServer, config: RuntimeConfig, name: string
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Required: pass JSON arguments with uri.`,
+      description: `${description} Required: pass JSON arguments with uri, or native OpenViking uris.`,
       inputSchema: {
         uri: z.string().optional().describe('Required viking:// file URI'),
+        uris: z
+          .union([z.string(), z.array(z.string())])
+          .optional()
+          .describe('Native OpenViking MCP read input: a single viking:// URI or array of URIs'),
       },
     },
-    async ({uri}) => {
-      const checkedUri = requiredVikingUri(uri, name, 'viking://agent/threadnote/memories/.abstract.md');
-      if (!checkedUri.ok) {
-        return checkedUri.error;
+    async ({uri, uris}) => {
+      const checkedUris = requiredVikingUriList(uris ?? uri, name, 'viking://agent/threadnote/memories/.abstract.md');
+      if (!checkedUris.ok) {
+        return checkedUris.error;
       }
       let syncedTeams: readonly string[] = [];
       const syncWarnings: string[] = [];
@@ -571,7 +931,7 @@ function registerReadTool(server: McpServer, config: RuntimeConfig, name: string
       } catch (err: unknown) {
         syncWarnings.push(errorMessage(err));
       }
-      const result = await runOpenVikingTool(config, ['read', checkedUri.value]);
+      const result = await runOpenVikingReadTool(config, checkedUris.value);
       if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
         return result;
       }
@@ -599,21 +959,18 @@ function registerListTool(server: McpServer, config: RuntimeConfig, name: string
         recursive: z.boolean().optional().describe('List recursively'),
         simple: z.boolean().optional().describe('Only return paths'),
         nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
+        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
       },
     },
-    async ({all, nodeLimit, recursive, simple, uri}) => {
+    async ({recursive, uri}) => {
       const checkedUri = optionalVikingUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'ls',
-        checkedUri.value ?? 'viking://',
-        ...(all === true ? ['--all'] : []),
-        ...(recursive === true ? ['--recursive'] : []),
-        ...(simple === true ? ['--simple'] : []),
-        ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
-      ]);
+      return runOpenVikingMcpTool(config, 'list', {
+        recursive,
+        uri: checkedUri.value ?? 'viking://',
+      });
     },
   );
 }
@@ -690,9 +1047,8 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
         return checkedUri.error;
       }
       try {
-        const ov = await requiredOpenVikingCli();
-        const readResult = await runCommand(ov, withIdentity(config, ['read', checkedUri.value]));
-        const original = readResult.stdout.trim();
+        const readResult = await runOpenVikingReadTool(config, [checkedUri.value]);
+        const original = textFromCallToolResult(readResult);
         if (!original) {
           return {
             content: [{type: 'text', text: `Could not read ${checkedUri.value} before archiving.`}],
@@ -715,7 +1071,7 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = await removeVikingResourceWithRetry(ov, config, checkedUri.value);
+        const removedOriginal = await forgetVikingResourceWithRetry(config, checkedUri.value);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -784,7 +1140,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           appliedMessages.push(`Updated kept memory: ${action.uri}`);
         }
         for (const action of plan.archives) {
-          const archiveResult = await archiveMemoryForCompact(config, ov, action);
+          const archiveResult = await archiveMemoryForCompact(config, action);
           if (archiveResult.isError === true) {
             return archiveResult;
           }
@@ -794,7 +1150,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           }
         }
         for (const action of plan.forgets) {
-          const removed = await removeVikingResourceWithRetry(ov, config, action.uri);
+          const removed = await forgetVikingResourceWithRetry(config, action.uri);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -816,13 +1172,9 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
   );
 }
 
-async function archiveMemoryForCompact(
-  config: RuntimeConfig,
-  ov: string,
-  action: ArchiveAction,
-): Promise<CallToolResult> {
-  const readResult = await runCommand(ov, withIdentity(config, ['read', action.uri]));
-  const original = readResult.stdout.trim();
+async function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction): Promise<CallToolResult> {
+  const readResult = await runOpenVikingReadTool(config, [action.uri]);
+  const original = textFromCallToolResult(readResult);
   if (!original) {
     return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
   }
@@ -841,7 +1193,7 @@ async function archiveMemoryForCompact(
   if (archiveResult.isError === true) {
     return archiveResult;
   }
-  const removedOriginal = await removeVikingResourceWithRetry(ov, config, action.uri);
+  const removedOriginal = await forgetVikingResourceWithRetry(config, action.uri);
   const [content] = archiveResult.content;
   const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
   return {
@@ -1052,8 +1404,13 @@ async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: stri
   return stat.exitCode === 0;
 }
 
-async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
-  const args = withIdentity(config, ['rm', uri]);
+async function removeVikingResourceWithRetry(
+  ov: string,
+  config: RuntimeConfig,
+  uri: string,
+  recursive = false,
+): Promise<boolean> {
+  const args = withIdentity(config, ['rm', uri, ...(recursive ? ['--recursive'] : [])]);
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
@@ -1068,6 +1425,28 @@ async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, 
     await sleep(1000 * (attempt + 1));
   }
   return false;
+}
+
+async function runOpenVikingRemoveTool(
+  config: RuntimeConfig,
+  uri: string,
+  recursive: boolean,
+): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const removed = await removeVikingResourceWithRetry(ov, config, uri, recursive);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: removed ? `Removed: ${uri}` : `Resource is still being processed; retry later: ${uri}`,
+        },
+      ],
+      isError: !removed,
+    };
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
 }
 
 function isResourceBusy(stderr: string, stdout: string): boolean {
@@ -1245,19 +1624,197 @@ function optionalVikingUri(value: string | undefined, toolName: string): Checked
   };
 }
 
+function requiredVikingUriList(
+  value: readonly string[] | string | undefined,
+  toolName: string,
+  exampleUri: string,
+): CheckedTextArray {
+  const rawValues = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const uris = rawValues.map(uri => uri.trim()).filter(Boolean);
+  if (uris.length === 0) {
+    return {
+      error: argumentError(
+        [
+          `Threadnote MCP tool "${toolName}" needs a non-empty "uri" or "uris" argument.`,
+          'Pass JSON arguments to the tool call.',
+          `Example: ${toolName}(${JSON.stringify({uris: [exampleUri]})})`,
+        ].join('\n'),
+      ),
+      ok: false,
+    };
+  }
+  const invalid = uris.find(uri => !uri.startsWith('viking://'));
+  if (invalid) {
+    return {
+      error: argumentError(`Threadnote MCP tool "${toolName}" needs viking:// URI values. Received: ${invalid}`),
+      ok: false,
+    };
+  }
+  return {ok: true, value: uris};
+}
+
 function argumentError(text: string): CallToolResult {
   return {content: [{type: 'text', text}], isError: true};
 }
 
-async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
+interface OpenVikingAddResourceParams {
+  readonly description?: string;
+  readonly path?: string;
+  readonly tempFileId?: string;
+  readonly to?: string;
+  readonly wait?: boolean;
+  readonly watchInterval?: number;
+}
+
+async function runOpenVikingAddResourceTool(
+  config: RuntimeConfig,
+  toolName: string,
+  params: OpenVikingAddResourceParams,
+): Promise<CallToolResult> {
+  const tempFileId = params.tempFileId?.trim();
+  const source = params.path?.trim();
+  if (!source && !tempFileId) {
+    return argumentError(
+      [
+        `Threadnote MCP tool "${toolName}" needs a non-empty "path" argument.`,
+        'Pass JSON arguments to the tool call.',
+        `Example: ${toolName}(${JSON.stringify({path: '/path/to/README.md', to: 'viking://resources/my-repo/README.md'})})`,
+      ].join('\n'),
+    );
+  }
+  if (tempFileId) {
+    const checkedTo = optionalVikingUri(params.to, toolName);
+    if (!checkedTo.ok) {
+      return checkedTo.error;
+    }
+    return runOpenVikingMcpTool(config, 'add_resource', {
+      description: params.description,
+      temp_file_id: tempFileId,
+      to: checkedTo.value,
+      watch_interval: params.watchInterval,
+    });
+  }
+  const checkedTo = optionalVikingUri(params.to, toolName);
+  if (!checkedTo.ok) {
+    return checkedTo.error;
+  }
+  const description = params.description?.trim();
+  return runOpenVikingMcpTool(config, 'add_resource', {
+    description,
+    path: source,
+    to: checkedTo.value,
+    watch_interval: params.watchInterval,
+  });
+}
+
+async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly string[]): Promise<CallToolResult> {
+  const result = await runOpenVikingMcpTool(config, 'read', {uris});
+  if (result.isError !== true && !nativeReadMissedAnyUri(result, uris)) {
+    return result;
+  }
+  return runOpenVikingReadToolWithCliFallback(config, uris);
+}
+
+function nativeReadMissedAnyUri(result: CallToolResult, uris: readonly string[]): boolean {
+  const text = textFromCallToolResult(result);
+  return uris.some(uri => text.includes(`(nothing found at ${uri})`));
+}
+
+async function runOpenVikingReadToolWithCliFallback(
+  config: RuntimeConfig,
+  uris: readonly string[],
+): Promise<CallToolResult> {
+  const outputs: string[] = [];
+  for (const uri of uris) {
+    const nativeResult = await runOpenVikingMcpTool(config, 'read', {uris: [uri]});
+    const nativeText = textFromCallToolResult(nativeResult);
+    let text = nativeText;
+    if (nativeResult.isError === true || nativeText.includes(`(nothing found at ${uri})`)) {
+      const cliResult = await runOpenVikingCliReadTool(config, uri);
+      if (cliResult.isError === true) {
+        return cliResult;
+      }
+      text = textFromCallToolResult(cliResult);
+    }
+    outputs.push(uris.length === 1 ? text : `=== ${uri} ===\n${text}`);
+  }
+  return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n\n') || 'OK'}]};
+}
+
+async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Promise<CallToolResult> {
   try {
     const ov = await requiredOpenVikingCli();
-    const result = await runCommand(ov, withIdentity(config, args));
+    const result = await runCommand(ov, withIdentity(config, ['read', uri]));
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
     return {content: [{type: 'text', text: text || 'OK'}]};
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
+}
+
+async function runOpenVikingMcpTool(
+  config: RuntimeConfig,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const client = new Client({name: 'threadnote-openviking-proxy', version: '1.1.0'});
+  try {
+    const transport = new StreamableHTTPClientTransport(new URL(config.openVikingMcpUrl), {
+      requestInit: {
+        headers: {
+          'X-OpenViking-Account': config.account,
+          'X-OpenViking-Agent': config.agentId,
+          'X-OpenViking-User': config.user,
+        },
+      },
+    });
+    await client.connect(transport);
+    const result = await client.callTool({arguments: stripUndefinedValues(args), name: toolName}, undefined, {
+      timeout: 30_000,
+    });
+    return normalizeCallToolResult(result);
+  } catch (err: unknown) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `OpenViking native MCP tool "${toolName}" failed at ${config.openVikingMcpUrl}: ${errorMessage(err)}`,
+        },
+      ],
+      isError: true,
+    };
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+function stripUndefinedValues(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(values).filter((entry): entry is [string, unknown] => entry[1] !== undefined),
+  );
+}
+
+function normalizeCallToolResult(result: unknown): CallToolResult {
+  const maybeResult = result as Partial<CallToolResult>;
+  if (Array.isArray(maybeResult.content)) {
+    return {
+      content: maybeResult.content,
+      isError: maybeResult.isError,
+    } as CallToolResult;
+  }
+  return {content: [{type: 'text', text: JSON.stringify(result)}]};
+}
+
+function textFromCallToolResult(result: CallToolResult): string {
+  return result.content
+    .map(content => (content.type === 'text' ? content.text : ''))
+    .join('\n')
+    .trim();
+}
+
+async function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string): Promise<boolean> {
+  const ov = await requiredOpenVikingCli();
+  return removeVikingResourceWithRetry(ov, config, uri);
 }
 
 interface SharePublishToolOptions {
@@ -1279,19 +1836,20 @@ async function runSharePublishTool(
     }
     const resolved = await resolveTeam(config, options.team);
     const ov = await requiredOpenVikingCli();
-    const readResult = await runCommand(ov, withIdentity(config, ['read', sourceUri]), {allowFailure: true});
-    if (readResult.exitCode !== 0 || !readResult.stdout.trim()) {
+    const readResult = await runOpenVikingReadTool(config, [sourceUri]);
+    const sourceText = textFromCallToolResult(readResult);
+    if (readResult.isError === true || !sourceText) {
       return {
         content: [
           {
             type: 'text',
-            text: `Could not read ${sourceUri}: ${readResult.stderr.trim() || readResult.stdout.trim() || 'unknown error'}`,
+            text: `Could not read ${sourceUri}: ${sourceText || 'unknown error'}`,
           },
         ],
         isError: true,
       };
     }
-    const stripped = stripPersonalProvenance(readResult.stdout);
+    const stripped = stripPersonalProvenance(sourceText);
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
     const targetUri = sharedUriFor(config, sourceUri, resolved.name);
 
@@ -1337,7 +1895,7 @@ async function runSharePublishTool(
       push: options.push,
     });
     try {
-      await removeMemoryUri(config, ov, sourceUri, false, {quiet: true});
+      await forgetVikingResourceWithRetry(config, sourceUri);
     } catch (sourceErr: unknown) {
       return {
         content: [
