@@ -1709,7 +1709,7 @@ async function runOpenVikingAddResourceTool(
 
 async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly string[]): Promise<CallToolResult> {
   const result = await runOpenVikingMcpTool(config, 'read', {uris});
-  if (result.isError === true || !nativeReadMissedAnyUri(result, uris)) {
+  if (result.isError !== true && !nativeReadMissedAnyUri(result, uris)) {
     return result;
   }
   return runOpenVikingReadToolWithCliFallback(config, uris);

@@ -328,6 +328,17 @@ describe('Threadnote MCP OpenViking parity tools', () => {
     });
   });
 
+  it('falls back to CLI read when native MCP read is unavailable', async () => {
+    await withMcpClient(
+      async client => {
+        expect(await callText(client, 'ov_read', {uri: 'viking://resources/native-unavailable.md'})).toContain(
+          '"read","viking://resources/native-unavailable.md"',
+        );
+      },
+      {nativeMcpUrl: 'not-a-url'},
+    );
+  });
+
   it('returns a tool error when the native MCP URL is invalid', async () => {
     await withMcpClient(
       async client => {
