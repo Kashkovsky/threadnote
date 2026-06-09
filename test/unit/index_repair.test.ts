@@ -225,6 +225,36 @@ describe('recall index auto repair', () => {
     expect(vi.mocked(utils.runCommand)).not.toHaveBeenCalled();
     await expect(readFile(join(config.agentContextHome, 'index-auto-repair.json'), 'utf8')).rejects.toThrow();
   });
+
+  it('reports scan and reindex progress for long maintenance repairs', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const summaryDir = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    await mkdir(summaryDir, {recursive: true});
+    await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
+    const progressTypes: string[] = [];
+
+    await repairStaleRecallIndex(config, '/ov', {
+      collapseToRoots: true,
+      onProgress: progress => {
+        progressTypes.push(progress.type);
+      },
+      query: 'threadnote latest handoff',
+    });
+
+    expect(progressTypes).toEqual(['scan-start', 'scan-complete', 'repair-start']);
+  });
 });
 
 describe('recall stale summary filtering', () => {

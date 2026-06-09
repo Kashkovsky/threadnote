@@ -21,6 +21,7 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
   formatRecallIndexRepairMessages,
@@ -340,6 +341,7 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
     return;
   }
 
+  const progress = startProgress('Scanning recall index freshness across memories and seeded resources.');
   try {
     const result = await repairStaleRecallIndex(config, ov, {
       collapseToRoots: true,
@@ -348,7 +350,29 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
       includeAgentSkills: true,
       includeManifestResources: true,
       maxTargets: MAINTENANCE_MAX_REPAIR_TARGETS,
+      onProgress: event => {
+        if (event.type === 'scan-complete') {
+          if (event.totalTargets === 0) {
+            progress.update('No stale recall index scopes found.');
+          } else {
+            progress.update(
+              `Found ${event.totalTargets} stale recall index scope(s); repairing ${event.repairTargetCount}.`,
+            );
+          }
+        } else if (event.type === 'repair-start') {
+          progress.update(
+            `Reindexing ${event.index}/${event.total}: ${event.target.uri} (${event.target.staleCount} stale summaries).`,
+          );
+        } else if (event.type === 'repair-dry-run') {
+          progress.update(
+            `Planning reindex ${event.index}/${event.total}: ${event.target.uri} (${event.target.staleCount} stale summaries).`,
+          );
+        } else if (event.type === 'repair-skip-recent') {
+          progress.update(`Skipping recently repaired scope ${event.index}/${event.total}: ${event.target.uri}.`);
+        }
+      },
     });
+    progress.stop();
     const messages = formatRecallIndexRepairMessages(result, {dryRun});
     if (messages.length === 0) {
       console.log('Recall index freshness OK.');
@@ -358,6 +382,7 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
       console.log(message);
     }
   } catch (err: unknown) {
+    progress.stop();
     console.log(`WARN could not repair recall index freshness: ${errorMessage(err)}`);
   }
 }

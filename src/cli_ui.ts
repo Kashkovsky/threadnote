@@ -92,3 +92,45 @@ export async function withSpinner<T>(message: string, action: () => Promise<T>):
     cursorTo(stdout, 0);
   }
 }
+
+export interface ProgressIndicator {
+  update(message: string): void;
+  stop(): void;
+}
+
+export function startProgress(message: string): ProgressIndicator {
+  if (stdout.isTTY !== true || process.env.CI !== undefined || process.env.THREADNOTE_NO_SPINNER !== undefined) {
+    console.log(message);
+    return {
+      update(nextMessage: string): void {
+        console.log(nextMessage);
+      },
+      stop(): void {
+        return;
+      },
+    };
+  }
+
+  const frames = ['-', '\\', '|', '/'];
+  let frameIndex = 0;
+  let currentMessage = message;
+  const render = () => {
+    clearLine(stdout, 0);
+    cursorTo(stdout, 0);
+    stdout.write(`${muted(frames[frameIndex])} ${currentMessage}`);
+    frameIndex = (frameIndex + 1) % frames.length;
+  };
+  const timer = setInterval(render, 100);
+  render();
+  return {
+    update(nextMessage: string): void {
+      currentMessage = nextMessage;
+      render();
+    },
+    stop(): void {
+      clearInterval(timer);
+      clearLine(stdout, 0);
+      cursorTo(stdout, 0);
+    },
+  };
+}

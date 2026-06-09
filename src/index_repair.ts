@@ -41,6 +41,28 @@ export interface RecallIndexRepairResult {
   readonly warnings: readonly string[];
 }
 
+export type RecallIndexRepairProgress =
+  | {readonly type: 'scan-start'}
+  | {readonly repairTargetCount: number; readonly totalTargets: number; readonly type: 'scan-complete'}
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-start';
+    }
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-skip-recent';
+    }
+  | {
+      readonly index: number;
+      readonly target: StaleIndexTarget;
+      readonly total: number;
+      readonly type: 'repair-dry-run';
+    };
+
 export async function repairStaleRecallIndex(
   config: RecallIndexRepairConfig,
   ov: string,
@@ -51,10 +73,18 @@ export async function repairStaleRecallIndex(
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly maxTargets?: number;
+    readonly onProgress?: (progress: RecallIndexRepairProgress) => void;
     readonly query?: string;
   } = {},
 ): Promise<RecallIndexRepairResult> {
+  options.onProgress?.({type: 'scan-start'});
   const targets = await findStaleRecallIndexTargets(config, options);
+  const repairTargets = targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS);
+  options.onProgress?.({
+    repairTargetCount: repairTargets.length,
+    totalTargets: targets.length,
+    type: 'scan-complete',
+  });
   if (targets.length === 0) {
     return {repairedUris: [], skippedRecentUris: [], warnings: []};
   }
@@ -65,7 +95,8 @@ export async function repairStaleRecallIndex(
   const skippedRecentUris: string[] = [];
   const warnings: string[] = [];
 
-  for (const target of targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS)) {
+  for (const [targetIndex, target] of repairTargets.entries()) {
+    const progressBase = {index: targetIndex + 1, target, total: repairTargets.length};
     const previous = state.entries[target.uri];
     if (
       previous?.signature === target.signature &&
@@ -73,15 +104,18 @@ export async function repairStaleRecallIndex(
       options.dryRun !== true &&
       options.ignoreBackoff !== true
     ) {
+      options.onProgress?.({...progressBase, type: 'repair-skip-recent'});
       skippedRecentUris.push(target.uri);
       continue;
     }
 
     if (options.dryRun === true) {
+      options.onProgress?.({...progressBase, type: 'repair-dry-run'});
       repairedUris.push(target.uri);
       continue;
     }
 
+    options.onProgress?.({...progressBase, type: 'repair-start'});
     const result = await runCommand(
       ov,
       withIdentity(config, ['reindex', target.uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),

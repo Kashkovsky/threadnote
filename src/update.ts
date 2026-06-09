@@ -14,11 +14,13 @@ import {
   errorMessage,
   findExecutable,
   isExecutable,
+  isTcpPortOpen,
   isJsonObject,
   maybeRun,
   readFileIfExists,
   runCommand,
   runInteractive,
+  sleep,
   toolRoot,
   formatShellCommand,
 } from './utils.js';
@@ -131,7 +133,9 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
   }
 
   const threadnoteCommand = await installedThreadnoteCommand(runtime);
-  await maybeRun(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+  console.log('');
+  console.log('Repairing local Threadnote setup after package update.');
+  await runThreadnoteSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
   if (options.postUpdate !== false) {
     const postUpdateArgs = [
       'post-update',
@@ -141,15 +145,7 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
       info.latestVersion,
       ...(options.yes === true ? ['--yes'] : []),
     ];
-    if (options.dryRun === true) {
-      await maybeRun(true, threadnoteCommand, postUpdateArgs);
-    } else {
-      console.log(`Running: ${formatShellCommand(threadnoteCommand, postUpdateArgs)}`);
-      const postUpdateExitCode = await runInteractive(threadnoteCommand, postUpdateArgs);
-      if (postUpdateExitCode !== 0) {
-        throw new Error(`${formatShellCommand(threadnoteCommand, postUpdateArgs)} exited with ${postUpdateExitCode}.`);
-      }
-    }
+    await runThreadnoteSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
   } else {
     console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
@@ -288,9 +284,11 @@ async function ensurePinnedOpenVikingInstalled(
   if (usingLaunchd) {
     const launchAgentPath = launchAgentPlistPath();
     await runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true});
+    await waitForOpenVikingPortClosed(config, 15_000);
     await runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
   } else {
     await maybeRun(false, threadnoteCommand, ['stop']);
+    await waitForOpenVikingPortClosed(config, 15_000);
     await maybeRun(false, threadnoteCommand, ['start']);
   }
   const healthyAfter = await waitForOpenVikingHealthy(config, 10_000);
@@ -299,6 +297,18 @@ async function ensurePinnedOpenVikingInstalled(
       `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
     );
     console.log('Check the server log or run: threadnote start');
+  }
+}
+
+async function runThreadnoteSubcommand(dryRun: boolean, executable: string, args: readonly string[]): Promise<void> {
+  if (dryRun) {
+    await maybeRun(true, executable, args);
+    return;
+  }
+  console.log(`Running: ${formatShellCommand(executable, args)}`);
+  const exitCode = await runInteractive(executable, args);
+  if (exitCode !== 0) {
+    throw new Error(`${formatShellCommand(executable, args)} exited with ${exitCode}.`);
   }
 }
 
@@ -327,11 +337,27 @@ async function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number
     if (await isOpenVikingHealthy(config)) {
       return true;
     }
-    await new Promise(resolvePromise => {
-      setTimeout(resolvePromise, 500);
-    });
+    await sleep(500);
   }
   return isOpenVikingHealthy(config);
+}
+
+async function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number): Promise<boolean> {
+  console.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await isTcpPortOpen(config.host, config.port, 300))) {
+      return true;
+    }
+    await sleep(300);
+  }
+  if (!(await isTcpPortOpen(config.host, config.port, 300))) {
+    return true;
+  }
+  console.log(
+    `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
+  );
+  return false;
 }
 
 function launchAgentPlistPath(): string {
