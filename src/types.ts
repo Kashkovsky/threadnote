@@ -193,7 +193,9 @@ export interface RecallOptions {
   readonly inferScope?: boolean;
   readonly includeArchived?: boolean;
   readonly nodeLimit?: string;
+  readonly project?: string;
   readonly query: string;
+  readonly threshold?: string;
   readonly uri?: string;
 }
 

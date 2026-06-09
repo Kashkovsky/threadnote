@@ -353,6 +353,8 @@ async function main(): Promise<void> {
     .option('--include-archived', 'Include archived memories in exact memory/resource matches')
     .option('-n, --node-limit <count>', 'Maximum number of search results')
     .option('--no-infer-scope', 'Disable query-based scope inference')
+    .option('--project <name>', 'Prioritize a project: add a scoped pass over its memories alongside the global search')
+    .option('--threshold <score>', 'Minimum relevance score 0-1 (default 0.45); lower to broaden when recall is empty')
     .option('--uri <uri>', 'Restrict search to a viking:// URI')
     .action(async (options: RecallOptions) => {
       await runRecall(getRuntimeConfig(program), options);

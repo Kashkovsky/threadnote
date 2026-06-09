@@ -1,7 +1,7 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
 import {inferProjectFromQuery, uriSegment} from './manifest.js';
-import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
+import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
   buildCompactPlan,
@@ -25,6 +25,7 @@ import type {
   MemoryStatus,
   MigrateMemoriesOptions,
   PackOptions,
+  ProjectManifest,
   ReadOptions,
   RecallOptions,
   RememberOptions,
@@ -35,17 +36,25 @@ import {
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   expandPath,
+  exactMemoryScopeUris,
+  exactRecallScopeIntents,
   exactRecallTerms,
+  collectExactMatches,
+  formatExactMatchPointers,
+  formatRecallHits,
   formatShellCommand,
   getInputText,
   getInvocationCwd,
   gitValue,
-  grepOutputHasMatches,
   isJsonObject,
   maybeRun,
+  mergeRecallHits,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
+  parseRecallHits,
+  type RecallHit,
+  RECALL_SCORE_THRESHOLD,
   resolveRepoName,
   runCommand,
   safeTimestamp,
@@ -302,34 +311,49 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   for (const message of indexRepairMessages) {
     console.log(message);
   }
+  const dryRun = options.dryRun === true;
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
-  const args = ['search', query];
+  const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
+  const nodeLimit = options.nodeLimit ? parsePositiveInteger(options.nodeLimit, 'node limit') : undefined;
+  const searchArgs = (scopeUri: string | undefined): readonly string[] => [
+    'search',
+    query,
+    '--threshold',
+    options.threshold ?? RECALL_SCORE_THRESHOLD,
+    '--level',
+    '2',
+    ...(scopeUri ? ['--uri', scopeUri] : []),
+    ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
+  ];
+
+  // Run the global base pass plus any scoped passes, then merge into one
+  // deduped ranked list so resources/memories the base already surfaced are not
+  // repeated by the scoped passes (and multiple chunks of one document collapse
+  // to a single entry).
   if (inferredUri) {
-    args.push('--uri', inferredUri);
     console.log(`Recall scope: ${inferredUri}`);
   }
-  if (options.nodeLimit) {
-    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
+  const passes: Array<readonly RecallHit[]> = [await recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun})];
+  if (options.project && project) {
+    const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
+    passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun}));
   }
+  const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
+  if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
+    passes.push(await recallSearchHits(config, ov, searchArgs(seededUri), {dryRun}));
+  }
+
   const recallOutputs: string[] = [];
-  const baseOutput = await runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
-  if (baseOutput) {
-    recallOutputs.push(baseOutput);
-  }
-  const seededOutput = await augmentRecallWithSeededResources(
-    config,
-    ov,
-    {...options, query},
-    inferredUri,
-    projectQuery,
-  );
-  if (seededOutput) {
-    recallOutputs.push(seededOutput);
+  const semanticSection = formatRecallHits(mergeRecallHits(passes), nodeLimit ?? 12);
+  if (semanticSection) {
+    console.log(`\n${semanticSection}`);
+    recallOutputs.push(semanticSection);
   }
   const exactOutput = await printExactMemoryMatches(config, ov, query, {
-    dryRun: options.dryRun === true,
+    dryRun,
     includeArchived: options.includeArchived === true,
+    project,
   });
   if (exactOutput) {
     recallOutputs.push(exactOutput);
@@ -338,64 +362,46 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
 }
 
 /**
- * If the query mentions a seeded project, run a second search scoped to that
- * project's resources URI and print results below the base search. The base
- * search is biased toward memory-shaped vocabulary ("handoff", "durable") and
- * with a small node-limit it crowds out seeded README/AGENTS.md/SKILL.md
- * content — running a scoped pass guarantees that seeded guidance surfaces
- * alongside personal memories on every recall.
- *
- * Skips the augmentation when the caller pinned the search to a specific URI
- * (they asked for that scope; honor it) or when the inferred scope already
- * targets the same resources subtree (no need to duplicate).
+ * Run one recall search pass with `--output json` and return parsed hits.
+ * Falls back to a plain search (without --threshold/--level) on a non-zero
+ * exit so an older ov does not fail the whole recall. The merge in `runRecall`
+ * dedupes hits across passes, so scoped passes only contribute what the base
+ * pass missed.
  */
-async function augmentRecallWithSeededResources(
-  config: RuntimeConfig,
-  ov: string,
-  options: RecallOptions,
-  inferredUri: string | undefined,
-  projectQuery = options.query,
-): Promise<string | undefined> {
-  // `--no-infer-scope` (options.inferScope === false) disables the base scope
-  // inference; honoring it here too keeps the flag's meaning consistent —
-  // augmenting with a project-scoped search would silently re-introduce what
-  // the user disabled. A caller-pinned --uri is also explicit intent we honor.
-  if (options.uri || options.inferScope === false) {
-    return undefined;
-  }
-  const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
-  if (!project) {
-    return undefined;
-  }
-  const projectResourceUri = trimTrailingSlash(project.uri);
-  if (!projectResourceUri.startsWith('viking://') || projectResourceUri === inferredUri) {
-    return undefined;
-  }
-  const args = ['search', options.query, '--uri', projectResourceUri];
-  if (options.nodeLimit) {
-    args.push('--node-limit', String(parsePositiveInteger(options.nodeLimit, 'node limit')));
-  }
-  console.log(`\nAlso searching seeded resources: ${projectResourceUri}`);
-  return runRecallSearch(config, ov, args, {dryRun: options.dryRun === true});
-}
-
-async function runRecallSearch(
+async function recallSearchHits(
   config: RuntimeConfig,
   ov: string,
   args: readonly string[],
   options: {readonly dryRun: boolean},
-): Promise<string | undefined> {
-  const fullArgs = withIdentity(config, args);
-  console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, fullArgs)}`);
+): Promise<readonly RecallHit[]> {
+  const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
+  console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, jsonArgs)}`);
   if (options.dryRun) {
-    return undefined;
+    return [];
   }
-  const result = await runCommand(ov, fullArgs);
-  const output = filterStaleRecallSummaryRows([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n'));
-  if (output) {
-    console.log(output);
+  let result = await runCommand(ov, jsonArgs, {allowFailure: true});
+  if (result.exitCode !== 0) {
+    result = await runCommand(ov, withIdentity(config, [...stripAdvancedSearchFlags(args), '--output', 'json']), {
+      allowFailure: true,
+    });
   }
-  return output || undefined;
+  if (result.exitCode !== 0) {
+    console.log(`WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`);
+    return [];
+  }
+  return parseRecallHits(result.stdout);
+}
+
+export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
+  const stripped: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '--threshold' || args[index] === '--level') {
+      index += 1;
+      continue;
+    }
+    stripped.push(args[index]);
+  }
+  return stripped;
 }
 
 export async function runRead(config: RuntimeConfig, uri: string, options: ReadOptions): Promise<void> {
@@ -777,35 +783,31 @@ async function printExactMemoryMatches(
   config: RuntimeConfig,
   ov: string,
   query: string,
-  options: {readonly dryRun: boolean; readonly includeArchived: boolean},
+  options: {readonly dryRun: boolean; readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
 ): Promise<string | undefined> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return undefined;
   }
-  const scopes = exactMemoryScopes(config, options.includeArchived);
-  const outputs: string[] = [];
-  for (const term of terms) {
-    for (const scope of scopes) {
-      const args = withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5']);
-      if (options.dryRun) {
-        outputs.push(formatShellCommand(ov, args));
-        continue;
-      }
-      const result = await runCommand(ov, args, {allowFailure: true});
-      const output = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-      if (result.exitCode === 0 && grepOutputHasMatches(output)) {
-        outputs.push(output);
-      }
-    }
+  const scopes = exactMemoryScopes(config, options.includeArchived, query, options.project);
+  const grepArgs = (term: string, scope: string): readonly string[] =>
+    withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']);
+  if (options.dryRun) {
+    const planned = terms.flatMap(term => scopes.map(scope => formatShellCommand(ov, grepArgs(term, scope))));
+    console.log('\nExact memory/resource matches:');
+    console.log(planned.join('\n'));
+    return planned.join('\n');
   }
-  if (outputs.length === 0) {
+  const matches = await collectExactMatches(terms, scopes, async (term, scope) => {
+    const result = await runCommand(ov, grepArgs(term, scope), {allowFailure: true});
+    return result.exitCode === 0 ? result.stdout : undefined;
+  });
+  const text = formatExactMatchPointers(matches);
+  if (!text) {
     return undefined;
   }
-  console.log('\nExact memory/resource matches:');
-  const output = outputs.join('\n\n');
-  console.log(output);
-  return output;
+  console.log(`\n${text}`);
+  return text;
 }
 
 async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): Promise<void> {
@@ -1045,23 +1047,20 @@ function lifecycleMigrationUri(config: RuntimeConfig, metadata: MemoryMetadata, 
   return `${memoryDirectoryUri(config, metadata)}/legacy-${hash.slice(0, 16)}.md`;
 }
 
-function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
-  const userBase = `viking://user/${uriSegment(config.user)}/memories`;
-  const scopes = [
-    `${userBase}/preferences`,
-    `${userBase}/durable/projects`,
-    `${userBase}/handoffs/active`,
-    `${userBase}/incidents/active`,
-    `${userBase}/shared`,
-    `viking://agent/${uriSegment(config.agentId)}/memories`,
-    // Seeded project resources (READMEs, AGENTS.md, SKILL.md, docs/**) live
-    // under viking://resources/repos/<project>. Include them so an exact-term
-    // grep in a recall surfaces matches in seeded guidance, not only memories.
-    'viking://resources/repos',
-  ];
-  return includeArchived
-    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
-    : scopes;
+function exactMemoryScopes(
+  config: RuntimeConfig,
+  includeArchived: boolean,
+  query: string,
+  project: ProjectManifest | undefined,
+): readonly string[] {
+  return exactMemoryScopeUris({
+    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    includeArchived,
+    intents: exactRecallScopeIntents(query),
+    projectName: project ? uriSegment(project.name) : undefined,
+    projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
+    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+  });
 }
 
 function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {

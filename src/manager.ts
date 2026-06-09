@@ -400,6 +400,7 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
           runRecall(context.config, {
             query: requireString(body.query, 'query'),
             nodeLimit: optionalString(body.nodeLimit),
+            project: optionalString(body.project),
           }),
         ),
       );

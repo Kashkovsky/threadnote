@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {hasAgentSkillCatalogIntent, runRecall} from '../../src/memory.js';
+import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as indexRepair from '../../src/index_repair.js';
 import * as utils from '../../src/utils.js';
@@ -71,5 +71,22 @@ describe('runRecall index repair fallback', () => {
     expect(output).toContain('Auto-index repair warning: repair failed');
     expect(output).toContain('Would run: /ov search');
     expect(output).toContain('availability check');
+  });
+});
+
+describe('stripAdvancedSearchFlags', () => {
+  it('removes --threshold and --level with their values, keeping the rest', () => {
+    expect(
+      stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'viking://x']),
+    ).toEqual(['search', 'q', '--uri', 'viking://x']);
+  });
+
+  it('is a no-op when no advanced flags are present', () => {
+    expect(stripAdvancedSearchFlags(['search', 'q', '--node-limit', '5'])).toEqual([
+      'search',
+      'q',
+      '--node-limit',
+      '5',
+    ]);
   });
 });

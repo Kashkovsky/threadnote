@@ -759,6 +759,298 @@ export function grepOutputHasMatches(output: string): boolean {
   );
 }
 
+/**
+ * Minimum `ov search` relevance score for recall. A conservative floor that
+ * drops only the clearly-irrelevant tail while keeping mid-relevance hits;
+ * passed to `ov search --threshold`. Observed strong hits sit ~0.70+, so 0.45
+ * trims noise without risking useful results on lower-scoring queries.
+ * Overridable per-call (recall `--threshold` / the `threshold` MCP arg) and
+ * globally via THREADNOTE_RECALL_THRESHOLD, matching the THREADNOTE_* env
+ * convention used for command timeout/output caps.
+ */
+export const RECALL_SCORE_THRESHOLD = process.env.THREADNOTE_RECALL_THRESHOLD?.trim() || '0.45';
+
+export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
+
+// Patterns favour specific, intentful phrasing over common dev vocabulary so an
+// incidental "design"/"interface" mention does not narrow the grep to durable
+// only. The semantic pass stays unscoped, so a missed intent never hides a hit.
+const EXACT_SCOPE_INTENT_PATTERNS: ReadonlyArray<readonly [ExactScopeIntent, RegExp]> = [
+  ['preferences', /\b(preferences?|prefer|styles?|tone|voice|writing|persona|communication)\b/i],
+  ['handoffs', /\b(handoffs?|status|next step|in progress|wip|current work|where .* left)\b/i],
+  ['durable', /\b(durable|feature knowledge|design decisions?|invariants?|api contract|gotchas?)\b/i],
+  ['incidents', /\b(incidents?|outage|post-?mortem|on-?call|escalation)\b/i],
+];
+
+/**
+ * Infer which personal-memory scopes a recall query is actually about, so the
+ * exact-term grep targets e.g. `preferences` for a "writing style" query
+ * instead of every scope. Empty set means "intent unclear" — the caller should
+ * fall back to a broad search. The semantic pass stays unscoped regardless, so
+ * a wrong guess here only narrows the exact-match pointers, not retrieval.
+ */
+export function exactRecallScopeIntents(query: string): ReadonlySet<ExactScopeIntent> {
+  const intents = new Set<ExactScopeIntent>();
+  for (const [intent, pattern] of EXACT_SCOPE_INTENT_PATTERNS) {
+    if (pattern.test(query)) {
+      intents.add(intent);
+    }
+  }
+  return intents;
+}
+
+/**
+ * A `.overview.md` (Level 1) or `.abstract.md` (Level 0) summary sidecar. With
+ * OpenViking summary auto-generation off (Threadnote's default) these are
+ * permanent "[Directory ... not ready]" placeholders, so they are noise in
+ * recall and must never surface as results or pointers.
+ */
+export function isSummarySidecarUri(uri: string): boolean {
+  return /\.(?:overview|abstract)\.md(?:#|$)/.test(uri);
+}
+
+/**
+ * Extract the matched resource URIs from `ov grep --output json` stdout, minus
+ * summary sidecars. The CLI prints a `cmd: ...` banner before the JSON, so
+ * parse from the first line that starts with `{` (robust to braces in the
+ * banner). Returns [] on any shape mismatch — exact matches are best-effort.
+ */
+export function grepUrisFromJson(output: string): readonly string[] {
+  const start = output.search(/^\{/m);
+  if (start < 0) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(output.slice(start));
+    const result = isJsonObject(parsed) ? parsed.result : undefined;
+    const matches = isJsonObject(result) ? result.matches : undefined;
+    if (!Array.isArray(matches)) {
+      return [];
+    }
+    const uris: string[] = [];
+    for (const match of matches) {
+      if (isJsonObject(match) && typeof match.uri === 'string' && !isSummarySidecarUri(match.uri)) {
+        uris.push(match.uri);
+      }
+    }
+    return uris;
+  } catch (_err: unknown) {
+    return [];
+  }
+}
+
+export interface ExactMatch {
+  readonly terms: readonly string[];
+  readonly uri: string;
+}
+
+export interface RecallHit {
+  readonly contextType: string;
+  readonly score: number;
+  readonly snippet: string;
+  readonly uri: string;
+}
+
+function recallSnippet(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const oneLine = value.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 180 ? `${oneLine.slice(0, 180)}…` : oneLine;
+}
+
+/**
+ * Parse `ov search --output json` stdout into recall hits across the memories,
+ * resources, and skills result arrays, dropping summary sidecars and trimming
+ * each abstract to a short snippet. Tolerant of the leading `cmd:` banner and
+ * shape drift; returns [] on parse failure.
+ */
+export function parseRecallHits(output: string): readonly RecallHit[] {
+  const start = output.search(/^\{/m);
+  if (start < 0) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(output.slice(start));
+    const result = isJsonObject(parsed) ? parsed.result : undefined;
+    if (!isJsonObject(result)) {
+      return [];
+    }
+    const hits: RecallHit[] = [];
+    for (const key of ['memories', 'resources', 'skills']) {
+      const items = result[key];
+      if (!Array.isArray(items)) {
+        continue;
+      }
+      for (const item of items) {
+        if (!isJsonObject(item) || typeof item.uri !== 'string' || isSummarySidecarUri(item.uri)) {
+          continue;
+        }
+        hits.push({
+          contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
+          score: typeof item.score === 'number' ? item.score : 0,
+          snippet: recallSnippet(item.abstract ?? item.overview),
+          uri: item.uri,
+        });
+      }
+    }
+    return hits;
+  } catch (_err: unknown) {
+    return [];
+  }
+}
+
+/**
+ * Merge recall hits from several search passes into one ranked list, deduped to
+ * one entry per document (chunk anchors stripped), keeping the highest-scoring
+ * chunk. Lets the scoped project/seeded passes contribute only documents the
+ * global pass missed, and collapses multiple chunks of the same document.
+ */
+export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): readonly RecallHit[] {
+  const byDocument = new Map<string, RecallHit>();
+  for (const pass of passes) {
+    for (const hit of pass) {
+      const documentUri = hit.uri.replace(/#.*$/, '');
+      const existing = byDocument.get(documentUri);
+      if (!existing || hit.score > existing.score) {
+        byDocument.set(documentUri, {...hit, uri: documentUri});
+      }
+    }
+  }
+  return [...byDocument.values()].sort((left, right) => right.score - left.score);
+}
+
+export function formatRecallHits(hits: readonly RecallHit[], maxHits: number): string | undefined {
+  if (hits.length === 0) {
+    return undefined;
+  }
+  const shown = hits.slice(0, maxHits);
+  const lines = shown.flatMap((hit, index) => {
+    const head = `${index + 1}. ${hit.contextType} · score ${hit.score.toFixed(2)} · ${hit.uri}`;
+    return hit.snippet ? [head, `   ${hit.snippet}`] : [head];
+  });
+  if (hits.length > maxHits) {
+    lines.push(`(+${hits.length - maxHits} more — refine the query or read a URI above)`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the exact-term grep scopes for a recall. Intent (from
+ * `exactRecallScopeIntents`) selects which scope types to search; a resolved
+ * project narrows the project-specific scopes (durable, handoffs, incidents) to
+ * that project, while preferences and shared stay global. Seeded resources
+ * (`viking://resources/repos`) are intentionally NOT exact-grepped for
+ * intent-classified queries — those are covered by the unscoped base semantic
+ * pass plus the project-scoped seeded pass, and grepping every repo per term is
+ * broad and low-signal. The broad fallback (unclear intent) does include them.
+ */
+export function exactMemoryScopeUris(params: {
+  readonly agentMemoriesUri: string;
+  readonly includeArchived: boolean;
+  readonly intents: ReadonlySet<ExactScopeIntent>;
+  readonly projectName?: string;
+  readonly projectResourceUri?: string;
+  readonly userBase: string;
+}): readonly string[] {
+  const {agentMemoriesUri, includeArchived, intents, projectName, projectResourceUri, userBase} = params;
+  const durable = projectName ? `${userBase}/durable/projects/${projectName}` : `${userBase}/durable/projects`;
+  const handoffs = projectName ? `${userBase}/handoffs/active/${projectName}` : `${userBase}/handoffs/active`;
+  const incidents = projectName ? `${userBase}/incidents/active/${projectName}` : `${userBase}/incidents/active`;
+  if (intents.size > 0) {
+    const scopes: string[] = [];
+    if (intents.has('preferences')) {
+      scopes.push(`${userBase}/preferences`);
+    }
+    if (intents.has('durable')) {
+      scopes.push(durable);
+    }
+    if (intents.has('handoffs')) {
+      scopes.push(handoffs);
+    }
+    if (intents.has('incidents')) {
+      scopes.push(incidents);
+    }
+    // Shared team memories are cross-cutting (durable knowledge published by
+    // teammates), so always include them alongside the intent-specific scopes.
+    scopes.push(`${userBase}/shared`);
+    if (includeArchived) {
+      if (intents.has('durable')) {
+        scopes.push(`${userBase}/durable/archived`);
+      }
+      if (intents.has('handoffs')) {
+        scopes.push(`${userBase}/handoffs/archived`);
+      }
+      if (intents.has('incidents')) {
+        scopes.push(`${userBase}/incidents/archived`);
+      }
+    }
+    return scopes;
+  }
+  const scopes = [
+    `${userBase}/preferences`,
+    durable,
+    handoffs,
+    incidents,
+    `${userBase}/shared`,
+    agentMemoriesUri,
+    projectResourceUri ?? 'viking://resources/repos',
+  ];
+  return includeArchived
+    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
+    : scopes;
+}
+
+/**
+ * Run exact-term greps over scopes and collapse them to a deduped, ranked
+ * pointer list: one entry per matched URI (chunk anchors stripped), tagged with
+ * the terms that hit it, ranked by distinct-term count then first-seen. Keeps
+ * recall an index of pointers rather than a dump of matching lines. `runGrep`
+ * returns `ov grep --output json` stdout (or undefined on failure).
+ */
+export async function collectExactMatches(
+  terms: readonly string[],
+  scopes: readonly string[],
+  runGrep: (term: string, scope: string) => Promise<string | undefined>,
+): Promise<readonly ExactMatch[]> {
+  // Run all term×scope greps concurrently, then fold the results in a fixed
+  // order so dedup ranking stays deterministic regardless of completion order.
+  const pairs = terms.flatMap(term => scopes.map(scope => ({scope, term})));
+  const outputs = await Promise.all(pairs.map(pair => runGrep(pair.term, pair.scope)));
+  const byUri = new Map<string, {order: number; terms: Set<string>}>();
+  let order = 0;
+  for (const [index, pair] of pairs.entries()) {
+    const json = outputs[index];
+    if (!json) {
+      continue;
+    }
+    for (const raw of grepUrisFromJson(json)) {
+      const uri = raw.replace(/#.*$/, '');
+      const existing = byUri.get(uri);
+      if (existing) {
+        existing.terms.add(pair.term);
+      } else {
+        byUri.set(uri, {order: order++, terms: new Set([pair.term])});
+      }
+    }
+  }
+  return [...byUri.entries()]
+    .sort((left, right) => right[1].terms.size - left[1].terms.size || left[1].order - right[1].order)
+    .map(([uri, value]) => ({terms: [...value.terms], uri}));
+}
+
+export function formatExactMatchPointers(matches: readonly ExactMatch[], maxUris = 8): string | undefined {
+  if (matches.length === 0) {
+    return undefined;
+  }
+  const shown = matches.slice(0, maxUris);
+  const lines = shown.map(match => `- ${match.uri} (${match.terms.join(', ')})`);
+  if (matches.length > maxUris) {
+    lines.push(`(+${matches.length - maxUris} more exact matches — refine the query to narrow)`);
+  }
+  return ['Exact term matches (read the URI for full content):', ...lines].join('\n');
+}
+
 function exactRecallTermScore(term: string): number {
   let score = term.length;
   if (/[A-Z]/.test(term)) {

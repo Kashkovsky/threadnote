@@ -10,8 +10,9 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
-import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
+import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
+import type {ProjectManifest} from './types.js';
 import {
   activePersonalMemoryUrisFromText,
   type ArchiveAction,
@@ -39,14 +40,22 @@ import {
   writeMemoryFile,
 } from './share.js';
 import {
+  collectExactMatches,
   errorMessage,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
+  exactMemoryScopeUris,
+  exactRecallScopeIntents,
   exactRecallTerms,
   expandPath,
   findExecutable,
-  grepOutputHasMatches,
+  formatExactMatchPointers,
+  formatRecallHits,
+  mergeRecallHits,
   parsePort,
+  parseRecallHits,
+  type RecallHit,
+  RECALL_SCORE_THRESHOLD,
   runCommand,
   safeTimestamp,
   sha256,
@@ -155,7 +164,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     server,
     config,
     'recall_context',
-    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
+    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Results are filtered by a default relevance threshold (0.5); if a recall comes back empty or too sparse, retry with a lower threshold (e.g. {"query":"...","threshold":0.2}) to broaden. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
   );
   registerSearchTool(
     server,
@@ -725,9 +734,17 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           .describe('Optional absolute caller workspace path used to resolve this/current branch queries'),
         nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
         includeArchived: z.boolean().optional().describe('Include archived memories in exact memory/resource matches'),
+        threshold: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
+          ),
       },
     },
-    async ({callerCwd, includeArchived, nodeLimit, query, uri}) => {
+    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -742,6 +759,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
         pinnedUri: checkedUri.value,
         nodeLimit,
         includeArchived: includeArchived === true,
+        threshold: threshold === undefined ? undefined : String(threshold),
       });
     },
   );
@@ -753,6 +771,7 @@ interface RecallToolParams {
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
   readonly query: string;
+  readonly threshold: string | undefined;
 }
 
 async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
@@ -781,35 +800,41 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   } catch (err: unknown) {
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
-  const contextualParams: RecallToolParams = {...params, query};
-  const semanticResult = await runOpenVikingMcpTool(config, 'search', {
-    limit: params.nodeLimit,
-    query,
-    target_uri: params.pinnedUri,
-  });
-  if (semanticResult.isError === true) {
-    return semanticResult;
+  const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
+  const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
+  const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
+  // Run the global base pass plus a seeded project pass, then merge into one
+  // deduped ranked list (per document, chunk anchors stripped) so the seeded
+  // pass only adds project docs the base missed. --level 2 keeps Level-2
+  // content and drops the L0/L1 .overview/.abstract summary sidecars.
+  const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
+  const base = await recallSearchHits(config, ['search', query, ...pinnedArgs, ...limitArgs], threshold);
+  const passes: Array<readonly RecallHit[]> = [base.hits];
+  const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
+  if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
+    const seeded = await recallSearchHits(
+      config,
+      ['search', params.query, '--uri', seededUri, ...limitArgs],
+      threshold,
+    );
+    passes.push(seeded.hits);
   }
-  const [firstContent] = semanticResult.content;
-  if (firstContent?.type !== 'text') {
-    return semanticResult;
-  }
+
   const sections: string[] = [];
-  const semanticText = filterStaleRecallSummaryRows(firstContent.text);
-  const filteredSemanticText = semanticText !== firstContent.text.trim();
-  if (semanticText) {
-    sections.push(semanticText);
+  const semanticSection = formatRecallHits(mergeRecallHits(passes), params.nodeLimit ?? 12);
+  if (semanticSection) {
+    sections.push(semanticSection);
+  } else if (!base.ok) {
+    // Semantic search failed even after the plain fallback (e.g. ov down).
+    // Degrade rather than abort: note it and still run exact below.
+    sections.push(`Recall semantic search unavailable: ${base.errorText || 'ov search failed'}`);
   }
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
   }
-  const seededSection = await seededResourcesSection(config, contextualParams, projectQuery);
-  if (seededSection) {
-    sections.push(seededSection);
-  }
-  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived);
+  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived, project);
   if (exactMatches) {
-    sections.push(`Exact memory/resource matches:\n${exactMatches}`);
+    sections.push(exactMatches);
   }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {
@@ -821,10 +846,41 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   for (const warning of syncWarnings) {
     sections.push(`Auto-sync warning: ${warning}`);
   }
-  if (sections.length <= 1 && !filteredSemanticText) {
-    return semanticResult;
+  if (sections.length === 0) {
+    return {content: [{type: 'text', text: 'No recall results found.'}]};
   }
-  return {...semanticResult, content: [{type: 'text', text: sections.join('\n\n')}]};
+  const onlyErrorNote = !base.ok && !semanticSection && sections.length === 1;
+  return {content: [{type: 'text', text: sections.join('\n\n')}], isError: onlyErrorNote || undefined};
+}
+
+/**
+ * Run one recall search pass with `--output json` via the ov CLI and return
+ * parsed hits, falling back to a plain search (no --threshold/--level) on a
+ * non-zero exit so an older ov does not fail the recall.
+ */
+async function recallSearchHits(
+  config: RuntimeConfig,
+  searchArgs: readonly string[],
+  threshold: string,
+): Promise<{readonly errorText: string; readonly hits: readonly RecallHit[]; readonly ok: boolean}> {
+  let result = await runOpenVikingTool(config, [
+    ...searchArgs,
+    '--threshold',
+    threshold,
+    '--level',
+    '2',
+    '--output',
+    'json',
+  ]);
+  if (result.isError === true) {
+    result = await runOpenVikingTool(config, [...searchArgs, '--output', 'json']);
+  }
+  const firstContent = result.content[0];
+  const text = firstContent?.type === 'text' ? firstContent.text : '';
+  if (result.isError === true) {
+    return {errorText: text.trim(), hits: [], ok: false};
+  }
+  return {errorText: '', hits: parseRecallHits(text), ok: true};
 }
 
 async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
@@ -837,70 +893,27 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
 }
 
-/**
- * Runs a second `ov search` scoped to the seeded project's resources when the
- * query mentions a project name from the manifest. The base semantic search
- * tends to rank memory-shaped hits above seeded READMEs/AGENTS.md/SKILL.md, so
- * this parallel pass guarantees that seeded guidance surfaces alongside
- * memories on every agent's recall — not only Claude's via the SessionStart
- * hook. Skipped when the caller pinned a URI (they asked for that scope;
- * honor it). The MCP server doesn't currently do scope inference of its own
- * the way the CLI's `runRecall` does, so there's no `inferredUri`-vs-
- * `projectResourceUri` dedupe check here — if MCP later grows inference, mirror
- * the CLI's `augmentRecallWithSeededResources` guard.
- */
-async function seededResourcesSection(
-  config: RuntimeConfig,
-  params: RecallToolParams,
-  projectQuery: string,
-): Promise<string | undefined> {
-  if (params.pinnedUri) {
-    return undefined;
-  }
-  const project = await inferProjectFromQuery(config.manifestPath, projectQuery);
-  if (!project) {
-    return undefined;
-  }
-  const projectResourceUri = trimTrailingSlash(project.uri);
-  if (!projectResourceUri.startsWith('viking://')) {
-    return undefined;
-  }
-  const result = await runOpenVikingMcpTool(config, 'search', {
-    limit: params.nodeLimit,
-    query: params.query,
-    target_uri: projectResourceUri,
-  });
-  if (result.isError === true) {
-    return undefined;
-  }
-  const body = filterStaleRecallSummaryRows(textFromCallToolResult(result));
-  if (!body) {
-    return undefined;
-  }
-  return `Seeded project resources (${projectResourceUri}):\n${body}`;
-}
-
 async function exactMemoryMatchesText(
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
+  project: ProjectManifest | undefined,
 ): Promise<string | undefined> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return undefined;
   }
-  const scopes = exactMemoryScopes(config, includeArchived);
-  const outputs: string[] = [];
-  for (const term of terms) {
-    for (const scope of scopes) {
-      const result = await runOpenVikingMcpTool(config, 'grep', {node_limit: 5, pattern: term, uri: scope});
-      const output = textFromCallToolResult(result);
-      if (result.isError !== true && grepOutputHasMatches(output)) {
-        outputs.push(output);
-      }
-    }
-  }
-  return outputs.length > 0 ? outputs.join('\n\n') : undefined;
+  const ov = await requiredOpenVikingCli();
+  const scopes = exactMemoryScopes(config, includeArchived, query, project);
+  const matches = await collectExactMatches(terms, scopes, async (term, scope) => {
+    const result = await runCommand(
+      ov,
+      withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']),
+      {allowFailure: true},
+    );
+    return result.exitCode === 0 ? result.stdout : undefined;
+  });
+  return formatExactMatchPointers(matches);
 }
 
 function registerReadTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
@@ -1525,23 +1538,20 @@ function vikingDirectoryChain(directoryUri: string): readonly string[] {
   return chain;
 }
 
-function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
-  const userBase = `viking://user/${uriSegment(config.user)}/memories`;
-  const scopes = [
-    `${userBase}/preferences`,
-    `${userBase}/durable/projects`,
-    `${userBase}/handoffs/active`,
-    `${userBase}/incidents/active`,
-    `${userBase}/shared`,
-    `viking://agent/${uriSegment(config.agentId)}/memories`,
-    // Seeded project resources live outside the user/memories tree. Include
-    // them so exact-term grep surfaces matches in seeded READMEs, AGENTS.md,
-    // SKILL.md, and docs/** alongside personal memory hits.
-    'viking://resources/repos',
-  ];
-  return includeArchived
-    ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]
-    : scopes;
+function exactMemoryScopes(
+  config: RuntimeConfig,
+  includeArchived: boolean,
+  query: string,
+  project: ProjectManifest | undefined,
+): readonly string[] {
+  return exactMemoryScopeUris({
+    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    includeArchived,
+    intents: exactRecallScopeIntents(query),
+    projectName: project ? uriSegment(project.name) : undefined,
+    projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
+    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+  });
 }
 
 function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {
@@ -1745,6 +1755,24 @@ async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Pro
   try {
     const ov = await requiredOpenVikingCli();
     const result = await runCommand(ov, withIdentity(config, ['read', uri]));
+    const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+    return {content: [{type: 'text', text: text || 'OK'}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+/**
+ * Run an `ov` CLI subcommand and wrap its output as a CallToolResult. Used by
+ * the enriched recall path (`recall_context`) so semantic search returns the
+ * compact ranked list (URI + score + short snippet) instead of the native
+ * `/mcp` search, which returns full Level-2 bodies and bloats recall ~15x.
+ * Goes through `runCommand` (no-shell `execFile`), so it stays injection-safe.
+ */
+async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
+  try {
+    const ov = await requiredOpenVikingCli();
+    const result = await runCommand(ov, withIdentity(config, args));
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
     return {content: [{type: 'text', text: text || 'OK'}]};
   } catch (err: unknown) {
