@@ -145,9 +145,10 @@ async function callText(client: Client, name: string, args: Record<string, unkno
   return text;
 }
 
-function firstArgs(text: string): readonly string[] {
-  const [line] = text.trim().split('\n');
-  return JSON.parse(line ?? '[]') as string[];
+function nativeArgs(text: string, toolName: string): Record<string, unknown> {
+  const prefix = `${toolName}:`;
+  expect(text).toContain(prefix);
+  return JSON.parse(text.slice(text.indexOf(prefix) + prefix.length)) as Record<string, unknown>;
 }
 
 describe('Threadnote MCP OpenViking parity tools', () => {
@@ -177,29 +178,24 @@ describe('Threadnote MCP OpenViking parity tools', () => {
     });
   });
 
-  it('forwards documented native parameters through the OpenViking CLI', async () => {
+  it('forwards documented native parameters through OpenViking MCP', async () => {
     await withMcpClient(async client => {
       expect(
-        firstArgs(
+        nativeArgs(
           await callText(client, 'ov_search', {
             limit: 4,
             min_score: 0.25,
             query: 'release notes',
             target_uri: 'viking://resources/repos/threadnote',
           }),
-        ),
-      ).toEqual(
-        expect.arrayContaining([
           'search',
-          'release notes',
-          '--uri',
-          'viking://resources/repos/threadnote',
-          '--node-limit',
-          '4',
-          '--threshold',
-          '0.25',
-        ]),
-      );
+        ),
+      ).toEqual({
+        limit: 4,
+        min_score: 0.25,
+        query: 'release notes',
+        uri: 'viking://resources/repos/threadnote',
+      });
 
       const readOutput = await callText(client, 'ov_read', {
         uris: ['viking://resources/repos/threadnote/README.md', 'viking://resources/repos/threadnote/docs/share.md'],
@@ -208,14 +204,14 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         readOutput
           .trim()
           .split('\n')
-          .map(line => JSON.parse(line) as string[]),
+          .map(line => nativeArgs(line, 'read')),
       ).toEqual([
-        expect.arrayContaining(['read', 'viking://resources/repos/threadnote/README.md']),
-        expect.arrayContaining(['read', 'viking://resources/repos/threadnote/docs/share.md']),
+        {uri: 'viking://resources/repos/threadnote/README.md'},
+        {uri: 'viking://resources/repos/threadnote/docs/share.md'},
       ]);
 
       expect(
-        firstArgs(
+        nativeArgs(
           await callText(client, 'add_resource', {
             description: 'Threadnote docs',
             path: 'https://github.com/Kashkovsky/threadnote.git',
@@ -223,49 +219,42 @@ describe('Threadnote MCP OpenViking parity tools', () => {
             wait: false,
             watch_interval: 30,
           }),
+          'add_resource',
         ),
-      ).toEqual(
-        expect.arrayContaining([
-          'add-resource',
-          'https://github.com/Kashkovsky/threadnote.git',
-          '--to',
-          'viking://resources/repos/threadnote',
-          '--reason',
-          'Threadnote docs',
-          '--watch-interval',
-          '30',
-        ]),
-      );
+      ).toEqual({
+        description: 'Threadnote docs',
+        path: 'https://github.com/Kashkovsky/threadnote.git',
+        to: 'viking://resources/repos/threadnote',
+        wait: false,
+        watch_interval: 30,
+      });
 
       expect(
-        firstArgs(
+        nativeArgs(
           await callText(client, 'grep', {
             case_insensitive: true,
             node_limit: 7,
             pattern: 'native mcp',
             uri: 'viking://resources/repos/threadnote',
           }),
-        ),
-      ).toEqual(
-        expect.arrayContaining([
           'grep',
-          'native mcp',
-          '--uri',
-          'viking://resources/repos/threadnote',
-          '--ignore-case',
-          '--node-limit',
-          '7',
-        ]),
-      );
+        ),
+      ).toEqual({
+        case_insensitive: true,
+        node_limit: 7,
+        pattern: 'native mcp',
+        uri: 'viking://resources/repos/threadnote',
+      });
 
       expect(
-        firstArgs(
+        nativeArgs(
           await callText(client, 'forget', {
             recursive: true,
             uri: 'viking://resources/repos/threadnote/tmp',
           }),
+          'forget',
         ),
-      ).toEqual(expect.arrayContaining(['rm', 'viking://resources/repos/threadnote/tmp', '--recursive']));
+      ).toEqual({recursive: true, uri: 'viking://resources/repos/threadnote/tmp'});
     });
   });
 
@@ -293,16 +282,17 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         'code_expand:{"symbol":"registerTools","uri":"viking://resources/repos/threadnote/src/mcp_server.ts"}',
       );
 
-      expect(firstArgs(await callText(client, 'ov_list_watches', {active_only: true}))).toEqual(
-        expect.arrayContaining(['task', 'watch', 'ls', '--active-only']),
-      );
+      expect(nativeArgs(await callText(client, 'ov_list_watches', {active_only: true}), 'list_watches')).toEqual({
+        active_only: true,
+      });
       expect(
-        firstArgs(
+        nativeArgs(
           await callText(client, 'ov_cancel_watch', {
             to_uri: 'viking://resources/repos/threadnote',
           }),
+          'cancel_watch',
         ),
-      ).toEqual(expect.arrayContaining(['task', 'watch', 'rm', 'viking://resources/repos/threadnote']));
+      ).toEqual({to_uri: 'viking://resources/repos/threadnote'});
     });
   });
 

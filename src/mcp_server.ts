@@ -210,7 +210,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         return checkedUri.error;
       }
       if (recursive === true) {
-        return runOpenVikingTool(config, ['rm', checkedUri.value, '--recursive']);
+        return runOpenVikingMcpTool(config, 'forget', {recursive: true, uri: checkedUri.value});
       }
       try {
         const ov = await requiredOpenVikingCli();
@@ -284,13 +284,12 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'grep',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...(caseInsensitive === true || case_insensitive === true ? ['--ignore-case'] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'grep', {
+        case_insensitive: caseInsensitive ?? case_insensitive,
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -315,12 +314,11 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'glob',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'glob', {
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -331,7 +329,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       description: 'Check OpenViking server health through the CLI.',
       inputSchema: {},
     },
-    async () => runOpenVikingTool(config, ['health']),
+    async () => runOpenVikingMcpTool(config, 'health', {}),
   );
 
   registerOpenVikingParityTools(server, config);
@@ -401,14 +399,13 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
         return checkedUri.error;
       }
       const normalizedPeerId = (peerId ?? peer_id)?.trim();
-      return runOpenVikingTool(config, [
-        'search',
-        checkedQuery.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...numberFlag('--node-limit', limit),
-        ...numberFlag('--threshold', minScore ?? min_score),
-        ...(normalizedPeerId ? ['--peer-id', normalizedPeerId] : []),
-      ]);
+      return runOpenVikingMcpTool(config, 'search', {
+        limit,
+        min_score: minScore ?? min_score,
+        peer_id: normalizedPeerId || undefined,
+        query: checkedQuery.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -458,14 +455,13 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'ls',
-        checkedUri.value ?? 'viking://',
-        ...(all === true ? ['--all'] : []),
-        ...(recursive === true ? ['--recursive'] : []),
-        ...(simple === true ? ['--simple'] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'list', {
+        all,
+        node_limit: nodeLimit ?? node_limit,
+        recursive,
+        simple,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -512,12 +508,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       },
     },
     async ({activeOnly, active_only}) =>
-      runOpenVikingTool(config, [
-        'task',
-        'watch',
-        'ls',
-        ...(activeOnly === true || active_only === true ? ['--active-only'] : []),
-      ]),
+      runOpenVikingMcpTool(config, 'list_watches', {active_only: activeOnly ?? active_only}),
   );
 
   server.registerTool(
@@ -540,7 +531,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, ['task', 'watch', 'rm', checkedUri.value]);
+      return runOpenVikingMcpTool(config, 'cancel_watch', {to_uri: checkedUri.value});
     },
   );
 
@@ -567,13 +558,12 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'grep',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...(caseInsensitive === true || case_insensitive === true ? ['--ignore-case'] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'grep', {
+        case_insensitive: caseInsensitive ?? case_insensitive,
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -598,12 +588,11 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, [
-        'glob',
-        checkedPattern.value,
-        ...(checkedUri.value ? ['--uri', checkedUri.value] : []),
-        ...numberFlag('--node-limit', nodeLimit ?? node_limit),
-      ]);
+      return runOpenVikingMcpTool(config, 'glob', {
+        node_limit: nodeLimit ?? node_limit,
+        pattern: checkedPattern.value,
+        uri: checkedUri.value,
+      });
     },
   );
 
@@ -622,7 +611,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingTool(config, ['rm', checkedUri.value, ...(recursive === true ? ['--recursive'] : [])]);
+      return runOpenVikingMcpTool(config, 'forget', {recursive, uri: checkedUri.value});
     },
   );
 
@@ -708,7 +697,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       description: 'Raw OpenViking MCP health parity.',
       inputSchema: {},
     },
-    async () => runOpenVikingTool(config, ['health']),
+    async () => runOpenVikingMcpTool(config, 'health', {}),
   );
 }
 
@@ -729,13 +718,15 @@ function registerOpenVikingStoreTool(server: McpServer, config: RuntimeConfig, n
     },
     async ({content, messages, text}) => {
       if (messages && messages.length > 0) {
-        return runOpenVikingTool(config, ['add-memory', JSON.stringify(messages)]);
+        return runOpenVikingMcpTool(config, name === 'ov_remember' ? 'remember' : 'store', {messages});
       }
       const checkedContent = requiredText(content ?? text, name, 'content', {content: 'Remember this note'});
       if (!checkedContent.ok) {
         return checkedContent.error;
       }
-      return runOpenVikingTool(config, ['add-memory', checkedContent.value]);
+      return runOpenVikingMcpTool(config, name === 'ov_remember' ? 'remember' : 'store', {
+        content: checkedContent.value,
+      });
     },
   );
 }
@@ -1724,20 +1715,19 @@ async function runOpenVikingAddResourceTool(
     return checkedTo.error;
   }
   const description = params.description?.trim();
-  return runOpenVikingTool(config, [
-    'add-resource',
-    ...(source ? [source] : ['--temp-file-id', tempFileId ?? '']),
-    ...(checkedTo.value ? ['--to', checkedTo.value] : []),
-    ...(description ? ['--reason', description] : []),
-    ...numberFlag('--watch-interval', params.watchInterval),
-    ...(params.wait === false ? [] : ['--wait']),
-  ]);
+  return runOpenVikingMcpTool(config, 'add_resource', {
+    description,
+    path: source,
+    to: checkedTo.value,
+    wait: params.wait,
+    watch_interval: params.watchInterval,
+  });
 }
 
 async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly string[]): Promise<CallToolResult> {
   const outputs: string[] = [];
   for (const uri of uris) {
-    const result = await runOpenVikingTool(config, ['read', uri]);
+    const result = await runOpenVikingMcpTool(config, 'read', {uri});
     if (result.isError === true) {
       return result;
     }
