@@ -851,6 +851,10 @@ export interface RecallHit {
   readonly uri: string;
 }
 
+interface ParseRecallHitsOptions {
+  readonly includeArchived?: boolean;
+}
+
 function recallSnippet(value: unknown): string {
   if (typeof value !== 'string') {
     return '';
@@ -859,13 +863,20 @@ function recallSnippet(value: unknown): string {
   return oneLine.length > 180 ? `${oneLine.slice(0, 180)}…` : oneLine;
 }
 
+function isArchivedMemoryUri(uri: string): boolean {
+  const documentUri = uri.replace(/#.*$/, '');
+  return /^viking:\/\/user\/[^/]+\/memories\/(?:durable|handoffs|incidents|preferences|smoke)\/archived(?:\/|$)/.test(
+    documentUri,
+  );
+}
+
 /**
  * Parse `ov search --output json` stdout into recall hits across the memories,
  * resources, and skills result arrays, dropping summary sidecars and trimming
  * each abstract to a short snippet. Tolerant of the leading `cmd:` banner and
  * shape drift; returns [] on parse failure.
  */
-export function parseRecallHits(output: string): readonly RecallHit[] {
+export function parseRecallHits(output: string, options: ParseRecallHitsOptions = {}): readonly RecallHit[] {
   const start = output.search(/^\{/m);
   if (start < 0) {
     return [];
@@ -884,6 +895,9 @@ export function parseRecallHits(output: string): readonly RecallHit[] {
       }
       for (const item of items) {
         if (!isJsonObject(item) || typeof item.uri !== 'string' || isSummarySidecarUri(item.uri)) {
+          continue;
+        }
+        if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
           continue;
         }
         hits.push({

@@ -334,14 +334,17 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   if (inferredUri) {
     console.log(`Recall scope: ${inferredUri}`);
   }
-  const passes: Array<readonly RecallHit[]> = [await recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun})];
+  const includeArchived = options.includeArchived === true;
+  const passes: Array<readonly RecallHit[]> = [
+    await recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun, includeArchived}),
+  ];
   if (options.project && project) {
     const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
-    passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun}));
+    passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived}));
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
-    passes.push(await recallSearchHits(config, ov, searchArgs(seededUri), {dryRun}));
+    passes.push(await recallSearchHits(config, ov, searchArgs(seededUri), {dryRun, includeArchived}));
   }
 
   const recallOutputs: string[] = [];
@@ -352,7 +355,7 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   }
   const exactOutput = await printExactMemoryMatches(config, ov, query, {
     dryRun,
-    includeArchived: options.includeArchived === true,
+    includeArchived,
     project,
   });
   if (exactOutput) {
@@ -372,7 +375,7 @@ async function recallSearchHits(
   config: RuntimeConfig,
   ov: string,
   args: readonly string[],
-  options: {readonly dryRun: boolean},
+  options: {readonly dryRun: boolean; readonly includeArchived: boolean},
 ): Promise<readonly RecallHit[]> {
   const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
   console.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, jsonArgs)}`);
@@ -389,7 +392,7 @@ async function recallSearchHits(
     console.log(`WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`);
     return [];
   }
-  return parseRecallHits(result.stdout);
+  return parseRecallHits(result.stdout, {includeArchived: options.includeArchived});
 }
 
 export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {

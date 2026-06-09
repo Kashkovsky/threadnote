@@ -733,7 +733,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           .optional()
           .describe('Optional absolute caller workspace path used to resolve this/current branch queries'),
         nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
-        includeArchived: z.boolean().optional().describe('Include archived memories in exact memory/resource matches'),
+        includeArchived: z.boolean().optional().describe('Include archived memories in recall results'),
         threshold: z
           .number()
           .min(0)
@@ -808,7 +808,12 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   // pass only adds project docs the base missed. --level 2 keeps Level-2
   // content and drops the L0/L1 .overview/.abstract summary sidecars.
   const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
-  const base = await recallSearchHits(config, ['search', query, ...pinnedArgs, ...limitArgs], threshold);
+  const base = await recallSearchHits(
+    config,
+    ['search', query, ...pinnedArgs, ...limitArgs],
+    threshold,
+    params.includeArchived,
+  );
   const passes: Array<readonly RecallHit[]> = [base.hits];
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
@@ -816,6 +821,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
       config,
       ['search', params.query, '--uri', seededUri, ...limitArgs],
       threshold,
+      params.includeArchived,
     );
     passes.push(seeded.hits);
   }
@@ -862,6 +868,7 @@ async function recallSearchHits(
   config: RuntimeConfig,
   searchArgs: readonly string[],
   threshold: string,
+  includeArchived: boolean,
 ): Promise<{readonly errorText: string; readonly hits: readonly RecallHit[]; readonly ok: boolean}> {
   let result = await runOpenVikingTool(config, [
     ...searchArgs,
@@ -880,7 +887,7 @@ async function recallSearchHits(
   if (result.isError === true) {
     return {errorText: text.trim(), hits: [], ok: false};
   }
-  return {errorText: '', hits: parseRecallHits(text), ok: true};
+  return {errorText: '', hits: parseRecallHits(text, {includeArchived}), ok: true};
 }
 
 async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {

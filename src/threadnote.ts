@@ -350,7 +350,7 @@ async function main(): Promise<void> {
     .description('Search shared OpenViking context')
     .requiredOption('--query <query>', 'Search query')
     .option('--dry-run', 'Print ov command without searching')
-    .option('--include-archived', 'Include archived memories in exact memory/resource matches')
+    .option('--include-archived', 'Include archived memories in recall results')
     .option('-n, --node-limit <count>', 'Maximum number of search results')
     .option('--no-infer-scope', 'Disable query-based scope inference')
     .option('--project <name>', 'Prioritize a project: add a scoped pass over its memories alongside the global search')

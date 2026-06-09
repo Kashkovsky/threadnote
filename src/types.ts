@@ -71,6 +71,10 @@ export interface InstallOptions {
   readonly packageManager?: PackageManager;
   readonly printNextSteps?: boolean;
   readonly repairInvalidConfigs?: boolean;
+  // When an install ran but openviking-server is still unresolvable, throw
+  // (default) so `threadnote install` fails loudly. Repair sets this false to
+  // warn-and-continue so config/manifest/MCP/hook repairs still run.
+  readonly requireServerBinary?: boolean;
   readonly start?: boolean;
   readonly withHooks?: boolean;
 }

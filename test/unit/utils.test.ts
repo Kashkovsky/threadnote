@@ -554,6 +554,53 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     ]);
   });
 
+  it('omits archived lifecycle memories by default', () => {
+    const hits = parseRecallHits(
+      json({
+        ok: true,
+        result: {
+          memories: [
+            {
+              context_type: 'memory',
+              uri: 'viking://user/denys/memories/handoffs/archived/threadnote/old.md#chunk_0000',
+              score: 0.8,
+              abstract: 'old',
+            },
+            {
+              context_type: 'memory',
+              uri: 'viking://user/denys/memories/durable/projects/threadnote/current.md',
+              score: 0.7,
+              abstract: 'current',
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/denys/memories/durable/projects/threadnote/current.md']);
+  });
+
+  it('keeps archived lifecycle memories when includeArchived is set', () => {
+    const hits = parseRecallHits(
+      json({
+        ok: true,
+        result: {
+          memories: [
+            {
+              context_type: 'memory',
+              uri: 'viking://user/denys/memories/durable/archived/threadnote/old.md',
+              score: 0.8,
+              abstract: 'old',
+            },
+          ],
+        },
+      }),
+      {includeArchived: true},
+    );
+
+    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/denys/memories/durable/archived/threadnote/old.md']);
+  });
+
   it('merges passes, collapses chunks to one document, keeps the best score, ranks desc', () => {
     const base = parseRecallHits(
       json({ok: true, result: {memories: [{uri: 'viking://doc.md#chunk_0000', score: 0.5, abstract: 'x'}]}}),

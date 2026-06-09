@@ -1,6 +1,14 @@
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 1933;
 export const DEFAULT_OPENVIKING_VERSION = '0.3.24';
+// CPython minor the OpenViking tool is pinned to. openviking[local-embed] pulls
+// in llama-cpp-python, whose prebuilt wheels (PyPI is sdist-only; wheels live on
+// the abetlen community index) top out at 3.12 as of 2026. On newer interpreters
+// (3.13/3.14) there is no wheel, so install falls back to a 10-20 min, memory-
+// heavy CMake/C++ build that can be OOM-killed or trip command timeouts. Pinning
+// the tool to this version keeps installs fast and reliable. Bump when upstream
+// ships wheels for a newer minor (abetlen/llama-cpp-python#2103, #2136).
+export const OPENVIKING_TOOL_PYTHON = '3.12';
 export const DEFAULT_ACCOUNT = 'local';
 export const DEFAULT_AGENT_ID = 'threadnote';
 export const OPENVIKING_PACKAGE_NAME = 'openviking[local-embed]';
