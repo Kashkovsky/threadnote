@@ -9,7 +9,8 @@ const AUTO_REPAIR_STATE_FILE = 'index-auto-repair.json';
 const AUTO_REPAIR_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_SCAN_DEPTH = 5;
 const MAX_REPAIR_TARGETS = 4;
-export const MAINTENANCE_MAX_REPAIR_TARGETS = 16;
+export const MAINTENANCE_COLLAPSE_DEPTH = 3;
+export const MAINTENANCE_MAX_REPAIR_TARGETS = 512;
 
 interface RecallIndexRepairConfig {
   readonly account: string;
@@ -68,11 +69,13 @@ export async function repairStaleRecallIndex(
   ov: string,
   options: {
     readonly collapseToRoots?: boolean;
+    readonly collapseDepth?: number;
     readonly dryRun?: boolean;
     readonly ignoreBackoff?: boolean;
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly maxTargets?: number;
+    readonly onRepairFailure?: (target: StaleIndexTarget, result: CommandResult) => Promise<void> | void;
     readonly onProgress?: (progress: RecallIndexRepairProgress) => void;
     readonly query?: string;
   } = {},
@@ -126,6 +129,7 @@ export async function repairStaleRecallIndex(
       state.entries[target.uri] = {repairedAt: new Date(now).toISOString(), signature: target.signature};
     } else {
       warnings.push(indexRepairWarning(target.uri, result));
+      await options.onRepairFailure?.(target, result);
     }
   }
 
@@ -140,6 +144,7 @@ export async function findStaleRecallIndexTargets(
   config: RecallIndexRepairConfig,
   options: {
     readonly collapseToRoots?: boolean;
+    readonly collapseDepth?: number;
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly query?: string;
@@ -153,15 +158,13 @@ export async function findStaleRecallIndexTargets(
     }
     const sidecars = await staleSidecars(root.path, root.uri);
     if (options.collapseToRoots === true) {
-      if (sidecars.length === 0) {
-        continue;
+      for (const sidecar of sidecars) {
+        const uri = collapseStaleSidecarUri(root.uri, sidecar.relativePath, options.collapseDepth);
+        const current = byUri.get(uri) ?? {parts: [], staleCount: 0, uri};
+        current.parts.push(`${sidecar.relativePath}\n${sidecar.content}`);
+        current.staleCount += 1;
+        byUri.set(uri, current);
       }
-      const parts = sidecars.map(sidecar => `${sidecar.relativePath}\n${sidecar.content}`);
-      byUri.set(root.uri, {
-        parts,
-        staleCount: sidecars.length,
-        uri: root.uri,
-      });
       continue;
     }
     for (const sidecar of sidecars) {
@@ -178,14 +181,33 @@ export async function findStaleRecallIndexTargets(
   }));
 }
 
+function collapseStaleSidecarUri(rootUri: string, relativePath: string, depth = 0): string {
+  const normalizedRootUri = trimLocalRootUri(rootUri);
+  if (depth <= 0) {
+    return normalizedRootUri;
+  }
+  const parentParts = relativePath.split('/').slice(0, -1);
+  const collapsedParts = parentParts.slice(0, depth);
+  return collapsedParts.length === 0 ? normalizedRootUri : `${normalizedRootUri}/${collapsedParts.join('/')}`;
+}
+
 export function formatRecallIndexRepairMessages(
   result: RecallIndexRepairResult,
-  options: {readonly dryRun?: boolean} = {},
+  options: {readonly dryRun?: boolean; readonly maxUris?: number} = {},
 ): readonly string[] {
   const messages: string[] = [];
-  for (const uri of result.repairedUris) {
+  const maxUris = options.maxUris ?? result.repairedUris.length;
+  for (const uri of result.repairedUris.slice(0, maxUris)) {
     messages.push(
       `${options.dryRun === true ? 'Would auto-reindex stale recall scope' : 'Auto-reindexed stale recall scope'}: ${uri}`,
+    );
+  }
+  const hiddenUriCount = result.repairedUris.length - maxUris;
+  if (hiddenUriCount > 0) {
+    messages.push(
+      options.dryRun === true
+        ? `Would auto-reindex ${hiddenUriCount} more stale recall scope(s).`
+        : `Auto-reindexed ${hiddenUriCount} more stale recall scope(s).`,
     );
   }
   for (const warning of result.warnings) {

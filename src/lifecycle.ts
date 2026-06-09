@@ -25,6 +25,7 @@ import {startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
   formatRecallIndexRepairMessages,
+  MAINTENANCE_COLLAPSE_DEPTH,
   MAINTENANCE_MAX_REPAIR_TARGETS,
   repairStaleRecallIndex,
 } from './index_repair.js';
@@ -344,12 +345,17 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
   const progress = startProgress('Scanning recall index freshness across memories and seeded resources.');
   try {
     const result = await repairStaleRecallIndex(config, ov, {
+      collapseDepth: MAINTENANCE_COLLAPSE_DEPTH,
       collapseToRoots: true,
       dryRun,
       ignoreBackoff: true,
       includeAgentSkills: true,
       includeManifestResources: true,
       maxTargets: MAINTENANCE_MAX_REPAIR_TARGETS,
+      onRepairFailure: async () => {
+        progress.update('A recall index reindex failed; checking OpenViking health before continuing.');
+        await repairServerHealth(config, dryRun);
+      },
       onProgress: event => {
         if (event.type === 'scan-complete') {
           if (event.totalTargets === 0) {
@@ -373,7 +379,7 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
       },
     });
     progress.stop();
-    const messages = formatRecallIndexRepairMessages(result, {dryRun});
+    const messages = formatRecallIndexRepairMessages(result, {dryRun, maxUris: 20});
     if (messages.length === 0) {
       console.log('Recall index freshness OK.');
       return;
