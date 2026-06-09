@@ -5,9 +5,9 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {access, readdir, readFile, realpath} from 'node:fs/promises';
+import {access, mkdir, readdir, readFile, realpath, rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {join, sep} from 'node:path';
+import {join, resolve, sep} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {filterStaleRecallSummaryRows, formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -47,10 +47,8 @@ import {
   findExecutable,
   grepOutputHasMatches,
   parsePort,
-  runCommand,
   safeTimestamp,
   sha256,
-  sleep,
   trimTrailingSlash,
 } from './utils.js';
 
@@ -1071,7 +1069,7 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = await forgetVikingResourceWithRetry(config, checkedUri.value);
+        const removedOriginal = await forgetVikingResource(config, checkedUri.value);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -1150,7 +1148,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           }
         }
         for (const action of plan.forgets) {
-          const removed = await forgetVikingResourceWithRetry(config, action.uri);
+          const removed = await forgetVikingResource(config, action.uri);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -1193,7 +1191,7 @@ async function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAct
   if (archiveResult.isError === true) {
     return archiveResult;
   }
-  const removedOriginal = await forgetVikingResourceWithRetry(config, action.uri);
+  const removedOriginal = await forgetVikingResource(config, action.uri);
   const [content] = archiveResult.content;
   const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
   return {
@@ -1342,7 +1340,7 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
     await writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
     const messages = [`Stored memory: ${memoryUri}`];
     if (params.replaceUri && !isInPlaceUpdate) {
-      const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, params.replaceUri);
+      const removedReplacedMemory = await removeVikingResource(config, params.replaceUri);
       messages.push(
         removedReplacedMemory
           ? `Forgot replaced memory: ${params.replaceUri}`
@@ -1400,31 +1398,20 @@ async function writeSharedMemoryReplacement(
 }
 
 async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
-  const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-  return stat.exitCode === 0;
+  void ov;
+  return (await localVikingPathForExistingUri(config, uri)) !== undefined;
 }
 
-async function removeVikingResourceWithRetry(
-  ov: string,
-  config: RuntimeConfig,
-  uri: string,
-  recursive = false,
-): Promise<boolean> {
-  const args = withIdentity(config, ['rm', uri, ...(recursive ? ['--recursive'] : [])]);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      return true;
-    }
-    if (isResourceBusy(result.stderr, result.stdout) && attempt === 3) {
-      return false;
-    }
-    if (!isResourceBusy(result.stderr, result.stdout)) {
-      throw new Error(`${ov} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
-    }
-    await sleep(1000 * (attempt + 1));
+async function removeVikingResource(config: RuntimeConfig, uri: string, recursive = false): Promise<boolean> {
+  const removedLocal = await removeLocalVikingResource(config, uri, recursive);
+  const nativeResult = await runOpenVikingMcpTool(config, 'forget', {
+    recursive: recursive ? true : undefined,
+    uri,
+  });
+  if (removedLocal) {
+    return true;
   }
-  return false;
+  return nativeResult.isError !== true;
 }
 
 async function runOpenVikingRemoveTool(
@@ -1433,13 +1420,12 @@ async function runOpenVikingRemoveTool(
   recursive: boolean,
 ): Promise<CallToolResult> {
   try {
-    const ov = await requiredOpenVikingCli();
-    const removed = await removeVikingResourceWithRetry(ov, config, uri, recursive);
+    const removed = await removeVikingResource(config, uri, recursive);
     return {
       content: [
         {
           type: 'text',
-          text: removed ? `Removed: ${uri}` : `Resource is still being processed; retry later: ${uri}`,
+          text: removed ? `Removed: ${uri}` : `Resource was not found locally or through native MCP: ${uri}`,
         },
       ],
       isError: !removed,
@@ -1449,22 +1435,14 @@ async function runOpenVikingRemoveTool(
   }
 }
 
-function isResourceBusy(stderr: string, stdout: string): boolean {
-  const output = `${stderr}\n${stdout}`.toLowerCase();
-  return output.includes('resource is busy') || output.includes('resource is being processed');
-}
-
 async function ensureMemoryDirectory(ov: string, config: RuntimeConfig, directoryUri: string): Promise<void> {
-  for (const uri of vikingDirectoryChain(directoryUri)) {
-    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-    if (statResult.exitCode === 0) {
-      continue;
-    }
-    await runCommand(
-      ov,
-      withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
-    );
+  void ov;
+  await mkdir(join(config.agentContextHome, 'data', 'viking', config.account), {recursive: true});
+  const directoryPath = await localVikingPathForUri(config, directoryUri);
+  if (!directoryPath) {
+    throw new Error(`Could not map memory directory URI to local VikingFS path: ${directoryUri}`);
   }
+  await mkdir(directoryPath, {recursive: true});
 }
 
 function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {
@@ -1509,20 +1487,6 @@ async function memoryWriteMode(
     return 'create';
   }
   return (await vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
-}
-
-function vikingDirectoryChain(directoryUri: string): readonly string[] {
-  const prefix = 'viking://';
-  if (!directoryUri.startsWith(prefix)) {
-    return [directoryUri];
-  }
-  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
-  const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
-  const chain: string[] = [];
-  for (let index = startIndex; index <= parts.length; index += 1) {
-    chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
-  }
-  return chain;
 }
 
 function exactMemoryScopes(config: RuntimeConfig, includeArchived: boolean): readonly string[] {
@@ -1746,15 +1710,61 @@ async function runOpenVikingReadToolWithLocalFallback(
 
 async function readLocalVikingFile(config: RuntimeConfig, uri: string): Promise<string | undefined> {
   try {
-    const root = await realpath(join(config.agentContextHome, 'data', 'viking', config.account));
-    const candidate = await realpath(join(root, uri.slice('viking://'.length)));
-    if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+    const candidate = await localVikingPathForExistingUri(config, uri);
+    if (!candidate) {
       return undefined;
     }
     return await readFile(candidate, 'utf8');
   } catch (_err: unknown) {
     return undefined;
   }
+}
+
+async function localVikingPathForUri(config: RuntimeConfig, uri: string): Promise<string | undefined> {
+  const relativePath = localVikingRelativePath(uri);
+  if (!relativePath) {
+    return undefined;
+  }
+  const root = await realpath(join(config.agentContextHome, 'data', 'viking', config.account));
+  const candidate = resolve(root, relativePath);
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+async function localVikingPathForExistingUri(config: RuntimeConfig, uri: string): Promise<string | undefined> {
+  try {
+    const candidate = await localVikingPathForUri(config, uri);
+    if (!candidate) {
+      return undefined;
+    }
+    const root = await realpath(join(config.agentContextHome, 'data', 'viking', config.account));
+    const resolvedCandidate = await realpath(candidate);
+    if (resolvedCandidate !== root && !resolvedCandidate.startsWith(`${root}${sep}`)) {
+      return undefined;
+    }
+    return resolvedCandidate;
+  } catch (_err: unknown) {
+    return undefined;
+  }
+}
+
+function localVikingRelativePath(uri: string): string | undefined {
+  const relativePath = uri.slice('viking://'.length);
+  if (!relativePath || relativePath.startsWith('/') || relativePath.split('/').includes('..')) {
+    return undefined;
+  }
+  return relativePath;
+}
+
+async function removeLocalVikingResource(config: RuntimeConfig, uri: string, recursive: boolean): Promise<boolean> {
+  const candidate = await localVikingPathForExistingUri(config, uri);
+  if (!candidate) {
+    return false;
+  }
+  await rm(candidate, {force: false, recursive});
+  return true;
 }
 
 async function runOpenVikingMcpTool(
@@ -1817,9 +1827,8 @@ function textFromCallToolResult(result: CallToolResult): string {
     .trim();
 }
 
-async function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string): Promise<boolean> {
-  const ov = await requiredOpenVikingCli();
-  return removeVikingResourceWithRetry(ov, config, uri);
+async function forgetVikingResource(config: RuntimeConfig, uri: string): Promise<boolean> {
+  return removeVikingResource(config, uri);
 }
 
 interface SharePublishToolOptions {
@@ -1900,7 +1909,7 @@ async function runSharePublishTool(
       push: options.push,
     });
     try {
-      await forgetVikingResourceWithRetry(config, sourceUri);
+      await forgetVikingResource(config, sourceUri);
     } catch (sourceErr: unknown) {
       return {
         content: [
@@ -1925,10 +1934,6 @@ async function runSharePublishTool(
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
-}
-
-function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {
-  return [...args, '--account', config.account, '--user', config.user, '--agent-id', config.agentId];
 }
 
 async function requiredOpenVikingCli(): Promise<string> {

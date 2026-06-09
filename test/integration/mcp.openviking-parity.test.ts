@@ -203,7 +203,7 @@ describe('Threadnote MCP OpenViking parity tools', () => {
   });
 
   it('forwards documented native parameters through OpenViking MCP', async () => {
-    await withMcpClient(async client => {
+    await withMcpClient(async (client, home) => {
       expect(
         nativeArgs(
           await callText(client, 'ov_search', {
@@ -263,6 +263,8 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         uri: 'viking://resources/repos/threadnote',
       });
 
+      await writeLocalVikingFile(home, 'viking://resources/needs-recursive/marker.md', 'delete me\n');
+      await writeLocalVikingFile(home, 'viking://resources/repos/threadnote/tmp', 'delete me\n');
       expect(
         await callText(client, 'forget', {
           recursive: true,

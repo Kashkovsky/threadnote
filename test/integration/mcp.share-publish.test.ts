@@ -138,6 +138,7 @@ describe('Threadnote MCP share_publish', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: home,
         THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
+        THREADNOTE_OPENVIKING_MCP_URL: 'not-a-url',
         THREADNOTE_USER: 'denyskashkovskyi',
       },
       stderr: 'pipe',
