@@ -124,7 +124,7 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
 
   const runtime = await resolveUpdateRuntime(options.runtime ?? 'auto');
   const updateCommand = updatePackageCommand(runtime, registry);
-  await maybeRun(options.dryRun === true, updateCommand.executable, updateCommand.args);
+  await runStreamingSubcommand(options.dryRun === true, updateCommand.executable, updateCommand.args);
 
   if (options.repair === false) {
     console.log('Skipping repair because --no-repair was provided.');
@@ -135,7 +135,7 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
   const threadnoteCommand = await installedThreadnoteCommand(runtime);
   console.log('');
   console.log('Repairing local Threadnote setup after package update.');
-  await runThreadnoteSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+  await runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
   if (options.postUpdate !== false) {
     const postUpdateArgs = [
       'post-update',
@@ -145,7 +145,7 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
       info.latestVersion,
       ...(options.yes === true ? ['--yes'] : []),
     ];
-    await runThreadnoteSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
+    await runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
   } else {
     console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
@@ -267,7 +267,7 @@ async function ensurePinnedOpenVikingInstalled(
 
   const threadnoteCommand =
     currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-  await maybeRun(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
+  await runStreamingSubcommand(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
 
   if (options.dryRun) {
     if (wasRunning || usingLaunchd) {
@@ -287,9 +287,9 @@ async function ensurePinnedOpenVikingInstalled(
     await waitForOpenVikingPortClosed(config, 15_000);
     await runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
   } else {
-    await maybeRun(false, threadnoteCommand, ['stop']);
+    await runStreamingSubcommand(false, threadnoteCommand, ['stop']);
     await waitForOpenVikingPortClosed(config, 15_000);
-    await maybeRun(false, threadnoteCommand, ['start']);
+    await runStreamingSubcommand(false, threadnoteCommand, ['start']);
   }
   const healthyAfter = await waitForOpenVikingHealthy(config, 10_000);
   if (!healthyAfter) {
@@ -300,7 +300,14 @@ async function ensurePinnedOpenVikingInstalled(
   }
 }
 
-async function runThreadnoteSubcommand(dryRun: boolean, executable: string, args: readonly string[]): Promise<void> {
+/**
+ * Run a subprocess with its stdout/stderr inherited so the user sees output
+ * live, instead of buffering through `runCommand`/`maybeRun` (which also
+ * imposes the 10-minute command timeout — fatal for long-running steps like a
+ * package install, an OpenViking reinstall, or a churning repair). Dry-run
+ * defers to `maybeRun` so it only prints the command it would run.
+ */
+async function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[]): Promise<void> {
   if (dryRun) {
     await maybeRun(true, executable, args);
     return;
@@ -516,7 +523,7 @@ async function runApplicablePostUpdateMigrations(
       console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
       continue;
     }
-    await maybeRun(options.dryRun, threadnoteCommand, migration.commandArgs);
+    await runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
     if (!options.dryRun) {
       handledMigrationIds.add(migration.id);
       for (const instruction of migration.instructions) {

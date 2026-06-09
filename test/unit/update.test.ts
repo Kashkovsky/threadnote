@@ -121,15 +121,14 @@ describe('runUpdate', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('streams repair output after updating instead of buffering it', async () => {
+  it('streams the package update and repair output instead of buffering it', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     mockLatestVersion('99.0.0');
 
     await runUpdate(config, {postUpdate: false, runtime: 'npm'});
 
-    expect(vi.mocked(utils.maybeRun)).toHaveBeenCalledWith(
-      false,
+    expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(
       'npm',
       expect.arrayContaining(['install', '--global', 'threadnote@latest']),
     );
@@ -137,6 +136,7 @@ describe('runUpdate', () => {
       'repair',
       '--no-post-update',
     ]);
+    expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
   });
 });
 
@@ -190,15 +190,15 @@ describe('runPostUpdate', () => {
 
     await runPostUpdate(config, {fromVersion: '1.1.0', toVersion: '1.1.0'});
 
-    const stopCall = vi.mocked(utils.maybeRun).mock.calls.find(call => call[2][0] === 'stop');
-    const startCall = vi.mocked(utils.maybeRun).mock.calls.find(call => call[2][0] === 'start');
+    const stopCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'stop');
+    const startCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'start');
 
     expect(stopCall).toBeDefined();
     expect(startCall).toBeDefined();
     expect(vi.mocked(utils.isTcpPortOpen)).toHaveBeenCalledWith('127.0.0.1', 1933, 300);
     expect(vi.mocked(utils.isTcpPortOpen).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(utils.maybeRun).mock.invocationCallOrder[
-        vi.mocked(utils.maybeRun).mock.calls.findIndex(call => call[2][0] === 'start')
+      vi.mocked(utils.runInteractive).mock.invocationCallOrder[
+        vi.mocked(utils.runInteractive).mock.calls.findIndex(call => call[1][0] === 'start')
       ],
     );
   });

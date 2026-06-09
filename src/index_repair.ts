@@ -11,6 +11,7 @@ const MAX_SCAN_DEPTH = 5;
 const MAX_REPAIR_TARGETS = 4;
 export const MAINTENANCE_COLLAPSE_DEPTH = 3;
 export const MAINTENANCE_MAX_REPAIR_TARGETS = 512;
+export const MAINTENANCE_CONSECUTIVE_FAILURE_LIMIT = 5;
 
 interface RecallIndexRepairConfig {
   readonly account: string;
@@ -70,6 +71,7 @@ export async function repairStaleRecallIndex(
   options: {
     readonly collapseToRoots?: boolean;
     readonly collapseDepth?: number;
+    readonly consecutiveFailureLimit?: number;
     readonly dryRun?: boolean;
     readonly ignoreBackoff?: boolean;
     readonly includeAgentSkills?: boolean;
@@ -83,6 +85,7 @@ export async function repairStaleRecallIndex(
   options.onProgress?.({type: 'scan-start'});
   const targets = await findStaleRecallIndexTargets(config, options);
   const repairTargets = targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS);
+  const consecutiveFailureLimit = options.consecutiveFailureLimit;
   options.onProgress?.({
     repairTargetCount: repairTargets.length,
     totalTargets: targets.length,
@@ -97,6 +100,7 @@ export async function repairStaleRecallIndex(
   const repairedUris: string[] = [];
   const skippedRecentUris: string[] = [];
   const warnings: string[] = [];
+  let consecutiveFailures = 0;
 
   for (const [targetIndex, target] of repairTargets.entries()) {
     const progressBase = {index: targetIndex + 1, target, total: repairTargets.length};
@@ -125,11 +129,21 @@ export async function repairStaleRecallIndex(
       {allowFailure: true},
     );
     if (result.exitCode === 0) {
+      consecutiveFailures = 0;
       repairedUris.push(target.uri);
       state.entries[target.uri] = {repairedAt: new Date(now).toISOString(), signature: target.signature};
     } else {
+      consecutiveFailures += 1;
       warnings.push(indexRepairWarning(target.uri, result));
       await options.onRepairFailure?.(target, result);
+      const remaining = repairTargets.length - (targetIndex + 1);
+      if (consecutiveFailureLimit !== undefined && consecutiveFailures >= consecutiveFailureLimit && remaining > 0) {
+        warnings.push(
+          `Stopped recall index repair after ${consecutiveFailures} consecutive reindex failures; ` +
+            `skipped ${remaining} remaining scope(s). Re-run \`threadnote repair\` once OpenViking is idle.`,
+        );
+        break;
+      }
     }
   }
 
@@ -150,6 +164,9 @@ export async function findStaleRecallIndexTargets(
     readonly query?: string;
   } = {},
 ): Promise<readonly StaleIndexTarget[]> {
+  if (await summaryAutoGenerationDisabled(config)) {
+    return [];
+  }
   const roots = await scanRoots(config, options);
   const byUri = new Map<string, {parts: string[]; staleCount: number; uri: string}>();
   for (const root of roots) {
@@ -350,6 +367,30 @@ async function staleSidecars(rootPath: string, rootUri: string): Promise<readonl
 
 function isSummarySidecar(name: string): boolean {
   return name === '.abstract.md' || name === '.overview.md';
+}
+
+/**
+ * `[Directory ... not ready]` sidecars only become "ready" when OpenViking
+ * generates Level 0/1 directory summaries. Threadnote's shipped `ov.conf`
+ * template sets `auto_generate_l0` and `auto_generate_l1` to false, and
+ * `ov reindex` (vectors_only / semantic_and_vectors) never regenerates those
+ * summaries. So when both are disabled the placeholders are permanent by
+ * design — treating them as stale would reindex every scope on every recall
+ * forever without ever clearing a single placeholder. Recall itself relies on
+ * the semantic + vector index, not these summaries, so skipping the scan is
+ * safe. Unknown/unparseable config is treated as enabled to preserve behavior.
+ */
+export async function summaryAutoGenerationDisabled(config: RecallIndexRepairConfig): Promise<boolean> {
+  const raw = await readFileIfExists(join(config.agentContextHome, 'ov.conf'));
+  if (!raw) {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isJsonObject(parsed) && parsed.auto_generate_l0 === false && parsed.auto_generate_l1 === false;
+  } catch (_err: unknown) {
+    return false;
+  }
 }
 
 function isStaleSummary(content: string): boolean {
