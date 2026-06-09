@@ -2,7 +2,7 @@ import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {createServer, type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
-import {delimiter, dirname, join} from 'node:path';
+import {delimiter, join} from 'node:path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
@@ -32,12 +32,6 @@ process.stdout.write(JSON.stringify(args) + '\\n');
 `,
   );
   return bin;
-}
-
-async function writeLocalVikingFile(home: string, uri: string, contents: string): Promise<void> {
-  const path = join(home, 'data', 'viking', 'local', uri.slice('viking://'.length));
-  await mkdir(dirname(path), {recursive: true});
-  await writeFile(path, contents);
 }
 
 async function makeNativeMcpServer(): Promise<{close: () => Promise<void>; url: string}> {
@@ -126,7 +120,7 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 async function withMcpClient<T>(
-  fn: (client: Client, home: string) => Promise<T>,
+  fn: (client: Client) => Promise<T>,
   options: {readonly nativeMcpUrl?: string} = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-ov-parity-'));
@@ -153,7 +147,7 @@ async function withMcpClient<T>(
   const client = new Client({name: 'threadnote-test', version: '0.0.0'});
   try {
     await client.connect(transport);
-    return await fn(client, home);
+    return await fn(client);
   } finally {
     await client.close().catch(() => undefined);
     await nativeMcp?.close().catch(() => undefined);
@@ -203,7 +197,7 @@ describe('Threadnote MCP OpenViking parity tools', () => {
   });
 
   it('forwards documented native parameters through OpenViking MCP', async () => {
-    await withMcpClient(async (client, home) => {
+    await withMcpClient(async client => {
       expect(
         nativeArgs(
           await callText(client, 'ov_search', {
@@ -263,8 +257,6 @@ describe('Threadnote MCP OpenViking parity tools', () => {
         uri: 'viking://resources/repos/threadnote',
       });
 
-      await writeLocalVikingFile(home, 'viking://resources/needs-recursive/marker.md', 'delete me\n');
-      await writeLocalVikingFile(home, 'viking://resources/repos/threadnote/tmp', 'delete me\n');
       expect(
         await callText(client, 'forget', {
           recursive: true,
@@ -315,14 +307,13 @@ describe('Threadnote MCP OpenViking parity tools', () => {
     });
   });
 
-  it('falls back to local VikingFS read when native MCP read misses a resource', async () => {
-    await withMcpClient(async (client, home) => {
-      await writeLocalVikingFile(home, 'viking://resources/native-missing.md', 'local native-missing fallback\n');
+  it('falls back to CLI read when native MCP read misses a resource', async () => {
+    await withMcpClient(async client => {
       expect(await callText(client, 'ov_read', {uri: 'viking://resources/native-missing.md'})).toContain(
-        'local native-missing fallback',
+        '"read","viking://resources/native-missing.md"',
       );
       expect(await callText(client, 'read_context', {uri: 'viking://resources/native-missing.md'})).toContain(
-        'local native-missing fallback',
+        '"read","viking://resources/native-missing.md"',
       );
       const mixedRead = await callText(client, 'read_context', {
         uris: [
@@ -333,16 +324,15 @@ describe('Threadnote MCP OpenViking parity tools', () => {
       expect(mixedRead).toContain(
         'read:{"uris":["viking://user/denyskashkovskyi/memories/durable/projects/threadnote/example.md"]}',
       );
-      expect(mixedRead).toContain('local native-missing fallback');
+      expect(mixedRead).toContain('"read","viking://resources/native-missing.md"');
     });
   });
 
-  it('falls back to local VikingFS read when native MCP read is unavailable', async () => {
+  it('falls back to CLI read when native MCP read is unavailable', async () => {
     await withMcpClient(
-      async (client, home) => {
-        await writeLocalVikingFile(home, 'viking://resources/native-unavailable.md', 'local unavailable fallback\n');
+      async client => {
         expect(await callText(client, 'ov_read', {uri: 'viking://resources/native-unavailable.md'})).toContain(
-          'local unavailable fallback',
+          '"read","viking://resources/native-unavailable.md"',
         );
       },
       {nativeMcpUrl: 'not-a-url'},
