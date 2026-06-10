@@ -119,11 +119,12 @@ compact_context({"project":"my-repo","topic":"active-bug","dryRun":true})
 
 Never compact secrets, credentials, customer data, raw production logs, or checked-in canonical docs into memory.
 
-## Sharing memories with teammates
+## Sharing context with teammates
 
-Threadnote can publish a curated subset of durable memories into a team git repo so other engineers' agents can pull them.
-The mechanism lives under the `viking://user/<you>/memories/shared/<team>/...` subtree; only memories that are explicitly
-published leave the machine. Personal handoffs, preferences, and unpublished durable notes always stay local.
+Threadnote can publish a curated subset of durable memories and agent artifacts (Codex/Claude skills and Claude
+commands) into a team git repo so other engineers' agents can pull them. The mechanism lives under the
+`viking://user/<you>/memories/shared/<team>/...` subtree; only content that is explicitly published leaves the machine.
+Personal handoffs, preferences, and unpublished durable notes always stay local.
 
 Publish a durable memory when its content is useful to other engineers working on the same project (intended behavior,
 design decisions, API contracts, gotchas) and is safe to share. Do NOT publish:
@@ -136,6 +137,16 @@ The MCP tool `share_publish` runs the same scrubber as the CLI and refuses to pu
 patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It writes and pushes
 the shared copy first, then removes the personal copy after the push succeeds.
 
+The MCP tool `share_skill` shares a local Codex/Claude `SKILL.md` file or Claude command markdown file into the team's
+`agent-artifacts/` catalog after the same scrubber checks. Shared artifacts are recallable after sync, but local
+installation remains opt-in with `threadnote share install-artifacts --apply`.
+
+When the user asks whether shared skills exist, call `list_shared_skills`. When the user asks to install one, call
+`install_shared_skill` with the selected `name`; include `agent` and `kind` from the list result when available.
+`list_shared_skills` syncs shared repos before listing and reports `not_installed`, `current`, `update_available`,
+`local_modified`, or `remote_changed_and_local_modified`. Install/update selected shared skills only when the user asks;
+use `force:true` only when the user explicitly accepts overwriting local modifications.
+
 Incoming shared memories are normally fetched and synced automatically before MCP `recall_context` / `read_context` and
 CLI `threadnote recall` / `threadnote read` return. If automatic sync reports a dirty worktree, a conflict, or another
 git issue, run `threadnote share sync` after resolving the local state to pull, reindex, and push explicitly.
@@ -144,9 +155,13 @@ git issue, run `threadnote share sync` after resolving the local state to pull, 
 # MCP call shape
 share_publish({"uri":"viking://user/you/memories/durable/projects/foo/bar.md"})
 share_publish({"uri":"viking://user/you/memories/durable/projects/foo/bar.md","team":"friends","push":false})
+share_skill({"path":"~/.codex/skills/reviewer/SKILL.md"})
+list_shared_skills({})
+install_shared_skill({"name":"reviewer","agent":"codex","kind":"skill"})
 ```
 
-Before publishing, confirm with the user unless they have already instructed you to share durable memories autonomously.
+Before publishing, confirm with the user unless they have already instructed you to share durable memories or agent
+artifacts autonomously.
 
 ## Handoff
 
@@ -184,5 +199,7 @@ threadnote forget viking://user/example/memories/events/duplicate.md
 threadnote handoff --project example --topic active-issue --task "short task summary" --tests "checks run" --next-step "what to do next"
 threadnote share init git@github.com:org/team-memories.git
 threadnote share publish viking://user/example/memories/durable/projects/foo/bar.md
+threadnote share publish-artifact ~/.codex/skills/example/SKILL.md
+threadnote share install-artifacts --name example --agent codex --kind skill --apply
 threadnote share sync
 ```
