@@ -567,7 +567,11 @@ export async function runStart(config: RuntimeConfig, options: StartOptions): Pr
   const child = spawnDetachedServerWithLog(server, args, logFd);
   child.unref();
   await writeFile(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`, 'utf8');
-  const health = await waitForOpenVikingHealth(config, START_HEALTH_TIMEOUT_MS);
+  const health = await waitForOpenVikingHealth(
+    config,
+    START_HEALTH_TIMEOUT_MS,
+    `Waiting for OpenViking health at ${healthUrl}.`,
+  );
   if (health) {
     console.log(`Started OpenViking with pid ${child.pid}. Health OK at ${healthUrl}. Logs: ${logPath}`);
     return;
@@ -885,21 +889,30 @@ async function readOpenVikingHealthIfAvailable(config: RuntimeConfig, timeoutMs:
   }
 }
 
-async function waitForOpenVikingHealth(config: RuntimeConfig, timeoutMs: number): Promise<string | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const requestTimeoutMs = Math.max(100, Math.min(1000, deadline - Date.now()));
-    const health = await readOpenVikingHealthIfAvailable(config, requestTimeoutMs);
-    if (health) {
-      return health;
+async function waitForOpenVikingHealth(
+  config: RuntimeConfig,
+  timeoutMs: number,
+  progressMessage?: string,
+): Promise<string | undefined> {
+  const progress = progressMessage ? startProgress(progressMessage) : undefined;
+  try {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() <= deadline) {
+      const requestTimeoutMs = Math.max(100, Math.min(1000, deadline - Date.now()));
+      const health = await readOpenVikingHealthIfAvailable(config, requestTimeoutMs);
+      if (health) {
+        return health;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
     }
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      break;
-    }
-    await sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+    return undefined;
+  } finally {
+    progress?.stop();
   }
-  return undefined;
 }
 
 async function runInstallCommands(
@@ -1444,7 +1457,11 @@ async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promi
   await maybeRun(false, 'launchctl', ['load', destination]);
   await maybeRun(false, 'launchctl', ['start', LAUNCHD_LABEL]);
   const healthUrl = openVikingHealthUrl(config);
-  const health = await waitForOpenVikingHealth(config, START_HEALTH_TIMEOUT_MS);
+  const health = await waitForOpenVikingHealth(
+    config,
+    START_HEALTH_TIMEOUT_MS,
+    `Waiting for OpenViking health at ${healthUrl}.`,
+  );
   if (health) {
     console.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
     return;
