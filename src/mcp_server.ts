@@ -25,13 +25,16 @@ import {
 } from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  installSharedAgentArtifacts,
   isInSharedNamespace,
+  listSharedAgentArtifacts,
   publishShareGitChange,
   resolveTeam,
   applyScrubber,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   sharedUriFor,
+  shareAgentArtifact,
   startShareBackgroundFetch,
   stripPersonalProvenance,
   syncSharedReposBeforeAgentRead,
@@ -135,6 +138,8 @@ async function main(): Promise<void> {
         'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
         'Use compact_context with dryRun=true for scoped memory hygiene when recall surfaces overlapping active memories.',
         'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish scrubs for secrets, writes and pushes the shared copy first, then removes the personal copy after the push succeeds. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
+        'To share a local Codex/Claude skill or Claude command with teammates, call `share_skill` with the local file path. It publishes into the shared artifact catalog after the same scrubber checks.',
+        'To use a team shared skill as a native local skill, call `list_shared_skills` first, then `install_shared_skill` for the selected name/agent/kind.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
       ].join('\n'),
     },
@@ -356,6 +361,89 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         return checkedUri.error;
       }
       return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+    },
+  );
+
+  server.registerTool(
+    'share_skill',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. Default team is used unless team is provided. Pass preview=true to inspect bytes without writing or committing.",
+      inputSchema: {
+        agent: z.enum(['codex', 'claude']).optional().describe('Agent owner when path inference is ambiguous'),
+        force: z.boolean().optional().describe('Replace an existing shared artifact with different content'),
+        kind: z.enum(['skill', 'command']).optional().describe('Artifact kind when path inference is ambiguous'),
+        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
+        name: z.string().optional().describe('Shared artifact name; defaults to skill directory or command file stem'),
+        path: z.string().optional().describe('Required local path to SKILL.md or a Claude command markdown file'),
+        preview: z.boolean().optional().describe('Return the bytes that would land in the shared git repo'),
+        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
+        redact: z
+          .boolean()
+          .optional()
+          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+      },
+    },
+    async ({agent, force, kind, message, name, path, preview, push, redact, team}) => {
+      const checkedPath = requiredText(path, 'share_skill', 'path', {
+        path: '~/.codex/skills/example/SKILL.md',
+      });
+      if (!checkedPath.ok) {
+        return checkedPath.error;
+      }
+      return runShareSkillTool(config, checkedPath.value, {
+        agent,
+        force,
+        kind,
+        message,
+        name,
+        preview,
+        push,
+        redact,
+        team,
+      });
+    },
+  );
+
+  server.registerTool(
+    'list_shared_skills',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        'List shared Codex/Claude skills and Claude commands available in a configured Threadnote team repo, including whether each one is already installed locally.',
+      inputSchema: {
+        agent: z.enum(['codex', 'claude']).optional().describe('Optional agent filter'),
+        kind: z.enum(['skill', 'command']).optional().describe('Optional kind filter'),
+        name: z.string().optional().describe('Optional shared artifact name filter'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+      },
+    },
+    async ({agent, kind, name, team}) => runListSharedSkillsTool(config, {agent, kind, name, team}),
+  );
+
+  server.registerTool(
+    'install_shared_skill',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        'Install one shared Codex/Claude skill or Claude command from a configured Threadnote team repo into the local agent skill/command directory. Use list_shared_skills first to find names and disambiguate agent/kind.',
+      inputSchema: {
+        agent: z.enum(['codex', 'claude']).optional().describe('Agent owner; required when name is ambiguous'),
+        dryRun: z.boolean().optional().describe('Preview install without writing local files'),
+        force: z.boolean().optional().describe('Replace an existing installed artifact with different content'),
+        kind: z.enum(['skill', 'command']).optional().describe('Artifact kind; required when name is ambiguous'),
+        name: z.string().optional().describe('Required shared artifact name to install'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+      },
+    },
+    async ({agent, dryRun, force, kind, name, team}) => {
+      const checkedName = requiredText(name, 'install_shared_skill', 'name', {name: 'reviewer'});
+      if (!checkedName.ok) {
+        return checkedName.error;
+      }
+      return runInstallSharedSkillTool(config, checkedName.value, {agent, dryRun, force, kind, team});
     },
   );
 }
@@ -1860,6 +1948,33 @@ interface SharePublishToolOptions {
   readonly team?: string;
 }
 
+interface ShareSkillToolOptions {
+  readonly agent?: 'claude' | 'codex';
+  readonly force?: boolean;
+  readonly kind?: 'command' | 'skill';
+  readonly message?: string;
+  readonly name?: string;
+  readonly preview?: boolean;
+  readonly push?: boolean;
+  readonly redact?: boolean;
+  readonly team?: string;
+}
+
+interface SharedSkillFilterOptions {
+  readonly agent?: 'claude' | 'codex';
+  readonly kind?: 'command' | 'skill';
+  readonly name?: string;
+  readonly team?: string;
+}
+
+interface InstallSharedSkillToolOptions {
+  readonly agent?: 'claude' | 'codex';
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly kind?: 'command' | 'skill';
+  readonly team?: string;
+}
+
 async function runSharePublishTool(
   config: RuntimeConfig,
   sourceUri: string,
@@ -1955,6 +2070,90 @@ async function runSharePublishTool(
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
   }
+}
+
+async function runShareSkillTool(
+  config: RuntimeConfig,
+  sourcePath: string,
+  options: ShareSkillToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const result = await shareAgentArtifact(config, sourcePath, options);
+    const lines = [...result.messages, ...result.gitMessages];
+    if (result.previewContent !== undefined) {
+      lines.push('-----BEGIN PREVIEW-----');
+      lines.push(result.previewContent);
+      lines.push('-----END PREVIEW-----');
+    }
+    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runListSharedSkillsTool(
+  config: RuntimeConfig,
+  options: SharedSkillFilterOptions,
+): Promise<CallToolResult> {
+  try {
+    const result = await listSharedAgentArtifacts(config, options);
+    if (result.artifacts.length === 0) {
+      const lines = shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings);
+      lines.push(`No shared skills or commands found for team "${result.team}".`);
+      return {content: [{type: 'text', text: lines.join('\n')}]};
+    }
+    const lines = shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings);
+    lines.push(`Shared skills and commands for team "${result.team}":`);
+    for (const artifact of result.artifacts) {
+      lines.push(
+        `- ${artifact.artifact.kind} ${artifact.artifact.agent}/${artifact.artifact.name} (${artifact.installStatus})`,
+      );
+      lines.push(
+        `  install: install_shared_skill({"name":"${artifact.artifact.name}","agent":"${artifact.artifact.agent}","kind":"${artifact.artifact.kind}"})`,
+      );
+    }
+    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runInstallSharedSkillTool(
+  config: RuntimeConfig,
+  name: string,
+  options: InstallSharedSkillToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const result = await installSharedAgentArtifacts(config, {
+      ...options,
+      apply: options.dryRun !== true,
+      name,
+    });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: [...shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings), ...result.messages].join(
+            '\n',
+          ),
+        },
+      ],
+      isError: false,
+    };
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+function shareArtifactToolHeader(team: string, syncedTeams: readonly string[], warnings: readonly string[]): string[] {
+  const lines = [`Team: ${team}`];
+  if (syncedTeams.length > 0) {
+    lines.push(`Synced shared teams: ${syncedTeams.join(', ')}`);
+  }
+  for (const warning of warnings) {
+    lines.push(`Warning: ${warning}`);
+  }
+  return lines;
 }
 
 function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {

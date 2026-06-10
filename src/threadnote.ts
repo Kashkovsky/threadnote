@@ -24,8 +24,10 @@ import type {
   RememberOptions,
   RepairOptions,
   SeedOptions,
+  ShareInstallArtifactsOptions,
   ShareInitOptions,
   ShareListOptions,
+  SharePublishArtifactOptions,
   SharePublishOptions,
   ShareRenameOptions,
   ShareRemoveOptions,
@@ -62,8 +64,10 @@ import {
 import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
 import {
   runShareInit,
+  runShareInstallArtifacts,
   runShareList,
   runSharePublish,
+  runSharePublishArtifact,
   runShareRename,
   runShareRemove,
   runShareSetUrl,
@@ -491,6 +495,42 @@ async function main(): Promise<void> {
     )
     .action(async (uri: string, options: SharePublishOptions) => {
       await runSharePublish(getRuntimeConfig(program), uri, options);
+    });
+
+  share
+    .command('publish-artifact')
+    .description('Publish a local Codex/Claude skill or Claude command into the shared team repo')
+    .argument('<path>', 'Path to SKILL.md or a Claude command markdown file')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--agent <agent>', 'Agent owner when path inference is ambiguous: codex or claude')
+    .option('--kind <kind>', 'Artifact kind when path inference is ambiguous: skill or command')
+    .option('--name <name>', 'Shared artifact name; defaults to skill directory or command file stem')
+    .option('--message <text>', 'Commit message override')
+    .option('--force', 'Replace an existing shared artifact with different content')
+    .option('--no-push', 'Skip the push step')
+    .option('--dry-run', 'Print actions without running them')
+    .option('--preview', 'Print the exact artifact bytes that would land in the shared git repo')
+    .option(
+      '--redact',
+      'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block',
+    )
+    .action(async (path: string, options: SharePublishArtifactOptions) => {
+      await runSharePublishArtifact(getRuntimeConfig(program), path, options);
+    });
+
+  share
+    .command('install-artifacts')
+    .description('Install shared Codex/Claude skills and Claude commands from a team repo')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--agent <agent>', 'Install only artifacts for this agent: codex or claude')
+    .option('--kind <kind>', 'Install only artifacts of this kind: skill or command')
+    .option('--name <name>', 'Install only this shared artifact name')
+    .option('--apply', 'Actually write files into local agent skill/command directories')
+    .option('--force', 'Replace existing installed artifacts with different content')
+    .option('--no-sync', 'Skip pulling shared team updates before listing/installing artifacts')
+    .option('--dry-run', 'Preview install actions without writing files')
+    .action(async (options: ShareInstallArtifactsOptions) => {
+      await runShareInstallArtifacts(getRuntimeConfig(program), options);
     });
 
   share

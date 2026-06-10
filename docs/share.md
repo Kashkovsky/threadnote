@@ -1,9 +1,9 @@
-# Sharing memories with teammates
+# Sharing context with teammates
 
-`threadnote share` lets a small team keep a curated set of durable memories in a
-git repository so every member's local agent can recall them. Personal handoffs,
-preferences, and unpublished durable notes stay local; only memories you
-explicitly publish leave your machine.
+`threadnote share` lets a small team keep curated durable memories and agent
+artifacts in a git repository so every member's local agent can recall them.
+Personal handoffs, preferences, and unpublished durable notes stay local; only
+content you explicitly publish leaves your machine.
 
 ## Model in one screen
 
@@ -34,7 +34,7 @@ threadnote share init --team friends git@github.com:you/friends-memories.git
 ```
 
 `share init` clones the remote into your local memory tree and ingests any
-existing markdown memories into OpenViking.
+existing shareable markdown into OpenViking.
 
 ### See what's configured
 
@@ -85,6 +85,95 @@ For MCP, pass the same shared URI as `replaceUri` to `remember_context`.
 Threadnote rewrites the shared memory in place, strips local-only provenance
 headers, commits, and pushes the shared repo. You do not need to store a
 personal replacement and run `share publish` again.
+
+### Share a skill or command
+
+Shared agent artifacts live in the same team repo, but outside `durable/`:
+
+```text
+agent-artifacts/
+  skills/codex/<name>/SKILL.md
+  skills/claude/<name>/SKILL.md
+  commands/claude/<name>.md
+```
+
+Publish a local artifact:
+
+```bash
+threadnote share publish-artifact ~/.codex/skills/reviewer/SKILL.md
+threadnote share publish-artifact ~/.claude/skills/triage/SKILL.md
+threadnote share publish-artifact ~/.claude/commands/review-pr.md
+```
+
+Path inference handles the common Codex and Claude locations. If the file is
+somewhere else, pass metadata explicitly:
+
+```bash
+threadnote share publish-artifact ./SKILL.md --agent codex --kind skill --name reviewer
+```
+
+Useful flags:
+
+```bash
+threadnote share publish-artifact <path> --preview
+threadnote share publish-artifact <path> --redact
+threadnote share publish-artifact <path> --force
+threadnote share publish-artifact <path> --no-push
+```
+
+`publish-artifact` runs the same scrubber as memory publish, writes the artifact
+under `agent-artifacts/`, ingests it into OpenViking under the shared team
+namespace, commits, and pushes. Existing artifacts with different content are
+not overwritten unless `--force` is passed.
+
+Agents can do the same through MCP:
+
+```text
+share_skill({"path":"~/.codex/skills/reviewer/SKILL.md"})
+```
+
+Agents can also list and install shared artifacts through MCP:
+
+```text
+list_shared_skills({})
+install_shared_skill({"name":"reviewer","agent":"codex","kind":"skill"})
+```
+
+`list_shared_skills` syncs configured shared repos before listing and reports
+one of:
+
+- `not_installed`
+- `current`
+- `update_available`
+- `local_modified`
+- `remote_changed_and_local_modified`
+
+### Install shared artifacts locally
+
+Shared artifacts are recallable after sync, but they are not installed into
+agent-native locations automatically. Installation is opt-in:
+
+```bash
+threadnote share install-artifacts          # preview only
+threadnote share install-artifacts --apply  # write files locally
+threadnote share install-artifacts --name reviewer --agent codex --kind skill --apply
+```
+
+Install targets are namespaced by Threadnote team to avoid colliding with
+personal files:
+
+```text
+~/.codex/skills/threadnote/<team>/<name>/SKILL.md
+~/.claude/skills/threadnote/<team>/<name>/SKILL.md
+~/.claude/commands/threadnote/<team>/<name>.md
+```
+
+If a target already exists with different content, installation refuses to
+overwrite local modifications unless `--force` is passed. Remote updates are
+applied by running the same install command again; Threadnote tracks the last
+installed shared hash in a sidecar metadata file next to the installed
+artifact. Start a new agent session after installing if that agent snapshots
+skills or commands at startup.
 
 ### Keep teammates' updates current
 
@@ -176,10 +265,11 @@ updates the git `origin` URL and verifies it with `git fetch`.
   - linux home paths (`/home/<you>/...`) → `<local-path>`
 - The scrubber complements but does not replace human review. Strip the value,
   preview with `--preview`, and then publish.
-- Only the `durable/` kind is shareable. `handoffs/`, `preferences/`,
-  `incidents/`, and other lifecycle kinds stay local by construction — both
-  the initial ingest (`share init`) and the sync-pull reindex (`share sync`)
-  skip any file outside `durable/`.
+- Only `durable/` memories and `agent-artifacts/` markdown files are
+  shareable. `handoffs/`, `preferences/`, `incidents/`, and other lifecycle
+  kinds stay local by construction — both the initial ingest (`share init`) and
+  the sync-pull reindex (`share sync`) skip any file outside the shareable
+  top-level directories.
 - `share publish` deletes the personal copy after publishing. If you want to
   keep both, copy the memory to a new URI first (`ov read` then
   `threadnote remember`).

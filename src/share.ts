@@ -1,12 +1,17 @@
-import {mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join, relative, sep} from 'node:path';
+import {lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from 'node:fs/promises';
+import {homedir, tmpdir} from 'node:os';
+import {basename, dirname, join, relative, sep} from 'node:path';
 import {uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
   CommandResult,
+  ShareAgentArtifactAgent,
+  ShareAgentArtifactKind,
+  ShareInstallArtifactsOptions,
   ShareInitOptions,
+  ShareListArtifactsOptions,
   ShareListOptions,
+  SharePublishArtifactOptions,
   SharePublishOptions,
   ShareRenameOptions,
   ShareRemoveOptions,
@@ -22,6 +27,7 @@ import {
   assertVikingUri,
   ensureDirectory,
   exists,
+  expandPath,
   formatShellCommand,
   isDirectory,
   isFile,
@@ -33,12 +39,16 @@ import {
   removePath,
   requiredExecutable,
   runCommand,
+  sha256,
   sleep,
 } from './utils.js';
 
 const TEAMS_FILE_VERSION = 1;
 const SHARED_SEGMENT = 'shared';
 const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
+const SHAREABLE_ARTIFACT_DIR = 'agent-artifacts';
+const SHAREABLE_TOP_LEVEL_DIRS = [...SHAREABLE_MEMORY_KIND_DIRS, SHAREABLE_ARTIFACT_DIR];
+const ARTIFACT_INSTALL_METADATA_VERSION = 1;
 const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
@@ -83,6 +93,76 @@ export interface ScrubberResult {
   readonly blocker?: string;
   readonly cleaned: string;
   readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
+}
+
+export interface ShareArtifactMetadata {
+  readonly agent: ShareAgentArtifactAgent;
+  readonly kind: ShareAgentArtifactKind;
+  readonly name: string;
+}
+
+export interface ShareArtifactResult {
+  readonly artifact: ShareArtifactMetadata;
+  readonly gitMessages: readonly string[];
+  readonly messages: readonly string[];
+  readonly previewContent?: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+  readonly targetUri: string;
+}
+
+export interface SharedArtifactFile {
+  readonly artifact: ShareArtifactMetadata;
+  readonly installPath: string;
+  readonly sourceRelativePath: string;
+  readonly sourcePath: string;
+  readonly team: string;
+}
+
+export type SharedArtifactInstallStatus =
+  | 'current'
+  | 'local_modified'
+  | 'not_installed'
+  | 'remote_changed_and_local_modified'
+  | 'update_available';
+
+export interface SharedArtifactSummary extends SharedArtifactFile {
+  readonly installStatus: SharedArtifactInstallStatus;
+  readonly metadataPath: string;
+}
+
+export interface SharedArtifactListResult {
+  readonly artifacts: readonly SharedArtifactSummary[];
+  readonly syncedTeams: readonly string[];
+  readonly team: string;
+  readonly warnings: readonly string[];
+}
+
+export interface SharedArtifactInstallResult {
+  readonly installedCount: number;
+  readonly messages: readonly string[];
+  readonly syncedTeams: readonly string[];
+  readonly team: string;
+  readonly warnings: readonly string[];
+}
+
+interface SharedArtifactInstallMetadata {
+  readonly artifact: ShareArtifactMetadata;
+  readonly installedAt: string;
+  readonly installedSha256: string;
+  readonly source: string;
+  readonly sourceSha256: string;
+  readonly team: string;
+  readonly version: number;
+}
+
+interface SharedArtifactInstallState {
+  readonly existingContent?: string;
+  readonly existingSha?: string;
+  readonly metadata?: SharedArtifactInstallMetadata;
+  readonly sourceContent: string;
+  readonly sourceSha: string;
+  readonly status: SharedArtifactInstallStatus;
 }
 
 /**
@@ -214,7 +294,7 @@ export async function runShareInit(config: ShareRuntime, remoteUrl: string, opti
   if (!dryRun) {
     await ensureSharedGitignore(worktree, git, options.push !== false);
     const ingested = await ingestWorktreeFiles(config, newConfig, 'create');
-    console.log(`Ingested ${ingested} shared memory file(s) into OpenViking.`);
+    console.log(`Ingested ${ingested} shared file(s) into OpenViking.`);
   }
 }
 
@@ -629,11 +709,11 @@ async function runShareSyncQuiet(
 }
 
 async function stageShareableChanges(dryRun: boolean, git: string, worktree: string): Promise<void> {
-  // Stage repo metadata (README, .gitignore) plus every shareable kind dir.
+  // Stage repo metadata plus every shareable top-level dir.
   // OpenViking-generated summaries (.abstract.md, .overview.md) are excluded
   // via the repo's .gitignore (ensureSharedGitignore self-heals it on every
   // sync), so they never get staged even by an unscoped `git add`.
-  const pathspecs = [':(top)README.md', ':(top).gitignore', ...SHAREABLE_MEMORY_KIND_DIRS.map(dir => `:(top)${dir}`)];
+  const pathspecs = [':(top)README.md', ':(top).gitignore', ...SHAREABLE_TOP_LEVEL_DIRS.map(dir => `:(top)${dir}`)];
   await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', ...pathspecs], {allowFailure: true});
 }
 
@@ -782,6 +862,208 @@ export async function runSharePublish(
   console.log(`Published ${sourceUri} -> ${targetUri}`);
 }
 
+export async function runSharePublishArtifact(
+  config: ShareRuntime,
+  sourcePath: string,
+  options: SharePublishArtifactOptions,
+): Promise<void> {
+  const result = await shareAgentArtifact(config, sourcePath, options);
+  printShareArtifactResult(result, options.preview === true);
+}
+
+export async function shareAgentArtifact(
+  config: ShareRuntime,
+  sourcePath: string,
+  options: SharePublishArtifactOptions,
+): Promise<ShareArtifactResult> {
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true;
+  const preview = options.preview === true;
+  const resolvedSourcePath = expandPath(sourcePath);
+  if (!(await isRegularFileNoSymlink(resolvedSourcePath))) {
+    throw new Error(`Agent artifact source is not a regular file: ${resolvedSourcePath}`);
+  }
+
+  const artifact = inferShareArtifact(resolvedSourcePath, options);
+  const rawContent = await readFile(resolvedSourcePath, 'utf8');
+  if (!rawContent.trim()) {
+    throw new Error(`Refusing to share empty agent artifact: ${resolvedSourcePath}`);
+  }
+  const scrub = applyScrubber(rawContent, {redact: options.redact === true});
+  const relativePath = sharedArtifactRelativePath(artifact);
+  const targetPath = join(team.config.worktree, ...relativePath.split('/'));
+  const targetUri = workfileToVikingUri(config, team.config, targetPath);
+  const messages: string[] = [
+    `${preview ? 'Previewing' : dryRun ? 'Would share' : 'Sharing'} ${artifact.kind} ${artifact.agent}/${artifact.name}`,
+    `Source: ${portablePath(resolvedSourcePath)}`,
+    `Destination: ${targetUri}`,
+  ];
+
+  if (preview) {
+    if (scrub.blocker) {
+      messages.push(`PREVIEW BLOCKED: ${scrub.blocker}. Strip the sensitive value or pass --redact.`);
+      return {
+        artifact,
+        gitMessages: [],
+        messages,
+        sourcePath: resolvedSourcePath,
+        targetPath,
+        targetUri,
+      };
+    }
+    for (const redaction of scrub.redactions) {
+      messages.push(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
+    }
+    return {
+      artifact,
+      gitMessages: [],
+      messages,
+      previewContent: scrub.cleaned,
+      sourcePath: resolvedSourcePath,
+      targetPath,
+      targetUri,
+    };
+  }
+
+  if (scrub.blocker) {
+    throw new Error(
+      `Refusing to share ${resolvedSourcePath}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
+    );
+  }
+  for (const redaction of scrub.redactions) {
+    messages.push(`Redacted ${redaction.count}× ${redaction.name} before sharing.`);
+  }
+  const content = scrub.cleaned;
+  const existingContent = (await readFileIfExists(targetPath)) ?? undefined;
+  if (existingContent !== undefined && existingContent !== content && options.force !== true) {
+    throw new Error(
+      `Shared artifact already exists with different content: ${portablePath(targetPath)}. Pass --force to replace it.`,
+    );
+  }
+
+  if (dryRun) {
+    messages.push(`Would write shared artifact: ${portablePath(targetPath)}`);
+  }
+
+  const ov = await openVikingCliForMode(dryRun);
+  const ovHasResource = !dryRun && (await vikingResourceExists(ov, config, targetUri));
+  await ensureSharedDirectoryChain(config, ov, targetUri, dryRun, {quiet: true});
+  await writeMemoryFile(config, ov, targetUri, content, ovHasResource ? 'replace' : 'create', dryRun, {quiet: true});
+
+  const message = options.message ?? `share: publish ${relativePath}`;
+  const gitMessages = await publishShareGitChange(team.config.worktree, relativePath, message, {
+    dryRun,
+    push: options.push,
+  });
+  return {artifact, gitMessages, messages, sourcePath: resolvedSourcePath, targetPath, targetUri};
+}
+
+export async function runShareInstallArtifacts(
+  config: ShareRuntime,
+  options: ShareInstallArtifactsOptions,
+): Promise<void> {
+  const result = await installSharedAgentArtifacts(config, options);
+  if (result.syncedTeams.length > 0) {
+    console.log(`Synced shared teams: ${result.syncedTeams.join(', ')}`);
+  }
+  for (const warning of result.warnings) {
+    console.warn(`Warning: ${warning}`);
+  }
+  for (const message of result.messages) {
+    console.log(message);
+  }
+}
+
+export async function listSharedAgentArtifacts(
+  config: ShareRuntime,
+  options: ShareListArtifactsOptions = {},
+): Promise<SharedArtifactListResult> {
+  const syncResult = await maybeSyncSharedArtifacts(config, options);
+  const team = await resolveTeam(config, options.team);
+  const artifacts = filterSharedArtifacts(await collectSharedArtifacts(team.config.worktree, team.name), options);
+  const summaries: SharedArtifactSummary[] = [];
+  for (const artifact of artifacts) {
+    summaries.push({
+      ...artifact,
+      installStatus: await sharedArtifactInstallStatus(artifact),
+      metadataPath: sharedArtifactMetadataPath(artifact),
+    });
+  }
+  return {artifacts: summaries, syncedTeams: syncResult.syncedTeams, team: team.name, warnings: syncResult.warnings};
+}
+
+export async function installSharedAgentArtifacts(
+  config: ShareRuntime,
+  options: ShareInstallArtifactsOptions,
+): Promise<SharedArtifactInstallResult> {
+  const syncResult = await maybeSyncSharedArtifacts(config, options);
+  const team = await resolveTeam(config, options.team);
+  const dryRun = options.dryRun === true || options.apply !== true;
+  const allArtifacts = await collectSharedArtifacts(team.config.worktree, team.name);
+  const artifacts = filterSharedArtifacts(allArtifacts, options);
+  const messages: string[] = [];
+  if (artifacts.length === 0) {
+    const filters = sharedArtifactFilterLabel(options);
+    if (filters) {
+      throw new Error(`No shared agent artifacts found for team "${team.name}" matching ${filters}.`);
+    }
+    return {
+      installedCount: 0,
+      messages: [`No shared agent artifacts found for team "${team.name}".`],
+      syncedTeams: syncResult.syncedTeams,
+      team: team.name,
+      warnings: syncResult.warnings,
+    };
+  }
+  if (
+    options.name !== undefined &&
+    artifacts.length > 1 &&
+    (options.agent === undefined || options.kind === undefined)
+  ) {
+    throw new Error(
+      `Shared artifact "${options.name}" is ambiguous. Specify agent and kind. Matches: ${artifacts
+        .map(artifact => sharedArtifactLabel(artifact.artifact))
+        .join(', ')}`,
+    );
+  }
+  let installedCount = 0;
+  for (const artifact of artifacts) {
+    const label = sharedArtifactLabel(artifact.artifact);
+    const state = await sharedArtifactInstallState(artifact);
+    if (dryRun) {
+      const verb = sharedArtifactDryRunVerb(state.status, options.force === true);
+      const suffix = sharedArtifactDryRunSuffix(state.status, options.force === true);
+      messages.push(`${verb} ${label}: ${portablePath(artifact.installPath)}${suffix}`);
+      continue;
+    }
+    if (
+      (state.status === 'local_modified' || state.status === 'remote_changed_and_local_modified') &&
+      options.force !== true
+    ) {
+      throw new Error(`Refusing to overwrite ${portablePath(artifact.installPath)}. Pass force=true or --force.`);
+    }
+    if (state.status === 'current') {
+      await writeSharedArtifactMetadata(artifact, state.sourceSha);
+      messages.push(`Already installed ${label}: ${portablePath(artifact.installPath)}`);
+      continue;
+    }
+    await ensureDirectory(dirname(artifact.installPath), false);
+    await writeFile(artifact.installPath, state.sourceContent, {encoding: 'utf8', mode: 0o600});
+    await writeSharedArtifactMetadata(artifact, state.sourceSha);
+    installedCount += 1;
+    messages.push(
+      `${sharedArtifactInstallVerb(state.status, options.force === true)} ${label}: ${portablePath(artifact.installPath)}`,
+    );
+  }
+  return {
+    installedCount,
+    messages,
+    syncedTeams: syncResult.syncedTeams,
+    team: team.name,
+    warnings: syncResult.warnings,
+  };
+}
+
 export async function runShareUnpublish(
   config: ShareRuntime,
   sourceUri: string,
@@ -882,7 +1164,7 @@ export async function runShareRename(config: ShareRuntime, options: ShareRenameO
     console.log(`Would rename worktree: ${portablePath(oldTeam.config.worktree)} -> ${portablePath(newWorktree)}`);
     console.log(`Would rename gitdir: ${portablePath(oldTeam.config.gitdir)} -> ${portablePath(newGitdir)}`);
     console.log(`Would update git core.worktree for team "${newName}".`);
-    console.log(`Would reindex shared memories under team "${newName}" and remove old shared URI tree.`);
+    console.log(`Would reindex shared context under team "${newName}" and remove old shared URI tree.`);
     console.log(`Would write teams file: ${teamsFilePath(config)}`);
     return;
   }
@@ -901,7 +1183,7 @@ export async function runShareRename(config: ShareRuntime, options: ShareRenameO
     false,
   );
   console.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
-  console.log(`Reindexed ${ingested} shared memory file(s).`);
+  console.log(`Reindexed ${ingested} shared file(s).`);
 }
 
 export async function runShareSetUrl(
@@ -1171,7 +1453,7 @@ async function walkMemoryFiles(root: string): Promise<readonly string[]> {
       }
       const full = join(path, entry.name);
       if (entry.isDirectory()) {
-        if (depth === 0 && !SHAREABLE_MEMORY_KIND_DIRS.includes(entry.name)) {
+        if (depth === 0 && !SHAREABLE_TOP_LEVEL_DIRS.includes(entry.name)) {
           continue;
         }
         await visit(full, depth + 1);
@@ -1262,6 +1544,321 @@ export function vikingUriToWorktreeRelative(config: ShareRuntime, uri: string, t
   return uri.slice(prefix.length);
 }
 
+async function isRegularFileNoSymlink(path: string): Promise<boolean> {
+  try {
+    const stat = await lstat(path);
+    return stat.isFile();
+  } catch (_err: unknown) {
+    return false;
+  }
+}
+
+function inferShareArtifact(path: string, options: SharePublishArtifactOptions): ShareArtifactMetadata {
+  const normalizedPath = path.split(sep).join('/');
+  const fileName = basename(path);
+  const lowerFileName = fileName.toLowerCase();
+  const lowerPath = normalizedPath.toLowerCase();
+  const inferredKind: ShareAgentArtifactKind | undefined =
+    lowerFileName === 'skill.md'
+      ? 'skill'
+      : lowerPath.includes('/.claude/commands/') && lowerFileName.endsWith('.md')
+        ? 'command'
+        : undefined;
+  const inferredAgent: ShareAgentArtifactAgent | undefined = lowerPath.includes('/.codex/skills/')
+    ? 'codex'
+    : lowerPath.includes('/.claude/skills/') || lowerPath.includes('/.claude/commands/')
+      ? 'claude'
+      : undefined;
+  const extensionIndex = fileName.lastIndexOf('.');
+  const stem = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+  const inferredName = lowerFileName === 'skill.md' ? basename(dirname(path)) : stem;
+  const kind = options.kind ?? inferredKind;
+  const agent = options.agent ?? inferredAgent;
+  const name = options.name ?? inferredName;
+
+  if (kind !== 'skill' && kind !== 'command') {
+    throw new Error('Could not infer artifact kind. Pass --kind skill or --kind command.');
+  }
+  if (agent !== 'codex' && agent !== 'claude') {
+    throw new Error('Could not infer artifact agent. Pass --agent codex or --agent claude.');
+  }
+  if (kind === 'skill' && lowerFileName !== 'skill.md') {
+    throw new Error('Skill artifacts must point at a SKILL.md file.');
+  }
+  if (kind === 'command' && !lowerFileName.endsWith('.md')) {
+    throw new Error('Command artifacts must be Markdown files.');
+  }
+  if (kind === 'command' && agent !== 'claude') {
+    throw new Error('Only Claude command artifacts are supported.');
+  }
+  if (name.trim().length === 0) {
+    throw new Error('Artifact name cannot be empty.');
+  }
+  return {agent, kind, name: uriSegment(name)};
+}
+
+function sharedArtifactRelativePath(artifact: ShareArtifactMetadata): string {
+  if (artifact.kind === 'skill') {
+    return `${SHAREABLE_ARTIFACT_DIR}/skills/${artifact.agent}/${artifact.name}/SKILL.md`;
+  }
+  return `${SHAREABLE_ARTIFACT_DIR}/commands/${artifact.agent}/${artifact.name}.md`;
+}
+
+function sharedArtifactFromRelativePath(relativePath: string): ShareArtifactMetadata | undefined {
+  const parts = relativePath.split('/');
+  if (parts[0] !== SHAREABLE_ARTIFACT_DIR) {
+    return undefined;
+  }
+  if (
+    parts.length === 5 &&
+    parts[1] === 'skills' &&
+    (parts[2] === 'codex' || parts[2] === 'claude') &&
+    parts[4] === 'SKILL.md'
+  ) {
+    return {agent: parts[2], kind: 'skill', name: parts[3]};
+  }
+  if (parts.length === 4 && parts[1] === 'commands' && parts[2] === 'claude' && parts[3].endsWith('.md')) {
+    return {agent: 'claude', kind: 'command', name: parts[3].slice(0, -'.md'.length)};
+  }
+  return undefined;
+}
+
+async function collectSharedArtifacts(worktree: string, team: string): Promise<readonly SharedArtifactFile[]> {
+  const root = join(worktree, SHAREABLE_ARTIFACT_DIR);
+  if (!(await isDirectory(root))) {
+    return [];
+  }
+  const out: SharedArtifactFile[] = [];
+  async function visit(path: string): Promise<void> {
+    const entries = await readdir(path, {withFileTypes: true});
+    for (const entry of entries) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) {
+        await visit(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.md')) {
+        continue;
+      }
+      const relativePath = relative(worktree, full).split(sep).join('/');
+      const artifact = sharedArtifactFromRelativePath(relativePath);
+      if (artifact === undefined) {
+        continue;
+      }
+      out.push({
+        artifact,
+        installPath: sharedArtifactInstallPath(team, artifact),
+        sourcePath: full,
+        sourceRelativePath: relativePath,
+        team,
+      });
+    }
+  }
+  await visit(root);
+  return out.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
+}
+
+function filterSharedArtifacts(
+  artifacts: readonly SharedArtifactFile[],
+  options: ShareInstallArtifactsOptions | ShareListArtifactsOptions,
+): readonly SharedArtifactFile[] {
+  const name = options.name === undefined ? undefined : uriSegment(options.name);
+  return artifacts.filter(artifact => {
+    if (options.agent !== undefined && artifact.artifact.agent !== options.agent) {
+      return false;
+    }
+    if (options.kind !== undefined && artifact.artifact.kind !== options.kind) {
+      return false;
+    }
+    if (name !== undefined && artifact.artifact.name !== name) {
+      return false;
+    }
+    return true;
+  });
+}
+
+async function maybeSyncSharedArtifacts(
+  config: ShareRuntime,
+  options: ShareInstallArtifactsOptions | ShareListArtifactsOptions,
+): Promise<AutoShareSyncResult> {
+  if (options.sync === false) {
+    return {syncedTeams: [], warnings: []};
+  }
+  return syncSharedReposBeforeAgentRead(config);
+}
+
+async function sharedArtifactInstallStatus(artifact: SharedArtifactFile): Promise<SharedArtifactInstallStatus> {
+  return (await sharedArtifactInstallState(artifact)).status;
+}
+
+async function sharedArtifactInstallState(artifact: SharedArtifactFile): Promise<SharedArtifactInstallState> {
+  const sourceContent = await readFile(artifact.sourcePath, 'utf8');
+  const sourceSha = sha256(sourceContent);
+  const existingContent = (await readFileIfExists(artifact.installPath)) ?? undefined;
+  if (existingContent === undefined) {
+    return {sourceContent, sourceSha, status: 'not_installed'};
+  }
+  const existingSha = sha256(existingContent);
+  const metadata = await readSharedArtifactMetadata(artifact);
+  if (existingSha === sourceSha) {
+    return {existingContent, existingSha, metadata, sourceContent, sourceSha, status: 'current'};
+  }
+  if (metadata === undefined) {
+    return {existingContent, existingSha, sourceContent, sourceSha, status: 'local_modified'};
+  }
+  const remoteChanged = metadata.sourceSha256 !== sourceSha;
+  const localChanged = metadata.installedSha256 !== existingSha;
+  if (remoteChanged && localChanged) {
+    return {
+      existingContent,
+      existingSha,
+      metadata,
+      sourceContent,
+      sourceSha,
+      status: 'remote_changed_and_local_modified',
+    };
+  }
+  if (remoteChanged) {
+    return {existingContent, existingSha, metadata, sourceContent, sourceSha, status: 'update_available'};
+  }
+  return {existingContent, existingSha, metadata, sourceContent, sourceSha, status: 'local_modified'};
+}
+
+async function readSharedArtifactMetadata(
+  artifact: SharedArtifactFile,
+): Promise<SharedArtifactInstallMetadata | undefined> {
+  const raw = await readFileIfExists(sharedArtifactMetadataPath(artifact));
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = parseJsonConfigObject(raw);
+  if (parsed === undefined || parsed.version !== ARTIFACT_INSTALL_METADATA_VERSION) {
+    return undefined;
+  }
+  const artifactValue = parsed.artifact;
+  if (
+    typeof parsed.team !== 'string' ||
+    typeof parsed.source !== 'string' ||
+    typeof parsed.sourceSha256 !== 'string' ||
+    typeof parsed.installedSha256 !== 'string' ||
+    typeof parsed.installedAt !== 'string' ||
+    typeof artifactValue !== 'object' ||
+    artifactValue === null ||
+    Array.isArray(artifactValue)
+  ) {
+    return undefined;
+  }
+  const metadataArtifact = artifactValue as Partial<ShareArtifactMetadata>;
+  if (
+    metadataArtifact.agent !== artifact.artifact.agent ||
+    metadataArtifact.kind !== artifact.artifact.kind ||
+    metadataArtifact.name !== artifact.artifact.name
+  ) {
+    return undefined;
+  }
+  return {
+    artifact: artifact.artifact,
+    installedAt: parsed.installedAt,
+    installedSha256: parsed.installedSha256,
+    source: parsed.source,
+    sourceSha256: parsed.sourceSha256,
+    team: parsed.team,
+    version: ARTIFACT_INSTALL_METADATA_VERSION,
+  };
+}
+
+async function writeSharedArtifactMetadata(artifact: SharedArtifactFile, sourceSha: string): Promise<void> {
+  const metadata: SharedArtifactInstallMetadata = {
+    artifact: artifact.artifact,
+    installedAt: new Date().toISOString(),
+    installedSha256: sourceSha,
+    source: artifact.sourceRelativePath,
+    sourceSha256: sourceSha,
+    team: artifact.team,
+    version: ARTIFACT_INSTALL_METADATA_VERSION,
+  };
+  const metadataPath = sharedArtifactMetadataPath(artifact);
+  await ensureDirectory(dirname(metadataPath), false);
+  await writeFile(metadataPath, `${JSON.stringify(metadata, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
+}
+
+function sharedArtifactMetadataPath(artifact: SharedArtifactFile): string {
+  return `${artifact.installPath}.threadnote-install.json`;
+}
+
+function sharedArtifactDryRunVerb(status: SharedArtifactInstallStatus, force: boolean): string {
+  switch (status) {
+    case 'not_installed':
+      return 'Would install';
+    case 'current':
+      return 'Already installed';
+    case 'update_available':
+      return 'Would update';
+    case 'local_modified':
+    case 'remote_changed_and_local_modified':
+      return force ? 'Would replace' : 'Would skip modified';
+  }
+}
+
+function sharedArtifactDryRunSuffix(status: SharedArtifactInstallStatus, force: boolean): string {
+  if ((status === 'local_modified' || status === 'remote_changed_and_local_modified') && !force) {
+    return ' (pass --force to replace local changes)';
+  }
+  return '';
+}
+
+function sharedArtifactInstallVerb(status: SharedArtifactInstallStatus, force: boolean): string {
+  if (force && (status === 'local_modified' || status === 'remote_changed_and_local_modified')) {
+    return 'Replaced';
+  }
+  if (status === 'update_available') {
+    return 'Updated';
+  }
+  return 'Installed';
+}
+
+function sharedArtifactFilterLabel(options: ShareInstallArtifactsOptions | ShareListArtifactsOptions): string {
+  const filters: string[] = [];
+  if (options.kind !== undefined) {
+    filters.push(`kind=${options.kind}`);
+  }
+  if (options.agent !== undefined) {
+    filters.push(`agent=${options.agent}`);
+  }
+  if (options.name !== undefined) {
+    filters.push(`name=${uriSegment(options.name)}`);
+  }
+  return filters.join(', ');
+}
+
+function sharedArtifactLabel(artifact: ShareArtifactMetadata): string {
+  return `${artifact.kind} ${artifact.agent}/${artifact.name}`;
+}
+
+function sharedArtifactInstallPath(team: string, artifact: ShareArtifactMetadata): string {
+  if (artifact.kind === 'skill' && artifact.agent === 'codex') {
+    return join(homedir(), '.codex', 'skills', 'threadnote', team, artifact.name, 'SKILL.md');
+  }
+  if (artifact.kind === 'skill' && artifact.agent === 'claude') {
+    return join(homedir(), '.claude', 'skills', 'threadnote', team, artifact.name, 'SKILL.md');
+  }
+  return join(homedir(), '.claude', 'commands', 'threadnote', team, `${artifact.name}.md`);
+}
+
+function printShareArtifactResult(result: ShareArtifactResult, preview: boolean): void {
+  for (const message of result.messages) {
+    console.log(message);
+  }
+  for (const gitMessage of result.gitMessages) {
+    console.log(gitMessage);
+  }
+  if (preview && result.previewContent !== undefined) {
+    console.log('-----BEGIN PREVIEW-----');
+    console.log(result.previewContent);
+    console.log('-----END PREVIEW-----');
+  }
+}
+
 export function scrubberBlocker(content: string): string | undefined {
   return applyScrubber(content, {redact: false}).blocker;
 }
@@ -1336,9 +1933,9 @@ export async function ensureSharedDirectoryChain(
       continue;
     }
     if (options.quiet === true) {
-      await runCommand(ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+      await runCommand(ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared context.']));
     } else {
-      await maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared memories.']));
+      await maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared context.']));
     }
   }
 }
@@ -1666,13 +2263,13 @@ interface ApplyChangesResult {
   readonly failed: readonly ChangedFile[];
 }
 
-// applyChangesToOpenViking only reflects changes to files under the shareable
-// kind directories (currently just `durable/`). For renames that cross kind
-// directories (e.g., handoffs/x.md -> durable/y.md), listChangedFiles emits a
+// applyChangesToOpenViking only reflects changes to files under shareable
+// top-level directories. For renames that cross those directories
+// (e.g., handoffs/x.md -> durable/y.md), listChangedFiles emits a
 // 'removed' for the old path and an 'added' for the new path; both are
-// processed independently here. The 'removed' entry for a non-shareable kind
+// processed independently here. The 'removed' entry for a non-shareable path
 // is filtered out by the firstSegment check, which is the desired outcome
-// because non-shareable kinds are never reflected into OV's shared subtree.
+// because non-shareable files are never reflected into OV's shared subtree.
 //
 // Per-change failures are non-fatal: we log a warning and continue with the
 // other changes, returning the failed list so the caller can re-persist them
@@ -1692,7 +2289,7 @@ async function applyChangesToOpenViking(
       continue;
     }
     const firstSegment = change.relativePath.split('/')[0];
-    if (!SHAREABLE_MEMORY_KIND_DIRS.includes(firstSegment)) {
+    if (!SHAREABLE_TOP_LEVEL_DIRS.includes(firstSegment)) {
       continue;
     }
     const uri = workfileToVikingUri(config, team, change.path);

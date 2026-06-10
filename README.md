@@ -42,6 +42,10 @@ Ask the agent to remember it. Threadnote keeps that memory local and searchable 
 **Have reusable agent workflows already installed as skills?**\
 Run `threadnote seed-skills` to make local `SKILL.md` guidance discoverable through recall. Agents can find relevant testing, release, on-call, debugging, or plugin-provided workflows without you reopening the same skill files by hand.
 
+**Want teammates to use the same skill or command?**\
+Publish it into a shared team repo with `threadnote share publish-artifact <path>`. Teammates can recall the shared
+artifact immediately after sync, then opt in to local installation with `threadnote share install-artifacts --apply`.
+
 **Recall returned several overlapping memories?**
 Run `threadnote compact --project <repo> --topic <issue> --dry-run` or ask the agent to use
 `compact_context({"project":"<repo>","topic":"<issue>","dryRun":true})`. Threadnote produces a scoped plan first:

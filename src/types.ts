@@ -307,6 +307,41 @@ export interface SharePublishOptions {
   readonly team?: string;
 }
 
+export type ShareAgentArtifactAgent = 'claude' | 'codex';
+export type ShareAgentArtifactKind = 'command' | 'skill';
+
+export interface SharePublishArtifactOptions {
+  readonly agent?: ShareAgentArtifactAgent;
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly kind?: ShareAgentArtifactKind;
+  readonly message?: string;
+  readonly name?: string;
+  readonly preview?: boolean;
+  readonly push?: boolean;
+  readonly redact?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareInstallArtifactsOptions {
+  readonly agent?: ShareAgentArtifactAgent;
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly kind?: ShareAgentArtifactKind;
+  readonly name?: string;
+  readonly sync?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareListArtifactsOptions {
+  readonly agent?: ShareAgentArtifactAgent;
+  readonly kind?: ShareAgentArtifactKind;
+  readonly name?: string;
+  readonly sync?: boolean;
+  readonly team?: string;
+}
+
 export interface ShareUnpublishOptions {
   readonly dryRun?: boolean;
   readonly message?: string;
