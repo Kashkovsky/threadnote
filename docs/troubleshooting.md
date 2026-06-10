@@ -85,8 +85,14 @@ For detached starts, logs are written to:
 ~/.openviking/logs/server.log
 ```
 
-If `start` reports that OpenViking did not become healthy, open that log. Certificate failures during the first embedding
-model download are covered above.
+If `start` reports that OpenViking did not become healthy, first check whether it finished shortly after the timeout:
+
+```bash
+threadnote doctor --dry-run
+```
+
+If it still is not healthy, open that log. Certificate failures during the first embedding model download are covered
+above.
 
 ## Port Already In Use
 
