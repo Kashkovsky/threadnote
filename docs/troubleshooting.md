@@ -8,7 +8,9 @@ Run:
 threadnote install
 ```
 
-The installer prefers `uv`, then `pipx`, then `python3 -m pip install --user`.
+The installer prefers `uv`, then `pipx`, then `python3 -m pip install --user`. For `curl | sh` installs, the wrapper
+reattaches `threadnote install` to your terminal when possible so it can prompt to install `uv` and continue instead of
+falling straight through to the pip fallback.
 
 ## `uv` Fails With `UnknownIssuer`
 

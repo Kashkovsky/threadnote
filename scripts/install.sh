@@ -116,7 +116,11 @@ install_package "$runtime"
 threadnote_bin="$(find_threadnote "$runtime")" || die "Installed $PACKAGE, but could not find the threadnote command."
 
 say "Running threadnote install"
-"$threadnote_bin" install "$@"
+if { true </dev/tty; } 2>/dev/null; then
+  "$threadnote_bin" install "$@" </dev/tty
+else
+  "$threadnote_bin" install "$@"
+fi
 
 if ! have threadnote; then
   say ""
