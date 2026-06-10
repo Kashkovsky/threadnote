@@ -9,7 +9,6 @@
 `threadnote` is a safe local workflow for using [OpenViking](https://openviking.ai/) as shared, agent-neutral context for development work.
 It is intentionally scoped to curated docs, memories, skills, and handoffs.
 
-
 **Walkthrough:** https://kashkovsky.github.io/threadnote/  
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
 
