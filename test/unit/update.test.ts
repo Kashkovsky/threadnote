@@ -9,6 +9,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     findExecutable: vi.fn(),
+    findOpenVikingCli: vi.fn(),
     isExecutable: vi.fn(),
     isTcpPortOpen: vi.fn(),
     maybeRun: vi.fn(),
@@ -55,6 +56,7 @@ function mockLatestVersion(version: string): void {
 describe('parseUpdateRuntime', () => {
   beforeEach(() => {
     vi.mocked(utils.findExecutable).mockReset();
+    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -62,6 +64,7 @@ describe('parseUpdateRuntime', () => {
     vi.mocked(utils.runInteractive).mockReset();
     vi.mocked(utils.sleep).mockReset();
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
+    vi.mocked(utils.findOpenVikingCli).mockResolvedValue(undefined);
     vi.mocked(utils.runCommand).mockResolvedValue(ok());
     vi.mocked(utils.runInteractive).mockResolvedValue(0);
     vi.mocked(utils.sleep).mockResolvedValue(undefined);
@@ -89,6 +92,7 @@ describe('runUpdate', () => {
 
   beforeEach(() => {
     vi.mocked(utils.findExecutable).mockReset();
+    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -104,6 +108,7 @@ describe('runUpdate', () => {
       }
       return undefined;
     });
+    vi.mocked(utils.findOpenVikingCli).mockResolvedValue(undefined);
     vi.mocked(utils.isExecutable).mockResolvedValue(true);
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
@@ -146,6 +151,7 @@ describe('runPostUpdate', () => {
 
   beforeEach(() => {
     vi.mocked(utils.findExecutable).mockReset();
+    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -153,14 +159,12 @@ describe('runPostUpdate', () => {
     vi.mocked(utils.runInteractive).mockReset();
     vi.mocked(utils.sleep).mockReset();
     vi.mocked(utils.findExecutable).mockImplementation(async commands => {
-      if (commands.includes('ov') || commands.includes('openviking')) {
-        return '/ov';
-      }
       if (commands.includes('threadnote')) {
         return '/threadnote';
       }
       return undefined;
     });
+    vi.mocked(utils.findOpenVikingCli).mockResolvedValue('/ov');
     vi.mocked(utils.isTcpPortOpen).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {

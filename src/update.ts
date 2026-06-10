@@ -13,6 +13,7 @@ import {
   ensureDirectory,
   errorMessage,
   findExecutable,
+  findOpenVikingCli,
   isExecutable,
   isTcpPortOpen,
   isJsonObject,
@@ -240,7 +241,7 @@ async function ensurePinnedOpenVikingInstalled(
   config: RuntimeConfig,
   options: {readonly dryRun: boolean},
 ): Promise<void> {
-  const ov = await findExecutable(['ov', 'openviking']);
+  const ov = await findOpenVikingCli();
   if (!ov) {
     return;
   }

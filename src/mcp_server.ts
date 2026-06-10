@@ -5,8 +5,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {access, readdir, readFile, realpath} from 'node:fs/promises';
-import {homedir} from 'node:os';
+import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
@@ -51,7 +50,7 @@ import {
   exactRecallScopeIntents,
   exactRecallTerms,
   expandPath,
-  findExecutable,
+  findOpenVikingCli,
   formatExactMatchPointers,
   formatRecallHits,
   mergeRecallHits,
@@ -2161,26 +2160,11 @@ function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly 
 }
 
 async function requiredOpenVikingCli(): Promise<string> {
-  const command =
-    process.env.THREADNOTE_OV ??
-    (await findExecutable(['ov', 'openviking'])) ??
-    (await firstExistingPath([join(homedir(), '.local', 'bin', 'ov'), join(homedir(), '.local', 'bin', 'openviking')]));
+  const command = await findOpenVikingCli();
   if (!command) {
     throw new Error('Neither ov nor openviking was found. Run threadnote install first.');
   }
   return command;
-}
-
-async function firstExistingPath(paths: readonly string[]): Promise<string | undefined> {
-  for (const path of paths) {
-    try {
-      await access(path);
-      return await realpath(path);
-    } catch (_err: unknown) {
-      continue;
-    }
-  }
-  return undefined;
 }
 
 main().catch(err => {

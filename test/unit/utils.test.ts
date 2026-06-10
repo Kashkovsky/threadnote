@@ -10,6 +10,7 @@ import {
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
+  findOpenVikingCli,
   formatExactMatchPointers,
   formatRecallHits,
   formatShellCommand,
@@ -170,6 +171,42 @@ describe('runInteractive', () => {
 
   it('resolves non-zero instead of hanging when the binary cannot be spawned', async () => {
     expect(await runInteractive('threadnote-nonexistent-binary-xyz', ['--version'])).toBe(1);
+  });
+});
+
+describe('findOpenVikingCli', () => {
+  it('finds ov in UV_TOOL_BIN_DIR when it is outside PATH', async () => {
+    const originalPath = process.env.PATH;
+    const originalUvToolBinDir = process.env.UV_TOOL_BIN_DIR;
+    const originalThreadnoteOv = process.env.THREADNOTE_OV;
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-ov-bin-'));
+    const ov = join(dir, 'ov');
+    try {
+      await writeFile(ov, '#!/bin/sh\nexit 0\n');
+      await chmod(ov, 0o755);
+      process.env.PATH = '/usr/bin:/bin';
+      process.env.UV_TOOL_BIN_DIR = dir;
+      delete process.env.THREADNOTE_OV;
+
+      expect(await findOpenVikingCli()).toBe(ov);
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      if (originalUvToolBinDir === undefined) {
+        delete process.env.UV_TOOL_BIN_DIR;
+      } else {
+        process.env.UV_TOOL_BIN_DIR = originalUvToolBinDir;
+      }
+      if (originalThreadnoteOv === undefined) {
+        delete process.env.THREADNOTE_OV;
+      } else {
+        process.env.THREADNOTE_OV = originalThreadnoteOv;
+      }
+      await rm(dir, {force: true, recursive: true});
+    }
   });
 });
 

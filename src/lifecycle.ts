@@ -64,6 +64,7 @@ import {
   exists,
   expandPath,
   findExecutable,
+  findOpenVikingCli,
   firstLine,
   formatShellCommand,
   formatStatus,
@@ -110,7 +111,7 @@ export async function collectDoctorChecks(config: RuntimeConfig, options: Doctor
   checks.push(await commandCheck('node', ['--version']));
   checks.push(await commandCheck('python3', ['--version']));
   checks.push(await openVikingServerCheck());
-  checks.push(await firstCommandCheck('openviking cli', ['ov', 'openviking'], ['--help']));
+  checks.push(await openVikingCliCheck());
   checks.push(await localEmbeddingCheck());
   checks.push(await pythonSystemCertificatesCheck());
   checks.push(await firstCommandCheck('python installer', ['pipx', 'uv', 'pip3'], ['--version']));
@@ -351,11 +352,9 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
 
 async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promise<void> {
   console.log('\nRepairing recall index freshness.');
-  const ov = dryRun
-    ? ((await findExecutable(['ov', 'openviking'])) ?? 'ov')
-    : await findExecutable(['ov', 'openviking']);
+  const ov = dryRun ? ((await findOpenVikingCli()) ?? 'ov') : await findOpenVikingCli();
   if (!ov) {
-    console.log('Skipping recall index repair: neither ov nor openviking was found in PATH.');
+    console.log('Skipping recall index repair: neither ov nor openviking was found.');
     return;
   }
 
@@ -408,9 +407,7 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
 }
 
 async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boolean): Promise<void> {
-  const ov = dryRun
-    ? ((await findExecutable(['ov', 'openviking'])) ?? 'ov')
-    : await findExecutable(['ov', 'openviking']);
+  const ov = dryRun ? ((await findOpenVikingCli()) ?? 'ov') : await findOpenVikingCli();
   if (!ov) {
     return;
   }
@@ -695,6 +692,21 @@ async function firstCommandCheck(
     };
   }
   return {name, status: 'fail', detail: `none found: ${commands.join(', ')}`};
+}
+
+async function openVikingCliCheck(): Promise<DoctorCheck> {
+  const executable = await findOpenVikingCli();
+  if (!executable) {
+    return {name: 'openviking cli', status: 'fail', detail: 'none found: ov, openviking'};
+  }
+  const result = await runCommand(executable, ['--help'], {allowFailure: true});
+  const onPath = await findExecutable(['ov', 'openviking']);
+  const detail = onPath ? executable : `${executable} (found outside PATH; add ${dirname(executable)} to PATH)`;
+  return {
+    name: 'openviking cli',
+    status: result.exitCode === 0 ? 'ok' : 'warn',
+    detail: result.exitCode === 0 ? detail : firstLine(result.stderr || result.stdout) || detail,
+  };
 }
 
 async function localEmbeddingCheck(): Promise<DoctorCheck> {

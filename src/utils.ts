@@ -110,18 +110,60 @@ export function escapeRegExp(value: string): string {
 }
 
 export async function requiredOpenVikingCli(): Promise<string> {
-  const command = await findExecutable(['ov', 'openviking']);
+  const command = await findOpenVikingCli();
   if (!command) {
-    throw new Error('Neither ov nor openviking was found in PATH. Run threadnote install first.');
+    throw new Error(
+      'Neither ov nor openviking was found in PATH, uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. ' +
+        'Run threadnote install first.',
+    );
   }
   return command;
 }
 
 export async function openVikingCliForMode(dryRun: boolean): Promise<string> {
   if (dryRun) {
-    return (await findExecutable(['ov', 'openviking'])) ?? 'ov';
+    return (await findOpenVikingCli()) ?? 'ov';
   }
   return requiredOpenVikingCli();
+}
+
+export async function findOpenVikingCli(): Promise<string | undefined> {
+  const override = process.env.THREADNOTE_OV?.trim();
+  if (override) {
+    return override;
+  }
+  const onPath = await findExecutable(['ov', 'openviking']);
+  if (onPath) {
+    return onPath;
+  }
+  for (const candidateDir of await openVikingToolCandidateDirs()) {
+    for (const command of ['ov', 'openviking']) {
+      const candidate = join(candidateDir, command);
+      if (await isExecutable(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+async function openVikingToolCandidateDirs(): Promise<readonly string[]> {
+  const dirs: string[] = [];
+  const uv = await findExecutable(['uv']);
+  if (uv) {
+    const result = await runCommand(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      const dir = result.stdout.trim();
+      if (dir) {
+        dirs.push(dir);
+      }
+    }
+  }
+  if (process.env.UV_TOOL_BIN_DIR) {
+    dirs.push(process.env.UV_TOOL_BIN_DIR);
+  }
+  dirs.push(join(homedir(), '.local', 'bin'));
+  return Array.from(new Set(dirs));
 }
 
 export async function requiredExecutable(command: string): Promise<string> {
