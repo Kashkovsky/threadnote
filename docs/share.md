@@ -194,12 +194,15 @@ threadnote share sync --team friends   # other team
 threadnote share sync --no-push        # pull only
 ```
 
-`share sync` will auto-commit any uncommitted edits in the worktree, fetch and
-rebase from the remote, reindex pulled markdown files into OpenViking (so
-`recall` finds them immediately), and push. Pass `--no-auto-commit` to refuse
-syncing when the worktree is dirty. Automatic recall/read sync never commits a
-dirty shared worktree; it warns and leaves that case for explicit
-`threadnote share sync`.
+`share sync` will auto-commit edits in Threadnote-managed share paths, fetch and
+rebase onto the configured upstream, reindex pulled markdown files into
+OpenViking (so `recall` finds them immediately), and push. Managed share paths
+are root guidance/metadata files (`README.md`, `AGENTS.md`, `CLAUDE.md`,
+`SKILL.md`, `.gitignore`) plus `durable/` and `agent-artifacts/`. If other dirty
+files remain after staging those paths, sync stops before rebase so you can
+commit, remove, or ignore them. Pass `--no-auto-commit` to refuse syncing when
+the worktree is dirty. Automatic recall/read sync never commits a dirty shared
+worktree; it warns and leaves that case for explicit `threadnote share sync`.
 
 ### Take a memory back
 
@@ -280,8 +283,8 @@ updates the git `origin` URL and verifies it with `git fetch`.
 
 ## Conflict resolution
 
-`share sync` uses `git pull --rebase` against the remote. When git can't merge
-cleanly:
+`share sync` fetches the remote, then rebases onto the branch's configured
+upstream. When git can't merge cleanly:
 
 1. The pull command reports the conflict and leaves the worktree in a
    rebase-in-progress state.
