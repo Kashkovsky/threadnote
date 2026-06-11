@@ -12,6 +12,13 @@ It is intentionally scoped to curated docs, memories, skills, and handoffs.
 **Walkthrough:** https://kashkovsky.github.io/threadnote/  
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
 
+## Quickstart
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+threadnote mcp-install claude --apply   # or codex / cursor / copilot
+threadnote doctor --dry-run
+```
+
 ## Real-World Uses
 
 **Want to continue work in a fresh agent session?**  
