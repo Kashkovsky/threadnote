@@ -48,6 +48,7 @@ const SHARED_SEGMENT = 'shared';
 const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
 const SHAREABLE_ARTIFACT_DIR = 'agent-artifacts';
 const SHAREABLE_TOP_LEVEL_DIRS = [...SHAREABLE_MEMORY_KIND_DIRS, SHAREABLE_ARTIFACT_DIR];
+const SHAREABLE_ROOT_FILES = ['README.md', 'AGENTS.md', 'CLAUDE.md', 'SKILL.md', '.gitignore'];
 const ARTIFACT_INSTALL_METADATA_VERSION = 1;
 const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
@@ -588,16 +589,35 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
     }
     const message = options.message ?? `share: sync ${new Date().toISOString()}`;
     await stageShareableChanges(dryRun, git, worktree);
-    await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
+    const commitResult = await maybeRun(dryRun, git, ['-C', worktree, 'commit', '-m', message], {allowFailure: true});
+    if (!dryRun && commitResult && commitResult.exitCode !== 0) {
+      if (await hasUncommittedChanges(worktree)) {
+        throw new Error(
+          `Worktree ${worktree} has uncommitted changes that Threadnote did not auto-commit. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.\nGit said: ${
+            commitResult.stderr.trim() || commitResult.stdout.trim() || 'unknown git commit error'
+          }`,
+        );
+      }
+      throw new Error(
+        `Could not auto-commit share worktree changes in ${worktree}: ${
+          commitResult.stderr.trim() || commitResult.stdout.trim() || 'unknown git commit error'
+        }`,
+      );
+    }
+    if (!dryRun && (await hasUncommittedChanges(worktree))) {
+      throw new Error(
+        `Worktree ${worktree} still has uncommitted changes after staging Threadnote shareable files. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.`,
+      );
+    }
   }
 
   const beforeRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
   await maybeRun(dryRun, git, ['-C', worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME]);
   const pullResult = dryRun
     ? undefined
-    : await runCommand(git, ['-C', worktree, 'pull', '--rebase', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
+    : await runCommand(git, ['-C', worktree, 'rebase', '@{u}'], {allowFailure: true});
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'pull', '--rebase', DEFAULT_GIT_REMOTE_NAME])}`);
+    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'rebase', '@{u}'])}`);
   } else if (pullResult && pullResult.exitCode !== 0) {
     // Detect mid-rebase state via filesystem markers rather than parsing git's
     // output — both because git's English phrasing varies by version and
@@ -613,7 +633,7 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
       );
     }
     throw new Error(
-      `git pull --rebase failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
+      `git rebase @{u} failed in ${worktree}: ${pullResult.stderr.trim() || pullResult.stdout.trim() || 'unknown error'}`,
     );
   }
   const afterRev = await gitOutput(worktree, ['rev-parse', 'HEAD'], dryRun);
@@ -709,12 +729,37 @@ async function runShareSyncQuiet(
 }
 
 async function stageShareableChanges(dryRun: boolean, git: string, worktree: string): Promise<void> {
-  // Stage repo metadata plus every shareable top-level dir.
+  // Stage repo guidance/metadata plus every shareable top-level dir.
   // OpenViking-generated summaries (.abstract.md, .overview.md) are excluded
   // via the repo's .gitignore (ensureSharedGitignore self-heals it on every
   // sync), so they never get staged even by an unscoped `git add`.
-  const pathspecs = [':(top)README.md', ':(top).gitignore', ...SHAREABLE_TOP_LEVEL_DIRS.map(dir => `:(top)${dir}`)];
-  await maybeRun(dryRun, git, ['-C', worktree, 'add', '--', ...pathspecs], {allowFailure: true});
+  const pathspecs = await existingShareablePathspecs(git, worktree);
+  if (pathspecs.length === 0) {
+    return;
+  }
+  await maybeRun(dryRun, git, ['-C', worktree, 'add', '-A', '--', ...pathspecs], {allowFailure: true});
+}
+
+async function existingShareablePathspecs(git: string, worktree: string): Promise<readonly string[]> {
+  const rootFiles = await Promise.all(
+    SHAREABLE_ROOT_FILES.map(async file =>
+      (await hasWorktreeOrTrackedPath(git, worktree, file)) ? `:(top)${file}` : undefined,
+    ),
+  );
+  const topLevelDirs = await Promise.all(
+    SHAREABLE_TOP_LEVEL_DIRS.map(async dir =>
+      (await hasWorktreeOrTrackedPath(git, worktree, dir)) ? `:(top)${dir}` : undefined,
+    ),
+  );
+  return [...rootFiles, ...topLevelDirs].filter((pathspec): pathspec is string => pathspec !== undefined);
+}
+
+async function hasWorktreeOrTrackedPath(git: string, worktree: string, relativePath: string): Promise<boolean> {
+  if (await exists(join(worktree, relativePath))) {
+    return true;
+  }
+  const result = await runCommand(git, ['-C', worktree, 'ls-files', '--', relativePath], {allowFailure: true});
+  return result.exitCode === 0 && result.stdout.trim().length > 0;
 }
 
 export async function publishShareGitChange(
