@@ -3,6 +3,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
+  applyExactMatchBoost,
+  categoryForUri,
   collectExactMatches,
   compareVersions,
   enrichRecallQueryWithWorkspaceContext,
@@ -688,5 +690,112 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     expect(text).toContain('1. memory · score 0.50 · viking://m0.md');
     expect(text).toContain('(+2 more');
     expect(formatRecallHits([], 5)).toBeUndefined();
+  });
+
+  it('collapses resource hits with identical snippets but keeps distinct memories', () => {
+    const merged = mergeRecallHits([
+      parseRecallHits(
+        json({
+          ok: true,
+          result: {
+            resources: [
+              {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
+              {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
+            ],
+            memories: [
+              {context_type: 'memory', uri: 'viking://m1.md', score: 0.8, abstract: 'dup'},
+              {context_type: 'memory', uri: 'viking://m2.md', score: 0.75, abstract: 'dup'},
+            ],
+          },
+        }),
+      ),
+    ]);
+    // One resource kept (highest score), both memories kept despite identical snippet.
+    expect(merged.map(hit => hit.uri)).toEqual([
+      'viking://m1.md',
+      'viking://m2.md',
+      'viking://r/.agents/skills/x/SKILL.md',
+    ]);
+  });
+});
+
+describe('categoryForUri', () => {
+  it('classifies memories, skill catalog, and resources', () => {
+    expect(categoryForUri('viking://user/me/memories/durable/projects/x/y.md')).toBe('memories');
+    expect(categoryForUri('viking://user/me/memories/shared/default/durable/x.md')).toBe('memories');
+    expect(categoryForUri('viking://resources/agent-skills/codex-global/foo/SKILL.md')).toBe('skills');
+    expect(categoryForUri('viking://resources/repos/coda/CLAUDE.md')).toBe('resources');
+    expect(categoryForUri('viking://resources/repos/coda/.claude/skills/x/SKILL.md')).toBe('resources');
+  });
+});
+
+describe('applyExactMatchBoost', () => {
+  const hit = (over: Partial<ReturnType<typeof baseHit>> = {}): ReturnType<typeof baseHit> => ({...baseHit(), ...over});
+  function baseHit() {
+    return {category: 'resources' as const, contextType: 'resource', score: 0.6, snippet: 's', uri: 'viking://x'};
+  }
+
+  it('returns hits unchanged when there are no exact matches', () => {
+    const hits = [hit()];
+    expect(applyExactMatchBoost(hits, [])).toBe(hits);
+  });
+
+  it('annotates a semantic hit that an exact term also matched', () => {
+    const ranked = applyExactMatchBoost(
+      [hit({uri: 'viking://a', score: 0.6}), hit({uri: 'viking://b', score: 0.9})],
+      [{terms: ['release', 'test'], uri: 'viking://a'}],
+    );
+    const a = ranked.find(entry => entry.uri === 'viking://a');
+    expect(a?.exactTerms).toEqual(['release', 'test']);
+    // Exact match leads its category despite lower semantic score.
+    expect(ranked[0]?.uri).toBe('viking://a');
+  });
+
+  it('promotes an exact-only document into the ranked list with score 0', () => {
+    const ranked = applyExactMatchBoost(
+      [hit({uri: 'viking://sem', score: 0.9})],
+      [{terms: ['conventions'], uri: 'viking://resources/repos/coda/CLAUDE.md'}],
+    );
+    const promoted = ranked.find(entry => entry.uri === 'viking://resources/repos/coda/CLAUDE.md');
+    expect(promoted).toMatchObject({
+      category: 'resources',
+      contextType: 'resource',
+      score: 0,
+      exactTerms: ['conventions'],
+    });
+    // Promoted exact match outranks the unmatched higher-scoring semantic hit in the same category.
+    expect(ranked[0]?.uri).toBe('viking://resources/repos/coda/CLAUDE.md');
+  });
+
+  it('orders by category, then exact-term count, then score', () => {
+    const ranked = applyExactMatchBoost(
+      [
+        hit({category: 'memories', contextType: 'memory', uri: 'viking://user/me/memories/m.md', score: 0.5}),
+        hit({uri: 'viking://r-one-term', score: 0.6}),
+        hit({uri: 'viking://r-two-terms', score: 0.55}),
+      ],
+      [
+        {terms: ['a'], uri: 'viking://r-one-term'},
+        {terms: ['a', 'b'], uri: 'viking://r-two-terms'},
+      ],
+    );
+    expect(ranked.map(entry => entry.uri)).toEqual([
+      'viking://user/me/memories/m.md',
+      'viking://r-two-terms',
+      'viking://r-one-term',
+    ]);
+  });
+
+  it('renders promoted exact-only hits without a score and annotates boosted hits', () => {
+    const ranked = applyExactMatchBoost(
+      [hit({uri: 'viking://sem', score: 0.62})],
+      [
+        {terms: ['x'], uri: 'viking://sem'},
+        {terms: ['y', 'z'], uri: 'viking://resources/repos/coda/CLAUDE.md'},
+      ],
+    );
+    const text = formatRecallHits(ranked, 5) ?? '';
+    expect(text).toContain('resource · exact: y, z · viking://resources/repos/coda/CLAUDE.md');
+    expect(text).toContain('resource · score 0.62 · exact: x · viking://sem');
   });
 });

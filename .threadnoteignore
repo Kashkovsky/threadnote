@@ -1,5 +1,7 @@
 .git/
 node_modules/
+.claude/worktrees/
+.worktrees/
 bazel-*/
 dist/
 build/
