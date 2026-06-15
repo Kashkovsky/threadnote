@@ -586,8 +586,8 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       }),
     );
     expect(hits).toEqual([
-      {contextType: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
-      {contextType: 'resource', uri: 'viking://r.md', score: 0.6, snippet: 'doc'},
+      {category: 'memories', contextType: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
+      {category: 'resources', contextType: 'resource', uri: 'viking://r.md', score: 0.6, snippet: 'doc'},
     ]);
   });
 
@@ -660,8 +660,25 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     ]);
   });
 
+  it('ranks memories above resources and skills regardless of score', () => {
+    const merged = mergeRecallHits([
+      parseRecallHits(
+        json({
+          ok: true,
+          result: {
+            memories: [{context_type: 'memory', uri: 'viking://mem.md', score: 0.5, abstract: 'm'}],
+            resources: [{context_type: 'resource', uri: 'viking://res.md', score: 0.9, abstract: 'r'}],
+            skills: [{context_type: 'skill', uri: 'viking://skill.md', score: 0.8, abstract: 's'}],
+          },
+        }),
+      ),
+    ]);
+    expect(merged.map(hit => hit.uri)).toEqual(['viking://mem.md', 'viking://res.md', 'viking://skill.md']);
+  });
+
   it('formats a capped numbered list with overflow note', () => {
     const hits = Array.from({length: 4}, (_unused, index) => ({
+      category: 'memories' as const,
       contextType: 'memory',
       score: 0.5,
       snippet: '',

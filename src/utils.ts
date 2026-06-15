@@ -886,7 +886,16 @@ export interface ExactMatch {
   readonly uri: string;
 }
 
+/**
+ * Result buckets in the order recall presents them: memories first, then seeded
+ * resources, then skills. The index doubles as the primary sort key so a
+ * lower-scoring memory still ranks above a higher-scoring resource or skill.
+ */
+export const RECALL_CATEGORY_ORDER = ['memories', 'resources', 'skills'] as const;
+export type RecallCategory = (typeof RECALL_CATEGORY_ORDER)[number];
+
 export interface RecallHit {
+  readonly category: RecallCategory;
   readonly contextType: string;
   readonly score: number;
   readonly snippet: string;
@@ -930,7 +939,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
       return [];
     }
     const hits: RecallHit[] = [];
-    for (const key of ['memories', 'resources', 'skills']) {
+    for (const key of RECALL_CATEGORY_ORDER) {
       const items = result[key];
       if (!Array.isArray(items)) {
         continue;
@@ -943,6 +952,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
           continue;
         }
         hits.push({
+          category: key,
           contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
           score: typeof item.score === 'number' ? item.score : 0,
           snippet: recallSnippet(item.abstract ?? item.overview),
@@ -961,6 +971,10 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
  * one entry per document (chunk anchors stripped), keeping the highest-scoring
  * chunk. Lets the scoped project/seeded passes contribute only documents the
  * global pass missed, and collapses multiple chunks of the same document.
+ *
+ * Ranking is category-first (memories, then resources, then skills per
+ * `RECALL_CATEGORY_ORDER`), then by score within each category, so personal
+ * memories always lead and seeded resources/skills only follow.
  */
 export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): readonly RecallHit[] {
   const byDocument = new Map<string, RecallHit>();
@@ -973,7 +987,11 @@ export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): re
       }
     }
   }
-  return [...byDocument.values()].sort((left, right) => right.score - left.score);
+  return [...byDocument.values()].sort(
+    (left, right) =>
+      RECALL_CATEGORY_ORDER.indexOf(left.category) - RECALL_CATEGORY_ORDER.indexOf(right.category) ||
+      right.score - left.score,
+  );
 }
 
 export function formatRecallHits(hits: readonly RecallHit[], maxHits: number): string | undefined {
