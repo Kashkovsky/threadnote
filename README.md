@@ -13,6 +13,7 @@ It is intentionally scoped to curated docs, memories, skills, and handoffs.
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
 
 ## Quickstart
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
 threadnote mcp-install claude --apply   # or codex / cursor / copilot

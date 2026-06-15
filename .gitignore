@@ -7,3 +7,10 @@ coverage/
 graphify-out/
 *.log
 manager/app.js
+.husky/post-commit
+.husky/post-checkout
+CLAUDE.md
+AGENTS.md
+.claude/settings.json
+.codex/hooks.json
+

@@ -48,7 +48,7 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" --fix",
     "prepare": "husky",
-    "precommit": "npm run lint && npm run prettier:check && npm run test",
+    "precommit": "npm run lint && npm run prettier:write && npm run test",
     "prepack": "npm run build",
     "prettier:check": "prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "prettier:write": "prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
