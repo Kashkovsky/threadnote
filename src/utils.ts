@@ -897,10 +897,27 @@ export type RecallCategory = (typeof RECALL_CATEGORY_ORDER)[number];
 export interface RecallHit {
   readonly category: RecallCategory;
   readonly contextType: string;
+  /**
+   * Query terms this document matched exactly (lexically) via grep. Present when
+   * an exact-match pass corroborates a semantic hit, or when the document was
+   * promoted into the ranked list from the exact-match pass alone (in which case
+   * `score` is 0 — there was no semantic hit). Empty/undefined for plain
+   * semantic hits.
+   */
+  readonly exactTerms?: readonly string[];
   readonly score: number;
   readonly snippet: string;
   readonly uri: string;
 }
+
+/**
+ * Score assigned to a document promoted into the ranked list from the
+ * exact-match pass alone (no semantic hit). It is never displayed as a score —
+ * `formatRecallHits` renders these as `exact match` — and the category-then-
+ * exact-term-count sort keys place them ahead of unmatched semantic hits in
+ * their category regardless of this value.
+ */
+const RECALL_PROMOTED_EXACT_SCORE = 0;
 
 interface ParseRecallHitsOptions {
   readonly includeArchived?: boolean;
@@ -966,6 +983,11 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
   }
 }
 
+/** Drop a chunk anchor (`#chunk_0001`) so a URI addresses its document. */
+function stripAnchor(uri: string): string {
+  return uri.replace(/#.*$/, '');
+}
+
 /**
  * Merge recall hits from several search passes into one ranked list, deduped to
  * one entry per document (chunk anchors stripped), keeping the highest-scoring
@@ -974,13 +996,15 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
  *
  * Ranking is category-first (memories, then resources, then skills per
  * `RECALL_CATEGORY_ORDER`), then by score within each category, so personal
- * memories always lead and seeded resources/skills only follow.
+ * memories always lead and seeded resources/skills only follow. Content-level
+ * dedup is applied later by `buildRecallSections`, after exact-match boosting,
+ * so a collapsed twin never strips the exact-matched copy.
  */
 export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): readonly RecallHit[] {
   const byDocument = new Map<string, RecallHit>();
   for (const pass of passes) {
     for (const hit of pass) {
-      const documentUri = hit.uri.replace(/#.*$/, '');
+      const documentUri = stripAnchor(hit.uri);
       const existing = byDocument.get(documentUri);
       if (!existing || hit.score > existing.score) {
         byDocument.set(documentUri, {...hit, uri: documentUri});
@@ -988,25 +1012,221 @@ export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): re
     }
   }
   return [...byDocument.values()].sort(
+    (left, right) => recallCategoryRank(left.category) - recallCategoryRank(right.category) || right.score - left.score,
+  );
+}
+
+/**
+ * Sort index for a category. Unknown categories rank last so a future bucket
+ * never silently jumps ahead of memories.
+ */
+function recallCategoryRank(category: RecallCategory): number {
+  const index = RECALL_CATEGORY_ORDER.indexOf(category);
+  return index === -1 ? RECALL_CATEGORY_ORDER.length : index;
+}
+
+/**
+ * Collapse resource/skill hits that share identical snippet content but live at
+ * different URIs — e.g. a repo that keeps the same SKILL.md under both
+ * `.agents/skills/` and `.claude/skills/`, which would otherwise consume several
+ * ranked slots for one logical document. Keeps the first (highest-ranked, since
+ * the input is already sorted) occurrence. Memories are never collapsed: their
+ * templated `MEMORY kind: ... project: ... topic: ...` header makes truncated
+ * snippets prone to colliding across genuinely distinct memories.
+ */
+function dedupeByContent(hits: readonly RecallHit[]): readonly RecallHit[] {
+  const seen = new Set<string>();
+  const kept: RecallHit[] = [];
+  for (const hit of hits) {
+    if (hit.category !== 'memories' && hit.snippet.length > 0) {
+      const key = `${hit.category}\n${hit.snippet}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+    }
+    kept.push(hit);
+  }
+  return kept;
+}
+
+/**
+ * Infer a recall category for a document URI, used to place exact-match-only
+ * documents (promoted into the ranked list without a semantic hit) into the
+ * right group. Mirrors how OpenViking buckets search results: personal/shared
+ * memories under `.../memories/...`, the global skill catalog under
+ * `resources/agent-skills/`, everything else (including repo-embedded skills) as
+ * a resource.
+ */
+export function categoryForUri(uri: string): RecallCategory {
+  if (uri.includes('/memories/')) {
+    return 'memories';
+  }
+  if (uri.startsWith('viking://resources/agent-skills/')) {
+    return 'skills';
+  }
+  return 'resources';
+}
+
+function contextTypeForCategory(category: RecallCategory): string {
+  if (category === 'memories') {
+    return 'memory';
+  }
+  return category === 'skills' ? 'skill' : 'resource';
+}
+
+/**
+ * Fold exact (lexical) matches into the semantically-ranked hits so the lexical
+ * signal drives ranking rather than sitting in a separate afterthought section.
+ * Semantic hits that a term also matched are annotated with `exactTerms`;
+ * exact-match documents with no semantic hit are promoted in as fresh hits with
+ * `score` 0. The result is re-sorted category-first, then by number of exact
+ * terms matched, then by semantic score — so within each category, exact matches
+ * lead (most terms first) and only then come unmatched semantic hits. This fixes
+ * canonical docs being buried under higher-scored-but-irrelevant noise in the
+ * compressed semantic score band.
+ *
+ * Intentional trade-off: an exact (lexical) match is treated as a stronger
+ * relevance signal than semantic proximity, so a promoted exact-only document
+ * (score 0) outranks an unmatched semantic hit in the same category and can
+ * occupy a slot in the shown window. `exactRecallTerms` only keeps distinctive
+ * tokens, so a literal match is high precision; surfacing it over a fuzzy
+ * neighbour is the desired behaviour.
+ */
+export function applyExactMatchBoost(
+  hits: readonly RecallHit[],
+  exactMatches: readonly ExactMatch[],
+): readonly RecallHit[] {
+  if (exactMatches.length === 0) {
+    return hits;
+  }
+  const termsByUri = new Map(exactMatches.map(match => [stripAnchor(match.uri), match.terms]));
+  const annotated = hits.map(hit => {
+    const terms = termsByUri.get(stripAnchor(hit.uri));
+    return terms ? {...hit, exactTerms: terms} : hit;
+  });
+  const present = new Set(annotated.map(hit => stripAnchor(hit.uri)));
+  const promoted: RecallHit[] = [...termsByUri.keys()]
+    .filter(uri => !present.has(uri))
+    .map(uri => {
+      const category = categoryForUri(uri);
+      return {
+        category,
+        contextType: contextTypeForCategory(category),
+        exactTerms: termsByUri.get(uri) ?? [],
+        score: RECALL_PROMOTED_EXACT_SCORE,
+        snippet: '',
+        uri,
+      };
+    });
+  return [...annotated, ...promoted].sort(
     (left, right) =>
-      RECALL_CATEGORY_ORDER.indexOf(left.category) - RECALL_CATEGORY_ORDER.indexOf(right.category) ||
+      recallCategoryRank(left.category) - recallCategoryRank(right.category) ||
+      (right.exactTerms?.length ?? 0) - (left.exactTerms?.length ?? 0) ||
       right.score - left.score,
   );
 }
 
 export function formatRecallHits(hits: readonly RecallHit[], maxHits: number): string | undefined {
-  if (hits.length === 0) {
+  return renderRecallHits(hits.slice(0, maxHits), Math.max(0, hits.length - maxHits));
+}
+
+/**
+ * Render an already-decided shown window into the numbered recall list. Keeping
+ * the slice out of here lets `buildRecallSections` compute the shown set once and
+ * feed both the rendering and the exact-tail "already shown" filter from the same
+ * list. `overflow` is the count of hits beyond the window, for the trailing note.
+ */
+function renderRecallHits(shown: readonly RecallHit[], overflow: number): string | undefined {
+  if (shown.length === 0) {
     return undefined;
   }
-  const shown = hits.slice(0, maxHits);
   const lines = shown.flatMap((hit, index) => {
-    const head = `${index + 1}. ${hit.contextType} · score ${hit.score.toFixed(2)} · ${hit.uri}`;
+    const scorePart = hit.score > 0 ? `score ${hit.score.toFixed(2)}` : undefined;
+    const exactPart = hit.exactTerms?.length ? `exact: ${hit.exactTerms.join(', ')}` : undefined;
+    const head = `${index + 1}. ${[hit.contextType, scorePart, exactPart].filter(Boolean).join(' · ')} · ${hit.uri}`;
     return hit.snippet ? [head, `   ${hit.snippet}`] : [head];
   });
-  if (hits.length > maxHits) {
-    lines.push(`(+${hits.length - maxHits} more — refine the query or read a URI above)`);
+  if (overflow > 0) {
+    lines.push(`(+${overflow} more — refine the query or read a URI above)`);
   }
   return lines.join('\n');
+}
+
+export interface RecallSections {
+  /**
+   * Final ranked hits (merged, exact-boosted, content-deduped). Exposed for
+   * tests and inspection; the CLI and MCP callers emit the rendered sections.
+   */
+  readonly ranked: readonly RecallHit[];
+  /** Rendered ranked list, capped at `limit`. Undefined when there are no hits. */
+  readonly semanticSection: string | undefined;
+  /** Exact-match pointer list for matches not already shown in the ranked window. */
+  readonly exactTail: string | undefined;
+}
+
+/**
+ * Slots reserved per category in the shown window so a memory-heavy result set
+ * does not crowd seeded resources and skills out of view entirely. Memories
+ * still lead and still take every slot the reserve pass leaves over.
+ */
+export const RECALL_CATEGORY_RESERVE = 2;
+
+/**
+ * Pick which `limit` hits fill the shown window. A reserve pass first takes up
+ * to `reserve` hits from each category in `RECALL_CATEGORY_ORDER` priority, so
+ * lower-priority categories keep guaranteed visibility; a fill pass then tops
+ * the window up from the global rank order (memories first). The selection is
+ * returned in the original ranked order — the reserve only changes which hits
+ * are shown, never the category-first display order.
+ */
+function selectShownHits(ranked: readonly RecallHit[], limit: number, reserve: number): readonly RecallHit[] {
+  if (ranked.length <= limit) {
+    return ranked;
+  }
+  const selected = new Set<string>();
+  for (const category of RECALL_CATEGORY_ORDER) {
+    let taken = 0;
+    for (const hit of ranked) {
+      if (selected.size >= limit || taken >= reserve) {
+        break;
+      }
+      if (hit.category === category && !selected.has(hit.uri)) {
+        selected.add(hit.uri);
+        taken += 1;
+      }
+    }
+  }
+  for (const hit of ranked) {
+    if (selected.size >= limit) {
+      break;
+    }
+    selected.add(hit.uri);
+  }
+  return ranked.filter(hit => selected.has(hit.uri));
+}
+
+/**
+ * Assemble the two recall output sections shared by the CLI (`runRecall`) and
+ * the MCP tool (`runRecallTool`): the ranked semantic list and the exact-match
+ * tail. Centralises the ordering — merge → exact-boost → content-dedup — the
+ * per-category reserve that decides the shown window, and the rule that the tail
+ * only lists exact matches not already surfaced in that window, so the two entry
+ * points cannot drift. Callers decide only how to emit.
+ */
+export function buildRecallSections(
+  passes: ReadonlyArray<readonly RecallHit[]>,
+  exactMatches: readonly ExactMatch[],
+  limit: number,
+): RecallSections {
+  const ranked = dedupeByContent(applyExactMatchBoost(mergeRecallHits(passes), exactMatches));
+  const shown = selectShownHits(ranked, limit, RECALL_CATEGORY_RESERVE);
+  const shownUris = new Set(shown.map(hit => stripAnchor(hit.uri)));
+  return {
+    exactTail: formatExactMatchPointers(exactMatches.filter(match => !shownUris.has(stripAnchor(match.uri)))),
+    ranked,
+    semanticSection: renderRecallHits(shown, ranked.length - shown.length),
+  };
 }
 
 /**

@@ -33,22 +33,21 @@ import type {
 } from './types.js';
 import {
   assertVikingUri,
+  buildRecallSections,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   expandPath,
+  type ExactMatch,
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
   collectExactMatches,
-  formatExactMatchPointers,
-  formatRecallHits,
   formatShellCommand,
   getInputText,
   getInvocationCwd,
   gitValue,
   isJsonObject,
   maybeRun,
-  mergeRecallHits,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
@@ -348,18 +347,15 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   }
 
   const recallOutputs: string[] = [];
-  const semanticSection = formatRecallHits(mergeRecallHits(passes), nodeLimit ?? 12);
+  const exactMatches = await collectExactMemoryMatches(config, ov, query, {dryRun, includeArchived, project});
+  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, nodeLimit ?? 12);
   if (semanticSection) {
     console.log(`\n${semanticSection}`);
     recallOutputs.push(semanticSection);
   }
-  const exactOutput = await printExactMemoryMatches(config, ov, query, {
-    dryRun,
-    includeArchived,
-    project,
-  });
-  if (exactOutput) {
-    recallOutputs.push(exactOutput);
+  if (exactTail) {
+    console.log(`\n${exactTail}`);
+    recallOutputs.push(exactTail);
   }
   await printRecallHygieneNudges(config, recallOutputs.join('\n'));
 }
@@ -782,15 +778,15 @@ export function hasAgentSkillCatalogIntent(query: string): boolean {
   );
 }
 
-async function printExactMemoryMatches(
+async function collectExactMemoryMatches(
   config: RuntimeConfig,
   ov: string,
   query: string,
   options: {readonly dryRun: boolean; readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
-): Promise<string | undefined> {
+): Promise<readonly ExactMatch[]> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
-    return undefined;
+    return [];
   }
   const scopes = exactMemoryScopes(config, options.includeArchived, query, options.project);
   const grepArgs = (term: string, scope: string): readonly string[] =>
@@ -799,18 +795,12 @@ async function printExactMemoryMatches(
     const planned = terms.flatMap(term => scopes.map(scope => formatShellCommand(ov, grepArgs(term, scope))));
     console.log('\nExact memory/resource matches:');
     console.log(planned.join('\n'));
-    return planned.join('\n');
+    return [];
   }
-  const matches = await collectExactMatches(terms, scopes, async (term, scope) => {
+  return collectExactMatches(terms, scopes, async (term, scope) => {
     const result = await runCommand(ov, grepArgs(term, scope), {allowFailure: true});
     return result.exitCode === 0 ? result.stdout : undefined;
   });
-  const text = formatExactMatchPointers(matches);
-  if (!text) {
-    return undefined;
-  }
-  console.log(`\n${text}`);
-  return text;
 }
 
 async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): Promise<void> {

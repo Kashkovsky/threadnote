@@ -42,7 +42,9 @@ import {
   writeMemoryFile,
 } from './share.js';
 import {
+  buildRecallSections,
   collectExactMatches,
+  type ExactMatch,
   errorMessage,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
@@ -51,9 +53,6 @@ import {
   exactRecallTerms,
   expandPath,
   findOpenVikingCli,
-  formatExactMatchPointers,
-  formatRecallHits,
-  mergeRecallHits,
   parsePort,
   parseRecallHits,
   type RecallHit,
@@ -258,14 +257,15 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     'grep',
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: 'Run exact text search in OpenViking.',
+      description:
+        'Run exact text search in OpenViking. Defaults to your memories subtree when uri is omitted (OpenViking grep requires a scope).',
       inputSchema: {
         caseInsensitive: z.boolean().optional().describe('Case-insensitive search'),
         case_insensitive: z.boolean().optional().describe('Case-insensitive search'),
         nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
         node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
         pattern: z.string().optional().describe('Required text or regex pattern'),
-        uri: z.string().optional().describe('Optional viking:// subtree'),
+        uri: z.string().optional().describe('Optional viking:// subtree (defaults to your memories root)'),
       },
     },
     async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
@@ -281,7 +281,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         case_insensitive: caseInsensitive ?? case_insensitive,
         node_limit: nodeLimit ?? node_limit,
         pattern: checkedPattern.value,
-        uri: checkedUri.value,
+        uri: checkedUri.value ?? `viking://user/${uriSegment(config.user)}/memories`,
       });
     },
   );
@@ -914,7 +914,8 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   }
 
   const sections: string[] = [];
-  const semanticSection = formatRecallHits(mergeRecallHits(passes), params.nodeLimit ?? 12);
+  const exactMatches = await collectExactMemoryMatches(config, query, params.includeArchived, project);
+  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, params.nodeLimit ?? 12);
   if (semanticSection) {
     sections.push(semanticSection);
   } else if (!base.ok) {
@@ -925,9 +926,8 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
   }
-  const exactMatches = await exactMemoryMatchesText(config, query, params.includeArchived, project);
-  if (exactMatches) {
-    sections.push(exactMatches);
+  if (exactTail) {
+    sections.push(exactTail);
   }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {
@@ -987,19 +987,19 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
 }
 
-async function exactMemoryMatchesText(
+async function collectExactMemoryMatches(
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
   project: ProjectManifest | undefined,
-): Promise<string | undefined> {
+): Promise<readonly ExactMatch[]> {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
-    return undefined;
+    return [];
   }
   const ov = await requiredOpenVikingCli();
   const scopes = exactMemoryScopes(config, includeArchived, query, project);
-  const matches = await collectExactMatches(terms, scopes, async (term, scope) => {
+  return collectExactMatches(terms, scopes, async (term, scope) => {
     const result = await runCommand(
       ov,
       withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']),
@@ -1007,7 +1007,6 @@ async function exactMemoryMatchesText(
     );
     return result.exitCode === 0 ? result.stdout : undefined;
   });
-  return formatExactMatchPointers(matches);
 }
 
 function registerReadTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
