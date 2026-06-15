@@ -42,7 +42,7 @@ import {
   writeMemoryFile,
 } from './share.js';
 import {
-  applyExactMatchBoost,
+  buildRecallSections,
   collectExactMatches,
   type ExactMatch,
   errorMessage,
@@ -53,9 +53,6 @@ import {
   exactRecallTerms,
   expandPath,
   findOpenVikingCli,
-  formatExactMatchPointers,
-  formatRecallHits,
-  mergeRecallHits,
   parsePort,
   parseRecallHits,
   type RecallHit,
@@ -918,9 +915,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
 
   const sections: string[] = [];
   const exactMatches = await collectExactMemoryMatches(config, query, params.includeArchived, project);
-  const limit = params.nodeLimit ?? 12;
-  const ranked = applyExactMatchBoost(mergeRecallHits(passes), exactMatches);
-  const semanticSection = formatRecallHits(ranked, limit);
+  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, params.nodeLimit ?? 12);
   if (semanticSection) {
     sections.push(semanticSection);
   } else if (!base.ok) {
@@ -931,10 +926,8 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (indexRepairMessages.length > 0) {
     sections.push(indexRepairMessages.join('\n'));
   }
-  const shownUris = new Set(ranked.slice(0, limit).map(hit => hit.uri));
-  const exactSection = formatExactMatchPointers(exactMatches.filter(match => !shownUris.has(match.uri)));
-  if (exactSection) {
-    sections.push(exactSection);
+  if (exactTail) {
+    sections.push(exactTail);
   }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {

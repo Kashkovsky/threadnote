@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   applyExactMatchBoost,
+  buildRecallSections,
   categoryForUri,
   collectExactMatches,
   compareVersions,
@@ -21,6 +22,7 @@ import {
   grepUrisFromJson,
   mergeRecallHits,
   parseRecallHits,
+  type RecallHit,
   hasGlob,
   isExecutable,
   isJsonObject,
@@ -693,29 +695,166 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
   });
 
   it('collapses resource hits with identical snippets but keeps distinct memories', () => {
-    const merged = mergeRecallHits([
-      parseRecallHits(
-        json({
-          ok: true,
-          result: {
-            resources: [
-              {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
-              {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
-            ],
-            memories: [
-              {context_type: 'memory', uri: 'viking://m1.md', score: 0.8, abstract: 'dup'},
-              {context_type: 'memory', uri: 'viking://m2.md', score: 0.75, abstract: 'dup'},
-            ],
-          },
-        }),
-      ),
-    ]);
+    const {ranked} = buildRecallSections(
+      [
+        parseRecallHits(
+          json({
+            ok: true,
+            result: {
+              resources: [
+                {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
+                {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
+              ],
+              memories: [
+                {context_type: 'memory', uri: 'viking://m1.md', score: 0.8, abstract: 'dup'},
+                {context_type: 'memory', uri: 'viking://m2.md', score: 0.75, abstract: 'dup'},
+              ],
+            },
+          }),
+        ),
+      ],
+      [],
+      12,
+    );
     // One resource kept (highest score), both memories kept despite identical snippet.
-    expect(merged.map(hit => hit.uri)).toEqual([
+    expect(ranked.map(hit => hit.uri)).toEqual([
       'viking://m1.md',
       'viking://m2.md',
       'viking://r/.agents/skills/x/SKILL.md',
     ]);
+  });
+
+  it('does not collapse resource hits with empty snippets', () => {
+    const {ranked} = buildRecallSections(
+      [
+        parseRecallHits(
+          json({
+            ok: true,
+            result: {
+              resources: [
+                {context_type: 'resource', uri: 'viking://r/a.md', score: 0.7, abstract: ''},
+                {context_type: 'resource', uri: 'viking://r/b.md', score: 0.6, abstract: ''},
+              ],
+            },
+          }),
+        ),
+      ],
+      [],
+      12,
+    );
+    expect(ranked.map(hit => hit.uri)).toEqual(['viking://r/a.md', 'viking://r/b.md']);
+  });
+
+  it('keeps the exact-matched twin when a content-duplicate would otherwise be dropped', () => {
+    // Lower-scored .claude copy is the exact match; it must survive dedup and lead.
+    const {ranked} = buildRecallSections(
+      [
+        parseRecallHits(
+          json({
+            ok: true,
+            result: {
+              resources: [
+                {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
+                {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
+              ],
+            },
+          }),
+        ),
+      ],
+      [{terms: ['chaos'], uri: 'viking://r/.claude/skills/x/SKILL.md'}],
+      12,
+    );
+    expect(ranked.map(hit => hit.uri)).toEqual(['viking://r/.claude/skills/x/SKILL.md']);
+  });
+
+  it('builds an exact tail that excludes matches already shown in the ranked window', () => {
+    const sections = buildRecallSections(
+      [parseRecallHits(json({ok: true, result: {memories: [{uri: 'viking://shown.md', score: 0.8, abstract: 'x'}]}}))],
+      [
+        {terms: ['a'], uri: 'viking://shown.md'},
+        {terms: ['a'], uri: 'viking://resources/repos/coda/only-exact.md'},
+      ],
+      12,
+    );
+    // shown.md is in the ranked window, so it is filtered out of the tail; the
+    // exact-only doc was promoted into the window too, so the tail is empty.
+    expect(sections.exactTail).toBeUndefined();
+    expect(sections.ranked.map(hit => hit.uri)).toContain('viking://resources/repos/coda/only-exact.md');
+  });
+});
+
+describe('buildRecallSections per-category reserve', () => {
+  const mk = (category: 'memories' | 'resources' | 'skills', index: number, score: number): RecallHit => ({
+    category,
+    contextType: category === 'memories' ? 'memory' : category === 'skills' ? 'skill' : 'resource',
+    score,
+    snippet: '',
+    uri: `viking://${category}/${index}`,
+  });
+  const numberedLines = (section: string | undefined): number =>
+    (section ?? '').split('\n').filter(line => /^\d+\. /.test(line)).length;
+
+  it('reserves window slots for resources and skills in a memory-heavy result', () => {
+    const hits = [
+      ...Array.from({length: 12}, (_unused, i) => mk('memories', i, 0.9 - i * 0.01)),
+      ...Array.from({length: 3}, (_unused, i) => mk('resources', i, 0.5 - i * 0.01)),
+      ...Array.from({length: 2}, (_unused, i) => mk('skills', i, 0.4 - i * 0.01)),
+    ];
+    const {semanticSection} = buildRecallSections([hits], [], 12);
+    const text = semanticSection ?? '';
+    // RECALL_CATEGORY_RESERVE = 2 → two resources and two skills are guaranteed visibility.
+    expect(text).toContain('viking://resources/0');
+    expect(text).toContain('viking://resources/1');
+    expect(text).not.toContain('viking://resources/2');
+    expect(text).toContain('viking://skills/0');
+    expect(text).toContain('viking://skills/1');
+    // Memories still take every remaining slot: 12 - 2 - 2 = 8.
+    expect((text.match(/viking:\/\/memories\//g) ?? []).length).toBe(8);
+    // Display stays fully category-first: every memory precedes every resource,
+    // which precedes every skill.
+    const lines = text.split('\n').filter(line => /^\d+\. /.test(line));
+    const lastMemory = lines.map(l => l.includes('memories/')).lastIndexOf(true);
+    const firstResource = lines.findIndex(l => l.includes('resources/'));
+    const lastResource = lines.map(l => l.includes('resources/')).lastIndexOf(true);
+    const firstSkill = lines.findIndex(l => l.includes('skills/'));
+    expect(firstResource).toBeGreaterThan(lastMemory);
+    expect(firstSkill).toBeGreaterThan(lastResource);
+    expect(numberedLines(semanticSection)).toBe(12);
+  });
+
+  it('shows every hit in category-first order when the result fits the window', () => {
+    const hits = [mk('skills', 0, 0.4), mk('memories', 0, 0.9), mk('resources', 0, 0.5)];
+    const {semanticSection} = buildRecallSections([hits], [], 12);
+    const lines = (semanticSection ?? '').split('\n').filter(line => /^\d+\. /.test(line));
+    expect(lines.map(l => l.replace(/^\d+\. .* · /, ''))).toEqual([
+      'viking://memories/0',
+      'viking://resources/0',
+      'viking://skills/0',
+    ]);
+  });
+
+  it('applies the reserve best-effort by priority when the window is smaller than reserve x categories', () => {
+    // limit 4 < RECALL_CATEGORY_RESERVE (2) * 3 categories: the two higher-priority
+    // categories claim their reserve first, and the lowest (skills) is squeezed out.
+    const hits = [
+      ...Array.from({length: 2}, (_unused, i) => mk('memories', i, 0.9 - i * 0.01)),
+      ...Array.from({length: 2}, (_unused, i) => mk('resources', i, 0.5 - i * 0.01)),
+      ...Array.from({length: 2}, (_unused, i) => mk('skills', i, 0.4 - i * 0.01)),
+    ];
+    const text = buildRecallSections([hits], [], 4).semanticSection ?? '';
+    expect(numberedLines(text)).toBe(4);
+    expect(text).toContain('viking://memories/0');
+    expect(text).toContain('viking://memories/1');
+    expect(text).toContain('viking://resources/0');
+    expect(text).toContain('viking://resources/1');
+    expect(text).not.toContain('viking://skills/');
+  });
+
+  it('does not starve a memory-only result of slots', () => {
+    const hits = Array.from({length: 15}, (_unused, i) => mk('memories', i, 0.9 - i * 0.01));
+    const {semanticSection} = buildRecallSections([hits], [], 12);
+    expect(numberedLines(semanticSection)).toBe(12);
+    expect((semanticSection ?? '').match(/viking:\/\/memories\//g)?.length).toBe(12);
   });
 });
 
@@ -730,10 +869,14 @@ describe('categoryForUri', () => {
 });
 
 describe('applyExactMatchBoost', () => {
-  const hit = (over: Partial<ReturnType<typeof baseHit>> = {}): ReturnType<typeof baseHit> => ({...baseHit(), ...over});
-  function baseHit() {
-    return {category: 'resources' as const, contextType: 'resource', score: 0.6, snippet: 's', uri: 'viking://x'};
-  }
+  const hit = (over: Partial<RecallHit> = {}): RecallHit => ({
+    category: 'resources',
+    contextType: 'resource',
+    score: 0.6,
+    snippet: 's',
+    uri: 'viking://x',
+    ...over,
+  });
 
   it('returns hits unchanged when there are no exact matches', () => {
     const hits = [hit()];
@@ -786,6 +929,18 @@ describe('applyExactMatchBoost', () => {
     ]);
   });
 
+  it('breaks ties by score when exact-term counts are equal', () => {
+    const ranked = applyExactMatchBoost(
+      [hit({uri: 'viking://lo', score: 0.5}), hit({uri: 'viking://hi', score: 0.8})],
+      [
+        {terms: ['a'], uri: 'viking://lo'},
+        {terms: ['a'], uri: 'viking://hi'},
+      ],
+    );
+    // Same single-term match → higher semantic score wins.
+    expect(ranked.map(entry => entry.uri)).toEqual(['viking://hi', 'viking://lo']);
+  });
+
   it('renders promoted exact-only hits without a score and annotates boosted hits', () => {
     const ranked = applyExactMatchBoost(
       [hit({uri: 'viking://sem', score: 0.62})],
@@ -794,8 +949,13 @@ describe('applyExactMatchBoost', () => {
         {terms: ['y', 'z'], uri: 'viking://resources/repos/coda/CLAUDE.md'},
       ],
     );
-    const text = formatRecallHits(ranked, 5) ?? '';
-    expect(text).toContain('resource · exact: y, z · viking://resources/repos/coda/CLAUDE.md');
-    expect(text).toContain('resource · score 0.62 · exact: x · viking://sem');
+    const lines = (formatRecallHits(ranked, 5) ?? '').split('\n');
+    const promotedIndex = lines.findIndex(line => line.includes('CLAUDE.md'));
+    // Promoted exact-only line carries no "score" token and is not followed by a
+    // wrapped (3-space indented) snippet line, since its snippet is empty.
+    expect(lines[promotedIndex]).toContain('resource · exact: y, z · viking://resources/repos/coda/CLAUDE.md');
+    expect(lines[promotedIndex]).not.toContain('score');
+    expect(lines[promotedIndex + 1] ?? '').not.toMatch(/^ {3}/);
+    expect(lines.join('\n')).toContain('resource · score 0.62 · exact: x · viking://sem');
   });
 });

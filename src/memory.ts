@@ -33,24 +33,21 @@ import type {
 } from './types.js';
 import {
   assertVikingUri,
+  buildRecallSections,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
-  applyExactMatchBoost,
   expandPath,
   type ExactMatch,
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
   collectExactMatches,
-  formatExactMatchPointers,
-  formatRecallHits,
   formatShellCommand,
   getInputText,
   getInvocationCwd,
   gitValue,
   isJsonObject,
   maybeRun,
-  mergeRecallHits,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
@@ -351,18 +348,14 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
 
   const recallOutputs: string[] = [];
   const exactMatches = await collectExactMemoryMatches(config, ov, query, {dryRun, includeArchived, project});
-  const limit = nodeLimit ?? 12;
-  const ranked = applyExactMatchBoost(mergeRecallHits(passes), exactMatches);
-  const semanticSection = formatRecallHits(ranked, limit);
+  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, nodeLimit ?? 12);
   if (semanticSection) {
     console.log(`\n${semanticSection}`);
     recallOutputs.push(semanticSection);
   }
-  const shownUris = new Set(ranked.slice(0, limit).map(hit => hit.uri));
-  const exactOutput = formatExactMatchPointers(exactMatches.filter(match => !shownUris.has(match.uri)));
-  if (exactOutput) {
-    console.log(`\n${exactOutput}`);
-    recallOutputs.push(exactOutput);
+  if (exactTail) {
+    console.log(`\n${exactTail}`);
+    recallOutputs.push(exactTail);
   }
   await printRecallHygieneNudges(config, recallOutputs.join('\n'));
 }
