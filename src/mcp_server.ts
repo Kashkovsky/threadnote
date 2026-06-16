@@ -11,6 +11,7 @@ import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery} from './manifest.js';
+import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
 import type {ProjectManifest} from './types.js';
 import {
   activePersonalMemoryUrisFromText,
@@ -205,6 +206,17 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
   registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
 
   registerCompactTool(server, config);
+
+  server.registerTool(
+    'threadnote_guide',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        "Onboard the user to Threadnote. Call this when the user asks what they can do with Threadnote, how to get started, for a feature tour/overview, or how Threadnote works — anything exploratory about Threadnote's capabilities. Returns a state-aware walkthrough (tailored to the user's server health, configured share teams, and seeded projects) written as guidance for YOU to present conversationally and offer to run step by step, not a message to paste. Prefer calling this over describing Threadnote from memory, so the guidance matches the user's actual setup. Takes no arguments.",
+      inputSchema: {},
+    },
+    async () => runThreadnoteGuideTool(config),
+  );
 
   server.registerTool(
     'forget',
@@ -2159,6 +2171,22 @@ async function runShareBundleTool(
     return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
   } catch (err: unknown) {
     return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runThreadnoteGuideTool(config: RuntimeConfig): Promise<CallToolResult> {
+  const serverUp = await probeServerUp(config);
+  const context = await gatherOnboardingContext(config);
+  const text = buildOnboardingGuide({...context, serverUp});
+  return {content: [{type: 'text', text}], isError: false};
+}
+
+async function probeServerUp(config: RuntimeConfig): Promise<boolean | undefined> {
+  try {
+    const result = await runOpenVikingMcpTool(config, 'health', {});
+    return result.isError !== true;
+  } catch (_err: unknown) {
+    return false;
   }
 }
 
