@@ -20,7 +20,15 @@ threadnote mcp-install claude --apply   # or codex / cursor / copilot
 threadnote doctor --dry-run
 ```
 
+New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it calls the
+`threadnote_guide` MCP tool, which returns a short walkthrough tailored to your setup
+(server health, configured share teams, seeded projects) and offers to run each step
+with you. The walkthrough only loads when you ask, so it never sits in context otherwise.
+
 ## Real-World Uses
+
+**Not sure what Threadnote can do?**  
+Ask your agent _"what can I do with Threadnote?"_ — it calls `threadnote_guide`, which returns a tour tailored to your setup and offers to run each step (recall a handoff, save a durable note, set up team sharing). The walkthrough loads only when you ask.
 
 **Want to continue work in a fresh agent session?**  
 `threadnote install` adds user-level Codex, Claude, Cursor, and Copilot instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.

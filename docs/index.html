@@ -1475,6 +1475,17 @@ threadnote remember \
 
           <div class="vignettes">
             <div class="vignette reveal">
+              <div class="v-say">What can I do with Threadnote?</div>
+              <pre class="v-call">threadnote_guide({})</pre>
+              <pre class="v-response">→ a short, setup-aware tour: recall · capture · tidy · share · skills</pre>
+              <div class="v-answer">
+                The agent calls the onboarding tool and walks you through Threadnote one capability at a time — offering
+                to run each (recall your last handoff, save a durable note, set up team sharing) rather than dumping a
+                manual. The walkthrough loads only when you ask, so it never sits in your context otherwise.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
               <div class="v-say">Continue where we left off on this branch.</div>
               <pre class="v-call">recall_context({query: "&lt;branch&gt; latest handoff durable feature memory"})</pre>
               <pre class="v-response">
