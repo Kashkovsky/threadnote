@@ -126,6 +126,100 @@ under `agent-artifacts/`, ingests it into OpenViking under the shared team
 namespace, commits, and pushes. Existing artifacts with different content are
 not overwritten unless `--force` is passed.
 
+#### Multi-file skills (bundles)
+
+A skill is shared as its **whole directory**, not just `SKILL.md`. When companion
+files sit beside the `SKILL.md` (reference docs, scripts, templates), they travel
+with the skill:
+
+```text
+agent-artifacts/skills/codex/<name>/
+  SKILL.md                 # recall anchor (OpenViking-ingested)
+  scripts/run.ts           # companion, carried in git
+  reference.md
+  .threadnote-bundle.json  # generated member manifest (sha + binary flags)
+```
+
+Notes:
+
+- A lone `SKILL.md` with no companions publishes exactly as before — no manifest,
+  one file.
+- Every **text** member runs through the scrubber, so a leaked credential or local
+  path in a companion script blocks the publish just like it would in `SKILL.md`.
+- Only `SKILL.md` (and any sibling `.md`) is OpenViking-ingested for recall;
+  companions ride in git and are materialized on install.
+- Runtime/scratch dirs and local junk are never bundled: `reviews/`, `repos/`,
+  `node_modules/`, `.git/`, `.DS_Store`, `*.log`.
+- **Binary** members are blocked by default because the scrubber cannot inspect
+  them; pass `--allow-binary` (CLI) / `allowBinary: true` (MCP) to include them.
+  A credential detected in the bytes still blocks regardless.
+- A skill whose helpers live **outside** its own directory (a multi-skill
+  constellation with shared code at the repo root) is shared as a **pack** — see
+  below.
+
+#### Constellation packs
+
+When several skills share code that lives outside any single skill directory
+(e.g. repo-root `scripts/` and `lib/`), publish them together as a **pack** from
+a `threadnote-bundle.json` manifest at the repo root:
+
+```json
+{
+  "version": 1,
+  "name": "review-pr-suite",
+  "agent": "claude",
+  "description": "PR/MR review constellation.",
+  "skills": [".claude/skills/review-pr", ".claude/skills/pr-action"],
+  "include": ["scripts", "lib", "package.json", "tsconfig.json"],
+  "deps": {"runtime": ["bun"], "cli": ["gh", "glab", "jq"], "mcp": ["mcp__pal__clink"]},
+  "pathRewrites": [{"from": "/Users/alex/code/reviewer"}]
+}
+```
+
+```bash
+threadnote share publish-bundle ./threadnote-bundle.json --preview
+threadnote share publish-bundle ./threadnote-bundle.json
+threadnote share install-artifacts --kind pack --name review-pr-suite --apply
+```
+
+```text
+share_bundle({"path":"~/src/reviewer/threadnote-bundle.json"})
+```
+
+How packs work:
+
+- Every declared skill plus the `include` paths are gathered, preserving the
+  author's repo-relative layout, and written under
+  `agent-artifacts/packs/<agent>/<name>/files/...` next to a generated
+  `<name>.pack.md` recall index and a `<name>.pack.json` manifest.
+- Install materializes the **whole tree under one root**
+  (`~/.{codex,claude}/skills/threadnote-packs/<team>/<name>/` — a dedicated
+  namespace so a pack and a same-named skill never share an install directory),
+  preserving the source repo layout (so a skill declared at
+  `.claude/skills/<name>` lands at `<root>/.claude/skills/<name>/SKILL.md` beside
+  `<root>/scripts/...`). This keeps **file-anchored** references working
+  unchanged: relative imports (`../lib/types`) and `import.meta.dir`-relative
+  paths resolve exactly as they did in the source repo.
+- **CWD-relative invocations do not auto-resolve.** A bare `bun run scripts/...`
+  in a skill body is resolved against the agent's working directory, not the
+  pack root, so anchor such paths to the token:
+  `bun run ${THREADNOTE_PACK_ROOT}/scripts/vcs-detect.ts`. The token is expanded
+  to the absolute install root in every text member at install.
+- Hardcoded absolute repo-root paths are rewritten to that
+  `${THREADNOTE_PACK_ROOT}` token at publish (the manifest dir plus any declared
+  `pathRewrites`, which must be absolute repo-root paths) and expanded back to
+  the real install directory at install. A residual `/Users` or `/home` path
+  that no rewrite covers trips the scrubber and blocks the publish. Other
+  machine-local absolute paths (`/opt`, `/srv`, `/private`, Windows `C:\…`) are
+  **not** auto-detected — declare them in `pathRewrites` or strip them, and
+  `--preview` before publishing. Binary members included via `--allow-binary`
+  are scanned for embedded home paths and declared roots but are otherwise
+  shipped byte-for-byte with no rewrite.
+- `deps` are declared, not bundled: Threadnote installs files, not runtimes or
+  MCP servers. After install it prints a loud "this pack will NOT run until these
+  exist" notice listing the runtime/CLI/OS tools and any MCP servers to
+  configure separately.
+
 Agents can do the same through MCP:
 
 ```text
@@ -174,6 +268,14 @@ applied by running the same install command again; Threadnote tracks the last
 installed shared hash in a sidecar metadata file next to the installed
 artifact. Start a new agent session after installing if that agent snapshots
 skills or commands at startup.
+
+For a multi-file skill, the whole `~/.{codex,claude}/skills/threadnote/<team>/<name>/`
+tree is installed (companions included) and the install is atomic — it is staged
+in a temporary directory and swapped into place, so an interrupted install never
+leaves a half-written, mixed-version skill. Bundle status folds every member into
+one verdict: a local edit to any member plus an upstream change to a different
+member reports `remote_changed_and_local_modified` and refuses to overwrite
+without `--force`.
 
 ### Keep teammates' updates current
 

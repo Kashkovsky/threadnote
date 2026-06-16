@@ -308,10 +308,11 @@ export interface SharePublishOptions {
 }
 
 export type ShareAgentArtifactAgent = 'claude' | 'codex';
-export type ShareAgentArtifactKind = 'command' | 'skill';
+export type ShareAgentArtifactKind = 'command' | 'pack' | 'skill';
 
 export interface SharePublishArtifactOptions {
   readonly agent?: ShareAgentArtifactAgent;
+  readonly allowBinary?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
   readonly kind?: ShareAgentArtifactKind;

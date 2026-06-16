@@ -34,6 +34,7 @@ import {
   sharedTeamNameForUri,
   sharedUriFor,
   shareAgentArtifact,
+  shareBundlePack,
   startShareBackgroundFetch,
   stripPersonalProvenance,
   syncSharedReposBeforeAgentRead,
@@ -368,9 +369,13 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. Default team is used unless team is provided. Pass preview=true to inspect bytes without writing or committing.",
+        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
         agent: z.enum(['codex', 'claude']).optional().describe('Agent owner when path inference is ambiguous'),
+        allowBinary: z
+          .boolean()
+          .optional()
+          .describe('Include binary skill files (unscannable by the scrubber); blocked by default'),
         force: z.boolean().optional().describe('Replace an existing shared artifact with different content'),
         kind: z.enum(['skill', 'command']).optional().describe('Artifact kind when path inference is ambiguous'),
         message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
@@ -385,7 +390,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         team: z.string().optional().describe('Team name; defaults to the configured default team'),
       },
     },
-    async ({agent, force, kind, message, name, path, preview, push, redact, team}) => {
+    async ({agent, allowBinary, force, kind, message, name, path, preview, push, redact, team}) => {
       const checkedPath = requiredText(path, 'share_skill', 'path', {
         path: '~/.codex/skills/example/SKILL.md',
       });
@@ -394,6 +399,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       }
       return runShareSkillTool(config, checkedPath.value, {
         agent,
+        allowBinary,
         force,
         kind,
         message,
@@ -407,14 +413,48 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
   );
 
   server.registerTool(
+    'share_bundle',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        "Publish a multi-skill constellation (pack) into a team's shared artifact catalog from a threadnote-bundle.json manifest. Use this when several skills share code that lives outside any single skill directory (e.g. repo-root scripts/lib). The manifest declares name, agent, skills, include paths, external deps, and pathRewrites. Hardcoded repo-root paths are rewritten to a portable token and expanded on install. Pass preview=true to inspect what would land without writing or committing.",
+      inputSchema: {
+        allowBinary: z
+          .boolean()
+          .optional()
+          .describe('Include binary files (unscannable by the scrubber); blocked by default'),
+        force: z.boolean().optional().describe('Replace existing shared pack files with different content'),
+        message: z.string().optional().describe('Commit message override'),
+        path: z.string().optional().describe('Required local path to a threadnote-bundle.json manifest'),
+        preview: z.boolean().optional().describe('Return what would land in the shared git repo without writing'),
+        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
+        redact: z
+          .boolean()
+          .optional()
+          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+      },
+    },
+    async ({allowBinary, force, message, path, preview, push, redact, team}) => {
+      const checkedPath = requiredText(path, 'share_bundle', 'path', {
+        path: '~/src/reviewer/threadnote-bundle.json',
+      });
+      if (!checkedPath.ok) {
+        return checkedPath.error;
+      }
+      return runShareBundleTool(config, checkedPath.value, {allowBinary, force, message, preview, push, redact, team});
+    },
+  );
+
+  server.registerTool(
     'list_shared_skills',
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description:
-        'List shared Codex/Claude skills and Claude commands available in a configured Threadnote team repo, including whether each one is already installed locally.',
+        'List shared Codex/Claude skills, Claude commands, and skill packs available in a configured Threadnote team repo, including whether each one is already installed locally.',
       inputSchema: {
         agent: z.enum(['codex', 'claude']).optional().describe('Optional agent filter'),
-        kind: z.enum(['skill', 'command']).optional().describe('Optional kind filter'),
+        kind: z.enum(['skill', 'command', 'pack']).optional().describe('Optional kind filter'),
         name: z.string().optional().describe('Optional shared artifact name filter'),
         team: z.string().optional().describe('Team name; defaults to the configured default team'),
       },
@@ -432,7 +472,10 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         agent: z.enum(['codex', 'claude']).optional().describe('Agent owner; required when name is ambiguous'),
         dryRun: z.boolean().optional().describe('Preview install without writing local files'),
         force: z.boolean().optional().describe('Replace an existing installed artifact with different content'),
-        kind: z.enum(['skill', 'command']).optional().describe('Artifact kind; required when name is ambiguous'),
+        kind: z
+          .enum(['skill', 'command', 'pack'])
+          .optional()
+          .describe('Artifact kind; required when name is ambiguous'),
         name: z.string().optional().describe('Required shared artifact name to install'),
         team: z.string().optional().describe('Team name; defaults to the configured default team'),
       },
@@ -1948,8 +1991,9 @@ interface SharePublishToolOptions {
 
 interface ShareSkillToolOptions {
   readonly agent?: 'claude' | 'codex';
+  readonly allowBinary?: boolean;
   readonly force?: boolean;
-  readonly kind?: 'command' | 'skill';
+  readonly kind?: 'command' | 'pack' | 'skill';
   readonly message?: string;
   readonly name?: string;
   readonly preview?: boolean;
@@ -1960,7 +2004,7 @@ interface ShareSkillToolOptions {
 
 interface SharedSkillFilterOptions {
   readonly agent?: 'claude' | 'codex';
-  readonly kind?: 'command' | 'skill';
+  readonly kind?: 'command' | 'pack' | 'skill';
   readonly name?: string;
   readonly team?: string;
 }
@@ -1969,7 +2013,7 @@ interface InstallSharedSkillToolOptions {
   readonly agent?: 'claude' | 'codex';
   readonly dryRun?: boolean;
   readonly force?: boolean;
-  readonly kind?: 'command' | 'skill';
+  readonly kind?: 'command' | 'pack' | 'skill';
   readonly team?: string;
 }
 
@@ -2077,6 +2121,35 @@ async function runShareSkillTool(
 ): Promise<CallToolResult> {
   try {
     const result = await shareAgentArtifact(config, sourcePath, options);
+    const lines = [...result.messages, ...result.gitMessages];
+    if (result.previewContent !== undefined) {
+      lines.push('-----BEGIN PREVIEW-----');
+      lines.push(result.previewContent);
+      lines.push('-----END PREVIEW-----');
+    }
+    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+interface ShareBundleToolOptions {
+  readonly allowBinary?: boolean;
+  readonly force?: boolean;
+  readonly message?: string;
+  readonly preview?: boolean;
+  readonly push?: boolean;
+  readonly redact?: boolean;
+  readonly team?: string;
+}
+
+async function runShareBundleTool(
+  config: RuntimeConfig,
+  manifestPath: string,
+  options: ShareBundleToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const result = await shareBundlePack(config, manifestPath, options);
     const lines = [...result.messages, ...result.gitMessages];
     if (result.previewContent !== undefined) {
       lines.push('-----BEGIN PREVIEW-----');

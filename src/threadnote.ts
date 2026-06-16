@@ -68,6 +68,7 @@ import {
   runShareList,
   runSharePublish,
   runSharePublishArtifact,
+  runSharePublishBundle,
   runShareRename,
   runShareRemove,
   runShareSetUrl,
@@ -507,15 +508,35 @@ async function main(): Promise<void> {
     .option('--name <name>', 'Shared artifact name; defaults to skill directory or command file stem')
     .option('--message <text>', 'Commit message override')
     .option('--force', 'Replace an existing shared artifact with different content')
+    .option('--allow-binary', 'Include binary skill files (unscannable by the scrubber); blocked by default')
     .option('--no-push', 'Skip the push step')
     .option('--dry-run', 'Print actions without running them')
-    .option('--preview', 'Print the exact artifact bytes that would land in the shared git repo')
+    .option('--preview', 'Print what would land in the shared git repo without writing or committing')
     .option(
       '--redact',
       'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block',
     )
     .action(async (path: string, options: SharePublishArtifactOptions) => {
       await runSharePublishArtifact(getRuntimeConfig(program), path, options);
+    });
+
+  share
+    .command('publish-bundle')
+    .description('Publish a multi-skill constellation (pack) declared by a threadnote-bundle.json manifest')
+    .argument('<manifest>', 'Path to a threadnote-bundle.json manifest')
+    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .option('--message <text>', 'Commit message override')
+    .option('--force', 'Replace existing shared pack files with different content')
+    .option('--allow-binary', 'Include binary files (unscannable by the scrubber); blocked by default')
+    .option('--no-push', 'Skip the push step')
+    .option('--dry-run', 'Print actions without running them')
+    .option('--preview', 'Print what would land in the shared git repo without writing or committing')
+    .option(
+      '--redact',
+      'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block',
+    )
+    .action(async (manifest: string, options: SharePublishArtifactOptions) => {
+      await runSharePublishBundle(getRuntimeConfig(program), manifest, options);
     });
 
   share
