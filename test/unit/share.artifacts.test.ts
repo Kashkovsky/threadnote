@@ -396,4 +396,252 @@ describe('shared agent artifacts', () => {
 
     await expect(readFile(installPath, 'utf8')).resolves.toBe('# Reviewer v2\n');
   });
+
+  function findGitAddArgs(): readonly string[] | undefined {
+    const call = vi
+      .mocked(utils.runCommand)
+      .mock.calls.find(([executable, args]) => executable === 'git' && args.includes('add'));
+    return call?.[1];
+  }
+
+  it('publishes a multi-file skill as a bundle with a manifest', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(join(skillDir, 'scripts'), {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n\nRun scripts/run.ts.\n');
+    await writeFile(join(skillDir, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
+    mockPublishCommands();
+
+    const result = await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {});
+
+    expect(result.targetUri).toBe(
+      'viking://user/denyskashkovskyi/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+    );
+    const sharedRoot = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'agent-artifacts',
+      'skills',
+      'codex',
+      'reviewer',
+    );
+    await expect(readFile(join(sharedRoot, 'scripts', 'run.ts'), 'utf8')).resolves.toBe(
+      'export const run = () => 1;\n',
+    );
+    const manifest = JSON.parse(await readFile(join(sharedRoot, '.threadnote-bundle.json'), 'utf8'));
+    expect(manifest.members.map((m: {path: string}) => m.path)).toEqual(['SKILL.md', 'scripts/run.ts']);
+    const addArgs = findGitAddArgs();
+    expect(addArgs).toContain('agent-artifacts/skills/codex/reviewer/SKILL.md');
+    expect(addArgs).toContain('agent-artifacts/skills/codex/reviewer/scripts/run.ts');
+    expect(addArgs).toContain('agent-artifacts/skills/codex/reviewer/.threadnote-bundle.json');
+  });
+
+  it('ignores runtime artifact dirs and local junk when bundling a skill', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(join(skillDir, 'reviews', 'mobile', '1'), {recursive: true});
+    await mkdir(join(skillDir, 'repos', 'coda'), {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
+    await writeFile(join(skillDir, 'run.ts'), 'export const run = () => 1;\n');
+    await writeFile(join(skillDir, '.DS_Store'), 'junk');
+    await writeFile(join(skillDir, 'debug.log'), 'noise');
+    await writeFile(join(skillDir, 'reviews', 'mobile', '1', 'state.json'), '{}');
+    await writeFile(join(skillDir, 'repos', 'coda', 'CLAUDE.md'), '# nope\n');
+    mockPublishCommands();
+
+    await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {});
+
+    const sharedRoot = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'agent-artifacts',
+      'skills',
+      'codex',
+      'reviewer',
+    );
+    const manifest = JSON.parse(await readFile(join(sharedRoot, '.threadnote-bundle.json'), 'utf8'));
+    expect(manifest.members.map((m: {path: string}) => m.path)).toEqual(['SKILL.md', 'run.ts']);
+    await expect(readFile(join(sharedRoot, 'reviews', 'mobile', '1', 'state.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(join(sharedRoot, 'repos', 'coda', 'CLAUDE.md'), 'utf8')).rejects.toThrow();
+  });
+
+  it('blocks a binary skill member by default and includes it with allowBinary', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(join(skillDir, 'assets'), {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x00, 0x01, 0x02, 0xff]);
+    await writeFile(join(skillDir, 'assets', 'logo.png'), png);
+    mockPublishCommands();
+
+    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/binary file/);
+
+    await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true});
+    const sharedRoot = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'agent-artifacts',
+      'skills',
+      'codex',
+      'reviewer',
+    );
+    await expect(readFile(join(sharedRoot, 'assets', 'logo.png'))).resolves.toEqual(png);
+  });
+
+  it('blocks a credential embedded in a binary member even with allowBinary', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(skillDir, {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
+    const secretBlob = Buffer.concat([Buffer.from([0x00, 0x01]), Buffer.from(`sk-${'a'.repeat(24)}`)]);
+    await writeFile(join(skillDir, 'helper.bin'), secretBlob);
+    mockPublishCommands();
+
+    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true})).rejects.toThrow(
+      /embedded in binary file/,
+    );
+  });
+
+  it('scrubs companion files and blocks a leaked credential in a script', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(join(skillDir, 'scripts'), {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
+    await writeFile(join(skillDir, 'scripts', 'run.ts'), `const token = "ghp_${'b'.repeat(36)}";\n`);
+    mockPublishCommands();
+
+    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/scripts\/run\.ts/);
+  });
+
+  it('does not materialize bundle companions when the SKILL.md OpenViking write fails', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
+    await mkdir(join(skillDir, 'scripts'), {recursive: true});
+    await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
+    await writeFile(join(skillDir, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
+    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+      if (executable === '/ov' && args[0] === 'stat') {
+        return fail();
+      }
+      if (executable === '/ov' && args[0] === 'mkdir') {
+        return ok('ok');
+      }
+      if (executable === '/ov' && args[0] === 'write') {
+        return fail('write failed');
+      }
+      return ok();
+    });
+
+    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/write failed/);
+    const sharedRoot = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'agent-artifacts',
+      'skills',
+      'codex',
+      'reviewer',
+    );
+    await expect(readFile(join(sharedRoot, 'scripts', 'run.ts'), 'utf8')).rejects.toThrow();
+  });
+
+  async function seedSharedBundle(config: ShareRuntime): Promise<string> {
+    const root = join(config.agentContextHome, 'shared', 'default', 'agent-artifacts', 'skills', 'claude', 'reviewer');
+    await mkdir(join(root, 'scripts'), {recursive: true});
+    await writeFile(join(root, 'SKILL.md'), '# Reviewer v1\n');
+    await writeFile(join(root, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
+    return root;
+  }
+
+  it('installs a multi-file bundle tree and tracks it with a bundle sidecar', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const installHome = await mkdtemp(join(tmpdir(), 'threadnote-bundle-install-home-'));
+    homes.push(installHome);
+    process.env.HOME = installHome;
+    await seedSharedBundle(config);
+
+    await installSharedAgentArtifacts(config, {
+      agent: 'claude',
+      apply: true,
+      kind: 'skill',
+      name: 'reviewer',
+      sync: false,
+    });
+
+    const installRoot = join(installHome, '.claude', 'skills', 'threadnote', 'default', 'reviewer');
+    await expect(readFile(join(installRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# Reviewer v1\n');
+    await expect(readFile(join(installRoot, 'scripts', 'run.ts'), 'utf8')).resolves.toBe(
+      'export const run = () => 1;\n',
+    );
+    await expect(readFile(join(installRoot, '.threadnote-bundle-install.json'), 'utf8')).resolves.toMatch(
+      /scripts\/run\.ts/,
+    );
+  });
+
+  it('updates a bundle member and protects local edits across members', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const installHome = await mkdtemp(join(tmpdir(), 'threadnote-bundle-update-home-'));
+    homes.push(installHome);
+    process.env.HOME = installHome;
+    const sharedRoot = await seedSharedBundle(config);
+    const installRoot = join(installHome, '.claude', 'skills', 'threadnote', 'default', 'reviewer');
+
+    await installSharedAgentArtifacts(config, {
+      agent: 'claude',
+      apply: true,
+      kind: 'skill',
+      name: 'reviewer',
+      sync: false,
+    });
+
+    // Upstream changes one member; reinstall adopts it.
+    await writeFile(join(sharedRoot, 'scripts', 'run.ts'), 'export const run = () => 2;\n');
+    expect((await listSharedAgentArtifacts(config, {sync: false})).artifacts[0]?.installStatus).toBe(
+      'update_available',
+    );
+    await installSharedAgentArtifacts(config, {
+      agent: 'claude',
+      apply: true,
+      kind: 'skill',
+      name: 'reviewer',
+      sync: false,
+    });
+    await expect(readFile(join(installRoot, 'scripts', 'run.ts'), 'utf8')).resolves.toBe(
+      'export const run = () => 2;\n',
+    );
+
+    // Local edit to one member + upstream edit to a different member -> conflict.
+    await writeFile(join(installRoot, 'SKILL.md'), '# Locally edited\n');
+    await writeFile(join(sharedRoot, 'scripts', 'run.ts'), 'export const run = () => 3;\n');
+    expect((await listSharedAgentArtifacts(config, {sync: false})).artifacts[0]?.installStatus).toBe(
+      'remote_changed_and_local_modified',
+    );
+    await expect(
+      installSharedAgentArtifacts(config, {agent: 'claude', apply: true, kind: 'skill', name: 'reviewer', sync: false}),
+    ).rejects.toThrow(/Refusing to overwrite/);
+
+    await installSharedAgentArtifacts(config, {
+      agent: 'claude',
+      apply: true,
+      force: true,
+      kind: 'skill',
+      name: 'reviewer',
+      sync: false,
+    });
+    await expect(readFile(join(installRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# Reviewer v1\n');
+    await expect(readFile(join(installRoot, 'scripts', 'run.ts'), 'utf8')).resolves.toBe(
+      'export const run = () => 3;\n',
+    );
+  });
 });

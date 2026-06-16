@@ -744,7 +744,7 @@ export function parentVikingUri(uri: string): string {
   return slashIndex <= 'viking://'.length ? trimmedUri : trimmedUri.slice(0, slashIndex);
 }
 
-export function sha256(content: string): string {
+export function sha256(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 

@@ -1,6 +1,7 @@
 import {lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from 'node:fs/promises';
 import {homedir, tmpdir} from 'node:os';
 import {basename, dirname, join, relative, sep} from 'node:path';
+import {TextDecoder} from 'node:util';
 import {uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -50,6 +51,18 @@ const SHAREABLE_ARTIFACT_DIR = 'agent-artifacts';
 const SHAREABLE_TOP_LEVEL_DIRS = [...SHAREABLE_MEMORY_KIND_DIRS, SHAREABLE_ARTIFACT_DIR];
 const SHAREABLE_ROOT_FILES = ['README.md', 'AGENTS.md', 'CLAUDE.md', 'SKILL.md', '.gitignore'];
 const ARTIFACT_INSTALL_METADATA_VERSION = 1;
+const BUNDLE_MANIFEST_VERSION = 1;
+// A shared skill carries its whole directory. These metadata files describe the
+// bundle in the team repo (BUNDLE_MANIFEST_FILE) and track a local install
+// (BUNDLE_INSTALL_METADATA_FILE); neither is treated as skill content.
+const BUNDLE_MANIFEST_FILE = '.threadnote-bundle.json';
+const BUNDLE_INSTALL_METADATA_FILE = '.threadnote-bundle-install.json';
+// OpenViking writes these summaries into the worktree; they are gitignored and
+// must never be packed as skill members.
+const OV_SUMMARY_FILES: readonly string[] = ['.abstract.md', '.overview.md'];
+// Directories and files that are skill runtime artifacts or local junk, never
+// part of a shared skill bundle. `reviews/` and `repos/` are skill scratch dirs.
+const BUNDLE_IGNORE_DIR_NAMES: readonly string[] = ['.git', 'node_modules', 'reviews', 'repos'];
 const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
@@ -115,9 +128,17 @@ export interface ShareArtifactResult {
 export interface SharedArtifactFile {
   readonly artifact: ShareArtifactMetadata;
   readonly installPath: string;
+  // Present for skill artifacts: every file in the shared skill directory,
+  // relative to it. A length > 1 means this is a multi-file bundle.
+  readonly members?: readonly BundleMemberFile[];
   readonly sourceRelativePath: string;
   readonly sourcePath: string;
   readonly team: string;
+}
+
+interface BundleMemberFile {
+  readonly absolutePath: string;
+  readonly relativePath: string;
 }
 
 export type SharedArtifactInstallStatus =
@@ -764,7 +785,7 @@ async function hasWorktreeOrTrackedPath(git: string, worktree: string, relativeP
 
 export async function publishShareGitChange(
   worktree: string,
-  relativePath: string,
+  relativePath: string | readonly string[],
   commitMessage: string,
   options: {
     readonly dryRun?: boolean;
@@ -777,7 +798,8 @@ export async function publishShareGitChange(
   const verb = options.verb ?? 'add';
   const git = await requiredExecutable('git');
   const messages: string[] = [];
-  const stageArgs = verb === 'rm' ? ['-C', worktree, 'rm', relativePath] : ['-C', worktree, 'add', '--', relativePath];
+  const paths = typeof relativePath === 'string' ? [relativePath] : [...relativePath];
+  const stageArgs = verb === 'rm' ? ['-C', worktree, 'rm', ...paths] : ['-C', worktree, 'add', '--', ...paths];
   const stageResult = await runGitCommand(dryRun, git, stageArgs, `git ${verb} failed`);
   if (stageResult) {
     messages.push(`git ${verb}: ${stageResult.stdout.trim() || 'ok'}`);
@@ -922,14 +944,36 @@ export async function shareAgentArtifact(
   options: SharePublishArtifactOptions,
 ): Promise<ShareArtifactResult> {
   const team = await resolveTeam(config, options.team);
-  const dryRun = options.dryRun === true;
-  const preview = options.preview === true;
   const resolvedSourcePath = expandPath(sourcePath);
   if (!(await isRegularFileNoSymlink(resolvedSourcePath))) {
     throw new Error(`Agent artifact source is not a regular file: ${resolvedSourcePath}`);
   }
 
   const artifact = inferShareArtifact(resolvedSourcePath, options);
+  // A skill carries its whole directory. When companion files sit beside the
+  // SKILL.md it is shared as a multi-file bundle; a lone SKILL.md takes the same
+  // single-file path as before, byte-for-byte.
+  if (artifact.kind === 'skill') {
+    const skillDir = dirname(resolvedSourcePath);
+    const members = await collectBundleMemberFiles(skillDir);
+    if (members.length > 1) {
+      return shareBundleArtifact(config, team, artifact, skillDir, members, options);
+    }
+  }
+  return shareSingleArtifact(config, team, resolvedSourcePath, artifact, options);
+}
+
+type ResolvedShareTeam = Awaited<ReturnType<typeof resolveTeam>>;
+
+async function shareSingleArtifact(
+  config: ShareRuntime,
+  team: ResolvedShareTeam,
+  resolvedSourcePath: string,
+  artifact: ShareArtifactMetadata,
+  options: SharePublishArtifactOptions,
+): Promise<ShareArtifactResult> {
+  const dryRun = options.dryRun === true;
+  const preview = options.preview === true;
   const rawContent = await readFile(resolvedSourcePath, 'utf8');
   if (!rawContent.trim()) {
     throw new Error(`Refusing to share empty agent artifact: ${resolvedSourcePath}`);
@@ -1003,6 +1047,296 @@ export async function shareAgentArtifact(
   return {artifact, gitMessages, messages, sourcePath: resolvedSourcePath, targetPath, targetUri};
 }
 
+interface PreparedBundleMember {
+  readonly binary: boolean;
+  readonly blocker?: string;
+  readonly content: Buffer | string;
+  readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
+  readonly relativePath: string;
+  readonly sha256: string;
+  readonly targetPath: string;
+  readonly targetUri: string;
+}
+
+async function shareBundleArtifact(
+  config: ShareRuntime,
+  team: ResolvedShareTeam,
+  artifact: ShareArtifactMetadata,
+  skillDir: string,
+  members: readonly BundleMemberFile[],
+  options: SharePublishArtifactOptions,
+): Promise<ShareArtifactResult> {
+  const dryRun = options.dryRun === true;
+  const preview = options.preview === true;
+  const skillRootRelative = `${SHAREABLE_ARTIFACT_DIR}/skills/${artifact.agent}/${artifact.name}`;
+  const skillRootTargetDir = join(team.config.worktree, ...skillRootRelative.split('/'));
+  const skillMdTargetPath = join(skillRootTargetDir, 'SKILL.md');
+  const skillMdTargetUri = workfileToVikingUri(config, team.config, skillMdTargetPath);
+  const skillRootTargetUri = parentUri(skillMdTargetUri);
+  const skillMdSourcePath = join(skillDir, 'SKILL.md');
+
+  const prepared = await Promise.all(
+    members.map(member => prepareBundleMember(config, team, member, skillRootTargetDir, options)),
+  );
+  const skillMd = prepared.find(entry => entry.relativePath === 'SKILL.md');
+  if (skillMd === undefined) {
+    throw new Error(`Skill bundle ${artifact.agent}/${artifact.name} is missing SKILL.md.`);
+  }
+  if (!skillMd.binary && typeof skillMd.content === 'string' && !skillMd.content.trim()) {
+    throw new Error(`Refusing to share empty agent artifact: ${skillMdSourcePath}`);
+  }
+
+  const messages: string[] = [
+    `${preview ? 'Previewing' : dryRun ? 'Would share' : 'Sharing'} skill ${artifact.agent}/${artifact.name} bundle (${prepared.length} files)`,
+    `Source: ${portablePath(skillDir)}`,
+    `Destination: ${skillRootTargetUri}/`,
+  ];
+
+  const blockers = prepared.filter(entry => entry.blocker !== undefined);
+  if (preview) {
+    for (const entry of prepared) {
+      const flags = entry.binary ? ['binary'] : [];
+      for (const redaction of entry.redactions) {
+        flags.push(`redact ${redaction.count}× ${redaction.name}`);
+      }
+      const note = entry.blocker !== undefined ? ` BLOCKED: ${entry.blocker}` : '';
+      messages.push(`  ${entry.relativePath}${flags.length > 0 ? ` [${flags.join(', ')}]` : ''}${note}`);
+    }
+    return {
+      artifact,
+      gitMessages: [],
+      messages,
+      previewContent: skillMd.binary ? undefined : (skillMd.content as string),
+      sourcePath: skillMdSourcePath,
+      targetPath: skillMdTargetPath,
+      targetUri: skillMdTargetUri,
+    };
+  }
+
+  if (blockers.length > 0) {
+    throw new Error(
+      `Refusing to share skill ${artifact.agent}/${artifact.name}: ${blockers
+        .map(entry => `${entry.relativePath} (${entry.blocker})`)
+        .join('; ')}. Strip the value, pass --redact for local paths, or --allow-binary for binary files.`,
+    );
+  }
+  for (const entry of prepared) {
+    for (const redaction of entry.redactions) {
+      messages.push(`Redacted ${redaction.count}× ${redaction.name} in ${entry.relativePath} before sharing.`);
+    }
+  }
+
+  for (const entry of prepared) {
+    const existing = await readFileBytesIfExists(entry.targetPath);
+    if (existing !== undefined && sha256(existing) !== entry.sha256 && options.force !== true) {
+      throw new Error(
+        `Shared artifact already exists with different content: ${portablePath(entry.targetPath)}. Pass --force to replace it.`,
+      );
+    }
+  }
+
+  if (dryRun) {
+    messages.push(`Would write ${prepared.length} files under ${portablePath(skillRootTargetDir)}`);
+    return {
+      artifact,
+      gitMessages: [],
+      messages,
+      sourcePath: skillMdSourcePath,
+      targetPath: skillMdTargetPath,
+      targetUri: skillMdTargetUri,
+    };
+  }
+
+  // Safety invariant: OpenViking-managed markdown is written first (SKILL.md
+  // leading), so a failed OV write never leaves a worktree tree that a later
+  // share sync would auto-commit without ingestion. Companion files and the
+  // manifest are materialized only after every markdown write succeeds.
+  const ov = await openVikingCliForMode(dryRun);
+  const markdownMembers = orderSkillMdFirst(prepared.filter(entry => entry.relativePath.endsWith('.md')));
+  const otherMembers = prepared.filter(entry => !entry.relativePath.endsWith('.md'));
+  for (const entry of markdownMembers) {
+    const ovHasResource = await vikingResourceExists(ov, config, entry.targetUri);
+    await ensureSharedDirectoryChain(config, ov, entry.targetUri, dryRun, {quiet: true});
+    await writeMemoryFile(
+      config,
+      ov,
+      entry.targetUri,
+      entry.content as string,
+      ovHasResource ? 'replace' : 'create',
+      dryRun,
+      {quiet: true},
+    );
+  }
+  await ensureDirectory(skillRootTargetDir, false);
+  for (const entry of otherMembers) {
+    await ensureDirectory(dirname(entry.targetPath), false);
+    await writeFile(entry.targetPath, entry.content, entry.binary ? {mode: 0o600} : {encoding: 'utf8', mode: 0o600});
+  }
+  await writeFile(join(skillRootTargetDir, BUNDLE_MANIFEST_FILE), buildBundleManifest(artifact, prepared), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+
+  const stagedPaths = [
+    ...prepared.map(entry => `${skillRootRelative}/${entry.relativePath}`),
+    `${skillRootRelative}/${BUNDLE_MANIFEST_FILE}`,
+  ];
+  const message =
+    options.message ?? `share: publish skill ${artifact.agent}/${artifact.name} (${prepared.length} files)`;
+  const gitMessages = await publishShareGitChange(team.config.worktree, stagedPaths, message, {
+    dryRun,
+    push: options.push,
+  });
+  return {
+    artifact,
+    gitMessages,
+    messages,
+    sourcePath: skillMdSourcePath,
+    targetPath: skillMdTargetPath,
+    targetUri: skillMdTargetUri,
+  };
+}
+
+async function prepareBundleMember(
+  config: ShareRuntime,
+  team: ResolvedShareTeam,
+  member: BundleMemberFile,
+  skillRootTargetDir: string,
+  options: SharePublishArtifactOptions,
+): Promise<PreparedBundleMember> {
+  const buffer = await readFile(member.absolutePath);
+  const targetPath = join(skillRootTargetDir, ...member.relativePath.split('/'));
+  const targetUri = workfileToVikingUri(config, team.config, targetPath);
+  if (isProbablyBinary(buffer)) {
+    const credential = detectBinaryCredential(buffer);
+    const blocker =
+      credential !== undefined
+        ? `possible ${credential} embedded in binary file`
+        : options.allowBinary === true
+          ? undefined
+          : 'binary file (pass --allow-binary to include it unscanned)';
+    return {
+      binary: true,
+      blocker,
+      content: buffer,
+      redactions: [],
+      relativePath: member.relativePath,
+      sha256: sha256(buffer),
+      targetPath,
+      targetUri,
+    };
+  }
+  const scrub = applyScrubber(buffer.toString('utf8'), {redact: options.redact === true});
+  return {
+    binary: false,
+    blocker: scrub.blocker,
+    content: scrub.cleaned,
+    redactions: scrub.redactions,
+    relativePath: member.relativePath,
+    sha256: sha256(scrub.cleaned),
+    targetPath,
+    targetUri,
+  };
+}
+
+function orderSkillMdFirst(entries: readonly PreparedBundleMember[]): readonly PreparedBundleMember[] {
+  return [...entries].sort((a, b) => {
+    if (a.relativePath === 'SKILL.md') {
+      return -1;
+    }
+    if (b.relativePath === 'SKILL.md') {
+      return 1;
+    }
+    return compareStrings(a.relativePath, b.relativePath);
+  });
+}
+
+function buildBundleManifest(artifact: ShareArtifactMetadata, prepared: readonly PreparedBundleMember[]): string {
+  const manifest = {
+    artifact,
+    members: prepared
+      .map(entry => ({binary: entry.binary, path: entry.relativePath, sha256: entry.sha256}))
+      .sort((a, b) => compareStrings(a.path, b.path)),
+    version: BUNDLE_MANIFEST_VERSION,
+  };
+  return `${JSON.stringify(manifest, undefined, 2)}\n`;
+}
+
+async function collectBundleMemberFiles(skillDir: string): Promise<readonly BundleMemberFile[]> {
+  const out: BundleMemberFile[] = [];
+  async function visit(dir: string): Promise<void> {
+    const entries = await readdir(dir, {withFileTypes: true});
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!BUNDLE_IGNORE_DIR_NAMES.includes(entry.name)) {
+          await visit(full);
+        }
+        continue;
+      }
+      if (!entry.isFile() || isIgnoredBundleFile(entry.name)) {
+        continue;
+      }
+      out.push({absolutePath: full, relativePath: relative(skillDir, full).split(sep).join('/')});
+    }
+  }
+  await visit(skillDir);
+  return out.sort((a, b) => compareStrings(a.relativePath, b.relativePath));
+}
+
+function isIgnoredBundleFile(name: string): boolean {
+  if (name === '.DS_Store' || name === BUNDLE_MANIFEST_FILE || name === BUNDLE_INSTALL_METADATA_FILE) {
+    return true;
+  }
+  if (OV_SUMMARY_FILES.includes(name)) {
+    return true;
+  }
+  return name.endsWith('.log') || name.endsWith('.threadnote-install.json');
+}
+
+function isProbablyBinary(buffer: Buffer): boolean {
+  if (buffer.includes(0)) {
+    return true;
+  }
+  try {
+    new TextDecoder('utf-8', {fatal: true}).decode(buffer);
+    return false;
+  } catch (_err: unknown) {
+    return true;
+  }
+}
+
+function detectBinaryCredential(buffer: Buffer): string | undefined {
+  const latin1 = buffer.toString('latin1');
+  for (const pattern of SCRUBBER_PATTERNS) {
+    if (pattern.placeholder === undefined && pattern.regex.test(latin1)) {
+      return pattern.name;
+    }
+  }
+  return undefined;
+}
+
+async function readFileBytesIfExists(path: string): Promise<Buffer | undefined> {
+  try {
+    return await readFile(path);
+  } catch (_err: unknown) {
+    return undefined;
+  }
+}
+
+function isBundleArtifact(artifact: SharedArtifactFile): boolean {
+  return artifact.members !== undefined && artifact.members.length > 1;
+}
+
+// Locale-independent ordering so manifests and git diffs are reproducible
+// across machines regardless of the host locale.
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export async function runShareInstallArtifacts(
   config: ShareRuntime,
   options: ShareInstallArtifactsOptions,
@@ -1073,6 +1407,10 @@ export async function installSharedAgentArtifacts(
   }
   let installedCount = 0;
   for (const artifact of artifacts) {
+    if (isBundleArtifact(artifact)) {
+      installedCount += await installBundleArtifact(artifact, options, dryRun, messages);
+      continue;
+    }
     const label = sharedArtifactLabel(artifact.artifact);
     const state = await sharedArtifactInstallState(artifact);
     if (dryRun) {
@@ -1693,6 +2031,7 @@ async function collectSharedArtifacts(worktree: string, team: string): Promise<r
       out.push({
         artifact,
         installPath: sharedArtifactInstallPath(team, artifact),
+        members: artifact.kind === 'skill' ? await collectSharedBundleMembers(dirname(full)) : undefined,
         sourcePath: full,
         sourceRelativePath: relativePath,
         team,
@@ -1701,6 +2040,30 @@ async function collectSharedArtifacts(worktree: string, team: string): Promise<r
   }
   await visit(root);
   return out.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
+}
+
+// Members of a shared skill directory. Prefers the published manifest as the
+// authoritative member list; falls back to walking the directory when it is a
+// legacy single-file skill or the manifest is unreadable.
+async function collectSharedBundleMembers(skillDir: string): Promise<readonly BundleMemberFile[]> {
+  const manifestRaw = await readFileIfExists(join(skillDir, BUNDLE_MANIFEST_FILE));
+  if (manifestRaw !== undefined) {
+    const parsed = parseJsonConfigObject(manifestRaw);
+    const rawMembers = parsed?.members;
+    if (Array.isArray(rawMembers)) {
+      const fromManifest: BundleMemberFile[] = [];
+      for (const entry of rawMembers) {
+        const path = (entry as {path?: unknown})?.path;
+        if (typeof path === 'string' && path.length > 0) {
+          fromManifest.push({absolutePath: join(skillDir, ...path.split('/')), relativePath: path});
+        }
+      }
+      if (fromManifest.length > 0) {
+        return fromManifest.sort((a, b) => compareStrings(a.relativePath, b.relativePath));
+      }
+    }
+  }
+  return collectBundleMemberFiles(skillDir);
 }
 
 function filterSharedArtifacts(
@@ -1733,7 +2096,173 @@ async function maybeSyncSharedArtifacts(
 }
 
 async function sharedArtifactInstallStatus(artifact: SharedArtifactFile): Promise<SharedArtifactInstallStatus> {
+  if (isBundleArtifact(artifact)) {
+    return sharedBundleInstallStatus(artifact);
+  }
   return (await sharedArtifactInstallState(artifact)).status;
+}
+
+interface BundleInstallMemberMetadata {
+  readonly installedSha256: string;
+  readonly sourceSha256: string;
+}
+
+function bundleInstallRoot(artifact: SharedArtifactFile): string {
+  return dirname(artifact.installPath);
+}
+
+function bundleInstallMetadataPath(artifact: SharedArtifactFile): string {
+  return join(bundleInstallRoot(artifact), BUNDLE_INSTALL_METADATA_FILE);
+}
+
+async function readBundleInstallMetadata(
+  artifact: SharedArtifactFile,
+): Promise<Map<string, BundleInstallMemberMetadata> | undefined> {
+  const raw = await readFileIfExists(bundleInstallMetadataPath(artifact));
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = parseJsonConfigObject(raw);
+  if (parsed === undefined || parsed.version !== ARTIFACT_INSTALL_METADATA_VERSION || !Array.isArray(parsed.members)) {
+    return undefined;
+  }
+  const map = new Map<string, BundleInstallMemberMetadata>();
+  for (const entry of parsed.members) {
+    const path = (entry as {path?: unknown})?.path;
+    const sourceSha256 = (entry as {sourceSha256?: unknown})?.sourceSha256;
+    const installedSha256 = (entry as {installedSha256?: unknown})?.installedSha256;
+    if (typeof path === 'string' && typeof sourceSha256 === 'string' && typeof installedSha256 === 'string') {
+      map.set(path, {installedSha256, sourceSha256});
+    }
+  }
+  return map;
+}
+
+// Folds per-member 3-way comparison (source vs installed vs recorded) into one
+// bundle status. A local edit to one member and an upstream change to a
+// different member both surface as remote_changed_and_local_modified so install
+// refuses to silently clobber local work.
+async function sharedBundleInstallStatus(artifact: SharedArtifactFile): Promise<SharedArtifactInstallStatus> {
+  const members = artifact.members ?? [];
+  const installRoot = bundleInstallRoot(artifact);
+  const metadata = await readBundleInstallMetadata(artifact);
+  let installedCount = 0;
+  let localChanged = false;
+  let remoteChanged = false;
+  const memberPaths = new Set<string>();
+  for (const member of members) {
+    memberPaths.add(member.relativePath);
+    const sourceSha = sha256(await readFile(member.absolutePath));
+    const installedBytes = await readFileBytesIfExists(join(installRoot, ...member.relativePath.split('/')));
+    if (installedBytes === undefined) {
+      remoteChanged = true;
+      continue;
+    }
+    installedCount += 1;
+    const installedSha = sha256(installedBytes);
+    const recorded = metadata?.get(member.relativePath);
+    if (recorded === undefined) {
+      if (installedSha !== sourceSha) {
+        localChanged = true;
+      }
+      continue;
+    }
+    if (installedSha !== recorded.installedSha256) {
+      localChanged = true;
+    }
+    if (sourceSha !== recorded.sourceSha256) {
+      remoteChanged = true;
+    }
+  }
+  if (metadata !== undefined) {
+    for (const recordedPath of metadata.keys()) {
+      if (!memberPaths.has(recordedPath)) {
+        remoteChanged = true;
+      }
+    }
+  }
+  if (installedCount === 0 && metadata === undefined) {
+    return 'not_installed';
+  }
+  if (localChanged && remoteChanged) {
+    return 'remote_changed_and_local_modified';
+  }
+  if (remoteChanged) {
+    return 'update_available';
+  }
+  if (localChanged) {
+    return 'local_modified';
+  }
+  return 'current';
+}
+
+async function installBundleArtifact(
+  artifact: SharedArtifactFile,
+  options: ShareInstallArtifactsOptions,
+  dryRun: boolean,
+  messages: string[],
+): Promise<number> {
+  const members = artifact.members ?? [];
+  const installRoot = bundleInstallRoot(artifact);
+  const label = `${sharedArtifactLabel(artifact.artifact)} bundle (${members.length} files)`;
+  const status = await sharedBundleInstallStatus(artifact);
+  if (dryRun) {
+    const verb = sharedArtifactDryRunVerb(status, options.force === true);
+    const suffix = sharedArtifactDryRunSuffix(status, options.force === true);
+    messages.push(`${verb} ${label}: ${portablePath(installRoot)}${suffix}`);
+    return 0;
+  }
+  if ((status === 'local_modified' || status === 'remote_changed_and_local_modified') && options.force !== true) {
+    throw new Error(`Refusing to overwrite ${portablePath(installRoot)}. Pass force=true or --force.`);
+  }
+  if (status === 'current') {
+    await writeFile(bundleInstallMetadataPath(artifact), await buildBundleInstallMetadata(artifact, members), {
+      mode: 0o600,
+    });
+    messages.push(`Already installed ${label}: ${portablePath(installRoot)}`);
+    return 0;
+  }
+
+  // Materialize into a sibling staging directory, then swap atomically so an
+  // interrupted install can never leave a half-written, mixed-version bundle.
+  const stagingRoot = `${installRoot}.threadnote-staging`;
+  await rm(stagingRoot, {force: true, recursive: true});
+  for (const member of members) {
+    const dest = join(stagingRoot, ...member.relativePath.split('/'));
+    await ensureDirectory(dirname(dest), false);
+    await writeFile(dest, await readFile(member.absolutePath), {mode: 0o600});
+  }
+  await writeFile(
+    join(stagingRoot, BUNDLE_INSTALL_METADATA_FILE),
+    await buildBundleInstallMetadata(artifact, members),
+    {
+      mode: 0o600,
+    },
+  );
+  await rm(installRoot, {force: true, recursive: true});
+  await ensureDirectory(dirname(installRoot), false);
+  await rename(stagingRoot, installRoot);
+  messages.push(`${sharedArtifactInstallVerb(status, options.force === true)} ${label}: ${portablePath(installRoot)}`);
+  return 1;
+}
+
+async function buildBundleInstallMetadata(
+  artifact: SharedArtifactFile,
+  members: readonly BundleMemberFile[],
+): Promise<string> {
+  const recordedMembers: Array<{installedSha256: string; path: string; sourceSha256: string}> = [];
+  for (const member of members) {
+    const sha = sha256(await readFile(member.absolutePath));
+    recordedMembers.push({installedSha256: sha, path: member.relativePath, sourceSha256: sha});
+  }
+  const metadata = {
+    artifact: artifact.artifact,
+    installedAt: new Date().toISOString(),
+    members: recordedMembers.sort((a, b) => compareStrings(a.path, b.path)),
+    team: artifact.team,
+    version: ARTIFACT_INSTALL_METADATA_VERSION,
+  };
+  return `${JSON.stringify(metadata, undefined, 2)}\n`;
 }
 
 async function sharedArtifactInstallState(artifact: SharedArtifactFile): Promise<SharedArtifactInstallState> {

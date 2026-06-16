@@ -126,6 +126,37 @@ under `agent-artifacts/`, ingests it into OpenViking under the shared team
 namespace, commits, and pushes. Existing artifacts with different content are
 not overwritten unless `--force` is passed.
 
+#### Multi-file skills (bundles)
+
+A skill is shared as its **whole directory**, not just `SKILL.md`. When companion
+files sit beside the `SKILL.md` (reference docs, scripts, templates), they travel
+with the skill:
+
+```text
+agent-artifacts/skills/codex/<name>/
+  SKILL.md                 # recall anchor (OpenViking-ingested)
+  scripts/run.ts           # companion, carried in git
+  reference.md
+  .threadnote-bundle.json  # generated member manifest (sha + binary flags)
+```
+
+Notes:
+
+- A lone `SKILL.md` with no companions publishes exactly as before — no manifest,
+  one file.
+- Every **text** member runs through the scrubber, so a leaked credential or local
+  path in a companion script blocks the publish just like it would in `SKILL.md`.
+- Only `SKILL.md` (and any sibling `.md`) is OpenViking-ingested for recall;
+  companions ride in git and are materialized on install.
+- Runtime/scratch dirs and local junk are never bundled: `reviews/`, `repos/`,
+  `node_modules/`, `.git/`, `.DS_Store`, `*.log`.
+- **Binary** members are blocked by default because the scrubber cannot inspect
+  them; pass `--allow-binary` (CLI) / `allowBinary: true` (MCP) to include them.
+  A credential detected in the bytes still blocks regardless.
+- A skill whose helpers live **outside** its own directory (a multi-skill
+  constellation with shared code at the repo root) is not yet captured — that is
+  a follow-up.
+
 Agents can do the same through MCP:
 
 ```text
@@ -174,6 +205,14 @@ applied by running the same install command again; Threadnote tracks the last
 installed shared hash in a sidecar metadata file next to the installed
 artifact. Start a new agent session after installing if that agent snapshots
 skills or commands at startup.
+
+For a multi-file skill, the whole `~/.{codex,claude}/skills/threadnote/<team>/<name>/`
+tree is installed (companions included) and the install is atomic — it is staged
+in a temporary directory and swapped into place, so an interrupted install never
+leaves a half-written, mixed-version skill. Bundle status folds every member into
+one verdict: a local edit to any member plus an upstream change to a different
+member reports `remote_changed_and_local_modified` and refuses to overwrite
+without `--force`.
 
 ### Keep teammates' updates current
 

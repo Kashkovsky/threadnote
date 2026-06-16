@@ -368,9 +368,13 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. Default team is used unless team is provided. Pass preview=true to inspect bytes without writing or committing.",
+        "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
         agent: z.enum(['codex', 'claude']).optional().describe('Agent owner when path inference is ambiguous'),
+        allowBinary: z
+          .boolean()
+          .optional()
+          .describe('Include binary skill files (unscannable by the scrubber); blocked by default'),
         force: z.boolean().optional().describe('Replace an existing shared artifact with different content'),
         kind: z.enum(['skill', 'command']).optional().describe('Artifact kind when path inference is ambiguous'),
         message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
@@ -385,7 +389,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         team: z.string().optional().describe('Team name; defaults to the configured default team'),
       },
     },
-    async ({agent, force, kind, message, name, path, preview, push, redact, team}) => {
+    async ({agent, allowBinary, force, kind, message, name, path, preview, push, redact, team}) => {
       const checkedPath = requiredText(path, 'share_skill', 'path', {
         path: '~/.codex/skills/example/SKILL.md',
       });
@@ -394,6 +398,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       }
       return runShareSkillTool(config, checkedPath.value, {
         agent,
+        allowBinary,
         force,
         kind,
         message,
@@ -1948,6 +1953,7 @@ interface SharePublishToolOptions {
 
 interface ShareSkillToolOptions {
   readonly agent?: 'claude' | 'codex';
+  readonly allowBinary?: boolean;
   readonly force?: boolean;
   readonly kind?: 'command' | 'skill';
   readonly message?: string;
