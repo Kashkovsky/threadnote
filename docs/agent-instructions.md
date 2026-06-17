@@ -137,6 +137,11 @@ The MCP tool `share_publish` runs the same scrubber as the CLI and refuses to pu
 patterns (PEM private keys, `sk-...`, `gh[pousr]_...`, `Bearer ...`, `AKIA...`, `xox[abprs]-...`). It writes and pushes
 the shared copy first, then removes the personal copy after the push succeeds.
 
+When creating a GitHub PR or otherwise opening a review request, check for configured Threadnote shares first with
+`threadnote share list` or the equivalent available share-team lookup. If one or more shares exist, ask the user whether
+they want to publish a durable feature memory to help reviewers before sharing anything. If more than one share exists,
+show the available teams as an option select when supported, or list the teams and ask which one to use.
+
 The MCP tool `share_skill` shares a local Codex/Claude `SKILL.md` file or Claude command markdown file into the team's
 `agent-artifacts/` catalog after the same scrubber checks. Shared artifacts are recallable after sync, but local
 installation remains opt-in with `threadnote share install-artifacts --apply`.
@@ -197,6 +202,7 @@ threadnote compact --project example --topic active-issue --dry-run
 threadnote archive viking://user/example/memories/handoffs/active/example/old-issue.md
 threadnote forget viking://user/example/memories/events/duplicate.md
 threadnote handoff --project example --topic active-issue --task "short task summary" --tests "checks run" --next-step "what to do next"
+threadnote share list
 threadnote share init git@github.com:org/team-memories.git
 threadnote share publish viking://user/example/memories/durable/projects/foo/bar.md
 threadnote share publish-artifact ~/.codex/skills/example/SKILL.md
