@@ -3,7 +3,16 @@ import {dirname, join, relative} from 'node:path';
 import {inferProjectFromQuery, readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {CommandResult} from './types.js';
-import {ensureDirectory, exists, isJsonObject, readFileIfExists, runCommand, sha256, toPosixPath} from './utils.js';
+import {
+  ensureDirectory,
+  exists,
+  isJsonObject,
+  readFileIfExists,
+  reindexWaitTimeoutMs,
+  runCommand,
+  sha256,
+  toPosixPath,
+} from './utils.js';
 
 const AUTO_REPAIR_STATE_FILE = 'index-auto-repair.json';
 const AUTO_REPAIR_TTL_MS = 6 * 60 * 60 * 1000;
@@ -126,7 +135,11 @@ export async function repairStaleRecallIndex(
     const result = await runCommand(
       ov,
       withIdentity(config, ['reindex', target.uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),
-      {allowFailure: true},
+      // Bound the wait: `ov reindex` has no --timeout, so a stuck/poisoned
+      // semantic queue would block each target for the full 10-min command
+      // timeout. A timed-out target counts as a failure and trips the
+      // consecutive-failure stop instead of hanging the whole repair.
+      {allowFailure: true, timeoutMs: reindexWaitTimeoutMs()},
     );
     if (result.exitCode === 0) {
       consecutiveFailures = 0;

@@ -1937,8 +1937,9 @@ async function runOpenVikingMcpTool(
     const transport = new StreamableHTTPClientTransport(new URL(config.openVikingMcpUrl), {
       requestInit: {
         headers: {
+          // OpenViking 0.4.x dropped agent_id as an identity input; only
+          // account + user are honored (mirrors withIdentity in runtime.ts).
           'X-OpenViking-Account': config.account,
-          'X-OpenViking-Agent': config.agentId,
           'X-OpenViking-User': config.user,
         },
       },

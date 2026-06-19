@@ -316,6 +316,20 @@ function defaultCommandTimeoutMs(): number {
   return positiveIntegerFromEnv('THREADNOTE_COMMAND_TIMEOUT_MS') ?? 10 * 60 * 1000;
 }
 
+/**
+ * Upper bound (ms) for an `ov reindex --wait true` call. `ov reindex` has no
+ * `--timeout` flag, so without a client-side bound a stuck or poisoned semantic
+ * queue makes the wait block until the 10-minute default command timeout — the
+ * AGFS memory-reindex hang (a `context_type=memory` queue entry pointed at a
+ * memory *file* fails on `ls`, re-enqueues forever, and starves the queue). A
+ * healthy memory reindex finishes well under this bound; if it doesn't, the
+ * queue is stuck and we bail rather than hang (the write already succeeded).
+ * Override with THREADNOTE_REINDEX_TIMEOUT_MS.
+ */
+export function reindexWaitTimeoutMs(): number {
+  return positiveIntegerFromEnv('THREADNOTE_REINDEX_TIMEOUT_MS') ?? 120_000;
+}
+
 function defaultCommandMaxOutputBytes(): number {
   return positiveIntegerFromEnv('THREADNOTE_COMMAND_MAX_OUTPUT_BYTES') ?? 5 * 1024 * 1024;
 }
