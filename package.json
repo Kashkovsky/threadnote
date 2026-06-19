@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "type": "commonjs",
   "main": "dist/threadnote.cjs",
   "description": "Shared local context and handoffs for development agents",
