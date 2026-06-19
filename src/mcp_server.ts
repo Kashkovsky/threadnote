@@ -46,8 +46,10 @@ import {
 import {
   buildRecallSections,
   collectExactMatches,
+  currentPackageVersion,
   type ExactMatch,
   errorMessage,
+  formatStaleVersionNotice,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   exactMemoryScopeUris,
@@ -120,8 +122,44 @@ type CheckedTextArray =
       readonly ok: false;
     };
 
+// Version this MCP server process started from, captured at startup. A later
+// `threadnote update` overwrites the package on disk, but this resident stdio
+// process keeps running the old code (clients don't respawn an MCP server on
+// update), so we compare against the on-disk version and nudge the caller to
+// reconnect — otherwise they silently keep hitting stale code.
+let mcpStartupVersion: string | undefined;
+let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
+const STALE_NOTICE_TTL_MS = 60_000;
+
+async function staleVersionNotice(): Promise<string | undefined> {
+  if (mcpStartupVersion === undefined) {
+    return undefined;
+  }
+  const nowMs = Date.now();
+  if (staleNoticeCache && nowMs - staleNoticeCache.checkedAtMs < STALE_NOTICE_TTL_MS) {
+    return staleNoticeCache.notice;
+  }
+  let notice: string | undefined;
+  try {
+    notice = formatStaleVersionNotice(mcpStartupVersion, await currentPackageVersion());
+  } catch {
+    notice = undefined;
+  }
+  staleNoticeCache = {checkedAtMs: nowMs, notice};
+  return notice;
+}
+
+async function withStaleVersionNotice(result: CallToolResult): Promise<CallToolResult> {
+  const notice = await staleVersionNotice();
+  if (notice === undefined) {
+    return result;
+  }
+  return {...result, content: [...(result.content ?? []), {type: 'text', text: `⚠ ${notice}`}]};
+}
+
 async function main(): Promise<void> {
   const config = getRuntimeConfig();
+  mcpStartupVersion = await currentPackageVersion().catch(() => undefined);
   const server = new McpServer(
     {name: 'threadnote-local-adapter', version: '0.2.0'},
     {
@@ -336,7 +374,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       description: 'Check OpenViking server health through the CLI.',
       inputSchema: {},
     },
-    async () => runOpenVikingMcpTool(config, 'health', {}),
+    async () => withStaleVersionNotice(await runOpenVikingMcpTool(config, 'health', {})),
   );
 
   registerOpenVikingParityTools(server, config);
@@ -894,14 +932,16 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runRecallTool(config, {
-        callerCwd,
-        query: checkedQuery.value,
-        pinnedUri: checkedUri.value,
-        nodeLimit,
-        includeArchived: includeArchived === true,
-        threshold: threshold === undefined ? undefined : String(threshold),
-      });
+      return withStaleVersionNotice(
+        await runRecallTool(config, {
+          callerCwd,
+          query: checkedQuery.value,
+          pinnedUri: checkedUri.value,
+          nodeLimit,
+          includeArchived: includeArchived === true,
+          threshold: threshold === undefined ? undefined : String(threshold),
+        }),
+      );
     },
   );
 }
@@ -1179,11 +1219,13 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         timestamp: new Date().toISOString(),
         topic: normalizeOptionalMetadata(topic),
       };
-      return writeDurableMemory(config, {
-        bodyText: checkedText.value,
-        metadata,
-        replaceUri: checkedReplaceUri.value,
-      });
+      return withStaleVersionNotice(
+        await writeDurableMemory(config, {
+          bodyText: checkedText.value,
+          metadata,
+          replaceUri: checkedReplaceUri.value,
+        }),
+      );
     },
   );
 }

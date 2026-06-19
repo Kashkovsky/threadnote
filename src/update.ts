@@ -1,5 +1,5 @@
 import {constants as fsConstants} from 'node:fs';
-import {access, readFile, writeFile} from 'node:fs/promises';
+import {access, writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline/promises';
@@ -13,6 +13,7 @@ import {
   ensureDirectory,
   errorMessage,
   findExecutable,
+  currentPackageVersion,
   findOpenVikingCli,
   isExecutable,
   isTcpPortOpen,
@@ -420,14 +421,7 @@ async function getUpdateInfo(
   };
 }
 
-export async function currentPackageVersion(): Promise<string> {
-  const rawPackage = await readFile(join(toolRoot(), 'package.json'), 'utf8');
-  const parsed: unknown = JSON.parse(rawPackage);
-  if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
-    throw new Error('Could not read current threadnote package version.');
-  }
-  return parsed.version;
-}
+export {currentPackageVersion};
 
 export async function fetchLatestVersion(registry: string): Promise<string> {
   const url = new URL(`${NPM_PACKAGE_NAME}/latest`, normalizeRegistry(registry));
