@@ -193,8 +193,8 @@ Use these only when MCP tools are not available:
 threadnote start
 threadnote recall --query "last handoff for this branch"
 threadnote recall --query "durable feature knowledge for this branch"
-threadnote read viking://agent/threadnote/memories/.abstract.md
-threadnote list viking://agent/threadnote/memories --all --recursive
+threadnote read viking://user/example/memories/.abstract.md
+threadnote list viking://user/example/memories --all --recursive
 threadnote remember --kind durable --project example --topic workflow --text "Durable engineering note..."
 threadnote remember --kind durable --project example --topic active-issue --text "Feature knowledge..."
 threadnote remember --replace viking://user/example/memories/durable/projects/example/workflow.md --text "Updated durable engineering note..."

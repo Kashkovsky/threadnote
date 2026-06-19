@@ -2,7 +2,7 @@ import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
-import {runSeedSkills} from '../../src/seeding.js';
+import {parseSeedWatchIntervalMinutes, runSeedSkills, seedWatchArgs} from '../../src/seeding.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 async function captureConsole(action: () => Promise<void>): Promise<string> {
@@ -22,6 +22,40 @@ async function captureConsole(action: () => Promise<void>): Promise<string> {
   }
   return lines.join('\n');
 }
+
+describe('parseSeedWatchIntervalMinutes', () => {
+  it('returns undefined when unset or not a positive integer', () => {
+    expect(parseSeedWatchIntervalMinutes(undefined)).toBeUndefined();
+    expect(parseSeedWatchIntervalMinutes('')).toBeUndefined();
+    expect(parseSeedWatchIntervalMinutes('0')).toBeUndefined();
+    expect(parseSeedWatchIntervalMinutes('-5')).toBeUndefined();
+    expect(parseSeedWatchIntervalMinutes('abc')).toBeUndefined();
+  });
+
+  it('parses a positive integer cadence', () => {
+    expect(parseSeedWatchIntervalMinutes('60')).toBe(60);
+    expect(parseSeedWatchIntervalMinutes(' 1440 ')).toBe(1440);
+  });
+});
+
+describe('seedWatchArgs', () => {
+  it('attaches a watch only on the original, non-redaction-prone file when opted in', () => {
+    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: true, redactionProne: false})).toEqual([
+      '--watch-interval',
+      '60',
+    ]);
+  });
+
+  it('never watches when the cadence is unset', () => {
+    expect(seedWatchArgs({watchIntervalMinutes: undefined, importedOriginal: true, redactionProne: false})).toEqual([]);
+  });
+
+  it('never watches a redacted temp copy or a redaction-prone path', () => {
+    // Bypassing Threadnote's per-import secret scan would be unsafe here.
+    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: false, redactionProne: false})).toEqual([]);
+    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: true, redactionProne: true})).toEqual([]);
+  });
+});
 
 describe('seed-skills', () => {
   const homes: string[] = [];

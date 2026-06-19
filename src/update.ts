@@ -384,14 +384,14 @@ async function isLaunchAgentInstalled(): Promise<boolean> {
   }
 }
 
-async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
+export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
   const result = await runCommand(ov, ['version'], {allowFailure: true});
   if (result.exitCode !== 0) {
     return undefined;
   }
   // `ov version` output:
-  //   CLI:     0.3.24
-  //   Server:  0.3.24
+  //   CLI:     0.4.4
+  //   Server:  0.4.4
   // Match the CLI line specifically; ignore the server line in case the
   // server is briefly out of sync with the CLI during an upgrade.
   const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);

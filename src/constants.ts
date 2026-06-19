@@ -1,6 +1,6 @@
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 1933;
-export const DEFAULT_OPENVIKING_VERSION = '0.3.24';
+export const DEFAULT_OPENVIKING_VERSION = '0.4.4';
 // CPython minor the OpenViking tool is pinned to. openviking[local-embed] pulls
 // in llama-cpp-python, whose prebuilt wheels (PyPI is sdist-only; wheels live on
 // the abetlen community index) top out at 3.12 as of 2026. On newer interpreters
@@ -27,6 +27,10 @@ export const USER_INSTRUCTIONS_START_MARKER = '<!-- BEGIN THREADNOTE USER INSTRU
 export const USER_INSTRUCTIONS_END_MARKER = '<!-- END THREADNOTE USER INSTRUCTIONS -->';
 export const USER_MANIFEST_NAME = 'seed-manifest.yaml';
 export const SEED_STATE_FILE = 'seed-state.json';
+// Opt-in: minutes between OpenViking auto-refreshes of seeded repo docs. Unset
+// (the default) leaves watches off, so seeded content only refreshes on the
+// next `threadnote seed`/`repair` — which re-runs Threadnote's secret scan.
+export const SEED_WATCH_INTERVAL_ENV = 'THREADNOTE_SEED_WATCH_INTERVAL';
 export const USER_AGENT_INSTRUCTION_TARGETS = [
   {kind: 'block', label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
   {kind: 'block', label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},

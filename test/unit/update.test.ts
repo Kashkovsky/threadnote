@@ -32,7 +32,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     agentId: 'threadnote',
     host: '127.0.0.1',
     manifestPath: join(home, 'seed-manifest.yaml'),
-    openVikingVersion: '0.3.24',
+    openVikingVersion: '0.4.4',
     port: 1933,
     user: 'denys',
   };

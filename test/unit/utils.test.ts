@@ -69,6 +69,18 @@ describe('compareVersions', () => {
     expect(compareVersions('1.2', '1.2.0')).toBe(0);
     expect(compareVersions('abc', '0.0.0')).toBe(0);
   });
+
+  it('ignores build metadata so a local build is not misread as an older minor', () => {
+    expect(compareVersions('0.4.4+local.1', '0.4.4')).toBe(0);
+    expect(compareVersions('0.4.4+local', '0.4.3')).toBeGreaterThan(0);
+  });
+
+  it('treats PEP 440 post-releases as newer and pre-releases as older', () => {
+    expect(compareVersions('0.4.4.post1', '0.4.4')).toBeGreaterThan(0);
+    expect(compareVersions('0.4.4', '0.4.4.post1')).toBeLessThan(0);
+    expect(compareVersions('0.4.4rc1', '0.4.4')).toBeLessThan(0);
+    expect(compareVersions('0.4.4.dev0', '0.4.4')).toBeLessThan(0);
+  });
 });
 
 describe('parseJsonConfigObject', () => {

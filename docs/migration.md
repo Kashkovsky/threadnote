@@ -108,6 +108,12 @@ paths.
    threadnote seed
    ```
 
+   Seeded docs refresh on the next `threadnote seed`/`repair`, which re-runs the
+   secret scan. To let OpenViking auto-refresh them between runs, opt in with
+   `THREADNOTE_SEED_WATCH_INTERVAL=<minutes> threadnote seed`. Watches attach
+   only to original, non-redaction-prone files, since an OpenViking-managed
+   refresh re-ingests the file without Threadnote's per-import secret scan.
+
 7. Inspect and seed shared skills:
 
    ```bash

@@ -1,7 +1,13 @@
 import {chmod, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {basename, dirname, join, relative} from 'node:path';
 import yaml from 'js-yaml';
-import {DEFAULT_SEED_PATTERNS, MAX_SECRET_MATCHES_TO_PRINT, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
+import {
+  DEFAULT_SEED_PATTERNS,
+  MAX_SECRET_MATCHES_TO_PRINT,
+  SEED_STATE_FILE,
+  SEED_WATCH_INTERVAL_ENV,
+  USER_MANIFEST_NAME,
+} from './constants.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -46,10 +52,45 @@ interface SeedStateFile {
   readonly version: 1;
 }
 
+/**
+ * Reads the opt-in auto-refresh cadence (minutes) for seeded resources from
+ * THREADNOTE_SEED_WATCH_INTERVAL. Returns undefined (watches off) unless the
+ * value is a positive integer. When set, OpenViking re-ingests watched paths on
+ * this cadence so seeded repo docs stay indexed without a manual `threadnote
+ * seed`.
+ */
+export function parseSeedWatchIntervalMinutes(rawValue: string | undefined): number | undefined {
+  if (rawValue === undefined) {
+    return undefined;
+  }
+  const minutes = Number.parseInt(rawValue.trim(), 10);
+  return Number.isInteger(minutes) && minutes > 0 ? minutes : undefined;
+}
+
+/**
+ * `--watch-interval` args for a seed import, or [] when no watch should attach.
+ * A watch only goes on the ORIGINAL file (importedOriginal) that is NOT
+ * redaction-prone: OpenViking refreshes a watched path on its own schedule,
+ * bypassing Threadnote's per-import secret scan/redaction. So we never watch a
+ * redacted temp copy (its contents are frozen anyway) or a redaction-prone
+ * path, and watches stay off entirely unless the user opted in via the env.
+ */
+export function seedWatchArgs(params: {
+  readonly watchIntervalMinutes: number | undefined;
+  readonly importedOriginal: boolean;
+  readonly redactionProne: boolean;
+}): readonly string[] {
+  if (params.watchIntervalMinutes === undefined || !params.importedOriginal || params.redactionProne) {
+    return [];
+  }
+  return ['--watch-interval', String(params.watchIntervalMinutes)];
+}
+
 export async function runSeed(config: RuntimeConfig, options: SeedOptions): Promise<void> {
   const manifest = await readSeedManifest(config.manifestPath);
   const ignorePatterns = await loadIgnorePatterns();
   const ov = await openVikingCliForMode(options.dryRun === true);
+  const watchIntervalMinutes = parseSeedWatchIntervalMinutes(process.env[SEED_WATCH_INTERVAL_ENV]);
   const statePath = join(config.agentContextHome, SEED_STATE_FILE);
   const state: {files: Record<string, SeedStateEntry>; version: 1} =
     options.force === true ? {files: {}, version: 1} : await readSeedState(statePath);
@@ -85,6 +126,11 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
         candidate.destinationUri,
         '--reason',
         seedResourceReason(candidate),
+        ...seedWatchArgs({
+          watchIntervalMinutes,
+          importedOriginal: importPath === candidate.filePath,
+          redactionProne: shouldRedactPath(candidate.relativePath),
+        }),
         '--wait',
       ]);
       await maybeRun(options.dryRun === true, ov, args);
