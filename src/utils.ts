@@ -489,6 +489,28 @@ function safeVersionNumber(value: number | undefined): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
+/**
+ * Returns a reconnect notice when a newer threadnote is installed on disk than
+ * the version a long-lived process started from — undefined when they match,
+ * the disk is older, or either version is unknown. Used by the MCP server to
+ * tell callers their resident stdio server is running stale code.
+ */
+export function formatStaleVersionNotice(
+  runningVersion: string | undefined,
+  diskVersion: string | undefined,
+): string | undefined {
+  if (runningVersion === undefined || diskVersion === undefined) {
+    return undefined;
+  }
+  if (compareVersions(diskVersion, runningVersion) <= 0) {
+    return undefined;
+  }
+  return (
+    `threadnote ${diskVersion} is installed but this MCP server is still running ${runningVersion}. ` +
+    'Reconnect the threadnote MCP server (e.g. /mcp) to load the update.'
+  );
+}
+
 export async function readHttpStatus(url: string, timeoutMs: number): Promise<number | undefined> {
   return new Promise(resolvePromise => {
     const request = httpGet(url, response => {
@@ -1426,6 +1448,15 @@ export function toolRoot(): string {
     return __dirname;
   }
   return resolve(__dirname, '..');
+}
+
+export async function currentPackageVersion(): Promise<string> {
+  const rawPackage = await readFile(join(toolRoot(), 'package.json'), 'utf8');
+  const parsed: unknown = JSON.parse(rawPackage);
+  if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
+    throw new Error('Could not read current threadnote package version.');
+  }
+  return parsed.version;
 }
 
 export function errorMessage(err: unknown): string {

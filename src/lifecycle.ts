@@ -749,22 +749,25 @@ async function recallShapeCheck(config: RuntimeConfig): Promise<DoctorCheck> {
   if (result.exitCode !== 0) {
     return {name: 'recall shape', status: 'warn', detail: 'search failed; run threadnote repair'};
   }
-  let parsed: unknown;
+  // Mirror parseRecallHits: `ov find/search --output json` prints a `cmd: ...`
+  // preamble line before the JSON, and the buckets live under the `result`
+  // envelope (`{ok, result: {memories, resources, skills}}`). Start at the
+  // first line beginning with `{`, exactly as recall parsing does — otherwise
+  // this probe false-warns on a perfectly healthy OpenViking.
+  const start = result.stdout.search(/^\{/m);
+  let envelope: unknown;
   try {
-    parsed = JSON.parse(result.stdout.trim());
+    const parsed: unknown = start >= 0 ? JSON.parse(result.stdout.slice(start)) : undefined;
+    envelope = isJsonObject(parsed) ? parsed.result : undefined;
   } catch {
-    return {
-      name: 'recall shape',
-      status: 'warn',
-      detail: 'search output is not JSON; recall may silently return nothing',
-    };
+    envelope = undefined;
   }
   const buckets = ['memories', 'resources', 'skills'];
-  if (!isJsonObject(parsed) || !buckets.some(key => Array.isArray(parsed[key]))) {
+  if (!isJsonObject(envelope) || !buckets.some(key => Array.isArray(envelope[key]))) {
     return {
       name: 'recall shape',
       status: 'warn',
-      detail: `search JSON missing ${buckets.join('/')} buckets; recall parsing is out of sync with this OpenViking`,
+      detail: `search JSON missing the result.{${buckets.join(',')}} buckets recall parsing depends on`,
     };
   }
   return {name: 'recall shape', status: 'ok', detail: 'memories/resources/skills buckets present'};

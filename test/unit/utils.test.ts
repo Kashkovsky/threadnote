@@ -17,6 +17,7 @@ import {
   formatExactMatchPointers,
   formatRecallHits,
   formatShellCommand,
+  formatStaleVersionNotice,
   getGlobBase,
   globToRegExp,
   grepUrisFromJson,
@@ -110,6 +111,25 @@ describe('reindexWaitTimeoutMs', () => {
     expect(reindexWaitTimeoutMs()).toBe(120_000);
     process.env[ENV] = 'nope';
     expect(reindexWaitTimeoutMs()).toBe(120_000);
+  });
+});
+
+describe('formatStaleVersionNotice', () => {
+  it('returns a reconnect notice naming both versions when disk is newer', () => {
+    const notice = formatStaleVersionNotice('1.4.0', '1.4.1');
+    expect(notice).toContain('1.4.1');
+    expect(notice).toContain('1.4.0');
+    expect(notice).toMatch(/reconnect/i);
+  });
+
+  it('returns undefined when versions match or disk is older or equal', () => {
+    expect(formatStaleVersionNotice('1.4.1', '1.4.1')).toBeUndefined();
+    expect(formatStaleVersionNotice('1.4.1', '1.4.0')).toBeUndefined();
+  });
+
+  it('returns undefined when either version is unknown', () => {
+    expect(formatStaleVersionNotice(undefined, '1.4.1')).toBeUndefined();
+    expect(formatStaleVersionNotice('1.4.0', undefined)).toBeUndefined();
   });
 });
 
