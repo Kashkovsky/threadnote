@@ -119,7 +119,7 @@ describe('writeMemoryFile index refresh', () => {
     vi.restoreAllMocks();
   });
 
-  it('runs a file-level semantic/vector reindex after a successful write', async () => {
+  it('runs a file-level vector reindex after a successful write', async () => {
     commandSequence(
       fail('not found'), // stat before write
       ok('written'),
@@ -142,7 +142,7 @@ describe('writeMemoryFile index refresh', () => {
         'reindex',
         'viking://user/me/memories/durable/projects/threadnote/x.md',
         '--mode',
-        'semantic_and_vectors',
+        'vectors_only',
       ]),
     );
   });
