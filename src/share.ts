@@ -3564,9 +3564,12 @@ async function refreshMemoryIndex(
   uri: string,
   options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
+  // This runs after a successful file write. OpenViking's semantic memory
+  // reindex path expects a directory URI, but vectors_only supports memory
+  // files and refreshes the leaf recall records without poisoning the queue.
   const result = await runCommand(
     ov,
-    withIdentity(config, ['reindex', uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),
+    withIdentity(config, ['reindex', uri, '--mode', 'vectors_only', '--wait', 'true']),
     {allowFailure: true},
   );
   if (result.exitCode === 0) {
