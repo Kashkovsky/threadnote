@@ -64,7 +64,11 @@ export interface AgentIdentity {
 }
 
 export function withIdentity(config: AgentIdentity, args: readonly string[]): readonly string[] {
-  return [...args, '--account', config.account, '--user', config.user, '--agent-id', config.agentId];
+  // OpenViking 0.4.x removed the `--agent-id` CLI flag (every subcommand rejects
+  // it with "Unexpected argument"); identity is now just account + user, and the
+  // legacy agent_id maps to a request-level peer shim that the CLI no longer
+  // takes. Passing it broke every `ov` call (recall included) on 0.4.4.
+  return [...args, '--account', config.account, '--user', config.user];
 }
 
 export function renderTemplate(
