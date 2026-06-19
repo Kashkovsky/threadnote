@@ -1,6 +1,6 @@
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 1933;
-export const DEFAULT_OPENVIKING_VERSION = '0.3.24';
+export const DEFAULT_OPENVIKING_VERSION = '0.4.4';
 // CPython minor the OpenViking tool is pinned to. openviking[local-embed] pulls
 // in llama-cpp-python, whose prebuilt wheels (PyPI is sdist-only; wheels live on
 // the abetlen community index) top out at 3.12 as of 2026. On newer interpreters
