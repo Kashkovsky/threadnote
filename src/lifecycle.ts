@@ -34,13 +34,14 @@ import {
 } from './index_repair.js';
 import {readSeedManifest} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
-import {maybeRunPostUpdateAfterRepair} from './update.js';
+import {maybeRunPostUpdateAfterRepair, readOpenVikingCliVersion} from './update.js';
 import {
   builtInExampleManifestPath,
   openVikingHealthUrl,
   openVikingLogPath,
   openVikingServerArgs,
   renderTemplate,
+  withIdentity,
 } from './runtime.js';
 import {projectManifestForRepo, resolveRepoRoot} from './seeding.js';
 import type {
@@ -112,6 +113,8 @@ export async function collectDoctorChecks(config: RuntimeConfig, options: Doctor
   checks.push(await commandCheck('python3', ['--version']));
   checks.push(await openVikingServerCheck());
   checks.push(await openVikingCliCheck());
+  checks.push(await openVikingVersionCheck(config));
+  checks.push(await recallShapeCheck(config));
   checks.push(await localEmbeddingCheck());
   checks.push(await pythonSystemCertificatesCheck());
   checks.push(await firstCommandCheck('python installer', ['pipx', 'uv', 'pip3'], ['--version']));
@@ -419,15 +422,6 @@ async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boo
   await maybeRun(dryRun, ov, ['language', 'en'], {allowFailure: true});
 }
 
-async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
-  const result = await runCommand(ov, ['version'], {allowFailure: true});
-  if (result.exitCode !== 0) {
-    return undefined;
-  }
-  const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);
-  return match ? match[1] : undefined;
-}
-
 /**
  * Locate the openviking-server binary even when its install directory is not on
  * PATH — which is the default state on a fresh macOS shell after `uv tool install`.
@@ -707,6 +701,73 @@ async function openVikingCliCheck(): Promise<DoctorCheck> {
     status: result.exitCode === 0 ? 'ok' : 'warn',
     detail: result.exitCode === 0 ? detail : firstLine(result.stderr || result.stdout) || detail,
   };
+}
+
+/**
+ * Warns when the installed OpenViking CLI is older than the version Threadnote
+ * pins. `install`/`doctor` (unlike `repair`/`update`) don't upgrade OpenViking,
+ * so without this a healthy-but-stale server silently stays behind the pin.
+ */
+async function openVikingVersionCheck(config: RuntimeConfig): Promise<DoctorCheck> {
+  const executable = await findOpenVikingCli();
+  const pinned = config.openVikingVersion;
+  if (!executable) {
+    return {name: 'openviking version', status: 'warn', detail: `CLI not found; pinned ${pinned}`};
+  }
+  const installed = await readOpenVikingCliVersion(executable);
+  if (!installed) {
+    return {
+      name: 'openviking version',
+      status: 'warn',
+      detail: `could not detect via \`${executable} version\`; pinned ${pinned}`,
+    };
+  }
+  if (compareVersions(installed, pinned) < 0) {
+    return {
+      name: 'openviking version',
+      status: 'warn',
+      detail: `installed ${installed} is older than pinned ${pinned}; run \`threadnote repair\` or \`threadnote update\` to upgrade`,
+    };
+  }
+  return {name: 'openviking version', status: 'ok', detail: `${installed} (pinned ${pinned})`};
+}
+
+/**
+ * Recall reads its hits from a JSON object with `memories`/`resources`/`skills`
+ * arrays (see parseRecallHits). If a future OpenViking renames those buckets,
+ * parseRecallHits would return zero hits with no error, silently degrading
+ * recall. This probe asserts the shape is intact — empty buckets are fine, only
+ * a missing/renamed bucket structure (or non-JSON output) warns.
+ */
+async function recallShapeCheck(config: RuntimeConfig): Promise<DoctorCheck> {
+  const executable = await findOpenVikingCli();
+  if (!executable) {
+    return {name: 'recall shape', status: 'warn', detail: 'CLI not found'};
+  }
+  const args = withIdentity(config, ['find', 'threadnote', '--node-limit', '1', '--output', 'json']);
+  const result = await runCommand(executable, args, {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return {name: 'recall shape', status: 'warn', detail: 'search failed; run threadnote repair'};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout.trim());
+  } catch {
+    return {
+      name: 'recall shape',
+      status: 'warn',
+      detail: 'search output is not JSON; recall may silently return nothing',
+    };
+  }
+  const buckets = ['memories', 'resources', 'skills'];
+  if (!isJsonObject(parsed) || !buckets.some(key => Array.isArray(parsed[key]))) {
+    return {
+      name: 'recall shape',
+      status: 'warn',
+      detail: `search JSON missing ${buckets.join('/')} buckets; recall parsing is out of sync with this OpenViking`,
+    };
+  }
+  return {name: 'recall shape', status: 'ok', detail: 'memories/resources/skills buckets present'};
 }
 
 async function localEmbeddingCheck(): Promise<DoctorCheck> {

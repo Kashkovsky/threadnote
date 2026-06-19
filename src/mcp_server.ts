@@ -65,6 +65,7 @@ import {
   sleep,
   trimTrailingSlash,
 } from './utils.js';
+import {withIdentity} from './runtime.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -229,7 +230,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       },
     },
     async ({recursive, uri}) => {
-      const checkedUri = requiredVikingUri(uri, 'forget', 'viking://agent/threadnote/memories/example.md');
+      const checkedUri = requiredVikingUri(uri, 'forget', 'viking://user/you/memories/example.md');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -512,8 +513,6 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
         limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
         minScore: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
         min_score: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
-        peerId: z.string().optional().describe('Optional native peer id'),
-        peer_id: z.string().optional().describe('Optional native peer id'),
         query: z.string().optional().describe('Required search query'),
         sessionId: z.string().optional().describe('Optional native session id'),
         session_id: z.string().optional().describe('Optional native session id'),
@@ -1079,7 +1078,7 @@ function registerReadTool(server: McpServer, config: RuntimeConfig, name: string
       },
     },
     async ({uri, uris}) => {
-      const checkedUris = requiredVikingUriList(uris ?? uri, name, 'viking://agent/threadnote/memories/.abstract.md');
+      const checkedUris = requiredVikingUriList(uris ?? uri, name, 'viking://user/you/memories/.abstract.md');
       if (!checkedUris.ok) {
         return checkedUris.error;
       }
@@ -2253,10 +2252,6 @@ function shareArtifactToolHeader(team: string, syncedTeams: readonly string[], w
     lines.push(`Warning: ${warning}`);
   }
   return lines;
-}
-
-function withIdentity(config: RuntimeConfig, args: readonly string[]): readonly string[] {
-  return [...args, '--account', config.account, '--user', config.user, '--agent-id', config.agentId];
 }
 
 async function requiredOpenVikingCli(): Promise<string> {

@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
+import {compareVersions} from './utils.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const NPM_LATEST_URL = 'https://registry.npmjs.org/threadnote/latest';
@@ -39,7 +40,7 @@ export async function checkForThreadnoteUpdate(args: {
   }
   const cached = await readUpdateCache(args.cachePath);
   if (cached && isCacheFresh(cached)) {
-    return compareVersions(args.currentVersion, cached.latestVersion);
+    return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
   }
   const fresh = await fetchLatestVersion();
   if (fresh) {
@@ -48,10 +49,10 @@ export async function checkForThreadnoteUpdate(args: {
       latestVersion: fresh,
       version: 1,
     });
-    return compareVersions(args.currentVersion, fresh);
+    return toUpdateCheckResult(args.currentVersion, fresh);
   }
   if (cached) {
-    return compareVersions(args.currentVersion, cached.latestVersion);
+    return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
   }
   return undefined;
 }
@@ -81,28 +82,12 @@ export function spawnDetachedAutoUpdate(): void {
   }
 }
 
-function compareVersions(currentVersion: string, latestVersion: string): UpdateCheckResult {
+function toUpdateCheckResult(currentVersion: string, latestVersion: string): UpdateCheckResult {
   return {
     currentVersion,
     latestVersion,
-    outdated: isNewerVersion(latestVersion, currentVersion),
+    outdated: compareVersions(latestVersion, currentVersion) > 0,
   };
-}
-
-function isNewerVersion(candidate: string, baseline: string): boolean {
-  const candidateParts = parseVersion(candidate);
-  const baselineParts = parseVersion(baseline);
-  for (let index = 0; index < 3; index += 1) {
-    if (candidateParts[index] !== baselineParts[index]) {
-      return candidateParts[index] > baselineParts[index];
-    }
-  }
-  return false;
-}
-
-function parseVersion(value: string): readonly [number, number, number] {
-  const parts = value.split('.').map(part => parseInt(part, 10));
-  return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
 }
 
 function isCacheFresh(cache: UpdateCacheFile): boolean {

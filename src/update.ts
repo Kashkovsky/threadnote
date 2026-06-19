@@ -384,7 +384,7 @@ async function isLaunchAgentInstalled(): Promise<boolean> {
   }
 }
 
-async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
+export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
   const result = await runCommand(ov, ['version'], {allowFailure: true});
   if (result.exitCode !== 0) {
     return undefined;

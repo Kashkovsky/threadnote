@@ -410,10 +410,12 @@ export async function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Compare two semver-ish versions. Returns positive if `a > b`, negative if
- * `a < b`, zero if equal. Handles a single dash-prefixed prerelease segment
- * (e.g., `1.2.3-rc1`); a missing prerelease is treated as newer than any
- * prerelease, matching npm semver semantics.
+ * Compare two semver-ish / PEP 440 versions. Returns positive if `a > b`,
+ * negative if `a < b`, zero if equal. Build metadata (`+local...`) carries no
+ * precedence and is ignored. Pre-releases (`1.2.3-rc1`, `0.4.4rc1`, `.dev0`)
+ * sort before the matching release; post-releases (`0.4.4.post1`) sort after
+ * it. A non-integer or extra version segment never NaN-collapses a core number
+ * to 0 — important so a locally-built `0.4.4+local` is not misread as `0.4.0`.
  */
 export function compareVersions(a: string, b: string): number {
   const left = parseVersion(a);
@@ -424,28 +426,48 @@ export function compareVersions(a: string, b: string): number {
       return difference;
     }
   }
-  if (left.prerelease === right.prerelease) {
+  const rankDelta = suffixRank(left.suffix) - suffixRank(right.suffix);
+  if (rankDelta !== 0) {
+    return rankDelta;
+  }
+  if (left.suffix === right.suffix) {
     return 0;
   }
-  if (left.prerelease === undefined) {
-    return 1;
+  // Same rank class with distinct suffixes (e.g. rc1 vs rc2) — order lexically.
+  return (left.suffix ?? '').localeCompare(right.suffix ?? '');
+}
+
+/** PEP 440 post-releases sort after the release; pre/dev releases before it. */
+function suffixRank(suffix: string | undefined): number {
+  if (suffix === undefined) {
+    return 0;
   }
-  if (right.prerelease === undefined) {
-    return -1;
-  }
-  return left.prerelease.localeCompare(right.prerelease);
+  return /^post/i.test(suffix) ? 1 : -1;
 }
 
 function parseVersion(version: string): {
   readonly numbers: readonly [number, number, number];
-  readonly prerelease?: string;
+  readonly suffix?: string;
 } {
-  const normalized = version.trim().replace(/^v/, '');
-  const [core, prerelease] = normalized.split('-', 2);
-  const parts = core.split('.').map(part => Number(part));
+  // Drop a leading `v` and build metadata (`+local...`), then split the numeric
+  // core off any pre/post/dev suffix. PEP 440 attaches the suffix without a
+  // separator (`0.4.4rc1`, `0.4.4.post1`); semver uses a dash (`0.4.4-rc1`).
+  // Parsing each core segment as a leading integer keeps a non-numeric tail
+  // from collapsing the segment to 0.
+  const normalized = version.trim().replace(/^v/, '').split('+', 1)[0];
+  const core = normalized.match(/^\d+(?:\.\d+){0,2}/)?.[0] ?? '';
+  const rawSuffix = normalized.slice(core.length).replace(/^[-_.]/, '');
+  // Only a string with a numeric core can carry a meaningful suffix; a fully
+  // non-numeric version (e.g. `abc`) coerces to 0.0.0 with no suffix.
+  const suffix = core.length > 0 && rawSuffix.length > 0 ? rawSuffix : undefined;
+  const parts = core.split('.');
   return {
-    numbers: [safeVersionNumber(parts[0]), safeVersionNumber(parts[1]), safeVersionNumber(parts[2])],
-    prerelease,
+    numbers: [
+      safeVersionNumber(Number.parseInt(parts[0] ?? '', 10)),
+      safeVersionNumber(Number.parseInt(parts[1] ?? '', 10)),
+      safeVersionNumber(Number.parseInt(parts[2] ?? '', 10)),
+    ],
+    suffix,
   };
 }
 
