@@ -94,6 +94,38 @@ threadnote doctor --dry-run
 If it still is not healthy, open that log. Certificate failures during the first embedding model download are covered
 above.
 
+## Semantic Queue Stuck / Memory Writes Hang
+
+Symptom: agents hang or `remember`/`handoff` get very slow, and `~/.openviking/logs/server.log` repeats:
+
+```
+RuntimeError: Failed to list memory directory viking://user/.../memories/.../<name>.md: Directory not found
+```
+
+A memory _file_ got enqueued for directory-level semantic processing; OpenViking's `_process_memory_directory` lists
+it, fails, and the message re-enqueues forever. The entry is AGFS-persisted, so it survives a server restart. Check the
+queue — a non-zero `Errors`/`Requeued` on the `Semantic` row is the signature:
+
+```bash
+ov observer queue
+```
+
+Fix it by patching the installed OpenViking and restarting the server:
+
+```bash
+threadnote repair-semantic-queue --apply
+```
+
+It skips non-directory/missing memory URIs (OpenViking PR #2735), keeps a `.threadnote-bak`, compile-checks the patched
+file before writing, and is a no-op once the installed OpenViking already includes the fix. This is a **temporary local
+patch** — `threadnote update` also offers it as a post-update step, and it is superseded automatically once Threadnote
+pins an OpenViking release containing the fix. To revert manually:
+
+```bash
+mv <printed-path>.threadnote-bak <printed-path>
+threadnote stop && threadnote start
+```
+
 ## Port Already In Use
 
 The default bind address is `127.0.0.1:1933`. This does not conflict with projects serving `localhost:80`,

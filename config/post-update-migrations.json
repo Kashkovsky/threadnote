@@ -18,6 +18,21 @@
         "If Threadnote reported any original files were still being processed, rerun the printed threadnote forget <uri> command later."
       ],
       "requiresLegacyHandoffs": true
+    },
+    {
+      "id": "ov-semantic-poison-hotfix-2734",
+      "introducedIn": "1.4.3",
+      "title": "Patch OpenViking against the semantic-queue poison loop (#2734)",
+      "description": [
+        "OpenViking 0.4.x can deadlock its semantic queue: a memory file reindexed with mode=semantic_and_vectors enqueues a directory-level semantic message whose URI is a file; the processor lists it, fails, and the message re-enqueues forever (it is AGFS-persisted, so it survives a server restart).",
+        "This patches the installed OpenViking to skip non-directory/missing memory URIs (upstream fix PR #2735) and restarts the server so any stuck message drains on the next dequeue.",
+        "It is a no-op when the installed OpenViking already includes the fix, a backup of the original file is kept, and the patched file is compile-checked before it is written."
+      ],
+      "commandArgs": ["repair-semantic-queue", "--apply"],
+      "instructions": [
+        "If the semantic queue was stuck it should now drain. Verify with: ov observer queue",
+        "This is a temporary local patch; it is superseded automatically once Threadnote pins an OpenViking release that includes the fix. Re-run manually any time with: threadnote repair-semantic-queue --apply"
+      ]
     }
   ]
 }
