@@ -29,6 +29,7 @@ import {
   parseJsonConfigObject,
   recallQueryRequestsWorkspaceContext,
   redactText,
+  reindexWaitTimeoutMs,
   runCommand,
   runInteractive,
   shellQuote,
@@ -80,6 +81,35 @@ describe('compareVersions', () => {
     expect(compareVersions('0.4.4', '0.4.4.post1')).toBeLessThan(0);
     expect(compareVersions('0.4.4rc1', '0.4.4')).toBeLessThan(0);
     expect(compareVersions('0.4.4.dev0', '0.4.4')).toBeLessThan(0);
+  });
+});
+
+describe('reindexWaitTimeoutMs', () => {
+  const ENV = 'THREADNOTE_REINDEX_TIMEOUT_MS';
+  const original = process.env[ENV];
+  afterAll(() => {
+    if (original === undefined) {
+      delete process.env[ENV];
+    } else {
+      process.env[ENV] = original;
+    }
+  });
+
+  it('defaults to a bounded 2-minute wait', () => {
+    delete process.env[ENV];
+    expect(reindexWaitTimeoutMs()).toBe(120_000);
+  });
+
+  it('honors a positive integer override', () => {
+    process.env[ENV] = '30000';
+    expect(reindexWaitTimeoutMs()).toBe(30_000);
+  });
+
+  it('falls back to the default for non-positive or invalid overrides', () => {
+    process.env[ENV] = '0';
+    expect(reindexWaitTimeoutMs()).toBe(120_000);
+    process.env[ENV] = 'nope';
+    expect(reindexWaitTimeoutMs()).toBe(120_000);
   });
 });
 

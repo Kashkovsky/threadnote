@@ -37,6 +37,7 @@ import {
   parseJsonConfigObject,
   portablePath,
   readFileIfExists,
+  reindexWaitTimeoutMs,
   removePath,
   requiredExecutable,
   runCommand,
@@ -3567,10 +3568,14 @@ async function refreshMemoryIndex(
   // This runs after a successful file write. OpenViking's semantic memory
   // reindex path expects a directory URI, but vectors_only supports memory
   // files and refreshes the leaf recall records without poisoning the queue.
+  // `ov reindex` has no --timeout and --wait true blocks on the whole queue,
+  // so a stuck/poisoned semantic queue would otherwise hang this inline call
+  // for the full 10-min command timeout; reindexWaitTimeoutMs bounds it (the
+  // write already succeeded, so a timed-out refresh only defers freshness).
   const result = await runCommand(
     ov,
     withIdentity(config, ['reindex', uri, '--mode', 'vectors_only', '--wait', 'true']),
-    {allowFailure: true},
+    {allowFailure: true, timeoutMs: reindexWaitTimeoutMs()},
   );
   if (result.exitCode === 0) {
     if (options.quiet !== true && result.stdout.trim()) {

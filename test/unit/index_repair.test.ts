@@ -77,7 +77,7 @@ describe('recall index auto repair', () => {
         '--mode',
         'semantic_and_vectors',
       ]),
-      {allowFailure: true},
+      expect.objectContaining({allowFailure: true, timeoutMs: 120_000}),
     );
   });
 
