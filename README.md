@@ -6,11 +6,25 @@
 
 [![npm version](https://img.shields.io/npm/v/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![license](https://img.shields.io/npm/l/threadnote.svg)](./LICENSE) ![node version](https://img.shields.io/node/v/threadnote.svg)
 
-`threadnote` is a safe local workflow for using [OpenViking](https://openviking.ai/) as shared, agent-neutral context for development work.
-It is intentionally scoped to curated docs, memories, skills, and handoffs.
+> Stop re-explaining your project to every AI coding agent.
+
+`threadnote` gives Codex, Claude Code, Cursor, and Copilot one shared local memory for development work: durable
+decisions, current handoffs, seeded repo docs, reusable skills, and curated team knowledge.
+
+It is not a bigger prompt, and it is not just an auto-compacter. It is a workflow around Markdown-backed local memory:
+agents recall the relevant `viking://` pointers, read only what they need, update one stable `project/topic` record, and
+leave your canonical repo docs alone.
 
 **Walkthrough:** https://kashkovsky.github.io/threadnote/  
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
+
+## Why Engineers Use It
+
+- **Fresh agents start with recall, not amnesia.** A new session can read the latest handoff before touching code.
+- **Compaction becomes a checkpoint, not memory loss.** Durable facts and current status survive the summary.
+- **Agent switching stops resetting the task.** Codex can leave a handoff that Claude Code, Cursor, or Copilot can read.
+- **Repo docs stay clean.** `AGENTS.md`, `CLAUDE.md`, and docs remain stable policy; Threadnote carries living context.
+- **Team context is explicit.** Publish only curated durable memories to a team git repo; personal handoffs stay local.
 
 ## Quickstart
 
@@ -25,52 +39,47 @@ New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it ca
 (server health, configured share teams, seeded projects) and offers to run each step
 with you. The walkthrough only loads when you ask, so it never sits in context otherwise.
 
+## Why Not Just Markdown Files?
+
+Use Markdown files. Threadnote makes them operational.
+
+- **`AGENTS.md` / `CLAUDE.md` / repo docs:** stable, reviewed, version-controlled rules.
+- **Random notes:** easy to write, hard for agents to rank, scope, update, or know when stale.
+- **Threadnote memories:** Markdown on disk plus semantic recall, stable URIs, lifecycle (`durable`, `handoff`,
+  `archived`), scoped compaction, MCP tools, and safe team sharing.
+
+The source of truth is still local files. The benefit is that agents know how to find the right file, decide whether it
+is current, update it without creating duplicates, and hand it to the next agent.
+
+## Agent Perspective
+
+These are workflow examples from an agent's point of view:
+
+**Codex before Threadnote:** "I inspect the repo, ask what changed, rediscover the test command, and hope the compacted
+chat summary did not drop the important caveat."
+
+**Codex with Threadnote:** "I recall the branch handoff and durable feature memory first. I can name the files touched,
+the last failing check, the design decision behind the code, and the next step before editing."
+
+**Claude Code before Threadnote:** "A long debugging thread compacts into a vague narrative. The next turn knows the arc,
+but not the exact command, blocker, or decision."
+
+**Claude Code with Threadnote:** "The pre-compact handoff captures the concrete state. The next session reads the same
+memory and continues without asking the user to reconstruct it."
+
 ## Real-World Uses
 
-**Not sure what Threadnote can do?**  
-Ask your agent _"what can I do with Threadnote?"_ — it calls `threadnote_guide`, which returns a tour tailored to your setup and offers to run each step (recall a handoff, save a durable note, set up team sharing). The walkthrough loads only when you ask.
+- **Continue a branch:** "Continue where we left off" -> agent recalls the active handoff and durable feature memory.
+- **Switch agents:** "Save where we are" -> agent stores a handoff the next MCP-enabled agent can read.
+- **Survive compaction:** Claude Code's hook can snapshot a handoff before compaction; other agents can recall it later.
+- **Remember a repo fact:** "This repo cuts release notes from CI" -> agent stores a durable workflow memory.
+- **Share with teammates:** publish a curated durable memory or reusable skill to a team git repo.
+- **Clean up overlap:** run `threadnote compact --project <repo> --topic <issue> --dry-run` before archiving stale
+  handoffs or forgetting exact duplicates.
 
-**Want to continue work in a fresh agent session?**  
-`threadnote install` adds user-level Codex, Claude, Cursor, and Copilot instructions so new agents automatically recall recent handoffs and relevant memories before they start changing code.
-
-**Working on a feature branch over several sessions?**
-Agents recall the branch handoff for current status, then recall durable feature memories for the design, decisions,
-interfaces, and gotchas behind the feature. As useful implementation knowledge appears, agents update the durable feature
-memory instead of leaving everything buried in transient handoffs.
-
-**Implemented a feature a while ago and need to pick it up again?**  
-Ask the agent to recall the feature, branch, or repo. Threadnote returns auditable `viking://` pointers that the agent can read before deciding what still matters.
-
-**Switching between Codex, Claude, Cursor, and Copilot?**\
-Install the MCP adapter for each agent you use. The user-level instructions tell agents to store a handoff before they pause, so the next agent can search the same local memory layer instead of reconstructing context
-from chat history.
-
-The adapter keeps Threadnote workflow tools (`recall_context`, `remember_context`, `share_publish`, and related aliases)
-as the default surface, and also exposes raw OpenViking parity tools with `ov_*` names for native behaviors such as
-code symbol navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and forget.
-
-**Working through a long task until the agent context window fills up?**  
-After compaction, the next agent turn can recall the relevant Threadnote memories and handoffs instead of relying only on the compressed conversation summary.
-
-**Found a durable workflow fact, like how a repo runs tests or where release notes live?**  
-Ask the agent to remember it. Threadnote keeps that memory local and searchable without editing unrelated repo files.
-
-**Have reusable agent workflows already installed as skills?**\
-Run `threadnote seed-skills` to make local `SKILL.md` guidance discoverable through recall. Agents can find relevant testing, release, on-call, debugging, or plugin-provided workflows without you reopening the same skill files by hand.
-
-**Want teammates to use the same skill or command?**\
-Publish it into a shared team repo with `threadnote share publish-artifact <path>`. Teammates can recall the shared
-artifact immediately after sync, then opt in to local installation with `threadnote share install-artifacts --apply`.
-
-**Recall returned several overlapping memories?**
-Run `threadnote compact --project <repo> --topic <issue> --dry-run` or ask the agent to use
-`compact_context({"project":"<repo>","topic":"<issue>","dryRun":true})`. Threadnote produces a scoped plan first:
-which memory to keep/update, which old handoffs to archive, and which exact duplicates are safe to forget.
-
-**Still working on the same issue?**
-Use `threadnote remember --replace <uri>` or `threadnote handoff --replace <uri>` to keep one current-state memory fresh
-instead of accumulating near-duplicate progress notes. Replacing a shared `durable/` URI updates that shared memory in
-place and pushes the shared repo, so you do not need a separate `share publish` step.
+The adapter keeps Threadnote workflow tools (`recall_context`, `remember_context`, `compact_context`, `share_publish`,
+and related aliases) as the default surface. It also exposes raw OpenViking parity tools with `ov_*` names for native
+behaviors such as code symbol navigation, raw search/read/list/store/remember, grep/glob, resource import, and forget.
 
 ## Acknowledgments
 
