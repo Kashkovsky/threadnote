@@ -27,6 +27,10 @@ export const USER_INSTRUCTIONS_START_MARKER = '<!-- BEGIN THREADNOTE USER INSTRU
 export const USER_INSTRUCTIONS_END_MARKER = '<!-- END THREADNOTE USER INSTRUCTIONS -->';
 export const USER_MANIFEST_NAME = 'seed-manifest.yaml';
 export const SEED_STATE_FILE = 'seed-state.json';
+// Opt-in: minutes between OpenViking auto-refreshes of seeded repo docs. Unset
+// (the default) leaves watches off, so seeded content only refreshes on the
+// next `threadnote seed`/`repair` — which re-runs Threadnote's secret scan.
+export const SEED_WATCH_INTERVAL_ENV = 'THREADNOTE_SEED_WATCH_INTERVAL';
 export const USER_AGENT_INSTRUCTION_TARGETS = [
   {kind: 'block', label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
   {kind: 'block', label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
