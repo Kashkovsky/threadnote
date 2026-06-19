@@ -434,7 +434,7 @@ async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boo
  * three times. The resolved path itself is not memoised: a `threadnote install`
  * may create the binary mid-process and the second resolution must see it.
  */
-async function findOpenVikingServer(): Promise<string | undefined> {
+export async function findOpenVikingServer(): Promise<string | undefined> {
   const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
   if (onPath) {
     return onPath;

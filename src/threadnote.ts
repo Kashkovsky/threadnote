@@ -23,6 +23,7 @@ import type {
   RecallOptions,
   RememberOptions,
   RepairOptions,
+  RepairSemanticQueueOptions,
   SeedOptions,
   ShareInstallArtifactsOptions,
   ShareInitOptions,
@@ -77,6 +78,7 @@ import {
   runShareUnpublish,
 } from './share.js';
 import {parsePackageManager, runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from './lifecycle.js';
+import {runRepairSemanticQueue} from './semantic_queue_repair.js';
 import {maybeNotifyUpdate, parseUpdateRuntime, runPostUpdate, runUpdate} from './update.js';
 import {runVersion} from './version_command.js';
 import {runManage} from './manager.js';
@@ -348,6 +350,17 @@ async function main(): Promise<void> {
     .option('--limit <count>', 'Maximum number of legacy handoffs to migrate')
     .action(async (options: MigrateLifecycleOptions) => {
       await runMigrateLifecycle(getRuntimeConfig(program), options);
+    });
+
+  program
+    // Temporary bridge for the OpenViking semantic-queue poison loop (#2734);
+    // remove once the pinned OpenViking includes upstream PR #2735.
+    .command('repair-semantic-queue')
+    .description('Patch the installed OpenViking to drain/avoid the semantic-queue poison loop (#2734)')
+    .option('--apply', 'Apply the patch and restart the server; without this, prints a dry run')
+    .option('--dry-run', 'Print what would change without patching or restarting')
+    .action(async (options: RepairSemanticQueueOptions) => {
+      await runRepairSemanticQueue(getRuntimeConfig(program), options);
     });
 
   program
