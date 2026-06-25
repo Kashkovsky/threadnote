@@ -32,7 +32,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     agentId: 'threadnote',
     host: '127.0.0.1',
     manifestPath: join(home, 'seed-manifest.yaml'),
-    openVikingVersion: '0.4.4',
+    openVikingVersion: '0.4.5',
     port: 1933,
     user: 'denys',
   };
@@ -204,6 +204,24 @@ describe('runPostUpdate', () => {
       vi.mocked(utils.runInteractive).mock.invocationCallOrder[
         vi.mocked(utils.runInteractive).mock.calls.findIndex(call => call[1][0] === 'start')
       ],
+    );
+  });
+
+  it('does not run the obsolete OpenViking semantic-queue patch after the 1.4.4 update', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+      if (executable === '/ov' && args[0] === 'version') {
+        return ok('CLI:     0.4.5\nServer:  0.4.5\n');
+      }
+      return ok();
+    });
+
+    await runPostUpdate(config, {fromVersion: '1.4.3', toVersion: '1.4.4', yes: true});
+
+    expect(vi.mocked(utils.runInteractive)).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['repair-semantic-queue']),
     );
   });
 });

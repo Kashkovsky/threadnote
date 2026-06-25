@@ -391,8 +391,8 @@ export async function readOpenVikingCliVersion(ov: string): Promise<string | und
     return undefined;
   }
   // `ov version` output:
-  //   CLI:     0.4.4
-  //   Server:  0.4.4
+  //   CLI:     0.4.5
+  //   Server:  0.4.5
   // Match the CLI line specifically; ignore the server line in case the
   // server is briefly out of sync with the CLI during an upgrade.
   const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);

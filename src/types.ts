@@ -192,11 +192,6 @@ export interface MigrateLifecycleOptions {
   readonly limit?: string;
 }
 
-export interface RepairSemanticQueueOptions {
-  readonly apply?: boolean;
-  readonly dryRun?: boolean;
-}
-
 export interface RecallOptions {
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;
