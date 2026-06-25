@@ -102,28 +102,26 @@ Symptom: agents hang or `remember`/`handoff` get very slow, and `~/.openviking/l
 RuntimeError: Failed to list memory directory viking://user/.../memories/.../<name>.md: Directory not found
 ```
 
-A memory _file_ got enqueued for directory-level semantic processing; OpenViking's `_process_memory_directory` lists
-it, fails, and the message re-enqueues forever. The entry is AGFS-persisted, so it survives a server restart. Check the
-queue — a non-zero `Errors`/`Requeued` on the `Semantic` row is the signature:
+A memory _file_ got enqueued for directory-level semantic processing; older OpenViking releases listed it as a
+directory, failed, and re-enqueued the message forever. The entry is AGFS-persisted, so it survives a server restart.
+Check the queue — a non-zero `Errors`/`Requeued` on the `Semantic` row is the signature:
 
 ```bash
 ov observer queue
 ```
 
-Fix it by patching the installed OpenViking and restarting the server:
+This is fixed upstream in OpenViking 0.4.5. Update Threadnote so it upgrades the pinned OpenViking install and restarts
+the server:
 
 ```bash
-threadnote repair-semantic-queue --apply
+threadnote update
 ```
 
-It skips non-directory/missing memory URIs (OpenViking PR #2735), keeps a `.threadnote-bak`, compile-checks the patched
-file before writing, and is a no-op once the installed OpenViking already includes the fix. This is a **temporary local
-patch** — `threadnote update` also offers it as a post-update step, and it is superseded automatically once Threadnote
-pins an OpenViking release containing the fix. To revert manually:
+If Threadnote is already current but OpenViking is still older than 0.4.5, force a reinstall of the pinned OpenViking
+tool:
 
 ```bash
-mv <printed-path>.threadnote-bak <printed-path>
-threadnote stop && threadnote start
+threadnote install --force
 ```
 
 ## Port Already In Use
