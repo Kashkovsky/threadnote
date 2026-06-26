@@ -3,7 +3,7 @@ import {closeSync, openSync} from 'node:fs';
 import {chmod, readFile, realpath, writeFile} from 'node:fs/promises';
 import {platform} from 'node:os';
 import {dirname, join} from 'node:path';
-import {stdin as processStdin, stdout as processStdout} from 'node:process';
+import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
 import yaml from 'js-yaml';
 import {
@@ -45,6 +45,7 @@ import {
 } from './runtime.js';
 import {projectManifestForRepo, resolveRepoRoot} from './seeding.js';
 import type {
+  CommandResult,
   DoctorCheck,
   DoctorOptions,
   ForgetOptions,
@@ -87,6 +88,13 @@ import {
   suggestedShellRc,
   toolRoot,
 } from './utils.js';
+
+const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
+
+interface InstallCommandRetry {
+  readonly command: MappedCommand;
+  readonly env: Readonly<Record<string, string>>;
+}
 
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
@@ -1024,33 +1032,190 @@ async function runInstallCommands(
     // first, a killed reinstall leaves openviking-server missing — so we also
     // print recovery guidance before failing.
     console.log(`Running: ${formatShellCommand(installCommand.executable, installCommand.args)}`);
-    const exitCode = await runInteractive(installCommand.executable, installCommand.args);
-    if (exitCode !== 0) {
-      printOpenVikingInstallFailureHelp(installCommand);
-      throw new Error(`${formatShellCommand(installCommand.executable, installCommand.args)} exited with ${exitCode}.`);
+    const result = await runInstallCommand(installCommand);
+    if (result.exitCode !== 0) {
+      const commandOutput = `${result.stderr}\n${result.stdout}`;
+      const retry = openVikingSourceBuildRetryForArchiveFailure(installCommand, commandOutput);
+      if (retry) {
+        console.error('');
+        console.error(
+          'The prebuilt llama-cpp-python wheel failed ZIP archive validation; retrying with a local source build.',
+        );
+        console.error('This avoids the rejected wheel and can take 10-20 minutes.');
+        console.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
+        const retryResult = await runInstallCommand(retry.command, retry.env);
+        if (retryResult.exitCode === 0) {
+          continue;
+        }
+        printOpenVikingInstallFailureHelp(retry.command, `${retryResult.stderr}\n${retryResult.stdout}`);
+        throw new Error(
+          `${formatInstallCommand(retry.command, retry.env)} exited with ${retryResult.exitCode} after automatic source-build retry.`,
+        );
+      }
+
+      printOpenVikingInstallFailureHelp(installCommand, commandOutput);
+      throw new Error(
+        `${formatShellCommand(installCommand.executable, installCommand.args)} exited with ${result.exitCode}.`,
+      );
     }
   }
 }
 
-function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand): void {
-  console.error('');
-  console.error('OpenViking install did not complete.');
-  console.error(
+async function runInstallCommand(
+  command: MappedCommand,
+  env: Readonly<Record<string, string>> = {},
+): Promise<CommandResult> {
+  return new Promise(resolvePromise => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const child = spawn(command.executable, command.args, {
+      env: Object.keys(env).length === 0 ? process.env : {...process.env, ...env},
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+
+    child.stdout?.on('data', chunk => {
+      const text = String(chunk);
+      processStdout.write(text);
+      stdout = appendInstallOutputTail(stdout, text);
+    });
+    child.stderr?.on('data', chunk => {
+      const text = String(chunk);
+      processStderr.write(text);
+      stderr = appendInstallOutputTail(stderr, text);
+    });
+    child.on('error', err => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      const message = errorMessage(err);
+      processStderr.write(`${message}\n`);
+      resolvePromise({exitCode: 1, stderr: appendInstallOutputTail(stderr, message), stdout});
+    });
+    child.on('close', code => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolvePromise({exitCode: code ?? 1, stderr, stdout});
+    });
+  });
+}
+
+function appendInstallOutputTail(current: string, chunk: string): string {
+  const next = `${current}${chunk}`;
+  return next.length <= INSTALL_OUTPUT_TAIL_CHARS ? next : next.slice(next.length - INSTALL_OUTPUT_TAIL_CHARS);
+}
+
+function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand, commandOutput: string): void {
+  for (const line of openVikingInstallFailureHelpLines(failedCommand, commandOutput)) {
+    console.error(line);
+  }
+}
+
+export function openVikingInstallFailureHelpLines(failedCommand: MappedCommand, commandOutput = ''): readonly string[] {
+  if (isLlamaWheelArchiveExtractionFailure(commandOutput)) {
+    return [
+      '',
+      'OpenViking install did not complete.',
+      'The prebuilt llama-cpp-python wheel failed ZIP archive validation. Threadnote only falls back to a source build automatically when the failed command came from a prebuilt wheel index.',
+    ];
+  }
+
+  const lines = [
+    '',
+    'OpenViking install did not complete.',
     'openviking[local-embed] includes llama-cpp-python, which compiles from source when no prebuilt wheel matches your Python/platform — that build can run 10-20 minutes and is memory-heavy, so it may be killed by the OS (out of memory) or look stuck.',
-  );
-  console.error('Re-run it directly to see full output without any wrapper timeout:');
-  console.error(`  ${formatShellCommand(failedCommand.executable, failedCommand.args)}`);
-  console.error('Cap memory use during the compile with: CMAKE_BUILD_PARALLEL_LEVEL=2 <command above>');
+    'The package-manager output above contains the underlying build or download error.',
+  ];
   if (failedCommand.executable === 'uv') {
     if (failedCommand.args.includes('--python')) {
-      console.error(
-        'If uv could not fetch a managed CPython (offline or restricted network), drop the version pin and retry: THREADNOTE_OPENVIKING_PYTHON= threadnote install --force',
+      lines.push(
+        'If uv could not fetch managed CPython, Threadnote cannot complete the local install until that Python download is available.',
       );
     }
-    console.error('If it was killed mid-build, clear the partial install first, then retry:');
-    console.error('  uv cache clean');
-    console.error('  rm -rf "$(uv tool dir)/openviking"');
   }
+  return lines;
+}
+
+export function isLlamaWheelArchiveExtractionFailure(output: string): boolean {
+  const normalized = output.toLowerCase();
+  return (
+    (normalized.includes('llama-cpp-python') || normalized.includes('llama_cpp_python')) &&
+    (normalized.includes('failed to extract archive') ||
+      normalized.includes('zip file contains trailing contents after the end-of-central-directory record'))
+  );
+}
+
+export function openVikingSourceBuildRetryForArchiveFailure(
+  failedCommand: MappedCommand,
+  commandOutput: string,
+): InstallCommandRetry | undefined {
+  if (!isLlamaWheelArchiveExtractionFailure(commandOutput)) {
+    return undefined;
+  }
+  const command = withoutExtraIndexUrl(failedCommand);
+  if (!command) {
+    return undefined;
+  }
+  return {command, env: sourceBuildEnvironment(failedCommand)};
+}
+
+function withoutExtraIndexUrl(command: MappedCommand): MappedCommand | undefined {
+  const args: string[] = [];
+  let changed = false;
+  for (let index = 0; index < command.args.length; index += 1) {
+    const arg = command.args[index];
+    const next = command.args[index + 1];
+    if (arg === '--extra-index-url' && next !== undefined) {
+      changed = true;
+      index += 1;
+      continue;
+    }
+    if (arg === '--pip-args' && next?.includes('--extra-index-url') === true) {
+      changed = true;
+      index += 1;
+      continue;
+    }
+    args.push(arg);
+  }
+  return changed ? {...command, args} : undefined;
+}
+
+function formatInstallCommand(command: MappedCommand, env: Readonly<Record<string, string>> = {}): string {
+  return [...formatEnvironmentAssignments(env), formatShellCommand(command.executable, command.args)].join(' ');
+}
+
+function formatEnvironmentAssignments(env: Readonly<Record<string, string>>): readonly string[] {
+  return Object.entries(env).map(([key, value]) =>
+    key === 'CMAKE_ARGS' ? `${key}="${value.replaceAll('"', '\\"')}"` : `${key}=${shellQuote(value)}`,
+  );
+}
+
+function sourceBuildEnvironment(command: MappedCommand): Readonly<Record<string, string>> {
+  const env: Record<string, string> = {};
+  if (extraIndexUrl(command)?.replace(/\/+$/, '').toLowerCase().endsWith('/metal') === true) {
+    env.CMAKE_ARGS = '-DGGML_METAL=on';
+  }
+  env.CMAKE_BUILD_PARALLEL_LEVEL = '2';
+  return env;
+}
+
+function extraIndexUrl(command: MappedCommand): string | undefined {
+  for (let index = 0; index < command.args.length; index += 1) {
+    const arg = command.args[index];
+    if (arg === '--extra-index-url') {
+      return command.args[index + 1];
+    }
+    if (arg === '--pip-args') {
+      const match = command.args[index + 1]?.match(/(?:^|\s)--extra-index-url\s+(\S+)/);
+      if (match) {
+        return match[1];
+      }
+    }
+  }
+  return undefined;
 }
 
 async function offerToInstallUv(): Promise<boolean> {

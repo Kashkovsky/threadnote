@@ -1,10 +1,18 @@
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {getInstallCommands, localEmbedWheelIndexUrl, openVikingToolPython} from '../../src/lifecycle.js';
+import {
+  getInstallCommands,
+  isLlamaWheelArchiveExtractionFailure,
+  localEmbedWheelIndexUrl,
+  openVikingInstallFailureHelpLines,
+  openVikingSourceBuildRetryForArchiveFailure,
+  openVikingToolPython,
+} from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 const WHEEL_INDEX_ENV = 'THREADNOTE_LLAMA_WHEEL_INDEX';
 const TOOL_PYTHON_ENV = 'THREADNOTE_OPENVIKING_PYTHON';
 const TEST_INDEX = 'https://wheels.example/whl/cpu';
+const METAL_INDEX = 'https://abetlen.github.io/llama-cpp-python/whl/metal';
 
 function restoreEnv(name: string, original: string | undefined): void {
   if (original === undefined) {
@@ -28,6 +36,21 @@ function runtime(): RuntimeConfig {
 }
 
 const SPEC = 'openviking[local-embed]==0.4.5';
+const UV_COMMAND = {
+  executable: 'uv',
+  args: [
+    'tool',
+    'install',
+    '--native-tls',
+    '--python',
+    '3.12',
+    '--with',
+    'pip-system-certs',
+    '--extra-index-url',
+    METAL_INDEX,
+    SPEC,
+  ],
+};
 
 describe('localEmbedWheelIndexUrl', () => {
   const original = process.env[WHEEL_INDEX_ENV];
@@ -66,6 +89,50 @@ describe('openVikingToolPython', () => {
   it('treats an empty override as no pin', () => {
     process.env[TOOL_PYTHON_ENV] = '';
     expect(openVikingToolPython()).toBeUndefined();
+  });
+});
+
+describe('OpenViking install failure help', () => {
+  const wheelExtractFailure = [
+    '  × Failed to download `llama-cpp-python==0.3.31`',
+    '  ├─▶ Failed to extract archive: llama_cpp_python-0.3.31-py3-none-macosx_11_0_arm64.whl',
+    '  ╰─▶ ZIP file contains trailing contents after the end-of-central-directory record',
+  ].join('\n');
+
+  it('detects llama-cpp-python wheel archive extraction failures', () => {
+    expect(isLlamaWheelArchiveExtractionFailure(wheelExtractFailure)).toBe(true);
+    expect(isLlamaWheelArchiveExtractionFailure('CMake failed while building llama-cpp-python')).toBe(false);
+  });
+
+  it('builds an automatic Metal source-build retry for rejected prebuilt wheels', () => {
+    const retry = openVikingSourceBuildRetryForArchiveFailure(UV_COMMAND, wheelExtractFailure);
+    expect(retry).toBeDefined();
+    expect(retry?.env).toEqual({
+      CMAKE_ARGS: '-DGGML_METAL=on',
+      CMAKE_BUILD_PARALLEL_LEVEL: '2',
+    });
+    expect(retry?.command.executable).toBe('uv');
+    expect(retry?.command.args).not.toContain('--extra-index-url');
+    expect(retry?.command.args).not.toContain(METAL_INDEX);
+    expect(retry?.command.args).toContain(SPEC);
+  });
+
+  it('does not retry source builds for unrelated failures', () => {
+    expect(openVikingSourceBuildRetryForArchiveFailure(UV_COMMAND, 'CMake failed')).toBeUndefined();
+  });
+
+  it('keeps wheel validation guidance if automatic retry cannot be constructed', () => {
+    const command = {executable: 'uv', args: ['tool', 'install', SPEC]};
+    const text = openVikingInstallFailureHelpLines(command, wheelExtractFailure).join('\n');
+    expect(text).toContain('failed ZIP archive validation');
+    expect(text).not.toContain('uv cache clean');
+  });
+
+  it('keeps generic compile context for other install failures', () => {
+    const text = openVikingInstallFailureHelpLines(UV_COMMAND, 'CMake build failed').join('\n');
+    expect(text).toContain('compiles from source when no prebuilt wheel matches');
+    expect(text).toContain('package-manager output above contains the underlying build or download error');
+    expect(text).not.toContain('uv cache clean');
   });
 });
 
