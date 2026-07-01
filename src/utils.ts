@@ -812,14 +812,19 @@ export function exactRecallTerms(query: string): readonly string[] {
     'after',
     'agent',
     'anything',
+    'been',
     'branch',
     'case',
     'current',
+    'does',
     'durable',
     'find',
     'feature',
     'features',
+    'from',
     'handoff',
+    'have',
+    'into',
     'issue',
     'issues',
     'knowledge',
@@ -833,11 +838,22 @@ export function exactRecallTerms(query: string): readonly string[] {
     'related',
     'search',
     'stored',
+    'than',
+    'that',
+    'them',
+    'then',
+    'they',
     'this',
     'the',
+    'were',
+    'what',
+    'when',
+    'which',
+    'while',
     'with',
     'workspace',
     'worktree',
+    'your',
   ]);
   const seen = new Set<string>();
   const terms: string[] = [];
@@ -910,6 +926,28 @@ export function isSummarySidecarUri(uri: string): boolean {
 }
 
 /**
+ * Internal agent-artifact machinery — shareable-pack manifests and the prompt
+ * fragments bundled under them (`.../agent-artifacts/packs/...`). These are
+ * tooling, not recallable knowledge: a reviewer pack lists many review
+ * dimensions ("observability", "rollout", ...) so it lexically matches almost
+ * any query and floods recall. Filtered out like summary sidecars. Top-level
+ * shared skills (`.../agent-artifacts/skills/.../SKILL.md`) stay discoverable
+ * and are placed in the skills category by `categoryForUri`.
+ */
+export function isAgentArtifactPackUri(uri: string): boolean {
+  return /\/agent-artifacts\/packs\//.test(uri);
+}
+
+/**
+ * A URI that must never surface in recall — summary sidecars or agent-artifact
+ * pack machinery. Shared by the semantic (`parseRecallHits`) and exact
+ * (`grepUrisFromJson`) passes so their exclusion set cannot drift.
+ */
+export function isExcludedRecallUri(uri: string): boolean {
+  return isSummarySidecarUri(uri) || isAgentArtifactPackUri(uri);
+}
+
+/**
  * Extract the matched resource URIs from `ov grep --output json` stdout, minus
  * summary sidecars. The CLI prints a `cmd: ...` banner before the JSON, so
  * parse from the first line that starts with `{` (robust to braces in the
@@ -929,7 +967,7 @@ export function grepUrisFromJson(output: string): readonly string[] {
     }
     const uris: string[] = [];
     for (const match of matches) {
-      if (isJsonObject(match) && typeof match.uri === 'string' && !isSummarySidecarUri(match.uri)) {
+      if (isJsonObject(match) && typeof match.uri === 'string' && !isExcludedRecallUri(match.uri)) {
         uris.push(match.uri);
       }
     }
@@ -1020,7 +1058,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
         continue;
       }
       for (const item of items) {
-        if (!isJsonObject(item) || typeof item.uri !== 'string' || isSummarySidecarUri(item.uri)) {
+        if (!isJsonObject(item) || typeof item.uri !== 'string' || isExcludedRecallUri(item.uri)) {
           continue;
         }
         if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
@@ -1117,6 +1155,12 @@ function dedupeByContent(hits: readonly RecallHit[]): readonly RecallHit[] {
  * a resource.
  */
 export function categoryForUri(uri: string): RecallCategory {
+  // Shared agent artifacts live under `.../memories/.../agent-artifacts/` but
+  // are tooling, not personal knowledge — keep them out of the leading memory
+  // band. (Pack machinery is dropped entirely upstream; only skills reach here.)
+  if (uri.includes('/agent-artifacts/')) {
+    return 'skills';
+  }
   if (uri.includes('/memories/')) {
     return 'memories';
   }
@@ -1134,22 +1178,92 @@ function contextTypeForCategory(category: RecallCategory): string {
 }
 
 /**
+ * Extra weight given to an exact term that also appears in the document's slug
+ * (its memory topic or resource filename). A slug match is a title-level signal
+ * — the document is *about* that term — whereas a bare body match can be an
+ * incidental mention (a branch name in a CI note, "spec" inside "the author's
+ * spec doc"). The bonus lets a document whose topic names the query terms lead
+ * its category even when those terms are common corpus-wide.
+ */
+const RECALL_EXACT_SLUG_BONUS = 4;
+
+/** The document slug: last path segment, chunk anchor and extension stripped,
+ * lowercased. For a memory this is its topic (`mobile-observability-alerting-spec`),
+ * for a resource its filename. */
+function uriSlug(uri: string): string {
+  const withoutExtension = stripAnchor(uri).replace(/\.[a-z0-9]+$/i, '');
+  return withoutExtension.slice(withoutExtension.lastIndexOf('/') + 1).toLowerCase();
+}
+
+/**
+ * Document frequency of each exact term across the exact-match set: how many
+ * matched documents contain it. Used as a self-contained inverse-frequency
+ * (IDF-style) signal — no engine stats needed — so a term matching many
+ * documents (common, e.g. "background", "rollout") is discounted while a term
+ * matching one or two (distinctive, e.g. "sharding") keeps its weight.
+ */
+function exactTermDocumentFrequency(matches: readonly ExactMatch[]): Map<string, number> {
+  const frequency = new Map<string, number>();
+  for (const match of matches) {
+    for (const term of new Set(match.terms.map(term => term.toLowerCase()))) {
+      frequency.set(term, (frequency.get(term) ?? 0) + 1);
+    }
+  }
+  return frequency;
+}
+
+/**
+ * Whether the slug names the term as a whole token rather than an incidental
+ * substring — matched on non-alphanumeric boundaries (slugs are kebab/snake
+ * case) so `spec` boosts `mobile-observability-alerting-spec` but not
+ * `design-respec-notes`, while a hyphenated term like `valencia-v1` still
+ * matches `coda-valencia-v1-notes`.
+ */
+function slugNamesTerm(slug: string, term: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(term)}([^a-z0-9]|$)`).test(slug);
+}
+
+/**
+ * Combined exact-match strength for a hit — the intra-category sort key that
+ * replaced a raw exact-term *count*. Each matched term contributes its inverse
+ * document frequency (rare term → up to 1, common term → toward 0), multiplied
+ * by `RECALL_EXACT_SLUG_BONUS` when the term names the document's slug. A doc
+ * matched only by common terms in its body scores ~0 and falls back to semantic
+ * order; a doc whose topic names distinctive query terms leads its category.
+ */
+function exactMatchStrength(hit: RecallHit, documentFrequency: ReadonlyMap<string, number>): number {
+  if (!hit.exactTerms?.length) {
+    return 0;
+  }
+  const slug = uriSlug(hit.uri);
+  let strength = 0;
+  for (const term of hit.exactTerms) {
+    const normalized = term.toLowerCase();
+    // `?? 1` is defensive only: exactTerms is always a subset of the terms the
+    // documentFrequency map was built from, so the lookup resolves in practice.
+    const rarity = 1 / (documentFrequency.get(normalized) ?? 1);
+    strength += rarity * (slugNamesTerm(slug, normalized) ? RECALL_EXACT_SLUG_BONUS : 1);
+  }
+  return strength;
+}
+
+/**
  * Fold exact (lexical) matches into the semantically-ranked hits so the lexical
  * signal drives ranking rather than sitting in a separate afterthought section.
  * Semantic hits that a term also matched are annotated with `exactTerms`;
  * exact-match documents with no semantic hit are promoted in as fresh hits with
- * `score` 0. The result is re-sorted category-first, then by number of exact
- * terms matched, then by semantic score — so within each category, exact matches
- * lead (most terms first) and only then come unmatched semantic hits. This fixes
- * canonical docs being buried under higher-scored-but-irrelevant noise in the
- * compressed semantic score band.
+ * `score` 0. The result is re-sorted category-first, then by exact-match
+ * *strength* (see `exactMatchStrength`), then by semantic score.
  *
- * Intentional trade-off: an exact (lexical) match is treated as a stronger
- * relevance signal than semantic proximity, so a promoted exact-only document
- * (score 0) outranks an unmatched semantic hit in the same category and can
- * occupy a slot in the shown window. `exactRecallTerms` only keeps distinctive
- * tokens, so a literal match is high precision; surfacing it over a fuzzy
- * neighbour is the desired behaviour.
+ * Ranking by weighted strength rather than raw term count is deliberate: a
+ * distinctive exact match (a rare term, or one that names the document's topic)
+ * still outranks an unmatched semantic hit in its category — the intended
+ * high-precision behaviour — but a document matched only by common words in its
+ * body no longer floods the top, because inverse-document-frequency drives those
+ * terms toward zero. The intra-category key is `exactMatchStrength + score`, so
+ * a strong exact match (strength ≥ 1) leads regardless of semantic score while a
+ * weak common-word-only promotion (strength ≪ 1) sits below a genuine semantic
+ * hit instead of over-correcting into keyword flooding.
  */
 export function applyExactMatchBoost(
   hits: readonly RecallHit[],
@@ -1177,10 +1291,20 @@ export function applyExactMatchBoost(
         uri,
       };
     });
-  return [...annotated, ...promoted].sort(
+  const documentFrequency = exactTermDocumentFrequency(exactMatches);
+  const merged = [...annotated, ...promoted];
+  // Hoist the blended relevance (exact strength + semantic score) into an O(n)
+  // pre-pass, keyed by document URI (anchors stripped, matching termsByUri), so
+  // the comparator stays a cheap lookup and every hit resolves.
+  const combinedRelevanceByUri = new Map<string, number>();
+  for (const hit of merged) {
+    combinedRelevanceByUri.set(stripAnchor(hit.uri), exactMatchStrength(hit, documentFrequency) + hit.score);
+  }
+  return merged.sort(
     (left, right) =>
       recallCategoryRank(left.category) - recallCategoryRank(right.category) ||
-      (right.exactTerms?.length ?? 0) - (left.exactTerms?.length ?? 0) ||
+      (combinedRelevanceByUri.get(stripAnchor(right.uri)) ?? 0) -
+        (combinedRelevanceByUri.get(stripAnchor(left.uri)) ?? 0) ||
       right.score - left.score,
   );
 }
@@ -1190,10 +1314,25 @@ export function formatRecallHits(hits: readonly RecallHit[], maxHits: number): s
 }
 
 /**
+ * Leading note shown when every hit in the window is a keyword-only (score 0)
+ * promotion — i.e. no semantic pass matched above the recall threshold. It marks
+ * the difference between "here is what the corpus knows about this" and "nothing
+ * semantically matched; these merely contain the words", so an agent does not
+ * mistake keyword noise for coverage of an absent topic.
+ */
+export const RECALL_LOW_CONFIDENCE_NOTE =
+  '⚠ No semantically-relevant matches — the results below only contain the query words (the corpus may not cover this topic).';
+
+/**
  * Render an already-decided shown window into the numbered recall list. Keeping
  * the slice out of here lets `buildRecallSections` compute the shown set once and
  * feed both the rendering and the exact-tail "already shown" filter from the same
  * list. `overflow` is the count of hits beyond the window, for the trailing note.
+ *
+ * A promoted exact-only hit (score 0) is labelled `keyword-only:` rather than
+ * `exact:` so it is visibly distinct from a semantic hit that a term also
+ * corroborated; when the whole window is keyword-only, a low-confidence note
+ * leads the list.
  */
 function renderRecallHits(shown: readonly RecallHit[], overflow: number): string | undefined {
   if (shown.length === 0) {
@@ -1201,14 +1340,16 @@ function renderRecallHits(shown: readonly RecallHit[], overflow: number): string
   }
   const lines = shown.flatMap((hit, index) => {
     const scorePart = hit.score > 0 ? `score ${hit.score.toFixed(2)}` : undefined;
-    const exactPart = hit.exactTerms?.length ? `exact: ${hit.exactTerms.join(', ')}` : undefined;
+    const exactLabel = hit.score > 0 ? 'exact' : 'keyword-only';
+    const exactPart = hit.exactTerms?.length ? `${exactLabel}: ${hit.exactTerms.join(', ')}` : undefined;
     const head = `${index + 1}. ${[hit.contextType, scorePart, exactPart].filter(Boolean).join(' · ')} · ${hit.uri}`;
     return hit.snippet ? [head, `   ${hit.snippet}`] : [head];
   });
   if (overflow > 0) {
     lines.push(`(+${overflow} more — refine the query or read a URI above)`);
   }
-  return lines.join('\n');
+  const noSemanticMatch = shown.every(hit => hit.score === 0);
+  return (noSemanticMatch ? [RECALL_LOW_CONFIDENCE_NOTE, ...lines] : lines).join('\n');
 }
 
 export interface RecallSections {
