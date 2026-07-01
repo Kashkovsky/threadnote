@@ -985,7 +985,8 @@ export function memoryUriProjectSegment(uri: string): string | undefined {
 export function memoryFrontmatterField(content: string, field: string): string | undefined {
   const blankLine = content.indexOf('\n\n');
   const header = blankLine < 0 ? content : content.slice(0, blankLine);
-  const match = header.match(new RegExp(`^${escapeRegExp(field)}:\\s*(.+)$`, 'm'));
+  // `[ \t]*` (not `\s*`) so the value cannot span into the next header line.
+  const match = header.match(new RegExp(`^${escapeRegExp(field)}:[ \\t]*(.+)$`, 'm'));
   return match?.[1]?.trim() || undefined;
 }
 

@@ -1056,6 +1056,19 @@ describe('memoryFrontmatterField', () => {
     expect(memoryFrontmatterField(doc, 'repo')).toBeUndefined();
     expect(memoryFrontmatterField('MEMORY\nkind: durable\n\nproject: not-a-header', 'project')).toBeUndefined();
   });
+
+  it('treats a bare (empty-value) field as absent', () => {
+    expect(memoryFrontmatterField('MEMORY\nkind: durable\nproject:\ntopic: t\n\nb', 'project')).toBeUndefined();
+    expect(memoryFrontmatterField('MEMORY\nproject:   \n\nb', 'project')).toBeUndefined();
+  });
+
+  it('does not match a field that is only a prefix of another key', () => {
+    expect(memoryFrontmatterField('MEMORY\nproject_id: coda\n\nb', 'project')).toBeUndefined();
+  });
+
+  it('trims a trailing-whitespace value (memories round-trip through git)', () => {
+    expect(memoryFrontmatterField('MEMORY\nproject: coda   \n\nb', 'project')).toBe('coda');
+  });
 });
 
 describe('isAgentArtifactPackUri', () => {

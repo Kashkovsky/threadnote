@@ -987,8 +987,16 @@ export async function memoryProjectConsistencyCheck(config: RuntimeConfig): Prom
       if (!pathProject) {
         continue;
       }
+      let content: string;
+      try {
+        content = await readFile(join(memoriesRoot, entry), 'utf8');
+      } catch {
+        // Removed mid-walk (concurrent forget/compact/archive) or transiently
+        // unreadable — skip this file rather than aborting the whole check.
+        continue;
+      }
       checked += 1;
-      const frontProject = memoryFrontmatterField(await readFile(join(memoriesRoot, entry), 'utf8'), 'project');
+      const frontProject = memoryFrontmatterField(content, 'project');
       if (frontProject && uriSegment(frontProject) !== pathProject) {
         mismatches.push(`${uri} (frontmatter "${frontProject}" vs path "${pathProject}")`);
       }
@@ -997,7 +1005,7 @@ export async function memoryProjectConsistencyCheck(config: RuntimeConfig): Prom
       return {name, status: 'ok', detail: `${checked} project-scoped memories consistent`};
     }
     const sample = mismatches.slice(0, 3).join('; ');
-    const extra = mismatches.length - Math.min(3, mismatches.length);
+    const extra = Math.max(0, mismatches.length - 3);
     return {
       name,
       status: 'warn',

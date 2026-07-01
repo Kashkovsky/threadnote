@@ -75,8 +75,33 @@ describe('memoryProjectConsistencyCheck', () => {
     const root = memoriesDir(config);
     await writeMemory(root, 'durable/projects/mobile-native/a.md', 'mobile-native');
     await writeMemory(root, 'handoffs/active/threadnote/b.md', 'threadnote');
+    await writeMemory(root, 'incidents/active/coda/c.md', 'coda');
     const check = await memoryProjectConsistencyCheck(config);
     expect(check.status).toBe('ok');
-    expect(check.detail).toMatch(/2 project-scoped memories consistent/);
+    expect(check.detail).toMatch(/3 project-scoped memories consistent/);
+  });
+
+  it('skips non-.md files, summary sidecars, and unreadable entries without flagging', async () => {
+    const config = await makeConfig();
+    const root = memoriesDir(config);
+    await writeMemory(root, 'durable/projects/coda/real.md', 'coda'); // the only real memory
+    await writeMemory(root, 'durable/projects/coda/notes.txt', 'mobile-native'); // not .md → skipped
+    await writeMemory(root, 'durable/projects/coda/.overview.md', 'mobile-native'); // sidecar → skipped
+    await mkdir(join(root, 'durable/projects/coda/isdir.md'), {recursive: true}); // dir → readFile throws, skipped
+    const check = await memoryProjectConsistencyCheck(config);
+    expect(check.status).toBe('ok');
+    expect(check.detail).toMatch(/1 project-scoped memories consistent/);
+  });
+
+  it('caps the reported sample and notes the remainder', async () => {
+    const config = await makeConfig();
+    const root = memoriesDir(config);
+    for (const project of ['a', 'b', 'c', 'd']) {
+      await writeMemory(root, `durable/projects/${project}/m.md`, 'wrong');
+    }
+    const check = await memoryProjectConsistencyCheck(config);
+    expect(check.status).toBe('warn');
+    expect(check.detail).toMatch(/^4 memory/);
+    expect(check.detail).toContain('+1 more');
   });
 });

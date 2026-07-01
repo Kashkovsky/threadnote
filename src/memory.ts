@@ -875,23 +875,18 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
 
 /**
  * Warn when an in-place shared replacement was asked to change the memory's
- * project or topic — those are fixed by the storage path, so the request is
- * ignored to keep frontmatter and path consistent. Compares the caller's value
- * (normalized via `uriSegment`) against the path-derived segment.
+ * project — that is fixed by the storage path, so the request is ignored to keep
+ * frontmatter and path consistent (the divergence the doctor check flags). The
+ * caller's value is normalized via `uriSegment` to match how the path segment
+ * was produced. Topic is left to the existing caller-wins behavior: it is not a
+ * consistency-checked field and the path-derived topic can be a raw multi-segment
+ * value (`a/b`) that must not be slugged into or persisted from here.
  */
-function warnOnSharedMetadataDrift(
-  metadata: MemoryMetadata,
-  inferred: {readonly project?: string; readonly topic?: string} | undefined,
-): void {
+function warnOnSharedProjectDrift(metadata: MemoryMetadata, inferred: {readonly project?: string} | undefined): void {
   if (inferred?.project && metadata.project && uriSegment(metadata.project) !== inferred.project) {
     console.log(
       `WARN keeping shared memory project "${inferred.project}" from its storage path; ignoring requested "${metadata.project}". ` +
         `To change a shared memory's project, forget it and store a new one under the new project.`,
-    );
-  }
-  if (inferred?.topic && metadata.topic && uriSegment(metadata.topic) !== inferred.topic) {
-    console.log(
-      `WARN keeping shared memory topic "${inferred.topic}" from its storage path; ignoring requested "${metadata.topic}".`,
     );
   }
 }
@@ -911,17 +906,17 @@ async function storeSharedMemoryReplacement(
   }
   const team = await resolveTeam(config, teamName);
   const inferred = sharedMemoryUriParts(config, targetUri);
-  // The file is updated in place at targetUri, so its frontmatter project/topic
-  // must match the path it lives under; otherwise recall's project scoping and
-  // the doctor consistency check disagree with the file's real location. Prefer
-  // the path's values over a differing caller value and warn — changing a shared
+  // The file is updated in place at targetUri, so its frontmatter project must
+  // match the path it lives under; otherwise recall's project scoping and the
+  // doctor consistency check disagree with the file's real location. Prefer the
+  // path's project over a differing caller value and warn — changing a shared
   // memory's project means relocating it (forget + store anew), not editing the
-  // frontmatter of the file at the old path.
-  warnOnSharedMetadataDrift(options.metadata, inferred);
+  // frontmatter of the file at the old path. Topic keeps caller-wins semantics.
+  warnOnSharedProjectDrift(options.metadata, inferred);
   const metadata: MemoryMetadata = {
     ...options.metadata,
     project: inferred?.project ?? options.metadata.project,
-    topic: inferred?.topic ?? options.metadata.topic,
+    topic: options.metadata.topic ?? inferred?.topic,
   };
   const rawMemory = formatMemoryDocument(options.title, metadata, options.bodyText);
   const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
