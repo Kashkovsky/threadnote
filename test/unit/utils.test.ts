@@ -21,8 +21,10 @@ import {
   getGlobBase,
   globToRegExp,
   grepUrisFromJson,
+  isAgentArtifactPackUri,
   mergeRecallHits,
   parseRecallHits,
+  RECALL_LOW_CONFIDENCE_NOTE,
   type RecallHit,
   hasGlob,
   isExecutable,
@@ -586,6 +588,23 @@ describe('grepUrisFromJson', () => {
     expect(grepUrisFromJson(output)).toEqual(['viking://a/real.md']);
   });
 
+  it('drops agent-artifact pack machinery so a review pack does not flood exact matches', () => {
+    const output = JSON.stringify({
+      ok: true,
+      result: {
+        matches: [
+          {
+            line: 1,
+            uri: 'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
+            content: 'x',
+          },
+          {line: 2, uri: 'viking://user/me/memories/durable/projects/x/real.md', content: 'y'},
+        ],
+      },
+    });
+    expect(grepUrisFromJson(output)).toEqual(['viking://user/me/memories/durable/projects/x/real.md']);
+  });
+
   it('returns [] on malformed output', () => {
     expect(grepUrisFromJson('cmd: ov grep\nnot json')).toEqual([]);
     expect(grepUrisFromJson('')).toEqual([]);
@@ -655,6 +674,51 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       {category: 'memories', contextType: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
       {category: 'resources', contextType: 'resource', uri: 'viking://r.md', score: 0.6, snippet: 'doc'},
     ]);
+  });
+
+  it('drops agent-artifact pack machinery from semantic hits', () => {
+    const hits = parseRecallHits(
+      json({
+        ok: true,
+        result: {
+          memories: [
+            {
+              context_type: 'memory',
+              uri: 'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
+              score: 0.7,
+              abstract: 'pack',
+            },
+            {
+              context_type: 'memory',
+              uri: 'viking://user/me/memories/durable/projects/x/real.md',
+              score: 0.6,
+              abstract: 'real',
+            },
+          ],
+        },
+      }),
+    );
+    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/me/memories/durable/projects/x/real.md']);
+  });
+
+  it('leads with a low-confidence note when the window is entirely keyword-only', () => {
+    // No semantic pass matched; every shown hit is a promoted exact-only doc.
+    const {semanticSection} = buildRecallSections(
+      [],
+      [{terms: ['kubernetes'], uri: 'viking://user/me/memories/durable/projects/x/unrelated.md'}],
+      12,
+    );
+    expect(semanticSection?.split('\n')[0]).toBe(RECALL_LOW_CONFIDENCE_NOTE);
+    expect(semanticSection).toContain('keyword-only: kubernetes');
+  });
+
+  it('omits the low-confidence note when a semantic hit is present', () => {
+    const {semanticSection} = buildRecallSections(
+      [parseRecallHits(json({ok: true, result: {memories: [{uri: 'viking://real.md', score: 0.7, abstract: 'x'}]}}))],
+      [{terms: ['kubernetes'], uri: 'viking://user/me/memories/durable/projects/x/unrelated.md'}],
+      12,
+    );
+    expect(semanticSection).not.toContain(RECALL_LOW_CONFIDENCE_NOTE);
   });
 
   it('omits archived lifecycle memories by default', () => {
@@ -928,6 +992,33 @@ describe('categoryForUri', () => {
     expect(categoryForUri('viking://resources/repos/coda/CLAUDE.md')).toBe('resources');
     expect(categoryForUri('viking://resources/repos/coda/.claude/skills/x/SKILL.md')).toBe('resources');
   });
+
+  it('keeps shared agent artifacts out of the memory band (routes them to skills)', () => {
+    expect(
+      categoryForUri('viking://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md'),
+    ).toBe('skills');
+  });
+});
+
+describe('isAgentArtifactPackUri', () => {
+  it('flags pack machinery but not shared skills or plain memories', () => {
+    expect(
+      isAgentArtifactPackUri(
+        'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.json',
+      ),
+    ).toBe(true);
+    expect(
+      isAgentArtifactPackUri(
+        'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/files/prompts/f.md',
+      ),
+    ).toBe(true);
+    expect(
+      isAgentArtifactPackUri(
+        'viking://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md',
+      ),
+    ).toBe(false);
+    expect(isAgentArtifactPackUri('viking://user/me/memories/durable/projects/x/y.md')).toBe(false);
+  });
 });
 
 describe('applyExactMatchBoost', () => {
@@ -972,7 +1063,7 @@ describe('applyExactMatchBoost', () => {
     expect(ranked[0]?.uri).toBe('viking://resources/repos/coda/CLAUDE.md');
   });
 
-  it('orders by category, then exact-term count, then score', () => {
+  it('orders by category, then blended exact strength + score', () => {
     const ranked = applyExactMatchBoost(
       [
         hit({category: 'memories', contextType: 'memory', uri: 'viking://user/me/memories/m.md', score: 0.5}),
@@ -991,7 +1082,7 @@ describe('applyExactMatchBoost', () => {
     ]);
   });
 
-  it('breaks ties by score when exact-term counts are equal', () => {
+  it('breaks ties by score when exact strength is equal', () => {
     const ranked = applyExactMatchBoost(
       [hit({uri: 'viking://lo', score: 0.5}), hit({uri: 'viking://hi', score: 0.8})],
       [
@@ -1013,11 +1104,58 @@ describe('applyExactMatchBoost', () => {
     );
     const lines = (formatRecallHits(ranked, 5) ?? '').split('\n');
     const promotedIndex = lines.findIndex(line => line.includes('CLAUDE.md'));
-    // Promoted exact-only line carries no "score" token and is not followed by a
-    // wrapped (3-space indented) snippet line, since its snippet is empty.
-    expect(lines[promotedIndex]).toContain('resource · exact: y, z · viking://resources/repos/coda/CLAUDE.md');
+    // Promoted exact-only line is labelled keyword-only (no semantic match),
+    // carries no "score" token, and is not followed by a wrapped (3-space
+    // indented) snippet line, since its snippet is empty.
+    expect(lines[promotedIndex]).toContain('resource · keyword-only: y, z · viking://resources/repos/coda/CLAUDE.md');
     expect(lines[promotedIndex]).not.toContain('score');
     expect(lines[promotedIndex + 1] ?? '').not.toMatch(/^ {3}/);
+    // A semantic hit that a term also matched keeps the "exact:" label.
     expect(lines.join('\n')).toContain('resource · score 0.62 · exact: x · viking://sem');
+  });
+
+  it('weights a rare exact term above a common one (inverse document frequency)', () => {
+    // "common" matches three documents, "rare" matches one. The rare-term
+    // document leads even though "common" appears in more of the result set.
+    const ranked = applyExactMatchBoost(
+      [],
+      [
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c1.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c2.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c3.md'},
+        {terms: ['rare'], uri: 'viking://user/me/memories/durable/projects/x/r.md'},
+      ],
+    );
+    expect(ranked[0]?.uri).toBe('viking://user/me/memories/durable/projects/x/r.md');
+  });
+
+  it('boosts an exact term that names the document slug over a body-only match', () => {
+    // Same term, same document frequency — the memory whose topic slug names the
+    // term wins over one that only mentions it in the body (an incidental match).
+    const ranked = applyExactMatchBoost(
+      [],
+      [
+        {terms: ['observability'], uri: 'viking://user/me/memories/durable/projects/x/mobile-observability-spec.md'},
+        {terms: ['observability'], uri: 'viking://user/me/memories/durable/projects/x/desktop-layout-review.md'},
+      ],
+    );
+    expect(ranked[0]?.uri).toContain('mobile-observability-spec');
+  });
+
+  it('keeps a common-word-only promotion below a genuine semantic hit', () => {
+    // The semantic hit carries no exact term but scores 0.6; the promoted docs
+    // match only a corpus-common term (df 5 → strength 0.2), so they no longer
+    // outrank the real semantic hit — this is the anti-flooding guarantee.
+    const ranked = applyExactMatchBoost(
+      [hit({category: 'memories', contextType: 'memory', uri: 'viking://user/me/memories/semantic.md', score: 0.6})],
+      [
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p1.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p2.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p3.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p4.md'},
+        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p5.md'},
+      ],
+    );
+    expect(ranked[0]?.uri).toBe('viking://user/me/memories/semantic.md');
   });
 });
