@@ -939,6 +939,15 @@ export function isAgentArtifactPackUri(uri: string): boolean {
 }
 
 /**
+ * A URI that must never surface in recall — summary sidecars or agent-artifact
+ * pack machinery. Shared by the semantic (`parseRecallHits`) and exact
+ * (`grepUrisFromJson`) passes so their exclusion set cannot drift.
+ */
+export function isExcludedRecallUri(uri: string): boolean {
+  return isSummarySidecarUri(uri) || isAgentArtifactPackUri(uri);
+}
+
+/**
  * Extract the matched resource URIs from `ov grep --output json` stdout, minus
  * summary sidecars. The CLI prints a `cmd: ...` banner before the JSON, so
  * parse from the first line that starts with `{` (robust to braces in the
@@ -958,12 +967,7 @@ export function grepUrisFromJson(output: string): readonly string[] {
     }
     const uris: string[] = [];
     for (const match of matches) {
-      if (
-        isJsonObject(match) &&
-        typeof match.uri === 'string' &&
-        !isSummarySidecarUri(match.uri) &&
-        !isAgentArtifactPackUri(match.uri)
-      ) {
+      if (isJsonObject(match) && typeof match.uri === 'string' && !isExcludedRecallUri(match.uri)) {
         uris.push(match.uri);
       }
     }
@@ -1054,12 +1058,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
         continue;
       }
       for (const item of items) {
-        if (
-          !isJsonObject(item) ||
-          typeof item.uri !== 'string' ||
-          isSummarySidecarUri(item.uri) ||
-          isAgentArtifactPackUri(item.uri)
-        ) {
+        if (!isJsonObject(item) || typeof item.uri !== 'string' || isExcludedRecallUri(item.uri)) {
           continue;
         }
         if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
@@ -1214,10 +1213,21 @@ function exactTermDocumentFrequency(matches: readonly ExactMatch[]): Map<string,
 }
 
 /**
+ * Whether the slug names the term as a whole token rather than an incidental
+ * substring — matched on non-alphanumeric boundaries (slugs are kebab/snake
+ * case) so `spec` boosts `mobile-observability-alerting-spec` but not
+ * `design-respec-notes`, while a hyphenated term like `valencia-v1` still
+ * matches `coda-valencia-v1-notes`.
+ */
+function slugNamesTerm(slug: string, term: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(term)}([^a-z0-9]|$)`).test(slug);
+}
+
+/**
  * Combined exact-match strength for a hit — the intra-category sort key that
  * replaced a raw exact-term *count*. Each matched term contributes its inverse
  * document frequency (rare term → up to 1, common term → toward 0), multiplied
- * by `RECALL_EXACT_SLUG_BONUS` when the term is in the document's slug. A doc
+ * by `RECALL_EXACT_SLUG_BONUS` when the term names the document's slug. A doc
  * matched only by common terms in its body scores ~0 and falls back to semantic
  * order; a doc whose topic names distinctive query terms leads its category.
  */
@@ -1229,8 +1239,10 @@ function exactMatchStrength(hit: RecallHit, documentFrequency: ReadonlyMap<strin
   let strength = 0;
   for (const term of hit.exactTerms) {
     const normalized = term.toLowerCase();
+    // `?? 1` is defensive only: exactTerms is always a subset of the terms the
+    // documentFrequency map was built from, so the lookup resolves in practice.
     const rarity = 1 / (documentFrequency.get(normalized) ?? 1);
-    strength += rarity * (slug.includes(normalized) ? RECALL_EXACT_SLUG_BONUS : 1);
+    strength += rarity * (slugNamesTerm(slug, normalized) ? RECALL_EXACT_SLUG_BONUS : 1);
   }
   return strength;
 }
@@ -1280,15 +1292,19 @@ export function applyExactMatchBoost(
       };
     });
   const documentFrequency = exactTermDocumentFrequency(exactMatches);
-  const relevanceByUri = new Map<string, number>();
   const merged = [...annotated, ...promoted];
+  // Hoist the blended relevance (exact strength + semantic score) into an O(n)
+  // pre-pass, keyed by document URI (anchors stripped, matching termsByUri), so
+  // the comparator stays a cheap lookup and every hit resolves.
+  const combinedRelevanceByUri = new Map<string, number>();
   for (const hit of merged) {
-    relevanceByUri.set(hit.uri, exactMatchStrength(hit, documentFrequency) + hit.score);
+    combinedRelevanceByUri.set(stripAnchor(hit.uri), exactMatchStrength(hit, documentFrequency) + hit.score);
   }
   return merged.sort(
     (left, right) =>
       recallCategoryRank(left.category) - recallCategoryRank(right.category) ||
-      (relevanceByUri.get(right.uri) ?? 0) - (relevanceByUri.get(left.uri) ?? 0) ||
+      (combinedRelevanceByUri.get(stripAnchor(right.uri)) ?? 0) -
+        (combinedRelevanceByUri.get(stripAnchor(left.uri)) ?? 0) ||
       right.score - left.score,
   );
 }

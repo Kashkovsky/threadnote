@@ -348,6 +348,13 @@ describe('exactRecallTerms', () => {
       'mobile-checkbox-clipped-table-cell',
     ]);
   });
+
+  it('drops expanded generic function words so they cannot re-flood recall', () => {
+    // A sentence built only from stop words yields no exact grep terms.
+    expect(exactRecallTerms('what have they which does that when were')).toEqual([]);
+    // A distinctive token still survives among the same filler.
+    expect(exactRecallTerms('what does the sharding do')).toEqual(['sharding']);
+  });
 });
 
 describe('recallQueryRequestsWorkspaceContext', () => {
@@ -719,6 +726,15 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       12,
     );
     expect(semanticSection).not.toContain(RECALL_LOW_CONFIDENCE_NOTE);
+    // Positively assert the mixed state so the test cannot pass by dropping the
+    // semantic hit or rendering an empty section.
+    expect(semanticSection).toContain('viking://real.md');
+    expect(semanticSection).toContain('keyword-only: kubernetes');
+  });
+
+  it('emits no note and no section for an empty result', () => {
+    const {semanticSection} = buildRecallSections([], [], 12);
+    expect(semanticSection).toBeUndefined();
   });
 
   it('omits archived lifecycle memories by default', () => {
@@ -1140,6 +1156,20 @@ describe('applyExactMatchBoost', () => {
       ],
     );
     expect(ranked[0]?.uri).toContain('mobile-observability-spec');
+  });
+
+  it('gives the slug bonus only on a token boundary, not an incidental substring', () => {
+    // "spec" names the slug token in one doc but is only a substring of "respec"
+    // in the other; same term and df, so the whole-token match must win.
+    const ranked = applyExactMatchBoost(
+      [],
+      [
+        {terms: ['spec'], uri: 'viking://user/me/memories/durable/projects/x/mobile-alerting-spec.md'},
+        {terms: ['spec'], uri: 'viking://user/me/memories/durable/projects/x/design-respec-notes.md'},
+      ],
+    );
+    expect(ranked[0]?.uri).toContain('mobile-alerting-spec');
+    expect(ranked[1]?.uri).toContain('design-respec-notes');
   });
 
   it('keeps a common-word-only promotion below a genuine semantic hit', () => {
