@@ -22,6 +22,8 @@ import {
   globToRegExp,
   grepUrisFromJson,
   isAgentArtifactPackUri,
+  memoryFrontmatterField,
+  memoryUriProjectSegment,
   mergeRecallHits,
   parseRecallHits,
   RECALL_LOW_CONFIDENCE_NOTE,
@@ -1013,6 +1015,59 @@ describe('categoryForUri', () => {
     expect(
       categoryForUri('viking://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md'),
     ).toBe('skills');
+  });
+});
+
+describe('memoryUriProjectSegment', () => {
+  const u = (path: string): string => `viking://user/me/memories/${path}`;
+  it('extracts the project for personal durable/handoff/incident memories', () => {
+    expect(memoryUriProjectSegment(u('durable/projects/mobile-native/auth.md'))).toBe('mobile-native');
+    expect(memoryUriProjectSegment(u('durable/archived/mobile-native/auth.md'))).toBe('mobile-native');
+    expect(memoryUriProjectSegment(u('handoffs/active/threadnote/foo.md'))).toBe('threadnote');
+    expect(memoryUriProjectSegment(u('incidents/active/coda/bar.md'))).toBe('coda');
+  });
+
+  it('de-scopes shared team memories to the underlying project', () => {
+    expect(memoryUriProjectSegment(u('shared/docs-desktop/durable/projects/coda/pagerduty.md'))).toBe('coda');
+  });
+
+  it('returns undefined for project-less kinds, directory nodes, and non-memory URIs', () => {
+    expect(memoryUriProjectSegment(u('preferences/coding-style.md'))).toBeUndefined();
+    expect(memoryUriProjectSegment(u('preferences/archived/old.md'))).toBeUndefined();
+    expect(memoryUriProjectSegment(u('smoke/active/probe.md'))).toBeUndefined();
+    expect(memoryUriProjectSegment(u('durable/projects/mobile-native'))).toBeUndefined(); // dir node, no file
+    expect(memoryUriProjectSegment('viking://resources/repos/coda/README.md')).toBeUndefined();
+  });
+
+  it('ignores a chunk anchor', () => {
+    expect(memoryUriProjectSegment(u('durable/projects/coda/x.md#chunk_0001'))).toBe('coda');
+  });
+});
+
+describe('memoryFrontmatterField', () => {
+  const doc = ['MEMORY', 'kind: durable', 'status: active', 'project: mobile-native', 'topic: auth', '', 'Body.'].join(
+    '\n',
+  );
+  it('reads a header field from the leading block', () => {
+    expect(memoryFrontmatterField(doc, 'project')).toBe('mobile-native');
+    expect(memoryFrontmatterField(doc, 'topic')).toBe('auth');
+  });
+  it('returns undefined for an absent field and does not read the body', () => {
+    expect(memoryFrontmatterField(doc, 'repo')).toBeUndefined();
+    expect(memoryFrontmatterField('MEMORY\nkind: durable\n\nproject: not-a-header', 'project')).toBeUndefined();
+  });
+
+  it('treats a bare (empty-value) field as absent', () => {
+    expect(memoryFrontmatterField('MEMORY\nkind: durable\nproject:\ntopic: t\n\nb', 'project')).toBeUndefined();
+    expect(memoryFrontmatterField('MEMORY\nproject:   \n\nb', 'project')).toBeUndefined();
+  });
+
+  it('does not match a field that is only a prefix of another key', () => {
+    expect(memoryFrontmatterField('MEMORY\nproject_id: coda\n\nb', 'project')).toBeUndefined();
+  });
+
+  it('trims a trailing-whitespace value (memories round-trip through git)', () => {
+    expect(memoryFrontmatterField('MEMORY\nproject: coda   \n\nb', 'project')).toBe('coda');
   });
 });
 

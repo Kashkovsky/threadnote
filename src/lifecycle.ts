@@ -1,8 +1,8 @@
 import {spawn} from 'node:child_process';
 import {closeSync, openSync} from 'node:fs';
-import {chmod, readFile, realpath, writeFile} from 'node:fs/promises';
+import {chmod, readdir, readFile, realpath, writeFile} from 'node:fs/promises';
 import {platform} from 'node:os';
-import {dirname, join} from 'node:path';
+import {dirname, join, sep} from 'node:path';
 import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
 import yaml from 'js-yaml';
@@ -32,7 +32,7 @@ import {
   repairStaleRecallIndex,
   summaryAutoGenerationDisabled,
 } from './index_repair.js';
-import {readSeedManifest} from './manifest.js';
+import {readSeedManifest, uriSegment} from './manifest.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair, readOpenVikingCliVersion} from './update.js';
 import {
@@ -74,8 +74,11 @@ import {
   httpGetText,
   isExecutable,
   isJsonObject,
+  isSummarySidecarUri,
   isTcpPortOpen,
   maybeRun,
+  memoryFrontmatterField,
+  memoryUriProjectSegment,
   parseJsonConfigObject,
   readFileIfExists,
   removePath,
@@ -132,6 +135,7 @@ export async function collectDoctorChecks(config: RuntimeConfig, options: Doctor
   checks.push(...(await userAgentInstructionsChecks()));
   checks.push(await manifestCheck(config.manifestPath));
   checks.push(await recallIndexFreshnessCheck(config));
+  checks.push(await memoryProjectConsistencyCheck(config));
   checks.push(await fileCheck(join(toolRoot(), '.threadnoteignore'), 'ignore file'));
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ov.conf.template.json'), 'server config template'));
   checks.push(await fileCheck(join(toolRoot(), 'config', 'ovcli.conf.template.json'), 'cli config template'));
@@ -943,6 +947,74 @@ async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorC
     };
   } catch (err: unknown) {
     return {name: 'recall index freshness', status: 'warn', detail: errorMessage(err)};
+  }
+}
+
+/**
+ * Flag memories whose frontmatter `project` disagrees with the project segment
+ * of their storage path. Recall scopes and boosts by the path project, so a
+ * divergence (e.g. a shared memory living under `.../projects/coda/` but tagged
+ * `project: mobile-native`) makes project-aware ranking unreliable. Read-only:
+ * walks the on-disk memories tree and reports; the fix is to re-store the memory
+ * under the correct project (which relocates the file).
+ */
+export async function memoryProjectConsistencyCheck(config: RuntimeConfig): Promise<DoctorCheck> {
+  const name = 'memory project consistency';
+  const memoriesRoot = join(
+    config.agentContextHome,
+    'data',
+    'viking',
+    config.account,
+    'user',
+    uriSegment(config.user),
+    'memories',
+  );
+  try {
+    let entries: string[];
+    try {
+      entries = await readdir(memoriesRoot, {recursive: true});
+    } catch {
+      return {name, status: 'ok', detail: 'no memories directory yet'};
+    }
+    const mismatches: string[] = [];
+    let checked = 0;
+    for (const entry of entries) {
+      if (!entry.endsWith('.md') || isSummarySidecarUri(entry)) {
+        continue;
+      }
+      const uri = `viking://user/${uriSegment(config.user)}/memories/${entry.split(sep).join('/')}`;
+      const pathProject = memoryUriProjectSegment(uri);
+      if (!pathProject) {
+        continue;
+      }
+      let content: string;
+      try {
+        content = await readFile(join(memoriesRoot, entry), 'utf8');
+      } catch {
+        // Removed mid-walk (concurrent forget/compact/archive) or transiently
+        // unreadable — skip this file rather than aborting the whole check.
+        continue;
+      }
+      checked += 1;
+      const frontProject = memoryFrontmatterField(content, 'project');
+      if (frontProject && uriSegment(frontProject) !== pathProject) {
+        mismatches.push(`${uri} (frontmatter "${frontProject}" vs path "${pathProject}")`);
+      }
+    }
+    if (mismatches.length === 0) {
+      return {name, status: 'ok', detail: `${checked} project-scoped memories consistent`};
+    }
+    const sample = mismatches.slice(0, 3).join('; ');
+    const extra = Math.max(0, mismatches.length - 3);
+    return {
+      name,
+      status: 'warn',
+      detail:
+        `${mismatches.length} memory(ies) whose frontmatter project differs from their storage path; ` +
+        `re-store under the correct project to fix: ${sample}${extra > 0 ? `, +${extra} more` : ''}`,
+    };
+  } catch (err: unknown) {
+    return {name, status: 'warn', detail: errorMessage(err)};
   }
 }
 

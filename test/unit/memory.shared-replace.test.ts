@@ -104,6 +104,55 @@ describe('remember shared replacement', () => {
     expect(output).not.toContain('memories/durable/projects/mobile-native/auth.md --from-file');
   });
 
+  it('keeps the project from the storage path when the caller requests a different one', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: readonly unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+
+    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    await runRemember(config, {
+      dryRun: true,
+      kind: 'durable',
+      project: 'coda', // differs from the path project (mobile-native)
+      replace: sharedUri,
+      sourceAgentClient: 'codex',
+      text: 'Updated shared auth memory.',
+    });
+
+    const output = logs.join('\n');
+    // Frontmatter tracks the path, not the differing request — no divergence.
+    expect(output).toContain('project: mobile-native');
+    expect(output).not.toContain('project: coda');
+    expect(output).toContain('keeping shared memory project "mobile-native"');
+    expect(output).toContain('ignoring requested "coda"');
+  });
+
+  it('does not warn when the caller project matches the storage path', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: readonly unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+
+    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    await runRemember(config, {
+      dryRun: true,
+      kind: 'durable',
+      project: 'mobile-native', // matches the path project → no drift
+      replace: sharedUri,
+      sourceAgentClient: 'codex',
+      text: 'Updated shared auth memory.',
+    });
+
+    const output = logs.join('\n');
+    expect(output).toContain('project: mobile-native');
+    expect(output).not.toContain('keeping shared memory project');
+  });
+
   it('rejects non-durable shared replacements', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
