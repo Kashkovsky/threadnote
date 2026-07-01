@@ -948,6 +948,48 @@ export function isExcludedRecallUri(uri: string): boolean {
 }
 
 /**
+ * The project directory segment a memory URI is stored under, or undefined for
+ * kinds that carry no project (preferences, smoke), a directory node, or a
+ * non-memory URI. Shared team memories (`.../memories/shared/<team>/...`) are
+ * de-scoped to their underlying kind first, so both personal and shared layouts
+ * resolve the same way. Used by the doctor project-consistency check to compare
+ * a memory's storage location against its frontmatter `project`.
+ */
+export function memoryUriProjectSegment(uri: string): string | undefined {
+  const marker = '/memories/';
+  const at = uri.indexOf(marker);
+  if (at < 0) {
+    return undefined;
+  }
+  let segments = stripAnchor(uri)
+    .slice(at + marker.length)
+    .split('/')
+    .filter(Boolean);
+  if (segments[0] === 'shared') {
+    segments = segments.slice(2); // drop "shared" and the team name
+  }
+  // durable/handoffs/incidents store <kind>/<status|projects>/<project>/<file…>;
+  // require a file after the project segment so directory nodes are ignored.
+  const [kind, , project, ...rest] = segments;
+  if ((kind === 'durable' || kind === 'handoffs' || kind === 'incidents') && project && rest.length > 0) {
+    return project;
+  }
+  return undefined;
+}
+
+/**
+ * Read a single frontmatter field (e.g. `project`) from a memory document — the
+ * value after `<field>: ` on its own line within the leading header block (the
+ * text before the first blank line). Returns undefined when the field is absent.
+ */
+export function memoryFrontmatterField(content: string, field: string): string | undefined {
+  const blankLine = content.indexOf('\n\n');
+  const header = blankLine < 0 ? content : content.slice(0, blankLine);
+  const match = header.match(new RegExp(`^${escapeRegExp(field)}:\\s*(.+)$`, 'm'));
+  return match?.[1]?.trim() || undefined;
+}
+
+/**
  * Extract the matched resource URIs from `ov grep --output json` stdout, minus
  * summary sidecars. The CLI prints a `cmd: ...` banner before the JSON, so
  * parse from the first line that starts with `{` (robust to braces in the

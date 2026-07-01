@@ -873,6 +873,29 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
   }
 }
 
+/**
+ * Warn when an in-place shared replacement was asked to change the memory's
+ * project or topic — those are fixed by the storage path, so the request is
+ * ignored to keep frontmatter and path consistent. Compares the caller's value
+ * (normalized via `uriSegment`) against the path-derived segment.
+ */
+function warnOnSharedMetadataDrift(
+  metadata: MemoryMetadata,
+  inferred: {readonly project?: string; readonly topic?: string} | undefined,
+): void {
+  if (inferred?.project && metadata.project && uriSegment(metadata.project) !== inferred.project) {
+    console.log(
+      `WARN keeping shared memory project "${inferred.project}" from its storage path; ignoring requested "${metadata.project}". ` +
+        `To change a shared memory's project, forget it and store a new one under the new project.`,
+    );
+  }
+  if (inferred?.topic && metadata.topic && uriSegment(metadata.topic) !== inferred.topic) {
+    console.log(
+      `WARN keeping shared memory topic "${inferred.topic}" from its storage path; ignoring requested "${metadata.topic}".`,
+    );
+  }
+}
+
 async function storeSharedMemoryReplacement(
   config: RuntimeConfig,
   ov: string,
@@ -888,10 +911,17 @@ async function storeSharedMemoryReplacement(
   }
   const team = await resolveTeam(config, teamName);
   const inferred = sharedMemoryUriParts(config, targetUri);
+  // The file is updated in place at targetUri, so its frontmatter project/topic
+  // must match the path it lives under; otherwise recall's project scoping and
+  // the doctor consistency check disagree with the file's real location. Prefer
+  // the path's values over a differing caller value and warn — changing a shared
+  // memory's project means relocating it (forget + store anew), not editing the
+  // frontmatter of the file at the old path.
+  warnOnSharedMetadataDrift(options.metadata, inferred);
   const metadata: MemoryMetadata = {
     ...options.metadata,
-    project: options.metadata.project ?? inferred?.project,
-    topic: options.metadata.topic ?? inferred?.topic,
+    project: inferred?.project ?? options.metadata.project,
+    topic: inferred?.topic ?? options.metadata.topic,
   };
   const rawMemory = formatMemoryDocument(options.title, metadata, options.bodyText);
   const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
