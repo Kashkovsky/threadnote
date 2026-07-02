@@ -140,7 +140,8 @@ async function main(): Promise<void> {
   program
     .command('version')
     .description('Print the installed Threadnote version, latest npm version, and release notes')
-    .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
+    .option('--registry <url>', 'npm registry URL')
+    .option('--allow-untrusted-registry', 'Allow a non-default npm registry without package signature verification')
     .action(async (options: VersionOptions) => {
       await runVersion(getRuntimeConfig(program), options);
     });
@@ -151,7 +152,8 @@ async function main(): Promise<void> {
     .option('--check', 'Only check whether a newer version is available')
     .option('--dry-run', 'Print update and repair commands without running them')
     .option('--force', 'Run package-manager update even if this version is already current')
-    .option('--registry <url>', 'npm registry URL', process.env.THREADNOTE_NPM_REGISTRY)
+    .option('--registry <url>', 'npm registry URL')
+    .option('--allow-untrusted-registry', 'Allow a non-default npm registry without package signature verification')
     .option('--runtime <runtime>', 'auto, npm, bun, or deno', parseUpdateRuntime, 'auto')
     .option('--no-repair', 'Skip threadnote repair after updating the package')
     .option('--no-post-update', 'Skip post-update migration prompts')

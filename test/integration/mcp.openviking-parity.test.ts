@@ -163,6 +163,14 @@ async function callText(client: Client, name: string, args: Record<string, unkno
   return text;
 }
 
+async function callErrorText(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
+  const result = await client.callTool({arguments: args, name}, undefined, {timeout: 5000});
+  expect(Array.isArray(result.content)).toBe(true);
+  const text = (result.content as TextContent[]).map(item => item.text).join('\n');
+  expect(result.isError, text).toBe(true);
+  return text;
+}
+
 function nativeArgs(text: string, toolName: string): Record<string, unknown> {
   const prefix = `${toolName}:`;
   expect(text).toContain(prefix);
@@ -265,6 +273,29 @@ describe('Threadnote MCP OpenViking parity tools', () => {
       ).toContain('Removed: viking://resources/needs-recursive');
       expect(await callText(client, 'ov_forget', {uri: 'viking://resources/repos/threadnote/tmp'})).toContain(
         'Removed: viking://resources/repos/threadnote/tmp',
+      );
+    });
+  });
+
+  it('rejects leading-dash values before forwarding grep, glob, and add_resource', async () => {
+    await withMcpClient(async client => {
+      await expect(callErrorText(client, 'grep', {pattern: '--output=/tmp/leak'})).resolves.toContain(
+        'rejects "pattern" values that start with "-"',
+      );
+      await expect(callErrorText(client, 'glob', {pattern: '--help'})).resolves.toContain(
+        'rejects "pattern" values that start with "-"',
+      );
+      await expect(callErrorText(client, 'add_resource', {path: '--config=/tmp/leak'})).resolves.toContain(
+        'rejects "path" values that start with "-"',
+      );
+      await expect(callErrorText(client, 'ov_grep', {pattern: '--output=/tmp/leak'})).resolves.toContain(
+        'rejects "pattern" values that start with "-"',
+      );
+      await expect(callErrorText(client, 'ov_glob', {pattern: '--help'})).resolves.toContain(
+        'rejects "pattern" values that start with "-"',
+      );
+      await expect(callErrorText(client, 'ov_add_resource', {path: '--config=/tmp/leak'})).resolves.toContain(
+        'rejects "path" values that start with "-"',
       );
     });
   });

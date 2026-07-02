@@ -7,6 +7,7 @@ import {createConnection} from 'node:net';
 import {homedir} from 'node:os';
 import {basename, dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {command as commandText, failure, info, success, warning} from './cli_ui.js';
+import {redactSensitiveText} from './scrubber.js';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -23,14 +24,7 @@ export function parseJsonConfigObject(content: string): JsonObject | undefined {
 }
 
 export function redactText(content: string): string {
-  return content
-    .replace(
-      /([A-Za-z0-9_.-]*(?:token|secret|password|api[_-]?key|authorization)[A-Za-z0-9_.-]*\s*[:=]\s*)("[^"]+"|'[^']+'|Bearer\s+[^'"\s]+|\S+)/gi,
-      '$1[REDACTED]',
-    )
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
-    .replace(/sk-[A-Za-z0-9_-]{16,}/g, 'sk-[REDACTED]')
-    .replace(/gh[pousr]_[A-Za-z0-9_]{16,}/g, 'gh_[REDACTED]');
+  return redactSensitiveText(content);
 }
 
 export async function walkFiles(root: string): Promise<readonly string[]> {

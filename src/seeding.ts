@@ -11,6 +11,7 @@ import {
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
+import {detectSecretMatches} from './scrubber.js';
 import type {
   InitManifestOptions,
   ProjectManifest,
@@ -664,22 +665,4 @@ function redactJsonValue(value: unknown): unknown {
 
 function isSensitiveKey(key: string): boolean {
   return /token|secret|password|credential|authorization|api[_-]?key|client[_-]?secret|bearer/i.test(key);
-}
-
-export function detectSecretMatches(content: string): readonly string[] {
-  const detectors: Array<{readonly label: string; readonly regex: RegExp}> = [
-    {label: 'private-key', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/},
-    {label: 'openai-key', regex: /sk-[A-Za-z0-9_-]{24,}/},
-    {label: 'github-token', regex: /gh[pousr]_[A-Za-z0-9_]{24,}/},
-    {label: 'slack-token', regex: /xox[abprs]-[A-Za-z0-9-]{24,}/},
-    {label: 'bearer-token', regex: /Bearer\s+[A-Za-z0-9._~+/=-]{24,}/i},
-    {label: 'aws-access-key', regex: /AKIA[0-9A-Z]{16}/},
-  ];
-  const matches: string[] = [];
-  for (const detector of detectors) {
-    if (detector.regex.test(content)) {
-      matches.push(detector.label);
-    }
-  }
-  return matches;
 }

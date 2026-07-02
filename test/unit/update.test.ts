@@ -19,7 +19,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   };
 });
 
-import {parseUpdateRuntime, runPostUpdate, runUpdate} from '../../src/update.js';
+import {parseUpdateRuntime, resolveUpdateRegistry, runPostUpdate, runUpdate} from '../../src/update.js';
 import * as utils from '../../src/utils.js';
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
@@ -89,8 +89,12 @@ describe('parseUpdateRuntime', () => {
 
 describe('runUpdate', () => {
   const homes: string[] = [];
+  const originalRegistry = process.env.THREADNOTE_NPM_REGISTRY;
+  const originalAllowRegistry = process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
 
   beforeEach(() => {
+    delete process.env.THREADNOTE_NPM_REGISTRY;
+    delete process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
     vi.mocked(utils.findExecutable).mockReset();
     vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
@@ -122,6 +126,16 @@ describe('runUpdate', () => {
   });
 
   afterEach(async () => {
+    if (originalRegistry === undefined) {
+      delete process.env.THREADNOTE_NPM_REGISTRY;
+    } else {
+      process.env.THREADNOTE_NPM_REGISTRY = originalRegistry;
+    }
+    if (originalAllowRegistry === undefined) {
+      delete process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
+    } else {
+      process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY = originalAllowRegistry;
+    }
     vi.unstubAllGlobals();
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
@@ -142,6 +156,19 @@ describe('runUpdate', () => {
       '--no-post-update',
     ]);
     expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
+  });
+
+  it('rejects custom npm registries unless explicitly allowed', () => {
+    expect(() => resolveUpdateRegistry('https://registry.example.com/', false)).toThrow(/Refusing custom npm registry/);
+    expect(resolveUpdateRegistry('https://registry.example.com/', true)).toBe('https://registry.example.com/');
+  });
+
+  it('does not trust THREADNOTE_NPM_REGISTRY without explicit opt-in', () => {
+    process.env.THREADNOTE_NPM_REGISTRY = 'https://registry.example.com/';
+    expect(() => resolveUpdateRegistry(undefined, false)).toThrow(/Refusing custom npm registry/);
+
+    process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY = '1';
+    expect(resolveUpdateRegistry(undefined, false)).toBe('https://registry.example.com/');
   });
 });
 

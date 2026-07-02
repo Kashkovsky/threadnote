@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -165,6 +165,24 @@ describe('manager catalog', () => {
     expect(result.content).toContain('Manager UI feature notes.');
     expect(result.record?.metadata.kind).toBe('durable');
     expect(result.node.isSystem).toBe(false);
+  });
+
+  it('skips symlinked memory entries and rejects direct symlink reads', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories');
+    const secretPath = join(config.agentContextHome, 'local-secret.txt');
+    const linkPath = join(root, 'durable', 'projects', 'threadnote', 'leak.md');
+    await writeFile(secretPath, 'do not expose through manager\n', 'utf8');
+    await symlink(secretPath, linkPath);
+
+    const tree = await memoryTree(config);
+    const project = tree.children?.find(child => child.name === 'durable')?.children?.[0]?.children?.[0];
+
+    expect(project?.children?.map(child => child.name)).not.toContain('leak.md');
+    await expect(
+      readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/leak.md'),
+    ).rejects.toThrow(/regular memory files/);
   });
 });
 

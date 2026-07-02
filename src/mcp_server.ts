@@ -338,6 +338,10 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedPattern.ok) {
         return checkedPattern.error;
       }
+      const checkedLiteralPattern = rejectLeadingDash(checkedPattern.value, 'grep', 'pattern');
+      if (!checkedLiteralPattern.ok) {
+        return checkedLiteralPattern.error;
+      }
       const checkedUri = optionalVikingUri(uri, 'grep');
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -345,7 +349,7 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       return runOpenVikingMcpTool(config, 'grep', {
         case_insensitive: caseInsensitive ?? case_insensitive,
         node_limit: nodeLimit ?? node_limit,
-        pattern: checkedPattern.value,
+        pattern: checkedLiteralPattern.value,
         uri: checkedUri.value ?? `viking://user/${uriSegment(config.user)}/memories`,
       });
     },
@@ -368,13 +372,17 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
       if (!checkedPattern.ok) {
         return checkedPattern.error;
       }
+      const checkedLiteralPattern = rejectLeadingDash(checkedPattern.value, 'glob', 'pattern');
+      if (!checkedLiteralPattern.ok) {
+        return checkedLiteralPattern.error;
+      }
       const checkedUri = optionalVikingUri(uri, 'glob');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
       return runOpenVikingMcpTool(config, 'glob', {
         node_limit: nodeLimit ?? node_limit,
-        pattern: checkedPattern.value,
+        pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
     },
@@ -734,6 +742,10 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedPattern.ok) {
         return checkedPattern.error;
       }
+      const checkedLiteralPattern = rejectLeadingDash(checkedPattern.value, 'ov_grep', 'pattern');
+      if (!checkedLiteralPattern.ok) {
+        return checkedLiteralPattern.error;
+      }
       const checkedUri = optionalVikingUri(uri, 'ov_grep');
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -741,7 +753,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       return runOpenVikingMcpTool(config, 'grep', {
         case_insensitive: caseInsensitive ?? case_insensitive,
         node_limit: nodeLimit ?? node_limit,
-        pattern: checkedPattern.value,
+        pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
     },
@@ -764,13 +776,17 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       if (!checkedPattern.ok) {
         return checkedPattern.error;
       }
+      const checkedLiteralPattern = rejectLeadingDash(checkedPattern.value, 'ov_glob', 'pattern');
+      if (!checkedLiteralPattern.ok) {
+        return checkedLiteralPattern.error;
+      }
       const checkedUri = optionalVikingUri(uri, 'ov_glob');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
       return runOpenVikingMcpTool(config, 'glob', {
         node_limit: nodeLimit ?? node_limit,
-        pattern: checkedPattern.value,
+        pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
     },
@@ -1909,6 +1925,18 @@ function requiredText(
   };
 }
 
+function rejectLeadingDash(value: string, toolName: string, fieldName: string): CheckedText {
+  if (!value.startsWith('-')) {
+    return {ok: true, value};
+  }
+  return {
+    error: argumentError(
+      `Threadnote MCP tool "${toolName}" rejects "${fieldName}" values that start with "-". Prefix relative file paths with "./" or use an absolute path.`,
+    ),
+    ok: false,
+  };
+}
+
 function requiredVikingUri(value: string | undefined, toolName: string, exampleUri: string): CheckedText {
   const checked = requiredText(value, toolName, 'uri', {uri: exampleUri});
   if (!checked.ok) {
@@ -2017,6 +2045,12 @@ async function runOpenVikingAddResourceTool(
         `Example: ${toolName}(${JSON.stringify({path: '/path/to/README.md', to: 'viking://resources/my-repo/README.md'})})`,
       ].join('\n'),
     );
+  }
+  if (source) {
+    const checkedSource = rejectLeadingDash(source, toolName, 'path');
+    if (!checkedSource.ok) {
+      return checkedSource.error;
+    }
   }
   if (tempFileId) {
     const checkedTo = optionalVikingUri(params.to, toolName);

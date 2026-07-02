@@ -117,6 +117,7 @@ export interface UninstallOptions {
 }
 
 export interface UpdateOptions {
+  readonly allowUntrustedRegistry?: boolean;
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
@@ -128,6 +129,7 @@ export interface UpdateOptions {
 }
 
 export interface VersionOptions {
+  readonly allowUntrustedRegistry?: boolean;
   readonly registry?: string;
 }
 

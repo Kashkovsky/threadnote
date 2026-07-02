@@ -186,15 +186,22 @@ describe('redactText', () => {
   });
 
   it('redacts bearer tokens', () => {
-    expect(redactText('Bearer abc123xyz789')).toBe('Bearer [REDACTED]');
+    expect(redactText('Bearer abcdefghijklmnopqrst')).toBe('<secret>');
   });
 
   it('redacts sk-* api keys', () => {
-    expect(redactText('use sk-abcdefghijklmnopqrstuv now')).toBe('use sk-[REDACTED] now');
+    expect(redactText('use sk-abcdefghijklmnopqrstuv now')).toBe('use <secret> now');
   });
 
   it('redacts github personal access tokens that appear outside key=value contexts', () => {
-    expect(redactText('value: ghp_abcdefghijklmnopqrst')).toBe('value: gh_[REDACTED]');
+    expect(redactText('value: ghp_abcdefghijklmnopqrst')).toBe('value: <secret>');
+  });
+
+  it('redacts provider tokens and credential URLs that appear outside key=value contexts', () => {
+    expect(redactText('dsn postgres://user:password@db.example.com/app')).toBe('dsn <secret>');
+    expect(
+      redactText(['webhook https://hooks.slack.com/services/T00000000/B00000000/', 'abcdefghijklmnop'].join('')),
+    ).toBe('webhook <secret>');
   });
 
   it('leaves non-secret text untouched', () => {

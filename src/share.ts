@@ -4,6 +4,7 @@ import {basename, dirname, isAbsolute, join, relative, sep} from 'node:path';
 import {TextDecoder} from 'node:util';
 import {uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
+import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 import type {
   CommandResult,
   ShareAgentArtifactAgent,
@@ -77,51 +78,7 @@ const PACK_ROOT_TOKEN = '${THREADNOTE_PACK_ROOT}';
 const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
-interface ScrubberPattern {
-  readonly name: string;
-  // When present, the pattern is redactable: `--redact` (CLI) / `redact: true`
-  // (MCP) replaces every match with this string instead of blocking. When
-  // absent, the pattern always blocks regardless of --redact.
-  readonly placeholder?: string;
-  readonly regex: RegExp;
-}
-
-const SCRUBBER_PATTERNS: readonly ScrubberPattern[] = [
-  // Credentials: never redactable. Blocking is the only safe response —
-  // automated redaction risks false negatives that leave material in git.
-  {name: 'private key', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/},
-  {name: 'API key (sk-...)', regex: /\bsk-[A-Za-z0-9_-]{16,}/},
-  {name: 'GitHub token', regex: /\bgh[pousr]_[A-Za-z0-9_]{16,}/},
-  {name: 'GitHub fine-grained PAT', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}/},
-  {name: 'GitLab PAT', regex: /\bglpat-[A-Za-z0-9_-]{20,}/},
-  {name: 'bearer token', regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/i},
-  // Matches bare JWTs (three base64url segments). May surface a JWE token in
-  // legitimate docs; if that becomes noisy we can switch to warn-only.
-  {name: 'JWT', regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/},
-  {name: 'AWS access key', regex: /\bAKIA[0-9A-Z]{16}\b/},
-  // Slack tokens: xoxa/xoxb/xoxc (configuration)/xoxd (legacy user cookie)/
-  // xoxe (refresh)/xoxp/xoxr/xoxs, with optional -N- segment for the workspace tier.
-  {name: 'Slack token', regex: /\bxox[abcdeprs](?:-\d-)?[A-Za-z0-9._-]{10,}/i},
-
-  // Soft leaks: block by default (so the agent sees them and decides), but
-  // allow opt-in redaction so curated memories with incidental matches can
-  // ship without a manual rewrite. Local home paths are the recurring
-  // real-world leak; the regexes greedily consume the whole path segment
-  // (including subdirectories) up to whitespace or common closing punctuation
-  // so redaction collapses an entire path to a single placeholder rather than
-  // leaving the subpath visible.
-  {name: 'macOS home path', placeholder: '<local-path>', regex: /\/Users\/[^\s)>"'`,]+/},
-  // No leading \b: it only matches when a word char precedes the slash, which
-  // misses the common cases (after =, :, whitespace, or line start). Mirror the
-  // macOS pattern so /home/... is caught in every position.
-  {name: 'linux home path', placeholder: '<local-path>', regex: /\/home\/[^\s)>"'`,]+/},
-];
-
-export interface ScrubberResult {
-  readonly blocker?: string;
-  readonly cleaned: string;
-  readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
-}
+export {applyScrubber, scrubberBlocker} from './scrubber.js';
 
 export interface ShareArtifactMetadata {
   readonly agent: ShareAgentArtifactAgent;
@@ -201,34 +158,6 @@ interface SharedArtifactInstallState {
   readonly status: SharedArtifactInstallStatus;
 }
 
-/**
- * Runs `content` through {@link SCRUBBER_PATTERNS}. Credentials always block;
- * soft-leak patterns block by default and redact only when `redact` is true.
- *
- * On block: `blocker` is set to the first matching pattern name; `cleaned`
- * equals the input. On redact: `cleaned` is the rewritten body with each match
- * replaced by its `placeholder`, and `redactions` lists the pattern names plus
- * match counts so the caller can warn the user about what changed.
- */
-export function applyScrubber(content: string, {redact}: {readonly redact: boolean}): ScrubberResult {
-  let cleaned = content;
-  const redactions: Array<{count: number; name: string}> = [];
-  for (const pattern of SCRUBBER_PATTERNS) {
-    if (!pattern.regex.test(cleaned)) {
-      continue;
-    }
-    if (!pattern.placeholder || !redact) {
-      return {blocker: pattern.name, cleaned: content, redactions: []};
-    }
-    const flags = pattern.regex.flags.includes('g') ? pattern.regex.flags : `${pattern.regex.flags}g`;
-    const globalRegex = new RegExp(pattern.regex.source, flags);
-    const matches = cleaned.match(globalRegex) ?? [];
-    cleaned = cleaned.replace(globalRegex, pattern.placeholder);
-    redactions.push({count: matches.length, name: pattern.name});
-  }
-  return {cleaned, redactions};
-}
-
 export interface ResolvedTeam {
   readonly config: ShareTeamConfig;
   readonly name: string;
@@ -236,6 +165,7 @@ export interface ResolvedTeam {
 
 export interface ChangedFile {
   readonly path: string;
+  readonly previousContent?: string;
   readonly relativePath: string;
   readonly status: 'added' | 'removed' | 'modified';
 }
@@ -305,7 +235,15 @@ export async function runShareInit(config: ShareRuntime, remoteUrl: string, opti
   await ensureDirectory(dirname(gitdir), dryRun);
 
   const git = await requiredExecutable('git');
-  await maybeRun(dryRun, git, ['clone', `--separate-git-dir=${gitdir}`, '--', remoteUrl, worktree]);
+  await maybeRun(dryRun, git, [
+    'clone',
+    '-c',
+    'core.symlinks=false',
+    `--separate-git-dir=${gitdir}`,
+    '--',
+    remoteUrl,
+    worktree,
+  ]);
 
   const newConfig: ShareTeamConfig = {
     addedAt: new Date().toISOString(),
@@ -855,7 +793,7 @@ export async function publishShareGitChange(
   const git = await requiredExecutable('git');
   const messages: string[] = [];
   const paths = typeof relativePath === 'string' ? [relativePath] : [...relativePath];
-  const stageArgs = verb === 'rm' ? ['-C', worktree, 'rm', ...paths] : ['-C', worktree, 'add', '--', ...paths];
+  const stageArgs = verb === 'rm' ? ['-C', worktree, 'rm', '--', ...paths] : ['-C', worktree, 'add', '--', ...paths];
   const stageResult = await runGitCommand(dryRun, git, stageArgs, `git ${verb} failed`);
   if (stageResult) {
     messages.push(`git ${verb}: ${stageResult.stdout.trim() || 'ok'}`);
@@ -1366,13 +1304,7 @@ function isProbablyBinary(buffer: Buffer): boolean {
 }
 
 function detectBinaryCredential(buffer: Buffer): string | undefined {
-  const latin1 = buffer.toString('latin1');
-  for (const pattern of SCRUBBER_PATTERNS) {
-    if (pattern.placeholder === undefined && pattern.regex.test(latin1)) {
-      return pattern.name;
-    }
-  }
-  return undefined;
+  return credentialScrubberBlocker(buffer.toString('latin1'));
 }
 
 // Scans binary bytes for a machine-local path that the pack rewriter would
@@ -2255,7 +2187,7 @@ export async function runShareSetUrl(
   const git = await requiredExecutable('git');
   if (dryRun) {
     console.log(
-      `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, remoteUrl])}`,
+      `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, '--', remoteUrl])}`,
     );
     console.log(
       `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME])}`,
@@ -2263,7 +2195,7 @@ export async function runShareSetUrl(
     console.log(`Would write teams file: ${teamsFilePath(config)}`);
     return;
   }
-  await runCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, remoteUrl]);
+  await runCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, '--', remoteUrl]);
   await runCommand(git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME]);
   const teamsFile = await readTeamsFile(config);
   const updatedTeam: ShareTeamConfig = {...team.config, remote: remoteUrl};
@@ -3326,10 +3258,6 @@ function printShareArtifactResult(result: ShareArtifactResult, preview: boolean)
   }
 }
 
-export function scrubberBlocker(content: string): string | undefined {
-  return applyScrubber(content, {redact: false}).blocker;
-}
-
 /**
  * Removes `supersedes:` and `archived_from:` lines from the header block of
  * a memory document before it's published to a team's shared git repo. Those
@@ -3634,8 +3562,24 @@ async function ingestSingleFile(
   initialMode: 'create' | 'replace',
   options: {readonly quiet?: boolean} = {},
 ): Promise<void> {
-  const content = await readFile(filePath, 'utf8');
+  const content = await readSharedInboundFileContent(uri, filePath);
   await writeMemoryFile(config, ov, uri, content, initialMode, false, options);
+}
+
+async function readSharedInboundFileContent(uri: string, filePath: string): Promise<string> {
+  if (!(await isRegularFileNoSymlink(filePath))) {
+    throw new Error(`Refusing to ingest non-regular shared file: ${filePath}`);
+  }
+  return prepareSharedInboundContent(uri, await readFile(filePath, 'utf8'));
+}
+
+function prepareSharedInboundContent(uri: string, rawContent: string): string {
+  const stripped = stripPersonalProvenance(rawContent);
+  const scrub = applyScrubber(stripped, {redact: false});
+  if (scrub.blocker) {
+    throw new Error(`Refusing to ingest ${uri}: possible ${scrub.blocker}. Strip the sensitive value upstream first.`);
+  }
+  return scrub.cleaned;
 }
 
 export async function removeMemoryUri(
@@ -3697,12 +3641,16 @@ async function gitOutput(worktree: string, args: readonly string[], dryRun: bool
   return result.stdout.trim();
 }
 
-async function listChangedFiles(
+const GIT_MODE_ABSENT = '000000';
+// Git records symbolic links as mode 120000.
+const GIT_MODE_SYMLINK = '120000';
+
+export async function listChangedFiles(
   worktree: string,
   beforeRev: string,
   afterRev: string,
 ): Promise<readonly ChangedFile[]> {
-  const result = await runCommand('git', ['-C', worktree, 'diff', '--name-status', '-z', `${beforeRev}..${afterRev}`], {
+  const result = await runCommand('git', ['-C', worktree, 'diff', '--raw', '-z', `${beforeRev}..${afterRev}`], {
     allowFailure: true,
   });
   if (result.exitCode !== 0) {
@@ -3711,26 +3659,68 @@ async function listChangedFiles(
   const entries = result.stdout.split('\0').filter(part => part.length > 0);
   const changes: ChangedFile[] = [];
   for (let index = 0; index < entries.length; ) {
-    const raw = entries[index];
-    const head = raw.slice(0, 1);
-    if (head === 'R' || head === 'C') {
-      const oldRel = entries[index + 1];
-      const newRel = entries[index + 2];
-      if (oldRel && newRel) {
-        changes.push({path: join(worktree, oldRel), relativePath: oldRel, status: 'removed'});
-        changes.push({path: join(worktree, newRel), relativePath: newRel, status: 'added'});
-      }
-      index += 3;
+    const raw = entries[index++];
+    const match = raw.match(/^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])\d*/);
+    if (!match) {
       continue;
     }
-    const rel = entries[index + 1];
-    if (rel) {
-      const status = head === 'A' ? 'added' : head === 'D' ? 'removed' : 'modified';
-      changes.push({path: join(worktree, rel), relativePath: rel, status});
+    const [, oldMode, newMode, head] = match;
+    if (head === 'R' || head === 'C') {
+      const oldRel = entries[index];
+      const newRel = entries[index + 1];
+      if (oldRel) {
+        changes.push({
+          path: join(worktree, oldRel),
+          previousContent: oldMode === GIT_MODE_SYMLINK ? undefined : await gitFileContent(worktree, beforeRev, oldRel),
+          relativePath: oldRel,
+          status: 'removed',
+        });
+      }
+      if (newRel && newMode !== GIT_MODE_SYMLINK) {
+        changes.push({path: join(worktree, newRel), relativePath: newRel, status: 'added'});
+      }
+      index += 2;
+      continue;
     }
-    index += 2;
+    const rel = entries[index];
+    if (rel) {
+      if (head === 'D') {
+        changes.push({
+          path: join(worktree, rel),
+          previousContent: oldMode === GIT_MODE_SYMLINK ? undefined : await gitFileContent(worktree, beforeRev, rel),
+          relativePath: rel,
+          status: 'removed',
+        });
+      } else if (newMode === GIT_MODE_SYMLINK) {
+        if (oldMode !== GIT_MODE_ABSENT) {
+          changes.push({
+            path: join(worktree, rel),
+            previousContent: oldMode === GIT_MODE_SYMLINK ? undefined : await gitFileContent(worktree, beforeRev, rel),
+            relativePath: rel,
+            status: 'removed',
+          });
+        }
+      } else {
+        const status = head === 'A' ? 'added' : 'modified';
+        changes.push({
+          path: join(worktree, rel),
+          previousContent:
+            oldMode === GIT_MODE_ABSENT || oldMode === GIT_MODE_SYMLINK
+              ? undefined
+              : await gitFileContent(worktree, beforeRev, rel),
+          relativePath: rel,
+          status,
+        });
+      }
+    }
+    index += 1;
   }
   return changes;
+}
+
+async function gitFileContent(worktree: string, rev: string, relativePath: string): Promise<string | undefined> {
+  const result = await runCommand('git', ['-C', worktree, 'show', `${rev}:${relativePath}`], {allowFailure: true});
+  return result.exitCode === 0 ? result.stdout : undefined;
 }
 
 interface ApplyChangesResult {
@@ -3769,10 +3759,15 @@ async function applyChangesToOpenViking(
     const uri = workfileToVikingUri(config, team, change.path);
     try {
       if (change.status === 'removed') {
+        const currentContent = await readExistingMemoryContent(config, ov, uri);
+        if (currentContent === undefined) {
+          continue;
+        }
+        assertInboundPreviousContentMatches(change, uri, currentContent);
         await removeMemoryUri(config, ov, uri, false, options);
         continue;
       }
-      if (!(await isFile(change.path))) {
+      if (!(await isRegularFileNoSymlink(change.path))) {
         continue;
       }
       // Either 'modified' or 'added' from git's perspective; the file on disk
@@ -3783,19 +3778,29 @@ async function applyChangesToOpenViking(
       // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
       // earlier path — a prior share init/sync, or a local publish that wrote
       // the URI before the corresponding upstream commit landed in this clone.
-      const ovHasResource = await vikingResourceExists(ov, config, uri);
-      if (ovHasResource) {
+      const content = await readSharedInboundFileContent(uri, change.path);
+      const currentContent = await readExistingMemoryContent(config, ov, uri);
+      if (currentContent !== undefined) {
+        if (change.status === 'added') {
+          if (currentContent === content) {
+            continue;
+          }
+          throw new Error(
+            `Refusing to ingest newly added shared file over existing local OpenViking resource ${uri}; inspect and resolve the local edit first.`,
+          );
+        }
+        assertInboundPreviousContentMatches(change, uri, currentContent);
         const reason =
           change.status === 'modified'
-            ? 'overwriting local with upstream (local edits to the shared subtree are not preserved across sync)'
+            ? 'updating from upstream after verifying local content matches the previous shared version'
             : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
         if (options.quiet !== true) {
           console.warn(`share sync: ${uri}: ${reason}.`);
         }
       }
       await ensureSharedDirectoryChain(config, ov, uri, false, options);
-      const writeMode: 'create' | 'replace' = ovHasResource ? 'replace' : 'create';
-      await ingestSingleFile(ov, config, uri, change.path, writeMode, options);
+      const writeMode: 'create' | 'replace' = currentContent !== undefined ? 'replace' : 'create';
+      await writeMemoryFile(config, ov, uri, content, writeMode, false, options);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (options.quiet !== true) {
@@ -3805,6 +3810,27 @@ async function applyChangesToOpenViking(
     }
   }
   return {failed};
+}
+
+async function readExistingMemoryContent(config: ShareRuntime, ov: string, uri: string): Promise<string | undefined> {
+  if (!(await vikingResourceExists(ov, config, uri))) {
+    return undefined;
+  }
+  return readMemoryContent(config, ov, uri, false);
+}
+
+function assertInboundPreviousContentMatches(change: ChangedFile, uri: string, currentContent: string): void {
+  if (change.previousContent === undefined) {
+    throw new Error(
+      `Refusing to apply inbound shared change for ${uri}: previous shared content is unavailable, so local edits cannot be distinguished from upstream edits.`,
+    );
+  }
+  const expectedContent = prepareSharedInboundContent(uri, change.previousContent);
+  if (currentContent !== expectedContent) {
+    throw new Error(
+      `Refusing to apply inbound shared change for ${uri}: local OpenViking content differs from the previous shared version. Inspect and resolve the local edit first.`,
+    );
+  }
 }
 
 export function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {

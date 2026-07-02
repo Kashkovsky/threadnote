@@ -1,12 +1,12 @@
 import {heading, info, keyValue, success, warning, withSpinner} from './cli_ui.js';
 import type {RuntimeConfig, VersionOptions} from './types.js';
-import {currentPackageVersion, fetchLatestVersion, normalizeRegistry, updateRegistry} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, resolveUpdateRegistry} from './update.js';
 import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
 
 export async function runVersion(config: RuntimeConfig, options: VersionOptions): Promise<void> {
   const currentVersion = await currentPackageVersion();
-  const registry = normalizeRegistry(options.registry ?? updateRegistry());
+  const registry = resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry);
   let latestVersion: string | undefined;
   let latestWarning: string | undefined;
 

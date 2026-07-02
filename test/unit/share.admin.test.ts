@@ -2,7 +2,7 @@ import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {runShareRemove, runShareRename, runShareSetUrl} from '../../src/share.js';
+import {publishShareGitChange, runShareRemove, runShareRename, runShareSetUrl} from '../../src/share.js';
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 
@@ -101,13 +101,37 @@ describe('share administration', () => {
     expect(
       vi
         .mocked(utils.runCommand)
-        .mock.calls.some(([executable, args]) => executable === 'git' && args.includes('set-url')),
+        .mock.calls.some(
+          ([executable, args]) =>
+            executable === 'git' &&
+            args[0] === '-C' &&
+            args[2] === 'remote' &&
+            args[3] === 'set-url' &&
+            args[5] === '--' &&
+            args[6] === 'git@example.com:new/memories.git',
+        ),
     ).toBe(true);
     expect(
       vi
         .mocked(utils.runCommand)
         .mock.calls.some(([executable, args]) => executable === 'git' && args.includes('fetch')),
     ).toBe(true);
+  });
+
+  it('uses a literal path separator for git rm during shared deletions', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    await publishShareGitChange(join(config.agentContextHome, 'share-worktree'), '-dash.md', 'remove dash', {
+      push: false,
+      verb: 'rm',
+    });
+
+    expect(vi.mocked(utils.runCommand)).toHaveBeenCalledWith(
+      'git',
+      ['-C', join(config.agentContextHome, 'share-worktree'), 'rm', '--', '-dash.md'],
+      {allowFailure: true},
+    );
   });
 
   it('can preserve shared durable memories locally before removing a share', async () => {

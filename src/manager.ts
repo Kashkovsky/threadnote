@@ -1,6 +1,6 @@
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {chmod, mkdtemp, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
+import {chmod, lstat, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, relative, sep} from 'node:path';
 import {uriSegment} from './manifest.js';
@@ -198,7 +198,11 @@ export async function readManagedMemory(
   if (!path) {
     throw new Error(`Manager can only read current-user memory URIs: ${uri}`);
   }
-  const [content, pathStat] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
+  const pathStat = await lstat(path);
+  if (!pathStat.isFile()) {
+    throw new Error(`Manager can only read regular memory files: ${uri}`);
+  }
+  const content = await readFile(path, 'utf8');
   const relativePath = relative(localMemoriesRoot(config), path).split(sep).join('/');
   const record = parseMemoryDocument(uri, content);
   return {
@@ -530,10 +534,13 @@ async function readTree(
   relativePath: string,
   options: ReadTreeOptions = {},
 ): Promise<ManagerTreeNode> {
-  const pathStat = await stat(path);
+  const pathStat = await lstat(path);
   const name = relativePath ? (relativePath.split('/').at(-1) ?? relativePath) : (options.rootName ?? 'memories');
   const isDir = pathStat.isDirectory();
   if (!isDir) {
+    if (!pathStat.isFile()) {
+      throw new Error(`Manager can only read regular files or directories: ${uri}`);
+    }
     const record =
       options.parseMemoryDocuments === false
         ? undefined
@@ -554,6 +561,7 @@ async function readTree(
   const entries = await readdir(path, {withFileTypes: true});
   const children = await Promise.all(
     entries
+      .filter(entry => entry.isDirectory() || entry.isFile())
       .sort(
         (left, right) =>
           Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name),
@@ -750,7 +758,7 @@ async function removeManagedFolder(config: RuntimeConfig, uri: string): Promise<
   if (!path) {
     throw new Error(`Manager can only remove current-user memory folders: ${uri}`);
   }
-  const pathStat = await stat(path);
+  const pathStat = await lstat(path);
   if (!pathStat.isDirectory()) {
     throw new Error(`Not a folder: ${uri}`);
   }

@@ -29,6 +29,7 @@ import {
 
 const NPM_PACKAGE_NAME = 'threadnote';
 const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
+const ALLOW_UNTRUSTED_REGISTRY_ENV = 'THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 const POST_UPDATE_MIGRATIONS_FILE = 'post-update-migrations.json';
 const POST_UPDATE_STATE_FILE = 'post-update-state.json';
@@ -92,7 +93,7 @@ export async function maybeNotifyUpdate(
 }
 
 export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): Promise<void> {
-  const registry = normalizeRegistry(options.registry ?? updateRegistry());
+  const registry = resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry);
   const info = await withSpinner('Checking npm for latest threadnote version', () =>
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
@@ -739,11 +740,37 @@ function updatePackageCommand(
 }
 
 export function normalizeRegistry(registry: string): string {
-  return registry.endsWith('/') ? registry : `${registry}/`;
+  const normalized = registry.endsWith('/') ? registry : `${registry}/`;
+  const url = new URL(normalized);
+  if (url.protocol !== 'https:') {
+    throw new Error(`npm registry must use https: ${normalized}`);
+  }
+  return url.toString();
 }
 
 export function updateRegistry(): string {
-  return normalizeRegistry(process.env.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
+  return resolveUpdateRegistry(undefined, false);
+}
+
+export function resolveUpdateRegistry(
+  registry: string | undefined,
+  allowUntrustedRegistry: boolean | undefined,
+): string {
+  const normalized = normalizeRegistry(registry ?? process.env.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
+  if (normalized !== DEFAULT_NPM_REGISTRY && !allowsUntrustedRegistry(allowUntrustedRegistry)) {
+    throw new Error(
+      `Refusing custom npm registry ${normalized}: threadnote update does not verify package signatures from alternate registries. Use the default registry, pass --allow-untrusted-registry, or set ${ALLOW_UNTRUSTED_REGISTRY_ENV}=1 only for an approved mirror.`,
+    );
+  }
+  return normalized;
+}
+
+function allowsUntrustedRegistry(option: boolean | undefined): boolean {
+  if (option === true) {
+    return true;
+  }
+  const envValue = process.env[ALLOW_UNTRUSTED_REGISTRY_ENV]?.trim().toLowerCase();
+  return envValue === '1' || envValue === 'true' || envValue === 'yes';
 }
 
 function isUpdateNotificationDisabled(): boolean {

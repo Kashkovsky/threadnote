@@ -1,6 +1,10 @@
 import {describe, expect, it} from 'vitest';
 import {applyScrubber, scrubberBlocker, stripPersonalProvenance} from '../../src/share.js';
 
+function fixture(...parts: readonly string[]): string {
+  return parts.join('');
+}
+
 describe('applyScrubber', () => {
   it('returns cleaned=content with no redactions when no patterns match', () => {
     const input = 'plain prose with no secrets';
@@ -16,18 +20,41 @@ describe('applyScrubber', () => {
     expect(applyScrubber(input, {redact: true}).blocker).toBe('private key');
   });
 
-  it('blocks sk-, gh_, GitLab, AWS, Slack, JWT, and Bearer tokens', () => {
+  it('blocks common API tokens, cloud tokens, webhooks, auth headers, and credential URIs', () => {
     const samples: ReadonlyArray<{name: string; value: string}> = [
-      {name: 'API key (sk-...)', value: 'sk-abcdefghijklmnopqr1234'},
-      {name: 'GitHub token', value: 'ghp_abcdefghijklmnopqrst'},
-      {name: 'GitHub fine-grained PAT', value: 'github_pat_abcdefghijklmnopqrstuv'},
-      {name: 'GitLab PAT', value: 'glpat-abcdefghijklmnopqrst'},
-      {name: 'AWS access key', value: 'AKIAABCDEFGHIJKLMNOP'},
-      {name: 'Slack token', value: 'xoxb-12345-abcdefghijklmnopqr'},
-      {name: 'bearer token', value: 'Bearer abcdefghijklmnopqrst'},
+      {name: 'API key (sk-...)', value: fixture('sk-', 'abcdefghijklmnopqr1234')},
+      {name: 'GitHub token', value: fixture('ghp_', 'abcdefghijklmnopqrst')},
+      {name: 'GitHub fine-grained PAT', value: fixture('github_pat_', 'abcdefghijklmnopqrstuv')},
+      {name: 'GitLab PAT', value: fixture('glpat-', 'abcdefghijklmnopqrst')},
+      {name: 'AWS access key', value: fixture('AKIA', 'ABCDEFGHIJKLMNOP')},
+      {name: 'AWS access key', value: fixture('ASIA', 'ABCDEFGHIJKLMNOP')},
+      {
+        name: 'AWS secret access key',
+        value: fixture('aws_secret_access_key=', 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN'),
+      },
+      {name: 'AWS session token', value: fixture('aws_session_token=', 'abcdefghijklmnopqrstuvwxyz0123456789ABCD')},
+      {name: 'Google API key', value: fixture('AIza', 'abcdefghijklmnopqrstuvwxyz123456789')},
+      {name: 'Google OAuth token', value: fixture('ya29.', 'abcdefghijklmnopqrstuvwxyz123456789')},
+      {name: 'Stripe key', value: fixture('sk_', 'live_', 'abcdefghijklmnopqrstuvwxyz')},
+      {name: 'Stripe webhook secret', value: fixture('whsec_', 'abcdefghijklmnopqrstuvwxyz')},
+      {name: 'Discord token', value: fixture('mfa.', 'abcdefghijklmnopqrstuvwxyz123456789')},
+      {
+        name: 'Discord webhook',
+        value: fixture('https://discord.com/api/webhooks/123456789/', 'abcdefghijklmnopqrstuvwxyz'),
+      },
+      {name: 'Slack token', value: fixture('xoxb-', '12345-', 'abcdefghijklmnopqr')},
+      {name: 'Slack token', value: fixture('xapp-', '1-ABCDEF-2-', 'abcdef123456')},
+      {
+        name: 'Slack webhook',
+        value: fixture('https://hooks.slack.com/services/T00000000/B00000000/', 'abcdefghijklmnop'),
+      },
+      {name: 'bearer token', value: fixture('Bearer ', 'abcdefghijklmnopqrst')},
+      {name: 'basic auth header', value: fixture('Basic ', 'QWxhZGRpbjpvcGVuIHNlc2FtZQ==')},
+      {name: 'database URI', value: fixture('postgres://user:', 'password@db.example.com:5432/app')},
+      {name: 'URL basic auth', value: fixture('https://user:', 'password@example.com/path')},
       {
         name: 'JWT',
-        value: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcdefghijklmnopqrst',
+        value: fixture('eyJhbGciOiJIUzI1NiJ9.', 'eyJzdWIiOiIxMjMifQ.', 'abcdefghijklmnopqrst'),
       },
     ];
     for (const sample of samples) {
@@ -63,7 +90,7 @@ describe('applyScrubber', () => {
   });
 
   it('redacting soft-leaks does not silence a credential pattern in the same input', () => {
-    const input = 'home /Users/jane/secrets and key sk-abcdefghijklmnopqr1234';
+    const input = fixture('home /Users/jane/secrets and key sk-', 'abcdefghijklmnopqr1234');
     const result = applyScrubber(input, {redact: true});
     expect(result.blocker).toBe('API key (sk-...)');
     expect(result.cleaned).toBe(input);
@@ -72,7 +99,7 @@ describe('applyScrubber', () => {
 
 describe('scrubberBlocker', () => {
   it('returns the first blocking pattern name', () => {
-    expect(scrubberBlocker('sk-abcdefghijklmnopqr1234')).toBe('API key (sk-...)');
+    expect(scrubberBlocker(fixture('sk-', 'abcdefghijklmnopqr1234'))).toBe('API key (sk-...)');
   });
 
   it('returns undefined when nothing blocks', () => {

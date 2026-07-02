@@ -1,6 +1,10 @@
+import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {dirname, join} from 'node:path';
 import {describe, expect, it} from 'vitest';
-import {isResourceBusyFailure, isTransientOvFailure, mergeChanges} from '../../src/share.js';
+import {isResourceBusyFailure, isTransientOvFailure, listChangedFiles, mergeChanges} from '../../src/share.js';
 import type {ChangedFile} from '../../src/share.js';
+import {runCommand} from '../../src/utils.js';
 
 describe('isTransientOvFailure', () => {
   it('classifies resource-busy errors as transient', () => {
@@ -68,5 +72,60 @@ describe('mergeChanges', () => {
     const current = [make('a.md', 'added'), make('b.md', 'added')];
     const out = mergeChanges(previous, current);
     expect(out.map(c => c.relativePath)).toEqual(['z.md', 'a.md', 'b.md']);
+  });
+});
+
+describe('listChangedFiles', () => {
+  async function git(args: readonly string[], cwd: string): Promise<void> {
+    await runCommand('git', args, {cwd});
+  }
+
+  async function gitOutput(args: readonly string[], cwd: string): Promise<string> {
+    const result = await runCommand('git', args, {cwd});
+    return result.stdout.trim();
+  }
+
+  it('does not report symlink additions as ingestible files', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-share-changes-'));
+    let secretPath: string | undefined;
+    try {
+      await git(['init'], repo);
+      await git(['config', 'user.email', 'threadnote-test@example.com'], repo);
+      await git(['config', 'user.name', 'Threadnote Test'], repo);
+      const durableDir = join(repo, 'durable', 'projects', 'threadnote');
+      await mkdir(durableDir, {recursive: true});
+      await writeFile(join(durableDir, 'replace.md'), 'original\n', 'utf8');
+      await git(['add', 'durable/projects/threadnote/replace.md'], repo);
+      await git(['commit', '-m', 'initial'], repo);
+      const beforeRev = await gitOutput(['rev-parse', 'HEAD'], repo);
+
+      secretPath = join(dirname(repo), 'local-secret.txt');
+      await writeFile(secretPath, 'do not ingest\n', 'utf8');
+      await symlink(secretPath, join(durableDir, 'leak.md'));
+      await rm(join(durableDir, 'replace.md'));
+      await symlink(secretPath, join(durableDir, 'replace.md'));
+      await git(['add', '-A'], repo);
+      await git(['commit', '-m', 'add symlink memory'], repo);
+      const afterRev = await gitOutput(['rev-parse', 'HEAD'], repo);
+
+      const changes = await listChangedFiles(repo, beforeRev, afterRev);
+
+      expect(changes).not.toContainEqual(
+        expect.objectContaining({relativePath: 'durable/projects/threadnote/leak.md'}),
+      );
+      expect(changes).toContainEqual(
+        expect.objectContaining({
+          path: join(repo, 'durable/projects/threadnote/replace.md'),
+          previousContent: 'original\n',
+          relativePath: 'durable/projects/threadnote/replace.md',
+          status: 'removed',
+        }),
+      );
+    } finally {
+      if (secretPath) {
+        await rm(secretPath, {force: true});
+      }
+      await rm(repo, {force: true, recursive: true});
+    }
   });
 });

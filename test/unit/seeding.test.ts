@@ -110,6 +110,42 @@ describe('runSeed', () => {
     expect(output).not.toContain('--reason');
     expect(output).not.toContain('Project guidance for');
   });
+
+  it('uses the publish scrubber patterns when skipping seed files', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    await writeFile(join(repo, 'README.md'), 'dsn=postgres://user:password@db.example.com:5432/app\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: viking://resources/repos/sample-repo',
+        '    seed:',
+        '      - README.md',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath,
+      openVikingVersion: '0.0.0',
+      port: 1933,
+      user: 'denys',
+    };
+
+    const output = await captureConsole(() => runSeed(config, {dryRun: true}));
+
+    expect(output).toContain('SKIP sample-repo/README.md: possible secret (database URI)');
+    expect(output).toContain('Seed complete: 0 candidate(s), 0 unchanged, 1 skipped for safety.');
+  });
 });
 
 describe('seed-skills', () => {
