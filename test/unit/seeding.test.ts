@@ -5,6 +5,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   parseSeedWatchIntervalMinutes,
   runInitManifest,
+  runSeed,
   runSeedSkills,
   seedDependencyGraphs,
   seedWatchArgs,
@@ -61,6 +62,53 @@ describe('seedWatchArgs', () => {
     // Bypassing Threadnote's per-import secret scan would be unsafe here.
     expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: false, redactionProne: false})).toEqual([]);
     expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: true, redactionProne: true})).toEqual([]);
+  });
+});
+
+describe('runSeed', () => {
+  const homes: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('does not pass a reason to resource imports', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    await writeFile(join(repo, 'README.md'), '# Sample\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: viking://resources/repos/sample-repo',
+        '    seed:',
+        '      - README.md',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath,
+      openVikingVersion: '0.0.0',
+      port: 1933,
+      user: 'denys',
+    };
+
+    const output = await captureConsole(() => runSeed(config, {dryRun: true}));
+
+    expect(output).toContain('add-resource');
+    expect(output).toContain('viking://resources/repos/sample-repo/README.md');
+    expect(output).toContain('--wait');
+    expect(output).not.toContain('--reason');
+    expect(output).not.toContain('Project guidance for');
   });
 });
 
@@ -123,8 +171,8 @@ describe('seed-skills', () => {
     expect(output).toMatch(
       /viking:\/\/resources\/agent-skills\/repo-local-sample-repo-claude-commands\/review-pr-[a-f0-9]{12}\.md/,
     );
-    expect(output).toContain('--reason');
-    expect(output).toContain('Agent command catalog item from claude-commands-global: weekly.md');
+    expect(output).not.toContain('--reason');
+    expect(output).not.toContain('Agent command catalog item from claude-commands-global: weekly.md');
     expect(output).toContain('Skill seed complete: 2 unique catalog item(s).');
   });
 });
@@ -199,7 +247,12 @@ describe('seedDependencyGraphs', () => {
     homes.push(contextHome, repo);
     await writeFile(join(repo, 'package.json'), JSON.stringify({name: '@acme/pkg'}), 'utf8');
     const ov = join(contextHome, 'ov');
-    await writeFile(ov, '#!/bin/sh\nexit 0\n', 'utf8');
+    const ovArgsLog = join(contextHome, 'ov-args.log');
+    await writeFile(
+      ov,
+      `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done >> ${JSON.stringify(ovArgsLog)}\nexit 0\n`,
+      'utf8',
+    );
     await chmod(ov, 0o700);
     const manifest: SeedManifest = {
       projects: [
@@ -229,6 +282,10 @@ describe('seedDependencyGraphs', () => {
     expect(graphFiles).toHaveLength(1);
     expect(graphFiles[0]).not.toContain('/');
     expect(await readFile(join(contextHome, 'graph', graphFiles[0]), 'utf8')).toContain('# ../bad — dependency facts');
+    const ovArgs = (await readFile(ovArgsLog, 'utf8')).trim().split('\n');
+    expect(ovArgs).toContain('add-resource');
+    expect(ovArgs).toContain('--wait');
+    expect(ovArgs).not.toContain('--reason');
     await expect(readFile(join(contextHome, 'bad.graph.md'), 'utf8')).rejects.toThrow();
   });
 });

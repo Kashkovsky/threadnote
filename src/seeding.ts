@@ -126,8 +126,6 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
         importPath,
         '--to',
         candidate.destinationUri,
-        '--reason',
-        seedResourceReason(candidate),
         ...seedWatchArgs({
           watchIntervalMinutes,
           importedOriginal: importPath === candidate.filePath,
@@ -214,19 +212,7 @@ export async function seedDependencyGraphs(
     await ensureDirectory(dirname(graphPath), false);
     await writeFile(graphPath, document, {encoding: 'utf8', mode: 0o600});
     await chmod(graphPath, 0o600);
-    await maybeRun(
-      false,
-      ov,
-      withIdentity(config, [
-        'add-resource',
-        graphPath,
-        '--to',
-        destinationUri,
-        '--reason',
-        `Dependency facts for ${project.name}`,
-        '--wait',
-      ]),
-    );
+    await maybeRun(false, ov, withIdentity(config, ['add-resource', graphPath, '--to', destinationUri, '--wait']));
     written += 1;
   }
   console.log(
@@ -403,15 +389,7 @@ export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions)
     }
     const args = nativeMode
       ? ['add-skill', skill.filePath, '--wait']
-      : [
-          'add-resource',
-          skill.filePath,
-          '--to',
-          skillResourceUri(skill),
-          '--reason',
-          skillResourceReason(skill),
-          '--wait',
-        ];
+      : ['add-resource', skill.filePath, '--to', skillResourceUri(skill), '--wait'];
     await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
   }
   console.log(
@@ -537,18 +515,8 @@ async function prepareSeedFile(
   return redactedPath;
 }
 
-function seedResourceReason(candidate: SeedCandidate): string {
-  return `Project guidance for ${candidate.projectName}: ${candidate.relativePath}`;
-}
-
 function graphCacheFileName(projectName: string): string {
   return `${uriSegment(projectName)}-${sha256(projectName).slice(0, 8)}.graph.md`;
-}
-
-function skillResourceReason(skill: SkillCandidate): string {
-  return `${skill.kind === 'command' ? 'Agent command' : 'Agent skill'} catalog item from ${skill.source}: ${basename(
-    skill.filePath,
-  )}`;
 }
 
 async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly SkillCandidate[]> {

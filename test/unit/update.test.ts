@@ -32,7 +32,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     agentId: 'threadnote',
     host: '127.0.0.1',
     manifestPath: join(home, 'seed-manifest.yaml'),
-    openVikingVersion: '0.4.5',
+    openVikingVersion: '0.4.7',
     port: 1933,
     user: 'denys',
   };
@@ -196,7 +196,9 @@ describe('runPostUpdate', () => {
 
     const stopCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'stop');
     const startCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'start');
+    const installCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'install');
 
+    expect(installCall?.[1]).toEqual(['install', '--force', '--no-start']);
     expect(stopCall).toBeDefined();
     expect(startCall).toBeDefined();
     expect(vi.mocked(utils.isTcpPortOpen)).toHaveBeenCalledWith('127.0.0.1', 1933, 300);
@@ -212,7 +214,7 @@ describe('runPostUpdate', () => {
     homes.push(config.agentContextHome);
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
       if (executable === '/ov' && args[0] === 'version') {
-        return ok('CLI:     0.4.5\nServer:  0.4.5\n');
+        return ok('CLI:     0.4.7\nServer:  0.4.7\n');
       }
       return ok();
     });

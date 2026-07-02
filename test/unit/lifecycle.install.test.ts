@@ -29,13 +29,13 @@ function runtime(): RuntimeConfig {
     agentId: 'threadnote',
     host: '127.0.0.1',
     manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
-    openVikingVersion: '0.4.5',
+    openVikingVersion: '0.4.7',
     port: 1933,
     user: 'denys',
   };
 }
 
-const SPEC = 'openviking[local-embed]==0.4.5';
+const SPEC = 'openviking[local-embed]==0.4.7';
 const UV_COMMAND = {
   executable: 'uv',
   args: [
