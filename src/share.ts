@@ -3355,7 +3355,7 @@ export function stripPersonalProvenance(content: string): string {
   }
   const cleaned: string[] = [];
   for (let index = 0; index < headerEnd; index += 1) {
-    if (/^(?:supersedes|archived_from):\s/.test(lines[index])) {
+    if (/^(?:supersedes|archived_from|references):\s/.test(lines[index])) {
       continue;
     }
     cleaned.push(lines[index]);

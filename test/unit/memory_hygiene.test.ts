@@ -5,7 +5,10 @@ import {
   formatCompactPlan,
   handoffTopicForBranch,
   memoryContentWithHygieneSources,
+  parseMemoryDocument,
   recallHygieneNudges,
+  referencedContextExcerpt,
+  referencedUrisFromRecords,
 } from '../../src/memory_hygiene.js';
 
 function record(
@@ -258,5 +261,55 @@ describe('formatCompactPlan', () => {
 
     expect(formatCompactPlan(plan, {apply: false})).toContain('Dry-run memory hygiene plan for project mobile-native');
     expect(formatCompactPlan(plan, {apply: false})).toContain('Archive old handoffs');
+  });
+});
+
+describe('references relation', () => {
+  it('parses multiple references: header lines into metadata.references', () => {
+    const content = [
+      'HANDOFF',
+      'kind: handoff',
+      'status: active',
+      'project: threadnote',
+      'topic: my-branch',
+      'source_agent_client: codex',
+      'timestamp: 2026-07-02T00:00:00.000Z',
+      'references: viking://user/me/memories/durable/projects/threadnote/design.md',
+      'references: viking://user/me/memories/handoffs/active/threadnote/prior.md',
+      '',
+      'task: keep going',
+    ].join('\n');
+    const parsed = parseMemoryDocument('viking://user/me/memories/handoffs/active/threadnote/my-branch.md', content);
+    expect(parsed?.metadata.references).toEqual([
+      'viking://user/me/memories/durable/projects/threadnote/design.md',
+      'viking://user/me/memories/handoffs/active/threadnote/prior.md',
+    ]);
+  });
+
+  it('leaves references undefined when absent', () => {
+    const content = ['MEMORY', 'kind: durable', 'status: active', 'project: x', '', 'body'].join('\n');
+    const parsed = parseMemoryDocument('viking://user/me/memories/durable/projects/x/a.md', content);
+    expect(parsed?.metadata.references).toBeUndefined();
+  });
+
+  it('collects referenced uris off records, skipping ones already surfaced', () => {
+    const withRefs = record({
+      uri: 'viking://user/me/memories/handoffs/active/threadnote/branch.md',
+      metadata: {
+        references: [
+          'viking://user/me/memories/durable/projects/threadnote/design.md',
+          'viking://user/me/memories/durable/projects/threadnote/shown.md',
+        ],
+      },
+    });
+    const recallOutput = 'surfaced: viking://user/me/memories/durable/projects/threadnote/shown.md';
+    expect(referencedUrisFromRecords([withRefs], recallOutput)).toEqual([
+      'viking://user/me/memories/durable/projects/threadnote/design.md',
+    ]);
+  });
+
+  it('renders a bounded, indented excerpt', () => {
+    const excerpt = referencedContextExcerpt(['line one', '', 'line two', 'line three'].join('\n'), 2);
+    expect(excerpt).toBe('  line one\n  line two');
   });
 });

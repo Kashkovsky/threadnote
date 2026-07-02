@@ -404,17 +404,26 @@ async function main(): Promise<void> {
     .command('handoff')
     .description('Capture current repo state as a durable cross-agent handoff memory')
     .option('--blockers <text>', 'Known blockers')
+    .option('--ci <text>', 'Captured CI status snapshot (free text; not a live status board)')
     .option('--dry-run', 'Print handoff without storing')
+    .option('--issue <text>', 'Related issue reference (number or URL)')
     .option('--next-step <text>', 'Suggested next step')
+    .option('--pr <text>', 'Related pull request reference (number or URL)')
     .option('--project <name>', 'Project/repo namespace; defaults to current repo basename')
+    .option(
+      '--reference <uri>',
+      'viking:// memory to record as one-way read-only prior context; repeat for multiple',
+      collectOption,
+      [],
+    )
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new handoff is stored')
     .option('--source-agent-client <name>', 'codex, claude, cursor, copilot, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
     .option('--timestamped', 'Store a historical timestamped handoff instead of updating the current branch handoff')
     .option('--topic <name>', 'Stable topic name; active handoffs with the same project/topic update one file')
-    .action(async (options: HandoffOptions) => {
-      await runHandoff(getRuntimeConfig(program), options);
+    .action(async (options: HandoffOptions & {readonly reference?: readonly string[]}) => {
+      await runHandoff(getRuntimeConfig(program), {...options, references: options.reference});
     });
 
   program

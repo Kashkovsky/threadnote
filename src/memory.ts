@@ -10,6 +10,8 @@ import {
   handoffTopicForBranch,
   parseMemoryDocument,
   recallHygieneNudges,
+  referencedContextExcerpt,
+  referencedUrisFromRecords,
   topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
@@ -88,6 +90,7 @@ interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly sourceAgentClient: string;
   readonly status: MemoryStatus;
   readonly supersedes?: string;
@@ -357,7 +360,51 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     console.log(`\n${exactTail}`);
     recallOutputs.push(exactTail);
   }
+  const referencedSection = await referencedContextSection(config, recallOutputs.join('\n'));
+  if (referencedSection) {
+    console.log(`\n${referencedSection}`);
+    recallOutputs.push(referencedSection);
+  }
   await printRecallHygieneNudges(config, recallOutputs.join('\n'));
+}
+
+const MAX_REFERENCED_CONTEXT = 5;
+const REFERENCED_EXCERPT_LINES = 12;
+
+/**
+ * Resolves the one-way `references:` pointers carried by the personal memories
+ * recall just surfaced, reading each referenced memory read-only from the local
+ * store and appending a short excerpt. Bounded to one hop and a small cap;
+ * missing references degrade to a labeled line and never fail recall.
+ */
+async function referencedContextSection(config: RuntimeConfig, recallOutput: string): Promise<string | undefined> {
+  const surfacedUris = activePersonalMemoryUrisFromText(recallOutput, config.user);
+  if (surfacedUris.length === 0) {
+    return undefined;
+  }
+  const surfaced = await readMemoryRecordsByUri(config, surfacedUris);
+  const referenced = referencedUrisFromRecords(surfaced, recallOutput);
+  if (referenced.length === 0) {
+    return undefined;
+  }
+  const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
+  const records = await readMemoryRecordsByUri(config, capped);
+  const byUri = new Map(records.map(record => [record.uri, record]));
+  const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
+  for (const uri of capped) {
+    const record = byUri.get(uri);
+    if (record) {
+      lines.push(`- ${uri}`, referencedContextExcerpt(record.body, REFERENCED_EXCERPT_LINES));
+    } else {
+      lines.push(`- ${uri} [reference unavailable locally]`);
+    }
+  }
+  if (referenced.length > capped.length) {
+    lines.push(
+      `- … ${referenced.length - capped.length} more referenced ${referenced.length - capped.length === 1 ? 'memory' : 'memories'} omitted`,
+    );
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1150,6 +1197,7 @@ function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetad
     `timestamp: ${metadata.timestamp}`,
     metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
     metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
   ].filter((line): line is string => line !== undefined);
   return [...header, '', body.trim()].join('\n');
 }
@@ -1433,11 +1481,34 @@ function isResourceBusy(stderr: string, stdout: string): boolean {
   return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
+/**
+ * Validates and dedupes caller-supplied reference URIs so a handoff can record
+ * one-way, read-only pointers to other memories/sessions. Invalid URIs throw
+ * (loud failure) rather than silently dropping; returns undefined when empty so
+ * the `references:` header lines are omitted entirely.
+ */
+function normalizeReferenceUris(references: readonly string[] | undefined): readonly string[] | undefined {
+  if (!references || references.length === 0) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  for (const raw of references) {
+    const uri = raw.trim();
+    if (!uri || seen.has(uri)) {
+      continue;
+    }
+    assertVikingUri(uri);
+    seen.add(uri);
+  }
+  return seen.size > 0 ? [...seen] : undefined;
+}
+
 async function buildHandoff(
   options: HandoffOptions,
 ): Promise<{readonly bodyText: string; readonly metadata: MemoryMetadata}> {
   const repoRoot = (await gitValue(['rev-parse', '--show-toplevel'])) ?? getInvocationCwd();
   const branch = (await gitValue(['branch', '--show-current'], repoRoot)) ?? 'unknown';
+  const commit = (await gitValue(['rev-parse', 'HEAD'], repoRoot)) ?? 'unknown';
   const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
   const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
   const touchedFiles = await gitTouchedFiles(repoRoot);
@@ -1446,16 +1517,27 @@ async function buildHandoff(
   const metadata: MemoryMetadata = {
     kind: 'handoff',
     project: normalizeOptionalMetadata(options.project) ?? repoName,
+    references: normalizeReferenceUris(options.references),
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: 'active',
     timestamp: new Date().toISOString(),
     topic: handoffTopicForBranch(topicBranch, {timestamped: options.timestamped, topic: options.topic}),
   };
+  // Caller-supplied review-state snapshot (pr/issue/ci). Threadnote has no
+  // GitHub client, so these are captured strings paired with the exact commit,
+  // never a live status board.
+  const reviewState = [
+    options.pr ? `pr: ${options.pr}` : undefined,
+    options.issue ? `issue: ${options.issue}` : undefined,
+    options.ci ? `ci: ${options.ci}` : undefined,
+  ].filter((line): line is string => line !== undefined);
   const bodyText = [
     `repo: ${repoName}`,
     `repo_path: ${repoRoot}`,
     `branch: ${branch || 'unknown'}`,
+    `commit: ${commit}`,
     `task: ${options.task ?? 'unspecified'}`,
+    ...reviewState,
     '',
     'files_touched:',
     formatBlock(touchedFiles, '- none'),

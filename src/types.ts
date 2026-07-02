@@ -217,9 +217,13 @@ export interface ListOptions {
 
 export interface HandoffOptions {
   readonly blockers?: string;
+  readonly ci?: string;
   readonly dryRun?: boolean;
+  readonly issue?: string;
   readonly nextStep?: string;
+  readonly pr?: string;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly task?: string;

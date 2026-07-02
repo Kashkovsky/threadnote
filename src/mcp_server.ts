@@ -21,6 +21,8 @@ import {
   formatCompactPlan,
   parseMemoryDocument,
   recallHygieneNudges,
+  referencedContextExcerpt,
+  referencedUrisFromRecords,
   type MemoryRecord,
 } from './memory_hygiene.js';
 import {
@@ -85,6 +87,7 @@ interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly sourceAgentClient: string;
   readonly status: MemoryStatus;
   readonly supersedes?: string;
@@ -116,6 +119,16 @@ type CheckedTextArray =
   | {
       readonly ok: true;
       readonly value: readonly string[];
+    }
+  | {
+      readonly error: CallToolResult;
+      readonly ok: false;
+    };
+
+type CheckedOptionalTextArray =
+  | {
+      readonly ok: true;
+      readonly value: readonly string[] | undefined;
     }
   | {
       readonly error: CallToolResult;
@@ -1023,6 +1036,10 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   if (exactTail) {
     sections.push(exactTail);
   }
+  const referencedContext = await referencedContextSection(config, sections.join('\n\n'));
+  if (referencedContext) {
+    sections.push(referencedContext);
+  }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {
     sections.push(hygieneHints);
@@ -1079,6 +1096,44 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
   const records = await readMemoryRecordsByUri(config, uris);
   const nudges = recallHygieneNudges(recallText, {records, user: config.user});
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
+}
+
+const MAX_REFERENCED_CONTEXT = 5;
+const REFERENCED_EXCERPT_LINES = 12;
+
+/**
+ * Resolves the one-way `references:` pointers carried by the personal memories
+ * recall just surfaced, reading each read-only from the local store and
+ * appending a short excerpt. Bounded to one hop and a small cap; missing
+ * references degrade to a labeled line and never fail recall.
+ */
+async function referencedContextSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
+  const surfacedUris = activePersonalMemoryUrisFromText(recallText, config.user);
+  if (surfacedUris.length === 0) {
+    return undefined;
+  }
+  const surfaced = await readMemoryRecordsByUri(config, surfacedUris);
+  const referenced = referencedUrisFromRecords(surfaced, recallText);
+  if (referenced.length === 0) {
+    return undefined;
+  }
+  const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
+  const records = await readMemoryRecordsByUri(config, capped);
+  const byUri = new Map(records.map(record => [record.uri, record]));
+  const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
+  for (const uri of capped) {
+    const record = byUri.get(uri);
+    if (record) {
+      lines.push(`- ${uri}`, referencedContextExcerpt(record.body, REFERENCED_EXCERPT_LINES));
+    } else {
+      lines.push(`- ${uri} [reference unavailable locally]`);
+    }
+  }
+  if (referenced.length > capped.length) {
+    const omitted = referenced.length - capped.length;
+    lines.push(`- … ${omitted} more referenced ${omitted === 1 ? 'memory' : 'memories'} omitted`);
+  }
+  return lines.join('\n');
 }
 
 async function collectExactMemoryMatches(
@@ -1187,6 +1242,12 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
           .optional()
           .describe('Memory lifecycle kind; durable facts and handoffs are most common'),
         project: z.string().optional().describe('Project/repo namespace, for example threadnote or mobile-native'),
+        references: z
+          .union([z.string(), z.array(z.string())])
+          .optional()
+          .describe(
+            'Optional viking:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
+          ),
         replaceUri: z
           .string()
           .optional()
@@ -1202,7 +1263,7 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         topic: z.string().optional().describe('Stable topic; active project/topic memories update one file'),
       },
     },
-    async ({kind, project, replaceUri, sourceAgentClient, status, text, topic}) => {
+    async ({kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -1211,9 +1272,14 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
       if (!checkedReplaceUri.ok) {
         return checkedReplaceUri.error;
       }
+      const checkedReferences = optionalVikingUriList(references, name);
+      if (!checkedReferences.ok) {
+        return checkedReferences.error;
+      }
       const metadata: MemoryMetadata = {
         kind: kind ?? 'durable',
         project: normalizeOptionalMetadata(project),
+        references: checkedReferences.value,
         sourceAgentClient: sourceAgentClient ?? 'mcp',
         status: status ?? 'active',
         timestamp: new Date().toISOString(),
@@ -1754,6 +1820,7 @@ function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: s
     `timestamp: ${metadata.timestamp}`,
     metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
     metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
   ].filter((line): line is string => line !== undefined);
   return [...header, '', body.trim()].join('\n');
 }
@@ -1821,6 +1888,27 @@ function optionalVikingUri(value: string | undefined, toolName: string): Checked
     ),
     ok: false,
   };
+}
+
+function optionalVikingUriList(
+  value: readonly string[] | string | undefined,
+  toolName: string,
+): CheckedOptionalTextArray {
+  const rawValues = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const uris = rawValues.map(uri => uri.trim()).filter(Boolean);
+  if (uris.length === 0) {
+    return {ok: true, value: undefined};
+  }
+  const invalid = uris.find(uri => !uri.startsWith('viking://'));
+  if (invalid) {
+    return {
+      error: argumentError(
+        `Threadnote MCP tool "${toolName}" needs viking:// URI values for "references". Received: ${invalid}`,
+      ),
+      ok: false,
+    };
+  }
+  return {ok: true, value: [...new Set(uris)]};
 }
 
 function requiredVikingUriList(
