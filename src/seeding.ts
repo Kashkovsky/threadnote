@@ -259,6 +259,39 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
   console.log('  threadnote seed');
 }
 
+export async function runWorksetList(config: RuntimeConfig): Promise<void> {
+  const manifest = await readSeedManifest(config.manifestPath);
+  const worksets = manifest.worksets ?? [];
+  if (worksets.length === 0) {
+    console.log(
+      'No worksets defined. Add a top-level `worksets:` list to the seed manifest to group related projects.',
+    );
+    return;
+  }
+  console.log(`Worksets (${worksets.length}):`);
+  for (const workset of worksets) {
+    const summary = workset.description ? ` — ${workset.description}` : '';
+    console.log(`- ${workset.name} (${workset.projects.length} project(s))${summary}`);
+  }
+}
+
+export async function runWorksetShow(config: RuntimeConfig, name: string): Promise<void> {
+  const manifest = await readSeedManifest(config.manifestPath);
+  const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
+  if (!workset) {
+    throw new Error(`No workset named "${name}" in ${config.manifestPath}.`);
+  }
+  console.log(`Workset: ${workset.name}`);
+  if (workset.description) {
+    console.log(workset.description);
+  }
+  console.log('Projects:');
+  for (const memberName of workset.projects) {
+    const project = manifest.projects.find(entry => entry.name.toLowerCase() === memberName.toLowerCase());
+    console.log(project ? `- ${project.name} (${project.uri})` : `- ${memberName} [not found in manifest projects]`);
+  }
+}
+
 export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions): Promise<void> {
   const ov = await openVikingCliForMode(options.dryRun === true);
   const catalogItems = await collectSkillCandidates(config);

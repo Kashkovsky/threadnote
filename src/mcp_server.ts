@@ -10,9 +10,9 @@ import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
-import {inferProjectFromQuery} from './manifest.js';
+import {inferProjectFromQuery, inferWorksetFromQuery, resolveWorkset} from './manifest.js';
 import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
-import type {ProjectManifest} from './types.js';
+import type {ProjectManifest, ResolvedWorkset} from './types.js';
 import {
   activePersonalMemoryUrisFromText,
   type ArchiveAction,
@@ -934,9 +934,15 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           .describe(
             'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
           ),
+        workset: z
+          .string()
+          .optional()
+          .describe(
+            'Optional named workset (a set of related repos from the seed manifest) to recall across as one working set',
+          ),
       },
     },
-    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri}) => {
+    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -953,6 +959,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           nodeLimit,
           includeArchived: includeArchived === true,
           threshold: threshold === undefined ? undefined : String(threshold),
+          workset: workset?.trim() || undefined,
         }),
       );
     },
@@ -966,6 +973,7 @@ interface RecallToolParams {
   readonly pinnedUri: string | undefined;
   readonly query: string;
   readonly threshold: string | undefined;
+  readonly workset: string | undefined;
 }
 
 async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
@@ -1020,7 +1028,32 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     passes.push(seeded.hits);
   }
 
+  // Workset expansion (see src/memory.ts:runRecall): recall a named set of
+  // manifest repos as one working set. Skipped when a pinned URI scopes the
+  // search. The merge dedupes overlapping hits; scopes are deduped and capped.
   const sections: string[] = [];
+  const workset = params.pinnedUri
+    ? undefined
+    : params.workset
+      ? await resolveWorkset(config.manifestPath, params.workset)
+      : await inferWorksetFromQuery(config.manifestPath, projectQuery);
+  if (workset && workset.projects.length > 0) {
+    sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
+    const alreadyScoped = new Set([params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined));
+    const worksetScopes = worksetScopeUris(config, workset)
+      .filter(uri => !alreadyScoped.has(uri))
+      .slice(0, MAX_WORKSET_PASSES);
+    for (const scope of worksetScopes) {
+      const worksetPass = await recallSearchHits(
+        config,
+        ['search', params.query, '--uri', scope, ...limitArgs],
+        threshold,
+        params.includeArchived,
+      );
+      passes.push(worksetPass.hits);
+    }
+  }
+
   const exactMatches = await collectExactMemoryMatches(config, query, params.includeArchived, project);
   const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, params.nodeLimit ?? 12);
   if (semanticSection) {
@@ -1807,6 +1840,21 @@ function exactMemoryScopes(
     projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
     userBase: `viking://user/${uriSegment(config.user)}/memories`,
   });
+}
+
+const MAX_WORKSET_PASSES = 12;
+
+/** Durable + seeded recall scopes for every member of a workset (see src/memory.ts:worksetScopeUris). */
+function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
+  const scopes: string[] = [];
+  for (const member of workset.projects) {
+    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    const seeded = trimTrailingSlash(member.uri);
+    if (seeded.startsWith('viking://')) {
+      scopes.push(seeded);
+    }
+  }
+  return [...new Set(scopes)];
 }
 
 function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {

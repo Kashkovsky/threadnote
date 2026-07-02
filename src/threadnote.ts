@@ -61,7 +61,7 @@ import {
   runRecall,
   runRemember,
 } from './memory.js';
-import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
+import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from './seeding.js';
 import {
   runShareInit,
   runShareInstallArtifacts,
@@ -361,8 +361,31 @@ async function main(): Promise<void> {
     .option('--project <name>', 'Prioritize a project: add a scoped pass over its memories alongside the global search')
     .option('--threshold <score>', 'Minimum relevance score 0-1 (default 0.45); lower to broaden when recall is empty')
     .option('--uri <uri>', 'Restrict search to a viking:// URI')
+    .option(
+      '--workset <name>',
+      'Recall across a named seed-manifest workset (a set of related repos) as one working set',
+    )
     .action(async (options: RecallOptions) => {
       await runRecall(getRuntimeConfig(program), options);
+    });
+
+  const workset = program
+    .command('workset')
+    .description('Inspect seed-manifest worksets (named sets of related repos recalled as one working set)');
+
+  workset
+    .command('list')
+    .description('List worksets defined in the seed manifest')
+    .action(async () => {
+      await runWorksetList(getRuntimeConfig(program));
+    });
+
+  workset
+    .command('show')
+    .description('Show the member projects of a workset')
+    .argument('<name>', 'Workset name')
+    .action(async (name: string) => {
+      await runWorksetShow(getRuntimeConfig(program), name);
     });
 
   program

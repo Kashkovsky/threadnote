@@ -1,6 +1,6 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
-import {inferProjectFromQuery, uriSegment} from './manifest.js';
+import {inferProjectFromQuery, inferWorksetFromQuery, resolveWorkset, uriSegment} from './manifest.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
@@ -31,6 +31,7 @@ import type {
   ReadOptions,
   RecallOptions,
   RememberOptions,
+  ResolvedWorkset,
   RuntimeConfig,
 } from './types.js';
 import {
@@ -347,6 +348,26 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
     passes.push(await recallSearchHits(config, ov, searchArgs(seededUri), {dryRun, includeArchived}));
+  }
+
+  // Workset expansion: a named set of manifest projects recalled as one working
+  // set. Push a durable + seeded scope pass per member; the merge dedupes hits,
+  // and the scope list is deduped/capped so overlap only costs bounded searches.
+  const workset =
+    !options.uri && options.inferScope !== false
+      ? options.workset
+        ? await resolveWorkset(config.manifestPath, options.workset)
+        : await inferWorksetFromQuery(config.manifestPath, projectQuery)
+      : undefined;
+  if (workset && workset.projects.length > 0) {
+    console.log(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
+    const alreadyScoped = new Set([inferredUri, seededUri].filter((uri): uri is string => uri !== undefined));
+    const worksetScopes = worksetScopeUris(config, workset)
+      .filter(uri => !alreadyScoped.has(uri))
+      .slice(0, MAX_WORKSET_PASSES);
+    for (const scope of worksetScopes) {
+      passes.push(await recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
+    }
   }
 
   const recallOutputs: string[] = [];
@@ -1112,6 +1133,25 @@ function lifecycleMigrationUri(config: RuntimeConfig, metadata: MemoryMetadata, 
   return `${memoryDirectoryUri(config, metadata)}/legacy-${hash.slice(0, 16)}.md`;
 }
 
+const MAX_WORKSET_PASSES = 12;
+
+/**
+ * Durable + seeded recall scopes for every member of a workset, in member
+ * order. Callers dedupe against the already-scoped passes and cap the result;
+ * the recall merge dedupes any overlapping hits.
+ */
+function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
+  const scopes: string[] = [];
+  for (const member of workset.projects) {
+    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    const seeded = trimTrailingSlash(member.uri);
+    if (seeded.startsWith('viking://')) {
+      scopes.push(seeded);
+    }
+  }
+  return [...new Set(scopes)];
+}
+
 function exactMemoryScopes(
   config: RuntimeConfig,
   includeArchived: boolean,
@@ -1556,6 +1596,8 @@ async function buildHandoff(
     '',
     'next_step:',
     options.nextStep ?? '- inspect the current repo state and continue from this handoff',
+    ...(options.sessionId ? ['', `session_id: ${options.sessionId}`] : []),
+    ...(options.trace ? ['', 'trace (auto-captured, heuristic):', options.trace] : []),
   ].join('\n');
   return {bodyText, metadata};
 }
