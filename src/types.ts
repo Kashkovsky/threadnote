@@ -157,6 +157,7 @@ export interface StartOptions {
 export interface SeedOptions {
   readonly dryRun?: boolean;
   readonly force?: boolean;
+  readonly graph?: boolean;
   readonly manifest?: string;
   readonly native?: boolean;
   readonly only?: readonly string[];

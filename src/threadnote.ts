@@ -229,6 +229,10 @@ async function main(): Promise<void> {
     .description('Seed curated context from the manifest; never indexes whole repos by default')
     .option('--dry-run', 'Print files and ov commands without importing')
     .option('--force', 'Re-upload every candidate even if mtime+size match the recorded state')
+    .option(
+      '--graph',
+      'Also seed a per-project .graph.md dependency-facts resource (package.json/go.mod), with [[project]] cross-repo edges',
+    )
     .option('--manifest <path>', 'Manifest path for this seed run')
     .option(
       '--only <project>',

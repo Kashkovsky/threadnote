@@ -8,6 +8,7 @@ import {
   SEED_WATCH_INTERVAL_ENV,
   USER_MANIFEST_NAME,
 } from './constants.js';
+import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -15,6 +16,7 @@ import type {
   ProjectManifest,
   RuntimeConfig,
   SeedCandidate,
+  SeedManifest,
   SeedOptions,
   SkillCandidate,
 } from './types.js';
@@ -146,6 +148,89 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
   }
   console.log(
     `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${skippedCount} skipped for safety.`,
+  );
+
+  if (options.graph === true) {
+    await seedDependencyGraphs(config, ov, manifest, projects, options.dryRun === true);
+  }
+}
+
+/**
+ * Seeds a per-project `.graph.md` dependency-facts resource. Facts are extracted
+ * from every manifest project (so cross-repo `[[project]]` edges resolve even
+ * under --only), then a document is rendered and seeded for each target
+ * project. Synthesized content is routed through the same secret scanner as
+ * every other seeded file before it can reach OpenViking. Stored as a plain
+ * resource, never a memory.
+ */
+export async function seedDependencyGraphs(
+  config: RuntimeConfig,
+  ov: string,
+  manifest: SeedManifest,
+  targetProjects: readonly ProjectManifest[],
+  dryRun: boolean,
+): Promise<void> {
+  const factsByProject = new Map<string, DependencyFacts>();
+  for (const project of manifest.projects) {
+    const projectRoot = expandPath(project.path);
+    if (!(await exists(projectRoot))) {
+      continue;
+    }
+    factsByProject.set(project.name, await extractDependencyFacts(projectRoot));
+  }
+  const projectByPublishedName = new Map<string, string>();
+  for (const [name, facts] of factsByProject) {
+    if (facts.publishedName) {
+      projectByPublishedName.set(facts.publishedName.toLowerCase(), name);
+    }
+  }
+
+  let written = 0;
+  let skipped = 0;
+  for (const project of targetProjects) {
+    const facts = factsByProject.get(project.name);
+    if (!facts || facts.manifestFiles.length === 0) {
+      continue;
+    }
+    const {externalCount, internalEdges} = resolveGraphEdges(project.name, facts.dependencies, projectByPublishedName);
+    const document = buildGraphDocument({externalCount, facts, internalEdges, projectName: project.name});
+    const secretMatches = detectSecretMatches(document);
+    if (secretMatches.length > 0) {
+      skipped += 1;
+      console.log(
+        `SKIP ${project.name}/.graph.md: possible secret (${secretMatches
+          .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
+          .join(', ')})`,
+      );
+      continue;
+    }
+    const destinationUri = `${trimTrailingSlash(project.uri)}/.graph.md`;
+    if (dryRun) {
+      console.log(`Would seed dependency facts: ${destinationUri} (${internalEdges.length} in-workspace edge(s))`);
+      written += 1;
+      continue;
+    }
+    const graphPath = join(config.agentContextHome, 'graph', `${project.name}.graph.md`);
+    await ensureDirectory(dirname(graphPath), false);
+    await writeFile(graphPath, document, {encoding: 'utf8', mode: 0o600});
+    await chmod(graphPath, 0o600);
+    await maybeRun(
+      false,
+      ov,
+      withIdentity(config, [
+        'add-resource',
+        graphPath,
+        '--to',
+        destinationUri,
+        '--reason',
+        `Dependency facts for ${project.name}`,
+        '--wait',
+      ]),
+    );
+    written += 1;
+  }
+  console.log(
+    `Dependency graph seed complete: ${written} .graph.md resource(s)${skipped > 0 ? `, ${skipped} skipped for safety` : ''}.`,
   );
 }
 
