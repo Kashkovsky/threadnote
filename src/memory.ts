@@ -1,6 +1,6 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, join, sep} from 'node:path';
-import {inferProjectFromQuery, inferWorksetFromQuery, resolveWorkset, uriSegment} from './manifest.js';
+import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset, uriSegment} from './manifest.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
@@ -319,6 +319,7 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
   const nodeLimit = options.nodeLimit ? parsePositiveInteger(options.nodeLimit, 'node limit') : undefined;
+  const explicitWorkset = options.workset ? await requireWorkset(config.manifestPath, options.workset) : undefined;
   const searchArgs = (scopeUri: string | undefined): readonly string[] => [
     'search',
     query,
@@ -354,11 +355,11 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   // set. Push a durable + seeded scope pass per member; the merge dedupes hits,
   // and the scope list is deduped/capped so overlap only costs bounded searches.
   const workset =
-    !options.uri && options.inferScope !== false
-      ? options.workset
-        ? await resolveWorkset(config.manifestPath, options.workset)
-        : await inferWorksetFromQuery(config.manifestPath, projectQuery)
-      : undefined;
+    !options.uri && explicitWorkset
+      ? explicitWorkset
+      : !options.uri && options.inferScope !== false
+        ? await inferWorksetFromQuery(config.manifestPath, projectQuery)
+        : undefined;
   if (workset && workset.projects.length > 0) {
     console.log(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
     const alreadyScoped = new Set([inferredUri, seededUri].filter((uri): uri is string => uri !== undefined));

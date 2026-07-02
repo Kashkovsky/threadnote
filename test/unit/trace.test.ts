@@ -51,4 +51,34 @@ describe('distillTrace', () => {
     await writeFile(path, 'garbage\nmore garbage\n', 'utf8');
     expect(await distillTrace(path)).toBeUndefined();
   });
+
+  it('summarizes large transcripts from the capped tail', async () => {
+    const path = join(dir, 'large.jsonl');
+    const prefix = `${JSON.stringify({type: 'user', message: {role: 'user', content: 'old intent'}})}\n${'x'.repeat(
+      4 * 1024 * 1024,
+    )}`;
+    await writeFile(
+      path,
+      `${prefix}\n${JSON.stringify({type: 'user', message: {role: 'user', content: 'tail intent'}})}\n`,
+      'utf8',
+    );
+
+    const summary = await distillTrace(path);
+    expect(summary).toContain('tail intent');
+    expect(summary).not.toContain('old intent');
+  });
+
+  it('drops traces when untruncated intent text contains a credential', async () => {
+    const path = join(dir, 'secret.jsonl');
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        type: 'user',
+        message: {role: 'user', content: `${'x'.repeat(155)} sk-abcdefghijklmnopqr1234`},
+      })}\n`,
+      'utf8',
+    );
+
+    expect(await distillTrace(path)).toBeUndefined();
+  });
 });

@@ -10,7 +10,7 @@ import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
-import {inferProjectFromQuery, inferWorksetFromQuery, resolveWorkset} from './manifest.js';
+import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from './manifest.js';
 import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
 import type {ProjectManifest, ResolvedWorkset} from './types.js';
 import {
@@ -1005,6 +1005,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
   const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
   const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
+  const explicitWorkset = params.workset ? await requireWorkset(config.manifestPath, params.workset) : undefined;
   // Run the global base pass plus a seeded project pass, then merge into one
   // deduped ranked list (per document, chunk anchors stripped) so the seeded
   // pass only adds project docs the base missed. --level 2 keeps Level-2
@@ -1034,8 +1035,8 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   const sections: string[] = [];
   const workset = params.pinnedUri
     ? undefined
-    : params.workset
-      ? await resolveWorkset(config.manifestPath, params.workset)
+    : explicitWorkset
+      ? explicitWorkset
       : await inferWorksetFromQuery(config.manifestPath, projectQuery);
   if (workset && workset.projects.length > 0) {
     sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
@@ -1046,7 +1047,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     for (const scope of worksetScopes) {
       const worksetPass = await recallSearchHits(
         config,
-        ['search', params.query, '--uri', scope, ...limitArgs],
+        ['search', query, '--uri', scope, ...limitArgs],
         threshold,
         params.includeArchived,
       );

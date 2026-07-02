@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import yaml from 'js-yaml';
 import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
-import {isJsonObject} from './utils.js';
+import {escapeRegExp, isJsonObject} from './utils.js';
 
 export function uriSegment(value: string): string {
   const normalized = value
@@ -51,6 +51,16 @@ export async function resolveWorkset(manifestPath: string, worksetName: string):
   }
 }
 
+/** Resolves an explicit workset name; throws when the manifest is readable but no such workset exists. */
+export async function requireWorkset(manifestPath: string, worksetName: string): Promise<ResolvedWorkset> {
+  const manifest = await readSeedManifest(manifestPath);
+  const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
+  if (!workset) {
+    throw new Error(`No workset named "${worksetName}" in ${manifestPath}.`);
+  }
+  return resolveWorksetProjects(manifest, workset);
+}
+
 /** Returns the workset whose name appears as a token in `query`, or undefined. */
 export async function inferWorksetFromQuery(manifestPath: string, query: string): Promise<ResolvedWorkset | undefined> {
   try {
@@ -58,12 +68,16 @@ export async function inferWorksetFromQuery(manifestPath: string, query: string)
     if (!manifest.worksets || manifest.worksets.length === 0) {
       return undefined;
     }
-    const normalized = query.toLowerCase();
-    const workset = manifest.worksets.find(entry => normalized.includes(entry.name.toLowerCase()));
+    const workset = manifest.worksets.find(entry => containsNameToken(query, entry.name));
     return workset ? resolveWorksetProjects(manifest, workset) : undefined;
   } catch {
     return undefined;
   }
+}
+
+function containsNameToken(query: string, name: string): boolean {
+  const escaped = escapeRegExp(name.toLowerCase());
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(query.toLowerCase());
 }
 
 export async function readSeedManifest(path: string): Promise<SeedManifest> {

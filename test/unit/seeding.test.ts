@@ -1,9 +1,16 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
-import {parseSeedWatchIntervalMinutes, runSeedSkills, seedWatchArgs} from '../../src/seeding.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import {
+  parseSeedWatchIntervalMinutes,
+  runInitManifest,
+  runSeedSkills,
+  seedDependencyGraphs,
+  seedWatchArgs,
+} from '../../src/seeding.js';
+import {readSeedManifest} from '../../src/manifest.js';
+import type {RuntimeConfig, SeedManifest} from '../../src/types.js';
 
 async function captureConsole(action: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
@@ -119,5 +126,109 @@ describe('seed-skills', () => {
     expect(output).toContain('--reason');
     expect(output).toContain('Agent command catalog item from claude-commands-global: weekly.md');
     expect(output).toContain('Skill seed complete: 2 unique catalog item(s).');
+  });
+});
+
+describe('init-manifest', () => {
+  const homes: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('preserves worksets while adding a repo', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-init-manifest-context-'));
+    const existingRepo = await mkdtemp(join(tmpdir(), 'threadnote-existing-repo-'));
+    const newRepo = await mkdtemp(join(tmpdir(), 'threadnote-new-repo-'));
+    homes.push(contextHome, existingRepo, newRepo);
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: existing-repo',
+        `    path: ${existingRepo}`,
+        '    uri: viking://resources/repos/existing-repo',
+        '    seed: [README.md]',
+        'worksets:',
+        '  - name: platform',
+        '    description: existing grouped repos',
+        '    projects: [existing-repo, missing-repo]',
+        '',
+      ].join('\n'),
+    );
+
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath,
+      openVikingVersion: '0.0.0',
+      port: 1933,
+      user: 'denys',
+    };
+
+    await captureConsole(() => runInitManifest(config, {path: manifestPath, repo: [newRepo]}));
+
+    const manifest = await readSeedManifest(manifestPath);
+    expect(manifest.projects).toHaveLength(2);
+    expect(manifest.projects[0]?.name).toBe('existing-repo');
+    expect(manifest.projects[1]?.path).toContain('threadnote-new-repo-');
+    expect(manifest.worksets).toEqual([
+      {
+        description: 'existing grouped repos',
+        name: 'platform',
+        projects: ['existing-repo', 'missing-repo'],
+      },
+    ]);
+  });
+});
+
+describe('seedDependencyGraphs', () => {
+  const homes: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('uses a safe cache filename for manifest project names', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-graph-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-graph-repo-'));
+    homes.push(contextHome, repo);
+    await writeFile(join(repo, 'package.json'), JSON.stringify({name: '@acme/pkg'}), 'utf8');
+    const ov = join(contextHome, 'ov');
+    await writeFile(ov, '#!/bin/sh\nexit 0\n', 'utf8');
+    await chmod(ov, 0o700);
+    const manifest: SeedManifest = {
+      projects: [
+        {
+          name: '../bad',
+          path: repo,
+          seed: [],
+          uri: 'viking://resources/repos/bad',
+        },
+      ],
+      version: 1,
+    };
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath: join(contextHome, 'seed-manifest.yaml'),
+      openVikingVersion: '0.0.0',
+      port: 1933,
+      user: 'denys',
+    };
+
+    await captureConsole(() => seedDependencyGraphs(config, ov, manifest, manifest.projects, false));
+
+    const graphFiles = await readdir(join(contextHome, 'graph'));
+    expect(graphFiles).toHaveLength(1);
+    expect(graphFiles[0]).not.toContain('/');
+    expect(await readFile(join(contextHome, 'graph', graphFiles[0]), 'utf8')).toContain('# ../bad — dependency facts');
+    await expect(readFile(join(contextHome, 'bad.graph.md'), 'utf8')).rejects.toThrow();
   });
 });

@@ -210,7 +210,7 @@ export async function seedDependencyGraphs(
       written += 1;
       continue;
     }
-    const graphPath = join(config.agentContextHome, 'graph', `${project.name}.graph.md`);
+    const graphPath = join(config.agentContextHome, 'graph', graphCacheFileName(project.name));
     await ensureDirectory(dirname(graphPath), false);
     await writeFile(graphPath, document, {encoding: 'utf8', mode: 0o600});
     await chmod(graphPath, 0o600);
@@ -326,6 +326,13 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
       [pathCandidatesKey]: [...existingManifest.futureMonorepo.pathCandidates],
       uri: existingManifest.futureMonorepo.uri,
     };
+  }
+  if (existingManifest?.worksets) {
+    outputManifest.worksets = existingManifest.worksets.map(workset => ({
+      name: workset.name,
+      ...(workset.description !== undefined ? {description: workset.description} : {}),
+      projects: [...workset.projects],
+    }));
   }
   const output = yaml.dump(outputManifest, {lineWidth: 120, noRefs: true});
 
@@ -532,6 +539,10 @@ async function prepareSeedFile(
 
 function seedResourceReason(candidate: SeedCandidate): string {
   return `Project guidance for ${candidate.projectName}: ${candidate.relativePath}`;
+}
+
+function graphCacheFileName(projectName: string): string {
+  return `${uriSegment(projectName)}-${sha256(projectName).slice(0, 8)}.graph.md`;
 }
 
 function skillResourceReason(skill: SkillCandidate): string {

@@ -63,6 +63,25 @@ describe('seed manifest worksets', () => {
     expect(await inferWorksetFromQuery(manifestPath, 'an unrelated query')).toBeUndefined();
   });
 
+  it('does not infer a workset from a substring inside another token', async () => {
+    const apiManifest = `
+version: 1
+projects:
+  - name: web-app
+    path: ~/src/web-app
+    uri: viking://resources/repos/web-app
+    seed: [README.md]
+worksets:
+  - name: api
+    projects: [web-app]
+`;
+    const apiManifestPath = join(dir, 'api.yaml');
+    await writeFile(apiManifestPath, apiManifest, 'utf8');
+
+    expect(await inferWorksetFromQuery(apiManifestPath, 'recap the current mapping')).toBeUndefined();
+    expect((await inferWorksetFromQuery(apiManifestPath, 'review the api changes'))?.name).toBe('api');
+  });
+
   it('throws on a malformed worksets block', async () => {
     const badPath = join(dir, 'bad.yaml');
     await writeFile(badPath, 'version: 1\nprojects: []\nworksets: [{description: no name}]\n', 'utf8');

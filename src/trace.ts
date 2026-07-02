@@ -1,4 +1,5 @@
-import {readFile} from 'node:fs/promises';
+import {open, readFile, stat} from 'node:fs/promises';
+import {applyScrubber} from './share.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
 const MAX_INTENTS = 5;
@@ -55,20 +56,17 @@ function truncate(value: string, max: number): string {
  * the result before persisting — user intents can contain secrets.
  */
 export async function distillTrace(transcriptPath: string): Promise<string | undefined> {
-  let raw: string;
-  try {
-    raw = await readFile(transcriptPath, 'utf8');
-  } catch {
+  const raw = await readTranscriptTail(transcriptPath);
+  if (raw === undefined) {
     return undefined;
   }
   if (!raw.trim()) {
     return undefined;
   }
-  const body = raw.length > MAX_TRANSCRIPT_BYTES ? raw.slice(raw.length - MAX_TRANSCRIPT_BYTES) : raw;
   let events = 0;
   const tools = new Set<string>();
   const intents: string[] = [];
-  for (const line of body.split('\n')) {
+  for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) {
       continue;
@@ -89,7 +87,11 @@ export async function distillTrace(transcriptPath: string): Promise<string | und
     if (role === 'user') {
       const text = extractText(message.content);
       if (text) {
-        intents.push(truncate(text, MAX_INTENT_CHARS));
+        const scrubbed = applyScrubber(text, {redact: true});
+        if (scrubbed.blocker) {
+          return undefined;
+        }
+        intents.push(truncate(scrubbed.cleaned, MAX_INTENT_CHARS));
       }
     } else if (role === 'assistant') {
       for (const name of extractToolNames(message.content)) {
@@ -112,4 +114,30 @@ export async function distillTrace(transcriptPath: string): Promise<string | und
     }
   }
   return lines.join('\n');
+}
+
+async function readTranscriptTail(transcriptPath: string): Promise<string | undefined> {
+  try {
+    const {size} = await stat(transcriptPath);
+    if (size === 0) {
+      return undefined;
+    }
+    if (size <= MAX_TRANSCRIPT_BYTES) {
+      return await readFile(transcriptPath, 'utf8');
+    }
+    const start = size - MAX_TRANSCRIPT_BYTES;
+    const buffer = Buffer.alloc(MAX_TRANSCRIPT_BYTES);
+    const file = await open(transcriptPath, 'r');
+    try {
+      const {bytesRead} = await file.read(buffer, 0, MAX_TRANSCRIPT_BYTES, start);
+      return buffer
+        .subarray(0, bytesRead)
+        .toString('utf8')
+        .replace(/^[^\n]*(?:\n|$)/, '');
+    } finally {
+      await file.close();
+    }
+  } catch {
+    return undefined;
+  }
 }
