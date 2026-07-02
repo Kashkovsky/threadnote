@@ -8,6 +8,7 @@ export interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly sourceAgentClient: string;
   readonly status: MemoryStatus;
   readonly supersedes?: string;
@@ -107,6 +108,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       archivedFrom: headerValue(header, 'archived_from'),
       kind,
       project: normalizeOptionalMetadata(headerValue(header, 'project') ?? headerValue(header, 'repo')),
+      references: headerValues(header, 'references'),
       sourceAgentClient: headerValue(header, 'source_agent_client') ?? 'unknown',
       status,
       supersedes: headerValue(header, 'supersedes'),
@@ -333,6 +335,37 @@ export function recallHygieneNudges(
   return [...new Set(nudges)];
 }
 
+/**
+ * Collects one-way `references:` pointers off already-surfaced memory records,
+ * dropping any URI that recall already displayed so the referenced-context pass
+ * only adds prior context the caller has not already seen. Deduped, order
+ * preserved.
+ */
+export function referencedUrisFromRecords(records: readonly MemoryRecord[], recallOutput: string): readonly string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const record of records) {
+    for (const uri of record.metadata.references ?? []) {
+      if (seen.has(uri) || recallOutput.includes(uri)) {
+        continue;
+      }
+      seen.add(uri);
+      result.push(uri);
+    }
+  }
+  return result;
+}
+
+/** Renders a short, indented excerpt of a referenced memory body for recall. */
+export function referencedContextExcerpt(body: string, maxLines: number): string {
+  const lines = body
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line.trim().length > 0)
+    .slice(0, maxLines);
+  return lines.map(line => `  ${line}`).join('\n');
+}
+
 export function activePersonalMemoryUrisFromText(text: string, user: string): readonly string[] {
   const userSegment = uriSegment(user);
   const matches = text.matchAll(/viking:\/\/[^\s)]+/g);
@@ -508,6 +541,7 @@ function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetad
     `timestamp: ${metadata.timestamp}`,
     metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
     metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
   ].filter((line): line is string => line !== undefined);
   return [...header, '', body.trim()].join('\n');
 }
@@ -519,6 +553,16 @@ function headerValue(header: string, key: string): string | undefined {
     .find(line => line.startsWith(prefix))
     ?.slice(prefix.length)
     .trim();
+}
+
+function headerValues(header: string, key: string): readonly string[] | undefined {
+  const prefix = `${key}:`;
+  const values = header
+    .split('\n')
+    .filter(line => line.startsWith(prefix))
+    .map(line => line.slice(prefix.length).trim())
+    .filter(value => value.length > 0);
+  return values.length > 0 ? values : undefined;
 }
 
 function parseOptionalMemoryKind(value: string | undefined): MemoryKind | undefined {

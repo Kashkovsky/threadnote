@@ -337,6 +337,7 @@ describe('escapeRegExp', () => {
     expect(escapeRegExp('a.b')).toBe('a\\.b');
     expect(escapeRegExp('(x)')).toBe('\\(x\\)');
     expect(escapeRegExp('a|b')).toBe('a\\|b');
+    expect(escapeRegExp('a*b')).toBe('a\\*b');
   });
 });
 

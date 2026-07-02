@@ -1,3 +1,6 @@
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -71,6 +74,123 @@ describe('runRecall index repair fallback', () => {
     expect(output).toContain('Auto-index repair warning: repair failed');
     expect(output).toContain('Would run: /ov search');
     expect(output).toContain('availability check');
+  });
+
+  it('honors an explicit workset when inference is disabled', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-workset-'));
+    const manifestPath = join(dir, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: alpha',
+        `    path: ${dir}/alpha`,
+        '    uri: viking://resources/repos/alpha',
+        '    seed: []',
+        'worksets:',
+        '  - name: platform',
+        '    projects: [alpha]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await runRecall(
+        {...runtime, manifestPath},
+        {
+          dryRun: true,
+          inferScope: false,
+          query: 'current status',
+          workset: 'platform',
+        },
+      );
+    } finally {
+      await rm(dir, {force: true, recursive: true});
+    }
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).toContain('Workset scope: platform (alpha)');
+    expect(output).toContain('viking://resources/repos/alpha');
+  });
+
+  it('reports an unknown explicit workset instead of running unscoped', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-missing-workset-'));
+    const manifestPath = join(dir, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: alpha',
+        `    path: ${dir}/alpha`,
+        '    uri: viking://resources/repos/alpha',
+        '    seed: []',
+        'worksets:',
+        '  - name: platform',
+        '    projects: [alpha]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        runRecall(
+          {...runtime, manifestPath},
+          {
+            dryRun: true,
+            query: 'current status',
+            workset: 'platfrom',
+          },
+        ),
+      ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
+    } finally {
+      await rm(dir, {force: true, recursive: true});
+    }
+    expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
+  });
+
+  it('validates an explicit workset before a pinned uri search', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-pinned-workset-'));
+    const manifestPath = join(dir, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: alpha',
+        `    path: ${dir}/alpha`,
+        '    uri: viking://resources/repos/alpha',
+        '    seed: []',
+        'worksets:',
+        '  - name: platform',
+        '    projects: [alpha]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        runRecall(
+          {...runtime, manifestPath},
+          {
+            dryRun: true,
+            query: 'current status',
+            uri: 'viking://resources/repos/alpha',
+            workset: 'platfrom',
+          },
+        ),
+      ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
+    } finally {
+      await rm(dir, {force: true, recursive: true});
+    }
+    expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
   });
 });
 

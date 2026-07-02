@@ -99,6 +99,21 @@ describe('stripPersonalProvenance', () => {
     expect(out).toContain('archived_from: also kept here.');
   });
 
+  it('removes references lines from the header block but not the body', () => {
+    const input = [
+      'MEMORY',
+      'kind: durable',
+      'project: foo',
+      'references: viking://user/me/memories/durable/projects/foo/a.md',
+      'references: viking://user/me/memories/handoffs/active/foo/b.md',
+      '',
+      'Body mentioning references: should NOT be stripped.',
+    ].join('\n');
+    const out = stripPersonalProvenance(input);
+    expect(out).not.toMatch(/^references:/m);
+    expect(out).toContain('Body mentioning references:');
+  });
+
   it('leaves content unchanged when there is no header to strip', () => {
     const input = 'just a body\nwith no provenance';
     expect(stripPersonalProvenance(input)).toBe(input);

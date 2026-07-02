@@ -13,3 +13,12 @@ projects:
       - .claude/commands/*.md
       - .claude/skills/**/SKILL.md
       - docs/**/*.md
+
+# Optional: worksets group related projects into one recall working set.
+# `threadnote recall --workset <name>` (or a query mentioning the name) expands
+# recall across every member's durable + seeded scope. Unknown member names are
+# ignored. Inspect with `threadnote workset list` / `threadnote workset show`.
+# worksets:
+#   - name: example-stack
+#     description: service plus its client
+#     projects: [example-service, example-client]

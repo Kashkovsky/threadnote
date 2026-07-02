@@ -24,6 +24,17 @@ export interface ProjectManifest {
   readonly uri: string;
 }
 
+export interface WorksetManifest {
+  readonly description?: string;
+  readonly name: string;
+  readonly projects: readonly string[];
+}
+
+export interface ResolvedWorkset {
+  readonly name: string;
+  readonly projects: readonly ProjectManifest[];
+}
+
 export interface SeedManifest {
   readonly futureMonorepo?: {
     readonly pathCandidates: readonly string[];
@@ -31,6 +42,7 @@ export interface SeedManifest {
   };
   readonly projects: readonly ProjectManifest[];
   readonly version: number;
+  readonly worksets?: readonly WorksetManifest[];
 }
 
 export interface CommandResult {
@@ -145,6 +157,7 @@ export interface StartOptions {
 export interface SeedOptions {
   readonly dryRun?: boolean;
   readonly force?: boolean;
+  readonly graph?: boolean;
   readonly manifest?: string;
   readonly native?: boolean;
   readonly only?: readonly string[];
@@ -201,6 +214,7 @@ export interface RecallOptions {
   readonly query: string;
   readonly threshold?: string;
   readonly uri?: string;
+  readonly workset?: string;
 }
 
 export interface ReadOptions {
@@ -217,15 +231,21 @@ export interface ListOptions {
 
 export interface HandoffOptions {
   readonly blockers?: string;
+  readonly ci?: string;
   readonly dryRun?: boolean;
+  readonly issue?: string;
   readonly nextStep?: string;
+  readonly pr?: string;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly replace?: string;
+  readonly sessionId?: string;
   readonly sourceAgentClient?: string;
   readonly task?: string;
   readonly tests?: string;
   readonly timestamped?: boolean;
   readonly topic?: string;
+  readonly trace?: string;
 }
 
 export interface ArchiveOptions {

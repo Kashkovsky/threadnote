@@ -10,6 +10,8 @@ import {
 } from './constants.js';
 import {parseAgentClient} from './mcp.js';
 import {runHandoff, runRecall} from './memory.js';
+import {applyScrubber} from './share.js';
+import {distillTrace} from './trace.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
 import {checkForThreadnoteUpdate, spawnDetachedAutoUpdate} from './update-check.js';
 import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
@@ -193,16 +195,19 @@ export async function runPreCompactHook(config: RuntimeConfig, options: HookRunn
   // and the process still exits 0 — the worst-case is a missed snapshot.
   try {
     const project = (await resolveRepoName()) ?? 'general';
+    const {sessionId, trace} = await captureTraceContext();
     await runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
       nextStep:
         'Continue from this auto-snapshot. A manual `threadnote handoff` will produce a richer write-up if you have more context.',
       project,
+      sessionId,
       sourceAgentClient: 'claude',
       task: 'Auto-snapshot captured at Claude PreCompact (deterministic safety net before context compaction).',
       tests: '- not recorded (auto-snapshot)',
       topic: HOOK_AUTO_PRECOMPACT_TOPIC,
+      trace,
     });
   } catch (err: unknown) {
     process.stderr.write(
@@ -233,6 +238,98 @@ export async function runSessionStartHook(config: RuntimeConfig, options: HookRu
       `threadnote session-start-hook: recall skipped (${err instanceof Error ? err.message : String(err)})\n`,
     );
   }
+}
+
+interface TraceContext {
+  readonly sessionId?: string;
+  readonly trace?: string;
+}
+
+interface HookPayload {
+  readonly sessionId?: string;
+  readonly transcriptPath?: string;
+}
+
+/**
+ * Reads Claude's PreCompact stdin payload and distills the referenced
+ * transcript into a short, scrubbed trace. Entirely best-effort: any failure
+ * (no stdin, unreadable transcript, unstable format, secret blocker) yields an
+ * empty context so the pre-compact snapshot still writes its state-only
+ * handoff. Never throws.
+ */
+async function captureTraceContext(): Promise<TraceContext> {
+  try {
+    const payload = await readHookPayload();
+    if (!payload) {
+      return {};
+    }
+    const rawTrace = payload.transcriptPath ? await distillTrace(payload.transcriptPath) : undefined;
+    return {sessionId: payload.sessionId, trace: rawTrace ? scrubTrace(rawTrace) : undefined};
+  } catch {
+    return {};
+  }
+}
+
+/** Redacts soft leaks; drops the trace on a hard credential blocker. */
+function scrubTrace(trace: string): string | undefined {
+  const result = applyScrubber(trace, {redact: true});
+  return result.blocker ? undefined : result.cleaned;
+}
+
+async function readHookPayload(): Promise<HookPayload | undefined> {
+  if (process.stdin.isTTY) {
+    return undefined;
+  }
+  const raw = await readStdinWithTimeout(1500, 512 * 1024);
+  if (!raw.trim()) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isJsonObject(parsed)) {
+    return undefined;
+  }
+  return {
+    sessionId: typeof parsed.session_id === 'string' ? parsed.session_id : undefined,
+    transcriptPath: typeof parsed.transcript_path === 'string' ? parsed.transcript_path : undefined,
+  };
+}
+
+function readStdinWithTimeout(timeoutMs: number, maxBytes: number): Promise<string> {
+  return new Promise(resolve => {
+    const stdin = process.stdin;
+    let data = '';
+    let settled = false;
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stdin.off('data', onData);
+      stdin.off('end', finish);
+      stdin.off('error', finish);
+      clearTimeout(timer);
+      stdin.pause();
+      resolve(data);
+    };
+    const onData = (chunk: string): void => {
+      data += chunk;
+      if (data.length >= maxBytes) {
+        data = data.slice(0, maxBytes);
+        finish();
+      }
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    stdin.setEncoding('utf8');
+    stdin.on('data', onData);
+    stdin.on('end', finish);
+    stdin.on('error', finish);
+    stdin.resume();
+  });
 }
 
 async function emitUpdateBannerIfOutdated(config: RuntimeConfig): Promise<void> {

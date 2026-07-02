@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import yaml from 'js-yaml';
-import type {JsonObject, ProjectManifest, SeedManifest} from './types.js';
-import {isJsonObject} from './utils.js';
+import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
+import {escapeRegExp, isJsonObject} from './utils.js';
 
 export function uriSegment(value: string): string {
   const normalized = value
@@ -25,6 +25,59 @@ export async function inferProjectFromQuery(manifestPath: string, query: string)
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Resolves a workset's member names to their `ProjectManifest` entries, dropping
+ * names that do not match a known project. A workset is a named set of manifest
+ * projects that recall expands into one multi-repo working set.
+ */
+function resolveWorksetProjects(manifest: SeedManifest, workset: WorksetManifest): ResolvedWorkset {
+  const byName = new Map(manifest.projects.map(project => [project.name.toLowerCase(), project]));
+  const projects = workset.projects
+    .map(name => byName.get(name.toLowerCase()))
+    .filter((project): project is ProjectManifest => project !== undefined);
+  return {name: workset.name, projects};
+}
+
+/** Looks up a workset by exact (case-insensitive) name; undefined when unknown or unreadable. */
+export async function resolveWorkset(manifestPath: string, worksetName: string): Promise<ResolvedWorkset | undefined> {
+  try {
+    const manifest = await readSeedManifest(manifestPath);
+    const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
+    return workset ? resolveWorksetProjects(manifest, workset) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolves an explicit workset name; throws when the manifest is readable but no such workset exists. */
+export async function requireWorkset(manifestPath: string, worksetName: string): Promise<ResolvedWorkset> {
+  const manifest = await readSeedManifest(manifestPath);
+  const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
+  if (!workset) {
+    throw new Error(`No workset named "${worksetName}" in ${manifestPath}.`);
+  }
+  return resolveWorksetProjects(manifest, workset);
+}
+
+/** Returns the workset whose name appears as a token in `query`, or undefined. */
+export async function inferWorksetFromQuery(manifestPath: string, query: string): Promise<ResolvedWorkset | undefined> {
+  try {
+    const manifest = await readSeedManifest(manifestPath);
+    if (!manifest.worksets || manifest.worksets.length === 0) {
+      return undefined;
+    }
+    const workset = manifest.worksets.find(entry => containsNameToken(query, entry.name));
+    return workset ? resolveWorksetProjects(manifest, workset) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function containsNameToken(query: string, name: string): boolean {
+  const escaped = escapeRegExp(name.toLowerCase());
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(query.toLowerCase());
 }
 
 export async function readSeedManifest(path: string): Promise<SeedManifest> {
@@ -59,7 +112,35 @@ export async function readSeedManifest(path: string): Promise<SeedManifest> {
       uri: readString(loaded.future_monorepo, 'uri'),
     };
   }
-  return {futureMonorepo, projects, version};
+
+  let worksets: readonly WorksetManifest[] | undefined;
+  if (loaded.worksets !== undefined) {
+    if (!Array.isArray(loaded.worksets)) {
+      throw new Error(`Manifest worksets must be an array: ${path}`);
+    }
+    worksets = loaded.worksets.map(worksetValue => {
+      if (!isJsonObject(worksetValue)) {
+        throw new Error(`Manifest workset must be an object: ${path}`);
+      }
+      return {
+        description: readOptionalString(worksetValue, 'description'),
+        name: readString(worksetValue, 'name'),
+        projects: readStringArray(worksetValue, 'projects'),
+      };
+    });
+  }
+  return {futureMonorepo, projects, version, worksets};
+}
+
+function readOptionalString(object: JsonObject, key: string): string | undefined {
+  const value = object[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`Expected string for ${key}`);
+  }
+  return value;
 }
 
 function readString(object: JsonObject, key: string): string {

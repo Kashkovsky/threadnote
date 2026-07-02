@@ -10,9 +10,9 @@ import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
-import {inferProjectFromQuery} from './manifest.js';
+import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from './manifest.js';
 import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
-import type {ProjectManifest} from './types.js';
+import type {ProjectManifest, ResolvedWorkset} from './types.js';
 import {
   activePersonalMemoryUrisFromText,
   type ArchiveAction,
@@ -21,6 +21,8 @@ import {
   formatCompactPlan,
   parseMemoryDocument,
   recallHygieneNudges,
+  referencedContextExcerpt,
+  referencedUrisFromRecords,
   type MemoryRecord,
 } from './memory_hygiene.js';
 import {
@@ -85,6 +87,7 @@ interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly kind: MemoryKind;
   readonly project?: string;
+  readonly references?: readonly string[];
   readonly sourceAgentClient: string;
   readonly status: MemoryStatus;
   readonly supersedes?: string;
@@ -116,6 +119,16 @@ type CheckedTextArray =
   | {
       readonly ok: true;
       readonly value: readonly string[];
+    }
+  | {
+      readonly error: CallToolResult;
+      readonly ok: false;
+    };
+
+type CheckedOptionalTextArray =
+  | {
+      readonly ok: true;
+      readonly value: readonly string[] | undefined;
     }
   | {
       readonly error: CallToolResult;
@@ -921,9 +934,15 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           .describe(
             'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
           ),
+        workset: z
+          .string()
+          .optional()
+          .describe(
+            'Optional named workset (a set of related repos from the seed manifest) to recall across as one working set',
+          ),
       },
     },
-    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri}) => {
+    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -940,6 +959,7 @@ function registerSearchTool(server: McpServer, config: RuntimeConfig, name: stri
           nodeLimit,
           includeArchived: includeArchived === true,
           threshold: threshold === undefined ? undefined : String(threshold),
+          workset: workset?.trim() || undefined,
         }),
       );
     },
@@ -953,6 +973,7 @@ interface RecallToolParams {
   readonly pinnedUri: string | undefined;
   readonly query: string;
   readonly threshold: string | undefined;
+  readonly workset: string | undefined;
 }
 
 async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
@@ -984,6 +1005,7 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
   const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
   const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
+  const explicitWorkset = params.workset ? await requireWorkset(config.manifestPath, params.workset) : undefined;
   // Run the global base pass plus a seeded project pass, then merge into one
   // deduped ranked list (per document, chunk anchors stripped) so the seeded
   // pass only adds project docs the base missed. --level 2 keeps Level-2
@@ -1007,7 +1029,32 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     passes.push(seeded.hits);
   }
 
+  // Workset expansion (see src/memory.ts:runRecall): recall a named set of
+  // manifest repos as one working set. Skipped when a pinned URI scopes the
+  // search. The merge dedupes overlapping hits; scopes are deduped and capped.
   const sections: string[] = [];
+  const workset = params.pinnedUri
+    ? undefined
+    : explicitWorkset
+      ? explicitWorkset
+      : await inferWorksetFromQuery(config.manifestPath, projectQuery);
+  if (workset && workset.projects.length > 0) {
+    sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
+    const alreadyScoped = new Set([params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined));
+    const worksetScopes = worksetScopeUris(config, workset)
+      .filter(uri => !alreadyScoped.has(uri))
+      .slice(0, MAX_WORKSET_PASSES);
+    for (const scope of worksetScopes) {
+      const worksetPass = await recallSearchHits(
+        config,
+        ['search', query, '--uri', scope, ...limitArgs],
+        threshold,
+        params.includeArchived,
+      );
+      passes.push(worksetPass.hits);
+    }
+  }
+
   const exactMatches = await collectExactMemoryMatches(config, query, params.includeArchived, project);
   const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, params.nodeLimit ?? 12);
   if (semanticSection) {
@@ -1022,6 +1069,10 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
   }
   if (exactTail) {
     sections.push(exactTail);
+  }
+  const referencedContext = await referencedContextSection(config, sections.join('\n\n'));
+  if (referencedContext) {
+    sections.push(referencedContext);
   }
   const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
   if (hygieneHints) {
@@ -1079,6 +1130,44 @@ async function recallHygieneHintsSection(config: RuntimeConfig, recallText: stri
   const records = await readMemoryRecordsByUri(config, uris);
   const nudges = recallHygieneNudges(recallText, {records, user: config.user});
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
+}
+
+const MAX_REFERENCED_CONTEXT = 5;
+const REFERENCED_EXCERPT_LINES = 12;
+
+/**
+ * Resolves the one-way `references:` pointers carried by the personal memories
+ * recall just surfaced, reading each read-only from the local store and
+ * appending a short excerpt. Bounded to one hop and a small cap; missing
+ * references degrade to a labeled line and never fail recall.
+ */
+async function referencedContextSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
+  const surfacedUris = activePersonalMemoryUrisFromText(recallText, config.user);
+  if (surfacedUris.length === 0) {
+    return undefined;
+  }
+  const surfaced = await readMemoryRecordsByUri(config, surfacedUris);
+  const referenced = referencedUrisFromRecords(surfaced, recallText);
+  if (referenced.length === 0) {
+    return undefined;
+  }
+  const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
+  const records = await readMemoryRecordsByUri(config, capped);
+  const byUri = new Map(records.map(record => [record.uri, record]));
+  const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
+  for (const uri of capped) {
+    const record = byUri.get(uri);
+    if (record) {
+      lines.push(`- ${uri}`, referencedContextExcerpt(record.body, REFERENCED_EXCERPT_LINES));
+    } else {
+      lines.push(`- ${uri} [reference unavailable locally]`);
+    }
+  }
+  if (referenced.length > capped.length) {
+    const omitted = referenced.length - capped.length;
+    lines.push(`- … ${omitted} more referenced ${omitted === 1 ? 'memory' : 'memories'} omitted`);
+  }
+  return lines.join('\n');
 }
 
 async function collectExactMemoryMatches(
@@ -1187,6 +1276,12 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
           .optional()
           .describe('Memory lifecycle kind; durable facts and handoffs are most common'),
         project: z.string().optional().describe('Project/repo namespace, for example threadnote or mobile-native'),
+        references: z
+          .union([z.string(), z.array(z.string())])
+          .optional()
+          .describe(
+            'Optional viking:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
+          ),
         replaceUri: z
           .string()
           .optional()
@@ -1202,7 +1297,7 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         topic: z.string().optional().describe('Stable topic; active project/topic memories update one file'),
       },
     },
-    async ({kind, project, replaceUri, sourceAgentClient, status, text, topic}) => {
+    async ({kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -1211,9 +1306,14 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
       if (!checkedReplaceUri.ok) {
         return checkedReplaceUri.error;
       }
+      const checkedReferences = optionalVikingUriList(references, name);
+      if (!checkedReferences.ok) {
+        return checkedReferences.error;
+      }
       const metadata: MemoryMetadata = {
         kind: kind ?? 'durable',
         project: normalizeOptionalMetadata(project),
+        references: checkedReferences.value,
         sourceAgentClient: sourceAgentClient ?? 'mcp',
         status: status ?? 'active',
         timestamp: new Date().toISOString(),
@@ -1743,6 +1843,21 @@ function exactMemoryScopes(
   });
 }
 
+const MAX_WORKSET_PASSES = 12;
+
+/** Durable + seeded recall scopes for every member of a workset (see src/memory.ts:worksetScopeUris). */
+function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
+  const scopes: string[] = [];
+  for (const member of workset.projects) {
+    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    const seeded = trimTrailingSlash(member.uri);
+    if (seeded.startsWith('viking://')) {
+      scopes.push(seeded);
+    }
+  }
+  return [...new Set(scopes)];
+}
+
 function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {
   const header = [
     title,
@@ -1754,6 +1869,7 @@ function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: s
     `timestamp: ${metadata.timestamp}`,
     metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
     metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
+    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
   ].filter((line): line is string => line !== undefined);
   return [...header, '', body.trim()].join('\n');
 }
@@ -1821,6 +1937,27 @@ function optionalVikingUri(value: string | undefined, toolName: string): Checked
     ),
     ok: false,
   };
+}
+
+function optionalVikingUriList(
+  value: readonly string[] | string | undefined,
+  toolName: string,
+): CheckedOptionalTextArray {
+  const rawValues = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const uris = rawValues.map(uri => uri.trim()).filter(Boolean);
+  if (uris.length === 0) {
+    return {ok: true, value: undefined};
+  }
+  const invalid = uris.find(uri => !uri.startsWith('viking://'));
+  if (invalid) {
+    return {
+      error: argumentError(
+        `Threadnote MCP tool "${toolName}" needs viking:// URI values for "references". Received: ${invalid}`,
+      ),
+      ok: false,
+    };
+  }
+  return {ok: true, value: [...new Set(uris)]};
 }
 
 function requiredVikingUriList(

@@ -61,7 +61,7 @@ import {
   runRecall,
   runRemember,
 } from './memory.js';
-import {runInitManifest, runSeed, runSeedSkills} from './seeding.js';
+import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from './seeding.js';
 import {
   runShareInit,
   runShareInstallArtifacts,
@@ -229,6 +229,10 @@ async function main(): Promise<void> {
     .description('Seed curated context from the manifest; never indexes whole repos by default')
     .option('--dry-run', 'Print files and ov commands without importing')
     .option('--force', 'Re-upload every candidate even if mtime+size match the recorded state')
+    .option(
+      '--graph',
+      'Also seed a per-project .graph.md dependency-facts resource (package.json/go.mod), with [[project]] cross-repo edges',
+    )
     .option('--manifest <path>', 'Manifest path for this seed run')
     .option(
       '--only <project>',
@@ -361,8 +365,31 @@ async function main(): Promise<void> {
     .option('--project <name>', 'Prioritize a project: add a scoped pass over its memories alongside the global search')
     .option('--threshold <score>', 'Minimum relevance score 0-1 (default 0.45); lower to broaden when recall is empty')
     .option('--uri <uri>', 'Restrict search to a viking:// URI')
+    .option(
+      '--workset <name>',
+      'Recall across a named seed-manifest workset (a set of related repos) as one working set',
+    )
     .action(async (options: RecallOptions) => {
       await runRecall(getRuntimeConfig(program), options);
+    });
+
+  const workset = program
+    .command('workset')
+    .description('Inspect seed-manifest worksets (named sets of related repos recalled as one working set)');
+
+  workset
+    .command('list')
+    .description('List worksets defined in the seed manifest')
+    .action(async () => {
+      await runWorksetList(getRuntimeConfig(program));
+    });
+
+  workset
+    .command('show')
+    .description('Show the member projects of a workset')
+    .argument('<name>', 'Workset name')
+    .action(async (name: string) => {
+      await runWorksetShow(getRuntimeConfig(program), name);
     });
 
   program
@@ -404,17 +431,26 @@ async function main(): Promise<void> {
     .command('handoff')
     .description('Capture current repo state as a durable cross-agent handoff memory')
     .option('--blockers <text>', 'Known blockers')
+    .option('--ci <text>', 'Captured CI status snapshot (free text; not a live status board)')
     .option('--dry-run', 'Print handoff without storing')
+    .option('--issue <text>', 'Related issue reference (number or URL)')
     .option('--next-step <text>', 'Suggested next step')
+    .option('--pr <text>', 'Related pull request reference (number or URL)')
     .option('--project <name>', 'Project/repo namespace; defaults to current repo basename')
+    .option(
+      '--reference <uri>',
+      'viking:// memory to record as one-way read-only prior context; repeat for multiple',
+      collectOption,
+      [],
+    )
     .option('--replace <uri>', 'Supersede an existing viking:// memory after the new handoff is stored')
     .option('--source-agent-client <name>', 'codex, claude, cursor, copilot, or another client name', 'codex')
     .option('--task <text>', 'Current task summary')
     .option('--tests <text>', 'Tests or checks run')
     .option('--timestamped', 'Store a historical timestamped handoff instead of updating the current branch handoff')
     .option('--topic <name>', 'Stable topic name; active handoffs with the same project/topic update one file')
-    .action(async (options: HandoffOptions) => {
-      await runHandoff(getRuntimeConfig(program), options);
+    .action(async (options: HandoffOptions & {readonly reference?: readonly string[]}) => {
+      await runHandoff(getRuntimeConfig(program), {...options, references: options.reference});
     });
 
   program

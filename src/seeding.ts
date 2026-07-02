@@ -8,6 +8,7 @@ import {
   SEED_WATCH_INTERVAL_ENV,
   USER_MANIFEST_NAME,
 } from './constants.js';
+import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -15,6 +16,7 @@ import type {
   ProjectManifest,
   RuntimeConfig,
   SeedCandidate,
+  SeedManifest,
   SeedOptions,
   SkillCandidate,
 } from './types.js';
@@ -147,6 +149,89 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
   console.log(
     `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${skippedCount} skipped for safety.`,
   );
+
+  if (options.graph === true) {
+    await seedDependencyGraphs(config, ov, manifest, projects, options.dryRun === true);
+  }
+}
+
+/**
+ * Seeds a per-project `.graph.md` dependency-facts resource. Facts are extracted
+ * from every manifest project (so cross-repo `[[project]]` edges resolve even
+ * under --only), then a document is rendered and seeded for each target
+ * project. Synthesized content is routed through the same secret scanner as
+ * every other seeded file before it can reach OpenViking. Stored as a plain
+ * resource, never a memory.
+ */
+export async function seedDependencyGraphs(
+  config: RuntimeConfig,
+  ov: string,
+  manifest: SeedManifest,
+  targetProjects: readonly ProjectManifest[],
+  dryRun: boolean,
+): Promise<void> {
+  const factsByProject = new Map<string, DependencyFacts>();
+  for (const project of manifest.projects) {
+    const projectRoot = expandPath(project.path);
+    if (!(await exists(projectRoot))) {
+      continue;
+    }
+    factsByProject.set(project.name, await extractDependencyFacts(projectRoot));
+  }
+  const projectByPublishedName = new Map<string, string>();
+  for (const [name, facts] of factsByProject) {
+    if (facts.publishedName) {
+      projectByPublishedName.set(facts.publishedName.toLowerCase(), name);
+    }
+  }
+
+  let written = 0;
+  let skipped = 0;
+  for (const project of targetProjects) {
+    const facts = factsByProject.get(project.name);
+    if (!facts || facts.manifestFiles.length === 0) {
+      continue;
+    }
+    const {externalCount, internalEdges} = resolveGraphEdges(project.name, facts.dependencies, projectByPublishedName);
+    const document = buildGraphDocument({externalCount, facts, internalEdges, projectName: project.name});
+    const secretMatches = detectSecretMatches(document);
+    if (secretMatches.length > 0) {
+      skipped += 1;
+      console.log(
+        `SKIP ${project.name}/.graph.md: possible secret (${secretMatches
+          .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
+          .join(', ')})`,
+      );
+      continue;
+    }
+    const destinationUri = `${trimTrailingSlash(project.uri)}/.graph.md`;
+    if (dryRun) {
+      console.log(`Would seed dependency facts: ${destinationUri} (${internalEdges.length} in-workspace edge(s))`);
+      written += 1;
+      continue;
+    }
+    const graphPath = join(config.agentContextHome, 'graph', graphCacheFileName(project.name));
+    await ensureDirectory(dirname(graphPath), false);
+    await writeFile(graphPath, document, {encoding: 'utf8', mode: 0o600});
+    await chmod(graphPath, 0o600);
+    await maybeRun(
+      false,
+      ov,
+      withIdentity(config, [
+        'add-resource',
+        graphPath,
+        '--to',
+        destinationUri,
+        '--reason',
+        `Dependency facts for ${project.name}`,
+        '--wait',
+      ]),
+    );
+    written += 1;
+  }
+  console.log(
+    `Dependency graph seed complete: ${written} .graph.md resource(s)${skipped > 0 ? `, ${skipped} skipped for safety` : ''}.`,
+  );
 }
 
 function filterProjects(
@@ -242,6 +327,13 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
       uri: existingManifest.futureMonorepo.uri,
     };
   }
+  if (existingManifest?.worksets) {
+    outputManifest.worksets = existingManifest.worksets.map(workset => ({
+      name: workset.name,
+      ...(workset.description !== undefined ? {description: workset.description} : {}),
+      projects: [...workset.projects],
+    }));
+  }
   const output = yaml.dump(outputManifest, {lineWidth: 120, noRefs: true});
 
   if (options.dryRun === true) {
@@ -257,6 +349,39 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
   console.log('Seed with:');
   console.log('  threadnote seed --dry-run');
   console.log('  threadnote seed');
+}
+
+export async function runWorksetList(config: RuntimeConfig): Promise<void> {
+  const manifest = await readSeedManifest(config.manifestPath);
+  const worksets = manifest.worksets ?? [];
+  if (worksets.length === 0) {
+    console.log(
+      'No worksets defined. Add a top-level `worksets:` list to the seed manifest to group related projects.',
+    );
+    return;
+  }
+  console.log(`Worksets (${worksets.length}):`);
+  for (const workset of worksets) {
+    const summary = workset.description ? ` — ${workset.description}` : '';
+    console.log(`- ${workset.name} (${workset.projects.length} project(s))${summary}`);
+  }
+}
+
+export async function runWorksetShow(config: RuntimeConfig, name: string): Promise<void> {
+  const manifest = await readSeedManifest(config.manifestPath);
+  const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
+  if (!workset) {
+    throw new Error(`No workset named "${name}" in ${config.manifestPath}.`);
+  }
+  console.log(`Workset: ${workset.name}`);
+  if (workset.description) {
+    console.log(workset.description);
+  }
+  console.log('Projects:');
+  for (const memberName of workset.projects) {
+    const project = manifest.projects.find(entry => entry.name.toLowerCase() === memberName.toLowerCase());
+    console.log(project ? `- ${project.name} (${project.uri})` : `- ${memberName} [not found in manifest projects]`);
+  }
 }
 
 export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions): Promise<void> {
@@ -414,6 +539,10 @@ async function prepareSeedFile(
 
 function seedResourceReason(candidate: SeedCandidate): string {
   return `Project guidance for ${candidate.projectName}: ${candidate.relativePath}`;
+}
+
+function graphCacheFileName(projectName: string): string {
+  return `${uriSegment(projectName)}-${sha256(projectName).slice(0, 8)}.graph.md`;
 }
 
 function skillResourceReason(skill: SkillCandidate): string {

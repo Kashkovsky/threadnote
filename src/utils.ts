@@ -106,7 +106,7 @@ export function hasGlob(path: string): boolean {
 }
 
 export function escapeRegExp(value: string): string {
-  return value.replace(/[\\^$+?.()|[\]{}]/g, '\\$&');
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export async function requiredOpenVikingCli(): Promise<string> {
