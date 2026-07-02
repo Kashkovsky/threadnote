@@ -783,7 +783,7 @@
             handoffs, seeded repo docs, reusable skills, and team knowledge.
           </p>
           <div class="cta-row">
-            <span class="pill"><span id="version-tag">v1.3.2</span> · local-first · AGPL-3.0-or-later</span>
+            <span class="pill"><span id="version-tag">v1.6.0</span> · local-first · AGPL-3.0-or-later</span>
           </div>
         </div>
         <div class="scroll-cue">scroll ↓ &nbsp;·&nbsp; <span class="kbd">↓</span> / <span class="kbd">j</span></div>
@@ -1203,7 +1203,7 @@
     --repo ~/src/mobile-app</span>
 <span class="out">Wrote ~/.openviking/seed-manifest.yaml (2 project(s))</span>
 
-<span class="cmd">$ threadnote seed</span>
+<span class="cmd">$ threadnote seed --graph</span>
 <span class="out-strong">Imported 47 curated path(s); skipped 6 secret-flagged.</span>
 
 <span class="cmd">$ threadnote seed-skills</span>
@@ -1228,7 +1228,11 @@ projects:
     uri: viking://resources/repos/mobile-app
     seed:
       - AGENTS.md
-      - docs/**/*.md</code></pre>
+      - docs/**/*.md
+worksets:
+  - name: mobile_web
+    description: Mobile and web app context
+    projects: [web-app, mobile-app]</code></pre>
             </div>
           </div>
 
@@ -1240,6 +1244,14 @@ projects:
             <li>
               <strong>Seeding is opt-in and re-runnable.</strong> <code>threadnote seed</code> never deletes; it
               upserts.
+            </li>
+            <li>
+              <strong>Worksets recall related repos together.</strong> Ask for a workset when a task crosses mobile,
+              web, API, or shared-library boundaries.
+            </li>
+            <li>
+              <strong>Dependency facts are searchable.</strong> <code>threadnote seed --graph</code> adds compact
+              package and module facts without indexing source files.
             </li>
             <li>
               <strong>Skills are a first-class catalog.</strong> <code>seed-skills</code> makes reusable workflows
@@ -1339,6 +1351,9 @@ threadnote remember \
 threadnote handoff \
   --project web-app --topic auth-token-refresh \
   --task "Address reviewer comments on token refresh PR" \
+  --pr "https://github.com/acme/web-app/pull/184" \
+  --ci "lint and auth tests passing" \
+  --reference "viking://user/&lt;you&gt;/memories/durable/projects/web-app/token-client.md" \
   --tests "make lint-lite; mocha auth_client_test 77 passing" \
   --next-step "Push and request re-review"
 
@@ -1554,6 +1569,19 @@ threadnote remember \
             </div>
 
             <div class="vignette reveal">
+              <div class="v-say">Find the latest mobile and web context for sign-in.</div>
+              <pre class="v-call">recall_context({query: "latest sign-in handoff", workset: "mobile_web"})</pre>
+              <pre class="v-response">
+→ mobile-app guidance, handoffs, and durable memories
+→ web-app guidance, handoffs, and durable memories</pre
+              >
+              <div class="v-answer">
+                Worksets let a manifest group related repos once, then recall them together for cross-platform work. A
+                typo fails early instead of silently falling back to broad search.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
               <div class="v-say">Save where we are — I'm switching to another agent.</div>
               <pre class="v-call">
 remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre
@@ -1591,8 +1619,9 @@ remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precomp
 Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre
               >
               <div class="v-answer">
-                Compaction summarizes the conversation arc but loses the durable facts. Threadnote's hook captures them
-                first; the post-compaction turn recalls them and resumes without amnesia.
+                Compaction summarizes the conversation arc but loses concrete working state. Threadnote's hook captures
+                a scrubbed trace summary and current handoff first; the post-compaction turn recalls them and resumes
+                without amnesia.
               </div>
             </div>
 
