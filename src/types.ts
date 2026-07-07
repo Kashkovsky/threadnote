@@ -207,6 +207,12 @@ export interface MigrateLifecycleOptions {
   readonly limit?: string;
 }
 
+export interface MigrateProjectNamesOptions {
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly limit?: string;
+}
+
 export interface RecallOptions {
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;

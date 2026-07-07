@@ -27,6 +27,25 @@ export function redactText(content: string): string {
   return redactSensitiveText(content);
 }
 
+const GIT_ENVIRONMENT_KEYS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_PREFIX',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_QUARANTINE_PATH',
+] as const;
+
+export function withoutGitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = {...env};
+  for (const key of GIT_ENVIRONMENT_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 export async function walkFiles(root: string): Promise<readonly string[]> {
   const files: string[] = [];
   async function visit(path: string): Promise<void> {
@@ -206,6 +225,7 @@ export async function runCommand(
   options: {
     readonly allowFailure?: boolean;
     readonly cwd?: string;
+    readonly env?: NodeJS.ProcessEnv;
     readonly maxOutputBytes?: number;
     readonly timeoutMs?: number;
   } = {},
@@ -241,6 +261,7 @@ export async function runCommand(
       {
         cwd: options.cwd,
         encoding: 'utf8',
+        env: commandEnvironment(executable, options.env),
         maxBuffer: maxOutputBytes,
       },
       (err, stdout, stderr) => {
@@ -279,6 +300,13 @@ export async function runCommand(
       killTimer.unref?.();
     }
   });
+}
+
+function commandEnvironment(executable: string, env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv | undefined {
+  if (basename(executable) !== 'git') {
+    return env;
+  }
+  return withoutGitEnvironment(env ?? process.env);
 }
 
 function commandResultFromExecFileCallback(params: {
@@ -349,14 +377,24 @@ export async function gitValue(args: readonly string[], cwd = getInvocationCwd()
  * Resolves the canonical repository name for `cwd`, returning undefined when it
  * is not inside a git repository.
  *
- * From a linked worktree (`git worktree add`, Conductor workspaces, …) the
- * top-level path basename is the worktree/branch name, not the project — so a
- * handoff would file under e.g. `algiers` instead of `threadnote`. The shared
- * `--git-common-dir` always points at the primary worktree's `.git`, so the
- * project name is derived from there to stay consistent with what the primary
- * checkout produces.
+ * Prefer the git remote repository name so differently named clones of the same
+ * repo resolve to the same project. From repos without remotes, fall back to the
+ * primary worktree name: linked worktree paths (`git worktree add`, Conductor
+ * workspaces, …) often use the branch/workspace name instead of the project.
  */
 export async function resolveRepoName(cwd = getInvocationCwd()): Promise<string | undefined> {
+  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+  if (!repoRoot) {
+    return undefined;
+  }
+  const remoteName = await resolveGitRemoteRepoName(repoRoot);
+  if (remoteName) {
+    return remoteName;
+  }
+  return resolveRepoFolderName(repoRoot);
+}
+
+export async function resolveRepoFolderName(cwd = getInvocationCwd()): Promise<string | undefined> {
   const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
   if (!repoRoot) {
     return undefined;
@@ -371,6 +409,47 @@ export async function resolveRepoName(cwd = getInvocationCwd()): Promise<string 
     }
   }
   return basename(repoRoot);
+}
+
+async function resolveGitRemoteRepoName(repoRoot: string): Promise<string | undefined> {
+  const originUrl = await gitValue(['remote', 'get-url', 'origin'], repoRoot);
+  const originName = originUrl ? gitRemoteRepoName(originUrl) : undefined;
+  if (originName) {
+    return originName;
+  }
+  const remotes = await gitValue(['remote'], repoRoot);
+  const remote = remotes
+    ?.split(/\r?\n/)
+    .map(name => name.trim())
+    .find(name => name.length > 0);
+  if (!remote) {
+    return undefined;
+  }
+  const remoteUrl = await gitValue(['remote', 'get-url', remote], repoRoot);
+  return remoteUrl ? gitRemoteRepoName(remoteUrl) : undefined;
+}
+
+function gitRemoteRepoName(remoteUrl: string): string | undefined {
+  const trimmed = remoteUrl.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  let remotePath = trimmed.replace(/[?#].*$/, '');
+  try {
+    remotePath = new URL(trimmed).pathname;
+  } catch (_err: unknown) {
+    const scpLike = trimmed.match(/^[^@\s/]+@[^:\s]+:(.+)$/);
+    if (scpLike?.[1]) {
+      remotePath = scpLike[1];
+    }
+  }
+  const name = remotePath
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/:]/)
+    .filter(Boolean)
+    .pop()
+    ?.replace(/\.git$/i, '');
+  return name && name !== '.' && name !== '..' ? name : undefined;
 }
 
 export async function runInteractive(executable: string, args: readonly string[]): Promise<number> {
@@ -726,6 +805,16 @@ export async function enrichRecallQueryWithWorkspaceProjectContext(
   return enrichRecallQueryWithWorkspaceTerms(query, options, false);
 }
 
+export async function resolveWorkspaceRepoName(
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
+): Promise<string | undefined> {
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : getInvocationCwd());
+  if (!cwd || !isAbsolute(cwd)) {
+    return undefined;
+  }
+  return resolveRepoName(cwd);
+}
+
 async function enrichRecallQueryWithWorkspaceTerms(
   query: string,
   options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
@@ -755,10 +844,11 @@ async function currentWorkspaceRecallTerms(
     return [];
   }
   const branch = await gitValue(['branch', '--show-current'], repoRoot);
+  const repoName = await resolveWorkspaceRepoName({cwd, includeProcessCwd: false});
   const parent = dirname(repoRoot);
   return uniqueUsefulWorkspaceTerms([
     {source: 'branch', value: includeBranch ? branch : undefined},
-    {source: 'path', value: basename(repoRoot)},
+    {source: 'path', value: repoName},
     {source: 'path', value: parent === homedir() ? undefined : basename(parent)},
   ]);
 }

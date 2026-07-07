@@ -6,6 +6,17 @@ import {isResourceBusyFailure, isTransientOvFailure, listChangedFiles, mergeChan
 import type {ChangedFile} from '../../src/share.js';
 import {runCommand} from '../../src/utils.js';
 
+const GIT_ENV_KEYS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_PREFIX',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_QUARANTINE_PATH',
+] as const;
+
 describe('isTransientOvFailure', () => {
   it('classifies resource-busy errors as transient', () => {
     expect(isTransientOvFailure('Error: API error: [INVALID_ARGUMENT] resource is busy', '')).toBe(true);
@@ -87,8 +98,12 @@ describe('listChangedFiles', () => {
 
   it('does not report symlink additions as ingestible files', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'threadnote-share-changes-'));
+    const previousGitEnv = new Map(GIT_ENV_KEYS.map(key => [key, process.env[key]]));
     let secretPath: string | undefined;
     try {
+      for (const key of GIT_ENV_KEYS) {
+        delete process.env[key];
+      }
       await git(['init'], repo);
       await git(['config', 'user.email', 'threadnote-test@example.com'], repo);
       await git(['config', 'user.name', 'Threadnote Test'], repo);
@@ -126,6 +141,14 @@ describe('listChangedFiles', () => {
         await rm(secretPath, {force: true});
       }
       await rm(repo, {force: true, recursive: true});
+      for (const key of GIT_ENV_KEYS) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
     }
   });
 });

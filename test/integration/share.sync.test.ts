@@ -2,7 +2,7 @@ import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {runShareSync} from '../../src/share.js';
+import {runShareInit, runShareSync} from '../../src/share.js';
 import type {ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
 
@@ -152,6 +152,24 @@ async function makeShareRepo(): Promise<TestShareRepo> {
   return {config, home, remote, root, seed, worktree};
 }
 
+async function makeSeededRemote(root: string): Promise<string> {
+  const remote = join(root, 'remote.git');
+  const seed = join(root, 'seed');
+  await mkdir(seed, {recursive: true});
+  await git(['init', '--bare', remote]);
+  await git(['init'], seed);
+  await git(['checkout', '-b', 'main'], seed);
+  await git(['config', 'user.email', 'threadnote-test@example.com'], seed);
+  await git(['config', 'user.name', 'Threadnote Test'], seed);
+  await writeFile(join(seed, 'README.md'), '# Shared memories\n', 'utf8');
+  await git(['add', 'README.md'], seed);
+  await git(['commit', '-m', 'initial'], seed);
+  await git(['remote', 'add', 'origin', remote], seed);
+  await git(['push', '-u', 'origin', 'main'], seed);
+  await git(['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  return remote;
+}
+
 describe('share sync git handling', () => {
   beforeEach(() => {
     savedGitEnv.clear();
@@ -199,6 +217,38 @@ describe('share sync git handling', () => {
     await expect(gitOutput(['log', '-1', '--format=%s', '--', 'CLAUDE.md'], worktree)).resolves.toBe(
       'share: test sync',
     );
+  });
+
+  it('does not let inherited git environment redirect share init into the caller repo', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-share-init-env-'));
+    homes.push(root);
+    const remote = await makeSeededRemote(root);
+
+    const callerRepo = join(root, 'caller');
+    await mkdir(callerRepo, {recursive: true});
+    await git(['init'], callerRepo);
+    await git(['checkout', '-b', 'main'], callerRepo);
+    await git(['config', 'user.email', 'threadnote-test@example.com'], callerRepo);
+    await git(['config', 'user.name', 'Threadnote Test'], callerRepo);
+    await writeFile(join(callerRepo, 'tracked.txt'), 'caller repo\n', 'utf8');
+    await git(['add', 'tracked.txt'], callerRepo);
+    await git(['commit', '-m', 'caller initial'], callerRepo);
+    const callerHead = await gitOutput(['rev-parse', 'HEAD'], callerRepo);
+
+    const callerGitDir = join(callerRepo, '.git');
+    process.env.GIT_DIR = callerGitDir;
+    process.env.GIT_COMMON_DIR = callerGitDir;
+    process.env.GIT_WORK_TREE = callerRepo;
+    process.env.GIT_INDEX_FILE = join(callerGitDir, 'index');
+
+    const home = join(root, 'home');
+    const config: ShareRuntime = {account: 'local', agentContextHome: home, agentId: 'threadnote', user: 'denys'};
+
+    await runShareInit(config, remote, {push: false, team: 'threadnote'});
+
+    await expect(gitOutput(['rev-parse', 'HEAD'], callerRepo)).resolves.toBe(callerHead);
+    await expect(gitOutput(['status', '--porcelain'], callerRepo)).resolves.toBe('');
+    await expect(gitOutput(['log', '-1', '--format=%s'], callerRepo)).resolves.toBe('caller initial');
   });
 
   it('stops before rebase when non-shareable untracked files remain', async () => {

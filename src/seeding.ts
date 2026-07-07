@@ -38,6 +38,7 @@ import {
   openVikingCliForMode,
   portablePath,
   redactText,
+  resolveRepoName,
   sha256,
   toPosixPath,
   toolRoot,
@@ -294,7 +295,7 @@ export async function runInitManifest(config: RuntimeConfig, options: InitManife
       continue;
     }
     seen.add(identity);
-    projects.push(projectManifestForRepo(repoRoot, projects));
+    projects.push(await projectManifestForRepo(repoRoot, projects));
   }
 
   const outputManifest: Record<string, unknown> = {
@@ -417,11 +418,11 @@ async function projectIdentity(path: string): Promise<string> {
   }
 }
 
-export function projectManifestForRepo(
+export async function projectManifestForRepo(
   repoRoot: string,
   existingProjects: readonly ProjectManifest[],
-): ProjectManifest {
-  const baseName = uriSegment(basename(repoRoot));
+): Promise<ProjectManifest> {
+  const baseName = uriSegment((await resolveRepoName(repoRoot)) ?? basename(repoRoot));
   const usedNames = new Set(existingProjects.map(project => project.name));
   const usedUris = new Set(existingProjects.map(project => project.uri));
   let name = baseName;

@@ -63,6 +63,7 @@ import {
   parseRecallHits,
   type RecallHit,
   RECALL_SCORE_THRESHOLD,
+  resolveWorkspaceRepoName,
   runCommand,
   safeTimestamp,
   sha256,
@@ -1019,6 +1020,9 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
   }
   const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
+  const projectMemoryName = params.pinnedUri
+    ? undefined
+    : await resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false});
   const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
   const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
   const explicitWorkset = params.workset ? await requireWorkset(config.manifestPath, params.workset) : undefined;
@@ -1034,6 +1038,19 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
     params.includeArchived,
   );
   const passes: Array<readonly RecallHit[]> = [base.hits];
+  const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
+  for (const scope of projectMemoryScopeUris(config, projectMemoryName, params.includeArchived)) {
+    if (!scopedRecallUris.has(scope)) {
+      scopedRecallUris.add(scope);
+      const projectMemoryPass = await recallSearchHits(
+        config,
+        ['search', query, '--uri', scope, ...limitArgs],
+        threshold,
+        params.includeArchived,
+      );
+      passes.push(projectMemoryPass.hits);
+    }
+  }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
     const seeded = await recallSearchHits(
@@ -1056,7 +1073,9 @@ async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): P
       : await inferWorksetFromQuery(config.manifestPath, projectQuery);
   if (workset && workset.projects.length > 0) {
     sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
-    const alreadyScoped = new Set([params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined));
+    const alreadyScoped = new Set(
+      [params.pinnedUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
+    );
     const worksetScopes = worksetScopeUris(config, workset)
       .filter(uri => !alreadyScoped.has(uri))
       .slice(0, MAX_WORKSET_PASSES);
@@ -1872,6 +1891,31 @@ function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): read
     }
   }
   return [...new Set(scopes)];
+}
+
+function projectMemoryScopeUris(
+  config: RuntimeConfig,
+  projectName: string | undefined,
+  includeArchived: boolean,
+): readonly string[] {
+  if (!projectName) {
+    return [];
+  }
+  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(projectName);
+  const scopes = [
+    `${base}/durable/projects/${projectSegment}`,
+    `${base}/handoffs/active/${projectSegment}`,
+    `${base}/incidents/active/${projectSegment}`,
+  ];
+  return includeArchived
+    ? [
+        ...scopes,
+        `${base}/durable/archived/${projectSegment}`,
+        `${base}/handoffs/archived/${projectSegment}`,
+        `${base}/incidents/archived/${projectSegment}`,
+      ]
+    : scopes;
 }
 
 function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {

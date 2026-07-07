@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {createInterface} from 'node:readline/promises';
 import {stdin as input, stdout as output} from 'node:process';
 import {heading, info as infoText, keyValue, success, warning, withSpinner} from './cli_ui.js';
-import {hasLegacyLifecycleHandoffCandidates} from './memory.js';
+import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
 import {
@@ -54,6 +54,7 @@ interface PostUpdateMigration {
   readonly instructions: readonly string[];
   readonly introducedIn: string;
   readonly requiresLegacyHandoffs?: boolean;
+  readonly requiresProjectNameConsolidation?: boolean;
   readonly title: string;
 }
 
@@ -562,6 +563,9 @@ async function applicablePostUpdateMigrations(
     if (migration.requiresLegacyHandoffs === true && !(await hasLegacyLifecycleHandoffCandidates(config))) {
       continue;
     }
+    if (migration.requiresProjectNameConsolidation === true && !(await hasProjectNameMigrationCandidates(config))) {
+      continue;
+    }
     applicable.push(migration);
   }
   return applicable;
@@ -598,6 +602,7 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     instructions: stringArray(value, 'instructions'),
     introducedIn: value.introducedIn,
     requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
+    requiresProjectNameConsolidation: value.requiresProjectNameConsolidation === true,
     title: value.title,
   };
 }

@@ -20,6 +20,7 @@ describe('workspace recall enrichment', () => {
     }
     try {
       await runCommand('git', ['init'], {cwd: repoRoot});
+      await runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repoRoot});
       await runCommand('git', ['symbolic-ref', 'HEAD', 'refs/heads/mobile-feedback-results-fix'], {cwd: repoRoot});
 
       await expect(
@@ -32,7 +33,9 @@ describe('workspace recall enrichment', () => {
         cwd: repoRoot,
         includeProcessCwd: false,
       });
-      expect(projectScoped).toContain(basename(repoRoot));
+      const projectTerms = projectScoped.split(/\s+/);
+      expect(projectTerms).toContain('threadnote');
+      expect(projectTerms).not.toContain(basename(repoRoot));
       expect(projectScoped).not.toContain('mobile-feedback-results-fix');
       await expect(
         enrichRecallQueryWithWorkspaceContext('current repo latest handoff', {includeProcessCwd: false}),

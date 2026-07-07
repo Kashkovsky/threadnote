@@ -1,6 +1,13 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
-import {basename, join, sep} from 'node:path';
-import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset, uriSegment} from './manifest.js';
+import {basename, dirname, join, sep} from 'node:path';
+import yaml from 'js-yaml';
+import {
+  inferProjectFromQuery,
+  inferWorksetFromQuery,
+  readSeedManifest,
+  requireWorkset,
+  uriSegment,
+} from './manifest.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
@@ -26,6 +33,7 @@ import type {
   MemoryKind,
   MemoryStatus,
   MigrateMemoriesOptions,
+  MigrateProjectNamesOptions,
   PackOptions,
   ProjectManifest,
   ReadOptions,
@@ -39,6 +47,7 @@ import {
   buildRecallSections,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
+  ensureDirectory,
   expandPath,
   type ExactMatch,
   exactMemoryScopeUris,
@@ -55,9 +64,12 @@ import {
   parentVikingUri,
   parsePositiveInteger,
   parseRecallHits,
+  readFileIfExists,
   type RecallHit,
   RECALL_SCORE_THRESHOLD,
+  resolveRepoFolderName,
   resolveRepoName,
+  resolveWorkspaceRepoName,
   runCommand,
   safeTimestamp,
   sha256,
@@ -111,6 +123,26 @@ interface LifecycleHandoffCandidate {
   readonly metadata: MemoryMetadata;
   readonly original: string;
   readonly sourceUri: string;
+}
+
+interface ProjectNameMigrationContext {
+  readonly newProject: string;
+  readonly newSegment: string;
+  readonly oldProject: string;
+  readonly oldSegment: string;
+  readonly repoRoot: string;
+}
+
+interface ProjectNameMigrationCandidate {
+  readonly destinationContent: string;
+  readonly destinationExistsWithSameContent: boolean;
+  readonly destinationUri: string;
+  readonly sourceUri: string;
+}
+
+interface ProjectMemoryLocation {
+  readonly relativePath: readonly string[];
+  readonly uriPath: string;
 }
 
 export function parseMemoryKind(value: string): MemoryKind {
@@ -294,6 +326,327 @@ export async function runMigrateLifecycle(config: RuntimeConfig, options: Migrat
   );
 }
 
+export async function runMigrateProjectNames(
+  config: RuntimeConfig,
+  options: MigrateProjectNamesOptions,
+): Promise<void> {
+  const dryRun = options.dryRun === true || options.apply !== true;
+  const limit = options.limit ? parsePositiveInteger(options.limit, 'project-name migration limit') : undefined;
+  const context = await projectNameMigrationContext();
+  if (!context) {
+    console.log('No git remote project-name change applies in the current workspace.');
+    return;
+  }
+
+  const candidates = await projectNameMigrationCandidates(config, context, limit);
+  const seedManifestCandidate = await hasSeedManifestProjectNameMigrationCandidate(config, context);
+  if (candidates.length === 0 && !seedManifestCandidate) {
+    console.log(`No project-name migration candidates found for ${context.oldProject} -> ${context.newProject}.`);
+    return;
+  }
+
+  const seedManifestUpdated = await migrateSeedManifestProjectName(config, context, dryRun);
+  let existingCount = 0;
+  let migratedCount = 0;
+  let skippedCount = 0;
+  if (candidates.length > 0) {
+    const ov = await openVikingCliForMode(dryRun);
+    for (const candidate of candidates) {
+      const action = candidate.destinationExistsWithSameContent
+        ? dryRun
+          ? 'Would consolidate duplicate'
+          : 'Consolidating duplicate'
+        : dryRun
+          ? 'Would migrate'
+          : 'Migrating';
+      console.log(`${action} ${candidate.sourceUri} -> ${candidate.destinationUri}`);
+      if (!dryRun) {
+        if (candidate.destinationExistsWithSameContent) {
+          existingCount += 1;
+        } else {
+          await ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri));
+          await writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false);
+        }
+        const removedOriginal = await removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        if (!removedOriginal) {
+          console.error(
+            `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
+          );
+          skippedCount += 1;
+        }
+      }
+      migratedCount += 1;
+    }
+  }
+
+  console.log(
+    [
+      `Project-name migration summary: ${migratedCount} memor${migratedCount === 1 ? 'y' : 'ies'} ${dryRun ? 'would be migrated' : 'migrated'} from ${context.oldProject} to ${context.newProject}`,
+      seedManifestUpdated ? `seed manifest ${dryRun ? 'would be updated' : 'updated'}` : 'seed manifest unchanged',
+      `${existingCount} duplicate destination(s) reused`,
+      `${skippedCount} source(s) still processing`,
+      dryRun ? 'Run with --apply to perform this migration.' : undefined,
+      seedManifestUpdated
+        ? `Run threadnote seed --only ${context.newProject} to re-ingest seeded resources under the new project URI.`
+        : undefined,
+    ]
+      .filter((part): part is string => part !== undefined)
+      .join('; '),
+  );
+}
+
+export async function hasProjectNameMigrationCandidates(config: RuntimeConfig): Promise<boolean> {
+  const context = await projectNameMigrationContext();
+  return context
+    ? (await projectNameMigrationCandidates(config, context, 1)).length > 0 ||
+        (await hasSeedManifestProjectNameMigrationCandidate(config, context))
+    : false;
+}
+
+async function projectNameMigrationContext(): Promise<ProjectNameMigrationContext | undefined> {
+  const repoRoot = await gitValue(['rev-parse', '--show-toplevel']);
+  if (!repoRoot) {
+    return undefined;
+  }
+  const newProject = await resolveRepoName(repoRoot);
+  const oldProject = await resolveRepoFolderName(repoRoot);
+  if (!newProject || !oldProject) {
+    return undefined;
+  }
+  const newSegment = uriSegment(newProject);
+  const oldSegment = uriSegment(oldProject);
+  if (newSegment === oldSegment) {
+    return undefined;
+  }
+  return {newProject, newSegment, oldProject, oldSegment, repoRoot};
+}
+
+async function projectNameMigrationCandidates(
+  config: RuntimeConfig,
+  context: ProjectNameMigrationContext,
+  limit?: number,
+): Promise<readonly ProjectNameMigrationCandidate[]> {
+  const candidates: ProjectNameMigrationCandidate[] = [];
+  for (const location of projectMemoryLocations()) {
+    const sourceDirectory = join(localUserMemoriesRoot(config), ...location.relativePath, context.oldSegment);
+    const sourceDirectoryUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
+    let entries;
+    try {
+      entries = await readdir(sourceDirectory, {withFileTypes: true});
+    } catch (_err: unknown) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+        continue;
+      }
+      const sourceUri = `${sourceDirectoryUri}/${entry.name}`;
+      const content = await readTextIfExists(join(sourceDirectory, entry.name));
+      if (!content) {
+        continue;
+      }
+      const record = parseMemoryDocument(sourceUri, content);
+      if (!record || !canMigrateProjectName(record, context)) {
+        continue;
+      }
+      const metadata = {...record.metadata, project: context.newProject};
+      const destinationDirectoryUri = memoryDirectoryUri(config, metadata);
+      const destinationDirectory = localMemoryPathForUri(config, destinationDirectoryUri);
+      if (!destinationDirectory) {
+        continue;
+      }
+      const destinationContent = formatMemoryDocument(record.headerTitle, metadata, record.body);
+      const destination = await projectNameMigrationDestination(
+        destinationDirectory,
+        entry.name,
+        destinationContent,
+        context.oldSegment,
+      );
+      candidates.push({
+        destinationContent,
+        destinationExistsWithSameContent: destination.existsWithSameContent,
+        destinationUri: `${destinationDirectoryUri}/${destination.filename}`,
+        sourceUri,
+      });
+      if (limit !== undefined && candidates.length >= limit) {
+        return candidates;
+      }
+    }
+  }
+  return candidates;
+}
+
+async function hasSeedManifestProjectNameMigrationCandidate(
+  config: RuntimeConfig,
+  context: ProjectNameMigrationContext,
+): Promise<boolean> {
+  return (await seedManifestProjectNameMigration(config, context)) !== undefined;
+}
+
+async function migrateSeedManifestProjectName(
+  config: RuntimeConfig,
+  context: ProjectNameMigrationContext,
+  dryRun: boolean,
+): Promise<boolean> {
+  const migration = await seedManifestProjectNameMigration(config, context);
+  if (!migration) {
+    return false;
+  }
+  if (dryRun) {
+    console.log(`Would update seed manifest: ${config.manifestPath}`);
+    console.log(migration.output.trimEnd());
+    return true;
+  }
+  await ensureDirectory(dirname(config.manifestPath), false);
+  const currentContent = await readFileIfExists(config.manifestPath);
+  if (currentContent !== undefined) {
+    const backupPath = `${config.manifestPath}.project-name-${safeTimestamp()}`;
+    await writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
+    await chmod(backupPath, 0o600);
+    console.log(`Backup: ${backupPath}`);
+  }
+  await writeFile(config.manifestPath, migration.output, {encoding: 'utf8', mode: 0o600});
+  await chmod(config.manifestPath, 0o600);
+  console.log(`Updated seed manifest: ${config.manifestPath}`);
+  return true;
+}
+
+async function seedManifestProjectNameMigration(
+  config: RuntimeConfig,
+  context: ProjectNameMigrationContext,
+): Promise<{readonly output: string} | undefined> {
+  let manifest;
+  try {
+    manifest = await readSeedManifest(config.manifestPath);
+  } catch (_err: unknown) {
+    return undefined;
+  }
+  const oldDefaultUri = `viking://resources/repos/${context.oldSegment}`;
+  const newDefaultUri = `viking://resources/repos/${context.newSegment}`;
+  const newNameExists = manifest.projects.some(project => uriSegment(project.name) === context.newSegment);
+  let changed = false;
+  let renamedProject = false;
+  const projects = manifest.projects.map(project => {
+    if (!isSeedManifestProjectNameCandidate(project, context, oldDefaultUri) || newNameExists) {
+      return project;
+    }
+    changed = true;
+    renamedProject = true;
+    return {
+      ...project,
+      name: context.newProject,
+      uri: trimTrailingSlash(project.uri) === oldDefaultUri ? newDefaultUri : project.uri,
+    };
+  });
+  const worksets = renamedProject
+    ? manifest.worksets?.map(workset => {
+        const members = workset.projects.map(projectName => {
+          if (uriSegment(projectName) !== context.oldSegment) {
+            return projectName;
+          }
+          changed = true;
+          return context.newProject;
+        });
+        return {...workset, projects: members};
+      })
+    : manifest.worksets;
+  if (!changed) {
+    return undefined;
+  }
+  return {
+    output: `${yaml.dump(
+      {
+        version: manifest.version,
+        projects: projects.map(project => ({
+          name: project.name,
+          path: project.path,
+          uri: project.uri,
+          seed: [...project.seed],
+        })),
+        ...(worksets
+          ? {
+              worksets: worksets.map(workset => ({
+                name: workset.name,
+                ...(workset.description ? {description: workset.description} : {}),
+                projects: [...workset.projects],
+              })),
+            }
+          : {}),
+        ...(manifest.futureMonorepo
+          ? {
+              future_monorepo: {
+                path_candidates: [...manifest.futureMonorepo.pathCandidates],
+                uri: manifest.futureMonorepo.uri,
+              },
+            }
+          : {}),
+      },
+      {lineWidth: 120, noRefs: true},
+    )}`,
+  };
+}
+
+function isSeedManifestProjectNameCandidate(
+  project: ProjectManifest,
+  context: ProjectNameMigrationContext,
+  oldDefaultUri: string,
+): boolean {
+  if (uriSegment(project.name) !== context.oldSegment) {
+    return false;
+  }
+  return trimTrailingSlash(project.uri) === oldDefaultUri || expandPath(project.path) === context.repoRoot;
+}
+
+function canMigrateProjectName(record: MemoryRecord, context: ProjectNameMigrationContext): boolean {
+  const projectSegment = record.metadata.project ? uriSegment(record.metadata.project) : context.oldSegment;
+  return projectSegment === context.oldSegment || projectSegment === context.newSegment;
+}
+
+async function projectNameMigrationDestination(
+  destinationDirectory: string,
+  filename: string,
+  content: string,
+  oldProjectSegment: string,
+): Promise<{readonly existsWithSameContent: boolean; readonly filename: string}> {
+  const direct = await projectNameMigrationDestinationState(destinationDirectory, filename, content);
+  if (!direct.exists || direct.sameContent) {
+    return {existsWithSameContent: direct.sameContent, filename};
+  }
+  const stem = filename.replace(/\.md$/i, '');
+  const fromOldProject = `${stem}-from-${oldProjectSegment}.md`;
+  const renamed = await projectNameMigrationDestinationState(destinationDirectory, fromOldProject, content);
+  if (!renamed.exists || renamed.sameContent) {
+    return {existsWithSameContent: renamed.sameContent, filename: fromOldProject};
+  }
+  return {
+    existsWithSameContent: false,
+    filename: `${stem}-from-${oldProjectSegment}-${sha256(content).slice(0, 12)}.md`,
+  };
+}
+
+async function projectNameMigrationDestinationState(
+  destinationDirectory: string,
+  filename: string,
+  content: string,
+): Promise<{readonly exists: boolean; readonly sameContent: boolean}> {
+  const existing = await readTextIfExists(join(destinationDirectory, filename));
+  return {exists: existing !== undefined, sameContent: existing?.trim() === content.trim()};
+}
+
+function projectMemoryLocations(): readonly ProjectMemoryLocation[] {
+  return [
+    {relativePath: ['durable', 'projects'], uriPath: 'durable/projects'},
+    {relativePath: ['durable', 'archived'], uriPath: 'durable/archived'},
+    {relativePath: ['durable', 'superseded'], uriPath: 'durable/superseded'},
+    {relativePath: ['handoffs', 'active'], uriPath: 'handoffs/active'},
+    {relativePath: ['handoffs', 'archived'], uriPath: 'handoffs/archived'},
+    {relativePath: ['handoffs', 'superseded'], uriPath: 'handoffs/superseded'},
+    {relativePath: ['incidents', 'active'], uriPath: 'incidents/active'},
+    {relativePath: ['incidents', 'archived'], uriPath: 'incidents/archived'},
+    {relativePath: ['incidents', 'superseded'], uriPath: 'incidents/superseded'},
+  ];
+}
+
 export async function runRecall(config: RuntimeConfig, options: RecallOptions): Promise<void> {
   if (options.dryRun !== true) {
     await syncSharedReposAndLog(config);
@@ -318,6 +671,9 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
+  const projectMemoryName = await recallProjectMemoryName(options.project, {
+    includeProcessCwd: true,
+  });
   const nodeLimit = options.nodeLimit ? parsePositiveInteger(options.nodeLimit, 'node limit') : undefined;
   const explicitWorkset = options.workset ? await requireWorkset(config.manifestPath, options.workset) : undefined;
   const searchArgs = (scopeUri: string | undefined): readonly string[] => [
@@ -342,9 +698,19 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const passes: Array<readonly RecallHit[]> = [
     await recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun, includeArchived}),
   ];
+  const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
   if (options.project && project) {
     const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
-    passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived}));
+    if (!scopedRecallUris.has(projectMemoryUri)) {
+      scopedRecallUris.add(projectMemoryUri);
+      passes.push(await recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived}));
+    }
+  }
+  for (const scope of projectMemoryScopeUris(config, projectMemoryName, includeArchived)) {
+    if (!scopedRecallUris.has(scope)) {
+      scopedRecallUris.add(scope);
+      passes.push(await recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
+    }
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
@@ -362,7 +728,9 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
         : undefined;
   if (workset && workset.projects.length > 0) {
     console.log(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
-    const alreadyScoped = new Set([inferredUri, seededUri].filter((uri): uri is string => uri !== undefined));
+    const alreadyScoped = new Set(
+      [inferredUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
+    );
     const worksetScopes = worksetScopeUris(config, workset)
       .filter(uri => !alreadyScoped.has(uri))
       .slice(0, MAX_WORKSET_PASSES);
@@ -1151,6 +1519,38 @@ function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): read
     }
   }
   return [...new Set(scopes)];
+}
+
+async function recallProjectMemoryName(
+  explicitProject: string | undefined,
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
+): Promise<string | undefined> {
+  return normalizeOptionalMetadata(explicitProject) ?? (await resolveWorkspaceRepoName(options));
+}
+
+function projectMemoryScopeUris(
+  config: RuntimeConfig,
+  projectName: string | undefined,
+  includeArchived: boolean,
+): readonly string[] {
+  if (!projectName) {
+    return [];
+  }
+  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const projectSegment = uriSegment(projectName);
+  const scopes = [
+    `${base}/durable/projects/${projectSegment}`,
+    `${base}/handoffs/active/${projectSegment}`,
+    `${base}/incidents/active/${projectSegment}`,
+  ];
+  return includeArchived
+    ? [
+        ...scopes,
+        `${base}/durable/archived/${projectSegment}`,
+        `${base}/handoffs/archived/${projectSegment}`,
+        `${base}/incidents/archived/${projectSegment}`,
+      ]
+    : scopes;
 }
 
 function exactMemoryScopes(

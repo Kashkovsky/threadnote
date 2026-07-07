@@ -12,6 +12,9 @@ import {
 } from '../../src/seeding.js';
 import {readSeedManifest} from '../../src/manifest.js';
 import type {RuntimeConfig, SeedManifest} from '../../src/types.js';
+import {runCommand} from '../../src/utils.js';
+
+const GIT_ENV_KEYS = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
 
 async function captureConsole(action: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
@@ -267,6 +270,47 @@ describe('init-manifest', () => {
         projects: ['existing-repo', 'missing-repo'],
       },
     ]);
+  });
+
+  it('uses the git remote repo name for new manifest projects', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-init-manifest-context-'));
+    const repo = join(contextHome, 'easy-to-type');
+    const previousGitEnv = new Map(GIT_ENV_KEYS.map(key => [key, process.env[key]]));
+    homes.push(contextHome);
+    for (const key of GIT_ENV_KEYS) {
+      delete process.env[key];
+    }
+    try {
+      await mkdir(repo);
+      await runCommand('git', ['init'], {cwd: repo});
+      await runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repo});
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        host: '127.0.0.1',
+        manifestPath,
+        openVikingVersion: '0.0.0',
+        port: 1933,
+        user: 'denys',
+      };
+
+      await captureConsole(() => runInitManifest(config, {path: manifestPath, repo: [repo]}));
+
+      const manifest = await readSeedManifest(manifestPath);
+      expect(manifest.projects[0]?.name).toBe('threadnote');
+      expect(manifest.projects[0]?.uri).toBe('viking://resources/repos/threadnote');
+    } finally {
+      for (const key of GIT_ENV_KEYS) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 });
 

@@ -330,7 +330,7 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
     return;
   }
 
-  const project = projectManifestForRepo(repoRoot, []);
+  const project = await projectManifestForRepo(repoRoot, []);
   const output = yaml.dump(
     {
       version: 1,

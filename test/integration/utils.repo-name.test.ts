@@ -38,6 +38,15 @@ describe('resolveRepoName', () => {
     await rm(workspace, {recursive: true, force: true});
   });
 
+  it('resolves the repo name from the origin remote, not the clone dir', async () => {
+    const repoRoot = join(workspace, 'easy-to-type');
+    await mkdir(repoRoot);
+    await runCommand('git', ['init'], {cwd: repoRoot});
+    await runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repoRoot});
+
+    await expect(resolveRepoName(repoRoot)).resolves.toBe('threadnote');
+  });
+
   it('resolves the primary repo name from a linked worktree, not the worktree dir', async () => {
     const repoRoot = join(workspace, 'myrepo');
     await mkdir(repoRoot);

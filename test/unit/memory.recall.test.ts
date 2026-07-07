@@ -1,4 +1,4 @@
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -74,6 +74,116 @@ describe('runRecall index repair fallback', () => {
     expect(output).toContain('Auto-index repair warning: repair failed');
     expect(output).toContain('Would run: /ov search');
     expect(output).toContain('availability check');
+  });
+
+  it('adds remote-derived project memory scopes for current repo recall', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-remote-project-'));
+    const repoRoot = join(dir, 'easy-to-type');
+    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+    for (const key of gitEnvKeys) {
+      delete process.env[key];
+    }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await mkdir(repoRoot);
+      await utils.runCommand('git', ['init'], {cwd: repoRoot});
+      await utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+        cwd: repoRoot,
+      });
+      process.env.THREADNOTE_CALLER_CWD = repoRoot;
+
+      await runRecall(
+        {...runtime, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
+        {dryRun: true, query: 'current repo latest handoff'},
+      );
+    } finally {
+      if (previousCallerCwd === undefined) {
+        delete process.env.THREADNOTE_CALLER_CWD;
+      } else {
+        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+      }
+      for (const key of gitEnvKeys) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+      await rm(dir, {force: true, recursive: true});
+    }
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).toContain('current repo latest handoff');
+    expect(output).toContain('threadnote');
+    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
+    expect(output).toContain('--uri viking://user/denys/memories/handoffs/active/threadnote');
+    expect(output).not.toContain('easy-to-type');
+  });
+
+  it('does not duplicate current project durable scope through workset expansion', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-workset-dedupe-'));
+    const repoRoot = join(dir, 'easy-to-type');
+    const manifestPath = join(dir, 'seed-manifest.yaml');
+    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+    for (const key of gitEnvKeys) {
+      delete process.env[key];
+    }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await mkdir(repoRoot);
+      await utils.runCommand('git', ['init'], {cwd: repoRoot});
+      await utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+        cwd: repoRoot,
+      });
+      await writeFile(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: threadnote',
+          `    path: ${repoRoot}`,
+          '    uri: viking://resources/repos/threadnote',
+          '    seed: []',
+          'worksets:',
+          '  - name: platform',
+          '    projects: [threadnote]',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      process.env.THREADNOTE_CALLER_CWD = repoRoot;
+
+      await runRecall(
+        {...runtime, manifestPath},
+        {dryRun: true, query: 'current repo latest handoff', workset: 'platform'},
+      );
+    } finally {
+      if (previousCallerCwd === undefined) {
+        delete process.env.THREADNOTE_CALLER_CWD;
+      } else {
+        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+      }
+      for (const key of gitEnvKeys) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+      await rm(dir, {force: true, recursive: true});
+    }
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    const durableScope = '--uri viking://user/denys/memories/durable/projects/threadnote';
+    expect(output.split(durableScope)).toHaveLength(2);
   });
 
   it('honors an explicit workset when inference is disabled', async () => {

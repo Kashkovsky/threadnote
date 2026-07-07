@@ -17,6 +17,7 @@ import type {
   MigrateLifecycleOptions,
   McpInstallOptions,
   MigrateMemoriesOptions,
+  MigrateProjectNamesOptions,
   PackOptions,
   PostUpdateOptions,
   ReadOptions,
@@ -57,6 +58,7 @@ import {
   runList,
   runMigrateLifecycle,
   runMigrateMemories,
+  runMigrateProjectNames,
   runRead,
   runRecall,
   runRemember,
@@ -354,6 +356,16 @@ async function main(): Promise<void> {
     .option('--limit <count>', 'Maximum number of legacy handoffs to migrate')
     .action(async (options: MigrateLifecycleOptions) => {
       await runMigrateLifecycle(getRuntimeConfig(program), options);
+    });
+
+  program
+    .command('migrate-project-names')
+    .description('Move memories from old clone-folder project names to the git remote repo name')
+    .option('--apply', 'Perform the migration; without this, prints a dry run')
+    .option('--dry-run', 'Print migration actions without writing or removing memories')
+    .option('--limit <count>', 'Maximum number of memories to migrate')
+    .action(async (options: MigrateProjectNamesOptions) => {
+      await runMigrateProjectNames(getRuntimeConfig(program), options);
     });
 
   program
