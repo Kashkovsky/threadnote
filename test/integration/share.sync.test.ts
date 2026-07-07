@@ -242,6 +242,9 @@ describe('share sync git handling', () => {
     process.env.GIT_INDEX_FILE = join(callerGitDir, 'index');
 
     const home = join(root, 'home');
+    const {ov, store} = await installFakeOv(root);
+    process.env.THREADNOTE_OV = ov;
+    process.env.THREADNOTE_FAKE_OV_STORE = store;
     const config: ShareRuntime = {account: 'local', agentContextHome: home, agentId: 'threadnote', user: 'denys'};
 
     await runShareInit(config, remote, {push: false, team: 'threadnote'});
