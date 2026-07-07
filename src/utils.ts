@@ -411,7 +411,7 @@ export async function resolveRepoFolderName(cwd = getInvocationCwd()): Promise<s
   return basename(repoRoot);
 }
 
-async function resolveGitRemoteRepoName(repoRoot: string): Promise<string | undefined> {
+export async function resolveGitRemoteRepoName(repoRoot: string): Promise<string | undefined> {
   const originUrl = await gitValue(['remote', 'get-url', 'origin'], repoRoot);
   const originName = originUrl ? gitRemoteRepoName(originUrl) : undefined;
   if (originName) {

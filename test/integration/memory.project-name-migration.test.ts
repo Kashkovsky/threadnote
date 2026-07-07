@@ -42,9 +42,7 @@ describe('project-name memory migration', () => {
 
   it('dry-runs moving clone-folder memories to the remote repo project', async () => {
     const repoRoot = join(workspace, 'easy-to-type');
-    await mkdir(repoRoot);
-    await runCommand('git', ['init'], {cwd: repoRoot});
-    await runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repoRoot});
+    await initRepo(repoRoot, 'git@github.com:Kashkovsky/threadnote.git');
     process.env.THREADNOTE_CALLER_CWD = repoRoot;
 
     const config = runtimeConfig(join(workspace, 'home'));
@@ -122,6 +120,107 @@ describe('project-name memory migration', () => {
     expect(output).toContain('seed manifest would be updated');
     expect(output).toContain('Run threadnote seed --only threadnote');
   });
+
+  it('uses repo_path evidence from memories when no seed manifest exists', async () => {
+    const repoRoot = join(workspace, 'easy-to-type');
+    await initRepo(repoRoot, 'git@github.com:Kashkovsky/threadnote.git');
+
+    const config = runtimeConfig(join(workspace, 'home'));
+    await mkdir(config.agentContextHome, {recursive: true});
+    await writeMemory(
+      config,
+      'handoffs/active/easy-to-type/current.md',
+      [
+        'MEMORY',
+        'kind: handoff',
+        'status: active',
+        'project: easy-to-type',
+        'topic: current',
+        'source_agent_client: codex',
+        'timestamp: 2026-07-07T00:00:00.000Z',
+        '',
+        'repo: easy-to-type',
+        `repo_path: ${repoRoot}`,
+        'branch: main',
+      ].join('\n'),
+    );
+
+    await expect(hasProjectNameMigrationCandidates(config)).resolves.toBe(true);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await runMigrateProjectNames(config, {dryRun: true});
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).not.toContain('Would update seed manifest:');
+    expect(output).toContain(
+      'viking://user/denys/memories/handoffs/active/easy-to-type/current.md -> viking://user/denys/memories/handoffs/active/threadnote/current.md',
+    );
+    expect(output).toContain(
+      'Project-name migration summary: 1 memory would be migrated from easy-to-type to threadnote',
+    );
+    expect(output).toContain('seed manifest unchanged');
+  });
+
+  it('scans all memory-backed manifest projects, not only the current workspace', async () => {
+    const currentRepo = join(workspace, 'threadnote');
+    await initRepo(currentRepo, 'git@github.com:Kashkovsky/threadnote.git');
+    const otherRepo = join(workspace, 'ta');
+    await initRepo(otherRepo, 'git@github.com:Kashkovsky/igor-bot.git');
+    process.env.THREADNOTE_CALLER_CWD = currentRepo;
+
+    const config = runtimeConfig(join(workspace, 'home'));
+    await mkdir(config.agentContextHome, {recursive: true});
+    await writeFile(
+      config.manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: threadnote',
+        `    path: ${currentRepo}`,
+        '    uri: viking://resources/repos/threadnote',
+        '    seed: [README.md]',
+        '  - name: ta',
+        `    path: ${otherRepo}`,
+        '    uri: viking://resources/repos/ta',
+        '    seed: [README.md]',
+        'worksets:',
+        '  - name: all',
+        '    projects: [threadnote, ta]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeMemory(
+      config,
+      'durable/projects/ta/current.md',
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: ta',
+        'topic: current',
+        'source_agent_client: codex',
+        'timestamp: 2026-07-07T00:00:00.000Z',
+        '',
+        'Feature knowledge.',
+      ].join('\n'),
+    );
+
+    await expect(hasProjectNameMigrationCandidates(config)).resolves.toBe(true);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await runMigrateProjectNames(config, {dryRun: true});
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).toContain('Would update seed manifest:');
+    expect(output).toContain('name: igor-bot');
+    expect(output).toContain('uri: viking://resources/repos/igor-bot');
+    expect(output).toContain('- igor-bot');
+    expect(output).toContain(
+      'viking://user/denys/memories/durable/projects/ta/current.md -> viking://user/denys/memories/durable/projects/igor-bot/current.md',
+    );
+    expect(output).toContain('Project-name migration summary: 1 memory would be migrated from ta to igor-bot');
+  });
 });
 
 function runtimeConfig(agentContextHome: string): RuntimeConfig {
@@ -135,6 +234,12 @@ function runtimeConfig(agentContextHome: string): RuntimeConfig {
     port: 1933,
     user: 'denys',
   };
+}
+
+async function initRepo(repoRoot: string, remoteUrl: string): Promise<void> {
+  await mkdir(repoRoot);
+  await runCommand('git', ['init'], {cwd: repoRoot});
+  await runCommand('git', ['remote', 'add', 'origin', remoteUrl], {cwd: repoRoot});
 }
 
 async function writeMemory(config: RuntimeConfig, relativePath: string, content: string): Promise<void> {

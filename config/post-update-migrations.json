@@ -25,15 +25,16 @@
       "title": "Consolidate memories under the git remote project name",
       "description": [
         "Threadnote now uses the git remote repository name as the default project identifier instead of the clone folder name.",
-        "This migration scans personal lifecycle-aware memory folders for the old folder-derived project name from the current workspace.",
-        "It also renames the matching seed manifest project and workset references so future seeded guidance uses the remote-derived project name.",
+        "This migration scans personal lifecycle-aware memory project folders and uses repo_path evidence in memories, plus matching seed manifest paths when present, to resolve git remote names.",
+        "It covers every detected personal memory project, not just the workspace where threadnote update was run.",
+        "It also renames matching seed manifest projects and workset references so future seeded guidance uses the remote-derived project name.",
         "Matching memories are copied under the remote-derived project name with updated project metadata, then the old copy is removed.",
         "If a destination file already exists with different content, Threadnote keeps both by writing the migrated copy with a -from-<old-project> suffix.",
-        "Shared team memories and unrelated project folders are left untouched."
+        "Shared team memories and projects without repo path evidence are left untouched."
       ],
       "commandArgs": ["migrate-project-names", "--apply"],
       "instructions": [
-        "Post-update project-name migration finished. Future default handoffs and memories for this repo will use the git remote repository name as their project.",
+        "Post-update project-name migration finished. Future default handoffs and memories for migrated repos will use the git remote repository name as their project.",
         "If the migration updated your seed manifest, run threadnote seed --only <new-project-name> to re-ingest seeded resources under the new project URI.",
         "If Threadnote reported any original files were still being processed, rerun the printed threadnote forget <uri> command later."
       ],
