@@ -436,7 +436,12 @@ async function loadPendingReindexes(config: ShareRuntime, state: AutoShareState)
         typeof entry.relativePath === 'string' &&
         (entry.status === 'added' || entry.status === 'removed' || entry.status === 'modified')
       ) {
-        changes.push({path: entry.path, relativePath: entry.relativePath, status: entry.status});
+        changes.push({
+          path: entry.path,
+          previousContent: typeof entry.previousContent === 'string' ? entry.previousContent : undefined,
+          relativePath: entry.relativePath,
+          status: entry.status,
+        });
       }
     }
     if (changes.length > 0) {
@@ -3782,7 +3787,7 @@ async function applyChangesToOpenViking(
       const currentContent = await readExistingMemoryContent(config, ov, uri);
       if (currentContent !== undefined) {
         if (change.status === 'added') {
-          if (currentContent === content) {
+          if (sharedMemoryContentsEquivalent(currentContent, content)) {
             continue;
           }
           throw new Error(
@@ -3826,11 +3831,19 @@ function assertInboundPreviousContentMatches(change: ChangedFile, uri: string, c
     );
   }
   const expectedContent = prepareSharedInboundContent(uri, change.previousContent);
-  if (currentContent !== expectedContent) {
+  if (!sharedMemoryContentsEquivalent(currentContent, expectedContent)) {
     throw new Error(
       `Refusing to apply inbound shared change for ${uri}: local OpenViking content differs from the previous shared version. Inspect and resolve the local edit first.`,
     );
   }
+}
+
+function sharedMemoryContentsEquivalent(left: string, right: string): boolean {
+  return normalizeSharedMemoryComparisonContent(left) === normalizeSharedMemoryComparisonContent(right);
+}
+
+function normalizeSharedMemoryComparisonContent(content: string): string {
+  return content.replace(/\r\n?/g, '\n').replace(/\n$/, '');
 }
 
 export function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {

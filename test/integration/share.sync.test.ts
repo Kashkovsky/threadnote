@@ -323,6 +323,129 @@ describe('share sync git handling', () => {
     );
   });
 
+  it('clears a pending added reindex when OpenViking only differs by the final newline', async () => {
+    const {config, home, root, seed, worktree} = await makeShareRepo();
+    const {ov, store} = await installFakeOv(root);
+    process.env.THREADNOTE_OV = ov;
+    process.env.THREADNOTE_FAKE_OV_STORE = store;
+    const relativePath = 'durable/projects/threadnote/shared.md';
+    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
+    await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body', 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await writeFile(fakeOvFile(store, uri), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
+
+    const pendingPath = join(home, 'share', 'auto-sync-pending-reindexes.json');
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify(
+        {
+          teams: {
+            default: [{path: join(worktree, relativePath), relativePath, status: 'added'}],
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(fakeOvFile(store, uri), 'utf8')).resolves.toBe(
+      'MEMORY\nkind: durable\nstatus: active\n\nshared body\n',
+    );
+    await expect(readFile(pendingPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('keeps a pending added reindex blocked when OpenViking has a real local edit', async () => {
+    const {config, home, root, seed, worktree} = await makeShareRepo();
+    const {ov, store} = await installFakeOv(root);
+    process.env.THREADNOTE_OV = ov;
+    process.env.THREADNOTE_FAKE_OV_STORE = store;
+    const relativePath = 'durable/projects/threadnote/shared.md';
+    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
+    await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await writeFile(fakeOvFile(store, uri), 'MEMORY\nkind: durable\nstatus: active\n\nlocal edit\n', 'utf8');
+
+    const pendingPath = join(home, 'share', 'auto-sync-pending-reindexes.json');
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify(
+        {
+          teams: {
+            default: [{path: join(worktree, relativePath), relativePath, status: 'added'}],
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(fakeOvFile(store, uri), 'utf8')).resolves.toContain('local edit');
+    await expect(readFile(pendingPath, 'utf8')).resolves.toContain('"status": "added"');
+  });
+
+  it('preserves previousContent when replaying a pending modified reindex after restart', async () => {
+    const {config, home, root, seed, worktree} = await makeShareRepo();
+    const {ov, store} = await installFakeOv(root);
+    process.env.THREADNOTE_OV = ov;
+    process.env.THREADNOTE_FAKE_OV_STORE = store;
+    const relativePath = 'durable/projects/threadnote/shared.md';
+    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
+    const newContent = 'MEMORY\nkind: durable\nstatus: active\n\nnew shared';
+    await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
+    await writeFile(join(seed, relativePath), `${oldContent}\n`, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await writeFile(join(seed, relativePath), newContent, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'update shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await git(['-C', worktree, 'fetch', 'origin']);
+    await git(['-C', worktree, 'rebase', '@{u}']);
+    await writeFile(fakeOvFile(store, uri), `${oldContent}\n`, 'utf8');
+
+    const pendingPath = join(home, 'share', 'auto-sync-pending-reindexes.json');
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify(
+        {
+          teams: {
+            default: [
+              {path: join(worktree, relativePath), previousContent: oldContent, relativePath, status: 'modified'},
+            ],
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(fakeOvFile(store, uri), 'utf8')).resolves.toBe(newContent);
+    await expect(readFile(pendingPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
   it('does not delete a local shared resource that diverged from the previous shared version', async () => {
     const {config, root, seed} = await makeShareRepo();
     const {ov, store} = await installFakeOv(root);
