@@ -25,6 +25,9 @@ import type {
   RememberOptions,
   RepairOptions,
   SeedOptions,
+  ShareConflictOptions,
+  ShareConflictResolveOptions,
+  ShareConflictShowOptions,
   ShareInstallArtifactsOptions,
   ShareInitOptions,
   ShareListOptions,
@@ -65,6 +68,9 @@ import {
 } from './memory.js';
 import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from './seeding.js';
 import {
+  runShareConflictResolve,
+  runShareConflicts,
+  runShareConflictShow,
   runShareInit,
   runShareInstallArtifacts,
   runShareList,
@@ -518,14 +524,47 @@ async function main(): Promise<void> {
 
   share
     .command('sync')
-    .description('Pull, reindex, and push the shared memories repo for a team')
-    .option('--team <name>', 'Team name; defaults to the configured default team')
+    .description('Pull, reindex, and push shared memories repos')
+    .option('--team <name>', 'Team name; when omitted, syncs all configured teams')
     .option('--message <text>', 'Commit message when auto-committing local edits')
     .option('--no-auto-commit', 'Refuse to sync if there are uncommitted local changes')
     .option('--no-push', 'Skip the push step after pulling and reindexing')
     .option('--dry-run', 'Print actions without running them')
     .action(async (options: ShareSyncOptions) => {
       await runShareSync(getRuntimeConfig(program), options);
+    });
+
+  share
+    .command('conflicts')
+    .description('List pending shared memory conflicts from failed share sync reindexes')
+    .option('--team <name>', 'Team name; defaults to all configured teams')
+    .action(async (options: ShareConflictOptions) => {
+      await runShareConflicts(getRuntimeConfig(program), options);
+    });
+
+  const shareConflict = share.command('conflict').description('Inspect or resolve one pending shared memory conflict');
+
+  shareConflict
+    .command('show')
+    .description('Show local/shared content and resolution commands for one pending shared memory conflict')
+    .argument('<conflict-id>', 'Conflict id from `threadnote share conflicts`, relative path, or shared viking:// URI')
+    .option('--team <name>', 'Team name when conflict-id is a relative path')
+    .action(async (conflictId: string, options: ShareConflictShowOptions) => {
+      await runShareConflictShow(getRuntimeConfig(program), conflictId, options);
+    });
+
+  shareConflict
+    .command('resolve')
+    .description('Resolve one pending shared memory conflict with shared, local, or merged content')
+    .argument('<conflict-id>', 'Conflict id from `threadnote share conflicts`, relative path, or shared viking:// URI')
+    .option('--team <name>', 'Team name when conflict-id is a relative path')
+    .option('--take <side>', 'Resolution side: shared or local')
+    .option('--from-file <path>', 'Merged memory markdown to write to both OpenViking and the shared repo')
+    .option('--message <text>', 'Commit message when writing local or merged content to the shared repo')
+    .option('--no-push', 'Skip pushing a local/merged resolution commit')
+    .option('--dry-run', 'Print actions without writing OpenViking, shared files, git commits, or pending state')
+    .action(async (conflictId: string, options: ShareConflictResolveOptions) => {
+      await runShareConflictResolve(getRuntimeConfig(program), conflictId, options);
     });
 
   share

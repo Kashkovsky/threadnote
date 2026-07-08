@@ -27,12 +27,15 @@ import {
 } from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  listShareConflicts,
   installSharedAgentArtifacts,
   isInSharedNamespace,
   listSharedAgentArtifacts,
   publishShareGitChange,
   resolveTeam,
+  resolveShareConflict,
   applyScrubber,
+  showShareConflict,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   sharedUriFor,
@@ -191,6 +194,7 @@ async function main(): Promise<void> {
         'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
         'Use compact_context with dryRun=true for scoped memory hygiene when recall surfaces overlapping active memories.',
         'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish scrubs for secrets, writes and pushes the shared copy first, then removes the personal copy after the push succeeds. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
+        'When recall/read reports pending shared memory conflicts, call `share_conflicts`, inspect one with `share_conflict_show`, then resolve it only after user direction with `share_conflict_resolve` using take="shared", take="local", or mergedContent.',
         'To share a local Codex/Claude skill or Claude command with teammates, call `share_skill` with the local file path. It publishes into the shared artifact catalog after the same scrubber checks.',
         'To use a team shared skill as a native local skill, call `list_shared_skills` first, then `install_shared_skill` for the selected name/agent/kind.',
         'Do not store secrets, customer data, raw production logs, or credentials.',
@@ -434,6 +438,95 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
         return checkedUri.error;
       }
       return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+    },
+  );
+
+  server.registerTool(
+    'share_conflicts',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        'List pending shared memory conflicts left by share sync reindex failures. Use this when recall/read/sync reports pending shared memory conflicts. Each result includes a stable id plus exact next-step guidance for show/resolve.',
+      inputSchema: {
+        team: z.string().optional().describe('Team name; omit to inspect all configured teams'),
+      },
+    },
+    async ({team}) => runShareConflictsTool(config, {team}),
+  );
+
+  server.registerTool(
+    'share_conflict_show',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        'Show one pending shared memory conflict, including local OpenViking content vs shared file diff and safe resolution options. The id comes from share_conflicts and has the form team:durable/projects/.../topic.md; a shared viking:// URI also works.',
+      inputSchema: {
+        id: z
+          .string()
+          .optional()
+          .describe('Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI'),
+        team: z.string().optional().describe('Team name when id is only a relative path'),
+      },
+    },
+    async ({id, team}) => {
+      const checkedId = requiredText(id, 'share_conflict_show', 'id', {
+        id: 'default:durable/projects/foo/bar.md',
+      });
+      if (!checkedId.ok) {
+        return checkedId.error;
+      }
+      return runShareConflictShowTool(config, checkedId.value, {team});
+    },
+  );
+
+  server.registerTool(
+    'share_conflict_resolve',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        'Resolve one pending shared memory conflict on the user’s behalf after they choose a winner. Use take="shared" to accept the shared git file into OpenViking, take="local" to publish local OpenViking content back to the shared repo, or mergedContent to write explicit merged markdown to both places. Creates a local backup before mutation and clears only the resolved pending entry.',
+      inputSchema: {
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe('Preview without writing OpenViking, shared files, git commits, or pending state'),
+        id: z
+          .string()
+          .optional()
+          .describe('Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI'),
+        mergedContent: z
+          .string()
+          .optional()
+          .describe(
+            'Explicit merged memory markdown. Mutually exclusive with take. MCP equivalent of CLI --from-file.',
+          ),
+        message: z
+          .string()
+          .optional()
+          .describe('Commit message when writing local or merged content to the shared repo'),
+        push: z.boolean().optional().describe('Push local/merged resolution commit to remote; defaults to true'),
+        take: z
+          .enum(['shared', 'local'])
+          .optional()
+          .describe('Resolution side. Mutually exclusive with mergedContent.'),
+        team: z.string().optional().describe('Team name when id is only a relative path'),
+      },
+    },
+    async ({dryRun, id, mergedContent, message, push, take, team}) => {
+      const checkedId = requiredText(id, 'share_conflict_resolve', 'id', {
+        id: 'default:durable/projects/foo/bar.md',
+      });
+      if (!checkedId.ok) {
+        return checkedId.error;
+      }
+      return runShareConflictResolveTool(config, checkedId.value, {
+        dryRun,
+        mergedContent,
+        message,
+        push,
+        take,
+        team,
+      });
     },
   );
 
@@ -2258,6 +2351,19 @@ interface SharePublishToolOptions {
   readonly team?: string;
 }
 
+interface ShareConflictToolOptions {
+  readonly team?: string;
+}
+
+interface ShareConflictResolveToolOptions {
+  readonly dryRun?: boolean;
+  readonly mergedContent?: string;
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly take?: 'local' | 'shared';
+  readonly team?: string;
+}
+
 interface ShareSkillToolOptions {
   readonly agent?: 'claude' | 'codex';
   readonly allowBinary?: boolean;
@@ -2284,6 +2390,101 @@ interface InstallSharedSkillToolOptions {
   readonly force?: boolean;
   readonly kind?: 'command' | 'pack' | 'skill';
   readonly team?: string;
+}
+
+async function runShareConflictsTool(
+  config: RuntimeConfig,
+  options: ShareConflictToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const conflicts = await listShareConflicts(config, options);
+    if (conflicts.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: options.team
+              ? `No pending shared memory conflicts for team "${options.team}".`
+              : 'No pending shared memory conflicts.',
+          },
+        ],
+      };
+    }
+    const lines = [`Pending shared memory conflicts: ${conflicts.length}`];
+    for (const conflict of conflicts) {
+      lines.push(
+        '',
+        conflict.id,
+        `uri: ${conflict.uri}`,
+        `status: ${conflict.status}`,
+        `reason: ${conflict.reason}`,
+        `show: share_conflict_show({"id":${JSON.stringify(conflict.id)}})`,
+        `take shared: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"shared"})`,
+        `take local: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"local"})`,
+        `merged: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"mergedContent":"<merged MEMORY markdown>"})`,
+      );
+    }
+    return {content: [{type: 'text', text: lines.join('\n')}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runShareConflictShowTool(
+  config: RuntimeConfig,
+  id: string,
+  options: ShareConflictToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const detail = await showShareConflict(config, id, options);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: [
+            `Conflict: ${detail.id}`,
+            `URI: ${detail.uri}`,
+            `Status: ${detail.status}`,
+            `Reason: ${detail.reason}`,
+            '',
+            detail.diff,
+            '',
+            'Resolve:',
+            `share_conflict_resolve({"id":${JSON.stringify(detail.id)},"take":"shared"})`,
+            `share_conflict_resolve({"id":${JSON.stringify(detail.id)},"take":"local"})`,
+            `share_conflict_resolve({"id":${JSON.stringify(detail.id)},"mergedContent":"<merged MEMORY markdown>"})`,
+          ].join('\n'),
+        },
+      ],
+    };
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
+}
+
+async function runShareConflictResolveTool(
+  config: RuntimeConfig,
+  id: string,
+  options: ShareConflictResolveToolOptions,
+): Promise<CallToolResult> {
+  try {
+    const result = await resolveShareConflict(config, id, {
+      dryRun: options.dryRun,
+      mergedContent: options.mergedContent,
+      message: options.message,
+      push: options.push,
+      take: options.take,
+      team: options.team,
+    });
+    const lines = [...result.messages];
+    if (result.backupPath) {
+      lines.push(`Backup: ${result.backupPath}`);
+    }
+    lines.push(...result.gitMessages, `Resolved shared memory conflict: ${result.id}`);
+    return {content: [{type: 'text', text: lines.join('\n')}]};
+  } catch (err: unknown) {
+    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
+  }
 }
 
 async function runSharePublishTool(

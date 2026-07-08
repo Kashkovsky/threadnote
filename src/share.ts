@@ -9,6 +9,10 @@ import type {
   CommandResult,
   ShareAgentArtifactAgent,
   ShareAgentArtifactKind,
+  ShareConflictOptions,
+  ShareConflictResolveOptions,
+  ShareConflictShowOptions,
+  ShareConflictTake,
   ShareInstallArtifactsOptions,
   ShareInitOptions,
   ShareListArtifactsOptions,
@@ -42,6 +46,7 @@ import {
   removePath,
   requiredExecutable,
   runCommand,
+  safeTimestamp,
   sha256,
   sleep,
 } from './utils.js';
@@ -191,6 +196,37 @@ export interface AutoShareSyncResult {
   readonly syncedTeams: readonly string[];
   readonly warnings: readonly string[];
 }
+
+export interface ShareConflictSummary {
+  readonly hasLocalContent: boolean;
+  readonly hasPreviousContent: boolean;
+  readonly hasSharedContent: boolean;
+  readonly id: string;
+  readonly reason: string;
+  readonly relativePath: string;
+  readonly status: ChangedFile['status'];
+  readonly team: string;
+  readonly uri: string;
+}
+
+export interface ShareConflictDetail extends ShareConflictSummary {
+  readonly diff: string;
+  readonly localContent?: string;
+  readonly previousContent?: string;
+  readonly resolutionGuidance: readonly string[];
+  readonly sharedContent?: string;
+}
+
+export interface ShareConflictResolveResult {
+  readonly backupPath?: string;
+  readonly gitMessages: readonly string[];
+  readonly id: string;
+  readonly messages: readonly string[];
+  readonly team: string;
+  readonly uri: string;
+}
+
+type InspectedShareConflict = Omit<ShareConflictDetail, 'diff' | 'resolutionGuidance'>;
 
 interface ShareUpdateStatus {
   readonly behind: number;
@@ -548,7 +584,39 @@ async function fetchShareUpdateStatuses(config: ShareRuntime): Promise<readonly 
 }
 
 export async function runShareSync(config: ShareRuntime, options: ShareSyncOptions): Promise<void> {
-  const team = await resolveTeam(config, options.team);
+  const teams = await teamsForShareQuery(config, options.team);
+
+  if (options.team) {
+    const team = teams[0];
+    if (!team) {
+      throw new Error('No shared teams configured. Run: threadnote share init <remote-url>');
+    }
+    await runShareSyncForTeam(config, team, options);
+    return;
+  }
+
+  const failures: string[] = [];
+  for (const [index, team] of teams.entries()) {
+    if (teams.length > 1) {
+      console.log(`Syncing shared team "${team.name}" (${index + 1}/${teams.length})...`);
+    }
+    try {
+      await runShareSyncForTeam(config, team, options);
+    } catch (error) {
+      failures.push(`${team.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      [`share sync failed for ${failures.length} shared team(s):`, ...failures.map(failure => `- ${failure}`)].join(
+        '\n',
+      ),
+    );
+  }
+}
+
+async function runShareSyncForTeam(config: ShareRuntime, team: ResolvedTeam, options: ShareSyncOptions): Promise<void> {
   const dryRun = options.dryRun === true;
   const git = await requiredExecutable('git');
   const worktree = team.config.worktree;
@@ -633,6 +701,7 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
         console.warn(
           `share sync: ${result.failed.length} file(s) could not be ingested on this run; they are persisted and will be retried on the next sync or agent recall/read.`,
         );
+        console.warn(formatShareConflictNextSteps(team.name, result.failed));
       }
     }
   }
@@ -651,6 +720,171 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
   }
 }
 
+export async function runShareConflicts(config: ShareRuntime, options: ShareConflictOptions): Promise<void> {
+  const conflicts = await listShareConflicts(config, options);
+  if (conflicts.length === 0) {
+    const team = options.team ? ` for team "${options.team}"` : '';
+    console.log(`No pending shared memory conflicts${team}.`);
+    return;
+  }
+  console.log(`Pending shared memory conflicts: ${conflicts.length}`);
+  for (const conflict of conflicts) {
+    console.log('');
+    console.log(`${conflict.id}`);
+    console.log(`  uri: ${conflict.uri}`);
+    console.log(`  status: ${conflict.status}`);
+    console.log(`  reason: ${conflict.reason}`);
+    console.log(`  show: threadnote share conflict show ${conflict.id}`);
+    console.log(`  take shared: threadnote share conflict resolve ${conflict.id} --take shared`);
+    console.log(`  take local: threadnote share conflict resolve ${conflict.id} --take local`);
+    console.log(`  merged file: threadnote share conflict resolve ${conflict.id} --from-file merged.md`);
+  }
+}
+
+export async function runShareConflictShow(
+  config: ShareRuntime,
+  reference: string,
+  options: ShareConflictShowOptions,
+): Promise<void> {
+  const detail = await showShareConflict(config, reference, options);
+  console.log(`Conflict: ${detail.id}`);
+  console.log(`URI: ${detail.uri}`);
+  console.log(`Status: ${detail.status}`);
+  console.log(`Reason: ${detail.reason}`);
+  console.log('');
+  console.log(detail.diff);
+  console.log('');
+  console.log('Resolve:');
+  for (const line of detail.resolutionGuidance) {
+    console.log(`  ${line}`);
+  }
+}
+
+export async function runShareConflictResolve(
+  config: ShareRuntime,
+  reference: string,
+  options: ShareConflictResolveOptions,
+): Promise<void> {
+  const result = await resolveShareConflict(config, reference, options);
+  for (const message of result.messages) {
+    console.log(message);
+  }
+  if (result.backupPath) {
+    console.log(`Backup: ${portablePath(result.backupPath)}`);
+  }
+  for (const message of result.gitMessages) {
+    console.log(message);
+  }
+  console.log(`Resolved shared memory conflict: ${result.id}`);
+}
+
+export async function listShareConflicts(
+  config: ShareRuntime,
+  options: ShareConflictOptions = {},
+): Promise<readonly ShareConflictSummary[]> {
+  const teams = await teamsForShareQuery(config, options.team);
+  const state = autoShareState(config);
+  await loadPendingReindexes(config, state);
+  const summaries: ShareConflictSummary[] = [];
+  for (const team of teams) {
+    const pending = state.pendingReindexes.get(team.name) ?? [];
+    for (const change of pending) {
+      if (!isShareableMemoryChange(change)) {
+        continue;
+      }
+      summaries.push(await buildShareConflictSummary(config, team, normalizePendingChange(team, change)));
+    }
+  }
+  return summaries;
+}
+
+export async function showShareConflict(
+  config: ShareRuntime,
+  reference: string,
+  options: ShareConflictShowOptions = {},
+): Promise<ShareConflictDetail> {
+  const conflict = await readPendingShareConflict(config, reference, options.team);
+  const inspected = await inspectShareConflict(config, conflict.team, conflict.change);
+  return {
+    ...inspected,
+    diff: formatShareConflictDiff(inspected),
+    resolutionGuidance: shareConflictResolutionGuidance(inspected.id),
+  };
+}
+
+export async function resolveShareConflict(
+  config: ShareRuntime,
+  reference: string,
+  options: ShareConflictResolveOptions,
+): Promise<ShareConflictResolveResult> {
+  const fromFile = options.fromFile?.trim();
+  const mergedContent = options.mergedContent;
+  const rawTake = options.take as string | undefined;
+  if (rawTake !== undefined && rawTake !== 'shared' && rawTake !== 'local') {
+    throw new Error(`Unsupported --take value "${rawTake}". Expected "shared" or "local".`);
+  }
+  const take = rawTake as ShareConflictTake | undefined;
+  if ((take ? 1 : 0) + (fromFile ? 1 : 0) + (mergedContent !== undefined ? 1 : 0) !== 1) {
+    throw new Error(
+      'Choose exactly one resolution: --take shared, --take local, --from-file <path>, or mergedContent via MCP.',
+    );
+  }
+  const conflict = await readPendingShareConflict(config, reference, options.team);
+  const inspected = await inspectShareConflict(config, conflict.team, conflict.change);
+  const dryRun = options.dryRun === true;
+  const ov = await openVikingCliForMode(dryRun);
+  const messages: string[] = [];
+  const gitMessages: string[] = [];
+  const backupPath = dryRun ? undefined : await backupShareConflict(config, inspected);
+
+  if (take === 'shared') {
+    if (inspected.status === 'removed') {
+      if (inspected.hasLocalContent) {
+        await removeMemoryUri(config, ov, inspected.uri, dryRun);
+        messages.push(`Accepted shared deletion for ${inspected.uri}.`);
+      } else {
+        messages.push(`Shared deletion was already reflected in OpenViking for ${inspected.uri}.`);
+      }
+    } else {
+      if (inspected.sharedContent === undefined) {
+        throw new Error(`Cannot take shared for ${inspected.id}: shared file is missing or not readable.`);
+      }
+      await ensureSharedDirectoryChain(config, ov, inspected.uri, dryRun);
+      await writeMemoryFile(
+        config,
+        ov,
+        inspected.uri,
+        inspected.sharedContent,
+        inspected.hasLocalContent ? 'replace' : 'create',
+        dryRun,
+      );
+      messages.push(`Accepted shared file content for ${inspected.uri}.`);
+    }
+  } else {
+    const content = await conflictResolutionContent(inspected, take, fromFile, mergedContent);
+    await writeSharedConflictFile(conflict.team, inspected, content, dryRun);
+    await ensureSharedDirectoryChain(config, ov, inspected.uri, dryRun);
+    await writeMemoryFile(config, ov, inspected.uri, content, inspected.hasLocalContent ? 'replace' : 'create', dryRun);
+    const message = options.message ?? `share: resolve ${inspected.relativePath}`;
+    gitMessages.push(
+      ...(await publishShareGitChange(conflict.team.config.worktree, inspected.relativePath, message, {
+        dryRun,
+        push: options.push,
+      })),
+    );
+    messages.push(
+      take === 'local'
+        ? `Published local OpenViking content for ${inspected.uri}.`
+        : `Applied merged content for ${inspected.uri}.`,
+    );
+  }
+
+  if (!dryRun) {
+    await clearPendingShareConflict(config, conflict.team.name, inspected.relativePath);
+  }
+  return {backupPath, gitMessages, id: inspected.id, messages, team: inspected.team, uri: inspected.uri};
+}
+
 async function runShareSyncQuiet(
   config: ShareRuntime,
   state: AutoShareState,
@@ -662,7 +896,10 @@ async function runShareSyncQuiet(
 
   const pendingChanges = state.pendingReindexes.get(team.name);
   if (pendingChanges && pendingChanges.length > 0) {
-    await applyAndPersistChanges(config, team.config, state, pendingChanges, {quiet: true});
+    const result = await applyAndPersistChanges(config, team.config, state, pendingChanges, {quiet: true});
+    if (result.failed.length > 0) {
+      return `Shared team "${team.name}" has ${result.failed.length} pending shared memory conflict(s). Run \`threadnote share conflicts --team ${team.name}\` to inspect, then \`threadnote share conflict resolve <id> --take shared|local\` or \`--from-file <path>\`.`;
+    }
   }
 
   if (await hasUncommittedChanges(worktree)) {
@@ -700,10 +937,375 @@ async function runShareSyncQuiet(
       // drain item doesn't get clobbered when we persist the new changes.
       const stillPending = state.pendingReindexes.get(team.name) ?? [];
       const combined = mergeChanges(stillPending, changes);
-      await applyAndPersistChanges(config, team.config, state, combined, {quiet: true});
+      const result = await applyAndPersistChanges(config, team.config, state, combined, {quiet: true});
+      if (result.failed.length > 0) {
+        return `Shared team "${team.name}" has ${result.failed.length} pending shared memory conflict(s). Run \`threadnote share conflicts --team ${team.name}\` to inspect, then \`threadnote share conflict resolve <id> --take shared|local\` or \`--from-file <path>\`.`;
+      }
     }
   }
   return undefined;
+}
+
+interface PendingShareConflict {
+  readonly change: ChangedFile;
+  readonly team: ResolvedTeam;
+}
+
+async function teamsForShareQuery(
+  config: ShareRuntime,
+  teamName: string | undefined,
+): Promise<readonly ResolvedTeam[]> {
+  if (teamName) {
+    return [await resolveTeam(config, teamName)];
+  }
+  const teams = await readTeamsFile(config);
+  const entries = Object.entries(teams.teams);
+  if (entries.length === 0) {
+    throw new Error('No shared teams configured. Run: threadnote share init <remote-url>');
+  }
+  return entries.map(([name, team]) => ({config: team, name}));
+}
+
+async function readPendingShareConflict(
+  config: ShareRuntime,
+  reference: string,
+  optionTeam: string | undefined,
+): Promise<PendingShareConflict> {
+  const target = await parseShareConflictReference(config, reference, optionTeam);
+  const state = autoShareState(config);
+  await loadPendingReindexes(config, state);
+  const pending = state.pendingReindexes.get(target.team.name) ?? [];
+  const change = pending.find(candidate => candidate.relativePath === target.relativePath);
+  if (!change) {
+    const available = pending
+      .filter(isShareableMemoryChange)
+      .map(candidate => conflictId(target.team.name, candidate.relativePath));
+    throw new Error(
+      [
+        `No pending shared memory conflict found for ${conflictId(target.team.name, target.relativePath)}.`,
+        available.length > 0
+          ? `Pending conflicts for this team:\n${available.map(id => `- ${id}`).join('\n')}`
+          : `No pending conflicts for team "${target.team.name}".`,
+      ].join('\n'),
+    );
+  }
+  return {change: normalizePendingChange(target.team, change), team: target.team};
+}
+
+async function parseShareConflictReference(
+  config: ShareRuntime,
+  reference: string,
+  optionTeam: string | undefined,
+): Promise<{readonly relativePath: string; readonly team: ResolvedTeam}> {
+  const trimmed = reference.trim();
+  if (!trimmed) {
+    throw new Error('Provide a conflict id, relative path, or viking:// shared memory URI.');
+  }
+  if (trimmed.startsWith('viking://')) {
+    const teamName = sharedTeamNameForUri(config, trimmed);
+    if (!teamName) {
+      throw new Error(`Shared memory URI does not include a configured team: ${trimmed}`);
+    }
+    const team = await resolveTeam(config, optionTeam ?? teamName);
+    return {relativePath: assertSafeShareRelativePath(vikingUriToWorktreeRelative(config, trimmed, team.name)), team};
+  }
+  const colon = trimmed.indexOf(':');
+  if (colon > 0 && !trimmed.slice(0, colon).includes('/')) {
+    const team = await resolveTeam(config, optionTeam ?? trimmed.slice(0, colon));
+    return {relativePath: assertSafeShareRelativePath(trimmed.slice(colon + 1)), team};
+  }
+  const team = await resolveTeam(config, optionTeam);
+  return {relativePath: assertSafeShareRelativePath(trimmed), team};
+}
+
+function assertSafeShareRelativePath(relativePath: string): string {
+  if (
+    !relativePath ||
+    relativePath.startsWith('/') ||
+    relativePath.split('/').some(segment => segment === '..' || segment.length === 0)
+  ) {
+    throw new Error(`Invalid shared relative path: ${relativePath}`);
+  }
+  return relativePath;
+}
+
+function normalizePendingChange(team: ResolvedTeam, change: ChangedFile): ChangedFile {
+  return {...change, path: join(team.config.worktree, change.relativePath)};
+}
+
+function isShareableMemoryChange(change: ChangedFile): boolean {
+  const firstSegment = change.relativePath.split('/')[0];
+  return change.relativePath.endsWith('.md') && SHAREABLE_MEMORY_KIND_DIRS.includes(firstSegment);
+}
+
+async function buildShareConflictSummary(
+  config: ShareRuntime,
+  team: ResolvedTeam,
+  change: ChangedFile,
+): Promise<ShareConflictSummary> {
+  const inspected = await inspectShareConflict(config, team, change);
+  return {
+    hasLocalContent: inspected.hasLocalContent,
+    hasPreviousContent: inspected.hasPreviousContent,
+    hasSharedContent: inspected.hasSharedContent,
+    id: inspected.id,
+    reason: inspected.reason,
+    relativePath: inspected.relativePath,
+    status: inspected.status,
+    team: inspected.team,
+    uri: inspected.uri,
+  };
+}
+
+async function inspectShareConflict(
+  config: ShareRuntime,
+  team: ResolvedTeam,
+  change: ChangedFile,
+): Promise<InspectedShareConflict> {
+  const ov = await openVikingCliForMode(false);
+  const uri = workfileToVikingUri(config, team.config, change.path);
+  const localContent = await readOptionalMemoryContent(config, ov, uri);
+  const shared = await readOptionalSharedConflictContent(uri, change);
+  const previousContent =
+    change.previousContent === undefined ? undefined : prepareSharedInboundContent(uri, change.previousContent);
+  return {
+    hasLocalContent: localContent !== undefined,
+    hasPreviousContent: previousContent !== undefined,
+    hasSharedContent: shared.content !== undefined,
+    id: conflictId(team.name, change.relativePath),
+    localContent,
+    previousContent,
+    reason: shareConflictReason(change, localContent, shared.content, previousContent, shared.error),
+    relativePath: change.relativePath,
+    sharedContent: shared.content,
+    status: change.status,
+    team: team.name,
+    uri,
+  };
+}
+
+async function readOptionalSharedConflictContent(
+  uri: string,
+  change: ChangedFile,
+): Promise<{readonly content?: string; readonly error?: string}> {
+  try {
+    if (change.status === 'removed' || !(await isRegularFileNoSymlink(change.path))) {
+      return {};
+    }
+    return {content: await readSharedInboundFileContent(uri, change.path)};
+  } catch (err: unknown) {
+    return {error: err instanceof Error ? err.message : String(err)};
+  }
+}
+
+async function readOptionalMemoryContent(config: ShareRuntime, ov: string, uri: string): Promise<string | undefined> {
+  if (!(await vikingResourceExists(ov, config, uri))) {
+    return undefined;
+  }
+  return readMemoryContent(config, ov, uri, false);
+}
+
+function shareConflictReason(
+  change: ChangedFile,
+  localContent: string | undefined,
+  sharedContent: string | undefined,
+  previousContent: string | undefined,
+  sharedError: string | undefined,
+): string {
+  if (sharedError) {
+    return `shared file is not readable: ${sharedError}`;
+  }
+  if (change.status === 'added') {
+    if (localContent === undefined) {
+      return 'shared file is pending ingestion into OpenViking';
+    }
+    if (sharedContent === undefined) {
+      return 'shared file is missing or not readable';
+    }
+    return sharedMemoryContentsEquivalent(localContent, sharedContent)
+      ? 'pending replay is already reflected in OpenViking'
+      : 'local OpenViking content differs from the newly added shared file';
+  }
+  if (change.status === 'modified') {
+    if (localContent === undefined) {
+      return 'OpenViking resource is missing while a shared update is pending';
+    }
+    if (previousContent === undefined) {
+      return 'previous shared content is unavailable, so local edits cannot be distinguished from upstream edits';
+    }
+    return sharedMemoryContentsEquivalent(localContent, previousContent)
+      ? 'shared update is pending ingestion into OpenViking'
+      : 'local OpenViking content differs from the previous shared version';
+  }
+  if (localContent === undefined) {
+    return 'shared deletion is already reflected in OpenViking';
+  }
+  if (previousContent === undefined) {
+    return 'previous shared content is unavailable, so local deletion cannot be verified safely';
+  }
+  return sharedMemoryContentsEquivalent(localContent, previousContent)
+    ? 'shared deletion is pending removal from OpenViking'
+    : 'local OpenViking content differs from the deleted shared version';
+}
+
+async function conflictResolutionContent(
+  conflict: InspectedShareConflict,
+  take: ShareConflictTake | undefined,
+  fromFile: string | undefined,
+  mergedContent: string | undefined,
+): Promise<string> {
+  const raw =
+    fromFile !== undefined
+      ? await readFile(expandPath(fromFile), 'utf8')
+      : mergedContent !== undefined
+        ? mergedContent
+        : take === 'local'
+          ? conflict.localContent
+          : undefined;
+  if (raw === undefined) {
+    throw new Error(`Cannot resolve ${conflict.id}: local OpenViking content is unavailable.`);
+  }
+  const scrub = applyScrubber(stripPersonalProvenance(raw), {redact: false});
+  if (scrub.blocker) {
+    throw new Error(
+      `Refusing to resolve ${conflict.id}: possible ${scrub.blocker}. Strip the sensitive value before writing it to shared memory.`,
+    );
+  }
+  return scrub.cleaned;
+}
+
+async function writeSharedConflictFile(
+  team: ResolvedTeam,
+  conflict: InspectedShareConflict,
+  content: string,
+  dryRun: boolean,
+): Promise<void> {
+  const filePath = join(team.config.worktree, conflict.relativePath);
+  if (dryRun) {
+    console.log(`Would write shared file: ${portablePath(filePath)}`);
+    return;
+  }
+  await mkdir(dirname(filePath), {recursive: true});
+  await writeFile(filePath, content, 'utf8');
+}
+
+async function backupShareConflict(config: ShareRuntime, conflict: InspectedShareConflict): Promise<string> {
+  const backupDir = join(
+    config.agentContextHome,
+    'share',
+    'conflict-backups',
+    safeTimestamp(),
+    conflict.team,
+    ...conflict.relativePath.split('/'),
+  );
+  await mkdir(backupDir, {recursive: true});
+  const metadata = {
+    id: conflict.id,
+    reason: conflict.reason,
+    relativePath: conflict.relativePath,
+    status: conflict.status,
+    team: conflict.team,
+    uri: conflict.uri,
+  };
+  await writeFile(join(backupDir, 'metadata.json'), `${JSON.stringify(metadata, undefined, 2)}\n`, 'utf8');
+  if (conflict.localContent !== undefined) {
+    await writeFile(join(backupDir, 'local.md'), conflict.localContent, 'utf8');
+  }
+  if (conflict.sharedContent !== undefined) {
+    await writeFile(join(backupDir, 'shared.md'), conflict.sharedContent, 'utf8');
+  }
+  if (conflict.previousContent !== undefined) {
+    await writeFile(join(backupDir, 'previous.md'), conflict.previousContent, 'utf8');
+  }
+  return backupDir;
+}
+
+async function clearPendingShareConflict(config: ShareRuntime, teamName: string, relativePath: string): Promise<void> {
+  const state = autoShareState(config);
+  await loadPendingReindexes(config, state);
+  const pending = state.pendingReindexes.get(teamName) ?? [];
+  const remaining = pending.filter(change => change.relativePath !== relativePath);
+  if (remaining.length > 0) {
+    state.pendingReindexes.set(teamName, remaining);
+  } else {
+    state.pendingReindexes.delete(teamName);
+  }
+  await writePendingReindexes(config, state);
+}
+
+function conflictId(team: string, relativePath: string): string {
+  return `${team}:${relativePath}`;
+}
+
+function shareConflictResolutionGuidance(id: string): readonly string[] {
+  return [
+    `threadnote share conflict resolve ${id} --take shared`,
+    `threadnote share conflict resolve ${id} --take local`,
+    `threadnote share conflict resolve ${id} --from-file merged.md`,
+  ];
+}
+
+function formatShareConflictNextSteps(teamName: string, changes: readonly ChangedFile[]): string {
+  const ids = changes.filter(isShareableMemoryChange).map(change => conflictId(teamName, change.relativePath));
+  if (ids.length === 0) {
+    return `Run \`threadnote share conflicts --team ${teamName}\` to inspect pending reindexes.`;
+  }
+  return [
+    `Resolve pending shared memory conflicts with:`,
+    `  threadnote share conflicts --team ${teamName}`,
+    ...ids.flatMap(id => [
+      `  threadnote share conflict show ${id}`,
+      `  threadnote share conflict resolve ${id} --take shared`,
+      `  threadnote share conflict resolve ${id} --take local`,
+      `  threadnote share conflict resolve ${id} --from-file merged.md`,
+    ]),
+  ].join('\n');
+}
+
+function formatShareConflictDiff(conflict: InspectedShareConflict): string {
+  const parts: string[] = [];
+  if (conflict.previousContent !== undefined) {
+    parts.push(
+      formatTwoWayDiff('previous shared', conflict.previousContent, 'local OpenViking', conflict.localContent),
+    );
+  }
+  parts.push(formatTwoWayDiff('local OpenViking', conflict.localContent, 'shared file', conflict.sharedContent));
+  return parts.join('\n\n');
+}
+
+function formatTwoWayDiff(
+  leftLabel: string,
+  leftContent: string | undefined,
+  rightLabel: string,
+  rightContent: string | undefined,
+): string {
+  if (leftContent === undefined && rightContent === undefined) {
+    return `${leftLabel} and ${rightLabel} are both unavailable.`;
+  }
+  if (leftContent === rightContent) {
+    return `${leftLabel} and ${rightLabel} are identical.`;
+  }
+  const leftLines = splitDiffLines(leftContent);
+  const rightLines = splitDiffLines(rightContent);
+  const lines = [`--- ${leftLabel}`, `+++ ${rightLabel}`];
+  for (const line of leftLines) {
+    lines.push(`-${line}`);
+  }
+  for (const line of rightLines) {
+    lines.push(`+${line}`);
+  }
+  return lines.join('\n');
+}
+
+function splitDiffLines(content: string | undefined): readonly string[] {
+  if (content === undefined) {
+    return ['<missing>'];
+  }
+  const lines = content.split(/\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    return lines.slice(0, -1);
+  }
+  return lines;
 }
 
 async function stageShareableChanges(dryRun: boolean, git: string, worktree: string): Promise<void> {

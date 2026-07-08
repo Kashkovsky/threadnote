@@ -291,12 +291,13 @@ Manual sync remains useful when you want to publish local edits, clear a dirty
 shared worktree, resolve git conflicts, or force a sync immediately:
 
 ```bash
-threadnote share sync                  # default team
-threadnote share sync --team friends   # other team
-threadnote share sync --no-push        # pull only
+threadnote share sync                  # all configured teams
+threadnote share sync --team friends   # one team
+threadnote share sync --no-push        # pull only, all configured teams
 ```
 
-`share sync` will auto-commit edits in Threadnote-managed share paths, fetch and
+`share sync` without `--team` runs this flow for every configured team. For each
+team it will auto-commit edits in Threadnote-managed share paths, fetch and
 rebase onto the configured upstream, reindex pulled markdown files into
 OpenViking (so `recall` finds them immediately), and push. Managed share paths
 are root guidance/metadata files (`README.md`, `AGENTS.md`, `CLAUDE.md`,
@@ -396,6 +397,47 @@ upstream. When git can't merge cleanly:
 
 Two publishes touching the same `<topic>.md` from different machines will
 collide; coordinate ownership per-topic, or use distinct topics.
+
+### Resolve pending shared memory conflicts
+
+If `share sync` cannot safely reindex a shared memory into OpenViking, it keeps
+that file in the pending reindex queue and prints resolver commands. This is
+different from a git rebase conflict: the shared git worktree is clean, but the
+local OpenViking resource differs from the shared file or from the previous
+shared version.
+
+Inspect pending conflicts:
+
+```bash
+threadnote share conflicts
+threadnote share conflicts --team default
+threadnote share conflict show default:durable/projects/foo/bar.md
+```
+
+Resolve exactly one pending entry:
+
+```bash
+# Accept the shared git file into OpenViking. No git commit is made.
+threadnote share conflict resolve default:durable/projects/foo/bar.md --take shared
+
+# Publish the local OpenViking content back to the shared repo, then push.
+threadnote share conflict resolve default:durable/projects/foo/bar.md --take local
+
+# Write an explicit merge result to both OpenViking and the shared repo.
+threadnote share conflict resolve default:durable/projects/foo/bar.md --from-file merged.md
+```
+
+Each resolver writes a backup under
+`~/.openviking/share/conflict-backups/<timestamp>/...` before mutating local
+state. `--take shared` clears the pending item after updating or deleting the
+OpenViking resource. `--take local` and `--from-file` run the same scrubber as
+publish, commit the shared file, push by default, update OpenViking, and then
+clear only the resolved pending item. Pass `--no-push` to leave the resolution
+commit local.
+
+MCP agents have equivalent tools: `share_conflicts`, `share_conflict_show`, and
+`share_conflict_resolve`. `share_conflict_resolve` accepts `take:"shared"`,
+`take:"local"`, or `mergedContent:"..."`.
 
 ## Cross-machine identity notes
 

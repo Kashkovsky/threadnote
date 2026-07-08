@@ -326,6 +326,26 @@ export interface ShareSyncOptions {
   readonly team?: string;
 }
 
+export interface ShareConflictOptions {
+  readonly team?: string;
+}
+
+export interface ShareConflictShowOptions {
+  readonly team?: string;
+}
+
+export type ShareConflictTake = 'local' | 'shared';
+
+export interface ShareConflictResolveOptions {
+  readonly dryRun?: boolean;
+  readonly fromFile?: string;
+  readonly mergedContent?: string;
+  readonly message?: string;
+  readonly push?: boolean;
+  readonly take?: ShareConflictTake;
+  readonly team?: string;
+}
+
 export interface SharePublishOptions {
   readonly dryRun?: boolean;
   readonly message?: string;
