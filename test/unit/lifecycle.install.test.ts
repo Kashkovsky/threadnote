@@ -39,9 +39,9 @@ const SPEC = 'openviking[local-embed]==0.4.7';
 const UV_COMMAND = {
   executable: 'uv',
   args: [
+    '--system-certs',
     'tool',
     'install',
-    '--system-certs',
     '--python',
     '3.12',
     '--with',
@@ -153,9 +153,9 @@ describe('getInstallCommands', () => {
     expect(rest).toHaveLength(0);
     expect(command.executable).toBe('uv');
     expect(command.args).toEqual([
+      '--system-certs',
       'tool',
       'install',
-      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -177,9 +177,9 @@ describe('getInstallCommands', () => {
     const [command] = await getInstallCommands(runtime(), 'uv', false);
     expect(command.args).not.toContain('--extra-index-url');
     expect(command.args).toEqual([
+      '--system-certs',
       'tool',
       'install',
-      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -193,9 +193,9 @@ describe('getInstallCommands', () => {
     const [command] = await getInstallCommands(runtime(), 'uv', false);
     expect(command.args).not.toContain('--python');
     expect(command.args).toEqual([
+      '--system-certs',
       'tool',
       'install',
-      '--system-certs',
       '--with',
       'pip-system-certs',
       '--extra-index-url',

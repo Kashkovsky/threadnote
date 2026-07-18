@@ -1378,7 +1378,7 @@ async function getPythonSystemCertificatesInstallCommand(serverPath: string): Pr
   if (uvPath) {
     return {
       executable: uvPath,
-      args: ['pip', 'install', '--system-certs', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
+      args: ['--system-certs', 'pip', 'install', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
     };
   }
   return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
@@ -1447,9 +1447,9 @@ export async function getInstallCommands(
     // wheel instead of compiling. --extra-index-url points at that wheel index.
     const toolPython = openVikingToolPython();
     const uvArgs = [
+      '--system-certs',
       'tool',
       'install',
-      '--system-certs',
       ...(toolPython ? ['--python', toolPython] : []),
       '--with',
       PYTHON_SYSTEM_CERTS_PACKAGE,

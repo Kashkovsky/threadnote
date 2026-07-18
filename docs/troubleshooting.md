@@ -48,7 +48,7 @@ If an older Threadnote release tries to reinstall all of OpenViking and fails wh
 install the certificate bridge directly into the existing OpenViking environment:
 
 ```bash
-uv pip install --system-certs --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
+uv --system-certs pip install --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
 threadnote start
 ```
 
