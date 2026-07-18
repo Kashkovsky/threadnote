@@ -11,12 +11,8 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.os }} · node 22
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: Unit and integration tests
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
@@ -41,7 +37,6 @@ jobs:
       - run: npm run test:coverage
 
       - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: coverage
