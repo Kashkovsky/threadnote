@@ -686,15 +686,24 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
   const version = await pinnedOpenVikingVersion();
   const ov = process.env.THREADNOTE_E2E_OV?.trim() || 'ov';
   const serverCommand = process.env.THREADNOTE_E2E_OPENVIKING_SERVER?.trim() || 'openviking-server';
-  const cliVersion = await runProcess(ov, ['--version'], {timeoutMs: 15_000});
+  await mkdir(home, {recursive: true});
+  const isolatedHomeEnv = {...process.env, HOME: home, USERPROFILE: home};
+  const language = await runProcess(ov, ['language', 'en'], {env: isolatedHomeEnv, timeoutMs: 15_000});
+  if (language.code !== 0) {
+    await rm(root, {force: true, recursive: true});
+    throw new Error(
+      `OpenViking CLI could not initialize its isolated E2E settings. Run npm run test:e2e:install-openviking first.\n${language.stderr}`,
+    );
+  }
+  const cliVersion = await runProcess(ov, ['--version'], {env: isolatedHomeEnv, timeoutMs: 15_000});
   if (cliVersion.code !== 0) {
     await rm(root, {force: true, recursive: true});
     throw new Error(
       `OpenViking CLI is required for local-bin E2E. Run npm run test:e2e:install-openviking first.\n${cliVersion.stderr}`,
     );
   }
-  const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(
-    `${cliVersion.stdout}${cliVersion.stderr}`,
+  const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im.exec(
+    `${cliVersion.stdout}\n${cliVersion.stderr}`,
   )?.[1];
   if (installedVersion !== version) {
     await rm(root, {force: true, recursive: true});
@@ -704,7 +713,6 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
   }
 
   const port = await freeTcpPort();
-  await mkdir(home, {recursive: true});
   await writeFile(
     serverConfig,
     `${JSON.stringify(
@@ -738,7 +746,7 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
     {encoding: 'utf8', mode: 0o600},
   );
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...isolatedHomeEnv,
     OPENVIKING_CLI_CONFIG_FILE: cliConfig,
     OPENVIKING_CONFIG_FILE: serverConfig,
     THREADNOTE_ACCOUNT: 'local',

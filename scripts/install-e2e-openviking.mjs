@@ -1,15 +1,15 @@
 import {spawnSync} from 'node:child_process';
-import {readFile} from 'node:fs/promises';
-import {platform} from 'node:os';
-import {resolve} from 'node:path';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {platform, tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const constants = await readFile(resolve(root, 'src', 'constants.ts'), 'utf8');
 const version = /DEFAULT_OPENVIKING_VERSION\s*=\s*'([^']+)'/.exec(constants)?.[1];
 if (!version) throw new Error('Could not read DEFAULT_OPENVIKING_VERSION from src/constants.ts.');
 
-const installed = spawnSync('ov', ['--version'], {encoding: 'utf8'});
-const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(`${installed.stdout}${installed.stderr}`)?.[1];
+const installed = await readInstalledCliVersion();
+const installedVersion = installed.version;
 const serverInstalled = spawnSync('openviking-server', ['--version'], {encoding: 'utf8'});
 const installedServerVersion = /openviking-server\s+(\S+)/.exec(
   `${serverInstalled.stdout}${serverInstalled.stderr}`,
@@ -71,8 +71,8 @@ if (result.status !== 0) {
 }
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-const verified = spawnSync('ov', ['--version'], {encoding: 'utf8'});
-const verifiedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(`${verified.stdout}${verified.stderr}`)?.[1];
+const verified = await readInstalledCliVersion();
+const verifiedVersion = verified.version;
 const verifiedServer = spawnSync('openviking-server', ['--version'], {encoding: 'utf8'});
 const verifiedServerVersion = /openviking-server\s+(\S+)/.exec(`${verifiedServer.stdout}${verifiedServer.stderr}`)?.[1];
 if (
@@ -86,3 +86,19 @@ if (
   );
 }
 console.log(`OpenViking ${version} is ready for local-bin E2E.`);
+
+async function readInstalledCliVersion() {
+  const home = await mkdtemp(join(tmpdir(), 'threadnote-e2e-ov-version-'));
+  try {
+    const env = {...process.env, HOME: home, USERPROFILE: home};
+    const language = spawnSync('ov', ['language', 'en'], {encoding: 'utf8', env});
+    if (language.status !== 0) return {status: language.status, version: undefined};
+    const result = spawnSync('ov', ['--version'], {encoding: 'utf8', env});
+    const parsed = /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im.exec(
+      `${result.stdout}\n${result.stderr}`,
+    )?.[1];
+    return {status: result.status, version: parsed};
+  } finally {
+    await rm(home, {force: true, recursive: true});
+  }
+}

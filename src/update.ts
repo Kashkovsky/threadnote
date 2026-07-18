@@ -458,7 +458,9 @@ export async function readOpenVikingCliVersion(ov: string): Promise<string | und
   }
   // `ov --version` is local-only and remains available while the server is
   // stopped. OpenViking 0.4.10 prints `openviking 0.4.10`.
-  const match = `${result.stdout}\n${result.stderr}`.match(/^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im);
+  const match = `${result.stdout}\n${result.stderr}`.match(
+    /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im,
+  );
   return match ? match[1] : undefined;
 }
 
