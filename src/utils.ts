@@ -5,7 +5,7 @@ import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promise
 import {createConnection} from 'node:net';
 import {get as httpGet} from 'node:http';
 import {homedir} from 'node:os';
-import {basename, dirname, isAbsolute, join, resolve, sep} from 'node:path';
+import {basename, delimiter, dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {command as commandText, failure, info, success, warning} from './cli_ui.js';
 import {commandMaxOutputBytes, commandTimeoutMs, type CommandOptions, withoutGitEnvironment} from './effect/command.js';
@@ -182,6 +182,53 @@ export async function findExecutable(commands: readonly string[]): Promise<strin
     }
   }
   return undefined;
+}
+
+export async function findWorkingExecutable(
+  commands: readonly string[],
+  args: readonly string[] = ['--version'],
+): Promise<string | undefined> {
+  for (const executable of await findExecutableCandidates(commands)) {
+    const result = await runCommand(executable, args, {allowFailure: true, timeoutMs: 5000});
+    if (result.exitCode === 0) {
+      return executable;
+    }
+  }
+  return undefined;
+}
+
+async function findExecutableCandidates(commands: readonly string[]): Promise<readonly string[]> {
+  const candidates: string[] = [];
+  for (const command of commands) {
+    const paths =
+      isAbsolute(command) || command.includes('/') || command.includes('\\')
+        ? [command]
+        : executablePathCandidates(command);
+    for (const candidate of paths) {
+      if (!candidates.includes(candidate) && (await isExecutable(candidate))) {
+        candidates.push(candidate);
+      }
+    }
+  }
+  return candidates;
+}
+
+function executablePathCandidates(command: string): readonly string[] {
+  const pathDirectories = (process.env.PATH ?? '').split(delimiter);
+  const names = process.platform === 'win32' ? windowsExecutableNames(command) : [command];
+  return pathDirectories.flatMap(directory => names.map(name => join(directory || '.', name)));
+}
+
+function windowsExecutableNames(command: string): readonly string[] {
+  const extensions = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map(extension => extension.trim())
+    .filter(Boolean);
+  const lowerCommand = command.toLowerCase();
+  if (extensions.some(extension => lowerCommand.endsWith(extension.toLowerCase()))) {
+    return [command];
+  }
+  return [command, ...extensions.map(extension => `${command}${extension}`)];
 }
 
 export async function maybeRun(

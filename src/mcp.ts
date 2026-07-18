@@ -17,6 +17,7 @@ import {
   exists,
   expandPath,
   findExecutable,
+  findWorkingExecutable,
   formatShellCommand,
   getInvocationCwd,
   isJsonObject,
@@ -74,14 +75,16 @@ export async function runMcpInstall(
     return;
   }
 
-  const command = buildMcpInstallCommand(config, agent, name, {
+  const agentExecutable = apply ? await requiredMcpAgentExecutable(agent) : agent;
+
+  const command = buildMcpInstallCommand(config, agent, agentExecutable, name, {
     bearerTokenEnvVar: options.bearerTokenEnvVar,
     nativeHttp,
     scope: options.scope,
     toolset,
     url,
   });
-  const removeCommand = buildMcpRemoveCommand(agent, name);
+  const removeCommand = buildMcpRemoveCommand(agent, agentExecutable, name);
 
   if (!apply) {
     console.log('Dry run. Re-run with --apply to modify the selected agent config.');
@@ -202,7 +205,8 @@ export async function removeMcpConfigs(value: string, dryRun: boolean): Promise<
       await removeCopilotMcpConfig(OPENVIKING_MCP_NAME, dryRun);
       continue;
     }
-    const command = buildMcpRemoveCommand(client, OPENVIKING_MCP_NAME);
+    const executable = await requiredMcpAgentExecutable(client);
+    const command = buildMcpRemoveCommand(client, executable, OPENVIKING_MCP_NAME);
     await maybeRun(dryRun, command.executable, command.args, {allowFailure: true, cwd: command.cwd});
   }
 }
@@ -233,6 +237,7 @@ export async function removeMcpSnippets(config: RuntimeConfig, dryRun: boolean):
 function buildMcpInstallCommand(
   config: RuntimeConfig,
   agent: AgentClient,
+  agentExecutable: string,
   name: string,
   options: {
     readonly bearerTokenEnvVar?: string;
@@ -255,12 +260,12 @@ function buildMcpInstallCommand(
     const env = mcpEnvironment(config, options.toolset);
     if (agent === 'codex') {
       return {
-        executable: 'codex',
+        executable: agentExecutable,
         args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', '/usr/bin/env', ...command],
       };
     }
     return {
-      executable: 'claude',
+      executable: agentExecutable,
       args: ['mcp', 'add', '--scope', claudeScope, name, '--', '/usr/bin/env', ...env, ...command],
       cwd: claudeCwd,
     };
@@ -271,7 +276,7 @@ function buildMcpInstallCommand(
     if (options.bearerTokenEnvVar) {
       args.push('--bearer-token-env-var', options.bearerTokenEnvVar);
     }
-    return {executable: 'codex', args};
+    return {executable: agentExecutable, args};
   }
 
   const args = ['mcp', 'add', '--scope', claudeScope, '--transport', 'http', name, options.url];
@@ -285,14 +290,14 @@ function buildMcpInstallCommand(
       );
     }
   }
-  return {executable: 'claude', args, cwd: claudeCwd};
+  return {executable: agentExecutable, args, cwd: claudeCwd};
 }
 
 function mcpAdapterCommand(): readonly string[] {
   return [join(toolRoot(), 'bin', 'threadnote-mcp-server.cjs')];
 }
 
-function buildMcpRemoveCommand(agent: AgentClient, name: string): MappedCommand {
+function buildMcpRemoveCommand(agent: AgentClient, agentExecutable: string, name: string): MappedCommand {
   if (agent === 'cursor') {
     throw new Error('Cursor MCP config is removed directly from ~/.cursor/mcp.json.');
   }
@@ -300,8 +305,29 @@ function buildMcpRemoveCommand(agent: AgentClient, name: string): MappedCommand 
     throw new Error('GitHub Copilot MCP config is removed directly from the VS Code user mcp.json file.');
   }
   return agent === 'codex'
-    ? {executable: 'codex', args: ['mcp', 'remove', name]}
-    : {executable: 'claude', args: ['mcp', 'remove', name], cwd: getInvocationCwd()};
+    ? {executable: agentExecutable, args: ['mcp', 'remove', name]}
+    : {executable: agentExecutable, args: ['mcp', 'remove', name], cwd: getInvocationCwd()};
+}
+
+async function findMcpAgentExecutable(agent: 'claude' | 'codex'): Promise<string | undefined> {
+  return findWorkingExecutable([agent]);
+}
+
+async function requiredMcpAgentExecutable(agent: 'claude' | 'codex'): Promise<string> {
+  const executable = await findMcpAgentExecutable(agent);
+  if (executable) {
+    return executable;
+  }
+  const discovered = await findExecutable([agent]);
+  if (discovered) {
+    throw new Error(
+      `${agent} command was found at ${discovered} but is not working. ` +
+        `Repair or reinstall ${agent}, then run threadnote mcp-install ${agent} --apply.`,
+    );
+  }
+  throw new Error(
+    `${agent} command was not found in PATH. Install ${agent}, then run threadnote mcp-install ${agent} --apply.`,
+  );
 }
 
 function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset): readonly string[] {
@@ -491,7 +517,7 @@ function printMcpSnippet(
     return;
   }
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.${agent}.${agent === 'codex' ? 'toml' : 'txt'}`);
-  const command = buildMcpInstallCommand(config, agent, name, {
+  const command = buildMcpInstallCommand(config, agent, agent, name, {
     nativeHttp: options.nativeHttp,
     scope: options.scope,
     toolset: options.toolset,
@@ -607,8 +633,14 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
       }
       continue;
     }
-    if (!(await findExecutable([client]))) {
-      console.log(`WARN ${client} command not found; cannot ${action} ${client} MCP config.`);
+    if (!(await findMcpAgentExecutable(client))) {
+      const discovered = await findExecutable([client]);
+      console.log(
+        discovered
+          ? `WARN ${client} command at ${discovered} is not working; cannot ${action} ${client} MCP config. ` +
+              `Repair or reinstall ${client}, then run threadnote mcp-install ${client} --apply.`
+          : `WARN ${client} command not found; cannot ${action} ${client} MCP config.`,
+      );
       continue;
     }
     if (!clients.includes(client)) {
