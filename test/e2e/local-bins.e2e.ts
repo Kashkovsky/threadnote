@@ -705,10 +705,10 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
   const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im.exec(
     `${cliVersion.stdout}\n${cliVersion.stderr}`,
   )?.[1];
-  if (installedVersion !== version) {
+  if (!installedVersion || !isCompatibleOpenVikingCliVersion(installedVersion, version)) {
     await rm(root, {force: true, recursive: true});
     throw new Error(
-      `OpenViking CLI ${installedVersion ?? 'unknown'} does not match Threadnote pin ${version}. Run npm run test:e2e:install-openviking.`,
+      `OpenViking CLI ${installedVersion ?? 'unknown'} is not compatible with Threadnote pin ${version}. Run npm run test:e2e:install-openviking.`,
     );
   }
 
@@ -806,6 +806,16 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
     await rm(root, {force: true, recursive: true});
     throw cause;
   }
+}
+
+function isCompatibleOpenVikingCliVersion(actual: string, expected: string): boolean {
+  const actualParts = actual.split('.');
+  const expectedParts = expected.split('.');
+  return (
+    actualParts[0] === expectedParts[0] &&
+    actualParts[1] === expectedParts[1] &&
+    Number(actualParts[2]?.match(/^\d+/)?.[0]) >= Number(expectedParts[2]?.match(/^\d+/)?.[0])
+  );
 }
 
 async function stopLiveOpenViking(live: LiveOpenViking): Promise<void> {

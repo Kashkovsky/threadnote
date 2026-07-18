@@ -17,7 +17,7 @@ const installedServerVersion = /openviking-server\s+(\S+)/.exec(
 if (
   installed.status === 0 &&
   serverInstalled.status === 0 &&
-  installedVersion === version &&
+  isCompatibleCliVersion(installedVersion, version) &&
   installedServerVersion === version
 ) {
   console.log(`OpenViking ${version} is already installed for local-bin E2E.`);
@@ -78,11 +78,11 @@ const verifiedServerVersion = /openviking-server\s+(\S+)/.exec(`${verifiedServer
 if (
   verified.status !== 0 ||
   verifiedServer.status !== 0 ||
-  verifiedVersion !== version ||
+  !isCompatibleCliVersion(verifiedVersion, version) ||
   verifiedServerVersion !== version
 ) {
   throw new Error(
-    `Expected OpenViking CLI/server ${version} after installation, got CLI ${verifiedVersion ?? 'unavailable'} and server ${verifiedServerVersion ?? 'unavailable'}.`,
+    `Expected OpenViking server ${version} and a compatible ${majorMinor(version)}.x CLI after installation, got CLI ${verifiedVersion ?? 'unavailable'} and server ${verifiedServerVersion ?? 'unavailable'}.`,
   );
 }
 console.log(`OpenViking ${version} is ready for local-bin E2E.`);
@@ -101,4 +101,13 @@ async function readInstalledCliVersion() {
   } finally {
     await rm(home, {force: true, recursive: true});
   }
+}
+
+function isCompatibleCliVersion(actual, expected) {
+  if (!actual || majorMinor(actual) !== majorMinor(expected)) return false;
+  return Number(actual.split('.')[2]?.match(/^\d+/)?.[0]) >= Number(expected.split('.')[2]?.match(/^\d+/)?.[0]);
+}
+
+function majorMinor(versionText) {
+  return versionText.split('.').slice(0, 2).join('.');
 }
