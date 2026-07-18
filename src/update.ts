@@ -452,16 +452,13 @@ function isLaunchAgentInstalled() {
 }
 
 export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
-  const result = await runCommand(ov, ['version'], {allowFailure: true});
+  const result = await runCommand(ov, ['--version'], {allowFailure: true});
   if (result.exitCode !== 0) {
     return undefined;
   }
-  // `ov version` output:
-  //   CLI:     0.4.10
-  //   Server:  0.4.10
-  // Match the CLI line specifically; ignore the server line in case the
-  // server is briefly out of sync with the CLI during an upgrade.
-  const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);
+  // `ov --version` is local-only and remains available while the server is
+  // stopped. OpenViking 0.4.10 prints `openviking 0.4.10`.
+  const match = `${result.stdout}\n${result.stderr}`.match(/^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im);
   return match ? match[1] : undefined;
 }
 

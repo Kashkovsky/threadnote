@@ -739,7 +739,7 @@ async function openVikingVersionCheck(config: RuntimeConfig): Promise<DoctorChec
     return {
       name: 'openviking version',
       status: 'warn',
-      detail: `could not detect via \`${executable} version\`; pinned ${pinned}`,
+      detail: `could not detect via \`${executable} --version\`; pinned ${pinned}`,
     };
   }
   if (compareVersions(installed, pinned) < 0) {

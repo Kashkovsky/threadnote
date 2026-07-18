@@ -686,14 +686,16 @@ async function startLiveOpenViking(): Promise<LiveOpenViking> {
   const version = await pinnedOpenVikingVersion();
   const ov = process.env.THREADNOTE_E2E_OV?.trim() || 'ov';
   const serverCommand = process.env.THREADNOTE_E2E_OPENVIKING_SERVER?.trim() || 'openviking-server';
-  const cliVersion = await runProcess(ov, ['version'], {timeoutMs: 15_000});
+  const cliVersion = await runProcess(ov, ['--version'], {timeoutMs: 15_000});
   if (cliVersion.code !== 0) {
     await rm(root, {force: true, recursive: true});
     throw new Error(
       `OpenViking CLI is required for local-bin E2E. Run npm run test:e2e:install-openviking first.\n${cliVersion.stderr}`,
     );
   }
-  const installedVersion = /^\s*CLI:\s*(\S+)/m.exec(cliVersion.stdout)?.[1];
+  const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(
+    `${cliVersion.stdout}${cliVersion.stderr}`,
+  )?.[1];
   if (installedVersion !== version) {
     await rm(root, {force: true, recursive: true});
     throw new Error(

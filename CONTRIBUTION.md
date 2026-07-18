@@ -10,7 +10,7 @@ open an issue first so the intended contract can be agreed before substantial im
 
 You need:
 
-- Node.js 20 or newer;
+- Node.js 22.19 or newer (the version in `.nvmrc` is recommended);
 - npm;
 - uv and Python 3.12 only when running the live OpenViking end-to-end suite.
 

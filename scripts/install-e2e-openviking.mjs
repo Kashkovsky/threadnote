@@ -8,8 +8,8 @@ const constants = await readFile(resolve(root, 'src', 'constants.ts'), 'utf8');
 const version = /DEFAULT_OPENVIKING_VERSION\s*=\s*'([^']+)'/.exec(constants)?.[1];
 if (!version) throw new Error('Could not read DEFAULT_OPENVIKING_VERSION from src/constants.ts.');
 
-const installed = spawnSync('ov', ['version'], {encoding: 'utf8'});
-const installedVersion = /^\s*CLI:\s*(\S+)/m.exec(installed.stdout)?.[1];
+const installed = spawnSync('ov', ['--version'], {encoding: 'utf8'});
+const installedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(`${installed.stdout}${installed.stderr}`)?.[1];
 const serverInstalled = spawnSync('openviking-server', ['--version'], {encoding: 'utf8'});
 const installedServerVersion = /openviking-server\s+(\S+)/.exec(
   `${serverInstalled.stdout}${serverInstalled.stderr}`,
@@ -71,12 +71,10 @@ if (result.status !== 0) {
 }
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-const verified = spawnSync('ov', ['version'], {encoding: 'utf8'});
-const verifiedVersion = /^\s*CLI:\s*(\S+)/m.exec(verified.stdout)?.[1];
+const verified = spawnSync('ov', ['--version'], {encoding: 'utf8'});
+const verifiedVersion = /^\s*openviking(?:\s+CLI)?\s+v?(\S+)/im.exec(`${verified.stdout}${verified.stderr}`)?.[1];
 const verifiedServer = spawnSync('openviking-server', ['--version'], {encoding: 'utf8'});
-const verifiedServerVersion = /openviking-server\s+(\S+)/.exec(
-  `${verifiedServer.stdout}${verifiedServer.stderr}`,
-)?.[1];
+const verifiedServerVersion = /openviking-server\s+(\S+)/.exec(`${verifiedServer.stdout}${verifiedServer.stderr}`)?.[1];
 if (
   verified.status !== 0 ||
   verifiedServer.status !== 0 ||
