@@ -11,20 +11,19 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    name: ${{ matrix.os }} · node 22
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [20, 22]
 
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node }}
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
@@ -42,7 +41,7 @@ jobs:
       - run: npm run test:coverage
 
       - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: coverage
@@ -59,7 +58,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       - uses: astral-sh/setup-uv@v7

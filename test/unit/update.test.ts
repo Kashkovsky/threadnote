@@ -20,13 +20,28 @@ vi.mock('../../src/utils.js', async importOriginal => {
   };
 });
 
-import {parseUpdateRuntime, resolveUpdateRegistry, runPostUpdate, runUpdate} from '../../src/update.js';
+import {
+  parseUpdateRuntime,
+  readOpenVikingCliVersion,
+  resolveUpdateRegistry,
+  runPostUpdate,
+  runUpdate,
+} from '../../src/update.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
+
+describe('readOpenVikingCliVersion', () => {
+  it('uses the server-independent CLI version flag', async () => {
+    vi.mocked(utils.runCommand).mockResolvedValueOnce(ok('openviking 0.4.10\n'));
+
+    await expect(readOpenVikingCliVersion('/ov')).resolves.toBe('0.4.10');
+    expect(utils.runCommand).toHaveBeenCalledWith('/ov', ['--version'], {allowFailure: true});
+  });
+});
 
 async function makeRuntime(): Promise<RuntimeConfig> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-update-'));
@@ -196,8 +211,8 @@ describe('runPostUpdate', () => {
     vi.mocked(utils.isTcpPortOpen).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
-      if (executable === '/ov' && args[0] === 'version') {
-        return ok('CLI:     0.3.23\nServer:  0.3.23\n');
+      if (executable === '/ov' && args[0] === '--version') {
+        return ok('openviking 0.3.23\n');
       }
       return ok();
     });
@@ -243,8 +258,8 @@ describe('runPostUpdate', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
-      if (executable === '/ov' && args[0] === 'version') {
-        return ok('CLI:     0.4.7\nServer:  0.4.7\n');
+      if (executable === '/ov' && args[0] === '--version') {
+        return ok('openviking 0.4.7\n');
       }
       return ok();
     });
