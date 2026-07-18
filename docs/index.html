@@ -1549,8 +1549,7 @@ threadnote remember \
               <pre class="v-call">recall_context({query: "&lt;repo&gt; current handoff durable feature memory"})</pre>
               <pre class="v-response">
 → active handoff: status · tests · blockers · next step
-→ durable memory: design decisions · API contracts · gotchas</pre
-              >
+→ durable memory: design decisions · API contracts · gotchas</pre>
               <div class="v-answer">
                 Compaction compresses a conversation. Threadnote stores explicit records with lifecycle, stable URIs,
                 scoped recall, replacement, archiving, and optional team publishing.
@@ -1562,8 +1561,7 @@ threadnote remember \
               <pre class="v-call">recall_context({query: "&lt;branch&gt; latest handoff durable feature memory"})</pre>
               <pre class="v-response">
 → viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md
-→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre
-              >
+→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre>
               <div class="v-answer">
                 Fresh session, fresh agent. It reads both pointers, picks up the design decisions, the open PR, what's
                 left to test, and what just failed in CI. No re-explaining.
@@ -1575,8 +1573,7 @@ threadnote remember \
               <pre class="v-call">recall_context({query: "latest sign-in handoff", workset: "mobile_web"})</pre>
               <pre class="v-response">
 → mobile-app guidance, handoffs, and durable memories
-→ web-app guidance, handoffs, and durable memories</pre
-              >
+→ web-app guidance, handoffs, and durable memories</pre>
               <div class="v-answer">
                 Worksets let a manifest group related repos once, then recall them together for cross-platform work. A
                 typo fails early instead of silently falling back to broad search.
@@ -1586,11 +1583,9 @@ threadnote remember \
             <div class="vignette reveal">
               <div class="v-say">Save where we are — I'm switching to another agent.</div>
               <pre class="v-call">
-remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre
-              >
+remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre
-              >
+Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre>
               <div class="v-answer">
                 Open the next agent — the SessionStart hook recalls the same handoff and the durable memory. It picks up
                 the test command and the open blocker without you retyping them.
@@ -1600,12 +1595,10 @@ Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.
             <div class="vignette reveal">
               <div class="v-say">Share this feature's design memory with the team.</div>
               <pre class="v-call">
-share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre
-              >
+share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre>
               <pre class="v-response">
 Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
-git push: ok</pre
-              >
+git push: ok</pre>
               <div class="v-answer">
                 The memory lands in the team git repo. Their agent's next recall/read auto-syncs clean incoming changes
                 and surfaces it alongside their own memories — no DM forwarding, no PDF dumping.
@@ -1615,11 +1608,9 @@ git push: ok</pre
             <div class="vignette reveal">
               <div class="v-say v-auto">(automatic — the PreCompact hook fires before context compaction)</div>
               <pre class="v-call">
-remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre
-              >
+remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre
-              >
+Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre>
               <div class="v-answer">
                 Compaction summarizes the conversation arc but loses concrete working state. Threadnote's hook captures
                 a scrubbed trace summary and current handoff first; the post-compaction turn recalls them and resumes
@@ -1630,11 +1621,9 @@ Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.
             <div class="vignette reveal">
               <div class="v-say">Remember that this repo cuts release notes from CI via gh release create.</div>
               <pre class="v-call">
-remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre
-              >
+remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre
-              >
+Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre>
               <div class="v-answer">
                 Next time anyone asks where releases happen, the agent finds it in two seconds. No grepping the wiki.
               </div>
@@ -1644,8 +1633,7 @@ Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process
               <div class="v-say">What did we conclude about the export-workflow timeout?</div>
               <pre class="v-call">recall_context({query: "export workflow timeout findings"})</pre>
               <pre class="v-response">
-→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre
-              >
+→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre>
               <div class="v-answer">
                 Re-open the same investigation three weeks later; the durable memory points your agent at the right
                 files and the resolution. The trail doesn't decay.

@@ -118,11 +118,7 @@ interface BundleMemberFile {
 }
 
 export type SharedArtifactInstallStatus =
-  | 'current'
-  | 'local_modified'
-  | 'not_installed'
-  | 'remote_changed_and_local_modified'
-  | 'update_available';
+  'current' | 'local_modified' | 'not_installed' | 'remote_changed_and_local_modified' | 'update_available';
 
 export interface SharedArtifactSummary extends SharedArtifactFile {
   readonly installStatus: SharedArtifactInstallStatus;
@@ -4297,7 +4293,7 @@ export async function listChangedFiles(
   }
   const entries = result.stdout.split('\0').filter(part => part.length > 0);
   const changes: ChangedFile[] = [];
-  for (let index = 0; index < entries.length; ) {
+  for (let index = 0; index < entries.length;) {
     const raw = entries[index++];
     const match = raw.match(/^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])\d*/);
     if (!match) {
