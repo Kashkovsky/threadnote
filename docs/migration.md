@@ -128,6 +128,10 @@ paths.
    threadnote mcp-install codex --apply
    ```
 
+   The default stdio adapter installs the focused core toolset. Add `--toolset full` when the agent needs MCP tools for
+   memory maintenance, raw OpenViking operations, sharing conflicts, or shared skills and bundles. Start a fresh agent
+   session after changing the toolset.
+
    Then repeat for Claude:
 
    ```bash

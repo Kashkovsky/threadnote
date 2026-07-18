@@ -9,6 +9,7 @@ import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {z} from 'zod';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
+import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from './manifest.js';
 import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
@@ -176,33 +177,18 @@ async function withStaleVersionNotice(result: CallToolResult): Promise<CallToolR
 
 async function main(): Promise<void> {
   const config = getRuntimeConfig();
+  const toolset = parseMcpToolset(process.env[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET);
   mcpStartupVersion = await currentPackageVersion().catch(() => undefined);
+  const instructions =
+    'Threadnote provides local context. On non-trivial work, call `recall_context` with repo/project in `query` and absolute `callerCwd`; read relevant `viking://` URIs. Store reusable facts as durable and progress as handoff with stable project/topic; replace instead of duplicate. Do not store secrets, credentials, customer data, or raw production logs. Confirm before publishing durable memories; never publish handoffs or preferences. Use `threadnote_guide` for capabilities and CLI for absent advanced tools.';
   const server = new McpServer(
     {name: 'threadnote-local-adapter', version: '0.2.0'},
     {
-      instructions: [
-        '# Threadnote Local Adapter',
-        '',
-        'Stdio MCP adapter for Threadnote shared local context.',
-        'Prefer `recall_context` to find candidate viking:// URIs, then `read_context` files or `list_context` directories.',
-        'Always pass JSON arguments. Example: recall_context({"query":"current repo latest handoff","callerCwd":"/absolute/workspace/path"}).',
-        'recall_context also surfaces seeded project resources under viking://resources/repos/<project> when the query mentions a project from the seed manifest. See its tool description for the query convention.',
-        'Older clients may use the compatibility aliases `search`, `read`, and `list`.',
-        'For durable facts, store kind="durable"; for current work logs, store kind="handoff" with project/topic so Threadnote keeps one active memory updated.',
-        'When a handoff describes an active branch or feature, recall durable feature memories for the same branch/topic before coding.',
-        'During feature work, update durable feature knowledge when valuable implementation details, decisions, interfaces, or gotchas change.',
-        'When updating the same active issue, pass project/topic or replaceUri to remember_context so duplicate durable memories or handoffs do not accumulate.',
-        'Use compact_context with dryRun=true for scoped memory hygiene when recall surfaces overlapping active memories.',
-        'To share a durable memory with teammates, call `share_publish` with its viking:// URI. share_publish scrubs for secrets, writes and pushes the shared copy first, then removes the personal copy after the push succeeds. Do not publish handoffs, preferences, or anything carrying machine-local paths or in-flight task context.',
-        'When recall/read reports pending shared memory conflicts, call `share_conflicts`, inspect one with `share_conflict_show`, then resolve it only after user direction with `share_conflict_resolve` using take="shared", take="local", or mergedContent.',
-        'To share a local Codex/Claude skill or Claude command with teammates, call `share_skill` with the local file path. It publishes into the shared artifact catalog after the same scrubber checks.',
-        'To use a team shared skill as a native local skill, call `list_shared_skills` first, then `install_shared_skill` for the selected name/agent/kind.',
-        'Do not store secrets, customer data, raw production logs, or credentials.',
-      ].join('\n'),
+      instructions,
     },
   );
 
-  registerTools(server, config);
+  registerTools(server, config, toolset);
   startShareBackgroundFetch(config);
   await server.connect(new StdioServerTransport());
   process.stderr.write('Threadnote local MCP adapter running\n');
@@ -221,19 +207,21 @@ function getRuntimeConfig(): RuntimeConfig {
   };
 }
 
-function registerTools(server: McpServer, config: RuntimeConfig): void {
+function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToolset): void {
   registerSearchTool(
     server,
     config,
     'recall_context',
-    'Search Threadnote context across personal memories and seeded project resources. Returns semantic hits from indexed Threadnote context (handoffs, durable feature memories, preferences, shared team memories) — and, when the query mentions a project name from the seed manifest, also from that project\'s seeded guidance (README, AGENTS.md, CLAUDE.md, SKILL.md, docs/**) under viking://resources/repos/<project>. Queries that mention this/current branch are enriched with local git/workspace terms when callerCwd is provided. Include the repo or project name in the query to make the project-guidance pass fire. Results are filtered by a default relevance threshold (0.5); if a recall comes back empty or too sparse, retry with a lower threshold (e.g. {"query":"...","threshold":0.2}) to broaden. Required: pass JSON arguments with a non-empty query, for example {"query":"unity-ui-ccc latest handoff"}.',
+    'Search memories and seeded project guidance. Include the repo/project in the query; pass absolute callerCwd for current repo/branch. Returns viking:// pointers to read or list. Lower threshold if results are sparse.',
   );
-  registerSearchTool(
-    server,
-    config,
-    'search',
-    'Compatibility alias for recall_context. Searches both personal memories and seeded project resources; see recall_context for the query conventions.',
-  );
+  if (toolset === 'full') {
+    registerSearchTool(
+      server,
+      config,
+      'search',
+      'Compatibility alias for recall_context. Searches both personal memories and seeded project resources; see recall_context for the query conventions.',
+    );
+  }
 
   registerReadTool(
     server,
@@ -241,10 +229,14 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     'read_context',
     'Read a viking:// file URI returned by recall_context or list_context.',
   );
-  registerReadTool(server, config, 'read', 'Compatibility alias for read_context.');
+  if (toolset === 'full') {
+    registerReadTool(server, config, 'read', 'Compatibility alias for read_context.');
+  }
 
   registerListTool(server, config, 'list_context', 'List a viking:// directory returned by recall_context.');
-  registerListTool(server, config, 'list', 'Compatibility alias for list_context.');
+  if (toolset === 'full') {
+    registerListTool(server, config, 'list', 'Compatibility alias for list_context.');
+  }
 
   registerStoreTool(
     server,
@@ -252,28 +244,71 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
     'remember_context',
     'Store a durable Threadnote memory. Required: pass JSON arguments with text.',
   );
-  registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
+  if (toolset === 'full') {
+    registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
+  }
 
-  registerArchiveTool(
-    server,
-    config,
-    'archive_context',
-    'Archive a memory so it remains readable as provenance but is no longer current working context.',
-  );
-  registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
-
-  registerCompactTool(server, config);
+  if (toolset === 'full') {
+    registerArchiveTool(
+      server,
+      config,
+      'archive_context',
+      'Archive a memory so it remains readable as provenance but is no longer current working context.',
+    );
+    registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
+    registerCompactTool(server, config);
+  }
 
   server.registerTool(
     'threadnote_guide',
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description:
-        "Onboard the user to Threadnote. Call this when the user asks what they can do with Threadnote, how to get started, for a feature tour/overview, or how Threadnote works — anything exploratory about Threadnote's capabilities. Returns a state-aware walkthrough (tailored to the user's server health, configured share teams, and seeded projects) written as guidance for YOU to present conversationally and offer to run step by step, not a message to paste. Prefer calling this over describing Threadnote from memory, so the guidance matches the user's actual setup. Takes no arguments.",
+        'Return a state-aware Threadnote capability tour. Call when the user asks what Threadnote can do or how to start; present it conversationally and offer one step at a time.',
       inputSchema: {},
     },
-    async () => runThreadnoteGuideTool(config),
+    async () => runThreadnoteGuideTool(config, toolset),
   );
+
+  server.registerTool(
+    'share_publish',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        'Publish a personal durable memory to the team shared repo. Scrubs sensitive data, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
+      inputSchema: {
+        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
+        preview: z
+          .boolean()
+          .optional()
+          .describe(
+            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
+          ),
+        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
+        redact: z
+          .boolean()
+          .optional()
+          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
+        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        uri: z.string().optional().describe('Required viking:// memory URI to publish'),
+      },
+    },
+    async ({message, preview, push, redact, team, uri}) => {
+      const checkedUri = requiredVikingUri(
+        uri,
+        'share_publish',
+        'viking://user/example/memories/durable/projects/foo/bar.md',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+    },
+  );
+
+  if (toolset === 'core') {
+    return;
+  }
 
   server.registerTool(
     'forget',
@@ -404,42 +439,6 @@ function registerTools(server: McpServer, config: RuntimeConfig): void {
   );
 
   registerOpenVikingParityTools(server, config);
-
-  server.registerTool(
-    'share_publish',
-    {
-      annotations: {readOnlyHint: false, destructiveHint: true},
-      description:
-        "Publish a personal memory into a team's shared memories git repo. Reads the memory, strips local-only provenance frontmatter (supersedes:, archived_from:), refuses publish if it matches secret patterns, writes and pushes the shared copy first, then removes the personal original. Default team is used unless team is provided. Pass preview=true to return the would-be-published bytes without writing or committing.",
-      inputSchema: {
-        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
-        preview: z
-          .boolean()
-          .optional()
-          .describe(
-            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
-          ),
-        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
-        redact: z
-          .boolean()
-          .optional()
-          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
-        uri: z.string().optional().describe('Required viking:// memory URI to publish'),
-      },
-    },
-    async ({message, preview, push, redact, team, uri}) => {
-      const checkedUri = requiredVikingUri(
-        uri,
-        'share_publish',
-        'viking://user/example/memories/durable/projects/foo/bar.md',
-      );
-      if (!checkedUri.ok) {
-        return checkedUri.error;
-      }
-      return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
-    },
-  );
 
   server.registerTool(
     'share_conflicts',
@@ -2632,10 +2631,10 @@ async function runShareBundleTool(
   }
 }
 
-async function runThreadnoteGuideTool(config: RuntimeConfig): Promise<CallToolResult> {
+async function runThreadnoteGuideTool(config: RuntimeConfig, toolset: McpToolset): Promise<CallToolResult> {
   const serverUp = await probeServerUp(config);
   const context = await gatherOnboardingContext(config);
-  const text = buildOnboardingGuide({...context, serverUp});
+  const text = buildOnboardingGuide({...context, serverUp, toolset});
   return {content: [{type: 'text', text}], isError: false};
 }
 

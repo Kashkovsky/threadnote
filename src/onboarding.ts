@@ -1,4 +1,5 @@
 import {readSeedManifest} from './manifest.js';
+import type {McpToolset} from './mcp_toolset.js';
 import {readTeamsFile} from './share.js';
 
 // Minimal config shape the onboarding probes need, structurally satisfied by
@@ -19,6 +20,7 @@ export interface OnboardingState {
   // (not probed / timed out). Only `false` shows the "start the server" nudge.
   readonly serverUp?: boolean;
   readonly teams: readonly string[];
+  readonly toolset?: McpToolset;
 }
 
 // Reads the local, cheap pieces of onboarding state (configured share teams and
@@ -68,6 +70,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       : 'No seeded project guidance yet — recall draws on personal memories and shared team memories.';
 
   const hasTeam = state.teams.length > 0;
+  const fullToolset = state.toolset === 'full';
 
   return [
     '# Threadnote — what you can do here',
@@ -94,21 +97,35 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     '  Run: remember_context({"text":"...","kind":"durable","project":"<repo>","topic":"<feature>"})',
     '  or a handoff with kind:"handoff". Reuse the same project/topic to keep one memory current.',
     '',
-    'Tidy memory — when recall surfaces overlapping notes for one topic, preview a scoped merge.',
-    '  Run: compact_context({"project":"<repo>","topic":"<topic>","dryRun":true}) and review before applying.',
-    '',
     'Share with your team — publish a durable memory teammates’ agents can recall. Secrets are',
     'scrubbed/blocked; handoffs/preferences/local-path notes are never shared.',
     hasTeam
       ? '  Run: share_publish({"uri":"viking://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
       : '  First (one-time): `threadnote share init git@github.com:org/team-memories.git`, then share_publish({"uri":"..."}).',
     '',
-    'Share skills & packs — publish a Codex/Claude skill, or a multi-skill pack (skills + shared',
-    'scripts), into the team catalog; teammates install them on demand.',
-    '  Run: share_skill({"path":"~/.claude/skills/<name>/SKILL.md"}) or',
-    '  share_bundle({"path":"<repo>/threadnote-bundle.json"}). Teammates: list_shared_skills({})',
-    '  then install_shared_skill({"name":"<name>"}).',
-    '',
+    ...(fullToolset
+      ? [
+          'Tidy memory — when recall surfaces overlapping notes for one topic, preview a scoped merge.',
+          '  Run: compact_context({"project":"<repo>","topic":"<topic>","dryRun":true}) and review before applying.',
+          '',
+          'Share skills & packs — publish a Codex/Claude skill, or a multi-skill pack (skills + shared',
+          'scripts), into the team catalog; teammates install them on demand.',
+          '  Run: share_skill({"path":"~/.claude/skills/<name>/SKILL.md"}) or',
+          '  share_bundle({"path":"<repo>/threadnote-bundle.json"}). Teammates: list_shared_skills({})',
+          '  then install_shared_skill({"name":"<name>"}).',
+          '',
+        ]
+      : [
+          '## Advanced capabilities',
+          '',
+          'Memory maintenance — archive and compact overlapping context.',
+          'OpenViking utilities and raw parity — resource import, grep/glob, health, watches, and code navigation.',
+          'Advanced sharing and artifacts — conflict resolution plus skill and bundle publishing or installation.',
+          'Use the equivalent `threadnote` CLI command when one of these is needed now. To expose their',
+          'MCP tools in future sessions, run `threadnote mcp-install <agent> --toolset full --apply` and',
+          'start a fresh agent session.',
+          '',
+        ]),
     'Setup & health — verify the local install and server.',
     state.serverUp === false
       ? '  Run: `threadnote start` to bring OpenViking up.'

@@ -1,3 +1,5 @@
+import type {McpToolset} from './mcp_toolset.js';
+
 export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
@@ -171,6 +173,7 @@ export interface McpInstallOptions {
   readonly name?: string;
   readonly nativeHttp?: boolean;
   readonly scope?: ClaudeMcpScope;
+  readonly toolset?: McpToolset;
   readonly url?: string;
 }
 

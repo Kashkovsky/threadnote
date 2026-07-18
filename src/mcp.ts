@@ -3,6 +3,7 @@ import {writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {platform} from 'node:os';
 import {OPENVIKING_MCP_NAME} from './constants.js';
+import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './mcp_toolset.js';
 import type {
   AgentClient,
   ClaudeMcpScope,
@@ -36,6 +37,7 @@ export async function runMcpInstall(
   const url = options.url ?? `http://${config.host}:${config.port}/mcp`;
   const apply = options.apply === true;
   const nativeHttp = options.nativeHttp === true;
+  const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
 
   if (nativeHttp) {
     const mcpStatus = await readHttpStatus(url, 1200);
@@ -56,6 +58,7 @@ export async function runMcpInstall(
       apply,
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp,
+      toolset,
       url,
     });
     return;
@@ -65,6 +68,7 @@ export async function runMcpInstall(
       apply,
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp,
+      toolset,
       url,
     });
     return;
@@ -74,6 +78,7 @@ export async function runMcpInstall(
     bearerTokenEnvVar: options.bearerTokenEnvVar,
     nativeHttp,
     scope: options.scope,
+    toolset,
     url,
   });
   const removeCommand = buildMcpRemoveCommand(agent, name);
@@ -85,7 +90,7 @@ export async function runMcpInstall(
     }
     console.log(formatShellCommand(removeCommand.executable, removeCommand.args));
     console.log(formatShellCommand(command.executable, command.args));
-    printMcpSnippet(config, agent, name, {nativeHttp, scope: options.scope, url});
+    printMcpSnippet(config, agent, name, {nativeHttp, scope: options.scope, toolset, url});
     return;
   }
 
@@ -103,6 +108,7 @@ async function runCursorMcpInstall(
     readonly apply: boolean;
     readonly bearerTokenEnvVar?: string;
     readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
     readonly url: string;
   },
 ): Promise<void> {
@@ -110,6 +116,7 @@ async function runCursorMcpInstall(
   const serverConfig = buildCursorMcpServerConfig(config, {
     bearerTokenEnvVar: options.bearerTokenEnvVar,
     nativeHttp: options.nativeHttp,
+    toolset: options.toolset,
     url: options.url,
   });
   const currentContent = await readFileIfExists(path);
@@ -120,6 +127,7 @@ async function runCursorMcpInstall(
     printCursorMcpSnippet(config, name, {
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp: options.nativeHttp,
+      toolset: options.toolset,
       url: options.url,
     });
     return;
@@ -141,6 +149,7 @@ async function runCopilotMcpInstall(
     readonly apply: boolean;
     readonly bearerTokenEnvVar?: string;
     readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
     readonly url: string;
   },
 ): Promise<void> {
@@ -148,6 +157,7 @@ async function runCopilotMcpInstall(
   const serverConfig = buildCopilotMcpServerConfig(config, {
     bearerTokenEnvVar: options.bearerTokenEnvVar,
     nativeHttp: options.nativeHttp,
+    toolset: options.toolset,
     url: options.url,
   });
   const currentContent = await readFileIfExists(path);
@@ -158,6 +168,7 @@ async function runCopilotMcpInstall(
     printCopilotMcpSnippet(config, name, {
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp: options.nativeHttp,
+      toolset: options.toolset,
       url: options.url,
     });
     return;
@@ -227,6 +238,7 @@ function buildMcpInstallCommand(
     readonly bearerTokenEnvVar?: string;
     readonly nativeHttp: boolean;
     readonly scope?: ClaudeMcpScope;
+    readonly toolset: McpToolset;
     readonly url: string;
   },
 ): MappedCommand {
@@ -240,7 +252,7 @@ function buildMcpInstallCommand(
   const claudeScope = options.scope ?? 'user';
   if (!options.nativeHttp) {
     const command = mcpAdapterCommand();
-    const env = mcpEnvironment(config);
+    const env = mcpEnvironment(config, options.toolset);
     if (agent === 'codex') {
       return {
         executable: 'codex',
@@ -292,27 +304,34 @@ function buildMcpRemoveCommand(agent: AgentClient, name: string): MappedCommand 
     : {executable: 'claude', args: ['mcp', 'remove', name], cwd: getInvocationCwd()};
 }
 
-function mcpEnvironment(config: RuntimeConfig): readonly string[] {
+function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset): readonly string[] {
   return [
     `THREADNOTE_HOME=${config.agentContextHome}`,
     `THREADNOTE_ACCOUNT=${config.account}`,
     `THREADNOTE_USER=${config.user}`,
     `THREADNOTE_AGENT_ID=${config.agentId}`,
+    `${MCP_TOOLSET_ENV}=${toolset}`,
   ];
 }
 
-function mcpEnvironmentObject(config: RuntimeConfig): JsonObject {
+function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset): JsonObject {
   return {
     THREADNOTE_ACCOUNT: config.account,
     THREADNOTE_AGENT_ID: config.agentId,
     THREADNOTE_HOME: config.agentContextHome,
+    [MCP_TOOLSET_ENV]: toolset,
     THREADNOTE_USER: config.user,
   };
 }
 
 function buildCursorMcpServerConfig(
   config: RuntimeConfig,
-  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+  options: {
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
+    readonly url: string;
+  },
 ): JsonObject {
   if (options.nativeHttp) {
     const server: Record<string, unknown> = {url: options.url};
@@ -324,13 +343,18 @@ function buildCursorMcpServerConfig(
   return {
     args: [mcpAdapterCommand()[0]],
     command: '/usr/bin/env',
-    env: mcpEnvironmentObject(config),
+    env: mcpEnvironmentObject(config, options.toolset),
   };
 }
 
 function buildCopilotMcpServerConfig(
   config: RuntimeConfig,
-  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+  options: {
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
+    readonly url: string;
+  },
 ): JsonObject {
   if (options.nativeHttp) {
     const server: Record<string, unknown> = {type: 'http', url: options.url};
@@ -342,7 +366,7 @@ function buildCopilotMcpServerConfig(
   return {
     args: [mcpAdapterCommand()[0]],
     command: '/usr/bin/env',
-    env: mcpEnvironmentObject(config),
+    env: mcpEnvironmentObject(config, options.toolset),
     type: 'stdio',
   };
 }
@@ -443,20 +467,34 @@ function printMcpSnippet(
   config: RuntimeConfig,
   agent: AgentClient,
   name: string,
-  options: {readonly nativeHttp: boolean; readonly scope?: ClaudeMcpScope; readonly url: string},
+  options: {
+    readonly nativeHttp: boolean;
+    readonly scope?: ClaudeMcpScope;
+    readonly toolset: McpToolset;
+    readonly url: string;
+  },
 ): void {
   if (agent === 'cursor') {
-    printCursorMcpSnippet(config, name, {nativeHttp: options.nativeHttp, url: options.url});
+    printCursorMcpSnippet(config, name, {
+      nativeHttp: options.nativeHttp,
+      toolset: options.toolset,
+      url: options.url,
+    });
     return;
   }
   if (agent === 'copilot') {
-    printCopilotMcpSnippet(config, name, {nativeHttp: options.nativeHttp, url: options.url});
+    printCopilotMcpSnippet(config, name, {
+      nativeHttp: options.nativeHttp,
+      toolset: options.toolset,
+      url: options.url,
+    });
     return;
   }
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.${agent}.${agent === 'codex' ? 'toml' : 'txt'}`);
   const command = buildMcpInstallCommand(config, agent, name, {
     nativeHttp: options.nativeHttp,
     scope: options.scope,
+    toolset: options.toolset,
     url: options.url,
   });
   const snippet = `${formatShellCommand(command.executable, command.args)}\n`;
@@ -466,7 +504,12 @@ function printMcpSnippet(
 function printCursorMcpSnippet(
   config: RuntimeConfig,
   name: string,
-  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+  options: {
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
+    readonly url: string;
+  },
 ): void {
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.cursor.json`);
   const snippet = JSON.stringify({mcpServers: {[name]: buildCursorMcpServerConfig(config, options)}}, null, 2);
@@ -476,7 +519,12 @@ function printCursorMcpSnippet(
 function printCopilotMcpSnippet(
   config: RuntimeConfig,
   name: string,
-  options: {readonly bearerTokenEnvVar?: string; readonly nativeHttp: boolean; readonly url: string},
+  options: {
+    readonly bearerTokenEnvVar?: string;
+    readonly nativeHttp: boolean;
+    readonly toolset: McpToolset;
+    readonly url: string;
+  },
 ): void {
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.copilot.json`);
   const snippet = JSON.stringify({servers: {[name]: buildCopilotMcpServerConfig(config, options)}}, null, 2);

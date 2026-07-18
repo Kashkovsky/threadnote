@@ -2,15 +2,27 @@ import {describe, expect, it} from 'vitest';
 import {buildOnboardingGuide} from '../../src/onboarding.js';
 
 describe('buildOnboardingGuide', () => {
-  it('lists the core capabilities with runnable calls', () => {
+  it('lists core calls and catalogs advanced capability categories', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: []});
     expect(guide).toContain('# Threadnote — what you can do here');
-    for (const call of ['recall_context(', 'remember_context(', 'compact_context(', 'share_publish(', 'share_skill(']) {
+    for (const call of ['recall_context(', 'remember_context(', 'share_publish(']) {
       expect(guide).toContain(call);
     }
+    expect(guide).not.toContain('compact_context(');
+    expect(guide).not.toContain('share_skill(');
+    expect(guide).toContain('Memory maintenance');
+    expect(guide).toContain('OpenViking utilities and raw parity');
+    expect(guide).toContain('Advanced sharing and artifacts');
+    expect(guide).toContain('mcp-install <agent> --toolset full --apply');
     // It instructs the agent to present + offer, not to paste verbatim.
     expect(guide).toMatch(/OFFER to run it/);
     expect(guide).toMatch(/Do NOT paste this list verbatim/);
+  });
+
+  it('includes runnable advanced MCP calls for the full toolset', () => {
+    const guide = buildOnboardingGuide({seededProjects: [], teams: [], toolset: 'full'});
+    expect(guide).toContain('compact_context(');
+    expect(guide).toContain('share_skill(');
   });
 
   it('nudges first-time team setup when no team is configured', () => {

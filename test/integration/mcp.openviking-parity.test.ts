@@ -12,6 +12,52 @@ interface TextContent {
   readonly type: 'text';
 }
 
+const CORE_TOOL_NAMES = [
+  'recall_context',
+  'read_context',
+  'list_context',
+  'remember_context',
+  'threadnote_guide',
+  'share_publish',
+];
+
+const ADVANCED_TOOL_NAMES = [
+  'search',
+  'read',
+  'list',
+  'store',
+  'archive',
+  'archive_context',
+  'compact_context',
+  'forget',
+  'add_resource',
+  'grep',
+  'glob',
+  'health',
+  'ov_search',
+  'ov_read',
+  'ov_list',
+  'ov_store',
+  'ov_remember',
+  'ov_add_resource',
+  'ov_list_watches',
+  'ov_cancel_watch',
+  'ov_grep',
+  'ov_glob',
+  'ov_forget',
+  'ov_code_outline',
+  'ov_code_search',
+  'ov_code_expand',
+  'ov_health',
+  'share_conflicts',
+  'share_conflict_show',
+  'share_conflict_resolve',
+  'share_skill',
+  'share_bundle',
+  'list_shared_skills',
+  'install_shared_skill',
+];
+
 async function writeExecutable(path: string, contents: string): Promise<void> {
   await writeFile(path, contents, {encoding: 'utf8', mode: 0o700});
   await chmod(path, 0o700);
@@ -121,7 +167,7 @@ async function closeServer(server: Server): Promise<void> {
 
 async function withMcpClient<T>(
   fn: (client: Client) => Promise<T>,
-  options: {readonly nativeMcpUrl?: string} = {},
+  options: {readonly nativeMcpUrl?: string; readonly toolset?: 'core' | 'full' | null} = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-ov-parity-'));
   const home = join(root, 'home');
@@ -129,19 +175,26 @@ async function withMcpClient<T>(
   const fakeBin = await makeFakeBin(root);
   const nativeMcp = options.nativeMcpUrl === undefined ? await makeNativeMcpServer() : undefined;
   const repoRoot = process.cwd();
+  const environment = {
+    ...process.env,
+    PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
+    THREADNOTE_ACCOUNT: 'local',
+    THREADNOTE_AGENT_ID: 'threadnote',
+    THREADNOTE_HOME: home,
+    THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
+    THREADNOTE_OPENVIKING_MCP_URL: options.nativeMcpUrl ?? nativeMcp?.url ?? '',
+    THREADNOTE_USER: 'denyskashkovskyi',
+  } as Record<string, string>;
+  if (options.toolset === null) {
+    delete environment.THREADNOTE_MCP_TOOLSET;
+  } else {
+    environment.THREADNOTE_MCP_TOOLSET = options.toolset ?? 'full';
+  }
   const transport = new StdioClientTransport({
     args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
     command: process.execPath,
     cwd: repoRoot,
-    env: {
-      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
-      THREADNOTE_ACCOUNT: 'local',
-      THREADNOTE_AGENT_ID: 'threadnote',
-      THREADNOTE_HOME: home,
-      THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-      THREADNOTE_OPENVIKING_MCP_URL: options.nativeMcpUrl ?? nativeMcp?.url ?? '',
-      THREADNOTE_USER: 'denyskashkovskyi',
-    },
+    env: environment,
     stderr: 'pipe',
   });
   const client = new Client({name: 'threadnote-test', version: '0.0.0'});
@@ -154,6 +207,46 @@ async function withMcpClient<T>(
     await rm(root, {force: true, recursive: true});
   }
 }
+
+describe('Threadnote MCP toolsets', () => {
+  it('keeps the core server instructions compact and self-contained', async () => {
+    await withMcpClient(
+      async client => {
+        const instructions = client.getInstructions() ?? '';
+        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(512);
+        expect(instructions).toContain('callerCwd');
+        expect(instructions).toContain('viking://');
+        expect(instructions).toContain('durable');
+        expect(instructions).toContain('handoff');
+        expect(instructions).toContain('Do not store');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('advertises only the core tools by default', async () => {
+    await withMcpClient(
+      async client => {
+        const tools = await client.listTools();
+        expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
+        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(6_000);
+      },
+      {toolset: null},
+    );
+  });
+
+  it('advertises the complete toolset when requested', async () => {
+    await withMcpClient(
+      async client => {
+        const tools = await client.listTools();
+        const names = tools.tools.map(tool => tool.name);
+        expect(names).toHaveLength(CORE_TOOL_NAMES.length + ADVANCED_TOOL_NAMES.length);
+        expect(names).toEqual(expect.arrayContaining([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES]));
+      },
+      {toolset: 'full'},
+    );
+  });
+});
 
 async function callText(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
   const result = await client.callTool({arguments: args, name}, undefined, {timeout: 5000});

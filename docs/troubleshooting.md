@@ -162,9 +162,11 @@ Threadnote uses its bundled stdio MCP adapter by default, even when the installe
 `/mcp`. The adapter adds Threadnote-specific tools and behavior such as shared-memory sync, exact recall fallback,
 seeded-resource recall augmentation, and recall-index repair.
 
-The adapter also exposes raw OpenViking parity tools with `ov_*` names for native behaviors such as code symbol
-navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and forget. Prefer
-Threadnote-named tools for memory workflows; use `ov_*` when you intentionally want native OpenViking behavior.
+The adapter exposes six tools by default: `recall_context`, `read_context`, `list_context`, `remember_context`,
+`share_publish`, and `threadnote_guide`. Install with `--toolset full` to also expose memory maintenance, advanced
+sharing/artifact tools, compatibility aliases, and raw OpenViking parity tools with `ov_*` names for native behaviors
+such as code symbol navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and
+forget.
 
 Use the default stdio adapter:
 
@@ -172,6 +174,9 @@ Use the default stdio adapter:
 threadnote mcp-install claude --apply
 claude mcp list
 ```
+
+Changing toolsets rewrites the same MCP entry. For the complete surface, run
+`threadnote mcp-install claude --toolset full --apply`, then start a fresh agent session.
 
 `mcp-install claude` writes user-scoped Claude config by default. This is intentional: local-scoped config only applies
 to one repo/project, and the `threadnote` shim runs the implementation from the checkout that installed it.

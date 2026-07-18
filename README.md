@@ -34,6 +34,11 @@ threadnote mcp-install claude --apply   # or codex / cursor / copilot
 threadnote doctor --dry-run
 ```
 
+The CLI remains Threadnote's complete execution surface. The default stdio adapter is a compact interoperability layer
+with six core tools: `recall_context`, `read_context`, `list_context`, `remember_context`, `share_publish`, and
+`threadnote_guide`. Advanced workflows can run through the CLI without reconfiguring MCP; install with `--toolset full`
+only when the agent needs those workflows as MCP tools.
+
 New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it calls the
 `threadnote_guide` MCP tool, which returns a short walkthrough tailored to your setup
 (server health, configured share teams, seeded projects) and offers to run each step
@@ -77,9 +82,10 @@ memory and continues without asking the user to reconstruct it."
 - **Clean up overlap:** run `threadnote compact --project <repo> --topic <issue> --dry-run` before archiving stale
   handoffs or forgetting exact duplicates.
 
-The adapter keeps Threadnote workflow tools (`recall_context`, `remember_context`, `compact_context`, `share_publish`,
-and related aliases) as the default surface. It also exposes raw OpenViking parity tools with `ov_*` names for native
-behaviors such as code symbol navigation, raw search/read/list/store/remember, grep/glob, resource import, and forget.
+The adapter keeps the six core tools above as its default surface. `threadnote_guide` catalogs advanced categories and
+their CLI equivalents without loading their schemas into every agent session. Pass `--toolset full` to `mcp-install`
+to expose compatibility aliases, memory maintenance, advanced sharing/artifact tools, and raw OpenViking parity tools
+with `ov_*` names.
 
 ## Acknowledgments
 

@@ -47,6 +47,7 @@ import type {
 import {parseHookClient, runHooksInstall, runPreCompactHook, runSessionStartHook} from './hooks.js';
 import {collectOption, errorMessage, parsePort} from './utils.js';
 import {parseAgentClient, parseClaudeMcpScope, runMcpInstall} from './mcp.js';
+import {parseMcpToolset} from './mcp_toolset.js';
 import {getRuntimeConfig} from './runtime.js';
 import {
   parseCompactKind,
@@ -283,6 +284,7 @@ async function main(): Promise<void> {
     .option('--name <name>', 'MCP server name', OPENVIKING_MCP_NAME)
     .option('--native-http', 'Install OpenViking native HTTP MCP endpoint instead of the local stdio adapter')
     .option('--scope <scope>', 'Claude MCP config scope: user, local, or project', parseClaudeMcpScope, 'user')
+    .option('--toolset <toolset>', 'Stdio adapter toolset: core or full', parseMcpToolset)
     .option('--url <url>', 'OpenViking native HTTP MCP URL')
     .option('--bearer-token-env-var <name>', 'Environment variable containing the local API key')
     .action(async (agent: string, options: McpInstallOptions) => {
