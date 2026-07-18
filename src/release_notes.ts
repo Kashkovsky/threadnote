@@ -1,3 +1,5 @@
+import {Effect} from 'effect';
+import {getJsonEffect} from './effect/http.js';
 import {compareVersions, errorMessage, isJsonObject} from './utils.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
@@ -10,23 +12,19 @@ export interface ReleaseNote {
   readonly version: string;
 }
 
-export async function fetchThreadnoteReleaseNotes(): Promise<readonly ReleaseNote[]> {
-  const response = await fetch(GITHUB_RELEASES_URL, {
+export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNotes')(function* () {
+  const response = yield* getJsonEffect(GITHUB_RELEASES_URL, {
     headers: {
       accept: 'application/vnd.github+json',
       'user-agent': 'threadnote-cli',
     },
-    signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
+    timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
-  if (!response.ok) {
-    throw new Error(`GitHub releases returned HTTP ${response.status}`);
+  if (!Array.isArray(response.body)) {
+    return yield* Effect.fail(new Error('GitHub releases response was not an array.'));
   }
-  const parsed: unknown = await response.json();
-  if (!Array.isArray(parsed)) {
-    throw new Error('GitHub releases response was not an array.');
-  }
-  return parsed.flatMap(parseGithubRelease);
-}
+  return response.body.flatMap(parseGithubRelease);
+});
 
 export function releasesBetween(
   releases: readonly ReleaseNote[],
@@ -59,28 +57,28 @@ export function formatWhatsNew(releases: readonly ReleaseNote[]): readonly strin
   return lines;
 }
 
-export async function whatsNewLinesForVersion(version: string): Promise<readonly string[]> {
-  try {
-    const releases = await fetchThreadnoteReleaseNotes();
-    const lines = formatWhatsNew(releaseForVersion(releases, version));
-    return lines.length > 0 ? lines : ["What's new:", `No GitHub release notes found for ${version}.`];
-  } catch (err: unknown) {
-    return [`What's new: unavailable (${errorMessage(err)})`];
-  }
-}
+export const whatsNewLinesForVersion = Effect.fn('whatsNewLinesForVersion')((version: string) =>
+  fetchThreadnoteReleaseNotes().pipe(
+    Effect.map(releases => {
+      const lines = formatWhatsNew(releaseForVersion(releases, version));
+      return lines.length > 0 ? lines : ["What's new:", `No GitHub release notes found for ${version}.`];
+    }),
+    Effect.catch(error => Effect.succeed([`What's new: unavailable (${errorMessage(error)})`])),
+  ),
+);
 
-export async function whatsNewLinesForVersionRange(
+export const whatsNewLinesForVersionRange = Effect.fn('whatsNewLinesForVersionRange')(function (
   currentVersion: string,
   latestVersion: string,
-): Promise<readonly string[]> {
-  try {
-    const releases = await fetchThreadnoteReleaseNotes();
-    const lines = formatWhatsNew(releasesBetween(releases, currentVersion, latestVersion));
-    return lines.length > 0 ? lines : ["What's new:", 'No GitHub release notes found for this version range.'];
-  } catch (err: unknown) {
-    return [`What's new: unavailable (${errorMessage(err)})`];
-  }
-}
+) {
+  return fetchThreadnoteReleaseNotes().pipe(
+    Effect.map(releases => {
+      const lines = formatWhatsNew(releasesBetween(releases, currentVersion, latestVersion));
+      return lines.length > 0 ? lines : ["What's new:", 'No GitHub release notes found for this version range.'];
+    }),
+    Effect.catch(error => Effect.succeed([`What's new: unavailable (${errorMessage(error)})`])),
+  );
+});
 
 function parseGithubRelease(value: unknown): readonly ReleaseNote[] {
   if (!isJsonObject(value) || value.draft === true || value.prerelease === true) {

@@ -1,6 +1,7 @@
 import type {McpToolset} from './mcp_toolset.js';
 
 export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
+export type ConsolidationAgent = AgentClient | 'effect-ai';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
@@ -149,7 +150,7 @@ export interface DoctorOptions {
 
 export interface ManageOptions {
   readonly open?: boolean;
-  readonly uiPort?: string;
+  readonly uiPort?: number;
 }
 
 export interface StartOptions {
@@ -217,6 +218,7 @@ export interface MigrateProjectNamesOptions {
 }
 
 export interface RecallOptions {
+  readonly callerCwd?: string;
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;
   readonly includeArchived?: boolean;

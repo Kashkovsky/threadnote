@@ -37,6 +37,8 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run check:bundle-size
+
       - run: npm run test:coverage
 
       - name: Upload coverage
@@ -47,3 +49,23 @@ jobs:
           path: coverage/
           if-no-files-found: ignore
           retention-days: 14
+
+  local-bins-e2e:
+    name: Local bins E2E · ubuntu · node 22
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v7
+
+      - run: npm ci
+
+      - run: npm run test:e2e:install-openviking
+
+      - run: npm run test:e2e:local-bins

@@ -1,5 +1,6 @@
 import {clearLine, cursorTo} from 'node:readline';
 import {stdout} from 'node:process';
+import {Effect} from 'effect';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
 
@@ -69,11 +70,18 @@ export function shouldUseColor(): boolean {
   );
 }
 
-export async function withSpinner<T>(message: string, action: () => Promise<T>): Promise<T> {
+export function withSpinnerEffect<A, E, R>(message: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
   if (stdout.isTTY !== true || process.env.CI !== undefined || process.env.THREADNOTE_NO_SPINNER !== undefined) {
-    return action();
+    return effect;
   }
+  return Effect.acquireUseRelease(
+    Effect.sync(() => startSpinner(message)),
+    () => effect,
+    spinner => Effect.sync(spinner.stop),
+  );
+}
 
+function startSpinner(message: string): {readonly stop: () => void} {
   const frames = ['-', '\\', '|', '/'];
   let frameIndex = 0;
   const render = () => {
@@ -84,13 +92,13 @@ export async function withSpinner<T>(message: string, action: () => Promise<T>):
   };
   render();
   const timer = setInterval(render, 100);
-  try {
-    return await action();
-  } finally {
-    clearInterval(timer);
-    clearLine(stdout, 0);
-    cursorTo(stdout, 0);
-  }
+  return {
+    stop: () => {
+      clearInterval(timer);
+      clearLine(stdout, 0);
+      cursorTo(stdout, 0);
+    },
+  };
 }
 
 export interface ProgressIndicator {

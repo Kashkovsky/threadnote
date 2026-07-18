@@ -8,7 +8,7 @@ type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 type MemoryStatus = 'active' | 'archived' | 'superseded';
-type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
+type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
 
@@ -231,7 +231,9 @@ function App(): React.ReactElement {
   }, [resourceTree, selectedUri, tree]);
 
   useEffect(() => {
-    const firstAvailable = state?.agents.find(item => item.available && (item.id === 'codex' || item.id === 'claude'));
+    const firstAvailable =
+      state?.agents.find(item => item.available && (item.id === 'codex' || item.id === 'claude')) ??
+      state?.agents.find(item => item.available);
     if (firstAvailable) {
       setAgent(firstAvailable.id);
     }

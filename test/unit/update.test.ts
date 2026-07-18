@@ -1,6 +1,7 @@
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 
@@ -21,6 +22,9 @@ vi.mock('../../src/utils.js', async importOriginal => {
 
 import {parseUpdateRuntime, resolveUpdateRegistry, runPostUpdate, runUpdate} from '../../src/update.js';
 import * as utils from '../../src/utils.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
 
@@ -43,12 +47,9 @@ function mockLatestVersion(version: string): void {
     'fetch',
     vi.fn(async (url: string | URL) => {
       if (String(url).includes('/health')) {
-        return {ok: true};
+        return new Response('healthy');
       }
-      return {
-        json: async () => ({version}),
-        ok: true,
-      };
+      return Response.json({version});
     }),
   );
 }
@@ -145,7 +146,7 @@ describe('runUpdate', () => {
     homes.push(config.agentContextHome);
     mockLatestVersion('99.0.0');
 
-    await runUpdate(config, {postUpdate: false, runtime: 'npm'});
+    await runTestEffect(runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(Effect.provide(ApplicationLayer)));
 
     expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(
       'npm',
@@ -216,10 +217,12 @@ describe('runPostUpdate', () => {
     homes.push(config.agentContextHome);
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => ({ok: true})),
+      vi.fn(async () => new Response('healthy')),
     );
 
-    await runPostUpdate(config, {fromVersion: '1.1.0', toVersion: '1.1.0'});
+    await runTestEffect(
+      runPostUpdate(config, {fromVersion: '1.1.0', toVersion: '1.1.0'}).pipe(Effect.provide(ApplicationLayer)),
+    );
 
     const stopCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'stop');
     const startCall = vi.mocked(utils.runInteractive).mock.calls.find(call => call[1][0] === 'start');
@@ -246,7 +249,11 @@ describe('runPostUpdate', () => {
       return ok();
     });
 
-    await runPostUpdate(config, {fromVersion: '1.4.3', toVersion: '1.4.4', yes: true});
+    await runTestEffect(
+      runPostUpdate(config, {fromVersion: '1.4.3', toVersion: '1.4.4', yes: true}).pipe(
+        Effect.provide(ApplicationLayer),
+      ),
+    );
 
     expect(vi.mocked(utils.runInteractive)).not.toHaveBeenCalledWith(
       expect.any(String),

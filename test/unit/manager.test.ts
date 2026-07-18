@@ -1,6 +1,7 @@
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   consolidationAgentScript,
@@ -15,14 +16,15 @@ import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
   return {
     ...actual,
-    runRepair: vi.fn(async (_config, options) => {
-      console.log(options.dryRun ? 'repair dry run' : 'repair applied');
-    }),
+    runRepair: vi.fn((_config, options) =>
+      Effect.sync(() => console.log(options.dryRun ? 'repair dry run' : 'repair applied')),
+    ),
   };
 });
 
@@ -30,8 +32,8 @@ vi.mock('../../src/memory.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/memory.js')>();
   return {
     ...actual,
-    runArchive: vi.fn(),
-    runForget: vi.fn(),
+    runArchive: vi.fn(() => Effect.void),
+    runForget: vi.fn(() => Effect.void),
   };
 });
 
@@ -94,7 +96,9 @@ async function startServer(
   config: RuntimeConfig,
   token: string,
 ): Promise<{readonly close: () => Promise<void>; readonly url: string}> {
-  const server = createManagerServer({config, jobs: new Map(), token});
+  const server = createManagerServer({config, jobs: new Map(), token}, effect =>
+    Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer))),
+  );
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
@@ -236,7 +240,11 @@ describe('manager http API', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
-    vi.mocked(lifecycle.runRepair).mockClear();
+    vi.mocked(lifecycle.runRepair)
+      .mockReset()
+      .mockImplementation((_config, options) =>
+        Effect.sync(() => console.log(options.dryRun ? 'repair dry run' : 'repair applied')),
+      );
     vi.mocked(memory.runArchive).mockReset();
     vi.mocked(memory.runForget).mockReset();
     vi.mocked(seeding.runSeed).mockClear();
@@ -268,10 +276,11 @@ describe('manager http API', () => {
   it('returns per-item bulk results without hiding failures', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    vi.mocked(memory.runArchive).mockImplementation(async (_config, uri) => {
+    vi.mocked(memory.runArchive).mockImplementation((_config, uri) => {
       if (uri.endsWith('bad.md')) {
-        throw new Error('archive failed');
+        return Effect.fail(new Error('archive failed'));
       }
+      return Effect.succeed(undefined);
     });
     const server = await startServer(config, 'secret');
     try {
@@ -411,6 +420,37 @@ describe('manager http API', () => {
       expect(accepted.status).toBe(200);
       expect(body.output).toBe('repair applied');
       expect(vi.mocked(lifecycle.runRepair)).toHaveBeenCalledWith(config, {dryRun: false});
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps captured output isolated across concurrent requests', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(lifecycle.runRepair).mockImplementation((_config, options) =>
+      Effect.gen(function* () {
+        const label = options.dryRun ? 'dry run' : 'applied';
+        yield* Effect.sync(() => console.log(`${label} start`));
+        yield* Effect.sleep('10 millis');
+        yield* Effect.sync(() => console.log(`${label} end`));
+      }),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const request = (path: string, body: object) =>
+        fetch(`${server.url}${path}`, {
+          body: JSON.stringify(body),
+          headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+          method: 'POST',
+        }).then(response => response.json() as Promise<{readonly output: string}>);
+      const [dryRun, applied] = await Promise.all([
+        request('/api/doctor/repair-dry-run', {}),
+        request('/api/doctor/repair', {confirm: true}),
+      ]);
+
+      expect(dryRun.output).toBe('dry run start\ndry run end');
+      expect(applied.output).toBe('applied start\napplied end');
     } finally {
       await server.close();
     }

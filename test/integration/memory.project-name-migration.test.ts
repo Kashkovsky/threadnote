@@ -1,10 +1,14 @@
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {hasProjectNameMigrationCandidates, runMigrateProjectNames} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 const GIT_ENV_KEYS = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
 
@@ -100,7 +104,7 @@ describe('project-name memory migration', () => {
     await expect(hasProjectNameMigrationCandidates(config)).resolves.toBe(true);
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    await runMigrateProjectNames(config, {dryRun: true});
+    await runTestEffect(runMigrateProjectNames(config, {dryRun: true}).pipe(Effect.provide(ApplicationLayer)));
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Would update seed manifest:');
@@ -148,7 +152,7 @@ describe('project-name memory migration', () => {
     await expect(hasProjectNameMigrationCandidates(config)).resolves.toBe(true);
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    await runMigrateProjectNames(config, {dryRun: true});
+    await runTestEffect(runMigrateProjectNames(config, {dryRun: true}).pipe(Effect.provide(ApplicationLayer)));
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).not.toContain('Would update seed manifest:');
@@ -209,7 +213,7 @@ describe('project-name memory migration', () => {
     await expect(hasProjectNameMigrationCandidates(config)).resolves.toBe(true);
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    await runMigrateProjectNames(config, {dryRun: true});
+    await runTestEffect(runMigrateProjectNames(config, {dryRun: true}).pipe(Effect.provide(ApplicationLayer)));
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Would update seed manifest:');

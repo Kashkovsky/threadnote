@@ -235,6 +235,33 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('emits and enforces Effect Schema inputs over stdio', async () => {
+    await withMcpClient(
+      async client => {
+        const tools = await client.listTools();
+        const recall = tools.tools.find(tool => tool.name === 'recall_context');
+        expect(recall?.inputSchema).toMatchObject({
+          additionalProperties: false,
+          properties: {
+            callerCwd: {type: 'string'},
+            nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
+            query: {type: 'string'},
+            threshold: {maximum: 1, minimum: 0, type: 'number'},
+          },
+          type: 'object',
+        });
+        expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
+
+        const validationError = await callErrorText(client, 'recall_context', {
+          nodeLimit: 0,
+          query: 'threadnote',
+        });
+        expect(validationError).toContain('greater than or equal to 1');
+      },
+      {toolset: 'core'},
+    );
+  });
+
   it('advertises the complete toolset when requested', async () => {
     await withMcpClient(
       async client => {
@@ -302,6 +329,7 @@ describe('Threadnote MCP OpenViking parity tools', () => {
       expect(
         nativeArgs(
           await callText(client, 'ov_search', {
+            context_type: 'memory',
             limit: 4,
             min_score: 0.25,
             query: 'release notes',
@@ -310,6 +338,7 @@ describe('Threadnote MCP OpenViking parity tools', () => {
           'search',
         ),
       ).toEqual({
+        context_type: 'memory',
         limit: 4,
         min_score: 0.25,
         query: 'release notes',

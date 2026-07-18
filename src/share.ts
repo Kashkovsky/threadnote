@@ -398,6 +398,15 @@ export function startShareBackgroundFetch(config: ShareRuntime): void {
   state.timer.unref?.();
 }
 
+export function stopShareBackgroundFetch(config: ShareRuntime): void {
+  const key = `${config.agentContextHome}:${config.account}:${config.user}`;
+  const state = autoShareStates.get(key);
+  if (state?.timer) {
+    clearInterval(state.timer);
+  }
+  autoShareStates.delete(key);
+}
+
 export async function syncSharedReposBeforeAgentRead(config: ShareRuntime): Promise<AutoShareSyncResult> {
   const state = autoShareState(config);
   return enqueueShareOperation(state, async () => {
@@ -2758,17 +2767,45 @@ export async function runShareRename(config: ShareRuntime, options: ShareRenameO
   if (dryRun) {
     console.log(`Would rename worktree: ${portablePath(oldTeam.config.worktree)} -> ${portablePath(newWorktree)}`);
     console.log(`Would rename gitdir: ${portablePath(oldTeam.config.gitdir)} -> ${portablePath(newGitdir)}`);
-    console.log(`Would update git core.worktree for team "${newName}".`);
+    console.log(`Would update git core.worktree and the worktree .git pointer for team "${newName}".`);
     console.log(`Would reindex shared context under team "${newName}" and remove old shared URI tree.`);
     console.log(`Would write teams file: ${teamsFilePath(config)}`);
     return;
   }
 
-  await rename(oldTeam.config.worktree, newWorktree);
-  await rename(oldTeam.config.gitdir, newGitdir);
-  await writeTeamsFile(config, updatedFile);
   const git = await requiredExecutable('git');
-  await runCommand(git, ['-C', newWorktree, 'config', 'core.worktree', newWorktree]);
+  // A clone made with --separate-git-dir has a .git file in the worktree that
+  // points at the external gitdir. Moving both paths first leaves that pointer
+  // aimed at the old location, so `git -C <new-worktree>` can no longer open
+  // the repository. Update the gitdir config before moving it, then rewrite
+  // the pointer after both renames. Roll back the filesystem pair if any of
+  // those steps fail so teams.json never advertises a half-renamed checkout.
+  await runCommand(git, ['--git-dir', oldTeam.config.gitdir, 'config', 'core.worktree', newWorktree]);
+  let movedWorktree = false;
+  let movedGitdir = false;
+  try {
+    await rename(oldTeam.config.worktree, newWorktree);
+    movedWorktree = true;
+    await rename(oldTeam.config.gitdir, newGitdir);
+    movedGitdir = true;
+    await writeFile(join(newWorktree, '.git'), `gitdir: ${newGitdir}\n`, 'utf8');
+    await runCommand(git, ['--git-dir', newGitdir, '--work-tree', newWorktree, 'rev-parse', '--show-toplevel']);
+    await writeTeamsFile(config, updatedFile);
+  } catch (cause: unknown) {
+    if (movedGitdir && (await exists(newGitdir))) {
+      await rename(newGitdir, oldTeam.config.gitdir).catch(() => undefined);
+    }
+    if (movedWorktree && (await exists(newWorktree))) {
+      await writeFile(join(newWorktree, '.git'), `gitdir: ${oldTeam.config.gitdir}\n`, 'utf8').catch(() => undefined);
+      await rename(newWorktree, oldTeam.config.worktree).catch(() => undefined);
+    }
+    if (await exists(oldTeam.config.gitdir)) {
+      await runCommand(git, ['--git-dir', oldTeam.config.gitdir, 'config', 'core.worktree', oldTeam.config.worktree], {
+        allowFailure: true,
+      });
+    }
+    throw cause;
+  }
   const ingested = await ingestWorktreeFiles(config, updatedTeam, 'replace');
   const ov = await openVikingCliForMode(false);
   await removeMemoryUri(
@@ -3060,7 +3097,7 @@ async function walkMemoryFiles(root: string): Promise<readonly string[]> {
       if (depth === 0) {
         continue;
       }
-      if (!entry.name.endsWith('.md')) {
+      if (!entry.name.endsWith('.md') || OV_SUMMARY_FILES.includes(entry.name)) {
         continue;
       }
       out.push(full);
@@ -3986,11 +4023,6 @@ export async function writeMemoryFile(
     }
     return;
   }
-  // Stage the body in a dedicated temp directory so the memory body never
-  // lives at the root of THREADNOTE_HOME, and if the process is killed
-  // mid-write the leftover is in /tmp which the OS cleans up routinely.
-  // mkdtemp already guarantees a unique parent directory; the inner filename
-  // can be fixed.
   const stagingDir = await mkdtemp(join(tmpdir(), 'threadnote-share-'));
   const tempPath = join(stagingDir, 'body.txt');
   try {

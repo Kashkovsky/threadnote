@@ -15,7 +15,7 @@ falling straight through to the pip fallback.
 ## `uv` Fails With `UnknownIssuer`
 
 Some corporate machines trust PyPI through certificates installed in the system keychain. Threadnote passes
-`--native-tls` when it uses `uv` so those system certificates are loaded.
+`--system-certs` when it uses `uv` so those system certificates are loaded.
 
 If an older install still fails with `invalid peer certificate: UnknownIssuer`, retry with:
 
@@ -48,7 +48,7 @@ If an older Threadnote release tries to reinstall all of OpenViking and fails wh
 install the certificate bridge directly into the existing OpenViking environment:
 
 ```bash
-uv pip install --native-tls --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
+uv pip install --system-certs --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
 threadnote start
 ```
 
