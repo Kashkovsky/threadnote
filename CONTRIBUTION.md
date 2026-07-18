@@ -74,9 +74,8 @@ npm run check:bundle-size
 npm run pack:dry-run
 ```
 
-`typecheck` intentionally checks the supported TypeScript compiler and the TypeScript 7 release candidate. Do not fix
-one by weakening the other. Bundle-size failures should trigger a dependency or bundling review rather than an
-unexplained limit increase.
+`typecheck` intentionally uses TypeScript 7 for both source and test code. Bundle-size failures should trigger a
+dependency or bundling review rather than an unexplained limit increase.
 
 ### Live OpenViking end-to-end tests
 

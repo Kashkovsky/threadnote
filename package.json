@@ -46,8 +46,8 @@
     "clean": "rm -rf dist",
     "dev": "tsx src/threadnote.ts",
     "dev:mcp-server": "tsx src/mcp_server.ts",
-    "lint": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
-    "lint:fix": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" --fix",
+    "lint": "oxlint src test",
+    "lint:fix": "oxlint --fix src test",
     "prepare": "husky",
     "precommit": "npm run lint && npm run prettier:write && npm run test",
     "prepack": "npm run build && npm run check:bundle-size",
@@ -62,7 +62,7 @@
     "doctor": "npm run build --silent && node ./bin/threadnote.cjs doctor",
     "mcp-server": "npm run build --silent && node ./bin/threadnote-mcp-server.cjs",
     "pack:dry-run": "npm pack --dry-run",
-    "typecheck": "node ./node_modules/typescript-7/bin/tsc --noEmit && node ./node_modules/typescript-7/bin/tsc -p test/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -71,7 +71,6 @@
     "@effect/ai-openai-compat": "4.0.0-beta.99",
     "@effect/platform-node": "4.0.0-beta.99",
     "@effect/vitest": "4.0.0-beta.99",
-    "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.1",
@@ -80,17 +79,14 @@
     "@vitest/coverage-v8": "^4.1.7",
     "effect": "4.0.0-beta.99",
     "esbuild": "^0.28.1",
-    "eslint": "^10.3.0",
-    "globals": "^17.6.0",
     "husky": "^9.1.7",
     "js-yaml": "^4.2.0",
+    "oxlint": "^1.74.0",
     "prettier": "^3.9.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
-    "typescript-7": "npm:typescript@7.0.1-rc",
-    "typescript-eslint": "^8.59.2",
+    "typescript": "7.0.2",
     "vitest": "^4.1.7"
   },
   "dependencies": {
