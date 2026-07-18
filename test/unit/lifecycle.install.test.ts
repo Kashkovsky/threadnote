@@ -1,11 +1,17 @@
+import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {delimiter, join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
+  ensureSupportedUvExecutable,
+  findSupportedUvExecutable,
   getInstallCommands,
   isLlamaWheelArchiveExtractionFailure,
   localEmbedWheelIndexUrl,
   openVikingInstallFailureHelpLines,
   openVikingSourceBuildRetryForArchiveFailure,
   openVikingToolPython,
+  resolveOpenVikingInstallCommand,
 } from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
@@ -13,6 +19,39 @@ const WHEEL_INDEX_ENV = 'THREADNOTE_LLAMA_WHEEL_INDEX';
 const TOOL_PYTHON_ENV = 'THREADNOTE_OPENVIKING_PYTHON';
 const TEST_INDEX = 'https://wheels.example/whl/cpu';
 const METAL_INDEX = 'https://abetlen.github.io/llama-cpp-python/whl/metal';
+const originalPath = process.env.PATH;
+const temporaryDirectories: string[] = [];
+
+async function fakeUv(version: string, selfUpdateVersion?: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'threadnote-uv-test-'));
+  temporaryDirectories.push(directory);
+  const executable = join(directory, 'uv');
+  const statePath = join(directory, 'version');
+  await writeFile(statePath, `${version}\n`);
+  await writeFile(
+    executable,
+    [
+      '#!/bin/sh',
+      `state=${JSON.stringify(statePath)}`,
+      'if [ "$1" = "--version" ]; then',
+      '  /bin/cat "$state"',
+      '  exit 0',
+      'fi',
+      ...(selfUpdateVersion
+        ? [
+            'if [ "$1" = "self" ] && [ "$2" = "update" ]; then',
+            `  printf '%s\\n' ${JSON.stringify(selfUpdateVersion)} > "$state"`,
+            '  exit 0',
+            'fi',
+          ]
+        : []),
+      'exit 1',
+      '',
+    ].join('\n'),
+  );
+  await chmod(executable, 0o755);
+  return executable;
+}
 
 function restoreEnv(name: string, original: string | undefined): void {
   if (original === undefined) {
@@ -21,6 +60,11 @@ function restoreEnv(name: string, original: string | undefined): void {
     process.env[name] = original;
   }
 }
+
+afterEach(async () => {
+  restoreEnv('PATH', originalPath);
+  await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, {force: true, recursive: true})));
+});
 
 function runtime(): RuntimeConfig {
   return {
@@ -39,9 +83,9 @@ const SPEC = 'openviking[local-embed]==0.4.7';
 const UV_COMMAND = {
   executable: 'uv',
   args: [
-    '--system-certs',
     'tool',
     'install',
+    '--system-certs',
     '--python',
     '3.12',
     '--with',
@@ -51,6 +95,34 @@ const UV_COMMAND = {
     SPEC,
   ],
 };
+
+describe('uv compatibility', () => {
+  it('skips an old uv that shadows a compatible candidate later on PATH', async () => {
+    const oldUv = await fakeUv('uv 0.10.9');
+    const currentUv = await fakeUv('uv 0.11.0');
+    process.env.PATH = [join(oldUv, '..'), join(currentUv, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+    expect(await findSupportedUvExecutable()).toBe(currentUv);
+    expect(await resolveOpenVikingInstallCommand(UV_COMMAND)).toEqual({...UV_COMMAND, executable: currentUv});
+  });
+
+  it('self-updates an old standalone uv before using --system-certs', async () => {
+    const uv = await fakeUv('uv 0.10.9', 'uv 0.11.0');
+    process.env.PATH = [join(uv, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+    expect(await ensureSupportedUvExecutable()).toBe(uv);
+    expect(await findSupportedUvExecutable()).toBe(uv);
+  });
+
+  it('reports an actionable error when an old uv cannot be upgraded', async () => {
+    const uv = await fakeUv('uv 0.10.9');
+    process.env.PATH = [join(uv, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+    await expect(ensureSupportedUvExecutable()).rejects.toThrow(
+      'Threadnote requires uv 0.11.0 or newer to use --system-certs',
+    );
+  });
+});
 
 describe('localEmbedWheelIndexUrl', () => {
   const original = process.env[WHEEL_INDEX_ENV];
@@ -134,6 +206,11 @@ describe('OpenViking install failure help', () => {
     expect(text).toContain('package-manager output above contains the underlying build or download error');
     expect(text).not.toContain('uv cache clean');
   });
+
+  it('recognizes an absolute uv executable in install failure guidance', () => {
+    const text = openVikingInstallFailureHelpLines({...UV_COMMAND, executable: '/opt/homebrew/bin/uv'}).join('\n');
+    expect(text).toContain('If uv could not fetch managed CPython');
+  });
 });
 
 describe('getInstallCommands', () => {
@@ -153,9 +230,9 @@ describe('getInstallCommands', () => {
     expect(rest).toHaveLength(0);
     expect(command.executable).toBe('uv');
     expect(command.args).toEqual([
-      '--system-certs',
       'tool',
       'install',
+      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -177,9 +254,9 @@ describe('getInstallCommands', () => {
     const [command] = await getInstallCommands(runtime(), 'uv', false);
     expect(command.args).not.toContain('--extra-index-url');
     expect(command.args).toEqual([
-      '--system-certs',
       'tool',
       'install',
+      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -193,9 +270,9 @@ describe('getInstallCommands', () => {
     const [command] = await getInstallCommands(runtime(), 'uv', false);
     expect(command.args).not.toContain('--python');
     expect(command.args).toEqual([
-      '--system-certs',
       'tool',
       'install',
+      '--system-certs',
       '--with',
       'pip-system-certs',
       '--extra-index-url',

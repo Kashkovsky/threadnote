@@ -31,9 +31,9 @@ if (uv.status !== 0) {
 
 const wheelIndex = `https://abetlen.github.io/llama-cpp-python/whl/${platform() === 'darwin' ? 'metal' : 'cpu'}`;
 const args = [
-  '--system-certs',
   'tool',
   'install',
+  '--system-certs',
   '--python',
   '3.12',
   '--refresh-package',

@@ -197,7 +197,7 @@ export async function findWorkingExecutable(
   return undefined;
 }
 
-async function findExecutableCandidates(commands: readonly string[]): Promise<readonly string[]> {
+export async function findExecutableCandidates(commands: readonly string[]): Promise<readonly string[]> {
   const candidates: string[] = [];
   for (const command of commands) {
     const paths =

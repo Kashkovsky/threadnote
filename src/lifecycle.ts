@@ -2,7 +2,7 @@ import {spawn} from 'node:child_process';
 import {closeSync, openSync} from 'node:fs';
 import {chmod, readdir, readFile, realpath, writeFile} from 'node:fs/promises';
 import {platform} from 'node:os';
-import {dirname, join, sep} from 'node:path';
+import {basename, dirname, join, sep} from 'node:path';
 import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
 import {Effect} from 'effect';
@@ -67,6 +67,7 @@ import {
   exists,
   expandPath,
   findExecutable,
+  findExecutableCandidates,
   findOpenVikingCli,
   firstLine,
   formatShellCommand,
@@ -94,6 +95,12 @@ import {
 } from './utils.js';
 
 const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
+const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
+
+interface UvExecutable {
+  readonly executable: string;
+  readonly version: string | undefined;
+}
 
 interface InstallCommandRetry {
   readonly command: MappedCommand;
@@ -1101,17 +1108,18 @@ async function runInstallCommands(
       await maybeRun(true, installCommand.executable, installCommand.args);
       continue;
     }
+    const resolvedInstallCommand = await resolveOpenVikingInstallCommand(installCommand);
     // Stream live instead of buffering through runCommand. openviking[local-embed]
     // can compile llama-cpp-python from source (10-20 min, memory-heavy); buffering
     // hides all progress and the 10-minute command timeout would SIGKILL a
     // legitimate build. Because uv/pipx --force removes the existing tool env
     // first, a killed reinstall leaves openviking-server missing — so we also
     // print recovery guidance before failing.
-    console.log(`Running: ${formatShellCommand(installCommand.executable, installCommand.args)}`);
-    const result = await runInstallCommand(installCommand);
+    console.log(`Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`);
+    const result = await runInstallCommand(resolvedInstallCommand);
     if (result.exitCode !== 0) {
       const commandOutput = `${result.stderr}\n${result.stdout}`;
-      const retry = openVikingSourceBuildRetryForArchiveFailure(installCommand, commandOutput);
+      const retry = openVikingSourceBuildRetryForArchiveFailure(resolvedInstallCommand, commandOutput);
       if (retry) {
         console.error('');
         console.error(
@@ -1129,9 +1137,9 @@ async function runInstallCommands(
         );
       }
 
-      printOpenVikingInstallFailureHelp(installCommand, commandOutput);
+      printOpenVikingInstallFailureHelp(resolvedInstallCommand, commandOutput);
       throw new Error(
-        `${formatShellCommand(installCommand.executable, installCommand.args)} exited with ${result.exitCode}.`,
+        `${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)} exited with ${result.exitCode}.`,
       );
     }
   }
@@ -1205,7 +1213,7 @@ export function openVikingInstallFailureHelpLines(failedCommand: MappedCommand, 
     'openviking[local-embed] includes llama-cpp-python, which compiles from source when no prebuilt wheel matches your Python/platform — that build can run 10-20 minutes and is memory-heavy, so it may be killed by the OS (out of memory) or look stuck.',
     'The package-manager output above contains the underlying build or download error.',
   ];
-  if (failedCommand.executable === 'uv') {
+  if (isUvExecutable(failedCommand.executable)) {
     if (failedCommand.args.includes('--python')) {
       lines.push(
         'If uv could not fetch managed CPython, Threadnote cannot complete the local install until that Python download is available.',
@@ -1369,16 +1377,98 @@ async function installUv(): Promise<boolean> {
   return false;
 }
 
+async function uvExecutables(): Promise<readonly UvExecutable[]> {
+  const executables = await findExecutableCandidates(['uv']);
+  return await Promise.all(
+    executables.map(async executable => {
+      const result = await runCommand(executable, ['--version'], {allowFailure: true, timeoutMs: 5000});
+      const match = `${result.stdout}\n${result.stderr}`.match(/\buv\s+v?(\d+(?:\.\d+){1,2})\b/i);
+      return {executable, version: match?.[1]};
+    }),
+  );
+}
+
+export async function findSupportedUvExecutable(): Promise<string | undefined> {
+  const candidates = await uvExecutables();
+  return candidates.find(
+    candidate =>
+      candidate.version !== undefined && compareVersions(candidate.version, MINIMUM_UV_SYSTEM_CERTS_VERSION) >= 0,
+  )?.executable;
+}
+
+export async function ensureSupportedUvExecutable(): Promise<string | undefined> {
+  const candidates = await uvExecutables();
+  const supported = candidates.find(
+    candidate =>
+      candidate.version !== undefined && compareVersions(candidate.version, MINIMUM_UV_SYSTEM_CERTS_VERSION) >= 0,
+  );
+  if (supported) {
+    return supported.executable;
+  }
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  console.log(`Updating uv to ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer for system certificate support.`);
+  for (const candidate of candidates) {
+    const result = await runCommand(candidate.executable, ['self', 'update'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      const updated = await findSupportedUvExecutable();
+      if (updated) {
+        return updated;
+      }
+    }
+  }
+
+  const brew = await findExecutable(['brew']);
+  if (brew) {
+    const result = await runCommand(brew, ['upgrade', 'uv'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      const updated = await findSupportedUvExecutable();
+      if (updated) {
+        return updated;
+      }
+    }
+  }
+
+  const found = candidates
+    .map(candidate => `${candidate.version ?? 'unknown version'} at ${candidate.executable}`)
+    .join(', ');
+  throw new Error(
+    `Threadnote requires uv ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer to use --system-certs. ` +
+      `Found ${found}; automatic update did not produce a compatible uv. ` +
+      'Run `uv self update` (standalone install) or `brew upgrade uv`, then re-run `threadnote update`.',
+  );
+}
+
+function isUvExecutable(executable: string): boolean {
+  const name = basename(executable).toLowerCase();
+  return name === 'uv' || name === 'uv.exe';
+}
+
+export async function resolveOpenVikingInstallCommand(command: MappedCommand): Promise<MappedCommand> {
+  if (!isUvExecutable(command.executable)) {
+    return command;
+  }
+  const uv = await ensureSupportedUvExecutable();
+  if (!uv) {
+    throw new Error(
+      `uv was selected to install OpenViking but was not found on PATH. Install uv ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer and re-run Threadnote.`,
+    );
+  }
+  return {...command, executable: uv};
+}
+
 async function getPythonSystemCertificatesInstallCommand(serverPath: string): Promise<MappedCommand> {
   const pythonPath = await siblingPythonForExecutable(serverPath);
   if (!pythonPath) {
     throw new Error(`Could not find the OpenViking Python environment for ${serverPath}`);
   }
-  const uvPath = await findExecutable(['uv']);
+  const uvPath = await ensureSupportedUvExecutable();
   if (uvPath) {
     return {
       executable: uvPath,
-      args: ['--system-certs', 'pip', 'install', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
+      args: ['pip', 'install', '--system-certs', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
     };
   }
   return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
@@ -1447,9 +1537,9 @@ export async function getInstallCommands(
     // wheel instead of compiling. --extra-index-url points at that wheel index.
     const toolPython = openVikingToolPython();
     const uvArgs = [
-      '--system-certs',
       'tool',
       'install',
+      '--system-certs',
       ...(toolPython ? ['--python', toolPython] : []),
       '--with',
       PYTHON_SYSTEM_CERTS_PACKAGE,
