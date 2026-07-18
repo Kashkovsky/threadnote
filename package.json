@@ -88,7 +88,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "typescript-7": "npm:typescript@7.0.1-rc",
     "typescript-eslint": "^8.59.2",
     "vitest": "^4.1.7"
