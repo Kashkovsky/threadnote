@@ -50,7 +50,7 @@ jobs:
           retention-days: 14
 
   local-bins-e2e:
-    name: Local bins E2E · ubuntu · node 22
+    name: E2E tests · ubuntu · node 22
     runs-on: ubuntu-latest
 
     steps:
