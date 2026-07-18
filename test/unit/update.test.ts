@@ -41,6 +41,14 @@ describe('readOpenVikingCliVersion', () => {
     await expect(readOpenVikingCliVersion('/ov')).resolves.toBe('0.4.10');
     expect(utils.runCommand).toHaveBeenCalledWith('/ov', ['--version'], {allowFailure: true});
   });
+
+  it('does not mistake OpenViking setup guidance for a version', async () => {
+    vi.mocked(utils.runCommand).mockResolvedValueOnce(
+      ok('OpenViking needs a display language before running commands.\n'),
+    );
+
+    await expect(readOpenVikingCliVersion('/ov')).resolves.toBeUndefined();
+  });
 });
 
 async function makeRuntime(): Promise<RuntimeConfig> {
