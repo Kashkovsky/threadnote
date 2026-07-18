@@ -1,8 +1,8 @@
 {
   "name": "threadnote",
   "version": "1.9.0",
-  "type": "commonjs",
-  "main": "dist/threadnote.cjs",
+  "type": "module",
+  "main": "dist/threadnote.js",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/Kashkovsky/threadnote#readme",
@@ -41,7 +41,8 @@
     "scripts/"
   ],
   "scripts": {
-    "build": "npm run clean --silent && esbuild src/threadnote.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/threadnote.cjs && esbuild src/mcp_server.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp_server.cjs && esbuild src/manager_ui.tsx --bundle --platform=browser --format=iife --target=es2020 --outfile=manager/app.js",
+    "build": "npm run clean --silent && node scripts/build.mjs",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "clean": "rm -rf dist",
     "dev": "tsx src/threadnote.ts",
     "dev:mcp-server": "tsx src/mcp_server.ts",
@@ -49,10 +50,12 @@
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.ts\" --fix",
     "prepare": "husky",
     "precommit": "npm run lint && npm run prettier:write && npm run test",
-    "prepack": "npm run build",
+    "prepack": "npm run build && npm run check:bundle-size",
     "prettier:check": "prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "prettier:write": "prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "test": "vitest run",
+    "test:e2e:install-openviking": "node scripts/install-e2e-openviking.mjs",
+    "test:e2e:local-bins": "npm run build --silent && vitest run --config vitest.e2e.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "threadnote": "npm run build --silent && node ./bin/threadnote.cjs",
@@ -65,6 +68,9 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@effect/ai-openai-compat": "4.0.0-beta.99",
+    "@effect/platform-node": "4.0.0-beta.99",
+    "@effect/vitest": "4.0.0-beta.99",
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/js-yaml": "^4.0.9",
@@ -72,7 +78,7 @@
     "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.7",
-    "commander": "^15.0.0",
+    "effect": "4.0.0-beta.99",
     "esbuild": "^0.28.1",
     "eslint": "^10.3.0",
     "globals": "^17.6.0",
@@ -85,8 +91,7 @@
     "typescript": "^6.0.3",
     "typescript-7": "npm:typescript@7.0.1-rc",
     "typescript-eslint": "^8.59.2",
-    "vitest": "^4.1.7",
-    "zod": "^4.4.3"
+    "vitest": "^4.1.7"
   },
   "dependencies": {
     "react-markdown": "^10.1.0",

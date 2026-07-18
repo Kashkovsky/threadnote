@@ -87,6 +87,14 @@ their CLI equivalents without loading their schemas into every agent session. Pa
 to expose compatibility aliases, memory maintenance, advanced sharing/artifact tools, and raw OpenViking parity tools
 with `ov_*` names.
 
+## Development
+
+Threadnote's infrastructure and orchestration run on Effect 4 beta, including typed command/HTTP failures, scoped
+resources, deterministic polling and retries, Effect Schema MCP inputs, and optional structured Effect AI
+consolidation. See [`docs/effect.md`](./docs/effect.md) for boundaries, opt-in configuration, parity gates, and the beta
+upgrade procedure. See [`CONTRIBUTION.md`](./CONTRIBUTION.md) for development setup, validation requirements, and pull
+request guidance.
+
 ## Acknowledgments
 
 Threadnote is a workflow layer over [OpenViking](https://openviking.ai/) (AGPL-3.0).

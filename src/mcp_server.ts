@@ -1,13 +1,12 @@
 #! /usr/bin/env node
 
+import {NodeRuntime} from '@effect/platform-node';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {z} from 'zod';
+import {Effect, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -43,6 +42,7 @@ import {
   shareAgentArtifact,
   shareBundlePack,
   startShareBackgroundFetch,
+  stopShareBackgroundFetch,
   stripPersonalProvenance,
   syncSharedReposBeforeAgentRead,
   vikingResourceExists as sharedVikingResourceExists,
@@ -71,10 +71,12 @@ import {
   runCommand,
   safeTimestamp,
   sha256,
-  sleep,
   trimTrailingSlash,
 } from './utils.js';
 import {withIdentity} from './runtime.js';
+import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
+import {removeOpenVikingResourceEffect} from './effect/openviking.js';
+import {ApplicationLayer} from './effect/runtime.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -175,24 +177,30 @@ async function withStaleVersionNotice(result: CallToolResult): Promise<CallToolR
   return {...result, content: [...(result.content ?? []), {type: 'text', text: `⚠ ${notice}`}]};
 }
 
-async function main(): Promise<void> {
-  const config = getRuntimeConfig();
-  const toolset = parseMcpToolset(process.env[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET);
-  mcpStartupVersion = await currentPackageVersion().catch(() => undefined);
+const mainEffect = Effect.gen(function* () {
+  const config = yield* Effect.try({
+    try: getRuntimeConfig,
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+  const toolset = yield* Effect.try({
+    try: () => parseMcpToolset(process.env[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+  mcpStartupVersion = yield* Effect.tryPromise(currentPackageVersion).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   const instructions =
     'Threadnote provides local context. On non-trivial work, call `recall_context` with repo/project in `query` and absolute `callerCwd`; read relevant `viking://` URIs. Store reusable facts as durable and progress as handoff with stable project/topic; replace instead of duplicate. Do not store secrets, credentials, customer data, or raw production logs. Confirm before publishing durable memories; never publish handoffs or preferences. Use `threadnote_guide` for capabilities and CLI for absent advanced tools.';
-  const server = new McpServer(
-    {name: 'threadnote-local-adapter', version: '0.2.0'},
-    {
-      instructions,
-    },
-  );
+  const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
-  startShareBackgroundFetch(config);
-  await server.connect(new StdioServerTransport());
-  process.stderr.write('Threadnote local MCP adapter running\n');
-}
+  yield* Effect.acquireRelease(
+    Effect.sync(() => startShareBackgroundFetch(config)),
+    () => Effect.sync(() => stopShareBackgroundFetch(config)),
+  );
+  yield* Effect.sync(() => process.stderr.write('Threadnote local MCP adapter running\n'));
+  return yield* server.run();
+});
 
 function getRuntimeConfig(): RuntimeConfig {
   const host = process.env.THREADNOTE_HOST ?? DEFAULT_HOST;
@@ -207,7 +215,7 @@ function getRuntimeConfig(): RuntimeConfig {
   };
 }
 
-function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToolset): void {
+function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, toolset: McpToolset): void {
   registerSearchTool(
     server,
     config,
@@ -277,23 +285,19 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'Publish a personal durable memory to the team shared repo. Scrubs sensitive data, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
       inputSchema: {
-        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
-        preview: z
-          .boolean()
-          .optional()
-          .describe(
-            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
-          ),
-        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
-        redact: z
-          .boolean()
-          .optional()
-          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
-        uri: z.string().optional().describe('Required viking:// memory URI to publish'),
+        message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
+        preview: McpInput.boolean(
+          'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
+        ),
+        push: McpInput.boolean('Push to remote after committing; defaults to true'),
+        redact: McpInput.boolean(
+          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+        ),
+        team: McpInput.string('Team name; defaults to the configured default team'),
+        uri: McpInput.string('Required viking:// memory URI to publish'),
       },
     },
-    async ({message, preview, push, redact, team, uri}) => {
+    ({message, preview, push, redact, team, uri}) => {
       const checkedUri = requiredVikingUri(
         uri,
         'share_publish',
@@ -316,11 +320,11 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: 'Remove a viking:// URI from OpenViking.',
       inputSchema: {
-        recursive: z.boolean().optional().describe('Remove a directory recursively'),
-        uri: z.string().optional().describe('Required viking:// URI to remove'),
+        recursive: McpInput.boolean('Remove a directory recursively'),
+        uri: McpInput.string('Required viking:// URI to remove'),
       },
     },
-    async ({recursive, uri}) => {
+    ({recursive, uri}) => {
       const checkedUri = requiredVikingUri(uri, 'forget', 'viking://user/you/memories/example.md');
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -335,16 +339,16 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       annotations: {readOnlyHint: false, destructiveHint: false},
       description: 'Add a local file or directory to OpenViking as a resource.',
       inputSchema: {
-        description: z.string().optional().describe('Optional import reason/description'),
-        path: z.string().optional().describe('Local source file/directory or URL; native OpenViking MCP name'),
-        sourcePath: z.string().optional().describe('Required local source file or directory'),
-        source_path: z.string().optional().describe('Compatibility alias for path'),
-        tempFileId: z.string().optional().describe('Native progressive upload temp file id'),
-        temp_file_id: z.string().optional().describe('Native progressive upload temp file id'),
-        to: z.string().optional().describe('Optional destination viking:// URI'),
-        wait: z.boolean().optional().describe('Wait for processing to finish'),
-        watchInterval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
-        watch_interval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
+        description: McpInput.string('Optional import reason/description'),
+        path: McpInput.string('Local source file/directory or URL; native OpenViking MCP name'),
+        sourcePath: McpInput.string('Required local source file or directory'),
+        source_path: McpInput.string('Compatibility alias for path'),
+        tempFileId: McpInput.string('Native progressive upload temp file id'),
+        temp_file_id: McpInput.string('Native progressive upload temp file id'),
+        to: McpInput.string('Optional destination viking:// URI'),
+        wait: McpInput.boolean('Wait for processing to finish'),
+        watchInterval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
+        watch_interval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
       },
     },
     async args =>
@@ -365,12 +369,12 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'Run exact text search in OpenViking. Defaults to your memories subtree when uri is omitted (OpenViking grep requires a scope).',
       inputSchema: {
-        caseInsensitive: z.boolean().optional().describe('Case-insensitive search'),
-        case_insensitive: z.boolean().optional().describe('Case-insensitive search'),
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        pattern: z.string().optional().describe('Required text or regex pattern'),
-        uri: z.string().optional().describe('Optional viking:// subtree (defaults to your memories root)'),
+        caseInsensitive: McpInput.boolean('Case-insensitive search'),
+        case_insensitive: McpInput.boolean('Case-insensitive search'),
+        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        pattern: McpInput.string('Required text or regex pattern'),
+        uri: McpInput.string('Optional viking:// subtree (defaults to your memories root)'),
       },
     },
     async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
@@ -401,10 +405,10 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Run glob file search in OpenViking.',
       inputSchema: {
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        pattern: z.string().optional().describe('Required glob pattern'),
-        uri: z.string().optional().describe('Optional viking:// subtree'),
+        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        pattern: McpInput.string('Required glob pattern'),
+        uri: McpInput.string('Optional viking:// subtree'),
       },
     },
     async ({nodeLimit, node_limit, pattern, uri}) => {
@@ -447,7 +451,7 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'List pending shared memory conflicts left by share sync reindex failures. Use this when recall/read/sync reports pending shared memory conflicts. Each result includes a stable id plus exact next-step guidance for show/resolve.',
       inputSchema: {
-        team: z.string().optional().describe('Team name; omit to inspect all configured teams'),
+        team: McpInput.string('Team name; omit to inspect all configured teams'),
       },
     },
     async ({team}) => runShareConflictsTool(config, {team}),
@@ -460,11 +464,10 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'Show one pending shared memory conflict, including local OpenViking content vs shared file diff and safe resolution options. The id comes from share_conflicts and has the form team:durable/projects/.../topic.md; a shared viking:// URI also works.',
       inputSchema: {
-        id: z
-          .string()
-          .optional()
-          .describe('Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI'),
-        team: z.string().optional().describe('Team name when id is only a relative path'),
+        id: McpInput.string(
+          'Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI',
+        ),
+        team: McpInput.string('Team name when id is only a relative path'),
       },
     },
     async ({id, team}) => {
@@ -485,30 +488,17 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'Resolve one pending shared memory conflict on the user’s behalf after they choose a winner. Use take="shared" to accept the shared git file into OpenViking, take="local" to publish local OpenViking content back to the shared repo, or mergedContent to write explicit merged markdown to both places. Creates a local backup before mutation and clears only the resolved pending entry.',
       inputSchema: {
-        dryRun: z
-          .boolean()
-          .optional()
-          .describe('Preview without writing OpenViking, shared files, git commits, or pending state'),
-        id: z
-          .string()
-          .optional()
-          .describe('Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI'),
-        mergedContent: z
-          .string()
-          .optional()
-          .describe(
-            'Explicit merged memory markdown. Mutually exclusive with take. MCP equivalent of CLI --from-file.',
-          ),
-        message: z
-          .string()
-          .optional()
-          .describe('Commit message when writing local or merged content to the shared repo'),
-        push: z.boolean().optional().describe('Push local/merged resolution commit to remote; defaults to true'),
-        take: z
-          .enum(['shared', 'local'])
-          .optional()
-          .describe('Resolution side. Mutually exclusive with mergedContent.'),
-        team: z.string().optional().describe('Team name when id is only a relative path'),
+        dryRun: McpInput.boolean('Preview without writing OpenViking, shared files, git commits, or pending state'),
+        id: McpInput.string(
+          'Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI',
+        ),
+        mergedContent: McpInput.string(
+          'Explicit merged memory markdown. Mutually exclusive with take. MCP equivalent of CLI --from-file.',
+        ),
+        message: McpInput.string('Commit message when writing local or merged content to the shared repo'),
+        push: McpInput.boolean('Push local/merged resolution commit to remote; defaults to true'),
+        take: McpInput.literals(['shared', 'local'], 'Resolution side. Mutually exclusive with mergedContent.'),
+        team: McpInput.string('Team name when id is only a relative path'),
       },
     },
     async ({dryRun, id, mergedContent, message, push, take, team}) => {
@@ -536,23 +526,19 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         "Publish a local Codex/Claude skill or Claude command markdown file into a team's shared artifact catalog. Path inference handles ~/.codex/skills/**/SKILL.md, ~/.claude/skills/**/SKILL.md, and ~/.claude/commands/**/*.md; pass agent/kind/name when sharing from another path. A skill is shared as its whole directory: companion files (scripts, references, assets) beside the SKILL.md travel with it. Default team is used unless team is provided. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
-        agent: z.enum(['codex', 'claude']).optional().describe('Agent owner when path inference is ambiguous'),
-        allowBinary: z
-          .boolean()
-          .optional()
-          .describe('Include binary skill files (unscannable by the scrubber); blocked by default'),
-        force: z.boolean().optional().describe('Replace an existing shared artifact with different content'),
-        kind: z.enum(['skill', 'command']).optional().describe('Artifact kind when path inference is ambiguous'),
-        message: z.string().optional().describe('Commit message override; defaults to "share: publish <path>"'),
-        name: z.string().optional().describe('Shared artifact name; defaults to skill directory or command file stem'),
-        path: z.string().optional().describe('Required local path to SKILL.md or a Claude command markdown file'),
-        preview: z.boolean().optional().describe('Return the bytes that would land in the shared git repo'),
-        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
-        redact: z
-          .boolean()
-          .optional()
-          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        agent: McpInput.literals(['codex', 'claude'], 'Agent owner when path inference is ambiguous'),
+        allowBinary: McpInput.boolean('Include binary skill files (unscannable by the scrubber); blocked by default'),
+        force: McpInput.boolean('Replace an existing shared artifact with different content'),
+        kind: McpInput.literals(['skill', 'command'], 'Artifact kind when path inference is ambiguous'),
+        message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
+        name: McpInput.string('Shared artifact name; defaults to skill directory or command file stem'),
+        path: McpInput.string('Required local path to SKILL.md or a Claude command markdown file'),
+        preview: McpInput.boolean('Return the bytes that would land in the shared git repo'),
+        push: McpInput.boolean('Push to remote after committing; defaults to true'),
+        redact: McpInput.boolean(
+          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+        ),
+        team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
     async ({agent, allowBinary, force, kind, message, name, path, preview, push, redact, team}) => {
@@ -584,20 +570,16 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         "Publish a multi-skill constellation (pack) into a team's shared artifact catalog from a threadnote-bundle.json manifest. Use this when several skills share code that lives outside any single skill directory (e.g. repo-root scripts/lib). The manifest declares name, agent, skills, include paths, external deps, and pathRewrites. Hardcoded repo-root paths are rewritten to a portable token and expanded on install. Pass preview=true to inspect what would land without writing or committing.",
       inputSchema: {
-        allowBinary: z
-          .boolean()
-          .optional()
-          .describe('Include binary files (unscannable by the scrubber); blocked by default'),
-        force: z.boolean().optional().describe('Replace existing shared pack files with different content'),
-        message: z.string().optional().describe('Commit message override'),
-        path: z.string().optional().describe('Required local path to a threadnote-bundle.json manifest'),
-        preview: z.boolean().optional().describe('Return what would land in the shared git repo without writing'),
-        push: z.boolean().optional().describe('Push to remote after committing; defaults to true'),
-        redact: z
-          .boolean()
-          .optional()
-          .describe('Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        allowBinary: McpInput.boolean('Include binary files (unscannable by the scrubber); blocked by default'),
+        force: McpInput.boolean('Replace existing shared pack files with different content'),
+        message: McpInput.string('Commit message override'),
+        path: McpInput.string('Required local path to a threadnote-bundle.json manifest'),
+        preview: McpInput.boolean('Return what would land in the shared git repo without writing'),
+        push: McpInput.boolean('Push to remote after committing; defaults to true'),
+        redact: McpInput.boolean(
+          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+        ),
+        team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
     async ({allowBinary, force, message, path, preview, push, redact, team}) => {
@@ -618,10 +600,10 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'List shared Codex/Claude skills, Claude commands, and skill packs available in a configured Threadnote team repo, including whether each one is already installed locally.',
       inputSchema: {
-        agent: z.enum(['codex', 'claude']).optional().describe('Optional agent filter'),
-        kind: z.enum(['skill', 'command', 'pack']).optional().describe('Optional kind filter'),
-        name: z.string().optional().describe('Optional shared artifact name filter'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        agent: McpInput.literals(['codex', 'claude'], 'Optional agent filter'),
+        kind: McpInput.literals(['skill', 'command', 'pack'], 'Optional kind filter'),
+        name: McpInput.string('Optional shared artifact name filter'),
+        team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
     async ({agent, kind, name, team}) => runListSharedSkillsTool(config, {agent, kind, name, team}),
@@ -634,15 +616,12 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
       description:
         'Install one shared Codex/Claude skill or Claude command from a configured Threadnote team repo into the local agent skill/command directory. Use list_shared_skills first to find names and disambiguate agent/kind.',
       inputSchema: {
-        agent: z.enum(['codex', 'claude']).optional().describe('Agent owner; required when name is ambiguous'),
-        dryRun: z.boolean().optional().describe('Preview install without writing local files'),
-        force: z.boolean().optional().describe('Replace an existing installed artifact with different content'),
-        kind: z
-          .enum(['skill', 'command', 'pack'])
-          .optional()
-          .describe('Artifact kind; required when name is ambiguous'),
-        name: z.string().optional().describe('Required shared artifact name to install'),
-        team: z.string().optional().describe('Team name; defaults to the configured default team'),
+        agent: McpInput.literals(['codex', 'claude'], 'Agent owner; required when name is ambiguous'),
+        dryRun: McpInput.boolean('Preview install without writing local files'),
+        force: McpInput.boolean('Replace an existing installed artifact with different content'),
+        kind: McpInput.literals(['skill', 'command', 'pack'], 'Artifact kind; required when name is ambiguous'),
+        name: McpInput.string('Required shared artifact name to install'),
+        team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
     async ({agent, dryRun, force, kind, name, team}) => {
@@ -655,25 +634,39 @@ function registerTools(server: McpServer, config: RuntimeConfig, toolset: McpToo
   );
 }
 
-function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig): void {
+function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'ov_search',
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP search parity. Unlike search/recall_context, this does not enrich the query.',
       inputSchema: {
-        limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        minScore: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
-        min_score: z.number().min(0).max(1).optional().describe('Minimum score threshold'),
-        query: z.string().optional().describe('Required search query'),
-        sessionId: z.string().optional().describe('Optional native session id'),
-        session_id: z.string().optional().describe('Optional native session id'),
-        targetUri: z.string().optional().describe('Optional target viking:// subtree'),
-        target_uri: z.string().optional().describe('Optional target viking:// subtree'),
-        uri: z.string().optional().describe('Compatibility alias for target_uri'),
+        contextType: McpInput.literals(['resource', 'memory', 'skill'], 'Optional native context-type filter'),
+        context_type: McpInput.literals(['resource', 'memory', 'skill'], 'Optional native context-type filter'),
+        limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        minScore: McpInput.number('Minimum score threshold', {minimum: 0, maximum: 1}),
+        min_score: McpInput.number('Minimum score threshold', {minimum: 0, maximum: 1}),
+        query: McpInput.string('Required search query'),
+        sessionId: McpInput.string('Optional native session id'),
+        session_id: McpInput.string('Optional native session id'),
+        targetUri: McpInput.string('Optional target viking:// subtree'),
+        target_uri: McpInput.string('Optional target viking:// subtree'),
+        uri: McpInput.string('Compatibility alias for target_uri'),
       },
     },
-    async ({limit, minScore, min_score, query, sessionId, session_id, targetUri, target_uri, uri}) => {
+    async ({
+      contextType,
+      context_type,
+      limit,
+      minScore,
+      min_score,
+      query,
+      sessionId,
+      session_id,
+      targetUri,
+      target_uri,
+      uri,
+    }) => {
       const checkedQuery = requiredText(query, 'ov_search', 'query', {query: 'current repo release notes'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -684,6 +677,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       }
       const normalizedSessionId = (sessionId ?? session_id)?.trim();
       return runOpenVikingMcpTool(config, 'search', {
+        context_type: contextType ?? context_type,
         limit,
         min_score: minScore ?? min_score,
         query: checkedQuery.value,
@@ -700,11 +694,8 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       description:
         'Raw OpenViking MCP read parity. Reads one or more viking:// URIs without Threadnote shared-memory sync.',
       inputSchema: {
-        uri: z.string().optional().describe('Single viking:// URI'),
-        uris: z
-          .union([z.string(), z.array(z.string())])
-          .optional()
-          .describe('Single viking:// URI or array of URIs'),
+        uri: McpInput.string('Single viking:// URI'),
+        uris: McpInput.stringOrStrings('Single viking:// URI or array of URIs'),
       },
     },
     async ({uri, uris}) => {
@@ -726,15 +717,15 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP list parity.',
       inputSchema: {
-        all: z.boolean().optional().describe('Show hidden files like .abstract.md and .overview.md'),
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
-        recursive: z.boolean().optional().describe('List recursively'),
-        simple: z.boolean().optional().describe('Only return paths'),
-        uri: z.string().optional().describe('Optional viking:// directory URI; defaults to viking://'),
+        all: McpInput.boolean('Show hidden files like .abstract.md and .overview.md'),
+        nodeLimit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
+        recursive: McpInput.boolean('List recursively'),
+        simple: McpInput.boolean('Only return paths'),
+        uri: McpInput.string('Optional viking:// directory URI; defaults to viking://'),
       },
     },
-    async ({recursive, uri}) => {
+    ({recursive, uri}) => {
       const checkedUri = optionalVikingUri(uri, 'ov_list');
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -755,16 +746,16 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: false, destructiveHint: false},
       description: 'Raw OpenViking MCP add_resource parity.',
       inputSchema: {
-        description: z.string().optional().describe('Optional import reason/description'),
-        path: z.string().optional().describe('Local source file/directory or URL'),
-        sourcePath: z.string().optional().describe('Compatibility alias for path'),
-        source_path: z.string().optional().describe('Compatibility alias for path'),
-        tempFileId: z.string().optional().describe('Native progressive upload temp file id'),
-        temp_file_id: z.string().optional().describe('Native progressive upload temp file id'),
-        to: z.string().optional().describe('Optional destination viking:// URI'),
-        wait: z.boolean().optional().describe('Wait for processing to finish'),
-        watchInterval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
-        watch_interval: z.number().int().min(0).optional().describe('Watch interval in minutes'),
+        description: McpInput.string('Optional import reason/description'),
+        path: McpInput.string('Local source file/directory or URL'),
+        sourcePath: McpInput.string('Compatibility alias for path'),
+        source_path: McpInput.string('Compatibility alias for path'),
+        tempFileId: McpInput.string('Native progressive upload temp file id'),
+        temp_file_id: McpInput.string('Native progressive upload temp file id'),
+        to: McpInput.string('Optional destination viking:// URI'),
+        wait: McpInput.boolean('Wait for processing to finish'),
+        watchInterval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
+        watch_interval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
       },
     },
     async args =>
@@ -784,8 +775,8 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP list_watches parity.',
       inputSchema: {
-        activeOnly: z.boolean().optional().describe('Only show active watch tasks'),
-        active_only: z.boolean().optional().describe('Only show active watch tasks'),
+        activeOnly: McpInput.boolean('Only show active watch tasks'),
+        active_only: McpInput.boolean('Only show active watch tasks'),
       },
     },
     async ({activeOnly, active_only}) =>
@@ -798,9 +789,9 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: 'Raw OpenViking MCP cancel_watch parity. Accepts to_uri, toUri, or uri.',
       inputSchema: {
-        toUri: z.string().optional().describe('Watch target viking:// URI'),
-        to_uri: z.string().optional().describe('Watch target viking:// URI'),
-        uri: z.string().optional().describe('Compatibility alias for to_uri'),
+        toUri: McpInput.string('Watch target viking:// URI'),
+        to_uri: McpInput.string('Watch target viking:// URI'),
+        uri: McpInput.string('Compatibility alias for to_uri'),
       },
     },
     async ({toUri, to_uri, uri}) => {
@@ -822,12 +813,12 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP grep parity.',
       inputSchema: {
-        caseInsensitive: z.boolean().optional().describe('Case-insensitive search'),
-        case_insensitive: z.boolean().optional().describe('Case-insensitive search'),
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        pattern: z.string().optional().describe('Required regex pattern'),
-        uri: z.string().optional().describe('Optional viking:// subtree'),
+        caseInsensitive: McpInput.boolean('Case-insensitive search'),
+        case_insensitive: McpInput.boolean('Case-insensitive search'),
+        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        pattern: McpInput.string('Required regex pattern'),
+        uri: McpInput.string('Optional viking:// subtree'),
       },
     },
     async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
@@ -858,10 +849,10 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP glob parity.',
       inputSchema: {
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum result count'),
-        pattern: z.string().optional().describe('Required glob pattern'),
-        uri: z.string().optional().describe('Optional viking:// subtree'),
+        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
+        pattern: McpInput.string('Required glob pattern'),
+        uri: McpInput.string('Optional viking:// subtree'),
       },
     },
     async ({nodeLimit, node_limit, pattern, uri}) => {
@@ -891,11 +882,11 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: 'Raw OpenViking MCP forget parity.',
       inputSchema: {
-        recursive: z.boolean().optional().describe('Remove a directory recursively'),
-        uri: z.string().optional().describe('Required viking:// URI to remove'),
+        recursive: McpInput.boolean('Remove a directory recursively'),
+        uri: McpInput.string('Required viking:// URI to remove'),
       },
     },
-    async ({recursive, uri}) => {
+    ({recursive, uri}) => {
       const checkedUri = requiredVikingUri(uri, 'ov_forget', 'viking://resources/repos/threadnote/tmp');
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -910,7 +901,7 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP code_outline parity. Requires a viking:// file URI.',
       inputSchema: {
-        uri: z.string().optional().describe('Required viking:// file URI'),
+        uri: McpInput.string('Required viking:// file URI'),
       },
     },
     async ({uri}) => {
@@ -932,8 +923,8 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP code_search parity. Requires a query and viking:// directory URI.',
       inputSchema: {
-        query: z.string().optional().describe('Required symbol-name substring'),
-        uri: z.string().optional().describe('Required viking:// directory URI'),
+        query: McpInput.string('Required symbol-name substring'),
+        uri: McpInput.string('Required viking:// directory URI'),
       },
     },
     async ({query, uri}) => {
@@ -958,8 +949,8 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: 'Raw OpenViking MCP code_expand parity. Requires a viking:// file URI and symbol.',
       inputSchema: {
-        symbol: z.string().optional().describe('Required symbol name, e.g. bar or Foo.bar'),
-        uri: z.string().optional().describe('Required viking:// file URI'),
+        symbol: McpInput.string('Required symbol name, e.g. bar or Foo.bar'),
+        uri: McpInput.string('Required viking:// file URI'),
       },
     },
     async ({symbol, uri}) => {
@@ -990,19 +981,20 @@ function registerOpenVikingParityTools(server: McpServer, config: RuntimeConfig)
   );
 }
 
-function registerOpenVikingStoreTool(server: McpServer, config: RuntimeConfig, name: 'ov_remember' | 'ov_store'): void {
+function registerOpenVikingStoreTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: 'ov_remember' | 'ov_store',
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `Raw OpenViking MCP ${name === 'ov_remember' ? 'remember' : 'store'} parity. Stores message(s) through ov add-memory.`,
       inputSchema: {
-        content: z.string().optional().describe('Compatibility shortcut for a single user message'),
-        messages: z
-          .array(z.object({content: z.string(), role: z.string()}))
-          .optional()
-          .describe('Native messages array of {role, content}'),
-        text: z.string().optional().describe('Compatibility shortcut for a single user message'),
+        content: McpInput.string('Compatibility shortcut for a single user message'),
+        messages: McpInput.messages('Native messages array of {role, content}'),
+        text: McpInput.string('Compatibility shortcut for a single user message'),
       },
     },
     async ({content, messages, text}) => {
@@ -1020,35 +1012,32 @@ function registerOpenVikingStoreTool(server: McpServer, config: RuntimeConfig, n
   );
 }
 
-function registerSearchTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+function registerSearchTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: string,
+  description: string,
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        query: z.string().optional().describe('Required search query, for example "unity-ui-ccc latest handoff"'),
-        uri: z.string().optional().describe('Optional viking:// subtree to search'),
-        callerCwd: z
-          .string()
-          .optional()
-          .describe('Optional absolute caller workspace path used to resolve this/current branch queries'),
-        nodeLimit: z.number().int().positive().max(100).optional().describe('Maximum result count'),
-        includeArchived: z.boolean().optional().describe('Include archived memories in recall results'),
-        threshold: z
-          .number()
-          .min(0)
-          .max(1)
-          .optional()
-          .describe(
-            'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
-          ),
-        workset: z
-          .string()
-          .optional()
-          .describe(
-            'Optional named workset (a set of related repos from the seed manifest) to recall across as one working set',
-          ),
+        query: McpInput.string('Required search query, for example "unity-ui-ccc latest handoff"'),
+        uri: McpInput.string('Optional viking:// subtree to search'),
+        callerCwd: McpInput.string(
+          'Optional absolute caller workspace path used to resolve this/current branch queries',
+        ),
+        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 100}),
+        includeArchived: McpInput.boolean('Include archived memories in recall results'),
+        threshold: McpInput.number(
+          'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
+          {minimum: 0, maximum: 1},
+        ),
+        workset: McpInput.string(
+          'Optional named workset (a set of related repos from the seed manifest) to recall across as one working set',
+        ),
       },
     },
     async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
@@ -1319,18 +1308,20 @@ async function collectExactMemoryMatches(
   });
 }
 
-function registerReadTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+function registerReadTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: string,
+  description: string,
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: `${description} Required: pass JSON arguments with uri, or native OpenViking uris.`,
       inputSchema: {
-        uri: z.string().optional().describe('Required viking:// file URI'),
-        uris: z
-          .union([z.string(), z.array(z.string())])
-          .optional()
-          .describe('Native OpenViking MCP read input: a single viking:// URI or array of URIs'),
+        uri: McpInput.string('Required viking:// file URI'),
+        uris: McpInput.stringOrStrings('Native OpenViking MCP read input: a single viking:// URI or array of URIs'),
       },
     },
     async ({uri, uris}) => {
@@ -1363,19 +1354,24 @@ function registerReadTool(server: McpServer, config: RuntimeConfig, name: string
   );
 }
 
-function registerListTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+function registerListTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: string,
+  description: string,
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        uri: z.string().optional().describe('Optional viking:// directory URI; defaults to viking://'),
-        all: z.boolean().optional().describe('Show hidden files like .abstract.md and .overview.md'),
-        recursive: z.boolean().optional().describe('List recursively'),
-        simple: z.boolean().optional().describe('Only return paths'),
-        nodeLimit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
-        node_limit: z.number().int().positive().max(1000).optional().describe('Maximum node count'),
+        uri: McpInput.string('Optional viking:// directory URI; defaults to viking://'),
+        all: McpInput.boolean('Show hidden files like .abstract.md and .overview.md'),
+        recursive: McpInput.boolean('List recursively'),
+        simple: McpInput.boolean('Only return paths'),
+        nodeLimit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
+        node_limit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
       },
     },
     async ({recursive, uri}) => {
@@ -1391,40 +1387,36 @@ function registerListTool(server: McpServer, config: RuntimeConfig, name: string
   );
 }
 
-function registerStoreTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+function registerStoreTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: string,
+  description: string,
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
-        kind: z
-          .enum(['durable', 'handoff', 'incident', 'preference', 'smoke'])
-          .optional()
-          .describe('Memory lifecycle kind; durable facts and handoffs are most common'),
-        project: z.string().optional().describe('Project/repo namespace, for example threadnote or mobile-native'),
-        references: z
-          .union([z.string(), z.array(z.string())])
-          .optional()
-          .describe(
-            'Optional viking:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
-          ),
-        replaceUri: z
-          .string()
-          .optional()
-          .describe(
-            'Optional viking:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
-          ),
-        text: z.string().optional().describe('Required memory text to store'),
-        sourceAgentClient: z
-          .string()
-          .optional()
-          .describe('Originating client, for example cursor, copilot, codex, or claude'),
-        status: z.enum(['active', 'archived', 'superseded']).optional().describe('Memory lifecycle status'),
-        topic: z.string().optional().describe('Stable topic; active project/topic memories update one file'),
+        kind: McpInput.literals(
+          ['durable', 'handoff', 'incident', 'preference', 'smoke'],
+          'Memory lifecycle kind; durable facts and handoffs are most common',
+        ),
+        project: McpInput.string('Project/repo namespace, for example threadnote or mobile-native'),
+        references: McpInput.stringOrStrings(
+          'Optional viking:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
+        ),
+        replaceUri: McpInput.string(
+          'Optional viking:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
+        ),
+        text: McpInput.string('Required memory text to store'),
+        sourceAgentClient: McpInput.string('Originating client, for example cursor, copilot, codex, or claude'),
+        status: McpInput.literals(['active', 'archived', 'superseded'], 'Memory lifecycle status'),
+        topic: McpInput.string('Stable topic; active project/topic memories update one file'),
       },
     },
-    async ({kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
+    ({kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -1446,37 +1438,45 @@ function registerStoreTool(server: McpServer, config: RuntimeConfig, name: strin
         timestamp: new Date().toISOString(),
         topic: normalizeOptionalMetadata(topic),
       };
-      return withStaleVersionNotice(
-        await writeDurableMemory(config, {
-          bodyText: checkedText.value,
-          metadata,
-          replaceUri: checkedReplaceUri.value,
-        }),
+      return writeDurableMemory(config, {
+        bodyText: checkedText.value,
+        metadata,
+        replaceUri: checkedReplaceUri.value,
+      }).pipe(
+        Effect.flatMap(result => attemptPromise(() => withStaleVersionNotice(result))),
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
       );
     },
   );
 }
 
-function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: string, description: string): void {
+function registerArchiveTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  name: string,
+  description: string,
+): void {
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} The archive is written before the original URI is removed.`,
       inputSchema: {
-        kind: z.enum(['durable', 'handoff', 'incident', 'preference', 'smoke']).optional(),
-        project: z.string().optional().describe('Project/repo namespace for the archived copy'),
-        topic: z.string().optional().describe('Topic for the archived copy'),
-        uri: z.string().optional().describe('Required viking:// memory URI to archive'),
+        kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
+        project: McpInput.string('Project/repo namespace for the archived copy'),
+        topic: McpInput.string('Topic for the archived copy'),
+        uri: McpInput.string('Required viking:// memory URI to archive'),
       },
     },
-    async ({kind, project, topic, uri}) => {
+    ({kind, project, topic, uri}) => {
       const checkedUri = requiredVikingUri(uri, name, 'viking://user/example/memories/handoffs/active/repo/topic.md');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      try {
-        const readResult = await runOpenVikingReadTool(config, [checkedUri.value]);
+      return Effect.gen(function* () {
+        const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [checkedUri.value]));
         const original = textFromCallToolResult(readResult);
         if (!original) {
           return {
@@ -1493,14 +1493,14 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
           timestamp: new Date().toISOString(),
           topic: normalizeOptionalMetadata(topic),
         };
-        const archiveResult = await writeDurableMemory(config, {
+        const archiveResult = yield* writeDurableMemory(config, {
           bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
           metadata,
         });
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = await forgetVikingResourceWithRetry(config, checkedUri.value);
+        const removedOriginal = yield* forgetVikingResourceWithRetry(config, checkedUri.value);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -1513,14 +1513,16 @@ function registerArchiveTool(server: McpServer, config: RuntimeConfig, name: str
             },
           ],
         };
-      } catch (err: unknown) {
-        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-      }
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
     },
   );
 }
 
-function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
+function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
     {
@@ -1528,14 +1530,14 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
       description:
         'Plan or apply scoped Threadnote memory hygiene. Defaults to dry-run; pass apply=true to archive stale handoffs and forget exact duplicates.',
       inputSchema: {
-        apply: z.boolean().optional().describe('Apply the compact plan; defaults to false'),
-        dryRun: z.boolean().optional().describe('Keep the call read-only; defaults to true unless apply=true'),
-        kind: z.enum(['durable', 'handoff', 'incident']).optional().describe('Optional memory kind filter'),
-        project: z.string().optional().describe('Required project/repo namespace, for example threadnote'),
-        topic: z.string().optional().describe('Optional stable topic name'),
+        apply: McpInput.boolean('Apply the compact plan; defaults to false'),
+        dryRun: McpInput.boolean('Keep the call read-only; defaults to true unless apply=true'),
+        kind: McpInput.literals(['durable', 'handoff', 'incident'], 'Optional memory kind filter'),
+        project: McpInput.string('Required project/repo namespace, for example threadnote'),
+        topic: McpInput.string('Optional stable topic name'),
       },
     },
-    async ({apply, dryRun, kind, project, topic}) => {
+    ({apply, dryRun, kind, project, topic}) => {
       const checkedProject = requiredText(project, 'compact_context', 'project', {project: 'threadnote'});
       if (!checkedProject.ok) {
         return checkedProject.error;
@@ -1546,11 +1548,13 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           isError: true,
         };
       }
-      try {
-        const records = await scopedCompactRecords(config, {
-          kind: kind as CompactableMemoryKind | undefined,
-          project: checkedProject.value,
-        });
+      return Effect.gen(function* () {
+        const records = yield* attemptPromise(() =>
+          scopedCompactRecords(config, {
+            kind: kind as CompactableMemoryKind | undefined,
+            project: checkedProject.value,
+          }),
+        );
         const plan = buildCompactPlan(records, {
           kind: kind as CompactableMemoryKind | undefined,
           project: checkedProject.value,
@@ -1562,14 +1566,16 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           return {content: [{type: 'text', text: planText}]};
         }
 
-        const ov = await requiredOpenVikingCli();
+        const ov = yield* attemptPromise(requiredOpenVikingCli);
         const appliedMessages: string[] = [];
         for (const action of plan.keepUpdates) {
-          await writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true});
+          yield* attemptPromise(() =>
+            writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true}),
+          );
           appliedMessages.push(`Updated kept memory: ${action.uri}`);
         }
         for (const action of plan.archives) {
-          const archiveResult = await archiveMemoryForCompact(config, action);
+          const archiveResult = yield* archiveMemoryForCompact(config, action);
           if (archiveResult.isError === true) {
             return archiveResult;
           }
@@ -1579,7 +1585,7 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
           }
         }
         for (const action of plan.forgets) {
-          const removed = await forgetVikingResourceWithRetry(config, action.uri);
+          const removed = yield* forgetVikingResourceWithRetry(config, action.uri);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -1594,47 +1600,51 @@ function registerCompactTool(server: McpServer, config: RuntimeConfig): void {
             },
           ],
         };
-      } catch (err: unknown) {
-        return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-      }
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
     },
   );
 }
 
-async function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction): Promise<CallToolResult> {
-  const readResult = await runOpenVikingReadTool(config, [action.uri]);
-  const original = textFromCallToolResult(readResult);
-  if (!original) {
-    return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
-  }
-  const archiveResult = await writeDurableMemory(config, {
-    bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
-    metadata: {
-      archivedFrom: action.uri,
-      kind: action.kind,
-      project: action.project,
-      sourceAgentClient: 'mcp',
-      status: 'archived',
-      timestamp: new Date().toISOString(),
-      topic: action.topic,
-    },
-  });
-  if (archiveResult.isError === true) {
-    return archiveResult;
-  }
-  const removedOriginal = await forgetVikingResourceWithRetry(config, action.uri);
-  const [content] = archiveResult.content;
-  const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
-  return {
-    content: [
-      {
-        type: 'text',
-        text: removedOriginal
-          ? `${text}\nArchived original memory: ${action.uri}`
-          : `${text}\nArchive stored, but original memory is still processing. Retry later with forget: ${action.uri}`,
+function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
+  return Effect.gen(function* () {
+    const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [action.uri]));
+    const original = textFromCallToolResult(readResult);
+    if (!original) {
+      return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
+    }
+    const archiveResult = yield* writeDurableMemory(config, {
+      bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+      metadata: {
+        archivedFrom: action.uri,
+        kind: action.kind,
+        project: action.project,
+        sourceAgentClient: 'mcp',
+        status: 'archived',
+        timestamp: new Date().toISOString(),
+        topic: action.topic,
       },
-    ],
-  };
+    });
+    if (archiveResult.isError === true) {
+      return archiveResult;
+    }
+    const removedOriginal = yield* forgetVikingResourceWithRetry(config, action.uri);
+    const [content] = archiveResult.content;
+    const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
+    return {
+      content: [
+        {
+          type: 'text',
+          text: removedOriginal
+            ? `${text}\nArchived original memory: ${action.uri}`
+            : `${text}\nArchive stored, but original memory is still processing. Retry later with forget: ${action.uri}`,
+        },
+      ],
+    } satisfies CallToolResult;
+  });
 }
 
 async function scopedCompactRecords(
@@ -1747,14 +1757,17 @@ interface WriteDurableMemoryParams {
   readonly replaceUri?: string;
 }
 
-async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams): Promise<CallToolResult> {
-  try {
-    const ov = await requiredOpenVikingCli();
+const attemptPromise = <A>(evaluate: () => Promise<A>) =>
+  Effect.tryPromise({try: evaluate, catch: cause => (cause instanceof Error ? cause : new Error(String(cause)))});
+
+function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
+  return Effect.gen(function* () {
+    const ov = yield* attemptPromise(requiredOpenVikingCli);
     if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
-      return await writeSharedMemoryReplacement(config, ov, params, params.replaceUri);
+      return yield* attemptPromise(() => writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string));
     }
     const directoryUri = memoryDirectoryUri(config, params.metadata);
-    await ensureMemoryDirectory(ov, config, directoryUri);
+    yield* attemptPromise(() => ensureMemoryDirectory(ov, config, directoryUri));
 
     // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
     // Drops the supersedes line when replaceUri points at the URI we're about
@@ -1767,11 +1780,11 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
       ? {...params.metadata, supersedes: undefined}
       : candidateMetadata;
     const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
-    const writeMode = await memoryWriteMode(ov, config, memoryUri, finalMetadata);
-    await writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
+    const writeMode = yield* attemptPromise(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
+    yield* attemptPromise(() => writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true}));
     const messages = [`Stored memory: ${memoryUri}`];
     if (params.replaceUri && !isInPlaceUpdate) {
-      const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, params.replaceUri);
+      const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, params.replaceUri);
       messages.push(
         removedReplacedMemory
           ? `Forgot replaced memory: ${params.replaceUri}`
@@ -1780,10 +1793,12 @@ async function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMem
     } else if (isInPlaceUpdate) {
       messages.push(`Updated existing memory in place: ${memoryUri}`);
     }
-    return {content: [{type: 'text', text: messages.join('\n')}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+    return {content: [{type: 'text' as const, text: messages.join('\n')}]};
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 async function writeSharedMemoryReplacement(
@@ -1833,37 +1848,21 @@ async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: stri
   return stat.exitCode === 0;
 }
 
-async function removeVikingResourceWithRetry(
-  ov: string,
-  config: RuntimeConfig,
-  uri: string,
-  recursive = false,
-): Promise<boolean> {
+function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string, recursive = false) {
   const args = withIdentity(config, ['rm', uri, ...(recursive ? ['--recursive'] : [])]);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      return true;
-    }
-    if (isResourceBusy(result.stderr, result.stdout) && attempt === 3) {
-      return false;
-    }
-    if (!isResourceBusy(result.stderr, result.stdout)) {
-      throw new Error(`${ov} ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
-    }
-    await sleep(1000 * (attempt + 1));
-  }
-  return false;
+  return pipe(
+    removeOpenVikingResourceEffect(ov, args, {isBusy: isResourceBusy}),
+    Effect.map(result => result !== undefined),
+  );
 }
 
-async function runOpenVikingRemoveTool(
-  config: RuntimeConfig,
-  uri: string,
-  recursive: boolean,
-): Promise<CallToolResult> {
-  try {
-    const ov = await requiredOpenVikingCli();
-    const removed = await removeVikingResourceWithRetry(ov, config, uri, recursive);
+function runOpenVikingRemoveTool(config: RuntimeConfig, uri: string, recursive: boolean) {
+  return Effect.gen(function* () {
+    const ov = yield* Effect.tryPromise({
+      try: requiredOpenVikingCli,
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+    const removed = yield* removeVikingResourceWithRetry(ov, config, uri, recursive);
     return {
       content: [
         {
@@ -1872,10 +1871,12 @@ async function runOpenVikingRemoveTool(
         },
       ],
       isError: !removed,
-    };
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+    } satisfies CallToolResult;
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 function isResourceBusy(stderr: string, stdout: string): boolean {
@@ -2337,9 +2338,11 @@ function textFromCallToolResult(result: CallToolResult): string {
     .trim();
 }
 
-async function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string): Promise<boolean> {
-  const ov = await requiredOpenVikingCli();
-  return removeVikingResourceWithRetry(ov, config, uri);
+function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string) {
+  return Effect.tryPromise({
+    try: requiredOpenVikingCli,
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+  }).pipe(Effect.flatMap(ov => removeVikingResourceWithRetry(ov, config, uri)));
 }
 
 interface SharePublishToolOptions {
@@ -2486,18 +2489,14 @@ async function runShareConflictResolveTool(
   }
 }
 
-async function runSharePublishTool(
-  config: RuntimeConfig,
-  sourceUri: string,
-  options: SharePublishToolOptions,
-): Promise<CallToolResult> {
-  try {
+function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: SharePublishToolOptions) {
+  return Effect.gen(function* () {
     if (isInSharedNamespace(config, sourceUri)) {
       return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
     }
-    const resolved = await resolveTeam(config, options.team);
-    const ov = await requiredOpenVikingCli();
-    const readResult = await runOpenVikingReadTool(config, [sourceUri]);
+    const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
+    const ov = yield* attemptPromise(requiredOpenVikingCli);
+    const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [sourceUri]));
     const sourceText = textFromCallToolResult(readResult);
     if (readResult.isError === true || !sourceText) {
       return {
@@ -2539,25 +2538,27 @@ async function runSharePublishTool(
     const content = scrub.cleaned;
     // Refuse to silently overwrite an existing shared memory (e.g., a teammate
     // already published the same project/topic). Mirrors the CLI publish path.
-    if (await sharedVikingResourceExists(ov, config, targetUri)) {
+    if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
       return argumentError(
         `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
       );
     }
-    await ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
-    await writeMemoryFile(config, ov, targetUri, content, 'create', false, {quiet: true});
+    yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
+    yield* attemptPromise(() => writeMemoryFile(config, ov, targetUri, content, 'create', false, {quiet: true}));
     const messages = [`Published ${sourceUri} -> ${targetUri}`];
     for (const redaction of scrub.redactions) {
       messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
     }
     const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
     const commitMessage = options.message ?? `share: publish ${relativePath}`;
-    const gitMessages = await publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
-      push: options.push,
-    });
-    try {
-      await forgetVikingResourceWithRetry(config, sourceUri);
-    } catch (sourceErr: unknown) {
+    const gitMessages = yield* attemptPromise(() =>
+      publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
+    );
+    const sourceError = yield* forgetVikingResourceWithRetry(config, sourceUri).pipe(
+      Effect.as(undefined),
+      Effect.catch(error => Effect.succeed(error)),
+    );
+    if (sourceError !== undefined) {
       return {
         content: [
           {
@@ -2567,7 +2568,7 @@ async function runSharePublishTool(
               ...gitMessages,
               `Could not remove the personal source after publish: ${sourceUri}.`,
               `Retry cleanup later with: threadnote forget ${sourceUri}`,
-              sourceErr instanceof Error ? sourceErr.message : String(sourceErr),
+              sourceError instanceof Error ? sourceError.message : String(sourceError),
             ].join('\n'),
           },
         ],
@@ -2578,9 +2579,11 @@ async function runSharePublishTool(
       content: [{type: 'text', text: [...messages, ...gitMessages].join('\n')}],
       isError: false,
     };
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 async function runShareSkillTool(
@@ -2720,7 +2723,4 @@ async function requiredOpenVikingCli(): Promise<string> {
   return command;
 }
 
-main().catch(err => {
-  process.stderr.write(`${errorMessage(err)}\n`);
-  process.exit(1);
-});
+NodeRuntime.runMain(Effect.scoped(mainEffect).pipe(Effect.provide(ApplicationLayer)), {disableErrorReporting: false});

@@ -1,5 +1,6 @@
 import {chmod, mkdir, readFile, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
+import {Effect} from 'effect';
 import {
   CLAUDE_SETTINGS_PATH,
   HOOK_AUTO_PRECOMPACT_TOPIC,
@@ -190,13 +191,17 @@ export async function hasManagedClaudeHooks(): Promise<boolean> {
   return false;
 }
 
-export async function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOptions = {}): Promise<void> {
+export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOptions = {}) {
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
-  try {
-    const project = (await resolveRepoName()) ?? 'general';
-    const {sessionId, trace} = await captureTraceContext();
-    await runHandoff(config, {
+  return Effect.gen(function* () {
+    const project =
+      (yield* Effect.tryPromise({
+        try: () => resolveRepoName(),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      })) ?? 'general';
+    const {sessionId, trace} = yield* Effect.promise(() => captureTraceContext());
+    yield* runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
       nextStep:
@@ -209,35 +214,50 @@ export async function runPreCompactHook(config: RuntimeConfig, options: HookRunn
       topic: HOOK_AUTO_PRECOMPACT_TOPIC,
       trace,
     });
-  } catch (err: unknown) {
-    process.stderr.write(
-      `threadnote pre-compact-hook: snapshot skipped (${err instanceof Error ? err.message : String(err)})\n`,
-    );
-  }
+  }).pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        process.stderr.write(
+          `threadnote pre-compact-hook: snapshot skipped (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+      }),
+    ),
+  );
 }
 
-export async function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOptions = {}): Promise<void> {
+export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOptions = {}) {
   // Hooks must never block session start. Failures fall through quietly so the
   // user just gets a normal session without injected context.
-  try {
-    const project = await resolveRepoName();
+  return Effect.gen(function* () {
+    const project = yield* Effect.tryPromise({
+      try: () => resolveRepoName(),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
     if (!project) {
       return;
     }
-    await emitUpdateBannerIfOutdated(config);
-    process.stdout.write(`## Threadnote — latest context for ${project}\n\n`);
-    await runRecall(config, {
-      dryRun: options.dryRun === true,
-      inferScope: true,
-      nodeLimit: '5',
-      // Keep "current branch" here so recall enriches the query with local git/workspace terms.
-      query: `${project} current branch latest handoff durable feature memory`,
+    yield* emitUpdateBannerIfOutdated(config);
+    yield* Effect.sync(() => process.stdout.write(`## Threadnote — latest context for ${project}\n\n`));
+    yield* Effect.tryPromise({
+      try: () =>
+        runRecall(config, {
+          dryRun: options.dryRun === true,
+          inferScope: true,
+          nodeLimit: '5',
+          // Keep "current branch" here so recall enriches the query with local git/workspace terms.
+          query: `${project} current branch latest handoff durable feature memory`,
+        }),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
     });
-  } catch (err: unknown) {
-    process.stderr.write(
-      `threadnote session-start-hook: recall skipped (${err instanceof Error ? err.message : String(err)})\n`,
-    );
-  }
+  }).pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        process.stderr.write(
+          `threadnote session-start-hook: recall skipped (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+      }),
+    ),
+  );
 }
 
 interface TraceContext {
@@ -332,14 +352,14 @@ function readStdinWithTimeout(timeoutMs: number, maxBytes: number): Promise<stri
   });
 }
 
-async function emitUpdateBannerIfOutdated(config: RuntimeConfig): Promise<void> {
-  // Cheap, daily-cached check that nags users to upgrade. The check is wrapped
-  // in try/catch so a flaky registry or unreachable network never breaks the
-  // session-start path. With THREADNOTE_AUTO_UPDATE=1, the same code path
+function emitUpdateBannerIfOutdated(config: RuntimeConfig) {
+  // Cheap, daily-cached check that nags users to upgrade. Failures are folded
+  // in the Effect error channel so a flaky registry never breaks session start.
+  // With THREADNOTE_AUTO_UPDATE=1, the same code path
   // spawns `threadnote update --yes` as a detached background process and
   // tells the user the new version will be active next session.
-  try {
-    const result = await checkForThreadnoteUpdate({
+  return Effect.gen(function* () {
+    const result = yield* checkForThreadnoteUpdate({
       cachePath: join(config.agentContextHome, '.update-state.json'),
       currentVersion: getThreadnoteVersion(),
     });
@@ -347,17 +367,18 @@ async function emitUpdateBannerIfOutdated(config: RuntimeConfig): Promise<void> 
       return;
     }
     if (process.env.THREADNOTE_AUTO_UPDATE === '1') {
-      process.stdout.write(
-        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n\n`,
-      );
-      spawnDetachedAutoUpdate();
+      yield* Effect.sync(() => {
+        process.stdout.write(
+          `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n\n`,
+        );
+        spawnDetachedAutoUpdate();
+      });
       return;
     }
-    process.stdout.write(
-      `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n\n`,
+    yield* Effect.sync(() =>
+      process.stdout.write(
+        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n\n`,
+      ),
     );
-  } catch {
-    // Silent: the update banner is a nice-to-have, not a session-start
-    // requirement.
-  }
+  }).pipe(Effect.catch(() => Effect.void));
 }

@@ -1,8 +1,11 @@
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {chmod, lstat, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {lstat, readFile, readdir, rm} from 'node:fs/promises';
 import {join, relative, sep} from 'node:path';
+import {Effect, FiberSet, FileSystem, Result} from 'effect';
+import {effectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
+import {runCommandEffect} from './effect/command.js';
+import type {ApplicationServices} from './effect/runtime.js';
 import {uriSegment} from './manifest.js';
 import {
   runArchive,
@@ -37,9 +40,10 @@ import {
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
-import {currentPackageVersion, fetchLatestVersion, normalizeRegistry, updateRegistry} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, updateRegistry} from './update.js';
 import type {
   AgentClient,
+  ConsolidationAgent,
   DoctorCheck,
   ManageOptions,
   MemoryKind,
@@ -82,13 +86,22 @@ interface ReadTreeOptions {
 interface ApiContext {
   readonly config: RuntimeConfig;
   readonly jobs: Map<string, ConsolidationJob>;
+  readonly runEffect?: ManagerEffectPromise;
   readonly token: string;
 }
+
+type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
+type ManagerEffectPromise = <A>(effect: ManagerOperation<A>) => Promise<A>;
+
+// Capturing legacy console output mutates process-global state. Serialize these
+// compatibility operations so concurrent manager requests cannot steal or
+// restore one another's console handlers.
+let capturedOutputQueue: Promise<void> = Promise.resolve();
 
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
 interface ConsolidationJob {
-  readonly agent: AgentClient;
+  readonly agent: ConsolidationAgent;
   readonly createdAt: string;
   readonly id: string;
   readonly sourceUris: readonly string[];
@@ -129,30 +142,55 @@ const STATIC_FILES: Readonly<
   },
 };
 
-export async function runManage(config: RuntimeConfig, options: ManageOptions): Promise<void> {
-  const token = randomBytes(24).toString('base64url');
-  const server = createManagerServer({config, jobs: new Map(), token});
-  const port = parseUiPort(options.uiPort);
-  await listen(server, port);
-  const address = server.address();
-  const actualPort = typeof address === 'object' && address ? address.port : port;
-  const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
-  console.log(`Threadnote manager: ${url}`);
-  console.log('Press Ctrl-C to stop the manager.');
-  if (options.open !== false) {
-    await runCommand('open', [url], {allowFailure: true});
-  }
-  await new Promise<void>((resolve, reject) => {
-    const close = () => server.close(err => (err ? reject(err) : resolve()));
-    process.once('SIGINT', close);
-    process.once('SIGTERM', close);
+export function runManage(config: RuntimeConfig, options: ManageOptions) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const token = randomBytes(24).toString('base64url');
+      const runEffect = yield* FiberSet.makeRuntimePromise<ApplicationServices>();
+      const server = createManagerServer({config, jobs: new Map(), token}, runEffect);
+      const port = options.uiPort ?? 0;
+      yield* Effect.acquireRelease(
+        Effect.tryPromise({
+          try: async () => {
+            await listen(server, port);
+            return server;
+          },
+          catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        }),
+        closeManagerServer,
+      );
+      const address = server.address();
+      const actualPort = typeof address === 'object' && address ? address.port : port;
+      const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
+      yield* Effect.sync(() => {
+        console.log(`Threadnote manager: ${url}`);
+        console.log('Press Ctrl-C to stop the manager.');
+      });
+      if (options.open !== false) {
+        yield* runCommandEffect('open', [url], {allowFailure: true});
+      }
+      return yield* Effect.never;
+    }),
+  );
+}
+
+function closeManagerServer(server: Server): Effect.Effect<void> {
+  return Effect.callback<void>(resume => {
+    server.close(() => resume(Effect.void));
   });
 }
 
-export function createManagerServer(context: ApiContext): Server {
+type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
+
+export function createManagerServer(context: ApiContext, runEffect: ManagerEffectPromise): Server {
+  const requestContext: ApiContext = {...context, runEffect};
   return createServer((request, response) => {
-    void handleRequest(context, request, response).catch(err => {
-      writeJson(response, 500, {error: errorMessage(err)});
+    void runEffect(handleRequestEffect(requestContext, request, response)).catch(error => {
+      if (!response.headersSent) {
+        writeJson(response, 500, {error: errorMessage(error)});
+      } else {
+        response.destroy(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   });
 }
@@ -242,8 +280,14 @@ export async function readContextUri(
 }
 
 export async function detectConsolidationAgents(): Promise<
-  readonly {readonly available: boolean; readonly command?: string; readonly id: AgentClient; readonly label: string}[]
+  readonly {
+    readonly available: boolean;
+    readonly command?: string;
+    readonly id: ConsolidationAgent;
+    readonly label: string;
+  }[]
 > {
+  const effectAi = effectAiConfiguration();
   const [codex, claude, cursor, copilot] = await Promise.all([
     findExecutable(['codex']),
     findExecutable(['claude']),
@@ -255,10 +299,78 @@ export async function detectConsolidationAgents(): Promise<
     {available: claude !== undefined, command: claude, id: 'claude', label: 'Claude'},
     {available: cursor !== undefined, command: cursor, id: 'cursor', label: 'Cursor'},
     {available: copilot !== undefined, command: copilot, id: 'copilot', label: 'Copilot'},
+    {
+      available: effectAi !== undefined,
+      command: effectAi?.model,
+      id: 'effect-ai',
+      label: 'Effect AI (OpenAI-compatible)',
+    },
   ];
 }
 
-async function handleRequest(context: ApiContext, request: IncomingMessage, response: ServerResponse): Promise<void> {
+function handleRequestEffect(
+  context: ApiContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+): ManagerRequestEffect {
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+  let requestEffect: Effect.Effect<void, unknown, ApplicationServices>;
+  if (request.method === 'GET' && url.pathname === '/api/state') {
+    requestEffect = Effect.gen(function* () {
+      if (!isAuthorized(context, request)) {
+        writeJson(response, 401, {error: 'Unauthorized'});
+        return;
+      }
+      const [agents, version] = yield* Effect.tryPromise({
+        try: () => Promise.all([detectConsolidationAgents(), currentPackageVersion()]),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+      const latest = yield* Effect.try({
+        try: updateRegistry,
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      }).pipe(Effect.flatMap(fetchLatestVersion), Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}));
+      writeJson(response, 200, {
+        agents,
+        config: publicConfig(context.config),
+        latestVersion: Result.isSuccess(latest) ? latest.success : undefined,
+        openVikingLogPath: openVikingLogPath(context.config),
+        version,
+      });
+    });
+  } else if (request.method === 'POST' && url.pathname === '/api/consolidations') {
+    requestEffect = Effect.gen(function* () {
+      if (!isAuthorized(context, request)) {
+        writeJson(response, 401, {error: 'Unauthorized'});
+        return;
+      }
+      const body = yield* Effect.tryPromise({
+        try: () => readJsonBody(request),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+      const job = yield* createConsolidation(context, body);
+      writeJson(response, 200, {job});
+    });
+  } else {
+    requestEffect = Effect.tryPromise({
+      try: () => handleRequestLegacy(context, request, response),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+  }
+
+  return requestEffect.pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        writeJson(response, 500, {error: errorMessage(error)});
+      }),
+    ),
+  );
+}
+
+async function handleRequestLegacy(
+  context: ApiContext,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   if (request.method === 'GET' && STATIC_FILES[url.pathname]) {
     await serveStatic(context, url, response);
@@ -274,24 +386,6 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
     return;
   }
 
-  if (request.method === 'GET' && url.pathname === '/api/state') {
-    const agents = await detectConsolidationAgents();
-    const version = await currentPackageVersion();
-    let latestVersion: string | undefined;
-    try {
-      latestVersion = await fetchLatestVersion(normalizeRegistry(updateRegistry()));
-    } catch {
-      latestVersion = undefined;
-    }
-    writeJson(response, 200, {
-      agents,
-      config: publicConfig(context.config),
-      latestVersion,
-      openVikingLogPath: openVikingLogPath(context.config),
-      version,
-    });
-    return;
-  }
   if (request.method === 'GET' && url.pathname === '/api/tree') {
     const [tree, resourceTree] = await Promise.all([memoryTree(context.config), resourcesTree(context.config)]);
     writeJson(response, 200, {resourcesTree: resourceTree, tree});
@@ -334,19 +428,27 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
       writeJson(
         response,
         200,
-        await runCaptured(() => runArchive(context.config, requireString(body.uri, 'uri'), body)),
+        await runCaptured(() => runArchive(context.config, requireString(body.uri, 'uri'), body), context.runEffect),
       );
       return;
     case '/api/memory/forget':
       requireConfirm(body);
-      writeJson(response, 200, await runCaptured(() => runForget(context.config, requireString(body.uri, 'uri'), {})));
+      writeJson(
+        response,
+        200,
+        await runCaptured(() => runForget(context.config, requireString(body.uri, 'uri'), {}), context.runEffect),
+      );
       return;
     case '/api/memory/save':
-      writeJson(response, 200, await saveMemory(context.config, body));
+      writeJson(response, 200, await saveMemory(context.config, body, context.runEffect));
       return;
     case '/api/memory/move':
       requireConfirm(body);
-      writeJson(response, 200, await moveMemory(context.config, requireString(body.uri, 'uri'), targetFromBody(body)));
+      writeJson(
+        response,
+        200,
+        await moveMemory(context.config, requireString(body.uri, 'uri'), targetFromBody(body), context.runEffect),
+      );
       return;
     case '/api/memory/publish':
       requireConfirm(body);
@@ -376,12 +478,12 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
       writeJson(
         response,
         200,
-        await runCaptured(() => removeManagedFolder(context.config, requireString(body.uri, 'uri'))),
+        await runCaptured(() => removeManagedFolder(context.config, requireString(body.uri, 'uri'), context.runEffect)),
       );
       return;
     case '/api/bulk':
       requireConfirm(body);
-      writeJson(response, 200, await runBulk(context.config, body));
+      writeJson(response, 200, await runBulk(context.config, body, context.runEffect));
       return;
     case '/api/compact':
       if (body.apply === true) {
@@ -390,10 +492,17 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
       writeJson(
         response,
         200,
-        await runCaptured(async () => {
-          await runCompactDiagnostics(context.config, body);
-          await runCompact(context.config, body);
-        }),
+        await runCaptured(
+          () =>
+            Effect.gen(function* () {
+              yield* Effect.tryPromise({
+                try: () => runCompactDiagnostics(context.config, body),
+                catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+              });
+              yield* runCompact(context.config, body);
+            }),
+          context.runEffect,
+        ),
       );
       return;
     case '/api/recall':
@@ -467,11 +576,11 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
       writeJson(response, 200, await runCaptured(() => runStart(context.config, {})));
       return;
     case '/api/doctor/repair-dry-run':
-      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: true})));
+      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: true}), context.runEffect));
       return;
     case '/api/doctor/repair':
       requireConfirm(body);
-      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: false})));
+      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: false}), context.runEffect));
       return;
     case '/api/import-pack':
       requireConfirm(body);
@@ -502,14 +611,11 @@ async function handleRequest(context: ApiContext, request: IncomingMessage, resp
         ),
       );
       return;
-    case '/api/consolidations':
-      writeJson(response, 200, {job: await createConsolidation(context, body)});
-      return;
     default:
       if (url.pathname.startsWith('/api/consolidations/') && url.pathname.endsWith('/apply')) {
         requireConfirm(body);
         const id = url.pathname.split('/').at(-2) ?? '';
-        writeJson(response, 200, await applyConsolidation(context.config, context.jobs, id, body));
+        writeJson(response, 200, await applyConsolidation(context.config, context.jobs, id, body, context.runEffect));
         return;
       }
       writeJson(response, 404, {error: 'Not found'});
@@ -585,22 +691,28 @@ async function readTree(
   };
 }
 
-async function saveMemory(config: RuntimeConfig, body: Record<string, unknown>): Promise<{readonly output: string}> {
+async function saveMemory(
+  config: RuntimeConfig,
+  body: Record<string, unknown>,
+  runEffect: ManagerEffectPromise | undefined,
+): Promise<{readonly output: string}> {
   const text = requireString(body.text, 'text');
   const replaceUri = optionalString(body.replaceUri);
   if (replaceUri && isRawMemoryDocument(text)) {
     return runCaptured(() => writeRawMemory(config, replaceUri, text));
   }
-  return runCaptured(() =>
-    runRemember(config, {
-      kind: memoryKind(body.kind) ?? 'durable',
-      project: optionalString(body.project),
-      replace: replaceUri,
-      sourceAgentClient: optionalString(body.sourceAgentClient) ?? 'manager',
-      status: memoryStatus(body.status) ?? 'active',
-      text,
-      topic: optionalString(body.topic),
-    }),
+  return runCaptured(
+    () =>
+      runRemember(config, {
+        kind: memoryKind(body.kind) ?? 'durable',
+        project: optionalString(body.project),
+        replace: replaceUri,
+        sourceAgentClient: optionalString(body.sourceAgentClient) ?? 'manager',
+        status: memoryStatus(body.status) ?? 'active',
+        text,
+        topic: optionalString(body.topic),
+      }),
+    runEffect,
   );
 }
 
@@ -627,6 +739,7 @@ async function moveMemory(
   config: RuntimeConfig,
   sourceUri: string,
   target: TargetMemoryInput,
+  runEffect: ManagerEffectPromise | undefined,
 ): Promise<{readonly output: string; readonly targetUri: string}> {
   assertVikingUri(sourceUri);
   const source = await readManagedMemory(config, sourceUri);
@@ -655,7 +768,43 @@ async function moveMemory(
       );
       return {...output, targetUri: sharedTargetUri};
     }
-    const saved = await runCaptured(() =>
+    const saved = await runCaptured(
+      () =>
+        runRemember(config, {
+          kind: metadata.kind,
+          project: metadata.project,
+          replace: sourceUri,
+          sourceAgentClient: metadata.sourceAgentClient,
+          status: metadata.status,
+          text,
+          topic: metadata.topic,
+        }),
+      runEffect,
+    );
+    const published = await runCaptured(() => runSharePublish(config, personalTargetUri, {team: targetTeam}));
+    return {
+      output: [saved.output, published.output].filter(Boolean).join('\n'),
+      targetUri: sharedMemoryUriFor(config, targetTeam, metadata),
+    };
+  }
+  if (isInSharedNamespace(config, sourceUri)) {
+    const saved = await runCaptured(
+      () =>
+        runRemember(config, {
+          kind: metadata.kind,
+          project: metadata.project,
+          sourceAgentClient: metadata.sourceAgentClient,
+          status: metadata.status,
+          text,
+          topic: metadata.topic,
+        }),
+      runEffect,
+    );
+    const removed = await runCaptured(() => removeSharedSource(config, sourceUri));
+    return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
+  }
+  const output = await runCaptured(
+    () =>
       runRemember(config, {
         kind: metadata.kind,
         project: metadata.project,
@@ -665,37 +814,7 @@ async function moveMemory(
         text,
         topic: metadata.topic,
       }),
-    );
-    const published = await runCaptured(() => runSharePublish(config, personalTargetUri, {team: targetTeam}));
-    return {
-      output: [saved.output, published.output].filter(Boolean).join('\n'),
-      targetUri: sharedMemoryUriFor(config, targetTeam, metadata),
-    };
-  }
-  if (isInSharedNamespace(config, sourceUri)) {
-    const saved = await runCaptured(() =>
-      runRemember(config, {
-        kind: metadata.kind,
-        project: metadata.project,
-        sourceAgentClient: metadata.sourceAgentClient,
-        status: metadata.status,
-        text,
-        topic: metadata.topic,
-      }),
-    );
-    const removed = await runCaptured(() => removeSharedSource(config, sourceUri));
-    return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
-  }
-  const output = await runCaptured(() =>
-    runRemember(config, {
-      kind: metadata.kind,
-      project: metadata.project,
-      replace: sourceUri,
-      sourceAgentClient: metadata.sourceAgentClient,
-      status: metadata.status,
-      text,
-      topic: metadata.topic,
-    }),
+    runEffect,
   );
   return {...output, targetUri: personalTargetUri};
 }
@@ -745,7 +864,11 @@ async function removeSharedSource(config: RuntimeConfig, sourceUri: string): Pro
   await removeMemoryUri(config, ov, sourceUri, false);
 }
 
-async function removeManagedFolder(config: RuntimeConfig, uri: string): Promise<void> {
+async function removeManagedFolder(
+  config: RuntimeConfig,
+  uri: string,
+  runEffect: ManagerEffectPromise | undefined,
+): Promise<void> {
   assertVikingUri(uri);
   const rootUri = `viking://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
@@ -768,7 +891,8 @@ async function removeManagedFolder(config: RuntimeConfig, uri: string): Promise<
   }
   const fileUris = await fileUrisUnderFolder(config, path);
   for (const fileUri of fileUris) {
-    await runForget(config, fileUri, {});
+    if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
+    await runEffect(runForget(config, fileUri, {}));
   }
   await rm(path, {force: true, recursive: true});
   console.log(`Removed folder: ${uri}`);
@@ -792,6 +916,7 @@ async function fileUrisUnderFolder(config: RuntimeConfig, folderPath: string): P
 async function runBulk(
   config: RuntimeConfig,
   body: Record<string, unknown>,
+  runEffect: ManagerEffectPromise | undefined,
 ): Promise<{readonly results: readonly BulkItemResult[]}> {
   const action = requireString(body.action, 'action');
   const uris = requireStringArray(body.uris, 'uris');
@@ -800,9 +925,9 @@ async function runBulk(
     try {
       let output: string;
       if (action === 'archive') {
-        output = (await runCaptured(() => runArchive(config, uri, {}))).output;
+        output = (await runCaptured(() => runArchive(config, uri, {}), runEffect)).output;
       } else if (action === 'forget') {
-        output = (await runCaptured(() => runForget(config, uri, {}))).output;
+        output = (await runCaptured(() => runForget(config, uri, {}), runEffect)).output;
       } else if (action === 'publish') {
         output = (await runCaptured(() => runSharePublish(config, uri, {team: optionalString(body.team)}))).output;
       } else {
@@ -816,28 +941,42 @@ async function runBulk(
   return {results};
 }
 
-async function createConsolidation(context: ApiContext, body: Record<string, unknown>): Promise<ConsolidationJob> {
-  const agent = agentClient(requireString(body.agent, 'agent'));
-  const sourceUris = requireStringArray(body.uris, 'uris');
-  const target = targetFromBody(body);
-  const job: ConsolidationJob = {
-    agent,
-    createdAt: new Date().toISOString(),
-    id: randomUUID(),
-    sourceUris,
-    status: 'running',
-    target,
-  };
-  context.jobs.set(job.id, job);
-  try {
-    const sources = await Promise.all(sourceUris.map(uri => readManagedMemory(context.config, uri)));
-    job.draft = await runConsolidationAgent(agent, sources);
-    job.status = 'completed';
-  } catch (err: unknown) {
-    job.error = errorMessage(err);
-    job.status = 'failed';
-  }
-  return job;
+function createConsolidation(context: ApiContext, body: Record<string, unknown>) {
+  return Effect.gen(function* () {
+    const input = yield* Effect.try({
+      try: () => ({
+        agent: consolidationAgent(requireString(body.agent, 'agent')),
+        sourceUris: requireStringArray(body.uris, 'uris'),
+        target: targetFromBody(body),
+      }),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+    const job: ConsolidationJob = {
+      agent: input.agent,
+      createdAt: new Date().toISOString(),
+      id: randomUUID(),
+      sourceUris: input.sourceUris,
+      status: 'running',
+      target: input.target,
+    };
+    context.jobs.set(job.id, job);
+    yield* Effect.gen(function* () {
+      const sources = yield* Effect.tryPromise({
+        try: () => Promise.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri))),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+      job.draft = yield* runConsolidationAgent(input.agent, sources);
+      job.status = 'completed';
+    }).pipe(
+      Effect.catch(error =>
+        Effect.sync(() => {
+          job.error = errorMessage(error);
+          job.status = 'failed';
+        }),
+      ),
+    );
+    return job;
+  });
 }
 
 async function applyConsolidation(
@@ -845,6 +984,7 @@ async function applyConsolidation(
   jobs: Map<string, ConsolidationJob>,
   id: string,
   body: Record<string, unknown>,
+  runEffect: ManagerEffectPromise | undefined,
 ): Promise<{readonly output: string}> {
   const job = jobs.get(id);
   if (!job) {
@@ -855,15 +995,17 @@ async function applyConsolidation(
   }
   const draft = optionalString(body.draft) ?? job.draft;
   const target = targetFromBody({...job.target, ...body});
-  const saved = await runCaptured(() =>
-    runRemember(config, {
-      kind: target.kind ?? 'durable',
-      project: target.project,
-      sourceAgentClient: target.sourceAgentClient ?? 'manager',
-      status: target.status ?? 'active',
-      text: draft,
-      topic: target.topic,
-    }),
+  const saved = await runCaptured(
+    () =>
+      runRemember(config, {
+        kind: target.kind ?? 'durable',
+        project: target.project,
+        sourceAgentClient: target.sourceAgentClient ?? 'manager',
+        status: target.status ?? 'active',
+        text: draft,
+        topic: target.topic,
+      }),
+    runEffect,
   );
   const cleanup = cleanupMode(body.cleanup);
   const cleanupOutputs: string[] = [];
@@ -874,46 +1016,64 @@ async function applyConsolidation(
         continue;
       }
       const action = cleanup === 'forget' ? () => runForget(config, uri, {}) : () => runArchive(config, uri, {});
-      cleanupOutputs.push((await runCaptured(action)).output);
+      cleanupOutputs.push((await runCaptured(action, runEffect)).output);
     }
   }
   return {output: [saved.output, ...cleanupOutputs].filter(Boolean).join('\n')};
 }
 
-async function runConsolidationAgent(
-  agent: AgentClient,
+function runConsolidationAgent(
+  agent: ConsolidationAgent,
   sources: readonly {readonly content: string; readonly node: ManagerTreeNode}[],
-): Promise<string> {
-  if (agent !== 'codex' && agent !== 'claude') {
-    throw new Error(`${agent} does not expose a supported non-interactive consolidation mode.`);
-  }
-  const executable = await findExecutable([agent]);
-  if (!executable) {
-    throw new Error(`${agent} executable was not found.`);
-  }
+) {
   const prompt = consolidationPrompt(sources);
-  const stagingDir = await mkdtemp(join(tmpdir(), 'threadnote-consolidate-'));
-  const promptPath = join(stagingDir, 'prompt.txt');
-  try {
-    await writeFile(promptPath, prompt, {encoding: 'utf8', mode: 0o600});
-    await chmod(promptPath, 0o600);
-    const script = consolidationAgentScript(agent, executable);
-    const result = await runCommand('sh', ['-lc', script, 'threadnote-consolidate', promptPath], {
-      allowFailure: true,
-      maxOutputBytes: 1024 * 1024,
-      timeoutMs: 10 * 60 * 1000,
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`);
+  if (agent === 'effect-ai') {
+    const config = effectAiConfiguration();
+    if (!config) {
+      return Effect.fail(
+        new Error(
+          'Effect AI is not configured. Set THREADNOTE_EFFECT_AI=1 and THREADNOTE_EFFECT_AI_MODEL; add API URL/key variables when required.',
+        ),
+      );
     }
-    const draft = result.stdout.trim();
-    if (!draft) {
-      throw new Error(`${agent} returned an empty consolidation draft.`);
-    }
-    return draft;
-  } finally {
-    await rm(stagingDir, {force: true, recursive: true});
+    return runEffectAiConsolidation(prompt, config);
   }
+  if (agent !== 'codex' && agent !== 'claude') {
+    return Effect.fail(new Error(`${agent} does not expose a supported non-interactive consolidation mode.`));
+  }
+  return Effect.gen(function* () {
+    const executable = yield* Effect.tryPromise({
+      try: () => findExecutable([agent]),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+    if (!executable) {
+      return yield* Effect.fail(new Error(`${agent} executable was not found.`));
+    }
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const stagingDir = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-consolidate-'});
+        const promptPath = join(stagingDir, 'prompt.txt');
+        yield* fs.writeFileString(promptPath, prompt, {mode: 0o600});
+        const script = consolidationAgentScript(agent, executable);
+        const result = yield* runCommandEffect('sh', ['-lc', script, 'threadnote-consolidate', promptPath], {
+          allowFailure: true,
+          maxOutputBytes: 1024 * 1024,
+          timeoutMs: 10 * 60 * 1000,
+        });
+        if (result.exitCode !== 0) {
+          return yield* Effect.fail(
+            new Error(result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`),
+          );
+        }
+        const draft = result.stdout.trim();
+        if (!draft) {
+          return yield* Effect.fail(new Error(`${agent} returned an empty consolidation draft.`));
+        }
+        return draft;
+      }),
+    );
+  });
 }
 
 export function consolidationAgentScript(agent: AgentClient, executable: string): string {
@@ -1028,22 +1188,38 @@ function doctorStatus(value: string): DoctorCheck['status'] {
   return 'warn';
 }
 
-async function runCaptured(action: () => Promise<void>): Promise<{readonly output: string}> {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  const originalWarn = console.warn;
-  const originalError = console.error;
-  console.log = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  console.warn = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  console.error = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  try {
-    await action();
-  } finally {
-    console.log = originalLog;
-    console.warn = originalWarn;
-    console.error = originalError;
-  }
-  return {output: lines.join('\n')};
+async function runCaptured(
+  action: () => Promise<void> | ManagerOperation<void>,
+  runEffect?: ManagerEffectPromise,
+): Promise<{readonly output: string}> {
+  const queued = capturedOutputQueue.then(async () => {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    console.log = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
+    console.warn = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
+    console.error = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
+    try {
+      const operation = action();
+      if (Effect.isEffect(operation)) {
+        if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
+        await runEffect(operation);
+      } else {
+        await operation;
+      }
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+      console.error = originalError;
+    }
+    return {output: lines.join('\n')};
+  });
+  capturedOutputQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 function memoryUriFor(
@@ -1162,17 +1338,6 @@ function publicConfig(config: RuntimeConfig): Record<string, unknown> {
   };
 }
 
-function parseUiPort(value: string | undefined): number {
-  if (!value) {
-    return 0;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
-    throw new Error(`Invalid --ui-port "${value}".`);
-  }
-  return parsed;
-}
-
 function isAuthorized(context: ApiContext, request: IncomingMessage): boolean {
   const auth = request.headers.authorization;
   return auth === `Bearer ${context.token}` || request.headers['x-threadnote-token'] === context.token;
@@ -1274,8 +1439,8 @@ function isRawMemoryDocument(text: string): boolean {
   return text.startsWith('MEMORY\n') || text.startsWith('HANDOFF\n');
 }
 
-function agentClient(value: string): AgentClient {
-  if (value === 'codex' || value === 'claude' || value === 'cursor' || value === 'copilot') {
+function consolidationAgent(value: string): ConsolidationAgent {
+  if (value === 'codex' || value === 'claude' || value === 'cursor' || value === 'copilot' || value === 'effect-ai') {
     return value;
   }
   throw new Error(`Unsupported consolidation agent: ${value}`);

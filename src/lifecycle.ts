@@ -5,6 +5,7 @@ import {platform} from 'node:os';
 import {dirname, join, sep} from 'node:path';
 import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
+import {Effect} from 'effect';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -234,7 +235,17 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
   }
 }
 
-export async function runRepair(config: RuntimeConfig, options: RepairOptions): Promise<void> {
+export const runRepair = Effect.fn('runRepair')(function* (config: RuntimeConfig, options: RepairOptions) {
+  yield* Effect.tryPromise({
+    try: () => runRepairCore(config, options),
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+  if (options.postUpdate !== false) {
+    yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun === true});
+  }
+});
+
+async function runRepairCore(config: RuntimeConfig, options: RepairOptions): Promise<void> {
   const dryRun = options.dryRun === true;
   console.log('Repairing local OpenViking agent context from this checkout.');
 
@@ -275,9 +286,6 @@ export async function runRepair(config: RuntimeConfig, options: RepairOptions): 
 
   console.log('\nPost-repair doctor:');
   await runDoctor(config, {dryRun, strict: false});
-  if (options.postUpdate !== false) {
-    await maybeRunPostUpdateAfterRepair(config, {dryRun});
-  }
 }
 
 export async function runUninstall(config: RuntimeConfig, options: UninstallOptions): Promise<void> {
@@ -1056,13 +1064,9 @@ async function waitForOpenVikingHealth(
     while (Date.now() <= deadline) {
       const requestTimeoutMs = Math.max(100, Math.min(1000, deadline - Date.now()));
       const health = await readOpenVikingHealthIfAvailable(config, requestTimeoutMs);
-      if (health) {
-        return health;
-      }
+      if (health) return health;
       const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
-        break;
-      }
+      if (remainingMs <= 0) break;
       await sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
     }
     return undefined;
@@ -1374,7 +1378,7 @@ async function getPythonSystemCertificatesInstallCommand(serverPath: string): Pr
   if (uvPath) {
     return {
       executable: uvPath,
-      args: ['pip', 'install', '--native-tls', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
+      args: ['pip', 'install', '--system-certs', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
     };
   }
   return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
@@ -1445,7 +1449,7 @@ export async function getInstallCommands(
     const uvArgs = [
       'tool',
       'install',
-      '--native-tls',
+      '--system-certs',
       ...(toolPython ? ['--python', toolPython] : []),
       '--with',
       PYTHON_SYSTEM_CERTS_PACKAGE,
@@ -1709,7 +1713,7 @@ function renderCommandShim(): string {
     `# ${SHIM_MARKER}`,
     'set -euo pipefail',
     `THREADNOTE_ROOT=${shellQuote(root)}`,
-    'THREADNOTE_ENTRY="$THREADNOTE_ROOT/dist/threadnote.cjs"',
+    'THREADNOTE_ENTRY="$THREADNOTE_ROOT/dist/threadnote.js"',
     'if [ ! -f "$THREADNOTE_ENTRY" ]; then',
     '  THREADNOTE_ENTRY="$THREADNOTE_ROOT/bin/threadnote.cjs"',
     'fi',

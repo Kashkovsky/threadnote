@@ -1,6 +1,8 @@
 import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, dirname, join, sep} from 'node:path';
 import yaml from 'js-yaml';
+import {Effect, pipe} from 'effect';
+import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {
   inferProjectFromQuery,
   inferWorksetFromQuery,
@@ -74,7 +76,6 @@ import {
   runCommand,
   safeTimestamp,
   sha256,
-  sleep,
   trimTrailingSlash,
 } from './utils.js';
 import {
@@ -173,10 +174,19 @@ export function parseCompactKind(value: string): CompactableMemoryKind {
   throw new Error(`Unsupported compact kind "${value}". Expected durable, handoff, or incident.`);
 }
 
-export async function runRemember(config: RuntimeConfig, options: RememberOptions): Promise<void> {
-  const text = await getInputText(options.text, options.stdin === true);
+const attempt = <A>(evaluate: () => Promise<A>) =>
+  Effect.tryPromise({try: evaluate, catch: cause => (cause instanceof Error ? cause : new Error(String(cause)))});
+
+const attemptSync = <A>(evaluate: () => A) =>
+  Effect.try({try: evaluate, catch: cause => (cause instanceof Error ? cause : new Error(String(cause)))});
+
+const requireValue = <A>(value: A | undefined, message: string): Effect.Effect<A, Error> =>
+  value === undefined ? Effect.fail(new Error(message)) : Effect.succeed(value);
+
+export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeConfig, options: RememberOptions) {
+  const text = yield* attempt(() => getInputText(options.text, options.stdin === true));
   if (!text.trim()) {
-    throw new Error('Provide memory text with --text or --stdin.');
+    yield* Effect.fail(new Error('Provide memory text with --text or --stdin.'));
   }
   const metadata: MemoryMetadata = {
     kind: options.kind ?? 'durable',
@@ -186,14 +196,14 @@ export async function runRemember(config: RuntimeConfig, options: RememberOption
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic),
   };
-  await storeMemory(config, {
+  yield* storeMemory(config, {
     bodyText: text.trim(),
     dryRun: options.dryRun === true,
     metadata,
     replaceUri: options.replace,
     title: 'MEMORY',
   });
-}
+});
 
 export async function runMigrateMemories(config: RuntimeConfig, options: MigrateMemoriesOptions): Promise<void> {
   const dryRun = options.dryRun === true;
@@ -271,17 +281,20 @@ export async function runMigrateMemories(config: RuntimeConfig, options: Migrate
   );
 }
 
-export async function runMigrateLifecycle(config: RuntimeConfig, options: MigrateLifecycleOptions): Promise<void> {
+export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
+  config: RuntimeConfig,
+  options: MigrateLifecycleOptions,
+) {
   const dryRun = options.dryRun === true || options.apply !== true;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'lifecycle migration limit') : undefined;
-  const ov = await openVikingCliForMode(dryRun);
-  const candidates = await legacyLifecycleHandoffCandidates(config);
+  const ov = yield* attempt(() => openVikingCliForMode(dryRun));
+  const candidates = yield* attempt(() => legacyLifecycleHandoffCandidates(config));
   const migrationPath = join(config.agentContextHome, 'lifecycle-memory-migration.txt');
   let existingCount = 0;
   let migratedCount = 0;
   let skippedCount = 0;
 
-  try {
+  yield* Effect.gen(function* () {
     for (const candidate of candidates) {
       if (limit !== undefined && migratedCount >= limit) {
         break;
@@ -295,16 +308,16 @@ export async function runMigrateLifecycle(config: RuntimeConfig, options: Migrat
 
       console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${candidate.sourceUri} -> ${destinationUri}`);
       if (!dryRun) {
-        if (await vikingResourceExists(ov, config, destinationUri)) {
+        if (yield* attempt(() => vikingResourceExists(ov, config, destinationUri))) {
           existingCount += 1;
           console.log(`Archived copy already exists; cleaning up legacy source: ${candidate.sourceUri}`);
         } else {
-          await writeFile(migrationPath, migratedMemory, {encoding: 'utf8', mode: 0o600});
-          await chmod(migrationPath, 0o600);
-          await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata));
-          await writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create');
+          yield* attempt(() => writeFile(migrationPath, migratedMemory, {encoding: 'utf8', mode: 0o600}));
+          yield* attempt(() => chmod(migrationPath, 0o600));
+          yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata)));
+          yield* attempt(() => writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create'));
         }
-        const removedOriginal = await removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
         if (!removedOriginal) {
           console.error(
             `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
@@ -314,11 +327,11 @@ export async function runMigrateLifecycle(config: RuntimeConfig, options: Migrat
       }
       migratedCount += 1;
     }
-  } finally {
-    if (!dryRun) {
-      await rm(migrationPath, {force: true});
-    }
-  }
+  }).pipe(
+    Effect.ensuring(
+      dryRun ? Effect.void : attempt(() => rm(migrationPath, {force: true})).pipe(Effect.catch(() => Effect.void)),
+    ),
+  );
 
   console.log(
     [
@@ -331,15 +344,15 @@ export async function runMigrateLifecycle(config: RuntimeConfig, options: Migrat
       .filter((part): part is string => part !== undefined)
       .join('; '),
   );
-}
+});
 
-export async function runMigrateProjectNames(
+export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(function* (
   config: RuntimeConfig,
   options: MigrateProjectNamesOptions,
-): Promise<void> {
+) {
   const dryRun = options.dryRun === true || options.apply !== true;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'project-name migration limit') : undefined;
-  const contexts = await projectNameMigrationContexts(config);
+  const contexts = yield* attempt(() => projectNameMigrationContexts(config));
   if (contexts.length === 0) {
     console.log('No git remote project-name changes apply across configured projects.');
     return;
@@ -351,25 +364,28 @@ export async function runMigrateProjectNames(
   }> = [];
   let remaining = limit;
   for (const context of contexts) {
-    const candidates = remaining === 0 ? [] : await projectNameMigrationCandidates(config, context, remaining);
+    const candidates =
+      remaining === 0 ? [] : yield* attempt(() => projectNameMigrationCandidates(config, context, remaining));
     plans.push({candidates, context});
     if (remaining !== undefined) {
       remaining = Math.max(0, remaining - candidates.length);
     }
   }
-  const seedManifestMigration = await seedManifestProjectNameMigration(config, contexts);
+  const seedManifestMigration = yield* attempt(() => seedManifestProjectNameMigration(config, contexts));
   if (!plans.some(plan => plan.candidates.length > 0) && !seedManifestMigration) {
     console.log('No project-name migration candidates found across configured projects.');
     return;
   }
 
-  const seedManifestUpdated = await migrateSeedManifestProjectNames(config, seedManifestMigration, dryRun);
+  const seedManifestUpdated = yield* attempt(() =>
+    migrateSeedManifestProjectNames(config, seedManifestMigration, dryRun),
+  );
   let existingCount = 0;
   let migratedCount = 0;
   let skippedCount = 0;
   const candidates = plans.flatMap(plan => [...plan.candidates]);
   if (candidates.length > 0) {
-    const ov = await openVikingCliForMode(dryRun);
+    const ov = yield* attempt(() => openVikingCliForMode(dryRun));
     for (const candidate of candidates) {
       const action = candidate.destinationExistsWithSameContent
         ? dryRun
@@ -383,10 +399,12 @@ export async function runMigrateProjectNames(
         if (candidate.destinationExistsWithSameContent) {
           existingCount += 1;
         } else {
-          await ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri));
-          await writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false);
+          yield* attempt(() => ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri)));
+          yield* attempt(() =>
+            writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false),
+          );
         }
-        const removedOriginal = await removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
         if (!removedOriginal) {
           console.error(
             `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
@@ -414,7 +432,7 @@ export async function runMigrateProjectNames(
       .filter((part): part is string => part !== undefined)
       .join('; '),
   );
-}
+});
 
 export async function hasProjectNameMigrationCandidates(config: RuntimeConfig): Promise<boolean> {
   const contexts = await projectNameMigrationContexts(config);
@@ -905,8 +923,11 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
     await syncSharedReposAndLog(config);
   }
   const ov = await openVikingCliForMode(options.dryRun === true);
-  const query = await enrichRecallQueryWithWorkspaceContext(options.query);
-  const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(options.query);
+  const workspaceOptions = options.callerCwd
+    ? {cwd: options.callerCwd, includeProcessCwd: false}
+    : {includeProcessCwd: true};
+  const query = await enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions);
+  const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
   let indexRepairMessages: readonly string[];
   try {
     const indexRepair = await repairStaleRecallIndex(config, ov, {
@@ -924,9 +945,7 @@ export async function runRecall(config: RuntimeConfig, options: RecallOptions): 
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : await inferRecallUri(config, projectQuery));
   const project = await inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
-  const projectMemoryName = await recallProjectMemoryName(options.project, {
-    includeProcessCwd: true,
-  });
+  const projectMemoryName = await recallProjectMemoryName(options.project, workspaceOptions);
   const nodeLimit = options.nodeLimit ? parsePositiveInteger(options.nodeLimit, 'node limit') : undefined;
   const explicitWorkset = options.workset ? await requireWorkset(config.manifestPath, options.workset) : undefined;
   const searchArgs = (scopeUri: string | undefined): readonly string[] => [
@@ -1141,19 +1160,21 @@ async function printRecallHygieneNudges(config: RuntimeConfig, recallOutput: str
   }
 }
 
-export async function runCompact(config: RuntimeConfig, options: CompactOptions): Promise<void> {
-  const project = normalizeOptionalMetadata(options.project);
-  if (!project) {
-    throw new Error('Provide --project for scoped memory hygiene.');
-  }
+export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConfig, options: CompactOptions) {
+  const project = yield* requireValue(
+    normalizeOptionalMetadata(options.project),
+    'Provide --project for scoped memory hygiene.',
+  );
   if (options.apply === true && options.dryRun === true) {
-    throw new Error('Cannot combine --apply with --dry-run.');
+    yield* Effect.fail(new Error('Cannot combine --apply with --dry-run.'));
   }
   const apply = options.apply === true;
-  const records = await scopedCompactRecords(config, {
-    kind: options.kind,
-    project,
-  });
+  const records = yield* attempt(() =>
+    scopedCompactRecords(config, {
+      kind: options.kind,
+      project,
+    }),
+  );
   const plan = buildCompactPlan(records, {
     kind: options.kind,
     project,
@@ -1164,20 +1185,18 @@ export async function runCompact(config: RuntimeConfig, options: CompactOptions)
     return;
   }
 
-  const ov = await openVikingCliForMode(false);
+  const ov = yield* attempt(() => openVikingCliForMode(false));
   const updatePath = join(config.agentContextHome, 'compact-memory-update.txt');
-  try {
+  yield* Effect.gen(function* () {
     for (const action of plan.keepUpdates) {
-      await writeFile(updatePath, action.content, {encoding: 'utf8', mode: 0o600});
-      await chmod(updatePath, 0o600);
-      await writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace');
+      yield* attempt(() => writeFile(updatePath, action.content, {encoding: 'utf8', mode: 0o600}));
+      yield* attempt(() => chmod(updatePath, 0o600));
+      yield* attempt(() => writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace'));
     }
-  } finally {
-    await rm(updatePath, {force: true});
-  }
+  }).pipe(Effect.ensuring(attempt(() => rm(updatePath, {force: true})).pipe(Effect.catch(() => Effect.void))));
 
   for (const action of plan.archives) {
-    await runArchive(config, action.uri, {
+    yield* runArchive(config, action.uri, {
       dryRun: false,
       kind: action.kind,
       project: action.project,
@@ -1185,9 +1204,9 @@ export async function runCompact(config: RuntimeConfig, options: CompactOptions)
     });
   }
   for (const action of plan.forgets) {
-    await runForget(config, action.uri, {dryRun: false});
+    yield* runForget(config, action.uri, {dryRun: false});
   }
-}
+});
 
 export async function runCompactDiagnostics(config: RuntimeConfig, options: CompactOptions): Promise<void> {
   const project = normalizeOptionalMetadata(options.project);
@@ -1339,21 +1358,25 @@ export async function runList(config: RuntimeConfig, uri: string, options: ListO
   await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
 }
 
-export async function runHandoff(config: RuntimeConfig, options: HandoffOptions): Promise<void> {
-  const {bodyText, metadata} = await buildHandoff(options);
-  await storeMemory(config, {
+export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConfig, options: HandoffOptions) {
+  const {bodyText, metadata} = yield* attempt(() => buildHandoff(options));
+  yield* storeMemory(config, {
     bodyText,
     dryRun: options.dryRun === true,
     metadata,
     replaceUri: options.replace,
     title: 'HANDOFF',
   });
-}
+});
 
-export async function runArchive(config: RuntimeConfig, uri: string, options: ArchiveOptions): Promise<void> {
-  assertVikingUri(uri);
-  const ov = await openVikingCliForMode(options.dryRun === true);
-  const readResult = await maybeRun(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
+export const runArchive = Effect.fn('runArchive')(function* (
+  config: RuntimeConfig,
+  uri: string,
+  options: ArchiveOptions,
+) {
+  yield* attemptSync(() => assertVikingUri(uri));
+  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const readResult = yield* attempt(() => maybeRun(options.dryRun === true, ov, withIdentity(config, ['read', uri])));
   const original = readResult?.stdout.trim();
   if (options.dryRun === true) {
     const fallbackMetadata: MemoryMetadata = {
@@ -1365,7 +1388,7 @@ export async function runArchive(config: RuntimeConfig, uri: string, options: Ar
       timestamp: new Date().toISOString(),
       topic: normalizeOptionalMetadata(options.topic),
     };
-    await storeMemory(config, {
+    yield* storeMemory(config, {
       bodyText: ['Archived original Threadnote memory.', '', '<original memory content would be read here>'].join('\n'),
       dryRun: true,
       metadata: fallbackMetadata,
@@ -1374,11 +1397,9 @@ export async function runArchive(config: RuntimeConfig, uri: string, options: Ar
     console.log(formatShellCommand(ov, withIdentity(config, ['rm', uri])));
     return;
   }
-  if (!original) {
-    throw new Error(`Could not read ${uri} before archiving.`);
-  }
+  const originalMemory = yield* requireValue(original, `Could not read ${uri} before archiving.`);
 
-  const inferredMetadata = inferMemoryMetadata(original);
+  const inferredMetadata = inferMemoryMetadata(originalMemory);
   const metadata: MemoryMetadata = {
     archivedFrom: uri,
     kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
@@ -1388,38 +1409,39 @@ export async function runArchive(config: RuntimeConfig, uri: string, options: Ar
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
   };
-  await storeMemory(config, {
-    bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+  yield* storeMemory(config, {
+    bodyText: ['Archived original Threadnote memory.', '', originalMemory].join('\n'),
     dryRun: false,
     metadata,
     title: 'MEMORY',
   });
-  const removedOriginal = await removeVikingResourceWithRetry(ov, config, uri);
+  const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, uri);
   if (removedOriginal) {
     console.log(`Archived original memory: ${uri}`);
   } else {
     console.error(`Archive stored, but original memory is still processing. Retry later: threadnote forget ${uri}`);
   }
-}
+});
 
-export async function runForget(config: RuntimeConfig, uri: string, options: ForgetOptions): Promise<void> {
-  assertVikingUri(uri);
-  const ov = await openVikingCliForMode(options.dryRun === true);
+export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
+  yield* attemptSync(() => assertVikingUri(uri));
+  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
   if (options.dryRun === true) {
-    await maybeRun(true, ov, withIdentity(config, ['rm', uri]));
+    yield* attempt(() => maybeRun(true, ov, withIdentity(config, ['rm', uri])));
     return;
   }
-  const removed = await removeVikingResourceWithRetry(ov, config, uri);
+  const removed = yield* removeVikingResourceWithRetry(ov, config, uri);
   if (!removed) {
-    throw new Error(`Resource is still being processed; retry later: threadnote forget ${uri}`);
+    yield* Effect.fail(new Error(`Resource is still being processed; retry later: threadnote forget ${uri}`));
   }
-}
+});
 
 export async function runExportPack(config: RuntimeConfig, options: PackOptions): Promise<void> {
   const ov = await openVikingCliForMode(options.dryRun === true);
   const defaultPath = join(config.agentContextHome, `threadnote-${safeTimestamp()}.ovpack`);
   const outputPath = expandPath(options.path ?? defaultPath);
-  await maybeRun(options.dryRun === true, ov, withIdentity(config, ['export', options.uri ?? 'viking://', outputPath]));
+  const sourceUri = options.uri ?? `viking://user/${uriSegment(config.user)}/memories`;
+  await maybeRun(options.dryRun === true, ov, withIdentity(config, ['export', sourceUri, outputPath]));
 }
 
 export async function runImportPack(config: RuntimeConfig, options: PackOptions): Promise<void> {
@@ -1427,11 +1449,8 @@ export async function runImportPack(config: RuntimeConfig, options: PackOptions)
     throw new Error('Provide --path for import-pack.');
   }
   const ov = await openVikingCliForMode(options.dryRun === true);
-  await maybeRun(
-    options.dryRun === true,
-    ov,
-    withIdentity(config, ['import', expandPath(options.path), options.targetUri ?? 'viking://']),
-  );
+  const targetUri = options.targetUri ?? `viking://user/${uriSegment(config.user)}`;
+  await maybeRun(options.dryRun === true, ov, withIdentity(config, ['import', expandPath(options.path), targetUri]));
 }
 
 async function inferRecallUri(config: RuntimeConfig, query: string): Promise<string | undefined> {
@@ -1493,13 +1512,13 @@ async function collectExactMemoryMatches(
   });
 }
 
-async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): Promise<void> {
+const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
   if (options.replaceUri) {
-    assertVikingUri(options.replaceUri);
+    yield* attemptSync(() => assertVikingUri(options.replaceUri as string));
   }
-  const ov = await openVikingCliForMode(options.dryRun);
+  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun));
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
-    await storeSharedMemoryReplacement(config, ov, options, options.replaceUri);
+    yield* attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string));
     return;
   }
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
@@ -1519,7 +1538,7 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
   const memory = isInPlaceUpdate
     ? formatMemoryDocument(options.title, finalMetadata, options.bodyText)
     : candidateMemory;
-  const writeMode = await memoryWriteMode(ov, config, memoryUri, finalMetadata);
+  const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
   if (options.dryRun) {
     console.log(memory);
     console.log('\nWould run:');
@@ -1544,13 +1563,13 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
     }
     return;
   }
-  await writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600});
-  await chmod(memoryPath, 0o600);
-  await ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata));
-  await writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode);
+  yield* attempt(() => writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600}));
+  yield* attempt(() => chmod(memoryPath, 0o600));
+  yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata)));
+  yield* attempt(() => writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode));
   console.log(`Stored memory: ${memoryUri}`);
   if (options.replaceUri && !isInPlaceUpdate) {
-    const removedReplacedMemory = await removeVikingResourceWithRetry(ov, config, options.replaceUri);
+    const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri);
     if (removedReplacedMemory) {
       console.log(`Forgot replaced memory: ${options.replaceUri}`);
     } else {
@@ -1561,7 +1580,7 @@ async function storeMemory(config: RuntimeConfig, options: StoreMemoryOptions): 
   } else if (isInPlaceUpdate) {
     console.log(`Updated existing memory in place: ${memoryUri}`);
   }
-}
+});
 
 /**
  * Warn when an in-place shared replacement was asked to change the memory's
@@ -1649,29 +1668,20 @@ async function writeDurableMemoryFile(
   await writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
 }
 
-async function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
+function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string) {
   const args = withIdentity(config, ['rm', uri]);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
-    const result = await runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      if (result.stdout.trim()) {
-        console.log(result.stdout.trim());
-      }
-      if (result.stderr.trim()) {
-        console.error(result.stderr.trim());
-      }
+  return pipe(
+    removeOpenVikingResourceEffect(ov, args, {
+      isBusy: isResourceBusy,
+      onAttempt: attempt => console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`),
+    }),
+    Effect.map(result => {
+      if (!result) return false;
+      if (result.stdout.trim()) console.log(result.stdout.trim());
+      if (result.stderr.trim()) console.error(result.stderr.trim());
       return true;
-    }
-    if (isResourceBusy(result.stderr, result.stdout) && attempt === 3) {
-      return false;
-    }
-    if (!isResourceBusy(result.stderr, result.stdout)) {
-      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
-    }
-    await sleep(1000 * (attempt + 1));
-  }
-  return false;
+    }),
+  );
 }
 
 async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {

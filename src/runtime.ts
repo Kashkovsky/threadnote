@@ -1,4 +1,3 @@
-import type {Command} from 'commander';
 import {existsSync} from 'node:fs';
 import {userInfo} from 'node:os';
 import {join} from 'node:path';
@@ -13,13 +12,14 @@ import {
 import type {RuntimeConfig} from './types.js';
 import {expandPath, parsePort, toolRoot} from './utils.js';
 
-export function getRuntimeConfig(program: Command, manifestOverride?: string): RuntimeConfig {
-  const options = program.opts<{
-    readonly home?: string;
-    readonly host?: string;
-    readonly manifest?: string;
-    readonly port?: number;
-  }>();
+export interface RuntimeOptions {
+  readonly home?: string;
+  readonly host?: string;
+  readonly manifest?: string;
+  readonly port?: number;
+}
+
+export function getRuntimeConfig(options: RuntimeOptions = {}, manifestOverride?: string): RuntimeConfig {
   const threadnoteHome = expandPath(options.home ?? process.env.THREADNOTE_HOME ?? '~/.openviking');
   const manifestPath = expandPath(
     manifestOverride ?? options.manifest ?? process.env.THREADNOTE_MANIFEST ?? defaultManifestPath(threadnoteHome),

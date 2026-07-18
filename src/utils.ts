@@ -2,13 +2,19 @@ import {execFile, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {constants as fsConstants, existsSync} from 'node:fs';
 import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promises';
-import {get as httpGet} from 'node:http';
 import {createConnection} from 'node:net';
+import {get as httpGet} from 'node:http';
 import {homedir} from 'node:os';
 import {basename, dirname, isAbsolute, join, resolve, sep} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {command as commandText, failure, info, success, warning} from './cli_ui.js';
+import {commandMaxOutputBytes, commandTimeoutMs, type CommandOptions, withoutGitEnvironment} from './effect/command.js';
 import {redactSensitiveText} from './scrubber.js';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
+
+export {withoutGitEnvironment} from './effect/command.js';
+
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -25,25 +31,6 @@ export function parseJsonConfigObject(content: string): JsonObject | undefined {
 
 export function redactText(content: string): string {
   return redactSensitiveText(content);
-}
-
-const GIT_ENVIRONMENT_KEYS = [
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_PREFIX',
-  'GIT_COMMON_DIR',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_QUARANTINE_PATH',
-] as const;
-
-export function withoutGitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const next = {...env};
-  for (const key of GIT_ENVIRONMENT_KEYS) {
-    delete next[key];
-  }
-  return next;
 }
 
 export async function walkFiles(root: string): Promise<readonly string[]> {
@@ -222,38 +209,25 @@ export async function maybeRun(
 export async function runCommand(
   executable: string,
   args: readonly string[],
-  options: {
-    readonly allowFailure?: boolean;
-    readonly cwd?: string;
-    readonly env?: NodeJS.ProcessEnv;
-    readonly maxOutputBytes?: number;
-    readonly timeoutMs?: number;
-  } = {},
+  options: CommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const maxOutputBytes = options.maxOutputBytes ?? defaultCommandMaxOutputBytes();
+    const maxOutputBytes = options.maxOutputBytes ?? commandMaxOutputBytes();
+    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
     let finished = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
     let failureMessage: string | undefined;
-    let sentTerminationSignal = false;
-    const timeoutMs = options.timeoutMs ?? defaultCommandTimeoutMs();
     const finish = (result: CommandResult): void => {
-      if (finished) {
-        return;
-      }
+      if (finished) return;
       finished = true;
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
-      if (killEscalationTimer) {
-        clearTimeout(killEscalationTimer);
-      }
+      if (killTimer) clearTimeout(killTimer);
+      if (killEscalationTimer) clearTimeout(killEscalationTimer);
       if (result.exitCode !== 0 && options.allowFailure !== true) {
         rejectPromise(new Error(`${formatShellCommand(executable, args)} failed: ${result.stderr || result.stdout}`));
-        return;
+      } else {
+        resolvePromise(result);
       }
-      resolvePromise(result);
     };
     const child = execFile(
       executable,
@@ -261,81 +235,44 @@ export async function runCommand(
       {
         cwd: options.cwd,
         encoding: 'utf8',
-        env: commandEnvironment(executable, options.env),
+        env: basename(executable) === 'git' ? withoutGitEnvironment(options.env ?? process.env) : options.env,
         maxBuffer: maxOutputBytes,
       },
-      (err, stdout, stderr) => {
-        finish(
-          commandResultFromExecFileCallback({
-            args,
-            err,
-            executable,
-            failureMessage,
-            maxOutputBytes,
-            stderr,
-            stdout,
-          }),
-        );
+      (cause, stdout, stderr) => {
+        if (failureMessage) {
+          finish({exitCode: 124, stderr: failureMessage, stdout});
+          return;
+        }
+        if (!cause) {
+          finish({exitCode: 0, stderr, stdout});
+          return;
+        }
+        const error = cause as Error & {readonly code?: number | string};
+        const exitCode =
+          typeof error.code === 'number' ? error.code : error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 124 : 127;
+        finish({
+          exitCode,
+          stderr:
+            error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+              ? `${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`
+              : stderr || errorMessage(error),
+          stdout,
+        });
       },
     );
-    const failAndKill = (message: string): void => {
-      if (failureMessage) {
-        return;
-      }
-      failureMessage = message;
-      if (!sentTerminationSignal) {
-        sentTerminationSignal = true;
-        child.kill('SIGTERM');
-      }
-      killEscalationTimer = setTimeout(() => {
-        if (!finished) {
-          child.kill('SIGKILL');
-        }
-      }, 1000).unref?.();
-    };
     if (timeoutMs > 0) {
       killTimer = setTimeout(() => {
-        failAndKill(`${formatShellCommand(executable, args)} timed out after ${timeoutMs}ms`);
+        if (finished || child.exitCode !== null) return;
+        failureMessage = `${formatShellCommand(executable, args)} timed out after ${timeoutMs}ms`;
+        child.kill('SIGTERM');
+        killEscalationTimer = setTimeout(() => {
+          if (!finished) child.kill('SIGKILL');
+        }, 1000);
+        killEscalationTimer.unref?.();
       }, timeoutMs);
       killTimer.unref?.();
     }
   });
-}
-
-function commandEnvironment(executable: string, env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv | undefined {
-  if (basename(executable) !== 'git') {
-    return env;
-  }
-  return withoutGitEnvironment(env ?? process.env);
-}
-
-function commandResultFromExecFileCallback(params: {
-  readonly args: readonly string[];
-  readonly err: Error | null;
-  readonly executable: string;
-  readonly failureMessage?: string;
-  readonly maxOutputBytes: number;
-  readonly stderr: string;
-  readonly stdout: string;
-}): CommandResult {
-  if (params.failureMessage) {
-    return {exitCode: 124, stderr: params.failureMessage, stdout: params.stdout};
-  }
-  if (!params.err) {
-    return {exitCode: 0, stderr: params.stderr, stdout: params.stdout};
-  }
-  const error = params.err as Error & {readonly code?: number | string};
-  const exitCode =
-    typeof error.code === 'number' ? error.code : error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 124 : 127;
-  const stderr =
-    error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-      ? `${formatShellCommand(params.executable, params.args)} exceeded output limit of ${params.maxOutputBytes} bytes`
-      : params.stderr || errorMessage(error);
-  return {exitCode, stderr, stdout: params.stdout};
-}
-
-function defaultCommandTimeoutMs(): number {
-  return positiveIntegerFromEnv('THREADNOTE_COMMAND_TIMEOUT_MS') ?? 10 * 60 * 1000;
 }
 
 /**
@@ -350,10 +287,6 @@ function defaultCommandTimeoutMs(): number {
  */
 export function reindexWaitTimeoutMs(): number {
   return positiveIntegerFromEnv('THREADNOTE_REINDEX_TIMEOUT_MS') ?? 120_000;
-}
-
-function defaultCommandMaxOutputBytes(): number {
-  return positiveIntegerFromEnv('THREADNOTE_COMMAND_MAX_OUTPUT_BYTES') ?? 5 * 1024 * 1024;
 }
 
 function positiveIntegerFromEnv(name: string): number | undefined {
@@ -471,29 +404,23 @@ export async function httpGetText(url: string, timeoutMs: number): Promise<strin
   return new Promise((resolvePromise, rejectPromise) => {
     const request = httpGet(url, response => {
       const chunks: string[] = [];
-      response.on('data', chunk => {
-        chunks.push(String(chunk));
-      });
+      response.on('data', chunk => chunks.push(String(chunk)));
       response.on('end', () => {
         const statusCode = response.statusCode ?? 0;
-        if (statusCode < 200 || statusCode >= 300) {
+        if (statusCode >= 200 && statusCode < 300) {
+          resolvePromise(chunks.join(''));
+        } else {
           rejectPromise(new Error(`HTTP ${statusCode}`));
-          return;
         }
-        resolvePromise(chunks.join(''));
       });
     });
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error(`Timed out after ${timeoutMs}ms`));
-    });
+    request.setTimeout(timeoutMs, () => request.destroy(new Error(`Timed out after ${timeoutMs}ms`)));
     request.on('error', rejectPromise);
   });
 }
 
 export async function sleep(ms: number): Promise<void> {
-  return new Promise(resolvePromise => {
-    setTimeout(resolvePromise, ms);
-  });
+  return new Promise(resolvePromise => setTimeout(resolvePromise, ms));
 }
 
 /**
@@ -594,9 +521,7 @@ export async function readHttpStatus(url: string, timeoutMs: number): Promise<nu
       request.destroy();
       resolvePromise(undefined);
     });
-    request.on('error', () => {
-      resolvePromise(undefined);
-    });
+    request.on('error', () => resolvePromise(undefined));
   });
 }
 
@@ -1712,10 +1637,10 @@ export function shellQuote(value: string): string {
 }
 
 export function toolRoot(): string {
-  if (existsSync(join(__dirname, 'package.json'))) {
-    return __dirname;
+  if (existsSync(join(moduleDirectory, 'package.json'))) {
+    return moduleDirectory;
   }
-  return resolve(__dirname, '..');
+  return resolve(moduleDirectory, '..');
 }
 
 export async function currentPackageVersion(): Promise<string> {

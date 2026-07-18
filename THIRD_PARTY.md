@@ -27,9 +27,10 @@ This acknowledgment is provided as good-faith attribution to the OpenViking proj
 
 ## npm dependencies
 
-Runtime npm dependencies are declared in [`package.json`](./package.json) and retain their own licenses. As of this
-writing the direct runtime dependencies are:
+Runtime npm dependencies and build-time packages bundled into the published JavaScript retain their own licenses. As of
+this writing the direct bundled dependencies are:
 
+- `effect`, `@effect/platform-node`, and `@effect/ai-openai-compat` (MIT)
 - `react-markdown` (MIT)
 - `remark-gfm` (MIT)
 

@@ -1,7 +1,9 @@
 import {spawn} from 'node:child_process';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
-import {compareVersions} from './utils.js';
+import {Effect} from 'effect';
+import {getJsonEffect} from './effect/http.js';
+import {compareVersions, isJsonObject} from './utils.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const NPM_LATEST_URL = 'https://registry.npmjs.org/threadnote/latest';
@@ -31,30 +33,28 @@ export interface UpdateCheckResult {
  * the registry returned malformed data. Never throws — callers can fire and
  * forget without wrapping in try/catch.
  */
-export async function checkForThreadnoteUpdate(args: {
-  readonly cachePath: string;
-  readonly currentVersion: string;
-}): Promise<UpdateCheckResult | undefined> {
+export function checkForThreadnoteUpdate(args: {readonly cachePath: string; readonly currentVersion: string}) {
   if (args.currentVersion === 'unknown') {
-    return undefined;
+    return Effect.succeed(undefined);
   }
-  const cached = await readUpdateCache(args.cachePath);
-  if (cached && isCacheFresh(cached)) {
-    return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
-  }
-  const fresh = await fetchLatestVersion();
-  if (fresh) {
-    await writeUpdateCache(args.cachePath, {
-      checkedAt: new Date().toISOString(),
-      latestVersion: fresh,
-      version: 1,
-    });
-    return toUpdateCheckResult(args.currentVersion, fresh);
-  }
-  if (cached) {
-    return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
-  }
-  return undefined;
+  return Effect.gen(function* () {
+    const cached = yield* Effect.promise(() => readUpdateCache(args.cachePath));
+    if (cached && isCacheFresh(cached)) {
+      return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
+    }
+    const fresh = yield* fetchLatestVersionEffect();
+    if (fresh) {
+      yield* Effect.promise(() =>
+        writeUpdateCache(args.cachePath, {
+          checkedAt: new Date().toISOString(),
+          latestVersion: fresh,
+          version: 1,
+        }),
+      );
+      return toUpdateCheckResult(args.currentVersion, fresh);
+    }
+    return cached ? toUpdateCheckResult(args.currentVersion, cached.latestVersion) : undefined;
+  });
 }
 
 /**
@@ -117,18 +117,13 @@ async function writeUpdateCache(cachePath: string, contents: UpdateCacheFile): P
   }
 }
 
-async function fetchLatestVersion(): Promise<string | undefined> {
-  try {
-    const response = await fetch(NPM_LATEST_URL, {
-      headers: {accept: 'application/json'},
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      return undefined;
-    }
-    const data = (await response.json()) as {readonly version?: unknown};
-    return typeof data.version === 'string' && data.version.length > 0 ? data.version : undefined;
-  } catch {
-    return undefined;
-  }
-}
+const fetchLatestVersionEffect = Effect.fn('fetchLatestHookVersion')(() =>
+  getJsonEffect(NPM_LATEST_URL, {headers: {accept: 'application/json'}, timeoutMs: FETCH_TIMEOUT_MS}).pipe(
+    Effect.map(response =>
+      isJsonObject(response.body) && typeof response.body.version === 'string' && response.body.version.length > 0
+        ? response.body.version
+        : undefined,
+    ),
+    Effect.catch(() => Effect.succeed(undefined)),
+  ),
+);

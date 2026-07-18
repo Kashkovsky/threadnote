@@ -1,10 +1,14 @@
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runRemember} from '../../src/memory.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -84,13 +88,15 @@ describe('remember shared replacement', () => {
     });
 
     const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
-    await runRemember(config, {
-      dryRun: true,
-      kind: 'durable',
-      replace: sharedUri,
-      sourceAgentClient: 'codex',
-      text: 'Updated shared auth memory.',
-    });
+    await runTestEffect(
+      runRemember(config, {
+        dryRun: true,
+        kind: 'durable',
+        replace: sharedUri,
+        sourceAgentClient: 'codex',
+        text: 'Updated shared auth memory.',
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
 
     const output = logs.join('\n');
     expect(output).toContain(sharedUri);
@@ -113,14 +119,16 @@ describe('remember shared replacement', () => {
     });
 
     const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
-    await runRemember(config, {
-      dryRun: true,
-      kind: 'durable',
-      project: 'coda', // differs from the path project (mobile-native)
-      replace: sharedUri,
-      sourceAgentClient: 'codex',
-      text: 'Updated shared auth memory.',
-    });
+    await runTestEffect(
+      runRemember(config, {
+        dryRun: true,
+        kind: 'durable',
+        project: 'coda', // differs from the path project (mobile-native)
+        replace: sharedUri,
+        sourceAgentClient: 'codex',
+        text: 'Updated shared auth memory.',
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
 
     const output = logs.join('\n');
     // Frontmatter tracks the path, not the differing request — no divergence.
@@ -139,14 +147,16 @@ describe('remember shared replacement', () => {
     });
 
     const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
-    await runRemember(config, {
-      dryRun: true,
-      kind: 'durable',
-      project: 'mobile-native', // matches the path project → no drift
-      replace: sharedUri,
-      sourceAgentClient: 'codex',
-      text: 'Updated shared auth memory.',
-    });
+    await runTestEffect(
+      runRemember(config, {
+        dryRun: true,
+        kind: 'durable',
+        project: 'mobile-native', // matches the path project → no drift
+        replace: sharedUri,
+        sourceAgentClient: 'codex',
+        text: 'Updated shared auth memory.',
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
 
     const output = logs.join('\n');
     expect(output).toContain('project: mobile-native');
@@ -157,12 +167,14 @@ describe('remember shared replacement', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     await expect(
-      runRemember(config, {
-        dryRun: true,
-        kind: 'handoff',
-        replace: 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/foo/bar.md',
-        text: 'Not shareable.',
-      }),
+      runTestEffect(
+        runRemember(config, {
+          dryRun: true,
+          kind: 'handoff',
+          replace: 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/foo/bar.md',
+          text: 'Not shareable.',
+        }).pipe(Effect.provide(ApplicationLayer)),
+      ),
     ).rejects.toThrow(/only supports durable/);
   });
 
@@ -190,12 +202,14 @@ describe('remember shared replacement', () => {
     });
 
     await expect(
-      runRemember(config, {
-        kind: 'durable',
-        replace: sharedUri,
-        sourceAgentClient: 'codex',
-        text: 'Updated shared auth memory.',
-      }),
+      runTestEffect(
+        runRemember(config, {
+          kind: 'durable',
+          replace: sharedUri,
+          sourceAgentClient: 'codex',
+          text: 'Updated shared auth memory.',
+        }).pipe(Effect.provide(ApplicationLayer)),
+      ),
     ).rejects.toThrow(/git push failed/);
   });
 });

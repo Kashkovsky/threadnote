@@ -41,7 +41,7 @@ const UV_COMMAND = {
   args: [
     'tool',
     'install',
-    '--native-tls',
+    '--system-certs',
     '--python',
     '3.12',
     '--with',
@@ -155,7 +155,7 @@ describe('getInstallCommands', () => {
     expect(command.args).toEqual([
       'tool',
       'install',
-      '--native-tls',
+      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -179,7 +179,7 @@ describe('getInstallCommands', () => {
     expect(command.args).toEqual([
       'tool',
       'install',
-      '--native-tls',
+      '--system-certs',
       '--python',
       '3.12',
       '--with',
@@ -195,7 +195,7 @@ describe('getInstallCommands', () => {
     expect(command.args).toEqual([
       'tool',
       'install',
-      '--native-tls',
+      '--system-certs',
       '--with',
       'pip-system-certs',
       '--extra-index-url',

@@ -4,7 +4,11 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline/promises';
 import {stdin as input, stdout as output} from 'node:process';
-import {heading, info as infoText, keyValue, success, warning, withSpinner} from './cli_ui.js';
+import {Effect, pipe} from 'effect';
+import {heading, info as infoText, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
+import {applicationError} from './effect/errors.js';
+import {getJsonEffect, getStatusEffect} from './effect/http.js';
+import {pollUntilEffect} from './effect/time.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
@@ -22,7 +26,6 @@ import {
   readFileIfExists,
   runCommand,
   runInteractive,
-  sleep,
   toolRoot,
   formatShellCommand,
 } from './utils.js';
@@ -62,6 +65,12 @@ interface PostUpdateState {
   readonly handledMigrationIds: readonly string[];
 }
 
+const fromPromise = <A>(operation: string, evaluate: () => Promise<A>) =>
+  Effect.tryPromise({try: evaluate, catch: cause => applicationError(operation, cause)});
+
+const fromSync = <A>(operation: string, evaluate: () => A) =>
+  Effect.try({try: evaluate, catch: cause => applicationError(operation, cause)});
+
 export function parseUpdateRuntime(value: string): UpdateRuntime {
   if (value === 'auto' || value === 'npm' || value === 'bun' || value === 'deno') {
     return value;
@@ -69,33 +78,38 @@ export function parseUpdateRuntime(value: string): UpdateRuntime {
   throw new Error(`Invalid update runtime: ${value}. Expected auto, npm, bun, or deno.`);
 }
 
-export async function maybeNotifyUpdate(
-  config: RuntimeConfig,
-  options: {readonly dryRun?: boolean} = {},
-): Promise<void> {
+export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryRun?: boolean} = {}) {
   if (isUpdateNotificationDisabled()) {
-    return;
+    return Effect.void;
   }
-  try {
-    const info = await getUpdateInfo(config, {
-      allowCacheWrite: options.dryRun !== true,
-      preferFresh: false,
-      registry: updateRegistry(),
-    });
-    if (!info.isUpdateAvailable) {
-      return;
-    }
-    console.log('');
-    console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
-    console.log(`Run: ${infoText('threadnote update')}`);
-  } catch (_err: unknown) {
-    return;
-  }
+  return fromSync('resolve update registry', updateRegistry).pipe(
+    Effect.flatMap(registry =>
+      getUpdateInfo(config, {
+        allowCacheWrite: options.dryRun !== true,
+        preferFresh: false,
+        registry,
+      }),
+    ),
+    Effect.tap(info =>
+      info.isUpdateAvailable
+        ? Effect.sync(() => {
+            console.log('');
+            console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
+            console.log(`Run: ${infoText('threadnote update')}`);
+          })
+        : Effect.void,
+    ),
+    Effect.asVoid,
+    Effect.catch(() => Effect.void),
+  );
 }
 
-export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): Promise<void> {
-  const registry = resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry);
-  const info = await withSpinner('Checking npm for latest threadnote version', () =>
+export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
+  const registry = yield* fromSync('resolve update registry', () =>
+    resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry),
+  );
+  const info = yield* withSpinnerEffect(
+    'Checking npm for latest threadnote version',
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: true,
@@ -103,43 +117,51 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
     }),
   );
 
-  console.log(keyValue('Current version', infoText(info.currentVersion)));
-  console.log(keyValue('Latest version', infoText(info.latestVersion)));
-  console.log(keyValue('Registry', info.registry));
+  yield* Effect.sync(() => {
+    console.log(keyValue('Current version', infoText(info.currentVersion)));
+    console.log(keyValue('Latest version', infoText(info.latestVersion)));
+    console.log(keyValue('Registry', info.registry));
+  });
 
   if (options.check === true) {
     if (info.isUpdateAvailable) {
-      console.log(warning('Update available. Run: threadnote update'));
-      await printWhatsNewIfAvailable(info);
+      yield* Effect.sync(() => console.log(warning('Update available. Run: threadnote update')));
+      yield* printWhatsNewIfAvailable(info);
     } else {
-      console.log(
-        compareVersions(info.currentVersion, info.latestVersion) > 0
-          ? warning('Current version is newer than npm latest.')
-          : success('Threadnote is up to date.'),
+      yield* Effect.sync(() =>
+        console.log(
+          compareVersions(info.currentVersion, info.latestVersion) > 0
+            ? warning('Current version is newer than npm latest.')
+            : success('Threadnote is up to date.'),
+        ),
       );
     }
     return;
   }
 
   if (!info.isUpdateAvailable && options.force !== true) {
-    console.log(success('Threadnote is up to date.'));
+    yield* Effect.sync(() => console.log(success('Threadnote is up to date.')));
     return;
   }
 
-  const runtime = await resolveUpdateRuntime(options.runtime ?? 'auto');
+  const runtime = yield* fromPromise('resolve update runtime', () => resolveUpdateRuntime(options.runtime ?? 'auto'));
   const updateCommand = updatePackageCommand(runtime, registry);
-  await runStreamingSubcommand(options.dryRun === true, updateCommand.executable, updateCommand.args);
+  yield* runStreamingSubcommand(options.dryRun === true, updateCommand.executable, updateCommand.args);
 
   if (options.repair === false) {
-    console.log('Skipping repair because --no-repair was provided.');
-    await printWhatsNewIfAvailable(info);
+    yield* Effect.sync(() => console.log('Skipping repair because --no-repair was provided.'));
+    yield* printWhatsNewIfAvailable(info);
     return;
   }
 
-  const threadnoteCommand = await installedThreadnoteCommand(runtime);
-  console.log('');
-  console.log('Repairing local Threadnote setup after package update.');
-  await runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+  const threadnoteCommand = yield* fromPromise('resolve installed threadnote command', () =>
+    installedThreadnoteCommand(runtime),
+  );
+  yield* Effect.sync(() => {
+    console.log('');
+    console.log('Repairing local Threadnote setup after package update.');
+  });
+  yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
   if (options.postUpdate !== false) {
     const postUpdateArgs = [
       'post-update',
@@ -149,77 +171,102 @@ export async function runUpdate(config: RuntimeConfig, options: UpdateOptions): 
       info.latestVersion,
       ...(options.yes === true ? ['--yes'] : []),
     ];
-    await runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
+    yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
   } else {
-    console.log('Skipping post-update migration prompts because --no-post-update was provided.');
-  }
-  console.log(
-    'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
-  );
-  await printWhatsNewIfAvailable(info);
-}
-
-async function printWhatsNewIfAvailable(info: UpdateInfo): Promise<void> {
-  if (!info.isUpdateAvailable) {
-    return;
-  }
-  console.log('');
-  const whatsNew = await withSpinner('Fetching GitHub release notes', () =>
-    whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion),
-  );
-  for (const line of whatsNew) {
-    console.log(line === "What's new:" ? heading(line) : line);
-  }
-}
-
-export async function runPostUpdate(config: RuntimeConfig, options: PostUpdateOptions): Promise<void> {
-  if (!options.fromVersion || !options.toVersion) {
-    throw new Error('Provide --from-version and --to-version for post-update.');
-  }
-  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun === true});
-  await runApplicablePostUpdateMigrations(config, {
-    dryRun: options.dryRun === true,
-    fromVersion: options.fromVersion,
-    interactive,
-    markHandled: true,
-    toVersion: options.toVersion,
-    yes: options.yes === true,
-  });
-}
-
-export async function maybeRunPostUpdateAfterRepair(
-  config: RuntimeConfig,
-  options: {readonly dryRun: boolean},
-): Promise<void> {
-  const toVersion = await currentPackageVersion();
-  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  await ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun});
-  const state = await readPostUpdateState(config);
-  const migrations = await applicablePostUpdateMigrations(config, {
-    fromVersion: '0.0.0',
-    handledMigrationIds: state.handledMigrationIds,
-    toVersion,
-  });
-  if (migrations.length === 0) {
-    return;
-  }
-  console.log('');
-  console.log('Repair found package post-update migrations.');
-  console.log('This also covers updates launched by older Threadnote versions that only knew how to run repair.');
-  if (!interactive) {
-    console.log(
-      'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
+    yield* Effect.sync(() =>
+      console.log('Skipping post-update migration prompts because --no-post-update was provided.'),
     );
-    console.log(`Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`);
   }
-  await runApplicablePostUpdateMigrations(config, {
-    dryRun: options.dryRun,
-    fromVersion: '0.0.0',
-    interactive,
-    markHandled: true,
-    toVersion,
-    yes: false,
+  yield* Effect.sync(() =>
+    console.log(
+      'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
+    ),
+  );
+  yield* printWhatsNewIfAvailable(info);
+});
+
+function printWhatsNewIfAvailable(info: UpdateInfo) {
+  if (!info.isUpdateAvailable) {
+    return Effect.void;
+  }
+  return Effect.gen(function* () {
+    yield* Effect.sync(() => console.log(''));
+    const whatsNew = yield* withSpinnerEffect(
+      'Fetching GitHub release notes',
+      whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion),
+    );
+    yield* Effect.sync(() => {
+      for (const line of whatsNew) {
+        console.log(line === "What's new:" ? heading(line) : line);
+      }
+    });
+  });
+}
+
+export const runPostUpdate = Effect.fn('runPostUpdate')(function* (config: RuntimeConfig, options: PostUpdateOptions) {
+  if (!options.fromVersion || !options.toVersion) {
+    return yield* Effect.fail(
+      applicationError(
+        'validate post-update options',
+        new Error('Provide --from-version and --to-version for post-update.'),
+      ),
+    );
+  }
+  const fromVersion = options.fromVersion;
+  const toVersion = options.toVersion;
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun === true});
+  yield* fromPromise('run post-update memory migrations', () =>
+    runApplicablePostUpdateMigrations(config, {
+      dryRun: options.dryRun === true,
+      fromVersion,
+      interactive,
+      markHandled: true,
+      toVersion,
+      yes: options.yes === true,
+    }),
+  );
+});
+
+export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {readonly dryRun: boolean}) {
+  return Effect.gen(function* () {
+    const toVersion = yield* fromPromise('read current package version', currentPackageVersion);
+    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun});
+    const state = yield* fromPromise('read post-update state', () => readPostUpdateState(config));
+    const migrations = yield* fromPromise('find applicable post-update migrations', () =>
+      applicablePostUpdateMigrations(config, {
+        fromVersion: '0.0.0',
+        handledMigrationIds: state.handledMigrationIds,
+        toVersion,
+      }),
+    );
+    if (migrations.length === 0) {
+      return;
+    }
+    yield* Effect.sync(() => {
+      console.log('');
+      console.log('Repair found package post-update migrations.');
+      console.log('This also covers updates launched by older Threadnote versions that only knew how to run repair.');
+    });
+    if (!interactive) {
+      console.log(
+        'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
+      );
+      console.log(
+        `Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`,
+      );
+    }
+    yield* fromPromise('run post-update migrations after repair', () =>
+      runApplicablePostUpdateMigrations(config, {
+        dryRun: options.dryRun,
+        fromVersion: '0.0.0',
+        interactive,
+        markHandled: true,
+        toVersion,
+        yes: false,
+      }),
+    );
   });
 }
 
@@ -240,68 +287,79 @@ export async function maybeRunPostUpdateAfterRepair(
  * when a LaunchAgent is in play (so the user's launchd setup is preserved
  * instead of getting silently shifted to a detached process).
  */
-async function ensurePinnedOpenVikingInstalled(
-  config: RuntimeConfig,
-  options: {readonly dryRun: boolean},
-): Promise<void> {
-  const ov = await findOpenVikingCli();
-  if (!ov) {
-    return;
-  }
-  const installedVersion = await readOpenVikingCliVersion(ov);
-  if (!installedVersion) {
-    console.log(`Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`);
-    return;
-  }
-  const pinned = config.openVikingVersion;
-  if (compareVersions(installedVersion, pinned) >= 0) {
-    return;
-  }
-  console.log('');
-  console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
-  console.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
-
-  // Capture the server state BEFORE we swap binaries so we know what to
-  // restart afterward. install --no-start leaves the existing process
-  // untouched, but that process is still the pre-upgrade binary, so the
-  // user would otherwise need to manually `threadnote stop && threadnote
-  // start` to actually be on the new version.
-  const wasRunning = await isOpenVikingHealthy(config);
-  const usingLaunchd = await isLaunchAgentInstalled();
-
-  const threadnoteCommand =
-    currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-  await runStreamingSubcommand(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
-
-  if (options.dryRun) {
-    if (wasRunning || usingLaunchd) {
-      console.log('Would restart OpenViking server so the new binary takes effect.');
+function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readonly dryRun: boolean}) {
+  return Effect.gen(function* () {
+    const ov = yield* fromPromise('find OpenViking CLI', findOpenVikingCli);
+    if (!ov) {
+      return;
     }
-    return;
-  }
+    const installedVersion = yield* fromPromise('read OpenViking CLI version', () => readOpenVikingCliVersion(ov));
+    if (!installedVersion) {
+      yield* Effect.sync(() =>
+        console.log(`Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`),
+      );
+      return;
+    }
+    const pinned = config.openVikingVersion;
+    if (compareVersions(installedVersion, pinned) >= 0) {
+      return;
+    }
+    yield* Effect.sync(() => {
+      console.log('');
+      console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
+      console.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
+    });
 
-  if (!wasRunning && !usingLaunchd) {
-    return;
-  }
+    // Capture the server state BEFORE we swap binaries so we know what to
+    // restart afterward. install --no-start leaves the existing process
+    // untouched, but that process is still the pre-upgrade binary, so the
+    // user would otherwise need to manually `threadnote stop && threadnote
+    // start` to actually be on the new version.
+    const wasRunning = yield* isOpenVikingHealthy(config);
+    const usingLaunchd = yield* isLaunchAgentInstalled();
 
-  console.log('Restarting OpenViking server so the new binary takes effect.');
-  if (usingLaunchd) {
-    const launchAgentPath = launchAgentPlistPath();
-    await runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true});
-    await waitForOpenVikingPortClosed(config, 15_000);
-    await runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
-  } else {
-    await runStreamingSubcommand(false, threadnoteCommand, ['stop']);
-    await waitForOpenVikingPortClosed(config, 15_000);
-    await runStreamingSubcommand(false, threadnoteCommand, ['start']);
-  }
-  const healthyAfter = await waitForOpenVikingHealthy(config, 10_000);
-  if (!healthyAfter) {
-    console.log(
-      `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
-    );
-    console.log('Check the server log or run: threadnote start');
-  }
+    const threadnoteCommand =
+      currentThreadnoteCommand() ??
+      (yield* fromPromise('find threadnote executable', () => findExecutable([NPM_PACKAGE_NAME]))) ??
+      NPM_PACKAGE_NAME;
+    yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
+
+    if (options.dryRun) {
+      if (wasRunning || usingLaunchd) {
+        yield* Effect.sync(() => console.log('Would restart OpenViking server so the new binary takes effect.'));
+      }
+      return;
+    }
+
+    if (!wasRunning && !usingLaunchd) {
+      return;
+    }
+
+    yield* Effect.sync(() => console.log('Restarting OpenViking server so the new binary takes effect.'));
+    if (usingLaunchd) {
+      const launchAgentPath = launchAgentPlistPath();
+      yield* fromPromise('unload OpenViking launch agent', () =>
+        runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true}),
+      );
+      yield* waitForOpenVikingPortClosed(config, 15_000);
+      yield* fromPromise('load OpenViking launch agent', () =>
+        runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true}),
+      );
+    } else {
+      yield* runStreamingSubcommand(false, threadnoteCommand, ['stop']);
+      yield* waitForOpenVikingPortClosed(config, 15_000);
+      yield* runStreamingSubcommand(false, threadnoteCommand, ['start']);
+    }
+    const healthyAfter = yield* waitForOpenVikingHealthy(config, 10_000);
+    if (!healthyAfter) {
+      yield* Effect.sync(() => {
+        console.log(
+          `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
+        );
+        console.log('Check the server log or run: threadnote start');
+      });
+    }
+  });
 }
 
 /**
@@ -311,80 +369,86 @@ async function ensurePinnedOpenVikingInstalled(
  * package install, an OpenViking reinstall, or a churning repair). Dry-run
  * defers to `maybeRun` so it only prints the command it would run.
  */
-async function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[]): Promise<void> {
+function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[]) {
   if (dryRun) {
-    await maybeRun(true, executable, args);
-    return;
+    return fromPromise('print subcommand', () => maybeRun(true, executable, args)).pipe(Effect.asVoid);
   }
-  console.log(`Running: ${formatShellCommand(executable, args)}`);
-  const exitCode = await runInteractive(executable, args);
-  if (exitCode !== 0) {
-    throw new Error(`${formatShellCommand(executable, args)} exited with ${exitCode}.`);
-  }
+  return Effect.gen(function* () {
+    yield* Effect.sync(() => console.log(`Running: ${formatShellCommand(executable, args)}`));
+    const exitCode = yield* fromPromise('run interactive subcommand', () => runInteractive(executable, args));
+    if (exitCode !== 0) {
+      return yield* Effect.fail(
+        applicationError(
+          'run interactive subcommand',
+          new Error(`${formatShellCommand(executable, args)} exited with ${exitCode}.`),
+        ),
+      );
+    }
+  });
 }
 
 function openVikingHealthEndpoint(config: RuntimeConfig): string {
   return `http://${config.host}:${config.port}/health`;
 }
 
-async function isOpenVikingHealthy(config: RuntimeConfig): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, 800);
-  try {
-    const response = await fetch(openVikingHealthEndpoint(config), {signal: controller.signal});
-    return response.ok;
-  } catch (_err: unknown) {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const isOpenVikingHealthy = Effect.fn('isOpenVikingHealthy')((config: RuntimeConfig) =>
+  getStatusEffect(openVikingHealthEndpoint(config), {timeoutMs: 800}).pipe(
+    Effect.map(status => status >= 200 && status < 300),
+    Effect.catch(() => Effect.succeed(false)),
+  ),
+);
 
-async function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await isOpenVikingHealthy(config)) {
-      return true;
-    }
-    await sleep(500);
-  }
-  return isOpenVikingHealthy(config);
-}
-
-async function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number): Promise<boolean> {
-  console.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`);
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!(await isTcpPortOpen(config.host, config.port, 300))) {
-      return true;
-    }
-    await sleep(300);
-  }
-  if (!(await isTcpPortOpen(config.host, config.port, 300))) {
-    return true;
-  }
-  console.log(
-    `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
+function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number) {
+  return pipe(
+    pollUntilEffect(
+      getStatusEffect(openVikingHealthEndpoint(config), {timeoutMs: 800}).pipe(
+        Effect.map(status => (status >= 200 && status < 300 ? true : undefined)),
+        Effect.catch(() => Effect.succeed(undefined)),
+      ),
+      {intervalMs: 500, timeoutMs},
+    ),
+    Effect.map(result => result === true),
   );
-  return false;
+}
+
+function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number) {
+  return Effect.gen(function* () {
+    yield* Effect.sync(() =>
+      console.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`),
+    );
+    const closed = yield* pipe(
+      pollUntilEffect(
+        fromPromise('check OpenViking TCP port', () => isTcpPortOpen(config.host, config.port, 300)).pipe(
+          Effect.map(open => (open ? undefined : true)),
+        ),
+        {intervalMs: 300, timeoutMs},
+      ),
+      Effect.map(result => result === true),
+    );
+    if (closed) {
+      return true;
+    }
+    yield* Effect.sync(() =>
+      console.log(
+        `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
+      ),
+    );
+    return false;
+  });
 }
 
 function launchAgentPlistPath(): string {
   return join(homedir(), 'Library', 'LaunchAgents', 'io.threadnote.openviking.plist');
 }
 
-async function isLaunchAgentInstalled(): Promise<boolean> {
+function isLaunchAgentInstalled() {
   if (process.platform !== 'darwin') {
-    return false;
+    return Effect.succeed(false);
   }
-  try {
-    await access(launchAgentPlistPath(), fsConstants.F_OK);
-    return true;
-  } catch (_err: unknown) {
-    return false;
-  }
+  return fromPromise('check OpenViking launch agent', () => access(launchAgentPlistPath(), fsConstants.F_OK)).pipe(
+    Effect.as(true),
+    Effect.catch(() => Effect.succeed(false)),
+  );
 }
 
 export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
@@ -393,60 +457,64 @@ export async function readOpenVikingCliVersion(ov: string): Promise<string | und
     return undefined;
   }
   // `ov version` output:
-  //   CLI:     0.4.7
-  //   Server:  0.4.7
+  //   CLI:     0.4.10
+  //   Server:  0.4.10
   // Match the CLI line specifically; ignore the server line in case the
   // server is briefly out of sync with the CLI during an upgrade.
   const match = result.stdout.match(/^\s*CLI:\s*(\S+)/m);
   return match ? match[1] : undefined;
 }
 
-async function getUpdateInfo(
+function getUpdateInfo(
   config: RuntimeConfig,
   options: {
     readonly allowCacheWrite: boolean;
     readonly preferFresh: boolean;
     readonly registry: string;
   },
-): Promise<UpdateInfo> {
-  const currentVersion = await currentPackageVersion();
-  const cached = options.preferFresh ? undefined : await readFreshCache(config, options.registry);
-  const latestVersion = cached?.latestVersion ?? (await fetchLatestVersion(options.registry));
-  if (!cached && options.allowCacheWrite) {
-    await writeUpdateCache(config, {checkedAt: new Date().toISOString(), latestVersion, registry: options.registry});
-  }
-  return {
-    currentVersion,
-    isUpdateAvailable: compareVersions(currentVersion, latestVersion) < 0,
-    latestVersion,
-    registry: options.registry,
-  };
+) {
+  return Effect.gen(function* () {
+    const currentVersion = yield* fromPromise('read current package version', currentPackageVersion);
+    const cached = options.preferFresh
+      ? undefined
+      : yield* fromPromise('read update cache', () => readFreshCache(config, options.registry));
+    const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry));
+    if (!cached && options.allowCacheWrite) {
+      yield* fromPromise('write update cache', () =>
+        writeUpdateCache(config, {checkedAt: new Date().toISOString(), latestVersion, registry: options.registry}),
+      );
+    }
+    return {
+      currentVersion,
+      isUpdateAvailable: compareVersions(currentVersion, latestVersion) < 0,
+      latestVersion,
+      registry: options.registry,
+    };
+  });
 }
 
 export {currentPackageVersion};
 
-export async function fetchLatestVersion(registry: string): Promise<string> {
-  const url = new URL(`${NPM_PACKAGE_NAME}/latest`, normalizeRegistry(registry));
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, 2500);
-  try {
-    const response = await fetch(url, {headers: {accept: 'application/json'}, signal: controller.signal});
-    if (!response.ok) {
-      throw new Error(`npm registry returned HTTP ${response.status}`);
-    }
-    const parsed: unknown = await response.json();
-    if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
-      throw new Error('npm registry response did not include a version.');
-    }
-    return parsed.version;
-  } catch (err: unknown) {
-    throw new Error(`Could not check npm for updates: ${errorMessage(err)}`, {cause: err});
-  } finally {
-    clearTimeout(timeout);
+export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (registry: string) {
+  const url = yield* fromSync(
+    'build npm registry URL',
+    () => new URL(`${NPM_PACKAGE_NAME}/latest`, normalizeRegistry(registry)),
+  );
+  const response = yield* getJsonEffect(url, {headers: {accept: 'application/json'}, timeoutMs: 2500}).pipe(
+    Effect.mapError(cause =>
+      applicationError(
+        'check npm for updates',
+        new Error(`Could not check npm for updates: ${errorMessage(cause)}`, {cause}),
+      ),
+    ),
+  );
+  if (!isJsonObject(response.body) || typeof response.body.version !== 'string') {
+    return yield* Effect.fail(
+      applicationError('check npm for updates', new Error('npm registry response did not include a version.')),
+    );
   }
-}
+  return response.body.version;
+});
 
 async function readFreshCache(config: RuntimeConfig, registry: string): Promise<UpdateCache | undefined> {
   const rawCache = await readFileIfExists(updateCachePath(config));

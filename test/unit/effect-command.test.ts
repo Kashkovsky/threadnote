@@ -1,0 +1,51 @@
+import {Effect, Result} from 'effect';
+import {describe, expect, it} from 'vitest';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
+
+const run = <A, E>(effect: Effect.Effect<A, E, CommandExecutor>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(CommandExecutor.layer)));
+
+describe('Effect CommandExecutor', () => {
+  it('returns captured output for successful commands', async () => {
+    const result = await run(runCommandEffect(process.execPath, ['-e', 'process.stdout.write("ok")']));
+
+    expect(result).toEqual({exitCode: 0, stderr: '', stdout: 'ok'});
+  });
+
+  it('models non-zero exits in the typed error channel', async () => {
+    const result = await run(
+      runCommandEffect(process.execPath, ['-e', 'process.stderr.write("bad"); process.exit(7)']).pipe(
+        Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
+      ),
+    );
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result) && result.failure._tag === 'CommandFailed') {
+      expect(result.failure.exitCode).toBe(7);
+      expect(result.failure.stderr).toBe('bad');
+    }
+  });
+
+  it('models timeouts without throwing an untyped Error', async () => {
+    const result = await run(
+      runCommandEffect(process.execPath, ['-e', 'setTimeout(() => undefined, 5000)'], {timeoutMs: 25}).pipe(
+        Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
+      ),
+    );
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result) && result.failure._tag === 'CommandTimedOut') {
+      expect(result.failure.timeoutMs).toBe(25);
+    }
+  });
+
+  it('preserves allowFailure compatibility for callers that inspect exit codes', async () => {
+    const result = await run(
+      runCommandEffect(process.execPath, ['-e', 'process.stderr.write("bad"); process.exit(3)'], {
+        allowFailure: true,
+      }),
+    );
+
+    expect(result).toEqual({exitCode: 3, stderr: 'bad', stdout: ''});
+  });
+});
