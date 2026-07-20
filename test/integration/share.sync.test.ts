@@ -1,16 +1,21 @@
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {listShareConflicts, showShareConflict} from '../../src/share.js';
 import {
-  listShareConflicts,
-  resolveShareConflict,
-  runShareInit,
-  runShareSync,
-  showShareConflict,
-} from '../../src/share.js';
+  resolveShareConflict as resolveShareConflictEffect,
+  runShareInit as runShareInitEffect,
+  runShareSync as runShareSyncEffect,
+} from '../../src/effect/share.js';
 import type {ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
+
+const runShareInit = (...args: Parameters<typeof runShareInitEffect>) => Effect.runPromise(runShareInitEffect(...args));
+const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => Effect.runPromise(runShareSyncEffect(...args));
+const resolveShareConflict = (...args: Parameters<typeof resolveShareConflictEffect>) =>
+  Effect.runPromise(resolveShareConflictEffect(...args));
 
 interface TestShareRepo {
   readonly config: ShareRuntime;

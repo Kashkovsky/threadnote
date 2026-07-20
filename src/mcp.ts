@@ -2,7 +2,11 @@ import {statSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {platform} from 'node:os';
+import {Console, Effect} from 'effect';
 import {OPENVIKING_MCP_NAME} from './constants.js';
+import {maybeRunEffect} from './effect/command.js';
+import {consoleOutput, syncWithConsole} from './effect/console.js';
+import {applicationError, fromPromise} from './effect/errors.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './mcp_toolset.js';
 import type {
   AgentClient,
@@ -29,79 +33,92 @@ import {
   toolRoot,
 } from './utils.js';
 
-export async function runMcpInstall(
-  config: RuntimeConfig,
-  agent: AgentClient,
-  options: McpInstallOptions,
-): Promise<void> {
-  const name = options.name ?? OPENVIKING_MCP_NAME;
-  const url = options.url ?? `http://${config.host}:${config.port}/mcp`;
-  const apply = options.apply === true;
-  const nativeHttp = options.nativeHttp === true;
-  const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
+  return Effect.gen(function* () {
+    const name = options.name ?? OPENVIKING_MCP_NAME;
+    const url = options.url ?? `http://${config.host}:${config.port}/mcp`;
+    const apply = options.apply === true;
+    const nativeHttp = options.nativeHttp === true;
+    const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
 
-  if (nativeHttp) {
-    const mcpStatus = await readHttpStatus(url, 1200);
-    const unavailable = mcpStatus === undefined || mcpStatus === 404;
-    if (unavailable && apply) {
-      throw new Error(
-        `OpenViking native MCP endpoint is not available at ${url}. ` +
-          'Use the default stdio adapter, or install an OpenViking build that exposes /mcp.',
+    if (nativeHttp) {
+      const mcpStatus = yield* fromPromise('probe native OpenViking MCP endpoint', () => readHttpStatus(url, 1200));
+      const unavailable = mcpStatus === undefined || mcpStatus === 404;
+      if (unavailable && apply) {
+        return yield* Effect.fail(
+          applicationError(
+            'install native MCP configuration',
+            new Error(
+              `OpenViking native MCP endpoint is not available at ${url}. ` +
+                'Use the default stdio adapter, or install an OpenViking build that exposes /mcp.',
+            ),
+          ),
+        );
+      }
+      if (unavailable) {
+        yield* Console.log(
+          `WARN OpenViking native MCP endpoint is not available at ${url}; default mcp-install uses stdio.`,
+        );
+      }
+    }
+
+    if (agent === 'cursor') {
+      yield* fromPromise('install Cursor MCP configuration', () =>
+        runCursorMcpInstall(config, name, {
+          apply,
+          bearerTokenEnvVar: options.bearerTokenEnvVar,
+          nativeHttp,
+          toolset,
+          url,
+        }),
       );
+      return;
     }
-    if (unavailable) {
-      console.log(`WARN OpenViking native MCP endpoint is not available at ${url}; default mcp-install uses stdio.`);
+    if (agent === 'copilot') {
+      yield* fromPromise('install GitHub Copilot MCP configuration', () =>
+        runCopilotMcpInstall(config, name, {
+          apply,
+          bearerTokenEnvVar: options.bearerTokenEnvVar,
+          nativeHttp,
+          toolset,
+          url,
+        }),
+      );
+      return;
     }
-  }
 
-  if (agent === 'cursor') {
-    await runCursorMcpInstall(config, name, {
-      apply,
+    const agentExecutable = apply
+      ? yield* fromPromise(`find ${agent} executable`, () => requiredMcpAgentExecutable(agent))
+      : agent;
+
+    const command = buildMcpInstallCommand(config, agent, agentExecutable, name, {
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp,
+      scope: options.scope,
       toolset,
       url,
     });
-    return;
-  }
-  if (agent === 'copilot') {
-    await runCopilotMcpInstall(config, name, {
-      apply,
-      bearerTokenEnvVar: options.bearerTokenEnvVar,
-      nativeHttp,
-      toolset,
-      url,
-    });
-    return;
-  }
+    const removeCommand = buildMcpRemoveCommand(agent, agentExecutable, name);
 
-  const agentExecutable = apply ? await requiredMcpAgentExecutable(agent) : agent;
-
-  const command = buildMcpInstallCommand(config, agent, agentExecutable, name, {
-    bearerTokenEnvVar: options.bearerTokenEnvVar,
-    nativeHttp,
-    scope: options.scope,
-    toolset,
-    url,
-  });
-  const removeCommand = buildMcpRemoveCommand(agent, agentExecutable, name);
-
-  if (!apply) {
-    console.log('Dry run. Re-run with --apply to modify the selected agent config.');
-    if (removeCommand.cwd || command.cwd) {
-      console.log(`Command working directory: ${removeCommand.cwd ?? command.cwd}`);
+    if (!apply) {
+      yield* syncWithConsole(() => {
+        consoleOutput.log('Dry run. Re-run with --apply to modify the selected agent config.');
+        if (removeCommand.cwd || command.cwd) {
+          consoleOutput.log(`Command working directory: ${removeCommand.cwd ?? command.cwd}`);
+        }
+        consoleOutput.log(formatShellCommand(removeCommand.executable, removeCommand.args));
+        consoleOutput.log(formatShellCommand(command.executable, command.args));
+        printMcpSnippet(config, agent, name, {nativeHttp, scope: options.scope, toolset, url});
+      });
+      return;
     }
-    console.log(formatShellCommand(removeCommand.executable, removeCommand.args));
-    console.log(formatShellCommand(command.executable, command.args));
-    printMcpSnippet(config, agent, name, {nativeHttp, scope: options.scope, toolset, url});
-    return;
-  }
 
-  await maybeRun(false, removeCommand.executable, removeCommand.args, {
-    allowFailure: true,
-    cwd: removeCommand.cwd,
+    yield* maybeRunEffect(false, removeCommand.executable, removeCommand.args, {
+      allowFailure: true,
+      cwd: removeCommand.cwd,
+    });
+    yield* maybeRunEffect(false, command.executable, command.args, {cwd: command.cwd});
   });
-  await maybeRun(false, command.executable, command.args, {cwd: command.cwd});
 }
 
 async function runCursorMcpInstall(
@@ -126,7 +143,7 @@ async function runCursorMcpInstall(
   const nextContent = renderCursorMcpConfig(currentContent, name, serverConfig);
 
   if (!options.apply) {
-    console.log('Dry run. Re-run with --apply to modify Cursor MCP config.');
+    consoleOutput.log('Dry run. Re-run with --apply to modify Cursor MCP config.');
     printCursorMcpSnippet(config, name, {
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp: options.nativeHttp,
@@ -137,12 +154,14 @@ async function runCursorMcpInstall(
   }
 
   if (currentContent === nextContent) {
-    console.log(`Already configured: ${path}`);
+    consoleOutput.log(`Already configured: ${path}`);
     return;
   }
   await ensureDirectory(dirname(path), false);
   await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
-  console.log(currentContent === undefined ? `Wrote Cursor MCP config: ${path}` : `Updated Cursor MCP config: ${path}`);
+  consoleOutput.log(
+    currentContent === undefined ? `Wrote Cursor MCP config: ${path}` : `Updated Cursor MCP config: ${path}`,
+  );
 }
 
 async function runCopilotMcpInstall(
@@ -167,7 +186,7 @@ async function runCopilotMcpInstall(
   const nextContent = renderCopilotMcpConfig(currentContent, name, serverConfig);
 
   if (!options.apply) {
-    console.log('Dry run. Re-run with --apply to modify GitHub Copilot MCP config.');
+    consoleOutput.log('Dry run. Re-run with --apply to modify GitHub Copilot MCP config.');
     printCopilotMcpSnippet(config, name, {
       bearerTokenEnvVar: options.bearerTokenEnvVar,
       nativeHttp: options.nativeHttp,
@@ -178,12 +197,12 @@ async function runCopilotMcpInstall(
   }
 
   if (currentContent === nextContent) {
-    console.log(`Already configured: ${path}`);
+    consoleOutput.log(`Already configured: ${path}`);
     return;
   }
   await ensureDirectory(dirname(path), false);
   await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
-  console.log(
+  consoleOutput.log(
     currentContent === undefined
       ? `Wrote GitHub Copilot MCP config: ${path}`
       : `Updated GitHub Copilot MCP config: ${path}`,
@@ -193,7 +212,7 @@ async function runCopilotMcpInstall(
 export async function removeMcpConfigs(value: string, dryRun: boolean): Promise<void> {
   const clients = await resolveMcpClients(value, 'remove');
   if (clients.length === 0) {
-    console.log('Skipping MCP config removal.');
+    consoleOutput.log('Skipping MCP config removal.');
     return;
   }
   for (const client of clients) {
@@ -285,7 +304,7 @@ function buildMcpInstallCommand(
     if (token) {
       args.push('--header', `Authorization: Bearer ${token}`);
     } else {
-      console.log(
+      consoleOutput.log(
         `WARN ${options.bearerTokenEnvVar} is not set; installing Claude MCP without an Authorization header.`,
       );
     }
@@ -435,16 +454,16 @@ async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<voi
   const path = cursorMcpConfigPath();
   const currentContent = await readFileIfExists(path);
   if (isEmptyConfigContent(currentContent)) {
-    console.log(`Already absent: ${path}`);
+    consoleOutput.log(`Already absent: ${path}`);
     return;
   }
   const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
-    console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
+    consoleOutput.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
     return;
   }
   if (!isJsonObject(parsed.mcpServers) || parsed.mcpServers[name] === undefined) {
-    console.log(`No Cursor MCP config found: ${path}`);
+    consoleOutput.log(`No Cursor MCP config found: ${path}`);
     return;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
@@ -453,27 +472,27 @@ async function removeCursorMcpConfig(name: string, dryRun: boolean): Promise<voi
   nextConfig.mcpServers = mcpServers;
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
-    console.log(`Would update Cursor MCP config: ${path}`);
+    consoleOutput.log(`Would update Cursor MCP config: ${path}`);
     return;
   }
   await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
-  console.log(`Updated Cursor MCP config: ${path}`);
+  consoleOutput.log(`Updated Cursor MCP config: ${path}`);
 }
 
 async function removeCopilotMcpConfig(name: string, dryRun: boolean): Promise<void> {
   const path = copilotMcpConfigPath();
   const currentContent = await readFileIfExists(path);
   if (isEmptyConfigContent(currentContent)) {
-    console.log(`Already absent: ${path}`);
+    consoleOutput.log(`Already absent: ${path}`);
     return;
   }
   const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
-    console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
+    consoleOutput.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
     return;
   }
   if (!isJsonObject(parsed.servers) || parsed.servers[name] === undefined) {
-    console.log(`No GitHub Copilot MCP config found: ${path}`);
+    consoleOutput.log(`No GitHub Copilot MCP config found: ${path}`);
     return;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
@@ -482,11 +501,11 @@ async function removeCopilotMcpConfig(name: string, dryRun: boolean): Promise<vo
   nextConfig.servers = servers;
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
-    console.log(`Would update GitHub Copilot MCP config: ${path}`);
+    consoleOutput.log(`Would update GitHub Copilot MCP config: ${path}`);
     return;
   }
   await writeFile(path, nextContent, {encoding: 'utf8', mode: 0o644});
-  console.log(`Updated GitHub Copilot MCP config: ${path}`);
+  consoleOutput.log(`Updated GitHub Copilot MCP config: ${path}`);
 }
 
 function printMcpSnippet(
@@ -524,7 +543,7 @@ function printMcpSnippet(
     url: options.url,
   });
   const snippet = `${formatShellCommand(command.executable, command.args)}\n`;
-  console.log(`\nSnippet (${snippetPath}):\n${snippet}`);
+  consoleOutput.log(`\nSnippet (${snippetPath}):\n${snippet}`);
 }
 
 function printCursorMcpSnippet(
@@ -539,7 +558,7 @@ function printCursorMcpSnippet(
 ): void {
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.cursor.json`);
   const snippet = JSON.stringify({mcpServers: {[name]: buildCursorMcpServerConfig(config, options)}}, null, 2);
-  console.log(`\nSnippet (${snippetPath}; merge into ${cursorMcpConfigPath()}):\n${snippet}`);
+  consoleOutput.log(`\nSnippet (${snippetPath}; merge into ${cursorMcpConfigPath()}):\n${snippet}`);
 }
 
 function printCopilotMcpSnippet(
@@ -554,7 +573,7 @@ function printCopilotMcpSnippet(
 ): void {
   const snippetPath = join(config.agentContextHome, 'mcp', `${name}.copilot.json`);
   const snippet = JSON.stringify({servers: {[name]: buildCopilotMcpServerConfig(config, options)}}, null, 2);
-  console.log(`\nSnippet (${snippetPath}; merge into ${copilotMcpConfigPath()}):\n${snippet}`);
+  consoleOutput.log(`\nSnippet (${snippetPath}; merge into ${copilotMcpConfigPath()}):\n${snippet}`);
 }
 
 function cursorMcpConfigPath(): string {
@@ -615,7 +634,7 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
   for (const client of requested) {
     if (client === 'cursor') {
       if (!(await isCursorAvailable())) {
-        console.log(`WARN Cursor config not found; cannot ${action} cursor MCP config.`);
+        consoleOutput.log(`WARN Cursor config not found; cannot ${action} cursor MCP config.`);
         continue;
       }
       if (!clients.includes(client)) {
@@ -625,7 +644,7 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
     }
     if (client === 'copilot') {
       if (!(await isCopilotAvailable())) {
-        console.log(`WARN VS Code/Copilot config not found; cannot ${action} copilot MCP config.`);
+        consoleOutput.log(`WARN VS Code/Copilot config not found; cannot ${action} copilot MCP config.`);
         continue;
       }
       if (!clients.includes(client)) {
@@ -635,7 +654,7 @@ export async function resolveMcpClients(value: string, action: 'remove' | 'repai
     }
     if (!(await findMcpAgentExecutable(client))) {
       const discovered = await findExecutable([client]);
-      console.log(
+      consoleOutput.log(
         discovered
           ? `WARN ${client} command at ${discovered} is not working; cannot ${action} ${client} MCP config. ` +
               `Repair or reinstall ${client}, then run threadnote mcp-install ${client} --apply.`

@@ -1,16 +1,23 @@
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {shareAgentArtifact, shareBundlePack} from '../../src/share.js';
 import {
-  installSharedAgentArtifacts,
-  listSharedAgentArtifacts,
-  runShareInstallArtifacts,
-  shareAgentArtifact,
-  shareBundlePack,
-} from '../../src/share.js';
+  installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
+  listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
+  runShareInstallArtifacts as runShareInstallArtifactsEffect,
+} from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+
+const runShareInstallArtifacts = (...args: Parameters<typeof runShareInstallArtifactsEffect>) =>
+  Effect.runPromise(runShareInstallArtifactsEffect(...args));
+const listSharedAgentArtifacts = (...args: Parameters<typeof listSharedAgentArtifactsEffect>) =>
+  Effect.runPromise(listSharedAgentArtifactsEffect(...args));
+const installSharedAgentArtifacts = (...args: Parameters<typeof installSharedAgentArtifactsEffect>) =>
+  Effect.runPromise(installSharedAgentArtifactsEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();

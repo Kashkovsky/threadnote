@@ -1,9 +1,10 @@
 import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
-  ensureSupportedUvExecutable,
+  ensureSupportedUvExecutable as ensureSupportedUvExecutablePromise,
   findSupportedUvExecutable,
   getInstallCommands,
   isLlamaWheelArchiveExtractionFailure,
@@ -13,6 +14,7 @@ import {
   openVikingToolPython,
   resolveOpenVikingInstallCommand,
 } from '../../src/lifecycle.js';
+import {fromPromise} from '../../src/effect/errors.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 const WHEEL_INDEX_ENV = 'THREADNOTE_LLAMA_WHEEL_INDEX';
@@ -21,6 +23,8 @@ const TEST_INDEX = 'https://wheels.example/whl/cpu';
 const METAL_INDEX = 'https://abetlen.github.io/llama-cpp-python/whl/metal';
 const originalPath = process.env.PATH;
 const temporaryDirectories: string[] = [];
+const ensureSupportedUvExecutable = () =>
+  Effect.runPromise(fromPromise('ensure supported uv executable', ensureSupportedUvExecutablePromise));
 
 async function fakeUv(version: string, selfUpdateVersion?: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'threadnote-uv-test-'));

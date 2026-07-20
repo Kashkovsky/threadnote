@@ -1,6 +1,8 @@
 import {NodeStdio} from '@effect/platform-node';
-import {Context, Effect, Layer, Logger, Schema, Sink, Stdio} from 'effect';
+import {Console, Context, Effect, Layer, Logger, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
+import {runWithConsole} from './console.js';
+import {fromPromiseError} from './errors.js';
 import type {ApplicationServices} from './runtime.js';
 
 interface ToolAnnotations {
@@ -88,16 +90,7 @@ export class EffectMcpServerAdapter {
                   }),
                 );
               }
-              const effect = Effect.try({
-                try: () => registration.handle(parsed),
-                catch: normalizeError,
-              }).pipe(
-                Effect.flatMap(handled =>
-                  Effect.try({try: () => toolHandlerEffect(handled, applicationServices), catch: normalizeError}).pipe(
-                    Effect.flatten,
-                  ),
-                ),
-              );
+              const effect = toolHandlerEffect(() => registration.handle(parsed), applicationServices);
               return effect.pipe(
                 Effect.match({
                   onFailure: error =>
@@ -159,16 +152,26 @@ function flattenJsonSchemaConstraints(value: unknown): unknown {
 }
 
 function toolHandlerEffect(
-  handled: ToolHandlerResult,
+  evaluate: () => ToolHandlerResult,
   applicationServices: Context.Context<ApplicationServices>,
 ): Effect.Effect<ToolResult, unknown> {
-  if (Effect.isEffect(handled)) {
-    return handled.pipe(Effect.provideContext(applicationServices));
-  }
-  if (isPromiseLike(handled)) {
-    return Effect.tryPromise({try: () => Promise.resolve(handled), catch: normalizeError});
-  }
-  return Effect.succeed(handled);
+  return Console.consoleWith(output =>
+    Effect.suspend(() => {
+      let handled: ToolHandlerResult;
+      try {
+        handled = runWithConsole(output, evaluate);
+      } catch (cause: unknown) {
+        return Effect.fail(normalizeError(cause));
+      }
+      if (Effect.isEffect(handled)) {
+        return handled.pipe(Effect.provideContext(applicationServices));
+      }
+      if (isPromiseLike(handled)) {
+        return fromPromiseError(() => Promise.resolve(handled));
+      }
+      return Effect.succeed(handled);
+    }),
+  );
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<ToolResult> {

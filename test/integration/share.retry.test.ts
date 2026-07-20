@@ -1,5 +1,7 @@
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {removeMemoryUri, writeMemoryFile} from '../../src/share.js';
+import {writeMemoryFile} from '../../src/share.js';
+import {removeMemoryUri as removeMemoryUriEffect} from '../../src/effect/share.js';
 import * as utils from '../../src/utils.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 
@@ -21,6 +23,8 @@ const runtime: ShareRuntime = {
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
 const fail = (stderr: string): CommandResult => ({exitCode: 1, stdout: '', stderr});
+const removeMemoryUri = (...args: Parameters<typeof removeMemoryUriEffect>) =>
+  Effect.runPromise(removeMemoryUriEffect(...args));
 
 function commandSequence(...results: readonly CommandResult[]): void {
   const runCommand = vi.mocked(utils.runCommand);

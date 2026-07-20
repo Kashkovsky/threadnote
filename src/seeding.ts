@@ -1,5 +1,6 @@
 import {chmod, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {basename, dirname, join, relative} from 'node:path';
+import {Console, Effect, FileSystem} from 'effect';
 import yaml from 'js-yaml';
 import {
   DEFAULT_SEED_PATTERNS,
@@ -9,6 +10,9 @@ import {
   USER_MANIFEST_NAME,
 } from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
+import {maybeRunEffect} from './effect/command.js';
+import {consoleOutput} from './effect/console.js';
+import {applicationError, fromPromise} from './effect/errors.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import {detectSecretMatches} from './scrubber.js';
@@ -34,7 +38,6 @@ import {
   isDirectory,
   isFile,
   isJsonObject,
-  maybeRun,
   openVikingCliForMode,
   portablePath,
   redactText,
@@ -90,69 +93,81 @@ export function seedWatchArgs(params: {
   return ['--watch-interval', String(params.watchIntervalMinutes)];
 }
 
-export async function runSeed(config: RuntimeConfig, options: SeedOptions): Promise<void> {
-  const manifest = await readSeedManifest(config.manifestPath);
-  const ignorePatterns = await loadIgnorePatterns();
-  const ov = await openVikingCliForMode(options.dryRun === true);
-  const watchIntervalMinutes = parseSeedWatchIntervalMinutes(process.env[SEED_WATCH_INTERVAL_ENV]);
-  const statePath = join(config.agentContextHome, SEED_STATE_FILE);
-  const state: {files: Record<string, SeedStateEntry>; version: 1} =
-    options.force === true ? {files: {}, version: 1} : await readSeedState(statePath);
-  const projects = filterProjects(manifest.projects, options.only);
-  let importedCount = 0;
-  let skippedCount = 0;
-  let unchangedCount = 0;
+const log = Console.log;
 
-  for (const project of projects) {
-    const projectRoot = expandPath(project.path);
-    if (!(await exists(projectRoot))) {
-      console.log(`WARN project missing: ${project.name} (${projectRoot})`);
-      continue;
-    }
+export function runSeed(config: RuntimeConfig, options: SeedOptions) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
+    const ignorePatterns = yield* fromPromise('read seed ignore patterns', loadIgnorePatterns);
+    const ov = yield* fromPromise('find OpenViking CLI for seed', () => openVikingCliForMode(options.dryRun === true));
+    const watchIntervalMinutes = parseSeedWatchIntervalMinutes(process.env[SEED_WATCH_INTERVAL_ENV]);
+    const statePath = join(config.agentContextHome, SEED_STATE_FILE);
+    const state: {files: Record<string, SeedStateEntry>; version: 1} =
+      options.force === true ? {files: {}, version: 1} : yield* readSeedState(statePath);
+    const projects = yield* Effect.try({
+      try: () => filterProjects(manifest.projects, options.only),
+      catch: cause => applicationError('filter seed projects', cause),
+    });
+    let importedCount = 0;
+    let skippedCount = 0;
+    let unchangedCount = 0;
 
-    const candidates = await collectSeedCandidates(project, projectRoot, ignorePatterns);
-    for (const candidate of candidates) {
-      const fileStat = await statSeedFile(candidate.filePath);
-      const recorded = state.files[candidate.destinationUri];
-      if (fileStat && recorded && recorded.mtimeMs === fileStat.mtimeMs && recorded.size === fileStat.size) {
-        unchangedCount += 1;
+    for (const project of projects) {
+      const projectRoot = expandPath(project.path);
+      if (!(yield* fs.exists(projectRoot))) {
+        yield* log(`WARN project missing: ${project.name} (${projectRoot})`);
         continue;
       }
-      const importPath = await prepareSeedFile(config, candidate, options.dryRun === true);
-      if (!importPath) {
-        skippedCount += 1;
-        continue;
-      }
-      const args = withIdentity(config, [
-        'add-resource',
-        importPath,
-        '--to',
-        candidate.destinationUri,
-        ...seedWatchArgs({
-          watchIntervalMinutes,
-          importedOriginal: importPath === candidate.filePath,
-          redactionProne: shouldRedactPath(candidate.relativePath),
-        }),
-        '--wait',
-      ]);
-      await maybeRun(options.dryRun === true, ov, args);
-      importedCount += 1;
-      if (fileStat && options.dryRun !== true) {
-        state.files[candidate.destinationUri] = {mtimeMs: fileStat.mtimeMs, size: fileStat.size};
+
+      const candidates = yield* fromPromise('collect seed candidates', () =>
+        collectSeedCandidates(project, projectRoot, ignorePatterns),
+      );
+      for (const candidate of candidates) {
+        const fileStat = yield* statSeedFile(candidate.filePath);
+        const recorded = state.files[candidate.destinationUri];
+        if (fileStat && recorded && recorded.mtimeMs === fileStat.mtimeMs && recorded.size === fileStat.size) {
+          unchangedCount += 1;
+          continue;
+        }
+        const importPath = yield* fromPromise('prepare seed file', () =>
+          prepareSeedFile(config, candidate, options.dryRun === true),
+        );
+        if (!importPath) {
+          skippedCount += 1;
+          continue;
+        }
+        const args = withIdentity(config, [
+          'add-resource',
+          importPath,
+          '--to',
+          candidate.destinationUri,
+          ...seedWatchArgs({
+            watchIntervalMinutes,
+            importedOriginal: importPath === candidate.filePath,
+            redactionProne: shouldRedactPath(candidate.relativePath),
+          }),
+          '--wait',
+        ]);
+        yield* maybeRunEffect(options.dryRun === true, ov, args);
+        importedCount += 1;
+        if (fileStat && options.dryRun !== true) {
+          state.files[candidate.destinationUri] = {mtimeMs: fileStat.mtimeMs, size: fileStat.size};
+        }
       }
     }
-  }
 
-  if (options.dryRun !== true) {
-    await writeSeedState(statePath, state);
-  }
-  console.log(
-    `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${skippedCount} skipped for safety.`,
-  );
+    if (options.dryRun !== true) {
+      yield* writeSeedState(statePath, state);
+    }
+    yield* log(
+      `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${skippedCount} skipped for safety.`,
+    );
 
-  if (options.graph === true) {
-    await seedDependencyGraphs(config, ov, manifest, projects, options.dryRun === true);
-  }
+    if (options.graph === true) {
+      yield* seedDependencyGraphs(config, ov, manifest, projects, options.dryRun === true);
+    }
+  });
 }
 
 /**
@@ -163,63 +178,74 @@ export async function runSeed(config: RuntimeConfig, options: SeedOptions): Prom
  * every other seeded file before it can reach OpenViking. Stored as a plain
  * resource, never a memory.
  */
-export async function seedDependencyGraphs(
+export function seedDependencyGraphs(
   config: RuntimeConfig,
   ov: string,
   manifest: SeedManifest,
   targetProjects: readonly ProjectManifest[],
   dryRun: boolean,
-): Promise<void> {
-  const factsByProject = new Map<string, DependencyFacts>();
-  for (const project of manifest.projects) {
-    const projectRoot = expandPath(project.path);
-    if (!(await exists(projectRoot))) {
-      continue;
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const factsByProject = new Map<string, DependencyFacts>();
+    for (const project of manifest.projects) {
+      const projectRoot = expandPath(project.path);
+      if (!(yield* fs.exists(projectRoot))) {
+        continue;
+      }
+      factsByProject.set(project.name, yield* extractDependencyFacts(projectRoot));
     }
-    factsByProject.set(project.name, await extractDependencyFacts(projectRoot));
-  }
-  const projectByPublishedName = new Map<string, string>();
-  for (const [name, facts] of factsByProject) {
-    if (facts.publishedName) {
-      projectByPublishedName.set(facts.publishedName.toLowerCase(), name);
+    const projectByPublishedName = new Map<string, string>();
+    for (const [name, facts] of factsByProject) {
+      if (facts.publishedName) {
+        projectByPublishedName.set(facts.publishedName.toLowerCase(), name);
+      }
     }
-  }
 
-  let written = 0;
-  let skipped = 0;
-  for (const project of targetProjects) {
-    const facts = factsByProject.get(project.name);
-    if (!facts || facts.manifestFiles.length === 0) {
-      continue;
-    }
-    const {externalCount, internalEdges} = resolveGraphEdges(project.name, facts.dependencies, projectByPublishedName);
-    const document = buildGraphDocument({externalCount, facts, internalEdges, projectName: project.name});
-    const secretMatches = detectSecretMatches(document);
-    if (secretMatches.length > 0) {
-      skipped += 1;
-      console.log(
-        `SKIP ${project.name}/.graph.md: possible secret (${secretMatches
-          .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
-          .join(', ')})`,
+    let written = 0;
+    let skipped = 0;
+    for (const project of targetProjects) {
+      const facts = factsByProject.get(project.name);
+      if (!facts || facts.manifestFiles.length === 0) {
+        continue;
+      }
+      const {externalCount, internalEdges} = resolveGraphEdges(
+        project.name,
+        facts.dependencies,
+        projectByPublishedName,
       );
-      continue;
-    }
-    const destinationUri = `${trimTrailingSlash(project.uri)}/.graph.md`;
-    if (dryRun) {
-      console.log(`Would seed dependency facts: ${destinationUri} (${internalEdges.length} in-workspace edge(s))`);
+      const document = buildGraphDocument({externalCount, facts, internalEdges, projectName: project.name});
+      const secretMatches = detectSecretMatches(document);
+      if (secretMatches.length > 0) {
+        skipped += 1;
+        yield* log(
+          `SKIP ${project.name}/.graph.md: possible secret (${secretMatches
+            .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
+            .join(', ')})`,
+        );
+        continue;
+      }
+      const destinationUri = `${trimTrailingSlash(project.uri)}/.graph.md`;
+      if (dryRun) {
+        yield* log(`Would seed dependency facts: ${destinationUri} (${internalEdges.length} in-workspace edge(s))`);
+        written += 1;
+        continue;
+      }
+      const graphPath = join(config.agentContextHome, 'graph', graphCacheFileName(project.name));
+      yield* fs.makeDirectory(dirname(graphPath), {recursive: true});
+      yield* fs.writeFileString(graphPath, document, {mode: 0o600});
+      yield* fs.chmod(graphPath, 0o600);
+      yield* maybeRunEffect(
+        false,
+        ov,
+        withIdentity(config, ['add-resource', graphPath, '--to', destinationUri, '--wait']),
+      );
       written += 1;
-      continue;
     }
-    const graphPath = join(config.agentContextHome, 'graph', graphCacheFileName(project.name));
-    await ensureDirectory(dirname(graphPath), false);
-    await writeFile(graphPath, document, {encoding: 'utf8', mode: 0o600});
-    await chmod(graphPath, 0o600);
-    await maybeRun(false, ov, withIdentity(config, ['add-resource', graphPath, '--to', destinationUri, '--wait']));
-    written += 1;
-  }
-  console.log(
-    `Dependency graph seed complete: ${written} .graph.md resource(s)${skipped > 0 ? `, ${skipped} skipped for safety` : ''}.`,
-  );
+    yield* log(
+      `Dependency graph seed complete: ${written} .graph.md resource(s)${skipped > 0 ? `, ${skipped} skipped for safety` : ''}.`,
+    );
+  });
 }
 
 function filterProjects(
@@ -239,166 +265,198 @@ function filterProjects(
   return projects.filter(project => want.has(project.name));
 }
 
-async function statSeedFile(path: string): Promise<{readonly mtimeMs: number; readonly size: number} | undefined> {
-  try {
-    const result = await stat(path);
-    return {mtimeMs: result.mtimeMs, size: result.size};
-  } catch (_err: unknown) {
-    return undefined;
-  }
-}
-
-async function readSeedState(path: string): Promise<{files: Record<string, SeedStateEntry>; version: 1}> {
-  try {
-    const raw = await readFile(path, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<SeedStateFile>;
-    if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
-      return {files: {}, version: 1};
-    }
-    const files: Record<string, SeedStateEntry> = {};
-    for (const [uri, entry] of Object.entries(parsed.files)) {
-      if (isJsonObject(entry) && typeof entry.mtimeMs === 'number' && typeof entry.size === 'number') {
-        files[uri] = {mtimeMs: entry.mtimeMs, size: entry.size};
-      }
-    }
-    return {files, version: 1};
-  } catch (_err: unknown) {
-    return {files: {}, version: 1};
-  }
-}
-
-async function writeSeedState(path: string, state: SeedStateFile): Promise<void> {
-  await ensureDirectory(dirname(path), false);
-  await writeFile(path, `${JSON.stringify(state, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
-}
-
-export async function runInitManifest(config: RuntimeConfig, options: InitManifestOptions): Promise<void> {
-  const manifestPath = expandPath(
-    options.path ?? process.env.THREADNOTE_MANIFEST ?? join(config.agentContextHome, USER_MANIFEST_NAME),
+function statSeedFile(path: string) {
+  return fromPromise('stat seed file', () => stat(path)).pipe(
+    Effect.map(result => ({mtimeMs: result.mtimeMs, size: result.size})),
+    Effect.catchIf(
+      error => (error.cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT',
+      () => Effect.succeed(undefined),
+    ),
   );
-  const repoInputs = options.repo && options.repo.length > 0 ? options.repo : [getInvocationCwd()];
-  const existingManifest =
-    options.replace === true || !(await exists(manifestPath)) ? undefined : await readSeedManifest(manifestPath);
-  const existingProjects = existingManifest?.projects ?? [];
-  const projects = [...existingProjects];
-  const seen = new Set<string>();
-
-  for (const project of existingProjects) {
-    seen.add(await projectIdentity(project.path));
-  }
-
-  for (const repoInput of repoInputs) {
-    const repoRoot = await resolveRepoRoot(repoInput);
-    const identity = await projectIdentity(repoRoot);
-    if (seen.has(identity)) {
-      console.log(`Already in manifest: ${repoRoot}`);
-      continue;
-    }
-    seen.add(identity);
-    projects.push(await projectManifestForRepo(repoRoot, projects));
-  }
-
-  const outputManifest: Record<string, unknown> = {
-    version: 1,
-    projects: projects.map(project => ({
-      name: project.name,
-      path: project.path,
-      uri: project.uri,
-      seed: [...project.seed],
-    })),
-  };
-  if (existingManifest?.futureMonorepo) {
-    const futureMonorepoKey = 'future_monorepo';
-    const pathCandidatesKey = 'path_candidates';
-    outputManifest[futureMonorepoKey] = {
-      [pathCandidatesKey]: [...existingManifest.futureMonorepo.pathCandidates],
-      uri: existingManifest.futureMonorepo.uri,
-    };
-  }
-  if (existingManifest?.worksets) {
-    outputManifest.worksets = existingManifest.worksets.map(workset => ({
-      name: workset.name,
-      ...(workset.description !== undefined ? {description: workset.description} : {}),
-      projects: [...workset.projects],
-    }));
-  }
-  const output = yaml.dump(outputManifest, {lineWidth: 120, noRefs: true});
-
-  if (options.dryRun === true) {
-    console.log(`# Would write ${manifestPath}`);
-    console.log(output.trimEnd());
-    return;
-  }
-
-  await ensureDirectory(dirname(manifestPath), false);
-  await writeFile(manifestPath, output, {encoding: 'utf8', mode: 0o600});
-  await chmod(manifestPath, 0o600);
-  console.log(`Wrote manifest: ${manifestPath}`);
-  console.log('Seed with:');
-  console.log('  threadnote seed --dry-run');
-  console.log('  threadnote seed');
 }
 
-export async function runWorksetList(config: RuntimeConfig): Promise<void> {
-  const manifest = await readSeedManifest(config.manifestPath);
-  const worksets = manifest.worksets ?? [];
-  if (worksets.length === 0) {
-    console.log(
-      'No worksets defined. Add a top-level `worksets:` list to the seed manifest to group related projects.',
+function readSeedState(path: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const raw = yield* fs.readFileString(path).pipe(
+      Effect.catchIf(
+        error => error.reason._tag === 'NotFound',
+        () => Effect.succeed(undefined),
+      ),
     );
-    return;
-  }
-  console.log(`Worksets (${worksets.length}):`);
-  for (const workset of worksets) {
-    const summary = workset.description ? ` — ${workset.description}` : '';
-    console.log(`- ${workset.name} (${workset.projects.length} project(s))${summary}`);
-  }
-}
-
-export async function runWorksetShow(config: RuntimeConfig, name: string): Promise<void> {
-  const manifest = await readSeedManifest(config.manifestPath);
-  const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
-  if (!workset) {
-    throw new Error(`No workset named "${name}" in ${config.manifestPath}.`);
-  }
-  console.log(`Workset: ${workset.name}`);
-  if (workset.description) {
-    console.log(workset.description);
-  }
-  console.log('Projects:');
-  for (const memberName of workset.projects) {
-    const project = manifest.projects.find(entry => entry.name.toLowerCase() === memberName.toLowerCase());
-    console.log(project ? `- ${project.name} (${project.uri})` : `- ${memberName} [not found in manifest projects]`);
-  }
-}
-
-export async function runSeedSkills(config: RuntimeConfig, options: SeedOptions): Promise<void> {
-  const ov = await openVikingCliForMode(options.dryRun === true);
-  const catalogItems = await collectSkillCandidates(config);
-  const nativeMode = options.native === true;
-  console.log(
-    nativeMode
-      ? 'Skill seed mode: native OpenViking skills. This requires a working VLM config.'
-      : 'Skill seed mode: resource catalog. Use --native only after configuring a working VLM provider.',
-  );
-  let skippedCount = 0;
-  for (const skill of catalogItems) {
-    console.log(`${skill.kind === 'command' ? 'Command' : 'Skill'} ${skill.source}: ${skill.filePath}`);
-    if (nativeMode && skill.kind === 'command') {
-      skippedCount += 1;
-      console.log(`SKIP command in native skill mode: ${skill.filePath}`);
-      continue;
+    if (raw === undefined) {
+      return {files: {}, version: 1} as const;
     }
-    const args = nativeMode
-      ? ['add-skill', skill.filePath, '--wait']
-      : ['add-resource', skill.filePath, '--to', skillResourceUri(skill), '--wait'];
-    await maybeRun(options.dryRun === true, ov, withIdentity(config, args));
-  }
-  console.log(
-    `Skill seed complete: ${catalogItems.length - skippedCount} unique catalog item(s)${
-      skippedCount > 0 ? `, ${skippedCount} skipped` : ''
-    }.`,
-  );
+    try {
+      const parsed = JSON.parse(raw) as Partial<SeedStateFile>;
+      if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
+        return {files: {}, version: 1} as const;
+      }
+      const files: Record<string, SeedStateEntry> = {};
+      for (const [uri, entry] of Object.entries(parsed.files)) {
+        if (isJsonObject(entry) && typeof entry.mtimeMs === 'number' && typeof entry.size === 'number') {
+          files[uri] = {mtimeMs: entry.mtimeMs, size: entry.size};
+        }
+      }
+      return {files, version: 1 as const};
+    } catch (_err: unknown) {
+      return {files: {}, version: 1} as const;
+    }
+  });
+}
+
+function writeSeedState(path: string, state: SeedStateFile) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(dirname(path), {recursive: true});
+    yield* fs.writeFileString(path, `${JSON.stringify(state, undefined, 2)}\n`, {mode: 0o600});
+  });
+}
+
+export function runInitManifest(config: RuntimeConfig, options: InitManifestOptions) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const manifestPath = expandPath(
+      options.path ?? process.env.THREADNOTE_MANIFEST ?? join(config.agentContextHome, USER_MANIFEST_NAME),
+    );
+    const repoInputs = options.repo && options.repo.length > 0 ? options.repo : [getInvocationCwd()];
+    const existingManifest =
+      options.replace === true || !(yield* fs.exists(manifestPath))
+        ? undefined
+        : yield* fromPromise('read existing seed manifest', () => readSeedManifest(manifestPath));
+    const existingProjects = existingManifest?.projects ?? [];
+    const projects = [...existingProjects];
+    const seen = new Set<string>();
+
+    for (const project of existingProjects) {
+      seen.add(yield* fromPromise('resolve project identity', () => projectIdentity(project.path)));
+    }
+
+    for (const repoInput of repoInputs) {
+      const repoRoot = yield* fromPromise('resolve repository root', () => resolveRepoRoot(repoInput));
+      const identity = yield* fromPromise('resolve project identity', () => projectIdentity(repoRoot));
+      if (seen.has(identity)) {
+        yield* log(`Already in manifest: ${repoRoot}`);
+        continue;
+      }
+      seen.add(identity);
+      projects.push(
+        yield* fromPromise('build project manifest entry', () => projectManifestForRepo(repoRoot, projects)),
+      );
+    }
+
+    const outputManifest: Record<string, unknown> = {
+      version: 1,
+      projects: projects.map(project => ({
+        name: project.name,
+        path: project.path,
+        uri: project.uri,
+        seed: [...project.seed],
+      })),
+    };
+    if (existingManifest?.futureMonorepo) {
+      const futureMonorepoKey = 'future_monorepo';
+      const pathCandidatesKey = 'path_candidates';
+      outputManifest[futureMonorepoKey] = {
+        [pathCandidatesKey]: [...existingManifest.futureMonorepo.pathCandidates],
+        uri: existingManifest.futureMonorepo.uri,
+      };
+    }
+    if (existingManifest?.worksets) {
+      outputManifest.worksets = existingManifest.worksets.map(workset => ({
+        name: workset.name,
+        ...(workset.description !== undefined ? {description: workset.description} : {}),
+        projects: [...workset.projects],
+      }));
+    }
+    const output = yaml.dump(outputManifest, {lineWidth: 120, noRefs: true});
+
+    if (options.dryRun === true) {
+      yield* log(`# Would write ${manifestPath}`);
+      yield* log(output.trimEnd());
+      return;
+    }
+
+    yield* fs.makeDirectory(dirname(manifestPath), {recursive: true});
+    yield* fs.writeFileString(manifestPath, output, {mode: 0o600});
+    yield* fs.chmod(manifestPath, 0o600);
+    yield* log(`Wrote manifest: ${manifestPath}`);
+    yield* log('Seed with:');
+    yield* log('  threadnote seed --dry-run');
+    yield* log('  threadnote seed');
+  });
+}
+
+export function runWorksetList(config: RuntimeConfig) {
+  return Effect.gen(function* () {
+    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
+    const worksets = manifest.worksets ?? [];
+    if (worksets.length === 0) {
+      yield* log(
+        'No worksets defined. Add a top-level `worksets:` list to the seed manifest to group related projects.',
+      );
+      return;
+    }
+    yield* log(`Worksets (${worksets.length}):`);
+    for (const workset of worksets) {
+      const summary = workset.description ? ` — ${workset.description}` : '';
+      yield* log(`- ${workset.name} (${workset.projects.length} project(s))${summary}`);
+    }
+  });
+}
+
+export function runWorksetShow(config: RuntimeConfig, name: string) {
+  return Effect.gen(function* () {
+    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
+    const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
+    if (!workset) {
+      return yield* Effect.fail(
+        applicationError('show workset', new Error(`No workset named "${name}" in ${config.manifestPath}.`)),
+      );
+    }
+    yield* log(`Workset: ${workset.name}`);
+    if (workset.description) {
+      yield* log(workset.description);
+    }
+    yield* log('Projects:');
+    for (const memberName of workset.projects) {
+      const project = manifest.projects.find(entry => entry.name.toLowerCase() === memberName.toLowerCase());
+      yield* log(project ? `- ${project.name} (${project.uri})` : `- ${memberName} [not found in manifest projects]`);
+    }
+  });
+}
+
+export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
+  return Effect.gen(function* () {
+    const ov = yield* fromPromise('find OpenViking CLI for skill seed', () =>
+      openVikingCliForMode(options.dryRun === true),
+    );
+    const catalogItems = yield* fromPromise('collect skill candidates', () => collectSkillCandidates(config));
+    const nativeMode = options.native === true;
+    yield* log(
+      nativeMode
+        ? 'Skill seed mode: native OpenViking skills. This requires a working VLM config.'
+        : 'Skill seed mode: resource catalog. Use --native only after configuring a working VLM provider.',
+    );
+    let skippedCount = 0;
+    for (const skill of catalogItems) {
+      yield* log(`${skill.kind === 'command' ? 'Command' : 'Skill'} ${skill.source}: ${skill.filePath}`);
+      if (nativeMode && skill.kind === 'command') {
+        skippedCount += 1;
+        yield* log(`SKIP command in native skill mode: ${skill.filePath}`);
+        continue;
+      }
+      const args = nativeMode
+        ? ['add-skill', skill.filePath, '--wait']
+        : ['add-resource', skill.filePath, '--to', skillResourceUri(skill), '--wait'];
+      yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, args));
+    }
+    yield* log(
+      `Skill seed complete: ${catalogItems.length - skippedCount} unique catalog item(s)${
+        skippedCount > 0 ? `, ${skippedCount} skipped` : ''
+      }.`,
+    );
+  });
 }
 
 export async function resolveRepoRoot(repoInput: string): Promise<string> {
@@ -494,7 +552,7 @@ async function prepareSeedFile(
     : content;
   const secretMatches = detectSecretMatches(redactedContent);
   if (secretMatches.length > 0) {
-    console.log(
+    consoleOutput.log(
       `SKIP ${candidate.projectName}/${candidate.relativePath}: possible secret (${secretMatches
         .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
         .join(', ')})`,
@@ -508,7 +566,7 @@ async function prepareSeedFile(
 
   const redactedPath = join(config.agentContextHome, 'redacted', candidate.projectName, candidate.relativePath);
   if (dryRun) {
-    console.log(`Would write redacted copy: ${redactedPath}`);
+    consoleOutput.log(`Would write redacted copy: ${redactedPath}`);
     return redactedPath;
   }
   await ensureDirectory(dirname(redactedPath), false);
@@ -548,7 +606,7 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
       });
     }
   } catch (err: unknown) {
-    console.log(`WARN cannot read manifest for repo-local skill/command discovery: ${errorMessage(err)}`);
+    consoleOutput.log(`WARN cannot read manifest for repo-local skill/command discovery: ${errorMessage(err)}`);
   }
 
   const seenHashes = new Set<string>();
@@ -559,7 +617,7 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
       const content = await readFile(filePath, 'utf8');
       const matches = detectSecretMatches(content);
       if (matches.length > 0) {
-        console.log(`SKIP skill with possible secret: ${filePath}`);
+        consoleOutput.log(`SKIP skill with possible secret: ${filePath}`);
         continue;
       }
       const hash = sha256(content);

@@ -5,7 +5,7 @@ import {platform} from 'node:os';
 import {basename, dirname, join, sep} from 'node:path';
 import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
-import {Effect} from 'effect';
+import {Effect, FileSystem} from 'effect';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -23,6 +23,9 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {maybeRunEffect} from './effect/command.js';
+import {consoleOutput, syncWithConsole} from './effect/console.js';
+import {applicationError, fromPromise} from './effect/errors.js';
 import {startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
@@ -109,20 +112,22 @@ interface InstallCommandRetry {
 
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
-export async function runDoctor(config: RuntimeConfig, options: DoctorOptions): Promise<void> {
-  const checks = await collectDoctorChecks(config, options);
+export const runDoctor = Effect.fn('runDoctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
+  const checks = yield* fromPromise('collect doctor checks', () => collectDoctorChecks(config, options));
 
-  for (const check of checks) {
-    console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
-  }
+  yield* syncWithConsole(() => {
+    for (const check of checks) {
+      consoleOutput.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
+    }
 
-  const failureCount = checks.filter(check => check.status === 'fail').length;
-  const warningCount = checks.filter(check => check.status === 'warn').length;
-  console.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
-  if (options.strict === true && failureCount > 0) {
-    process.exitCode = 1;
-  }
-}
+    const failureCount = checks.filter(check => check.status === 'fail').length;
+    const warningCount = checks.filter(check => check.status === 'warn').length;
+    consoleOutput.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
+    if (options.strict === true && failureCount > 0) {
+      process.exitCode = 1;
+    }
+  });
+});
 
 export async function collectDoctorChecks(config: RuntimeConfig, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
@@ -151,29 +156,45 @@ export async function collectDoctorChecks(config: RuntimeConfig, options: Doctor
   return checks;
 }
 
-export async function runInstall(config: RuntimeConfig, options: InstallOptions): Promise<void> {
+export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConfig, options: InstallOptions) {
   const repairInvalidConfigs = options.repairInvalidConfigs === true;
   const dryRun = options.dryRun === true;
-  await ensureDirectory(config.agentContextHome, dryRun);
-  await ensureDirectory(join(config.agentContextHome, 'logs'), dryRun);
-  await ensureDirectory(join(config.agentContextHome, 'redacted'), dryRun);
-  await ensureDirectory(join(config.agentContextHome, 'mcp'), dryRun);
-  await installCommandShim(dryRun);
-  await installUserAgentInstructions(dryRun);
+  yield* fromPromise('create Threadnote home', () => ensureDirectory(config.agentContextHome, dryRun));
+  yield* fromPromise('create Threadnote logs directory', () =>
+    ensureDirectory(join(config.agentContextHome, 'logs'), dryRun),
+  );
+  yield* fromPromise('create Threadnote redacted directory', () =>
+    ensureDirectory(join(config.agentContextHome, 'redacted'), dryRun),
+  );
+  yield* fromPromise('create Threadnote MCP directory', () =>
+    ensureDirectory(join(config.agentContextHome, 'mcp'), dryRun),
+  );
+  yield* fromPromise('install command shim', () => installCommandShim(dryRun));
+  yield* fromPromise('install user agent instructions', () => installUserAgentInstructions(dryRun));
 
-  const serverPath = await findOpenVikingServer();
+  const serverPath = yield* fromPromise('find OpenViking server', findOpenVikingServer);
   // True only when an install/repair could have moved or created the
   // openviking-server binary itself. The python-certs branch patches the
   // existing Python env in place, so it does not flip this — the server
   // path is unchanged and the earlier resolution is still valid.
   let serverInstallRan = false;
   if (serverPath) {
-    console.log(`OpenViking server already installed: ${serverPath}`);
-    const localEmbeddingMissing = (await hasLocalEmbeddingDependency(serverPath)) === false;
-    const pythonSystemCertificatesMissing = (await hasPythonSystemCertificatesPatch(serverPath)) === false;
+    yield* syncWithConsole(() => consoleOutput.log(`OpenViking server already installed: ${serverPath}`));
+    const localEmbeddingMissing =
+      (yield* fromPromise('check OpenViking local embedding dependency', () =>
+        hasLocalEmbeddingDependency(serverPath),
+      )) === false;
+    const pythonSystemCertificatesMissing =
+      (yield* fromPromise('check OpenViking Python certificate bridge', () =>
+        hasPythonSystemCertificatesPatch(serverPath),
+      )) === false;
     if (options.force === true) {
-      console.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`);
-      await runInstallCommands(config, options.packageManager, true, dryRun);
+      yield* syncWithConsole(() =>
+        consoleOutput.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`),
+      );
+      yield* fromPromise('reinstall OpenViking', () =>
+        runInstallCommands(config, options.packageManager, true, dryRun),
+      );
       serverInstallRan = true;
     } else if (localEmbeddingMissing) {
       const repairReasons: string[] = [];
@@ -181,19 +202,27 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
       if (pythonSystemCertificatesMissing) {
         repairReasons.push('Python system certificate bridge is missing');
       }
-      console.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`);
-      await runInstallCommands(config, options.packageManager, true, dryRun);
+      yield* syncWithConsole(() => consoleOutput.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`));
+      yield* fromPromise('repair OpenViking installation', () =>
+        runInstallCommands(config, options.packageManager, true, dryRun),
+      );
       serverInstallRan = true;
     } else if (pythonSystemCertificatesMissing) {
-      console.log('OpenViking install needs repair: Python system certificate bridge is missing.');
-      const installCommand = await getPythonSystemCertificatesInstallCommand(serverPath);
-      await maybeRun(dryRun, installCommand.executable, installCommand.args);
+      yield* syncWithConsole(() =>
+        consoleOutput.log('OpenViking install needs repair: Python system certificate bridge is missing.'),
+      );
+      const installCommand = yield* fromPromise('resolve Python certificate bridge install command', () =>
+        getPythonSystemCertificatesInstallCommand(serverPath),
+      );
+      yield* maybeRunEffect(dryRun, installCommand.executable, installCommand.args);
     }
   } else {
-    await runInstallCommands(config, options.packageManager, false, dryRun);
+    yield* fromPromise('install OpenViking', () => runInstallCommands(config, options.packageManager, false, dryRun));
     serverInstallRan = true;
   }
-  const resolvedServerPath = serverInstallRan ? await findOpenVikingServer() : serverPath;
+  const resolvedServerPath = serverInstallRan
+    ? yield* fromPromise('find installed OpenViking server', findOpenVikingServer)
+    : serverPath;
   if (serverInstallRan && !resolvedServerPath && !dryRun) {
     // The install command reported success but the binary is unresolvable.
     // Fail loudly for `install`; for `repair` (requireServerBinary === false)
@@ -202,146 +231,162 @@ export async function runInstall(config: RuntimeConfig, options: InstallOptions)
       `OpenViking install ran but ${OPENVIKING_SERVER_COMMAND} was not found on PATH, in the uv tool bin dir, or ~/.local/bin. ` +
       'Re-run `threadnote install --force` (it streams the full build), then `threadnote doctor`.';
     if (options.requireServerBinary === false) {
-      console.warn(`WARN ${message}`);
+      yield* syncWithConsole(() => consoleOutput.warn(`WARN ${message}`));
     } else {
-      throw new Error(message);
+      return yield* Effect.fail(new Error(message));
     }
   }
   if (resolvedServerPath && !dryRun) {
-    await maybePrintOpenVikingPathHint(resolvedServerPath);
+    yield* fromPromise('print OpenViking path hint', () => maybePrintOpenVikingPathHint(resolvedServerPath));
   }
 
-  await writeTemplateIfMissing({
-    config,
-    destinationPath: join(config.agentContextHome, 'ov.conf'),
-    dryRun,
-    shouldRepair: content =>
-      shouldRepairOpenVikingConfig(content, config) ||
-      (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
-    templatePath: join(toolRoot(), 'config', 'ov.conf.template.json'),
-  });
-  await writeTemplateIfMissing({
-    config,
-    destinationPath: join(config.agentContextHome, 'ovcli.conf'),
-    dryRun,
-    shouldRepair: content =>
-      shouldRepairLegacyOvCliConfig(content) || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
-    templatePath: join(toolRoot(), 'config', 'ovcli.conf.template.json'),
-  });
-  await configureOpenVikingCliLanguage(config, dryRun);
+  yield* fromPromise('write OpenViking server configuration', () =>
+    writeTemplateIfMissing({
+      config,
+      destinationPath: join(config.agentContextHome, 'ov.conf'),
+      dryRun,
+      shouldRepair: content =>
+        shouldRepairOpenVikingConfig(content, config) ||
+        (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
+      templatePath: join(toolRoot(), 'config', 'ov.conf.template.json'),
+    }),
+  );
+  yield* fromPromise('write OpenViking CLI configuration', () =>
+    writeTemplateIfMissing({
+      config,
+      destinationPath: join(config.agentContextHome, 'ovcli.conf'),
+      dryRun,
+      shouldRepair: content =>
+        shouldRepairLegacyOvCliConfig(content) ||
+        (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
+      templatePath: join(toolRoot(), 'config', 'ovcli.conf.template.json'),
+    }),
+  );
+  yield* fromPromise('configure OpenViking CLI language', () => configureOpenVikingCliLanguage(config, dryRun));
 
   if (options.start !== false) {
-    const healthy = await repairServerHealth(config, dryRun);
+    const healthy = yield* repairServerHealth(config, dryRun);
     if (!healthy && !dryRun) {
-      throw new Error(`OpenViking did not become healthy. Check logs: ${openVikingLogPath(config)}`);
+      return yield* Effect.fail(
+        new Error(`OpenViking did not become healthy. Check logs: ${openVikingLogPath(config)}`),
+      );
     }
   }
 
   if (options.printNextSteps !== false) {
-    printInstallNextSteps({dryRun, startsServer: options.start !== false});
+    yield* syncWithConsole(() => printInstallNextSteps({dryRun, startsServer: options.start !== false}));
   }
-}
+});
 
 export const runRepair = Effect.fn('runRepair')(function* (config: RuntimeConfig, options: RepairOptions) {
-  yield* Effect.tryPromise({
-    try: () => runRepairCore(config, options),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-  });
+  yield* runRepairCore(config, options);
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun === true});
   }
 });
 
-async function runRepairCore(config: RuntimeConfig, options: RepairOptions): Promise<void> {
-  const dryRun = options.dryRun === true;
-  console.log('Repairing local OpenViking agent context from this checkout.');
+function runRepairCore(config: RuntimeConfig, options: RepairOptions) {
+  return Effect.gen(function* () {
+    const dryRun = options.dryRun === true;
+    yield* syncWithConsole(() => consoleOutput.log('Repairing local OpenViking agent context from this checkout.'));
 
-  await runInstall(config, {
-    dryRun,
-    packageManager: options.packageManager,
-    printNextSteps: false,
-    repairInvalidConfigs: true,
-    requireServerBinary: false,
-    start: false,
-  });
-  await repairManifest(config, dryRun);
+    yield* runInstall(config, {
+      dryRun,
+      packageManager: options.packageManager,
+      printNextSteps: false,
+      repairInvalidConfigs: true,
+      requireServerBinary: false,
+      start: false,
+    });
+    yield* fromPromise('repair seed manifest', () => repairManifest(config, dryRun));
 
-  if (options.start !== false) {
-    await repairServerHealth(config, dryRun);
-  } else {
-    console.log('Skipping server health repair because --no-start was provided.');
-  }
-  await repairRecallIndex(config, dryRun);
-
-  const mcpClients = await resolveMcpClients(options.mcp ?? 'available', 'repair');
-  if (mcpClients.length === 0) {
-    console.log('Skipping MCP config repair.');
-  } else {
-    for (const client of mcpClients) {
-      console.log(`Repairing ${client} MCP config for ${OPENVIKING_MCP_NAME}.`);
-      await runMcpInstall(config, client, {apply: !dryRun, name: OPENVIKING_MCP_NAME});
+    if (options.start !== false) {
+      yield* repairServerHealth(config, dryRun);
+    } else {
+      yield* syncWithConsole(() => consoleOutput.log('Skipping server health repair because --no-start was provided.'));
     }
-  }
+    yield* fromPromise('repair recall index', () => repairRecallIndex(config, dryRun));
 
-  // Re-install agent hooks only if the user opted in previously (a managed
-  // entry already exists). Never adds them unsolicited — `install-hooks` or
-  // `install --with-hooks` is the opt-in.
-  if (await hasManagedClaudeHooks()) {
-    console.log('\nRepairing claude hooks (re-asserting threadnote-managed entries).');
-    await runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
-  }
+    const mcpClients = yield* fromPromise('resolve MCP clients for repair', () =>
+      resolveMcpClients(options.mcp ?? 'available', 'repair'),
+    );
+    if (mcpClients.length === 0) {
+      yield* syncWithConsole(() => consoleOutput.log('Skipping MCP config repair.'));
+    } else {
+      for (const client of mcpClients) {
+        yield* syncWithConsole(() => consoleOutput.log(`Repairing ${client} MCP config for ${OPENVIKING_MCP_NAME}.`));
+        yield* runMcpInstall(config, client, {apply: !dryRun, name: OPENVIKING_MCP_NAME});
+      }
+    }
 
-  console.log('\nPost-repair doctor:');
-  await runDoctor(config, {dryRun, strict: false});
+    // Re-install agent hooks only if the user opted in previously (a managed
+    // entry already exists). Never adds them unsolicited — `install-hooks` or
+    // `install --with-hooks` is the opt-in.
+    if (yield* fromPromise('check managed Claude hooks', hasManagedClaudeHooks)) {
+      yield* syncWithConsole(() =>
+        consoleOutput.log('\nRepairing claude hooks (re-asserting threadnote-managed entries).'),
+      );
+      yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
+    }
+
+    yield* syncWithConsole(() => consoleOutput.log('\nPost-repair doctor:'));
+    yield* runDoctor(config, {dryRun, strict: false});
+  });
 }
 
-export async function runUninstall(config: RuntimeConfig, options: UninstallOptions): Promise<void> {
+export const runUninstall = Effect.fn('runUninstall')(function* (config: RuntimeConfig, options: UninstallOptions) {
   const dryRun = options.dryRun === true;
   if (options.eraseMemories === true && options.preserveMemories === true) {
-    throw new Error('Use either --erase-memories or --preserve-memories, not both.');
+    yield* Effect.fail(new Error('Use either --erase-memories or --preserve-memories, not both.'));
   }
 
-  console.log('Uninstalling local Threadnote setup.');
-  await runStop(config, {dryRun});
-  await removePathIfExists(join(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun);
-  await removeLaunchAgent(dryRun);
-  await removeMcpConfigs(options.mcp ?? 'available', dryRun);
-  await removeMcpSnippets(config, dryRun);
-  if (await hasManagedClaudeHooks()) {
-    await runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
+  yield* syncWithConsole(() => consoleOutput.log('Uninstalling local Threadnote setup.'));
+  yield* runStop(config, {dryRun});
+  yield* fromPromise('remove OpenViking pid file', () =>
+    removePathIfExists(join(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun),
+  );
+  yield* fromPromise('remove OpenViking launch agent', () => removeLaunchAgent(dryRun));
+  yield* fromPromise('remove MCP configurations', () => removeMcpConfigs(options.mcp ?? 'available', dryRun));
+  yield* fromPromise('remove MCP snippets', () => removeMcpSnippets(config, dryRun));
+  if (yield* fromPromise('check managed Claude hooks', hasManagedClaudeHooks)) {
+    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
-  await removeCommandShim(dryRun);
-  await removeUserAgentInstructions(dryRun);
+  yield* fromPromise('remove command shim', () => removeCommandShim(dryRun));
+  yield* fromPromise('remove user agent instructions', () => removeUserAgentInstructions(dryRun));
 
   if (options.eraseMemories === true) {
-    await eraseThreadnoteHome(config.agentContextHome, dryRun);
+    yield* fromPromise('erase Threadnote home', () => eraseThreadnoteHome(config.agentContextHome, dryRun));
   } else {
-    console.log(`Preserving local memories and OpenViking home: ${config.agentContextHome}`);
-    console.log('Use --erase-memories to delete this directory during uninstall.');
+    yield* syncWithConsole(() => {
+      consoleOutput.log(`Preserving local memories and OpenViking home: ${config.agentContextHome}`);
+      consoleOutput.log('Use --erase-memories to delete this directory during uninstall.');
+    });
   }
 
-  console.log('Uninstall complete.');
-  console.log('The package remains installed. Remove it with your package manager if desired.');
-}
+  yield* syncWithConsole(() => {
+    consoleOutput.log('Uninstall complete.');
+    consoleOutput.log('The package remains installed. Remove it with your package manager if desired.');
+  });
+});
 
 async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<void> {
   try {
     await readSeedManifest(config.manifestPath);
-    console.log(`Manifest OK: ${config.manifestPath}`);
+    consoleOutput.log(`Manifest OK: ${config.manifestPath}`);
     return;
   } catch (err: unknown) {
     if (config.manifestPath === builtInExampleManifestPath()) {
-      console.log(`WARN built-in manifest is not readable: ${errorMessage(err)}`);
+      consoleOutput.log(`WARN built-in manifest is not readable: ${errorMessage(err)}`);
       return;
     }
-    console.log(`Manifest needs repair: ${config.manifestPath} (${errorMessage(err)})`);
+    consoleOutput.log(`Manifest needs repair: ${config.manifestPath} (${errorMessage(err)})`);
   }
 
   let repoRoot: string;
   try {
     repoRoot = await resolveRepoRoot(getInvocationCwd());
   } catch (err: unknown) {
-    console.log(`WARN cannot create replacement manifest from current directory: ${errorMessage(err)}`);
+    consoleOutput.log(`WARN cannot create replacement manifest from current directory: ${errorMessage(err)}`);
     return;
   }
 
@@ -362,8 +407,8 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
   );
 
   if (dryRun) {
-    console.log(`# Would write replacement manifest: ${config.manifestPath}`);
-    console.log(output.trimEnd());
+    consoleOutput.log(`# Would write replacement manifest: ${config.manifestPath}`);
+    consoleOutput.log(output.trimEnd());
     return;
   }
 
@@ -373,18 +418,18 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
     const backupPath = `${config.manifestPath}.legacy-${safeTimestamp()}`;
     await writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
     await chmod(backupPath, 0o600);
-    console.log(`Backup: ${backupPath}`);
+    consoleOutput.log(`Backup: ${backupPath}`);
   }
   await writeFile(config.manifestPath, output, {encoding: 'utf8', mode: 0o600});
   await chmod(config.manifestPath, 0o600);
-  console.log(`Wrote replacement manifest: ${config.manifestPath}`);
+  consoleOutput.log(`Wrote replacement manifest: ${config.manifestPath}`);
 }
 
 async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promise<void> {
-  console.log('\nRepairing recall index freshness.');
+  consoleOutput.log('\nRepairing recall index freshness.');
   const ov = dryRun ? ((await findOpenVikingCli()) ?? 'ov') : await findOpenVikingCli();
   if (!ov) {
-    console.log('Skipping recall index repair: neither ov nor openviking was found.');
+    consoleOutput.log('Skipping recall index repair: neither ov nor openviking was found.');
     return;
   }
 
@@ -424,15 +469,15 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
     progress.stop();
     const messages = formatRecallIndexRepairMessages(result, {dryRun, maxUris: 20});
     if (messages.length === 0) {
-      console.log('Recall index freshness OK.');
+      consoleOutput.log('Recall index freshness OK.');
       return;
     }
     for (const message of messages) {
-      console.log(message);
+      consoleOutput.log(message);
     }
   } catch (err: unknown) {
     progress.stop();
-    console.log(`WARN could not repair recall index freshness: ${errorMessage(err)}`);
+    consoleOutput.log(`WARN could not repair recall index freshness: ${errorMessage(err)}`);
   }
 }
 
@@ -521,84 +566,111 @@ async function maybePrintOpenVikingPathHint(serverPath: string): Promise<void> {
   }
   const binDir = dirname(serverPath);
   const rcHint = suggestedShellRc(process.env.SHELL, platform());
-  console.log(
+  consoleOutput.log(
     `Note: ${serverPath} is installed but ${binDir} is not on this shell's PATH. ` +
       `Add \`export PATH="${binDir}:$PATH"\` to ${rcHint} so other tools can find openviking-server.`,
   );
 }
 
-async function repairServerHealth(config: RuntimeConfig, dryRun: boolean): Promise<boolean> {
-  const existingHealth = await readOpenVikingHealthIfAvailable(config, 800);
-  if (existingHealth) {
-    console.log(`OpenViking health OK at http://${config.host}:${config.port}/health`);
-    return true;
-  }
+function repairServerHealth(config: RuntimeConfig, dryRun: boolean) {
+  return Effect.gen(function* () {
+    const existingHealth = yield* fromPromise('check OpenViking health', () =>
+      readOpenVikingHealthIfAvailable(config, 800),
+    );
+    if (existingHealth) {
+      yield* syncWithConsole(() =>
+        consoleOutput.log(`OpenViking health OK at http://${config.host}:${config.port}/health`),
+      );
+      return true;
+    }
 
-  console.log(`OpenViking health is not responding at http://${config.host}:${config.port}/health; starting server.`);
-  try {
-    await runStart(config, {dryRun});
-    return true;
-  } catch (err: unknown) {
-    console.log(`WARN could not repair OpenViking health: ${errorMessage(err)}`);
-    return false;
-  }
+    yield* syncWithConsole(() =>
+      consoleOutput.log(
+        `OpenViking health is not responding at http://${config.host}:${config.port}/health; starting server.`,
+      ),
+    );
+    return yield* runStart(config, {dryRun}).pipe(
+      Effect.as(true),
+      Effect.catch(error =>
+        syncWithConsole(() => {
+          consoleOutput.log(`WARN could not repair OpenViking health: ${errorMessage(error)}`);
+          return false;
+        }),
+      ),
+    );
+  });
 }
 
-export async function runStart(config: RuntimeConfig, options: StartOptions): Promise<void> {
+export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, options: StartOptions) {
+  const fs = yield* FileSystem.FileSystem;
   if (options.launchd === true) {
-    await installLaunchAgent(config, options.dryRun === true);
+    yield* fromPromise('install OpenViking launch agent', () => installLaunchAgent(config, options.dryRun === true));
     return;
   }
 
   const server =
     options.dryRun === true
-      ? ((await findOpenVikingServer()) ?? OPENVIKING_SERVER_COMMAND)
-      : await requireOpenVikingServer();
+      ? ((yield* fromPromise('find OpenViking server', findOpenVikingServer)) ?? OPENVIKING_SERVER_COMMAND)
+      : yield* fromPromise('require OpenViking server', requireOpenVikingServer);
   const args = openVikingServerArgs(config);
   if (options.dryRun === true) {
-    console.log(formatShellCommand(server, args));
+    yield* syncWithConsole(() => consoleOutput.log(formatShellCommand(server, args)));
     return;
   }
 
-  const existingHealth = await readOpenVikingHealthIfAvailable(config, 500);
+  const existingHealth = yield* fromPromise('check existing OpenViking health', () =>
+    readOpenVikingHealthIfAvailable(config, 500),
+  );
   const healthUrl = openVikingHealthUrl(config);
   if (existingHealth) {
-    console.log(`OpenViking is already healthy at ${healthUrl}`);
+    yield* syncWithConsole(() => consoleOutput.log(`OpenViking is already healthy at ${healthUrl}`));
     return;
   }
-  if (await isTcpPortOpen(config.host, config.port, 500)) {
-    throw new Error(
-      `Port ${config.host}:${config.port} is already in use, but it is not a healthy OpenViking server. ` +
-        'Set THREADNOTE_PORT or pass --port to use a different port.',
+  if (yield* fromPromise('check OpenViking TCP port', () => isTcpPortOpen(config.host, config.port, 500))) {
+    return yield* Effect.fail(
+      new Error(
+        `Port ${config.host}:${config.port} is already in use, but it is not a healthy OpenViking server. ` +
+          'Set THREADNOTE_PORT or pass --port to use a different port.',
+      ),
     );
   }
 
   const logPath = openVikingLogPath(config);
-  await ensureDirectory(dirname(logPath), false);
+  yield* fs.makeDirectory(dirname(logPath), {recursive: true});
   if (options.foreground === true) {
-    const result = await runInteractive(server, args);
-    process.exitCode = result;
+    const result = yield* fromPromise('run OpenViking in foreground', () => runInteractive(server, args));
+    yield* syncWithConsole(() => {
+      process.exitCode = result;
+    });
     return;
   }
 
-  const logFd = openSync(logPath, 'a');
-  const child = spawnDetachedServerWithLog(server, args, logFd);
-  child.unref();
-  await writeFile(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`, 'utf8');
-  const health = await waitForOpenVikingHealth(
-    config,
-    START_HEALTH_TIMEOUT_MS,
-    `Waiting for OpenViking health at ${healthUrl}.`,
+  const child = yield* Effect.try({
+    try: () => {
+      const logFd = openSync(logPath, 'a');
+      const spawned = spawnDetachedServerWithLog(server, args, logFd);
+      spawned.unref();
+      return spawned;
+    },
+    catch: cause => applicationError('start detached OpenViking server', cause),
+  });
+  yield* fs.writeFileString(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`);
+  const health = yield* fromPromise('wait for OpenViking health', () =>
+    waitForOpenVikingHealth(config, START_HEALTH_TIMEOUT_MS, `Waiting for OpenViking health at ${healthUrl}.`),
   );
   if (health) {
-    console.log(`Started OpenViking with pid ${child.pid}. Health OK at ${healthUrl}. Logs: ${logPath}`);
+    yield* syncWithConsole(() =>
+      consoleOutput.log(`Started OpenViking with pid ${child.pid}. Health OK at ${healthUrl}. Logs: ${logPath}`),
+    );
     return;
   }
-  throw new Error(
-    `Started OpenViking with pid ${child.pid}, but ${healthUrl} did not become healthy within ` +
-      `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${logPath}`,
+  return yield* Effect.fail(
+    new Error(
+      `Started OpenViking with pid ${child.pid}, but ${healthUrl} did not become healthy within ` +
+        `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${logPath}`,
+    ),
   );
-}
+});
 
 function spawnDetachedServerWithLog(server: string, args: readonly string[], logFd: number): ReturnType<typeof spawn> {
   try {
@@ -615,38 +687,46 @@ function spawnDetachedServer(server: string, args: readonly string[], logFd: num
   });
 }
 
-export async function runStop(config: RuntimeConfig, options: ForgetOptions): Promise<void> {
+export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, options: ForgetOptions) {
+  const fs = yield* FileSystem.FileSystem;
   const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
   if (platform() === 'darwin') {
-    if (options.dryRun === true || (await exists(launchAgentPath))) {
-      await maybeRun(options.dryRun === true, 'launchctl', ['unload', launchAgentPath], {allowFailure: true});
+    if (options.dryRun === true || (yield* fs.exists(launchAgentPath))) {
+      yield* maybeRunEffect(options.dryRun === true, 'launchctl', ['unload', launchAgentPath], {allowFailure: true});
     } else {
-      console.log(`No LaunchAgent found: ${launchAgentPath}`);
+      yield* syncWithConsole(() => consoleOutput.log(`No LaunchAgent found: ${launchAgentPath}`));
     }
   }
 
   const pidPath = join(config.agentContextHome, 'openviking-server.pid');
-  const pidText = await readFileIfExists(pidPath);
+  const pidText = yield* fs.readFileString(pidPath).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
   if (!pidText) {
-    console.log('No pid file found for detached OpenViking server.');
+    yield* syncWithConsole(() => consoleOutput.log('No pid file found for detached OpenViking server.'));
     return;
   }
   const pid = Number(pidText.trim());
   if (!Number.isInteger(pid) || pid <= 0) {
-    console.log(`Invalid pid file: ${pidPath}`);
+    yield* syncWithConsole(() => consoleOutput.log(`Invalid pid file: ${pidPath}`));
     return;
   }
   if (options.dryRun === true) {
-    console.log(`Would stop process ${pid}`);
+    yield* syncWithConsole(() => consoleOutput.log(`Would stop process ${pid}`));
     return;
   }
-  try {
-    process.kill(pid, 'SIGTERM');
-    console.log(`Stopped process ${pid}`);
-  } catch (err: unknown) {
-    console.log(`Could not stop process ${pid}: ${errorMessage(err)}`);
-  }
-}
+  yield* syncWithConsole(() => {
+    try {
+      process.kill(pid, 'SIGTERM');
+      consoleOutput.log(`Stopped process ${pid}`);
+    } catch (err: unknown) {
+      consoleOutput.log(`Could not stop process ${pid}: ${errorMessage(err)}`);
+    }
+  });
+});
 
 async function commandCheck(name: string, args: readonly string[]): Promise<DoctorCheck> {
   const executable = await findExecutable([name]);
@@ -1115,18 +1195,18 @@ async function runInstallCommands(
     // legitimate build. Because uv/pipx --force removes the existing tool env
     // first, a killed reinstall leaves openviking-server missing — so we also
     // print recovery guidance before failing.
-    console.log(`Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`);
+    consoleOutput.log(`Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`);
     const result = await runInstallCommand(resolvedInstallCommand);
     if (result.exitCode !== 0) {
       const commandOutput = `${result.stderr}\n${result.stdout}`;
       const retry = openVikingSourceBuildRetryForArchiveFailure(resolvedInstallCommand, commandOutput);
       if (retry) {
-        console.error('');
-        console.error(
+        consoleOutput.error('');
+        consoleOutput.error(
           'The prebuilt llama-cpp-python wheel failed ZIP archive validation; retrying with a local source build.',
         );
-        console.error('This avoids the rejected wheel and can take 10-20 minutes.');
-        console.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
+        consoleOutput.error('This avoids the rejected wheel and can take 10-20 minutes.');
+        consoleOutput.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
         const retryResult = await runInstallCommand(retry.command, retry.env);
         if (retryResult.exitCode === 0) {
           continue;
@@ -1194,7 +1274,7 @@ function appendInstallOutputTail(current: string, chunk: string): string {
 
 function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand, commandOutput: string): void {
   for (const line of openVikingInstallFailureHelpLines(failedCommand, commandOutput)) {
-    console.error(line);
+    consoleOutput.error(line);
   }
 }
 
@@ -1304,7 +1384,7 @@ function extraIndexUrl(command: MappedCommand): string | undefined {
 
 async function offerToInstallUv(): Promise<boolean> {
   if (processStdin.isTTY !== true || processStdout.isTTY !== true) {
-    console.warn(
+    consoleOutput.warn(
       'Neither uv nor pipx was found on PATH. Falling back to `python3 -m pip install --user`, which fails on PEP 668 (Homebrew/system) Python.\n' +
         'Re-run with --package-manager uv after installing uv (brew install uv), or pass --package-manager pipx.',
     );
@@ -1324,7 +1404,9 @@ async function offerToInstallUv(): Promise<boolean> {
     readline.close();
   }
   if (answer === 'n' || answer === 'no') {
-    console.log('Continuing with `python3 -m pip install --user`. You may hit PEP 668 errors on managed Pythons.');
+    consoleOutput.log(
+      'Continuing with `python3 -m pip install --user`. You may hit PEP 668 errors on managed Pythons.',
+    );
     return false;
   }
   return await installUv();
@@ -1333,11 +1415,11 @@ async function offerToInstallUv(): Promise<boolean> {
 async function installUv(): Promise<boolean> {
   const brew = await findExecutable(['brew']);
   if (brew) {
-    console.log('Installing uv via Homebrew...');
+    consoleOutput.log('Installing uv via Homebrew...');
     const result = await runCommand(brew, ['install', 'uv'], {allowFailure: true});
     if (result.exitCode === 0) {
       if (result.stdout.trim()) {
-        console.log(result.stdout.trim());
+        consoleOutput.log(result.stdout.trim());
       }
       if (await findExecutable(['uv'])) {
         // Drop the candidate-dirs cache so subsequent openviking-server
@@ -1346,32 +1428,34 @@ async function installUv(): Promise<boolean> {
         return true;
       }
     } else {
-      console.warn(`brew install uv failed: ${(result.stderr || result.stdout).trim()}`);
+      consoleOutput.warn(`brew install uv failed: ${(result.stderr || result.stdout).trim()}`);
     }
   }
   // Fall back to the official install script. Requires curl + sh; honors any
   // proxy env vars the user already has.
   if ((await findExecutable(['curl'])) && (await findExecutable(['sh']))) {
-    console.log('Installing uv via the official install script (curl -LsSf https://astral.sh/uv/install.sh | sh)...');
+    consoleOutput.log(
+      'Installing uv via the official install script (curl -LsSf https://astral.sh/uv/install.sh | sh)...',
+    );
     const result = await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], {
       allowFailure: true,
     });
     if (result.exitCode === 0) {
       if (result.stdout.trim()) {
-        console.log(result.stdout.trim());
+        consoleOutput.log(result.stdout.trim());
       }
       if (await findExecutable(['uv'])) {
         candidateDirsPromise = undefined;
         return true;
       }
-      console.warn(
+      consoleOutput.warn(
         'uv installed, but the new binary is not yet on this shell PATH. Open a new shell (or `source ~/.zshrc` / `source ~/.bashrc`) and re-run `threadnote install`.',
       );
       return false;
     }
-    console.warn(`uv install script failed: ${(result.stderr || result.stdout).trim()}`);
+    consoleOutput.warn(`uv install script failed: ${(result.stderr || result.stdout).trim()}`);
   }
-  console.warn(
+  consoleOutput.warn(
     'Could not install uv automatically. Install it manually (brew install uv) and re-run threadnote install.',
   );
   return false;
@@ -1409,7 +1493,7 @@ export async function ensureSupportedUvExecutable(): Promise<string | undefined>
     return undefined;
   }
 
-  console.log(`Updating uv to ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer for system certificate support.`);
+  consoleOutput.log(`Updating uv to ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer for system certificate support.`);
   for (const candidate of candidates) {
     const result = await runCommand(candidate.executable, ['self', 'update'], {allowFailure: true});
     if (result.exitCode === 0) {
@@ -1576,19 +1660,19 @@ async function detectPackageManager(): Promise<PackageManager> {
 
 function printInstallNextSteps(options: {readonly dryRun: boolean; readonly startsServer: boolean}): void {
   if (options.dryRun) {
-    console.log('Dry run complete. Run without --dry-run to install and start OpenViking.');
+    consoleOutput.log('Dry run complete. Run without --dry-run to install and start OpenViking.');
     return;
   }
 
   if (options.startsServer) {
-    console.log('Install complete. OpenViking health is ready. Next:');
-    console.log('  threadnote doctor --dry-run');
+    consoleOutput.log('Install complete. OpenViking health is ready. Next:');
+    consoleOutput.log('  threadnote doctor --dry-run');
     return;
   }
 
-  console.log('Install complete. Run start, then doctor:');
-  console.log('  threadnote start');
-  console.log('  threadnote doctor --dry-run');
+  consoleOutput.log('Install complete. Run start, then doctor:');
+  consoleOutput.log('  threadnote start');
+  consoleOutput.log('  threadnote doctor --dry-run');
 }
 
 async function writeTemplateIfMissing(options: {
@@ -1601,12 +1685,12 @@ async function writeTemplateIfMissing(options: {
   if (await exists(options.destinationPath)) {
     const currentContent = await readFile(options.destinationPath, 'utf8');
     if (options.shouldRepair?.(currentContent) !== true) {
-      console.log(`Already exists: ${options.destinationPath}`);
+      consoleOutput.log(`Already exists: ${options.destinationPath}`);
       return;
     }
     const rendered = renderTemplate(await readFile(options.templatePath, 'utf8'), options.config);
     if (options.dryRun) {
-      console.log(`Would repair generated config: ${options.destinationPath}`);
+      consoleOutput.log(`Would repair generated config: ${options.destinationPath}`);
       return;
     }
     const backupPath = `${options.destinationPath}.legacy-${safeTimestamp()}`;
@@ -1614,19 +1698,19 @@ async function writeTemplateIfMissing(options: {
     await chmod(backupPath, 0o600);
     await writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
     await chmod(options.destinationPath, 0o600);
-    console.log(`Repaired generated config: ${options.destinationPath}`);
-    console.log(`Backup: ${backupPath}`);
+    consoleOutput.log(`Repaired generated config: ${options.destinationPath}`);
+    consoleOutput.log(`Backup: ${backupPath}`);
     return;
   }
   const rendered = renderTemplate(await readFile(options.templatePath, 'utf8'), options.config);
   if (options.dryRun) {
-    console.log(`Would write ${options.destinationPath}`);
+    consoleOutput.log(`Would write ${options.destinationPath}`);
     return;
   }
   await ensureDirectory(dirname(options.destinationPath), false);
   await writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
   await chmod(options.destinationPath, 0o600);
-  console.log(`Wrote ${options.destinationPath}`);
+  consoleOutput.log(`Wrote ${options.destinationPath}`);
 }
 
 async function installCommandShim(dryRun: boolean): Promise<void> {
@@ -1634,34 +1718,34 @@ async function installCommandShim(dryRun: boolean): Promise<void> {
   const shimPath = join(binDir, 'threadnote');
   const existingContent = await readFileIfExists(shimPath);
   if (existingContent && !isManagedCommandShim(existingContent)) {
-    console.log(`WARN not overwriting existing command shim: ${shimPath}`);
+    consoleOutput.log(`WARN not overwriting existing command shim: ${shimPath}`);
     return;
   }
 
   const content = renderCommandShim();
   if (existingContent === content) {
-    console.log(`Already exists: ${shimPath}`);
+    consoleOutput.log(`Already exists: ${shimPath}`);
     return;
   }
   if (dryRun) {
-    console.log(`Would write command shim: ${shimPath}`);
+    consoleOutput.log(`Would write command shim: ${shimPath}`);
     return;
   }
   await ensureDirectory(binDir, false);
   await writeFile(shimPath, content, {encoding: 'utf8', mode: 0o755});
   await chmod(shimPath, 0o755);
-  console.log(`Wrote command shim: ${shimPath}`);
+  consoleOutput.log(`Wrote command shim: ${shimPath}`);
 }
 
 async function removeCommandShim(dryRun: boolean): Promise<void> {
   const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
   const content = await readFileIfExists(shimPath);
   if (content === undefined) {
-    console.log(`Already absent: ${shimPath}`);
+    consoleOutput.log(`Already absent: ${shimPath}`);
     return;
   }
   if (!isManagedCommandShim(content)) {
-    console.log(`WARN not removing unmanaged command shim: ${shimPath}`);
+    consoleOutput.log(`WARN not removing unmanaged command shim: ${shimPath}`);
     return;
   }
   await removePath(shimPath, 'command shim', dryRun);
@@ -1673,25 +1757,25 @@ async function installUserAgentInstructions(dryRun: boolean): Promise<void> {
     const targetPath = expandPath(target.path);
     const currentContent = await readFileIfExists(targetPath);
     if (target.kind === 'file' && currentContent !== undefined && extractManagedBlock(currentContent) === undefined) {
-      console.log(`WARN ${targetPath} is not managed by threadnote; not modifying it`);
+      consoleOutput.log(`WARN ${targetPath} is not managed by threadnote; not modifying it`);
       continue;
     }
     const nextContent = target.kind === 'file' ? instructions : upsertManagedBlock(currentContent ?? '', instructions);
     if (nextContent === undefined) {
-      console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
+      consoleOutput.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
       continue;
     }
     if (currentContent === nextContent) {
-      console.log(`Already exists: ${targetPath}`);
+      consoleOutput.log(`Already exists: ${targetPath}`);
       continue;
     }
     if (dryRun) {
-      console.log(currentContent === undefined ? `Would write ${targetPath}` : `Would update ${targetPath}`);
+      consoleOutput.log(currentContent === undefined ? `Would write ${targetPath}` : `Would update ${targetPath}`);
       continue;
     }
     await ensureDirectory(dirname(targetPath), false);
     await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
-    console.log(currentContent === undefined ? `Wrote ${targetPath}` : `Updated ${targetPath}`);
+    consoleOutput.log(currentContent === undefined ? `Wrote ${targetPath}` : `Updated ${targetPath}`);
   }
 }
 
@@ -1700,12 +1784,12 @@ async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
     const targetPath = expandPath(target.path);
     const currentContent = await readFileIfExists(targetPath);
     if (currentContent === undefined) {
-      console.log(`Already absent: ${targetPath}`);
+      consoleOutput.log(`Already absent: ${targetPath}`);
       continue;
     }
     if (target.kind === 'file') {
       if (extractManagedBlock(currentContent) === undefined) {
-        console.log(`WARN ${targetPath} is not managed by threadnote; not removing it`);
+        consoleOutput.log(`WARN ${targetPath} is not managed by threadnote; not removing it`);
         continue;
       }
       await removePath(targetPath, target.label, dryRun);
@@ -1713,11 +1797,11 @@ async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
     }
     const nextContent = removeManagedBlock(currentContent);
     if (nextContent === undefined) {
-      console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
+      consoleOutput.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
       continue;
     }
     if (nextContent === currentContent) {
-      console.log(`No threadnote block found: ${targetPath}`);
+      consoleOutput.log(`No threadnote block found: ${targetPath}`);
       continue;
     }
     if (nextContent.trim().length === 0) {
@@ -1725,11 +1809,11 @@ async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
       continue;
     }
     if (dryRun) {
-      console.log(`Would update ${targetPath}`);
+      consoleOutput.log(`Would update ${targetPath}`);
       continue;
     }
     await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
-    console.log(`Updated ${targetPath}`);
+    consoleOutput.log(`Updated ${targetPath}`);
   }
 }
 
@@ -1850,11 +1934,11 @@ async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promi
   });
   if (dryRun) {
     const resolutionDetail = resolvedServer ?? `<not found; would use bare \`${OPENVIKING_SERVER_COMMAND}\`>`;
-    console.log(`Resolved openviking-server: ${resolutionDetail}`);
-    console.log(`Would write ${destination}`);
-    console.log(`Would run: launchctl unload ${destination}`);
-    console.log(`Would run: launchctl load ${destination}`);
-    console.log(`Would run: launchctl start ${LAUNCHD_LABEL}`);
+    consoleOutput.log(`Resolved openviking-server: ${resolutionDetail}`);
+    consoleOutput.log(`Would write ${destination}`);
+    consoleOutput.log(`Would run: launchctl unload ${destination}`);
+    consoleOutput.log(`Would run: launchctl load ${destination}`);
+    consoleOutput.log(`Would run: launchctl start ${LAUNCHD_LABEL}`);
     return;
   }
   await ensureDirectory(dirname(destination), false);
@@ -1870,7 +1954,7 @@ async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promi
     `Waiting for OpenViking health at ${healthUrl}.`,
   );
   if (health) {
-    console.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
+    consoleOutput.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
     return;
   }
   throw new Error(
@@ -1883,11 +1967,11 @@ async function removeLaunchAgent(dryRun: boolean): Promise<void> {
   const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
   const content = await readFileIfExists(launchAgentPath);
   if (content === undefined) {
-    console.log(`Already absent: ${launchAgentPath}`);
+    consoleOutput.log(`Already absent: ${launchAgentPath}`);
     return;
   }
   if (!content.includes(LAUNCHD_LABEL) || !content.includes(OPENVIKING_SERVER_COMMAND)) {
-    console.log(`WARN not removing unmanaged LaunchAgent: ${launchAgentPath}`);
+    consoleOutput.log(`WARN not removing unmanaged LaunchAgent: ${launchAgentPath}`);
     return;
   }
   await removePath(launchAgentPath, 'LaunchAgent', dryRun);

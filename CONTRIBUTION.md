@@ -45,6 +45,10 @@ Keep these invariants intact:
 - Library workflows return and compose Effects. Do not introduce internal `runPromise`, `runFork`, or repeated runtime
   boundaries.
 - Expected failures belong in typed Effect error channels. Use defects for truly unexpected programmer errors.
+- Use the shared `fromPromise`/`fromSync` adapters in `src/effect/errors.ts` for compatibility helpers; do not add
+  module-local Promise-lifting helpers or a generic Promise bridge in the CLI.
+- Use Effect's `Console` service for application output. Promise compatibility code must use the scoped adapter in
+  `src/effect/console.ts`; raw `console.*` calls are rejected by the architecture tests.
 - Use `Scope` or `acquireRelease` for servers, temporary directories, child processes, and other resources that require
   cleanup.
 - MCP inputs use Effect Schema as the source for types, runtime validation, descriptions, and emitted JSON Schema.

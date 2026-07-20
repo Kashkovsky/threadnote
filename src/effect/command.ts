@@ -1,6 +1,8 @@
 import {execFile, type ChildProcess} from 'node:child_process';
 import {basename} from 'node:path';
-import {Context, Effect, Layer, Schema} from 'effect';
+import {Console, Context, Effect, Layer, Schema} from 'effect';
+import {command as commandText, info, warning} from '../cli_ui.js';
+import {redactSensitiveText} from '../scrubber.js';
 import type {CommandResult} from '../types.js';
 
 export interface CommandOptions {
@@ -66,6 +68,28 @@ export const runCommandEffect = Effect.fn('runCommandEffect')(function* (
   return yield* command.execute(executable, args, options);
 });
 
+export const maybeRunEffect = Effect.fn('maybeRunEffect')(function* (
+  dryRun: boolean,
+  executable: string,
+  args: readonly string[],
+  options: Pick<CommandOptions, 'allowFailure' | 'cwd'> = {},
+) {
+  const cwdSuffix = options.cwd ? ` (cwd: ${options.cwd})` : '';
+  const label = dryRun ? warning('Would run') : info('Running');
+  yield* Console.log(`${label}: ${commandText(formatShellCommand(executable, args))}${cwdSuffix}`);
+  if (dryRun) {
+    return undefined;
+  }
+  const result = yield* runCommandEffect(executable, args, options);
+  if (result.stdout.trim()) {
+    yield* Console.log(result.stdout.trim());
+  }
+  if (result.stderr.trim()) {
+    yield* Console.error(result.stderr.trim());
+  }
+  return result;
+});
+
 const executeCommand = Effect.fn('CommandExecutor.execute')((
   executable: string,
   args: readonly string[],
@@ -73,7 +97,9 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
 ) => {
   const maxOutputBytes = options.maxOutputBytes ?? commandMaxOutputBytes();
   const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
-  const command = formatCommand(executable, args);
+  const command = formatShellCommand(executable, args);
+  const safeArgs = redactCommandArgs(args);
+  const safeExecutable = redactSensitiveText(executable);
   const run = Effect.callback<CommandResult, CommandExecutionError>(resume => {
     let child: ChildProcess | undefined;
     let finished = false;
@@ -127,31 +153,31 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
           const error = cause as Error & {readonly code?: number | string};
           if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
             const outputError = new CommandOutputLimitExceeded({
-              args: [...args],
-              executable,
+              args: safeArgs,
+              executable: safeExecutable,
               maxOutputBytes,
-              message: `${formatCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`,
+              message: `${command} exceeded output limit of ${maxOutputBytes} bytes`,
             });
             complete({exitCode: 124, stderr: outputError.message, stdout}, outputError);
             return;
           }
           if (typeof error.code !== 'number') {
             const spawnError = new CommandSpawnFailed({
-              args: [...args],
-              cause,
-              executable,
-              message: `${formatCommand(executable, args)} failed to start: ${error.message}`,
+              args: safeArgs,
+              cause: redactedError(error),
+              executable: safeExecutable,
+              message: redactSensitiveText(`${command} failed to start: ${error.message}`),
             });
             complete({exitCode: 127, stderr: error.message, stdout}, spawnError);
             return;
           }
           const failed = new CommandFailed({
-            args: [...args],
-            executable,
+            args: safeArgs,
+            executable: safeExecutable,
             exitCode: error.code,
-            message: `${formatCommand(executable, args)} failed: ${stderr || stdout}`,
-            stderr,
-            stdout,
+            message: redactSensitiveText(`${command} failed: ${stderr || stdout}`),
+            stderr: redactSensitiveText(stderr),
+            stdout: redactSensitiveText(stdout),
           });
           complete({exitCode: error.code, stderr, stdout}, failed);
         },
@@ -159,10 +185,10 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
     } catch (cause: unknown) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
       const spawnError = new CommandSpawnFailed({
-        args: [...args],
-        cause,
-        executable,
-        message: `${formatCommand(executable, args)} failed to start: ${error.message}`,
+        args: safeArgs,
+        cause: redactedError(error),
+        executable: safeExecutable,
+        message: redactSensitiveText(`${command} failed to start: ${error.message}`),
       });
       complete({exitCode: 127, stderr: error.message, stdout: ''}, spawnError);
     }
@@ -178,8 +204,8 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
     return run;
   }
   const timedOut = new CommandTimedOut({
-    args: [...args],
-    executable,
+    args: safeArgs,
+    executable: safeExecutable,
     message: `${command} timed out after ${timeoutMs}ms`,
     timeoutMs,
   });
@@ -217,6 +243,17 @@ function commandEnvironment(executable: string, env: NodeJS.ProcessEnv | undefin
   return basename(executable) === 'git' ? withoutGitEnvironment(env ?? process.env) : env;
 }
 
+export function formatShellCommand(executable: string, args: readonly string[]): string {
+  return redactSensitiveText([executable, ...args].map(shellQuote).join(' '));
+}
+
+export function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@=-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
 export function commandTimeoutMs(): number {
   return positiveIntegerFromEnv('THREADNOTE_COMMAND_TIMEOUT_MS') ?? 10 * 60 * 1000;
 }
@@ -234,6 +271,14 @@ function positiveIntegerFromEnv(name: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function formatCommand(executable: string, args: readonly string[]): string {
-  return [executable, ...args].join(' ');
+function redactCommandArgs(args: readonly string[]): readonly string[] {
+  const combined = args.join(' ');
+  if (redactSensitiveText(combined) !== combined) {
+    return ['[REDACTED]'];
+  }
+  return args.map(redactSensitiveText);
+}
+
+function redactedError(error: Error): Error {
+  return new Error(redactSensitiveText(error.message));
 }

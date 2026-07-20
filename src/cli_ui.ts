@@ -1,6 +1,7 @@
 import {clearLine, cursorTo} from 'node:readline';
 import {stdout} from 'node:process';
 import {Effect} from 'effect';
+import {consoleOutput} from './effect/console.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
 
@@ -108,10 +109,10 @@ export interface ProgressIndicator {
 
 export function startProgress(message: string): ProgressIndicator {
   if (stdout.isTTY !== true || process.env.CI !== undefined || process.env.THREADNOTE_NO_SPINNER !== undefined) {
-    console.log(message);
+    consoleOutput.log(message);
     return {
       update(nextMessage: string): void {
-        console.log(nextMessage);
+        consoleOutput.log(nextMessage);
       },
       stop(): void {
         return;

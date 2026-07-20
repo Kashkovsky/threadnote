@@ -1,11 +1,16 @@
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as indexRepair from '../../src/index_repair.js';
 import * as utils from '../../src/utils.js';
+
+const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
 
 vi.mock('../../src/index_repair.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/index_repair.js')>();
@@ -68,7 +73,7 @@ describe('runRecall index repair fallback', () => {
     vi.mocked(indexRepair.repairStaleRecallIndex).mockRejectedValue(new Error('repair failed'));
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-    await runRecall(runtime, {dryRun: true, query: 'availability check'});
+    await run(runRecall(runtime, {dryRun: true, query: 'availability check'}));
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Auto-index repair warning: repair failed');
@@ -95,9 +100,11 @@ describe('runRecall index repair fallback', () => {
       });
       process.env.THREADNOTE_CALLER_CWD = repoRoot;
 
-      await runRecall(
-        {...runtime, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
-        {dryRun: true, query: 'current repo latest handoff'},
+      await run(
+        runRecall(
+          {...runtime, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
+          {dryRun: true, query: 'current repo latest handoff'},
+        ),
       );
     } finally {
       if (previousCallerCwd === undefined) {
@@ -160,9 +167,11 @@ describe('runRecall index repair fallback', () => {
       );
       process.env.THREADNOTE_CALLER_CWD = repoRoot;
 
-      await runRecall(
-        {...runtime, manifestPath},
-        {dryRun: true, query: 'current repo latest handoff', workset: 'platform'},
+      await run(
+        runRecall(
+          {...runtime, manifestPath},
+          {dryRun: true, query: 'current repo latest handoff', workset: 'platform'},
+        ),
       );
     } finally {
       if (previousCallerCwd === undefined) {
@@ -208,14 +217,16 @@ describe('runRecall index repair fallback', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     try {
-      await runRecall(
-        {...runtime, manifestPath},
-        {
-          dryRun: true,
-          inferScope: false,
-          query: 'current status',
-          workset: 'platform',
-        },
+      await run(
+        runRecall(
+          {...runtime, manifestPath},
+          {
+            dryRun: true,
+            inferScope: false,
+            query: 'current status',
+            workset: 'platform',
+          },
+        ),
       );
     } finally {
       await rm(dir, {force: true, recursive: true});
@@ -249,13 +260,15 @@ describe('runRecall index repair fallback', () => {
 
     try {
       await expect(
-        runRecall(
-          {...runtime, manifestPath},
-          {
-            dryRun: true,
-            query: 'current status',
-            workset: 'platfrom',
-          },
+        run(
+          runRecall(
+            {...runtime, manifestPath},
+            {
+              dryRun: true,
+              query: 'current status',
+              workset: 'platfrom',
+            },
+          ),
         ),
       ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
     } finally {
@@ -287,14 +300,16 @@ describe('runRecall index repair fallback', () => {
 
     try {
       await expect(
-        runRecall(
-          {...runtime, manifestPath},
-          {
-            dryRun: true,
-            query: 'current status',
-            uri: 'viking://resources/repos/alpha',
-            workset: 'platfrom',
-          },
+        run(
+          runRecall(
+            {...runtime, manifestPath},
+            {
+              dryRun: true,
+              query: 'current status',
+              uri: 'viking://resources/repos/alpha',
+              workset: 'platfrom',
+            },
+          ),
         ),
       ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
     } finally {

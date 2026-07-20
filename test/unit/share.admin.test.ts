@@ -1,10 +1,23 @@
 import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {publishShareGitChange, runShareRemove, runShareRename, runShareSetUrl} from '../../src/share.js';
+import {publishShareGitChange} from '../../src/share.js';
+import {
+  runShareRemove as runShareRemoveEffect,
+  runShareRename as runShareRenameEffect,
+  runShareSetUrl as runShareSetUrlEffect,
+} from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+
+const runShareRemove = (...args: Parameters<typeof runShareRemoveEffect>) =>
+  Effect.runPromise(runShareRemoveEffect(...args));
+const runShareRename = (...args: Parameters<typeof runShareRenameEffect>) =>
+  Effect.runPromise(runShareRenameEffect(...args));
+const runShareSetUrl = (...args: Parameters<typeof runShareSetUrlEffect>) =>
+  Effect.runPromise(runShareSetUrlEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();

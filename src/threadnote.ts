@@ -1,7 +1,7 @@
 #! /usr/bin/env node
 
 import {NodeRuntime, NodeServices} from '@effect/platform-node';
-import {Effect} from 'effect';
+import {Console, Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {errorMessage} from './utils.js';
 import {getThreadnoteVersion} from './version.js';
@@ -17,7 +17,7 @@ const program = Command.runWith(threadnoteCommand, {version: getThreadnoteVersio
   Effect.tapError(error =>
     CliError.isCliError(error)
       ? Effect.void
-      : Effect.sync(() => console.error(errorMessage(error instanceof ApplicationError ? error.cause : error))),
+      : Console.error(errorMessage(error instanceof ApplicationError ? error.cause : error)),
   ),
   Effect.catch(() =>
     Effect.sync(() => {

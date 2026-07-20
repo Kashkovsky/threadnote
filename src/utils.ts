@@ -8,11 +8,18 @@ import {homedir} from 'node:os';
 import {basename, delimiter, dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {command as commandText, failure, info, success, warning} from './cli_ui.js';
-import {commandMaxOutputBytes, commandTimeoutMs, type CommandOptions, withoutGitEnvironment} from './effect/command.js';
+import {consoleOutput} from './effect/console.js';
+import {
+  commandMaxOutputBytes,
+  commandTimeoutMs,
+  formatShellCommand,
+  type CommandOptions,
+  withoutGitEnvironment,
+} from './effect/command.js';
 import {redactSensitiveText} from './scrubber.js';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
 
-export {withoutGitEnvironment} from './effect/command.js';
+export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -239,16 +246,16 @@ export async function maybeRun(
 ): Promise<CommandResult | undefined> {
   const cwdSuffix = options.cwd ? ` (cwd: ${options.cwd})` : '';
   const label = dryRun ? warning('Would run') : info('Running');
-  console.log(`${label}: ${commandText(formatShellCommand(executable, args))}${cwdSuffix}`);
+  consoleOutput.log(`${label}: ${commandText(formatShellCommand(executable, args))}${cwdSuffix}`);
   if (dryRun) {
     return undefined;
   }
   const result = await runCommand(executable, args, {allowFailure: options.allowFailure === true, cwd: options.cwd});
   if (result.stdout.trim()) {
-    console.log(result.stdout.trim());
+    consoleOutput.log(result.stdout.trim());
   }
   if (result.stderr.trim()) {
-    console.error(result.stderr.trim());
+    consoleOutput.error(result.stderr.trim());
   }
   return result;
 }
@@ -617,7 +624,7 @@ export async function getInputText(optionText: string | undefined, useStdin: boo
 
 export async function ensureDirectory(path: string, dryRun: boolean): Promise<void> {
   if (dryRun) {
-    console.log(`Would create directory: ${path}`);
+    consoleOutput.log(`Would create directory: ${path}`);
     return;
   }
   await mkdir(path, {recursive: true});
@@ -681,7 +688,7 @@ export async function readFileIfExists(path: string): Promise<string | undefined
 
 export async function removePathIfExists(path: string, label: string, dryRun: boolean): Promise<void> {
   if (!(await exists(path))) {
-    console.log(`Already absent: ${path}`);
+    consoleOutput.log(`Already absent: ${path}`);
     return;
   }
   await removePath(path, label, dryRun);
@@ -689,11 +696,11 @@ export async function removePathIfExists(path: string, label: string, dryRun: bo
 
 export async function removePath(path: string, label: string, dryRun: boolean): Promise<void> {
   if (dryRun) {
-    console.log(`Would remove ${label}: ${path}`);
+    consoleOutput.log(`Would remove ${label}: ${path}`);
     return;
   }
   await rm(path, {force: true, recursive: true});
-  console.log(`Removed ${label}: ${path}`);
+  consoleOutput.log(`Removed ${label}: ${path}`);
 }
 
 export function parsePort(value: string): number {
@@ -1670,17 +1677,6 @@ export function formatStatus(status: CommandStatus): string {
     return warning('WARN');
   }
   return failure('FAIL');
-}
-
-export function formatShellCommand(executable: string, args: readonly string[]): string {
-  return redactText([executable, ...args].map(shellQuote).join(' '));
-}
-
-export function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_./:@=-]+$/.test(value)) {
-    return value;
-  }
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 export function toolRoot(): string {

@@ -1,6 +1,7 @@
-import {chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   parseSeedWatchIntervalMinutes,
@@ -11,27 +12,18 @@ import {
   seedWatchArgs,
 } from '../../src/seeding.js';
 import {readSeedManifest} from '../../src/manifest.js';
+import {captureConsole as captureEffectConsole} from '../../src/effect/console.js';
+import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import type {RuntimeConfig, SeedManifest} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
 
 const GIT_ENV_KEYS = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
 
-async function captureConsole(action: () => Promise<void>): Promise<string> {
-  const lines: string[] = [];
-  const originalLog = console.log;
-  const originalWarn = console.warn;
-  const originalError = console.error;
-  console.log = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  console.warn = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  console.error = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-  try {
-    await action();
-  } finally {
-    console.log = originalLog;
-    console.warn = originalWarn;
-    console.error = originalError;
-  }
-  return lines.join('\n');
+const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
+
+async function captureConsole<E>(effect: Effect.Effect<void, E, ApplicationServices>): Promise<string> {
+  return (await run(captureEffectConsole(effect))).output;
 }
 
 describe('parseSeedWatchIntervalMinutes', () => {
@@ -105,13 +97,68 @@ describe('runSeed', () => {
       user: 'denys',
     };
 
-    const output = await captureConsole(() => runSeed(config, {dryRun: true}));
+    const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('add-resource');
     expect(output).toContain('viking://resources/repos/sample-repo/README.md');
     expect(output).toContain('--wait');
     expect(output).not.toContain('--reason');
     expect(output).not.toContain('Project guidance for');
+  });
+
+  it('does not skip same-size files changed within the recorded millisecond', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    const readmePath = join(repo, 'README.md');
+    await writeFile(readmePath, '# Sample\n', 'utf8');
+    const fractionalSeconds = 1_700_000_000.123456;
+    await utimes(readmePath, fractionalSeconds, fractionalSeconds);
+    const readmeStat = await stat(readmePath);
+    const recordedMtimeMs = readmeStat.mtime.getTime();
+    expect(readmeStat.mtimeMs).not.toBe(recordedMtimeMs);
+
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: viking://resources/repos/sample-repo',
+        '    seed:',
+        '      - README.md',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      join(contextHome, 'seed-state.json'),
+      JSON.stringify({
+        files: {
+          'viking://resources/repos/sample-repo/README.md': {
+            mtimeMs: recordedMtimeMs,
+            size: readmeStat.size,
+          },
+        },
+        version: 1,
+      }),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath,
+      openVikingVersion: '0.0.0',
+      port: 1933,
+      user: 'denys',
+    };
+
+    const output = await captureConsole(runSeed(config, {dryRun: true}));
+
+    expect(output).toContain('add-resource');
+    expect(output).toContain('Seed complete: 1 candidate(s), 0 unchanged, 0 skipped for safety.');
   });
 
   it('uses the publish scrubber patterns when skipping seed files', async () => {
@@ -144,7 +191,7 @@ describe('runSeed', () => {
       user: 'denys',
     };
 
-    const output = await captureConsole(() => runSeed(config, {dryRun: true}));
+    const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('SKIP sample-repo/README.md: possible secret (database URI)');
     expect(output).toContain('Seed complete: 0 candidate(s), 0 unchanged, 1 skipped for safety.');
@@ -200,7 +247,7 @@ describe('seed-skills', () => {
       user: 'denys',
     };
 
-    const output = await captureConsole(() => runSeedSkills(config, {dryRun: true}));
+    const output = await captureConsole(runSeedSkills(config, {dryRun: true}));
 
     expect(output).toContain(`Command claude-commands-global: ${join(home, '.claude', 'commands', 'weekly.md')}`);
     expect(output).toContain(
@@ -257,7 +304,7 @@ describe('init-manifest', () => {
       user: 'denys',
     };
 
-    await captureConsole(() => runInitManifest(config, {path: manifestPath, repo: [newRepo]}));
+    await captureConsole(runInitManifest(config, {path: manifestPath, repo: [newRepo]}));
 
     const manifest = await readSeedManifest(manifestPath);
     expect(manifest.projects).toHaveLength(2);
@@ -296,7 +343,7 @@ describe('init-manifest', () => {
         user: 'denys',
       };
 
-      await captureConsole(() => runInitManifest(config, {path: manifestPath, repo: [repo]}));
+      await captureConsole(runInitManifest(config, {path: manifestPath, repo: [repo]}));
 
       const manifest = await readSeedManifest(manifestPath);
       expect(manifest.projects[0]?.name).toBe('threadnote');
@@ -356,7 +403,7 @@ describe('seedDependencyGraphs', () => {
       user: 'denys',
     };
 
-    await captureConsole(() => seedDependencyGraphs(config, ov, manifest, manifest.projects, false));
+    await captureConsole(seedDependencyGraphs(config, ov, manifest, manifest.projects, false));
 
     const graphFiles = await readdir(join(contextHome, 'graph'));
     expect(graphFiles).toHaveLength(1);
