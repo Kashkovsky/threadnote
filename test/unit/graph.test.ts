@@ -1,8 +1,13 @@
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {NodeFileSystem} from '@effect/platform-node';
+import {Effect, FileSystem} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {buildGraphDocument, extractDependencyFacts, resolveGraphEdges} from '../../src/graph.js';
+
+const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer)));
 
 describe('extractDependencyFacts', () => {
   let dir: string;
@@ -25,7 +30,7 @@ describe('extractDependencyFacts', () => {
       }),
       'utf8',
     );
-    const facts = await extractDependencyFacts(dir);
+    const facts = await run(extractDependencyFacts(dir));
     expect(facts.publishedName).toBe('@acme/web-app');
     expect(facts.ecosystems).toEqual(['npm']);
     expect(facts.manifestFiles).toEqual(['package.json']);
@@ -48,16 +53,16 @@ describe('extractDependencyFacts', () => {
       ].join('\n'),
       'utf8',
     );
-    const facts = await extractDependencyFacts(dir);
+    const facts = await run(extractDependencyFacts(dir));
     expect(facts.publishedName).toBe('github.com/acme/service');
     expect(facts.ecosystems).toEqual(['go']);
     expect(facts.dependencies).toEqual(['github.com/acme/lib', 'github.com/pkg/errors']);
   });
 
   it('returns empty facts when no manifests exist and ignores malformed package.json', async () => {
-    expect(await extractDependencyFacts(dir)).toEqual({dependencies: [], ecosystems: [], manifestFiles: []});
+    expect(await run(extractDependencyFacts(dir))).toEqual({dependencies: [], ecosystems: [], manifestFiles: []});
     await writeFile(join(dir, 'package.json'), '{not valid json', 'utf8');
-    const facts = await extractDependencyFacts(dir);
+    const facts = await run(extractDependencyFacts(dir));
     expect(facts.manifestFiles).toEqual([]);
   });
 });

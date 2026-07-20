@@ -3,6 +3,7 @@ import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {Effect} from 'effect';
 import {getJsonEffect} from './effect/http.js';
+import {fromPromiseError} from './effect/errors.js';
 import {compareVersions, isJsonObject} from './utils.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -38,13 +39,13 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
     return Effect.succeed(undefined);
   }
   return Effect.gen(function* () {
-    const cached = yield* Effect.promise(() => readUpdateCache(args.cachePath));
+    const cached = yield* fromPromiseError(() => readUpdateCache(args.cachePath));
     if (cached && isCacheFresh(cached)) {
       return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
     }
     const fresh = yield* fetchLatestVersionEffect();
     if (fresh) {
-      yield* Effect.promise(() =>
+      yield* fromPromiseError(() =>
         writeUpdateCache(args.cachePath, {
           checkedAt: new Date().toISOString(),
           latestVersion: fresh,

@@ -2,6 +2,9 @@ import {spawnSync} from 'node:child_process';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {platform, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {Console, Effect} from 'effect';
+
+const output = Effect.runSync(Console.Console);
 
 const root = resolve(import.meta.dirname, '..');
 const constants = await readFile(resolve(root, 'src', 'constants.ts'), 'utf8');
@@ -20,7 +23,7 @@ if (
   isCompatibleCliVersion(installedVersion, version) &&
   installedServerVersion === version
 ) {
-  console.log(`OpenViking ${version} is already installed for local-bin E2E.`);
+  output.log(`OpenViking ${version} is already installed for local-bin E2E.`);
   process.exit(0);
 }
 
@@ -45,11 +48,11 @@ const args = [
   ...(installed.status === 0 ? ['--force'] : []),
   `openviking[local-embed]==${version}`,
 ];
-console.log(`Installing pinned OpenViking ${version} for local-bin E2E...`);
+output.log(`Installing pinned OpenViking ${version} for local-bin E2E...`);
 let result = spawnSync('uv', args, {cwd: root, stdio: 'inherit'});
 if (result.status !== 0) {
-  console.warn('The prebuilt llama-cpp-python wheel failed; retrying with a local source build.');
-  console.warn('This fallback can take 10-20 minutes.');
+  output.warn('The prebuilt llama-cpp-python wheel failed; retrying with a local source build.');
+  output.warn('This fallback can take 10-20 minutes.');
   const sourceArgs = args.filter((arg, index) => {
     const previous = args[index - 1];
     return (
@@ -85,7 +88,7 @@ if (
     `Expected OpenViking server ${version} and a compatible ${majorMinor(version)}.x CLI after installation, got CLI ${verifiedVersion ?? 'unavailable'} and server ${verifiedServerVersion ?? 'unavailable'}.`,
   );
 }
-console.log(`OpenViking ${version} is ready for local-bin E2E.`);
+output.log(`OpenViking ${version} is ready for local-bin E2E.`);
 
 async function readInstalledCliVersion() {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-e2e-ov-version-'));

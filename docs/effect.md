@@ -22,6 +22,16 @@ upgrades are explicit and must pass the protocol and bundle gates below.
 - Promise-based filesystem and compatibility helpers are lifted with `Effect.tryPromise` at composition points. The
   manager's Node HTTP callback submits request Effects to a scoped `FiberSet` runtime created by its entry Effect, so
   in-flight requests are interrupted when the manager scope closes.
+- Application Promise lifting is centralized in `src/effect/errors.ts`; production modules use its `fromPromise` and
+  `fromSync` adapters with an operation label rather than declaring local copies. The CLI has no generic legacy-Promise
+  command bridge: every command composes an Effect-returning workflow.
+- Application output uses Effect's `Console` service. `src/effect/console.ts` carries the current service across the
+  remaining Promise compatibility boundary and captures scoped output without mutating process-global handlers.
+- Graph manifest reads, seeding, MCP installation, hook installation, lifecycle commands, recall, memory migration,
+  pack I/O, and command execution compose through the application layer. Pure graph parsing, edge resolution, and
+  Markdown rendering remain plain TypeScript.
+- `src/effect/share.ts` is the Effect-facing adapter for the transaction-oriented sharing implementation. This keeps
+  the CLI error channel and runtime boundary uniform while the lower-level rollback callbacks remain Promise-based.
 - Long-lived servers and Effect-owned temporary directories use `Scope`/`acquireRelease`, so interruption closes
   servers and removes staged files.
 

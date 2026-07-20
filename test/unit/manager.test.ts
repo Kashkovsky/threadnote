@@ -1,7 +1,7 @@
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {Console, Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   consolidationAgentScript,
@@ -22,9 +22,7 @@ vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
   return {
     ...actual,
-    runRepair: vi.fn((_config, options) =>
-      Effect.sync(() => console.log(options.dryRun ? 'repair dry run' : 'repair applied')),
-    ),
+    runRepair: vi.fn((_config, options) => Console.log(options.dryRun ? 'repair dry run' : 'repair applied')),
   };
 });
 
@@ -34,6 +32,7 @@ vi.mock('../../src/memory.js', async importOriginal => {
     ...actual,
     runArchive: vi.fn(() => Effect.void),
     runForget: vi.fn(() => Effect.void),
+    runRecall: vi.fn((_config, options) => Console.log(`recall result: ${options.query}`)),
   };
 });
 
@@ -41,12 +40,12 @@ vi.mock('../../src/seeding.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/seeding.js')>();
   return {
     ...actual,
-    runSeed: vi.fn(async (_config: RuntimeConfig, options: {readonly dryRun?: boolean}) => {
-      console.log(options.dryRun ? 'seed dry run' : 'seed applied');
-    }),
-    runSeedSkills: vi.fn(async (_config: RuntimeConfig, options: {readonly dryRun?: boolean}) => {
-      console.log(options.dryRun ? 'seed skills dry run' : 'seed skills applied');
-    }),
+    runSeed: vi.fn((_config: RuntimeConfig, options: {readonly dryRun?: boolean}) =>
+      Console.log(options.dryRun ? 'seed dry run' : 'seed applied'),
+    ),
+    runSeedSkills: vi.fn((_config: RuntimeConfig, options: {readonly dryRun?: boolean}) =>
+      Console.log(options.dryRun ? 'seed skills dry run' : 'seed skills applied'),
+    ),
   };
 });
 
@@ -123,6 +122,9 @@ describe('manager catalog', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
     vi.mocked(memory.runArchive).mockReset();
     vi.mocked(memory.runForget).mockReset();
+    vi.mocked(memory.runRecall)
+      .mockReset()
+      .mockImplementation((_config, options) => Console.log(`recall result: ${options.query}`));
   });
 
   it('maps local memory files into viking URIs with parsed metadata', async () => {
@@ -242,9 +244,7 @@ describe('manager http API', () => {
   beforeEach(() => {
     vi.mocked(lifecycle.runRepair)
       .mockReset()
-      .mockImplementation((_config, options) =>
-        Effect.sync(() => console.log(options.dryRun ? 'repair dry run' : 'repair applied')),
-      );
+      .mockImplementation((_config, options) => Console.log(options.dryRun ? 'repair dry run' : 'repair applied'));
     vi.mocked(memory.runArchive).mockReset();
     vi.mocked(memory.runForget).mockReset();
     vi.mocked(seeding.runSeed).mockClear();
@@ -325,6 +325,30 @@ describe('manager http API', () => {
       expect(response.status).toBe(200);
       expect(body.content).toContain('Manager UI feature notes.');
       expect(body.localMemory?.node.uri).toBe('viking://user/denys/memories/durable/projects/threadnote/manager-ui.md');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('runs recall through the scoped manager Effect runtime', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/recall`, {
+        body: JSON.stringify({query: 'manager context'}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      const body = (await response.json()) as {readonly output: string};
+
+      expect(response.status).toBe(200);
+      expect(body.output).toBe('recall result: manager context');
+      expect(vi.mocked(memory.runRecall)).toHaveBeenCalledWith(config, {
+        nodeLimit: undefined,
+        project: undefined,
+        query: 'manager context',
+      });
     } finally {
       await server.close();
     }
@@ -431,9 +455,9 @@ describe('manager http API', () => {
     vi.mocked(lifecycle.runRepair).mockImplementation((_config, options) =>
       Effect.gen(function* () {
         const label = options.dryRun ? 'dry run' : 'applied';
-        yield* Effect.sync(() => console.log(`${label} start`));
+        yield* Console.log(`${label} start`);
         yield* Effect.sleep('10 millis');
-        yield* Effect.sync(() => console.log(`${label} end`));
+        yield* Console.log(`${label} end`);
       }),
     );
     const server = await startServer(config, 'secret');

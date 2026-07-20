@@ -1,6 +1,6 @@
-import {chmod, mkdir, readFile, writeFile} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
-import {Effect} from 'effect';
+import {Console, Effect, FileSystem} from 'effect';
 import {
   CLAUDE_SETTINGS_PATH,
   HOOK_AUTO_PRECOMPACT_TOPIC,
@@ -10,6 +10,7 @@ import {
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
 import {parseAgentClient} from './mcp.js';
+import {fromPromiseError} from './effect/errors.js';
 import {runHandoff, runRecall} from './memory.js';
 import {applyScrubber} from './share.js';
 import {distillTrace} from './trace.js';
@@ -41,56 +42,57 @@ const MANAGED_HOOKS: readonly ManagedHookEntry[] = [
 
 export {parseAgentClient as parseHookClient};
 
-export async function runHooksInstall(
-  config: RuntimeConfig,
-  agent: AgentClient,
-  options: HooksInstallOptions,
-): Promise<void> {
-  const apply = options.apply === true && options.dryRun !== true;
-  const remove = options.remove === true;
-  switch (agent) {
-    case 'claude':
-      await runClaudeHooksInstall({apply, remove});
-      return;
-    case 'codex':
-      printCodexHooksNotice(remove);
-      return;
-    case 'cursor':
-      printNoHooksSupported('cursor', remove);
-      return;
-    case 'copilot':
-      printNoHooksSupported('copilot', remove);
-      return;
-  }
+export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, options: HooksInstallOptions) {
+  return Effect.gen(function* () {
+    const apply = options.apply === true && options.dryRun !== true;
+    const remove = options.remove === true;
+    switch (agent) {
+      case 'claude':
+        yield* runClaudeHooksInstall({apply, remove});
+        return;
+      case 'codex':
+        yield* printCodexHooksNotice(remove);
+        return;
+      case 'cursor':
+        yield* printNoHooksSupported('cursor', remove);
+        return;
+      case 'copilot':
+        yield* printNoHooksSupported('copilot', remove);
+        return;
+    }
+  });
 }
 
-async function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remove: boolean}): Promise<void> {
-  const path = expandPath(CLAUDE_SETTINGS_PATH);
-  const existingRaw = (await exists(path)) ? await readFile(path, 'utf8') : '{}';
-  const parsed = parseJsonConfigObject(existingRaw) ?? {};
-  const next = options.remove ? withoutThreadnoteHooks(parsed) : withThreadnoteHooks(parsed);
-  const before = JSON.stringify(parsed);
-  const after = JSON.stringify(next);
-  if (before === after) {
-    console.log(`Claude hooks already ${options.remove ? 'absent' : 'managed'} in ${path}.`);
-    return;
-  }
+function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remove: boolean}) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = expandPath(CLAUDE_SETTINGS_PATH);
+    const existingRaw = (yield* fs.exists(path)) ? yield* fs.readFileString(path) : '{}';
+    const parsed = parseJsonConfigObject(existingRaw) ?? {};
+    const next = options.remove ? withoutThreadnoteHooks(parsed) : withThreadnoteHooks(parsed);
+    const before = JSON.stringify(parsed);
+    const after = JSON.stringify(next);
+    if (before === after) {
+      yield* Console.log(`Claude hooks already ${options.remove ? 'absent' : 'managed'} in ${path}.`);
+      return;
+    }
 
-  console.log(`${options.apply ? 'Updating' : 'Would update'} ${path}:`);
-  for (const entry of MANAGED_HOOKS) {
-    console.log(`  ${options.remove ? '-' : '+'} ${entry.event}: ${entry.command}`);
-  }
+    yield* Console.log(`${options.apply ? 'Updating' : 'Would update'} ${path}:`);
+    for (const entry of MANAGED_HOOKS) {
+      yield* Console.log(`  ${options.remove ? '-' : '+'} ${entry.event}: ${entry.command}`);
+    }
 
-  if (!options.apply) {
-    console.log('\nRe-run with --apply to actually modify the file.');
-    return;
-  }
+    if (!options.apply) {
+      yield* Console.log('\nRe-run with --apply to actually modify the file.');
+      return;
+    }
 
-  await mkdir(dirname(path), {recursive: true});
-  const serialized = `${JSON.stringify(next, undefined, 2)}\n`;
-  await writeFile(path, serialized, {encoding: 'utf8', mode: 0o600});
-  await chmod(path, 0o600);
-  console.log(`${options.remove ? 'Removed' : 'Installed'} threadnote-managed Claude hooks.`);
+    yield* fs.makeDirectory(dirname(path), {recursive: true});
+    const serialized = `${JSON.stringify(next, undefined, 2)}\n`;
+    yield* fs.writeFileString(path, serialized, {mode: 0o600});
+    yield* fs.chmod(path, 0o600);
+    yield* Console.log(`${options.remove ? 'Removed' : 'Installed'} threadnote-managed Claude hooks.`);
+  });
 }
 
 function withThreadnoteHooks(input: JsonObject): JsonObject {
@@ -142,12 +144,11 @@ function ensureMutableArray(value: unknown): unknown[] {
   return Array.isArray(value) ? [...value] : [];
 }
 
-function printCodexHooksNotice(remove: boolean): void {
+function printCodexHooksNotice(remove: boolean) {
   if (remove) {
-    console.log('Codex CLI does not expose a managed hook surface today, so there is nothing to remove.');
-    return;
+    return Console.log('Codex CLI does not expose a managed hook surface today, so there is nothing to remove.');
   }
-  console.log(
+  return Console.log(
     [
       'Codex CLI does not currently expose lifecycle hooks (no PreCompact or SessionStart analog).',
       'Threadnote already installs Codex user instructions at ~/.codex/AGENTS.md; that remains the active guidance surface.',
@@ -156,12 +157,11 @@ function printCodexHooksNotice(remove: boolean): void {
   );
 }
 
-function printNoHooksSupported(agent: AgentClient, remove: boolean): void {
+function printNoHooksSupported(agent: AgentClient, remove: boolean) {
   if (remove) {
-    console.log(`${agent} does not expose a hook surface; nothing to remove.`);
-    return;
+    return Console.log(`${agent} does not expose a hook surface; nothing to remove.`);
   }
-  console.log(
+  return Console.log(
     [
       `${agent} does not expose agent-mode hooks today.`,
       'Threadnote already installs user-level instructions for this agent; that remains the active guidance surface.',
@@ -195,12 +195,8 @@ export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOpti
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
   return Effect.gen(function* () {
-    const project =
-      (yield* Effect.tryPromise({
-        try: () => resolveRepoName(),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      })) ?? 'general';
-    const {sessionId, trace} = yield* Effect.promise(() => captureTraceContext());
+    const project = (yield* fromPromiseError(() => resolveRepoName())) ?? 'general';
+    const {sessionId, trace} = yield* fromPromiseError(() => captureTraceContext());
     yield* runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
@@ -229,25 +225,18 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
   // Hooks must never block session start. Failures fall through quietly so the
   // user just gets a normal session without injected context.
   return Effect.gen(function* () {
-    const project = yield* Effect.tryPromise({
-      try: () => resolveRepoName(),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-    });
+    const project = yield* fromPromiseError(() => resolveRepoName());
     if (!project) {
       return;
     }
     yield* emitUpdateBannerIfOutdated(config);
     yield* Effect.sync(() => process.stdout.write(`## Threadnote — latest context for ${project}\n\n`));
-    yield* Effect.tryPromise({
-      try: () =>
-        runRecall(config, {
-          dryRun: options.dryRun === true,
-          inferScope: true,
-          nodeLimit: '5',
-          // Keep "current branch" here so recall enriches the query with local git/workspace terms.
-          query: `${project} current branch latest handoff durable feature memory`,
-        }),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    yield* runRecall(config, {
+      dryRun: options.dryRun === true,
+      inferScope: true,
+      nodeLimit: '5',
+      // Keep "current branch" here so recall enriches the query with local git/workspace terms.
+      query: `${project} current branch latest handoff durable feature memory`,
     });
   }).pipe(
     Effect.catch(error =>

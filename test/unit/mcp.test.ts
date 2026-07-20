@@ -1,10 +1,17 @@
 import {chmod, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
+import {captureConsole} from '../../src/effect/console.js';
+import {fromPromise} from '../../src/effect/errors.js';
+import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {parseMcpToolset} from '../../src/mcp_toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
+
+const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
 
 function runtime(): RuntimeConfig {
   return {
@@ -22,7 +29,7 @@ function runtime(): RuntimeConfig {
 async function dryRunOutput(toolset?: 'core' | 'full'): Promise<string> {
   const lines: string[] = [];
   vi.spyOn(console, 'log').mockImplementation(value => lines.push(String(value)));
-  await runMcpInstall(runtime(), 'codex', {toolset});
+  await run(runMcpInstall(runtime(), 'codex', {toolset}));
   return lines.join('\n');
 }
 
@@ -71,7 +78,7 @@ describe('MCP agent executable resolution', () => {
     );
     process.env.PATH = [join(broken, '..'), join(healthy, '..')].join(delimiter);
 
-    await runMcpInstall(runtime(), 'codex', {apply: true});
+    await run(runMcpInstall(runtime(), 'codex', {apply: true}));
 
     const calls = await readFile(callsPath, 'utf8');
     expect(calls).toContain('mcp remove threadnote');
@@ -82,12 +89,13 @@ describe('MCP agent executable resolution', () => {
   it('skips a broken Codex launcher during repair and gives explicit installs an actionable error', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
-    const lines: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation(value => lines.push(String(value)));
 
-    await expect(resolveMcpClients('codex', 'repair')).resolves.toEqual([]);
-    expect(lines.join('\n')).toMatch(/codex command.*not working/i);
-    await expect(runMcpInstall(runtime(), 'codex', {apply: true})).rejects.toThrow(
+    const resolution = await run(
+      captureConsole(fromPromise('resolve MCP clients', () => resolveMcpClients('codex', 'repair'))),
+    );
+    expect(resolution.value).toEqual([]);
+    expect(resolution.output).toMatch(/codex command.*not working/i);
+    await expect(run(runMcpInstall(runtime(), 'codex', {apply: true}))).rejects.toThrow(
       /repair or reinstall codex.*threadnote mcp-install codex --apply/i,
     );
   });

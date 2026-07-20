@@ -1,4 +1,7 @@
 import {stat} from 'node:fs/promises';
+import {Console, Effect} from 'effect';
+
+const output = Effect.runSync(Console.Console);
 
 const budgets = [
   {bytes: 1_700_000, path: 'dist/threadnote.js'},
@@ -10,7 +13,7 @@ let exceeded = false;
 for (const budget of budgets) {
   const {size} = await stat(budget.path);
   const status = size <= budget.bytes ? 'OK' : 'OVER';
-  console.log(`${status} ${budget.path}: ${size.toLocaleString()} / ${budget.bytes.toLocaleString()} bytes`);
+  output.log(`${status} ${budget.path}: ${size.toLocaleString()} / ${budget.bytes.toLocaleString()} bytes`);
   exceeded ||= size > budget.bytes;
 }
 

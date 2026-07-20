@@ -6,7 +6,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {Effect, pipe} from 'effect';
+import {Console, Effect, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -75,6 +75,8 @@ import {
 } from './utils.js';
 import {withIdentity} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
+import {runWithConsole} from './effect/console.js';
+import {fromPromiseError as attemptPromise} from './effect/errors.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {ApplicationLayer} from './effect/runtime.js';
 
@@ -186,16 +188,15 @@ const mainEffect = Effect.gen(function* () {
     try: () => parseMcpToolset(process.env[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
     catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
   });
-  mcpStartupVersion = yield* Effect.tryPromise(currentPackageVersion).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
+  mcpStartupVersion = yield* attemptPromise(currentPackageVersion).pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
     'Threadnote provides local context. On non-trivial work, call `recall_context` with repo/project in `query` and absolute `callerCwd`; read relevant `viking://` URIs. Store reusable facts as durable and progress as handoff with stable project/topic; replace instead of duplicate. Do not store secrets, credentials, customer data, or raw production logs. Confirm before publishing durable memories; never publish handoffs or preferences. Use `threadnote_guide` for capabilities and CLI for absent advanced tools.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
+  const output = yield* Console.Console;
   yield* Effect.acquireRelease(
-    Effect.sync(() => startShareBackgroundFetch(config)),
+    Effect.sync(() => runWithConsole(output, () => startShareBackgroundFetch(config))),
     () => Effect.sync(() => stopShareBackgroundFetch(config)),
   );
   yield* Effect.sync(() => process.stderr.write('Threadnote local MCP adapter running\n'));
@@ -1757,9 +1758,6 @@ interface WriteDurableMemoryParams {
   readonly replaceUri?: string;
 }
 
-const attemptPromise = <A>(evaluate: () => Promise<A>) =>
-  Effect.tryPromise({try: evaluate, catch: cause => (cause instanceof Error ? cause : new Error(String(cause)))});
-
 function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
   return Effect.gen(function* () {
     const ov = yield* attemptPromise(requiredOpenVikingCli);
@@ -1858,10 +1856,7 @@ function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: s
 
 function runOpenVikingRemoveTool(config: RuntimeConfig, uri: string, recursive: boolean) {
   return Effect.gen(function* () {
-    const ov = yield* Effect.tryPromise({
-      try: requiredOpenVikingCli,
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-    });
+    const ov = yield* attemptPromise(requiredOpenVikingCli);
     const removed = yield* removeVikingResourceWithRetry(ov, config, uri, recursive);
     return {
       content: [
@@ -2339,10 +2334,9 @@ function textFromCallToolResult(result: CallToolResult): string {
 }
 
 function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string) {
-  return Effect.tryPromise({
-    try: requiredOpenVikingCli,
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-  }).pipe(Effect.flatMap(ov => removeVikingResourceWithRetry(ov, config, uri)));
+  return attemptPromise(requiredOpenVikingCli).pipe(
+    Effect.flatMap(ov => removeVikingResourceWithRetry(ov, config, uri)),
+  );
 }
 
 interface SharePublishToolOptions {

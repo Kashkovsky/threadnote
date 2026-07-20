@@ -1,5 +1,5 @@
-import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import {Effect, FileSystem} from 'effect';
 
 export interface DependencyFacts {
   readonly dependencies: readonly string[];
@@ -13,13 +13,15 @@ export interface GraphEdge {
   readonly project: string;
 }
 
-async function readIfExists(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch {
-    return undefined;
-  }
-}
+const readIfExists = Effect.fn('graph.readIfExists')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(path).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
+});
 
 function parsePackageJson(
   content: string,
@@ -88,37 +90,39 @@ function parseGoMod(content: string): {readonly dependencies: readonly string[];
  * Deterministic formats only (npm package.json + go.mod) so we never emit wrong
  * edges; unparseable files are ignored. No AST, lockfiles, or API analysis.
  */
-export async function extractDependencyFacts(projectRoot: string): Promise<DependencyFacts> {
-  const dependencies = new Set<string>();
-  const ecosystems: string[] = [];
-  const manifestFiles: string[] = [];
-  let publishedName: string | undefined;
+export function extractDependencyFacts(projectRoot: string) {
+  return Effect.gen(function* () {
+    const dependencies = new Set<string>();
+    const ecosystems: string[] = [];
+    const manifestFiles: string[] = [];
+    let publishedName: string | undefined;
 
-  const packageJson = await readIfExists(join(projectRoot, 'package.json'));
-  if (packageJson !== undefined) {
-    const parsed = parsePackageJson(packageJson);
-    if (parsed) {
-      manifestFiles.push('package.json');
-      ecosystems.push('npm');
+    const packageJson = yield* readIfExists(join(projectRoot, 'package.json'));
+    if (packageJson !== undefined) {
+      const parsed = parsePackageJson(packageJson);
+      if (parsed) {
+        manifestFiles.push('package.json');
+        ecosystems.push('npm');
+        publishedName = publishedName ?? parsed.publishedName;
+        for (const dependency of parsed.dependencies) {
+          dependencies.add(dependency);
+        }
+      }
+    }
+
+    const goMod = yield* readIfExists(join(projectRoot, 'go.mod'));
+    if (goMod !== undefined) {
+      const parsed = parseGoMod(goMod);
+      manifestFiles.push('go.mod');
+      ecosystems.push('go');
       publishedName = publishedName ?? parsed.publishedName;
       for (const dependency of parsed.dependencies) {
         dependencies.add(dependency);
       }
     }
-  }
 
-  const goMod = await readIfExists(join(projectRoot, 'go.mod'));
-  if (goMod !== undefined) {
-    const parsed = parseGoMod(goMod);
-    manifestFiles.push('go.mod');
-    ecosystems.push('go');
-    publishedName = publishedName ?? parsed.publishedName;
-    for (const dependency of parsed.dependencies) {
-      dependencies.add(dependency);
-    }
-  }
-
-  return {dependencies: [...dependencies].sort(), ecosystems, manifestFiles, publishedName};
+    return {dependencies: [...dependencies].sort(), ecosystems, manifestFiles, publishedName};
+  });
 }
 
 /**

@@ -1,10 +1,14 @@
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {runSharePublish} from '../../src/share.js';
+import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+
+const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
+  Effect.runPromise(runSharePublishEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();

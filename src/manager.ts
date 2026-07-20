@@ -2,9 +2,11 @@ import {createServer, type IncomingMessage, type Server, type ServerResponse} fr
 import {randomBytes, randomUUID} from 'node:crypto';
 import {lstat, readFile, readdir, rm} from 'node:fs/promises';
 import {join, relative, sep} from 'node:path';
-import {Effect, FiberSet, FileSystem, Result} from 'effect';
+import {Console, Effect, FiberSet, FileSystem, Result} from 'effect';
 import {effectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
 import {runCommandEffect} from './effect/command.js';
+import {captureConsole, capturePromiseConsole, consoleOutput} from './effect/console.js';
+import {fromPromiseError} from './effect/errors.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {uriSegment} from './manifest.js';
 import {
@@ -93,11 +95,6 @@ interface ApiContext {
 type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
 type ManagerEffectPromise = <A>(effect: ManagerOperation<A>) => Promise<A>;
 
-// Capturing legacy console output mutates process-global state. Serialize these
-// compatibility operations so concurrent manager requests cannot steal or
-// restore one another's console handlers.
-let capturedOutputQueue: Promise<void> = Promise.resolve();
-
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
 interface ConsolidationJob {
@@ -150,22 +147,17 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       const server = createManagerServer({config, jobs: new Map(), token}, runEffect);
       const port = options.uiPort ?? 0;
       yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: async () => {
-            await listen(server, port);
-            return server;
-          },
-          catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        fromPromiseError(async () => {
+          await listen(server, port);
+          return server;
         }),
         closeManagerServer,
       );
       const address = server.address();
       const actualPort = typeof address === 'object' && address ? address.port : port;
       const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
-      yield* Effect.sync(() => {
-        console.log(`Threadnote manager: ${url}`);
-        console.log('Press Ctrl-C to stop the manager.');
-      });
+      yield* Console.log(`Threadnote manager: ${url}`);
+      yield* Console.log('Press Ctrl-C to stop the manager.');
       if (options.open !== false) {
         yield* runCommandEffect('open', [url], {allowFailure: true});
       }
@@ -264,6 +256,7 @@ export async function readManagedMemory(
 export async function readContextUri(
   config: RuntimeConfig,
   uri: string,
+  runEffect?: ManagerEffectPromise,
 ): Promise<{
   readonly content: string;
   readonly localMemory?: Awaited<ReturnType<typeof readManagedMemory>>;
@@ -274,7 +267,7 @@ export async function readContextUri(
     const localMemory = await readManagedMemory(config, uri);
     return {content: localMemory.content, localMemory, output: localMemory.content};
   } catch {
-    const result = await runCaptured(() => runRead(config, uri, {}));
+    const result = await runCaptured(() => runRead(config, uri, {}), runEffect);
     return {content: result.output, output: result.output};
   }
 }
@@ -321,10 +314,9 @@ function handleRequestEffect(
         writeJson(response, 401, {error: 'Unauthorized'});
         return;
       }
-      const [agents, version] = yield* Effect.tryPromise({
-        try: () => Promise.all([detectConsolidationAgents(), currentPackageVersion()]),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
+      const [agents, version] = yield* fromPromiseError(() =>
+        Promise.all([detectConsolidationAgents(), currentPackageVersion()]),
+      );
       const latest = yield* Effect.try({
         try: updateRegistry,
         catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
@@ -343,18 +335,12 @@ function handleRequestEffect(
         writeJson(response, 401, {error: 'Unauthorized'});
         return;
       }
-      const body = yield* Effect.tryPromise({
-        try: () => readJsonBody(request),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
+      const body = yield* fromPromiseError(() => readJsonBody(request));
       const job = yield* createConsolidation(context, body);
       writeJson(response, 200, {job});
     });
   } else {
-    requestEffect = Effect.tryPromise({
-      try: () => handleRequestLegacy(context, request, response),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-    });
+    requestEffect = fromPromiseError(() => handleRequestLegacy(context, request, response));
   }
 
   return requestEffect.pipe(
@@ -396,7 +382,7 @@ async function handleRequestLegacy(
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/read') {
-    writeJson(response, 200, await readContextUri(context.config, requiredQuery(url, 'uri')));
+    writeJson(response, 200, await readContextUri(context.config, requiredQuery(url, 'uri'), context.runEffect));
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/shares') {
@@ -495,10 +481,7 @@ async function handleRequestLegacy(
         await runCaptured(
           () =>
             Effect.gen(function* () {
-              yield* Effect.tryPromise({
-                try: () => runCompactDiagnostics(context.config, body),
-                catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-              });
+              yield* fromPromiseError(() => runCompactDiagnostics(context.config, body));
               yield* runCompact(context.config, body);
             }),
           context.runEffect,
@@ -509,17 +492,19 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runRecall(context.config, {
-            query: requireString(body.query, 'query'),
-            nodeLimit: optionalString(body.nodeLimit),
-            project: optionalString(body.project),
-          }),
+        await runCaptured(
+          () =>
+            runRecall(context.config, {
+              query: requireString(body.query, 'query'),
+              nodeLimit: optionalString(body.nodeLimit),
+              project: optionalString(body.project),
+            }),
+          context.runEffect,
         ),
       );
       return;
     case '/api/read':
-      writeJson(response, 200, await readContextUri(context.config, requireString(body.uri, 'uri')));
+      writeJson(response, 200, await readContextUri(context.config, requireString(body.uri, 'uri'), context.runEffect));
       return;
     case '/api/shares/init':
       requireConfirm(body);
@@ -573,7 +558,7 @@ async function handleRequestLegacy(
       );
       return;
     case '/api/doctor/start':
-      writeJson(response, 200, await runCaptured(() => runStart(context.config, {})));
+      writeJson(response, 200, await runCaptured(() => runStart(context.config, {}), context.runEffect));
       return;
     case '/api/doctor/repair-dry-run':
       writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: true}), context.runEffect));
@@ -587,15 +572,19 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() => runImportPack(context.config, {path: requireString(body.path, 'path')})),
+        await runCaptured(
+          () => runImportPack(context.config, {path: requireString(body.path, 'path')}),
+          context.runEffect,
+        ),
       );
       return;
     case '/api/export-pack':
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runExportPack(context.config, {path: optionalString(body.path), uri: optionalString(body.uri)}),
+        await runCaptured(
+          () => runExportPack(context.config, {path: optionalString(body.path), uri: optionalString(body.uri)}),
+          context.runEffect,
         ),
       );
       return;
@@ -604,10 +593,12 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          body.skills === true
-            ? runSeedSkills(context.config, {dryRun: body.dryRun === true})
-            : runSeed(context.config, {dryRun: body.dryRun === true}),
+        await runCaptured(
+          () =>
+            body.skills === true
+              ? runSeedSkills(context.config, {dryRun: body.dryRun === true})
+              : runSeed(context.config, {dryRun: body.dryRun === true}),
+          context.runEffect,
         ),
       );
       return;
@@ -895,8 +886,8 @@ async function removeManagedFolder(
     await runEffect(runForget(config, fileUri, {}));
   }
   await rm(path, {force: true, recursive: true});
-  console.log(`Removed folder: ${uri}`);
-  console.log(`Forgot ${fileUris.length} file${fileUris.length === 1 ? '' : 's'}.`);
+  consoleOutput.log(`Removed folder: ${uri}`);
+  consoleOutput.log(`Forgot ${fileUris.length} file${fileUris.length === 1 ? '' : 's'}.`);
 }
 
 async function fileUrisUnderFolder(config: RuntimeConfig, folderPath: string): Promise<readonly string[]> {
@@ -961,10 +952,9 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
     };
     context.jobs.set(job.id, job);
     yield* Effect.gen(function* () {
-      const sources = yield* Effect.tryPromise({
-        try: () => Promise.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri))),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
+      const sources = yield* fromPromiseError(() =>
+        Promise.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri))),
+      );
       job.draft = yield* runConsolidationAgent(input.agent, sources);
       job.status = 'completed';
     }).pipe(
@@ -1042,10 +1032,7 @@ function runConsolidationAgent(
     return Effect.fail(new Error(`${agent} does not expose a supported non-interactive consolidation mode.`));
   }
   return Effect.gen(function* () {
-    const executable = yield* Effect.tryPromise({
-      try: () => findExecutable([agent]),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-    });
+    const executable = yield* fromPromiseError(() => findExecutable([agent]));
     if (!executable) {
       return yield* Effect.fail(new Error(`${agent} executable was not found.`));
     }
@@ -1192,34 +1179,18 @@ async function runCaptured(
   action: () => Promise<void> | ManagerOperation<void>,
   runEffect?: ManagerEffectPromise,
 ): Promise<{readonly output: string}> {
-  const queued = capturedOutputQueue.then(async () => {
-    const lines: string[] = [];
-    const originalLog = console.log;
-    const originalWarn = console.warn;
-    const originalError = console.error;
-    console.log = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-    console.warn = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-    console.error = (...args: readonly unknown[]) => lines.push(args.map(String).join(' '));
-    try {
-      const operation = action();
-      if (Effect.isEffect(operation)) {
-        if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
-        await runEffect(operation);
-      } else {
-        await operation;
-      }
-    } finally {
-      console.log = originalLog;
-      console.warn = originalWarn;
-      console.error = originalError;
+  const captured = await capturePromiseConsole(async () => {
+    const operation = action();
+    if (!Effect.isEffect(operation)) {
+      await operation;
+      return undefined;
     }
-    return {output: lines.join('\n')};
+    if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
+    return runEffect(captureConsole(operation));
   });
-  capturedOutputQueue = queued.then(
-    () => undefined,
-    () => undefined,
-  );
-  return queued;
+  return {
+    output: [captured.output, captured.value?.output].filter(Boolean).join('\n'),
+  };
 }
 
 function memoryUriFor(

@@ -2,6 +2,7 @@ import {lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from 'n
 import {homedir, tmpdir} from 'node:os';
 import {basename, dirname, isAbsolute, join, relative, sep} from 'node:path';
 import {TextDecoder} from 'node:util';
+import {consoleOutput} from './effect/console.js';
 import {uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
@@ -290,17 +291,17 @@ export async function runShareInit(config: ShareRuntime, remoteUrl: string, opti
     version: TEAMS_FILE_VERSION,
   };
   if (dryRun) {
-    console.log(`Would write teams file: ${teamsFilePath(config)}`);
-    console.log(`Would set ${teamName} as default? ${updatedTeams.defaultTeam === teamName}`);
+    consoleOutput.log(`Would write teams file: ${teamsFilePath(config)}`);
+    consoleOutput.log(`Would set ${teamName} as default? ${updatedTeams.defaultTeam === teamName}`);
   } else {
     await writeTeamsFile(config, updatedTeams);
-    console.log(`Configured shared team "${teamName}" -> ${portablePath(worktree)}`);
+    consoleOutput.log(`Configured shared team "${teamName}" -> ${portablePath(worktree)}`);
   }
 
   if (!dryRun) {
     await ensureSharedGitignore(worktree, git, options.push !== false);
     const ingested = await ingestWorktreeFiles(config, newConfig, 'create');
-    console.log(`Ingested ${ingested} shared file(s) into OpenViking.`);
+    consoleOutput.log(`Ingested ${ingested} shared file(s) into OpenViking.`);
   }
 }
 
@@ -336,7 +337,7 @@ async function ensureSharedGitignore(worktree: string, git: string, push: boolea
   }
   segments.push(missingPatterns.join('\n'), '\n');
   await writeFile(gitignorePath, `${existing}${segments.join('')}`, {encoding: 'utf8'});
-  console.log(`Added ${missingPatterns.join(', ')} to ${portablePath(gitignorePath)}`);
+  consoleOutput.log(`Added ${missingPatterns.join(', ')} to ${portablePath(gitignorePath)}`);
   await maybeRun(false, git, ['-C', worktree, 'add', '.gitignore']);
   const commitResult = await runCommand(
     git,
@@ -346,7 +347,7 @@ async function ensureSharedGitignore(worktree: string, git: string, push: boolea
   if (commitResult.exitCode !== 0) {
     const detail = commitResult.stderr.trim() || commitResult.stdout.trim();
     if (!/nothing to commit|no changes added/i.test(detail)) {
-      console.warn(
+      consoleOutput.warn(
         `.gitignore housekeeping commit was rejected (${detail || 'unknown'}); it will be retried on the next share sync.`,
       );
       return;
@@ -360,10 +361,10 @@ async function ensureSharedGitignore(worktree: string, git: string, push: boolea
 export async function runShareStatus(config: ShareRuntime, options: ShareStatusOptions): Promise<void> {
   const team = await resolveTeam(config, options.team);
   const git = await requiredExecutable('git');
-  console.log(`Team: ${team.name}`);
-  console.log(`Remote: ${team.config.remote}`);
-  console.log(`Worktree: ${portablePath(team.config.worktree)}`);
-  console.log(`Gitdir: ${portablePath(team.config.gitdir)}`);
+  consoleOutput.log(`Team: ${team.name}`);
+  consoleOutput.log(`Remote: ${team.config.remote}`);
+  consoleOutput.log(`Worktree: ${portablePath(team.config.worktree)}`);
+  consoleOutput.log(`Gitdir: ${portablePath(team.config.gitdir)}`);
   await maybeRun(options.dryRun === true, git, ['-C', team.config.worktree, 'status', '--short', '--branch']);
   await maybeRun(options.dryRun === true, git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
     allowFailure: true,
@@ -371,10 +372,10 @@ export async function runShareStatus(config: ShareRuntime, options: ShareStatusO
   const ahead = await gitOutput(team.config.worktree, ['rev-list', '--count', '@{u}..HEAD'], options.dryRun === true);
   const behind = await gitOutput(team.config.worktree, ['rev-list', '--count', 'HEAD..@{u}'], options.dryRun === true);
   if (ahead !== undefined) {
-    console.log(`Ahead of upstream: ${ahead}`);
+    consoleOutput.log(`Ahead of upstream: ${ahead}`);
   }
   if (behind !== undefined) {
-    console.log(`Behind upstream: ${behind}`);
+    consoleOutput.log(`Behind upstream: ${behind}`);
   }
 }
 
@@ -384,11 +385,11 @@ export function startShareBackgroundFetch(config: ShareRuntime): void {
     return;
   }
   void refreshShareUpdateState(config, {force: true}).catch(err => {
-    console.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+    consoleOutput.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
   });
   state.timer = setInterval(() => {
     void refreshShareUpdateState(config, {force: false}).catch(err => {
-      console.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+      consoleOutput.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }, AUTO_SHARE_FETCH_INTERVAL_MS);
   state.timer.unref?.();
@@ -514,7 +515,7 @@ async function refreshShareUpdateState(config: ShareRuntime, options: {readonly 
     refreshShareUpdateStateLocked(config, state, options),
   );
   for (const warning of warnings) {
-    console.error(warning);
+    consoleOutput.error(warning);
   }
 }
 
@@ -603,7 +604,7 @@ export async function runShareSync(config: ShareRuntime, options: ShareSyncOptio
   const failures: string[] = [];
   for (const [index, team] of teams.entries()) {
     if (teams.length > 1) {
-      console.log(`Syncing shared team "${team.name}" (${index + 1}/${teams.length})...`);
+      consoleOutput.log(`Syncing shared team "${team.name}" (${index + 1}/${teams.length})...`);
     }
     try {
       await runShareSyncForTeam(config, team, options);
@@ -668,7 +669,7 @@ async function runShareSyncForTeam(config: ShareRuntime, team: ResolvedTeam, opt
     ? undefined
     : await runCommand(git, ['-C', worktree, 'rebase', '@{u}'], {allowFailure: true});
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'rebase', '@{u}'])}`);
+    consoleOutput.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'rebase', '@{u}'])}`);
   } else if (pullResult && pullResult.exitCode !== 0) {
     // Detect mid-rebase state via filesystem markers rather than parsing git's
     // output — both because git's English phrasing varies by version and
@@ -697,16 +698,16 @@ async function runShareSyncForTeam(config: ShareRuntime, team: ResolvedTeam, opt
       beforeRev && afterRev && beforeRev !== afterRev ? await listChangedFiles(worktree, beforeRev, afterRev) : [];
     const combined = mergeChanges(previouslyPending, newChanges);
     if (combined.length === 0) {
-      console.log('No upstream changes to reindex.');
+      consoleOutput.log('No upstream changes to reindex.');
     } else {
       const result = await applyAndPersistChanges(config, team.config, state, combined);
       const succeeded = combined.length - result.failed.length;
-      console.log(`Reindexed ${succeeded} file change(s) into OpenViking.`);
+      consoleOutput.log(`Reindexed ${succeeded} file change(s) into OpenViking.`);
       if (result.failed.length > 0) {
-        console.warn(
+        consoleOutput.warn(
           `share sync: ${result.failed.length} file(s) could not be ingested on this run; they are persisted and will be retried on the next sync or agent recall/read.`,
         );
-        console.warn(formatShareConflictNextSteps(team.name, result.failed));
+        consoleOutput.warn(formatShareConflictNextSteps(team.name, result.failed));
       }
     }
   }
@@ -716,7 +717,7 @@ async function runShareSyncForTeam(config: ShareRuntime, team: ResolvedTeam, opt
       ? undefined
       : await runCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
     if (dryRun) {
-      console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
+      consoleOutput.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME])}`);
     } else if (pushResult && pushResult.exitCode !== 0) {
       throw new Error(
         `git push failed in ${worktree}: ${pushResult.stderr.trim() || pushResult.stdout.trim() || 'unknown error'}`,
@@ -729,20 +730,20 @@ export async function runShareConflicts(config: ShareRuntime, options: ShareConf
   const conflicts = await listShareConflicts(config, options);
   if (conflicts.length === 0) {
     const team = options.team ? ` for team "${options.team}"` : '';
-    console.log(`No pending shared memory conflicts${team}.`);
+    consoleOutput.log(`No pending shared memory conflicts${team}.`);
     return;
   }
-  console.log(`Pending shared memory conflicts: ${conflicts.length}`);
+  consoleOutput.log(`Pending shared memory conflicts: ${conflicts.length}`);
   for (const conflict of conflicts) {
-    console.log('');
-    console.log(`${conflict.id}`);
-    console.log(`  uri: ${conflict.uri}`);
-    console.log(`  status: ${conflict.status}`);
-    console.log(`  reason: ${conflict.reason}`);
-    console.log(`  show: threadnote share conflict show ${conflict.id}`);
-    console.log(`  take shared: threadnote share conflict resolve ${conflict.id} --take shared`);
-    console.log(`  take local: threadnote share conflict resolve ${conflict.id} --take local`);
-    console.log(`  merged file: threadnote share conflict resolve ${conflict.id} --from-file merged.md`);
+    consoleOutput.log('');
+    consoleOutput.log(`${conflict.id}`);
+    consoleOutput.log(`  uri: ${conflict.uri}`);
+    consoleOutput.log(`  status: ${conflict.status}`);
+    consoleOutput.log(`  reason: ${conflict.reason}`);
+    consoleOutput.log(`  show: threadnote share conflict show ${conflict.id}`);
+    consoleOutput.log(`  take shared: threadnote share conflict resolve ${conflict.id} --take shared`);
+    consoleOutput.log(`  take local: threadnote share conflict resolve ${conflict.id} --take local`);
+    consoleOutput.log(`  merged file: threadnote share conflict resolve ${conflict.id} --from-file merged.md`);
   }
 }
 
@@ -752,16 +753,16 @@ export async function runShareConflictShow(
   options: ShareConflictShowOptions,
 ): Promise<void> {
   const detail = await showShareConflict(config, reference, options);
-  console.log(`Conflict: ${detail.id}`);
-  console.log(`URI: ${detail.uri}`);
-  console.log(`Status: ${detail.status}`);
-  console.log(`Reason: ${detail.reason}`);
-  console.log('');
-  console.log(detail.diff);
-  console.log('');
-  console.log('Resolve:');
+  consoleOutput.log(`Conflict: ${detail.id}`);
+  consoleOutput.log(`URI: ${detail.uri}`);
+  consoleOutput.log(`Status: ${detail.status}`);
+  consoleOutput.log(`Reason: ${detail.reason}`);
+  consoleOutput.log('');
+  consoleOutput.log(detail.diff);
+  consoleOutput.log('');
+  consoleOutput.log('Resolve:');
   for (const line of detail.resolutionGuidance) {
-    console.log(`  ${line}`);
+    consoleOutput.log(`  ${line}`);
   }
 }
 
@@ -772,15 +773,15 @@ export async function runShareConflictResolve(
 ): Promise<void> {
   const result = await resolveShareConflict(config, reference, options);
   for (const message of result.messages) {
-    console.log(message);
+    consoleOutput.log(message);
   }
   if (result.backupPath) {
-    console.log(`Backup: ${portablePath(result.backupPath)}`);
+    consoleOutput.log(`Backup: ${portablePath(result.backupPath)}`);
   }
   for (const message of result.gitMessages) {
-    console.log(message);
+    consoleOutput.log(message);
   }
-  console.log(`Resolved shared memory conflict: ${result.id}`);
+  consoleOutput.log(`Resolved shared memory conflict: ${result.id}`);
 }
 
 export async function listShareConflicts(
@@ -1187,7 +1188,7 @@ async function writeSharedConflictFile(
 ): Promise<void> {
   const filePath = join(team.config.worktree, conflict.relativePath);
   if (dryRun) {
-    console.log(`Would write shared file: ${portablePath(filePath)}`);
+    consoleOutput.log(`Would write shared file: ${portablePath(filePath)}`);
     return;
   }
   await mkdir(dirname(filePath), {recursive: true});
@@ -1357,7 +1358,7 @@ async function removeOrphanPackIndexes(dryRun: boolean, git: string, worktree: s
       if (tracked.exitCode === 0 && tracked.stdout.trim().length > 0) {
         continue;
       }
-      console.warn(
+      consoleOutput.warn(
         `${dryRun ? 'Would remove' : 'Removing'} incomplete shared pack (missing ${nameEntry.name}${PACK_MANIFEST_SUFFIX}): ${indexRelative}`,
       );
       if (!dryRun) {
@@ -1412,7 +1413,7 @@ export async function publishShareGitChange(
   }
 
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'commit', '-m', commitMessage])}`);
+    consoleOutput.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'commit', '-m', commitMessage])}`);
   } else {
     const commitResult = await runCommand(git, ['-C', worktree, 'commit', '-m', commitMessage], {allowFailure: true});
     if (commitResult.exitCode !== 0) {
@@ -1450,7 +1451,7 @@ async function runGitCommand(
   failureLabel: string,
 ): Promise<CommandResult | undefined> {
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(git, args)}`);
+    consoleOutput.log(`Would run: ${formatShellCommand(git, args)}`);
     return undefined;
   }
   const result = await runCommand(git, args, {allowFailure: true});
@@ -1479,20 +1480,20 @@ export async function runSharePublish(
   const targetUri = sharedUriFor(config, sourceUri, team.name);
 
   if (preview) {
-    console.log(`PREVIEW source: ${sourceUri}`);
-    console.log(`PREVIEW destination: ${targetUri}`);
+    consoleOutput.log(`PREVIEW source: ${sourceUri}`);
+    consoleOutput.log(`PREVIEW destination: ${targetUri}`);
     if (scrub.blocker) {
-      console.log(
+      consoleOutput.log(
         `PREVIEW BLOCKED: ${scrub.blocker}. Strip the sensitive value or rerun with --redact for soft-leak patterns.`,
       );
       return;
     }
     for (const redaction of scrub.redactions) {
-      console.log(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
+      consoleOutput.log(`PREVIEW redact: ${redaction.count}× ${redaction.name}`);
     }
-    console.log('-----BEGIN PREVIEW-----');
-    console.log(scrub.cleaned);
-    console.log('-----END PREVIEW-----');
+    consoleOutput.log('-----BEGIN PREVIEW-----');
+    consoleOutput.log(scrub.cleaned);
+    consoleOutput.log('-----END PREVIEW-----');
     return;
   }
 
@@ -1502,7 +1503,7 @@ export async function runSharePublish(
     );
   }
   for (const redaction of scrub.redactions) {
-    console.log(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
+    consoleOutput.log(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
   }
   const content = scrub.cleaned;
 
@@ -1522,7 +1523,7 @@ export async function runSharePublish(
     push: options.push,
   });
   for (const gitMessage of gitMessages) {
-    console.log(gitMessage);
+    consoleOutput.log(gitMessage);
   }
   try {
     await removeMemoryUri(config, ov, sourceUri, dryRun);
@@ -1532,7 +1533,7 @@ export async function runSharePublish(
       {cause: err},
     );
   }
-  console.log(`Published ${sourceUri} -> ${targetUri}`);
+  consoleOutput.log(`Published ${sourceUri} -> ${targetUri}`);
 }
 
 export async function runSharePublishArtifact(
@@ -2560,13 +2561,13 @@ export async function runShareInstallArtifacts(
 ): Promise<void> {
   const result = await installSharedAgentArtifacts(config, options);
   if (result.syncedTeams.length > 0) {
-    console.log(`Synced shared teams: ${result.syncedTeams.join(', ')}`);
+    consoleOutput.log(`Synced shared teams: ${result.syncedTeams.join(', ')}`);
   }
   for (const warning of result.warnings) {
-    console.warn(`Warning: ${warning}`);
+    consoleOutput.warn(`Warning: ${warning}`);
   }
   for (const message of result.messages) {
-    console.log(message);
+    consoleOutput.log(message);
   }
 }
 
@@ -2694,7 +2695,7 @@ export async function runShareUnpublish(
     verb: 'rm',
   });
   for (const gitMessage of gitMessages) {
-    console.log(gitMessage);
+    consoleOutput.log(gitMessage);
   }
   try {
     await removeMemoryUri(config, ov, sourceUri, dryRun);
@@ -2704,23 +2705,23 @@ export async function runShareUnpublish(
       {cause: err},
     );
   }
-  console.log(`Unpublished ${sourceUri} -> ${targetUri}`);
+  consoleOutput.log(`Unpublished ${sourceUri} -> ${targetUri}`);
 }
 
 export async function runShareList(config: ShareRuntime, _options: ShareListOptions): Promise<void> {
   const teams = await readTeamsFile(config);
   const entries = Object.values(teams.teams);
   if (entries.length === 0) {
-    console.log('No shared teams configured. Run: threadnote share init <remote-url>');
+    consoleOutput.log('No shared teams configured. Run: threadnote share init <remote-url>');
     return;
   }
   for (const team of entries) {
     const marker = team.name === teams.defaultTeam ? ' (default)' : '';
-    console.log(`- ${team.name}${marker}`);
-    console.log(`    remote: ${team.remote}`);
-    console.log(`    worktree: ${portablePath(team.worktree)}`);
-    console.log(`    gitdir: ${portablePath(team.gitdir)}`);
-    console.log(`    added: ${team.addedAt}`);
+    consoleOutput.log(`- ${team.name}${marker}`);
+    consoleOutput.log(`    remote: ${team.remote}`);
+    consoleOutput.log(`    worktree: ${portablePath(team.worktree)}`);
+    consoleOutput.log(`    gitdir: ${portablePath(team.gitdir)}`);
+    consoleOutput.log(`    added: ${team.addedAt}`);
   }
 }
 
@@ -2761,11 +2762,13 @@ export async function runShareRename(config: ShareRuntime, options: ShareRenameO
   };
 
   if (dryRun) {
-    console.log(`Would rename worktree: ${portablePath(oldTeam.config.worktree)} -> ${portablePath(newWorktree)}`);
-    console.log(`Would rename gitdir: ${portablePath(oldTeam.config.gitdir)} -> ${portablePath(newGitdir)}`);
-    console.log(`Would update git core.worktree and the worktree .git pointer for team "${newName}".`);
-    console.log(`Would reindex shared context under team "${newName}" and remove old shared URI tree.`);
-    console.log(`Would write teams file: ${teamsFilePath(config)}`);
+    consoleOutput.log(
+      `Would rename worktree: ${portablePath(oldTeam.config.worktree)} -> ${portablePath(newWorktree)}`,
+    );
+    consoleOutput.log(`Would rename gitdir: ${portablePath(oldTeam.config.gitdir)} -> ${portablePath(newGitdir)}`);
+    consoleOutput.log(`Would update git core.worktree and the worktree .git pointer for team "${newName}".`);
+    consoleOutput.log(`Would reindex shared context under team "${newName}" and remove old shared URI tree.`);
+    consoleOutput.log(`Would write teams file: ${teamsFilePath(config)}`);
     return;
   }
 
@@ -2810,8 +2813,8 @@ export async function runShareRename(config: ShareRuntime, options: ShareRenameO
     `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
     false,
   );
-  console.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
-  console.log(`Reindexed ${ingested} shared file(s).`);
+  consoleOutput.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
+  consoleOutput.log(`Reindexed ${ingested} shared file(s).`);
 }
 
 export async function runShareSetUrl(
@@ -2826,13 +2829,13 @@ export async function runShareSetUrl(
   const dryRun = options.dryRun === true;
   const git = await requiredExecutable('git');
   if (dryRun) {
-    console.log(
+    consoleOutput.log(
       `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, '--', remoteUrl])}`,
     );
-    console.log(
+    consoleOutput.log(
       `Would run: ${formatShellCommand(git, ['-C', team.config.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME])}`,
     );
-    console.log(`Would write teams file: ${teamsFilePath(config)}`);
+    consoleOutput.log(`Would write teams file: ${teamsFilePath(config)}`);
     return;
   }
   await runCommand(git, ['-C', team.config.worktree, 'remote', 'set-url', DEFAULT_GIT_REMOTE_NAME, '--', remoteUrl]);
@@ -2843,7 +2846,7 @@ export async function runShareSetUrl(
     ...teamsFile,
     teams: {...teamsFile.teams, [team.name]: updatedTeam},
   });
-  console.log(`Updated shared team "${team.name}" remote: ${remoteUrl}`);
+  consoleOutput.log(`Updated shared team "${team.name}" remote: ${remoteUrl}`);
 }
 
 export async function runShareRemove(config: ShareRuntime, options: ShareRemoveOptions): Promise<void> {
@@ -2851,7 +2854,7 @@ export async function runShareRemove(config: ShareRuntime, options: ShareRemoveO
   const dryRun = options.dryRun === true;
   if (options.preserveLocal === true) {
     const preserved = await preserveSharedMemoriesLocally(config, team.config, dryRun);
-    console.log(`${dryRun ? 'Would preserve' : 'Preserved'} ${preserved} shared durable memory file(s) locally.`);
+    consoleOutput.log(`${dryRun ? 'Would preserve' : 'Preserved'} ${preserved} shared durable memory file(s) locally.`);
   }
   const teamsFile = await readTeamsFile(config);
   const remaining: Record<string, ShareTeamConfig> = {};
@@ -2864,16 +2867,16 @@ export async function runShareRemove(config: ShareRuntime, options: ShareRemoveO
   const nextDefault = teamsFile.defaultTeam === team.name ? remainingNames[0] : teamsFile.defaultTeam;
   const updated: ShareTeamsFile = {defaultTeam: nextDefault, teams: remaining, version: TEAMS_FILE_VERSION};
   if (dryRun) {
-    console.log(`Would update teams file: ${teamsFilePath(config)}`);
+    consoleOutput.log(`Would update teams file: ${teamsFilePath(config)}`);
   } else {
     await writeTeamsFile(config, updated);
-    console.log(`Removed team "${team.name}" from teams.json.`);
+    consoleOutput.log(`Removed team "${team.name}" from teams.json.`);
   }
   if (options.keepFiles !== true) {
     await removePath(team.config.worktree, 'shared worktree', dryRun);
     await removePath(team.config.gitdir, 'shared gitdir', dryRun);
   } else {
-    console.log(`Keeping files at ${portablePath(team.config.worktree)} and ${portablePath(team.config.gitdir)}`);
+    consoleOutput.log(`Keeping files at ${portablePath(team.config.worktree)} and ${portablePath(team.config.gitdir)}`);
   }
 }
 
@@ -2899,7 +2902,7 @@ async function preserveSharedMemoriesLocally(
     const targetUri = `viking://user/${uriSegment(config.user)}/memories/${rel}`;
     const content = await readFile(file, 'utf8');
     if (dryRun) {
-      console.log(`Would preserve ${rel} -> ${targetUri}`);
+      consoleOutput.log(`Would preserve ${rel} -> ${targetUri}`);
     } else {
       await ensurePersonalDirectoryChain(config, ov, parentUri(targetUri));
       await writeMemoryFile(config, ov, targetUri, content, 'create', false);
@@ -2979,12 +2982,12 @@ export async function readTeamsFile(config: ShareRuntime): Promise<ShareTeamsFil
   if (typeof parsed.teams === 'object' && parsed.teams !== null && !Array.isArray(parsed.teams)) {
     for (const [name, value] of Object.entries(parsed.teams)) {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        console.warn(`Skipping non-object team entry "${name}" in ${path}.`);
+        consoleOutput.warn(`Skipping non-object team entry "${name}" in ${path}.`);
         continue;
       }
       const entry = value as Record<string, unknown>;
       if (typeof entry.remote !== 'string' || entry.remote.length === 0) {
-        console.warn(`Skipping team entry "${name}" in ${path}: missing or empty "remote" field.`);
+        consoleOutput.warn(`Skipping team entry "${name}" in ${path}: missing or empty "remote" field.`);
         continue;
       }
       teams[name] = {
@@ -3072,7 +3075,9 @@ async function walkMemoryFiles(root: string): Promise<readonly string[]> {
     try {
       entries = await readdir(path, {withFileTypes: true});
     } catch (err: unknown) {
-      console.warn(`Skipping ${path} during shared-tree walk: ${err instanceof Error ? err.message : String(err)}`);
+      consoleOutput.warn(
+        `Skipping ${path} during shared-tree walk: ${err instanceof Error ? err.message : String(err)}`,
+      );
       return;
     }
     for (const entry of entries) {
@@ -3285,7 +3290,7 @@ async function collectSharedArtifacts(worktree: string, team: string): Promise<r
       // An orphaned pack index without its .pack.json is an incomplete/partial
       // publish; skip it so it neither pollutes the catalog nor breaks discovery.
       if (artifact.kind === 'pack' && !(await isFile(join(artifactDir, `${artifact.name}${PACK_MANIFEST_SUFFIX}`)))) {
-        console.warn(
+        consoleOutput.warn(
           `Skipping incomplete shared pack (missing ${artifact.name}${PACK_MANIFEST_SUFFIX}): ${relativePath}`,
         );
         continue;
@@ -3302,7 +3307,9 @@ async function collectSharedArtifacts(worktree: string, team: string): Promise<r
           team,
         });
       } catch (err: unknown) {
-        console.warn(`Skipping shared artifact ${relativePath}: ${err instanceof Error ? err.message : String(err)}`);
+        consoleOutput.warn(
+          `Skipping shared artifact ${relativePath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -3886,15 +3893,15 @@ function sharedArtifactInstallPath(team: string, artifact: ShareArtifactMetadata
 
 function printShareArtifactResult(result: ShareArtifactResult, preview: boolean): void {
   for (const message of result.messages) {
-    console.log(message);
+    consoleOutput.log(message);
   }
   for (const gitMessage of result.gitMessages) {
-    console.log(gitMessage);
+    consoleOutput.log(gitMessage);
   }
   if (preview && result.previewContent !== undefined) {
-    console.log('-----BEGIN PREVIEW-----');
-    console.log(result.previewContent);
-    console.log('-----END PREVIEW-----');
+    consoleOutput.log('-----BEGIN PREVIEW-----');
+    consoleOutput.log(result.previewContent);
+    consoleOutput.log('-----END PREVIEW-----');
   }
 }
 
@@ -3937,7 +3944,7 @@ export function stripPersonalProvenance(content: string): string {
 async function readMemoryContent(config: ShareRuntime, ov: string, uri: string, dryRun: boolean): Promise<string> {
   const args = withIdentity(config, ['read', uri]);
   if (dryRun) {
-    console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    consoleOutput.log(`Would run: ${formatShellCommand(ov, args)}`);
     return '<dry-run memory body>';
   }
   const result = await runCommand(ov, args);
@@ -3959,7 +3966,7 @@ export async function ensureSharedDirectoryChain(
     const args = withIdentity(config, ['stat', uri]);
     if (dryRun) {
       if (options.quiet !== true) {
-        console.log(`Would run: ${formatShellCommand(ov, args)}`);
+        consoleOutput.log(`Would run: ${formatShellCommand(ov, args)}`);
       }
       continue;
     }
@@ -4015,7 +4022,7 @@ export async function writeMemoryFile(
       '120',
     ]);
     if (options.quiet !== true) {
-      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      consoleOutput.log(`Would run: ${formatShellCommand(ov, args)}`);
     }
     return;
   }
@@ -4073,15 +4080,15 @@ async function writeOvFileWithRetry(
       '120',
     ]);
     if (options.quiet !== true) {
-      console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
+      consoleOutput.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
     }
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
       if (options.quiet !== true && result.stdout.trim()) {
-        console.log(result.stdout.trim());
+        consoleOutput.log(result.stdout.trim());
       }
       if (options.quiet !== true && result.stderr.trim()) {
-        console.error(result.stderr.trim());
+        consoleOutput.error(result.stderr.trim());
       }
       return;
     }
@@ -4094,7 +4101,7 @@ async function writeOvFileWithRetry(
       // this call started) even though OV returned an error before the --wait
       // completed. Drain the queue and treat the write as durable.
       if (options.quiet !== true) {
-        console.log(
+        consoleOutput.log(
           'OpenViking accepted the write but returned an error before the wait completed; draining the queue.',
         );
       }
@@ -4142,15 +4149,15 @@ async function refreshMemoryIndex(
   );
   if (result.exitCode === 0) {
     if (options.quiet !== true && result.stdout.trim()) {
-      console.log(result.stdout.trim());
+      consoleOutput.log(result.stdout.trim());
     }
     if (options.quiet !== true && result.stderr.trim()) {
-      console.error(result.stderr.trim());
+      consoleOutput.error(result.stderr.trim());
     }
     return;
   }
   if (options.quiet !== true) {
-    console.error(
+    consoleOutput.error(
       `Memory stored, but index refresh failed for ${uri}: ${result.stderr.trim() || result.stdout.trim()}`,
     );
   }
@@ -4163,10 +4170,10 @@ async function waitForOvQueue(
 ): Promise<void> {
   const result = await runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
   if (options.quiet !== true && result.stdout.trim()) {
-    console.log(result.stdout.trim());
+    consoleOutput.log(result.stdout.trim());
   }
   if (options.quiet !== true && result.stderr.trim()) {
-    console.error(result.stderr.trim());
+    consoleOutput.error(result.stderr.trim());
   }
 }
 
@@ -4227,7 +4234,7 @@ export async function removeMemoryUri(
   const args = withIdentity(config, ['rm', uri]);
   if (dryRun) {
     if (options.quiet !== true) {
-      console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      consoleOutput.log(`Would run: ${formatShellCommand(ov, args)}`);
     }
     return;
   }
@@ -4236,7 +4243,7 @@ export async function removeMemoryUri(
     const result = await runCommand(ov, args, {allowFailure: true});
     if (result.exitCode === 0) {
       if (options.quiet !== true && result.stdout.trim()) {
-        console.log(result.stdout.trim());
+        consoleOutput.log(result.stdout.trim());
       }
       return;
     }
@@ -4430,7 +4437,7 @@ async function applyChangesToOpenViking(
             ? 'updating from upstream after verifying local content matches the previous shared version'
             : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
         if (options.quiet !== true) {
-          console.warn(`share sync: ${uri}: ${reason}.`);
+          consoleOutput.warn(`share sync: ${uri}: ${reason}.`);
         }
       }
       await ensureSharedDirectoryChain(config, ov, uri, false, options);
@@ -4439,7 +4446,7 @@ async function applyChangesToOpenViking(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (options.quiet !== true) {
-        console.warn(`share sync: ${uri}: ingest failed — will retry on the next sync. ${message}`);
+        consoleOutput.warn(`share sync: ${uri}: ingest failed — will retry on the next sync. ${message}`);
       }
       failed.push(change);
     }

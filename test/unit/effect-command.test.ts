@@ -26,6 +26,23 @@ describe('Effect CommandExecutor', () => {
     }
   });
 
+  it('redacts sensitive command arguments from typed failures', async () => {
+    const secret = 'manager-bearer-token-value';
+    const result = await run(
+      runCommandEffect(process.execPath, [
+        '-e',
+        'process.stderr.write(process.argv[1]); process.exit(7)',
+        `Authorization: Bearer ${secret}`,
+      ]).pipe(Effect.match({onFailure: Result.fail, onSuccess: Result.succeed})),
+    );
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(JSON.stringify(result.failure)).not.toContain(secret);
+      expect(result.failure.message).toContain('[REDACTED]');
+    }
+  });
+
   it('models timeouts without throwing an untyped Error', async () => {
     const result = await run(
       runCommandEffect(process.execPath, ['-e', 'setTimeout(() => undefined, 5000)'], {timeoutMs: 25}).pipe(

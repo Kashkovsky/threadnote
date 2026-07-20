@@ -1,4 +1,4 @@
-import {Config, Effect, Option, Schema} from 'effect';
+import {Config, Console, Effect, Option, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {OPENVIKING_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
@@ -37,7 +37,7 @@ import {
   runShareStatus,
   runShareSync,
   runShareUnpublish,
-} from '../share.js';
+} from './share.js';
 import type {RuntimeConfig} from '../types.js';
 import {maybeNotifyUpdate, runPostUpdate, runUpdate} from '../update.js';
 import {runVersion} from '../version_command.js';
@@ -109,9 +109,6 @@ const argument = (name: string, description: string): Argument.Argument<string> 
 const optionalArgument = (name: string, description: string, fallback: string): Argument.Argument<string> =>
   argument(name, description).pipe(Argument.withDefault(fallback));
 
-const legacy = <A>(operation: string, evaluate: () => Promise<A>): Effect.Effect<A, ApplicationError> =>
-  Effect.tryPromise({try: evaluate, catch: cause => applicationError(operation, cause)});
-
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
     home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
@@ -134,12 +131,6 @@ const withRuntimeEffect = <E, R>(
       catch: cause => applicationError('load runtime configuration', cause),
     }).pipe(Effect.flatMap(effect)),
   );
-
-const withRuntimePromise = (
-  operation: string,
-  evaluate: (config: RuntimeConfig) => Promise<void>,
-  manifestOverride?: string,
-) => withRuntimeEffect(config => legacy(operation, () => evaluate(config)), manifestOverride);
 
 const manage = Command.make(
   'manage',
@@ -164,7 +155,7 @@ const doctor = Command.make(
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
-        yield* legacy('doctor', () => runDoctor(config, options));
+        yield* runDoctor(config, options);
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
@@ -185,13 +176,11 @@ const install = Command.make(
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
-        yield* legacy('install', () => runInstall(config, options));
+        yield* runInstall(config, options);
         if (options.withHooks) {
           for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
-            yield* Effect.sync(() => console.log(`\n--- ${agent} hooks ---`));
-            yield* legacy(`install ${agent} hooks`, () =>
-              runHooksInstall(config, agent, {apply: !options.dryRun, dryRun: options.dryRun}),
-            );
+            yield* Console.log(`\n--- ${agent} hooks ---`);
+            yield* runHooksInstall(config, agent, {apply: !options.dryRun, dryRun: options.dryRun});
           }
         }
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
@@ -277,7 +266,7 @@ const start = Command.make(
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
-        yield* legacy('start', () => runStart(config, options));
+        yield* runStart(config, options);
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
@@ -286,7 +275,7 @@ const start = Command.make(
 const stop = Command.make(
   'stop',
   {dryRun: boolean('dry-run', 'Print the stop actions without running them')},
-  options => withRuntimePromise('stop', config => runStop(config, options)),
+  options => withRuntimeEffect(config => runStop(config, options)),
 ).pipe(Command.withDescription('Stop the local OpenViking server or LaunchAgent'));
 
 const uninstall = Command.make(
@@ -301,7 +290,7 @@ const uninstall = Command.make(
     ),
     preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)'),
   },
-  options => withRuntimePromise('uninstall', config => runUninstall(config, options)),
+  options => withRuntimeEffect(config => runUninstall(config, options)),
 ).pipe(Command.withDescription('Remove Threadnote setup and optionally erase local memories'));
 
 const seed = Command.make(
@@ -312,7 +301,7 @@ const seed = Command.make(
     graph: boolean('graph', 'Also seed per-project dependency facts with cross-repo edges'),
     only: repeatedString('only', 'Restrict seeding to one or more manifest projects; repeat for multiple'),
   },
-  options => withRuntimePromise('seed', config => runSeed(config, options)),
+  options => withRuntimeEffect(config => runSeed(config, options)),
 ).pipe(Command.withDescription('Seed curated context from the manifest; never indexes whole repos by default'));
 
 const initManifest = Command.make(
@@ -323,7 +312,7 @@ const initManifest = Command.make(
     replace: boolean('replace', 'Replace the manifest instead of merging with existing projects'),
     repo: repeatedString('repo', 'Repo root to include; repeat for multiple repos'),
   },
-  options => withRuntimePromise('init-manifest', config => runInitManifest(config, options)),
+  options => withRuntimeEffect(config => runInitManifest(config, options)),
 ).pipe(Command.withDescription('Create or update a per-developer seed manifest from one or more repo roots'));
 
 const seedSkills = Command.make(
@@ -332,7 +321,7 @@ const seedSkills = Command.make(
     dryRun: boolean('dry-run', 'Print skill files and ov commands without importing'),
     native: boolean('native', 'Use native OpenViking skill ingestion; requires a working VLM config'),
   },
-  options => withRuntimePromise('seed-skills', config => runSeedSkills(config, options)),
+  options => withRuntimeEffect(config => runSeedSkills(config, options)),
 ).pipe(Command.withDescription('Seed Codex/Claude skills and Claude command markdown files as a searchable catalog'));
 
 const mcpInstall = Command.make(
@@ -349,7 +338,7 @@ const mcpInstall = Command.make(
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
     url: optionalString('url', 'OpenViking native HTTP MCP URL'),
   },
-  ({agent, ...options}) => withRuntimePromise('mcp-install', config => runMcpInstall(config, agent, options)),
+  ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
 ).pipe(Command.withDescription('Install OpenViking MCP config for a supported agent'));
 
 const installHooks = Command.make(
@@ -362,7 +351,7 @@ const installHooks = Command.make(
     dryRun: boolean('dry-run', 'Print the planned change without applying it'),
     remove: boolean('remove', 'Remove threadnote-managed hook entries instead of adding them'),
   },
-  ({agent, ...options}) => withRuntimePromise('install-hooks', config => runHooksInstall(config, agent, options)),
+  ({agent, ...options}) => withRuntimeEffect(config => runHooksInstall(config, agent, options)),
 ).pipe(Command.withDescription('Install deterministic agent lifecycle hooks'));
 
 const preCompactHook = Command.make(
@@ -406,7 +395,7 @@ const migrateMemories = Command.make(
     limit: optionalString('limit', 'Maximum number of memories to migrate'),
     sourceAccount: repeatedString('source-account', 'Source OpenViking account; repeat for multiple accounts'),
   },
-  options => withRuntimePromise('migrate-memories', config => runMigrateMemories(config, options)),
+  options => withRuntimeEffect(config => runMigrateMemories(config, options)),
 ).pipe(Command.withDescription('Migrate legacy session-only memories into durable memory files'));
 
 const migrateLifecycle = Command.make(
@@ -447,15 +436,15 @@ const recall = Command.make(
     uri: optionalString('uri', 'Restrict search to a viking:// URI'),
     workset: optionalString('workset', 'Recall across a named seed-manifest workset'),
   },
-  options => withRuntimePromise('recall', config => runRecall(config, options)),
+  options => withRuntimeEffect(config => runRecall(config, options)),
 ).pipe(Command.withDescription('Search shared OpenViking context'));
 
-const worksetList = Command.make('list', {}, () =>
-  withRuntimePromise('workset list', config => runWorksetList(config)),
-).pipe(Command.withDescription('List worksets defined in the seed manifest'));
+const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
+  Command.withDescription('List worksets defined in the seed manifest'),
+);
 
 const worksetShow = Command.make('show', {name: argument('name', 'Workset name')}, ({name}) =>
-  withRuntimePromise('workset show', config => runWorksetShow(config, name)),
+  withRuntimeEffect(config => runWorksetShow(config, name)),
 ).pipe(Command.withDescription('Show the member projects of a workset'));
 
 const workset = Command.make('workset').pipe(
@@ -478,7 +467,7 @@ const compact = Command.make(
 const read = Command.make(
   'read',
   {dryRun: boolean('dry-run', 'Print ov command without reading'), uri: argument('uri', 'viking:// URI to read')},
-  ({uri, ...options}) => withRuntimePromise('read', config => runRead(config, uri, options)),
+  ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
 ).pipe(Command.withDescription('Read a viking:// URI returned by recall or list'));
 
 const list = Command.make(
@@ -491,7 +480,7 @@ const list = Command.make(
     simple: boolean('simple', 'Print only paths').pipe(Flag.withAlias('s')),
     uri: optionalArgument('uri', 'viking:// directory URI', 'viking://'),
   },
-  ({uri, ...options}) => withRuntimePromise('list', config => runList(config, uri, options)),
+  ({uri, ...options}) => withRuntimeEffect(config => runList(config, uri, options)),
 ).pipe(Command.withDescription('List a viking:// directory'), Command.withAlias('ls'));
 
 const handoff = Command.make(
@@ -542,13 +531,13 @@ const shareInit = Command.make(
     setDefault: boolean('set-default', 'Mark this team as the default'),
     team: optionalString('team', 'Team name; defaults to default'),
   },
-  ({remoteUrl, ...options}) => withRuntimePromise('share init', config => runShareInit(config, remoteUrl, options)),
+  ({remoteUrl, ...options}) => withRuntimeEffect(config => runShareInit(config, remoteUrl, options)),
 ).pipe(Command.withDescription('Configure a shared memories repo for a team'));
 
 const shareStatus = Command.make(
   'status',
   {dryRun: boolean('dry-run', 'Print git commands'), team: optionalString('team', 'Team name')},
-  options => withRuntimePromise('share status', config => runShareStatus(config, options)),
+  options => withRuntimeEffect(config => runShareStatus(config, options)),
 ).pipe(Command.withDescription('Show git status and ahead/behind counts for a shared team'));
 
 const shareSync = Command.make(
@@ -560,13 +549,13 @@ const shareSync = Command.make(
     push: negatedBoolean('push', 'Skip the push step'),
     team: optionalString('team', 'Team name; omit to sync all teams'),
   },
-  options => withRuntimePromise('share sync', config => runShareSync(config, options)),
+  options => withRuntimeEffect(config => runShareSync(config, options)),
 ).pipe(Command.withDescription('Pull, reindex, and push shared memories repos'));
 
 const shareConflicts = Command.make(
   'conflicts',
   {team: optionalString('team', 'Team name; defaults to all teams')},
-  options => withRuntimePromise('share conflicts', config => runShareConflicts(config, options)),
+  options => withRuntimeEffect(config => runShareConflicts(config, options)),
 ).pipe(Command.withDescription('List pending shared memory conflicts'));
 
 const conflictShow = Command.make(
@@ -575,8 +564,7 @@ const conflictShow = Command.make(
     conflictId: argument('conflict-id', 'Conflict id, relative path, or shared viking:// URI'),
     team: optionalString('team', 'Team name for a relative path'),
   },
-  ({conflictId, ...options}) =>
-    withRuntimePromise('share conflict show', config => runShareConflictShow(config, conflictId, options)),
+  ({conflictId, ...options}) => withRuntimeEffect(config => runShareConflictShow(config, conflictId, options)),
 ).pipe(Command.withDescription('Show local/shared content for one conflict'));
 
 const conflictResolve = Command.make(
@@ -590,8 +578,7 @@ const conflictResolve = Command.make(
     take: optionalChoice('take', ['shared', 'local'], 'Resolution side'),
     team: optionalString('team', 'Team name for a relative path'),
   },
-  ({conflictId, ...options}) =>
-    withRuntimePromise('share conflict resolve', config => runShareConflictResolve(config, conflictId, options)),
+  ({conflictId, ...options}) => withRuntimeEffect(config => runShareConflictResolve(config, conflictId, options)),
 ).pipe(Command.withDescription('Resolve one pending shared memory conflict'));
 
 const shareConflict = Command.make('conflict').pipe(
@@ -611,7 +598,7 @@ const publishFlags = {
 const sharePublish = Command.make(
   'publish',
   {...publishFlags, uri: argument('viking-uri', 'Personal viking:// memory URI')},
-  ({uri, ...options}) => withRuntimePromise('share publish', config => runSharePublish(config, uri, options)),
+  ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
 const artifactFlags = {
@@ -626,15 +613,13 @@ const artifactFlags = {
 const sharePublishArtifact = Command.make(
   'publish-artifact',
   {...artifactFlags, path: argument('path', 'Path to SKILL.md or a Claude command file')},
-  ({path, ...options}) =>
-    withRuntimePromise('share publish-artifact', config => runSharePublishArtifact(config, path, options)),
+  ({path, ...options}) => withRuntimeEffect(config => runSharePublishArtifact(config, path, options)),
 ).pipe(Command.withDescription('Publish a local agent skill or command into the shared team repo'));
 
 const sharePublishBundle = Command.make(
   'publish-bundle',
   {...artifactFlags, manifest: argument('manifest', 'Path to a threadnote-bundle.json manifest')},
-  ({manifest, ...options}) =>
-    withRuntimePromise('share publish-bundle', config => runSharePublishBundle(config, manifest, options)),
+  ({manifest, ...options}) => withRuntimeEffect(config => runSharePublishBundle(config, manifest, options)),
 ).pipe(Command.withDescription('Publish a multi-skill constellation declared by a bundle manifest'));
 
 const shareInstallArtifacts = Command.make(
@@ -649,7 +634,7 @@ const shareInstallArtifacts = Command.make(
     sync: negatedBoolean('sync', 'Skip pulling shared updates first'),
     team: optionalString('team', 'Team name'),
   },
-  options => withRuntimePromise('share install-artifacts', config => runShareInstallArtifacts(config, options)),
+  options => withRuntimeEffect(config => runShareInstallArtifacts(config, options)),
 ).pipe(Command.withDescription('Install shared agent skills and commands from a team repo'));
 
 const shareUnpublish = Command.make(
@@ -661,11 +646,11 @@ const shareUnpublish = Command.make(
     team: optionalString('team', 'Team name'),
     uri: argument('viking-uri', 'Shared viking:// memory URI'),
   },
-  ({uri, ...options}) => withRuntimePromise('share unpublish', config => runShareUnpublish(config, uri, options)),
+  ({uri, ...options}) => withRuntimeEffect(config => runShareUnpublish(config, uri, options)),
 ).pipe(Command.withDescription('Pull a shared memory back into the personal namespace'));
 
 const shareList = Command.make('list', {dryRun: boolean('dry-run', 'Print without side effects')}, options =>
-  withRuntimePromise('share list', config => runShareList(config, options)),
+  withRuntimeEffect(config => runShareList(config, options)),
 ).pipe(Command.withDescription('List configured shared teams'));
 
 const shareRename = Command.make(
@@ -675,7 +660,7 @@ const shareRename = Command.make(
     team: requiredString('team', 'Existing team name'),
     to: requiredString('to', 'New team name'),
   },
-  options => withRuntimePromise('share rename', config => runShareRename(config, options)),
+  options => withRuntimeEffect(config => runShareRename(config, options)),
 ).pipe(Command.withDescription('Rename a configured shared team'));
 
 const shareSetUrl = Command.make(
@@ -685,8 +670,7 @@ const shareSetUrl = Command.make(
     remoteUrl: argument('remote-url', 'New git remote URL'),
     team: optionalString('team', 'Team name'),
   },
-  ({remoteUrl, ...options}) =>
-    withRuntimePromise('share set-url', config => runShareSetUrl(config, remoteUrl, options)),
+  ({remoteUrl, ...options}) => withRuntimeEffect(config => runShareSetUrl(config, remoteUrl, options)),
 ).pipe(Command.withDescription('Change a shared team git remote URL'));
 
 const shareRemove = Command.make(
@@ -697,7 +681,7 @@ const shareRemove = Command.make(
     preserveLocal: boolean('preserve-local', 'Copy durable memories into the personal tree first'),
     team: optionalString('team', 'Team name'),
   },
-  options => withRuntimePromise('share remove', config => runShareRemove(config, options)),
+  options => withRuntimeEffect(config => runShareRemove(config, options)),
 ).pipe(Command.withDescription('Forget a configured team and optionally delete its files'));
 
 const share = Command.make('share').pipe(
@@ -727,7 +711,7 @@ const exportPack = Command.make(
     path: optionalString('path', 'Output .ovpack path'),
     uri: optionalString('uri', 'Source viking:// URI; defaults to the current user memories'),
   },
-  options => withRuntimePromise('export-pack', config => runExportPack(config, options)),
+  options => withRuntimeEffect(config => runExportPack(config, options)),
 ).pipe(Command.withDescription('Export local OpenViking context to an .ovpack'));
 
 const importPack = Command.make(
@@ -737,7 +721,7 @@ const importPack = Command.make(
     path: requiredString('path', 'Input .ovpack path'),
     targetUri: optionalString('target-uri', 'Target parent viking:// URI; defaults to the current user'),
   },
-  options => withRuntimePromise('import-pack', config => runImportPack(config, options)),
+  options => withRuntimeEffect(config => runImportPack(config, options)),
 ).pipe(Command.withDescription('Import an .ovpack into local OpenViking context'));
 
 export const threadnoteCommand = root.pipe(
