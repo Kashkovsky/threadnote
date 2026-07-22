@@ -2,10 +2,10 @@ import {spawn} from 'node:child_process';
 import {closeSync, openSync} from 'node:fs';
 import {chmod, readdir, readFile, realpath, writeFile} from 'node:fs/promises';
 import {platform} from 'node:os';
-import {basename, dirname, join, sep} from 'node:path';
+import {basename, delimiter, dirname, join, sep} from 'node:path';
 import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
-import {Effect, FileSystem} from 'effect';
+import {Cause, Clock, Console, Effect, Exit, FileSystem, Option} from 'effect';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -23,9 +23,10 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
-import {maybeRunEffect} from './effect/command.js';
+import {CommandExecutor, maybeRunEffect, runCommandEffect} from './effect/command.js';
 import {consoleOutput, syncWithConsole} from './effect/console.js';
 import {applicationError, fromPromise} from './effect/errors.js';
+import {getTextEffect, HttpService} from './effect/http.js';
 import {startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
@@ -37,6 +38,13 @@ import {
   summaryAutoGenerationDisabled,
 } from './index_repair.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
+import {
+  bootoutLaunchAgent,
+  bootstrapLaunchAgent,
+  launchAgentPath,
+  readLaunchAgentStatus,
+  type LaunchAgentStatus,
+} from './launchd.js';
 import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair, readOpenVikingCliVersion} from './update.js';
 import {
@@ -99,6 +107,7 @@ import {
 
 const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
 const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
+const STOP_SERVER_TIMEOUT_MS = 10_000;
 
 interface UvExecutable {
   readonly executable: string;
@@ -108,6 +117,33 @@ interface UvExecutable {
 interface InstallCommandRetry {
   readonly command: MappedCommand;
   readonly env: Readonly<Record<string, string>>;
+}
+
+export interface LaunchAgentActivationEffects<R = never> {
+  readonly bootout: (timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+  readonly bootstrap: (plistPath: string, timeoutMs: number) => Effect.Effect<void, unknown, R>;
+  readonly isPortOpen: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+  readonly stagePlist: (
+    plistPath: string,
+    content: string,
+  ) => Effect.Effect<LaunchAgentPlistTransaction<R>, unknown, R>;
+  readonly stopDetached: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+  readonly restartDetached: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<void, unknown, R>;
+  readonly waitForHealth: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<string | undefined, unknown, R>;
+  readonly waitForShutdown: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+}
+
+export interface LaunchAgentPlistTransaction<R = never> {
+  readonly hadPrevious: boolean;
+  readonly commit: Effect.Effect<void, unknown, R>;
+  readonly release: Effect.Effect<void, unknown, R>;
+  readonly rollback: Effect.Effect<void, unknown, R>;
+}
+
+export interface LaunchAgentHealthEffects<R = never> {
+  readonly ownsPort: (pid: number, config: RuntimeConfig, timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+  readonly readHealth: (config: RuntimeConfig, timeoutMs: number) => Effect.Effect<string | undefined, unknown, R>;
+  readonly readStatus: (timeoutMs: number) => Effect.Effect<LaunchAgentStatus, unknown, R>;
 }
 
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
@@ -345,7 +381,7 @@ export const runUninstall = Effect.fn('runUninstall')(function* (config: Runtime
   yield* fromPromise('remove OpenViking pid file', () =>
     removePathIfExists(join(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun),
   );
-  yield* fromPromise('remove OpenViking launch agent', () => removeLaunchAgent(dryRun));
+  yield* removeLaunchAgent(dryRun);
   yield* fromPromise('remove MCP configurations', () => removeMcpConfigs(options.mcp ?? 'available', dryRun));
   yield* fromPromise('remove MCP snippets', () => removeMcpSnippets(config, dryRun));
   if (yield* fromPromise('check managed Claude hooks', hasManagedClaudeHooks)) {
@@ -520,6 +556,74 @@ export async function findOpenVikingServer(): Promise<string | undefined> {
   return undefined;
 }
 
+const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(function* (timeoutMs: number) {
+  const fs = yield* FileSystem.FileSystem;
+  const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+  const pathDirectories = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  for (const directory of pathDirectories) {
+    const candidate = join(directory, OPENVIKING_SERVER_COMMAND);
+    if (yield* isExecutableFileEffect(fs, candidate)) {
+      return candidate;
+    }
+  }
+
+  const candidateDirectories: string[] = [];
+  const uv = yield* findExecutableInDirectoriesEffect(fs, 'uv', pathDirectories);
+  if (uv) {
+    const result = yield* runCommandEffect(uv, ['tool', 'dir', '--bin'], {
+      allowFailure: true,
+      timeoutMs: yield* remainingBudget(deadline, timeoutMs),
+    });
+    if (result.exitCode === 0 && result.stdout.trim()) {
+      candidateDirectories.push(result.stdout.trim());
+    }
+  }
+  if (process.env.UV_TOOL_BIN_DIR) {
+    candidateDirectories.push(process.env.UV_TOOL_BIN_DIR);
+  }
+  candidateDirectories.push(expandPath('~/.local/bin'));
+  for (const directory of new Set(candidateDirectories)) {
+    const candidate = join(directory, OPENVIKING_SERVER_COMMAND);
+    if (yield* isExecutableFileEffect(fs, candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+});
+
+export function findOpenVikingServerEffect(timeoutMs: number) {
+  return findOpenVikingServerEffectCore(timeoutMs).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail(new Error(`OpenViking server discovery timed out after ${timeoutMs / 1000}s.`)),
+    }),
+  );
+}
+
+const findExecutableInDirectoriesEffect = Effect.fn('findExecutableInDirectories')(function* (
+  fs: FileSystem.FileSystem,
+  name: string,
+  directories: readonly string[],
+) {
+  for (const directory of directories) {
+    const candidate = join(directory, name);
+    if (yield* isExecutableFileEffect(fs, candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+});
+
+const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (fs: FileSystem.FileSystem, path: string) {
+  const info = yield* fs.stat(path).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
+  return info?.type === 'File' && (info.mode & 0o111) !== 0;
+});
+
 let candidateDirsPromise: Promise<readonly string[]> | undefined;
 
 async function openVikingServerCandidateDirs(): Promise<readonly string[]> {
@@ -604,7 +708,7 @@ function repairServerHealth(config: RuntimeConfig, dryRun: boolean) {
 export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, options: StartOptions) {
   const fs = yield* FileSystem.FileSystem;
   if (options.launchd === true) {
-    yield* fromPromise('install OpenViking launch agent', () => installLaunchAgent(config, options.dryRun === true));
+    yield* installLaunchAgent(config, options.dryRun === true);
     return;
   }
 
@@ -687,15 +791,45 @@ function spawnDetachedServer(server: string, args: readonly string[], logFd: num
   });
 }
 
+const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServer')(function* (
+  config: RuntimeConfig,
+  server: string,
+  timeoutMs: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const logPath = openVikingLogPath(config);
+  yield* fs.makeDirectory(dirname(logPath), {recursive: true});
+  const child = yield* Effect.try({
+    try: () => {
+      const logFd = openSync(logPath, 'a');
+      const spawned = spawnDetachedServerWithLog(server, openVikingServerArgs(config), logFd);
+      spawned.unref();
+      return spawned;
+    },
+    catch: cause => applicationError('restore detached OpenViking server', cause),
+  });
+  if (child.pid === undefined) {
+    return yield* Effect.fail(new Error('Restored detached OpenViking server did not report a pid.'));
+  }
+  yield* fs.writeFileString(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`);
+  const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+  while ((yield* Clock.currentTimeMillis) < deadline) {
+    const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+    if (yield* readOpenVikingHealthEffect(config, Math.max(1, Math.min(500, remainingMs)))) {
+      return;
+    }
+    yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+  }
+  yield* signalProcessEffect(child.pid, 'SIGTERM').pipe(Effect.ignore);
+  return yield* Effect.fail(
+    new Error(`Restored detached OpenViking server did not become healthy within ${timeoutMs}ms.`),
+  );
+});
+
 export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, options: ForgetOptions) {
   const fs = yield* FileSystem.FileSystem;
-  const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
   if (platform() === 'darwin') {
-    if (options.dryRun === true || (yield* fs.exists(launchAgentPath))) {
-      yield* maybeRunEffect(options.dryRun === true, 'launchctl', ['unload', launchAgentPath], {allowFailure: true});
-    } else {
-      yield* syncWithConsole(() => consoleOutput.log(`No LaunchAgent found: ${launchAgentPath}`));
-    }
+    yield* bootoutLaunchAgent(options.dryRun === true, undefined, STOP_SERVER_TIMEOUT_MS);
   }
 
   const pidPath = join(config.agentContextHome, 'openviking-server.pid');
@@ -727,6 +861,192 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     }
   });
 });
+
+const stopDetachedOpenVikingServerForLaunchdCore = Effect.fn('stopDetachedOpenVikingServerForLaunchd')(function* (
+  config: RuntimeConfig,
+  dryRun: boolean,
+  timeoutMs: number = STOP_SERVER_TIMEOUT_MS,
+  resolvedServer?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pidPath = join(config.agentContextHome, 'openviking-server.pid');
+  const pidText = yield* fs.readFileString(pidPath).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
+  if (pidText === undefined) {
+    yield* Console.log('No pid file found for detached OpenViking server.');
+    return false;
+  }
+  const pid = Number(pidText.trim());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    yield* Console.log(`Invalid pid file: ${pidPath}`);
+    if (!dryRun) {
+      yield* fs.remove(pidPath, {force: true});
+    }
+    return false;
+  }
+  if (dryRun) {
+    yield* Console.log(`Would stop detached OpenViking process ${pid}`);
+    return true;
+  }
+  const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+  if (!(yield* isProcessRunningEffect(pid))) {
+    yield* fs.remove(pidPath, {force: true});
+    return false;
+  }
+  const server = resolvedServer ?? (yield* findOpenVikingServerEffect(yield* remainingBudget(deadline, timeoutMs)));
+  if (!server) {
+    return yield* Effect.fail(new Error(`Refusing to stop process ${pid}: OpenViking server path is unavailable.`));
+  }
+  const expectedProcess = {
+    args: openVikingServerArgs(config),
+    server,
+    shebangInterpreter: yield* fs.readFileString(server).pipe(
+      Effect.map(parseShebangInterpreter),
+      Effect.catch(() => Effect.succeed(undefined)),
+    ),
+  };
+  if (!(yield* isManagedDetachedOpenVikingProcess(pid, pidPath, config, expectedProcess, deadline, timeoutMs))) {
+    return yield* Effect.fail(
+      new Error(`Refusing to stop process ${pid}: the pid file does not identify this Threadnote OpenViking server.`),
+    );
+  }
+  if (!(yield* isManagedDetachedOpenVikingProcess(pid, pidPath, config, expectedProcess, deadline, timeoutMs))) {
+    return yield* Effect.fail(new Error(`Refusing to stop process ${pid}: its identity changed before signaling.`));
+  }
+  const signaled = yield* signalProcessEffect(pid, 'SIGTERM');
+  if (!signaled) {
+    yield* fs.remove(pidPath, {force: true});
+    return false;
+  }
+  while (yield* isProcessRunningEffect(pid)) {
+    const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+    if (remainingMs <= 0) {
+      return yield* Effect.fail(
+        new Error(`Detached OpenViking process ${pid} did not stop within ${timeoutMs / 1000}s.`),
+      );
+    }
+    yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+  }
+  yield* fs.remove(pidPath, {force: true});
+  yield* Console.log(`Stopped detached OpenViking process ${pid}`);
+  return true;
+});
+
+export function stopDetachedOpenVikingServerForLaunchd(
+  config: RuntimeConfig,
+  dryRun: boolean,
+  timeoutMs: number = STOP_SERVER_TIMEOUT_MS,
+  resolvedServer?: string,
+) {
+  return stopDetachedOpenVikingServerForLaunchdCore(config, dryRun, timeoutMs, resolvedServer).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () =>
+        Effect.fail(new Error(`Stopping the detached OpenViking server timed out after ${timeoutMs / 1000}s.`)),
+    }),
+  );
+}
+
+interface ExpectedOpenVikingProcess {
+  readonly args: readonly string[];
+  readonly server: string;
+  readonly shebangInterpreter?: string;
+}
+
+const isManagedDetachedOpenVikingProcess = Effect.fn('isManagedDetachedOpenVikingProcess')(function* (
+  pid: number,
+  pidPath: string,
+  config: RuntimeConfig,
+  expected: ExpectedOpenVikingProcess,
+  deadline: number,
+  timeoutMs: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const result = yield* runCommandEffect('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], {
+    allowFailure: true,
+    timeoutMs: yield* remainingBudget(deadline, timeoutMs),
+  });
+  if (result.exitCode !== 0) {
+    return false;
+  }
+  const output = result.stdout.trim();
+  const processStartedAt = Date.parse(output.slice(0, 24));
+  const pidFile = yield* fs.stat(pidPath);
+  const pidFileMtime = Option.getOrUndefined(pidFile.mtime)?.getTime();
+  if (
+    !Number.isFinite(processStartedAt) ||
+    pidFileMtime === undefined ||
+    Math.abs(pidFileMtime - processStartedAt) > 2000
+  ) {
+    return false;
+  }
+  const command = output.slice(24).trim();
+  if (!isExpectedLaunchdProcessCommand(command, expected.server, expected.args, expected.shebangInterpreter)) {
+    return false;
+  }
+  return yield* launchdProcessOwnsPort(pid, config, Math.min(yield* remainingBudget(deadline, timeoutMs), 2000));
+});
+
+export function isExpectedLaunchdProcessCommand(
+  command: string,
+  server: string,
+  args: readonly string[],
+  shebangInterpreter?: string,
+): boolean {
+  const directCommand = [server, ...args].join(' ');
+  return (
+    command === directCommand ||
+    (shebangInterpreter !== undefined && command === `${shebangInterpreter} ${directCommand}`)
+  );
+}
+
+function parseShebangInterpreter(content: string): string | undefined {
+  const first = content.split(/\r?\n/, 1)[0];
+  const interpreter = first?.startsWith('#!') ? first.slice(2).trim() : '';
+  return interpreter && !/\s/.test(interpreter) ? interpreter : undefined;
+}
+
+const isProcessRunningEffect = Effect.fn('isProcessRunning')(function* (pid: number) {
+  return yield* Effect.try({
+    try: () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (cause: unknown) {
+        if (isNodeError(cause) && cause.code === 'ESRCH') {
+          return false;
+        }
+        throw cause;
+      }
+    },
+    catch: cause => applicationError(`check process ${pid}`, cause),
+  });
+});
+
+const signalProcessEffect = Effect.fn('signalProcess')(function* (pid: number, signal: NodeJS.Signals) {
+  return yield* Effect.try({
+    try: () => {
+      try {
+        process.kill(pid, signal);
+        return true;
+      } catch (cause: unknown) {
+        if (isNodeError(cause) && cause.code === 'ESRCH') {
+          return false;
+        }
+        throw cause;
+      }
+    },
+    catch: cause => applicationError(`signal process ${pid}`, cause),
+  });
+});
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error && 'code' in value;
+}
 
 async function commandCheck(name: string, args: readonly string[]): Promise<DoctorCheck> {
   const executable = await findExecutable([name]);
@@ -1912,70 +2232,393 @@ function isManagedCommandShim(content: string): boolean {
   return content.includes(SHIM_MARKER);
 }
 
-async function installLaunchAgent(config: RuntimeConfig, dryRun: boolean): Promise<void> {
+const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: RuntimeConfig, dryRun: boolean) {
+  const fs = yield* FileSystem.FileSystem;
   if (platform() !== 'darwin') {
-    throw new Error('launchd autostart is only supported on macOS.');
+    return yield* Effect.fail(new Error('launchd autostart is only supported on macOS.'));
   }
   // launchd uses a minimal default PATH (/usr/bin:/bin:/usr/sbin:/sbin) and
   // does not source the user's shell rc, so the plist must reference the
   // absolute path to openviking-server — otherwise a LaunchAgent on a fresh
   // macOS box would exit 127.
-  const resolvedServer = await findOpenVikingServer();
+  const installDeadline = (yield* Clock.currentTimeMillis) + START_HEALTH_TIMEOUT_MS;
+  const resolvedServer = yield* findOpenVikingServerEffect(
+    yield* remainingBudget(installDeadline, START_HEALTH_TIMEOUT_MS),
+  );
   if (!resolvedServer && !dryRun) {
-    throw new Error(
-      `Cannot install LaunchAgent: ${OPENVIKING_SERVER_COMMAND} was not found in PATH, ` +
-        'uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. Run `threadnote install` first.',
+    return yield* Effect.fail(
+      new Error(
+        `Cannot install LaunchAgent: ${OPENVIKING_SERVER_COMMAND} was not found in PATH, ` +
+          'uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. Run `threadnote install` first.',
+      ),
     );
   }
   const source = join(toolRoot(), 'config', 'launchd', `${LAUNCHD_LABEL}.plist.template`);
-  const destination = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
-  const rendered = renderTemplate(await readFile(source, 'utf8'), config, {
+  const destination = launchAgentPath();
+  const rendered = renderTemplate(yield* fs.readFileString(source), config, {
     OPENVIKING_SERVER_PATH: resolvedServer ?? OPENVIKING_SERVER_COMMAND,
   });
   if (dryRun) {
     const resolutionDetail = resolvedServer ?? `<not found; would use bare \`${OPENVIKING_SERVER_COMMAND}\`>`;
-    consoleOutput.log(`Resolved openviking-server: ${resolutionDetail}`);
-    consoleOutput.log(`Would write ${destination}`);
-    consoleOutput.log(`Would run: launchctl unload ${destination}`);
-    consoleOutput.log(`Would run: launchctl load ${destination}`);
-    consoleOutput.log(`Would run: launchctl start ${LAUNCHD_LABEL}`);
+    yield* Console.log(`Resolved openviking-server: ${resolutionDetail}`);
+    yield* Console.log(`Would write ${destination}`);
+    yield* bootoutLaunchAgent(true);
+    yield* stopDetachedOpenVikingServerForLaunchd(config, true);
+    yield* bootstrapLaunchAgent(destination, true);
     return;
   }
-  await ensureDirectory(dirname(destination), false);
-  await ensureDirectory(dirname(openVikingLogPath(config)), false);
-  await writeFile(destination, rendered, 'utf8');
-  await maybeRun(false, 'launchctl', ['unload', destination], {allowFailure: true});
-  await maybeRun(false, 'launchctl', ['load', destination]);
-  await maybeRun(false, 'launchctl', ['start', LAUNCHD_LABEL]);
+  yield* fs.makeDirectory(dirname(destination), {recursive: true});
+  yield* fs.makeDirectory(dirname(openVikingLogPath(config)), {recursive: true});
   const healthUrl = openVikingHealthUrl(config);
-  const health = await waitForOpenVikingHealth(
+  const activationTimeoutMs = yield* remainingBudget(installDeadline, START_HEALTH_TIMEOUT_MS);
+  const health = yield* activateLaunchAgent<CommandExecutor | FileSystem.FileSystem | HttpService>(
     config,
-    START_HEALTH_TIMEOUT_MS,
-    `Waiting for OpenViking health at ${healthUrl}.`,
+    destination,
+    rendered,
+    activationTimeoutMs,
+    {
+      bootout: timeoutMs => bootoutLaunchAgent(false, undefined, timeoutMs),
+      bootstrap: (plistPath, timeoutMs) => bootstrapLaunchAgent(plistPath, false, undefined, timeoutMs),
+      isPortOpen: (current, timeoutMs) => isTcpPortOpenEffect(current.host, current.port, Math.min(500, timeoutMs)),
+      stagePlist: (plistPath, content) => stageLaunchAgentPlist(plistPath, content),
+      stopDetached: (current, timeoutMs) =>
+        stopDetachedOpenVikingServerForLaunchd(current, false, timeoutMs, resolvedServer),
+      restartDetached: (current, timeoutMs) => restartDetachedOpenVikingServer(current, resolvedServer!, timeoutMs),
+      waitForHealth: (current, timeoutMs) =>
+        waitForLaunchAgentHealth(current, timeoutMs, `Waiting for OpenViking health at ${healthUrl}.`),
+      waitForShutdown: waitForOpenVikingShutdown,
+    },
   );
   if (health) {
-    consoleOutput.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
+    yield* Console.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
     return;
   }
-  throw new Error(
-    `Installed and started ${LAUNCHD_LABEL}, but ${healthUrl} did not become healthy within ` +
-      `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${openVikingLogPath(config)}`,
+  return yield* Effect.fail(
+    new Error(
+      `Installed and started ${LAUNCHD_LABEL}, but ${healthUrl} did not become healthy within ` +
+        `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${openVikingLogPath(config)}`,
+    ),
+  );
+});
+
+export function activateLaunchAgent<R>(
+  config: RuntimeConfig,
+  plistPath: string,
+  plistContent: string,
+  timeoutMs: number,
+  effects: LaunchAgentActivationEffects<R>,
+): Effect.Effect<string | undefined, unknown, R> {
+  const timedOut = new Error(`LaunchAgent activation timed out after ${timeoutMs / 1000}s.`);
+  const recoveryTimeoutMs = Math.min(2000, timeoutMs);
+  let transaction: LaunchAgentPlistTransaction<R> | undefined;
+  let launchAgentWasLoaded = false;
+  let detachedServerWasStopped = false;
+  let replacementCommitted = false;
+  let serviceHealthy = false;
+  const operation = Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+    const remaining = () => remainingBudget(deadline, timeoutMs);
+    transaction = yield* effects.stagePlist(plistPath, plistContent);
+    yield* Effect.uninterruptibleMask(restore =>
+      Effect.gen(function* () {
+        launchAgentWasLoaded = yield* restore(effects.bootout(yield* remaining()));
+      }),
+    );
+    yield* Effect.uninterruptibleMask(restore =>
+      Effect.gen(function* () {
+        detachedServerWasStopped = yield* restore(effects.stopDetached(config, yield* remaining()));
+      }),
+    );
+    if (!(yield* effects.waitForShutdown(config, yield* remaining()))) {
+      return yield* Effect.fail(
+        new Error(
+          `OpenViking at ${openVikingHealthUrl(config)} is still running outside Threadnote's managed process. ` +
+            'Stop that process before enabling launchd autostart.',
+        ),
+      );
+    }
+    if (yield* effects.isPortOpen(config, yield* remaining())) {
+      return yield* Effect.fail(
+        new Error(
+          `Port ${config.host}:${config.port} is still in use after stopping the managed OpenViking server. ` +
+            'Stop the process using that port before enabling launchd autostart.',
+        ),
+      );
+    }
+    yield* transaction.commit;
+    replacementCommitted = true;
+    yield* effects.bootstrap(plistPath, yield* remaining());
+    const health = yield* effects.waitForHealth(config, yield* remaining());
+    if (health === undefined) {
+      return yield* Effect.fail(timedOut);
+    }
+    serviceHealthy = true;
+    yield* transaction.release;
+    return health;
+  });
+  const boundedOperation = operation.pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail(timedOut),
+    }),
+  );
+  return boundedOperation.pipe(
+    Effect.onExit(exit => {
+      if (Exit.isSuccess(exit) || !transaction) {
+        return Effect.void;
+      }
+      const activeTransaction = transaction;
+      if (serviceHealthy) {
+        return boundedRecovery(activeTransaction.release, recoveryTimeoutMs, exit);
+      }
+      const recovery = Effect.gen(function* () {
+        if (replacementCommitted) {
+          yield* effects.bootout(recoveryTimeoutMs);
+        }
+        yield* activeTransaction.rollback;
+        if (launchAgentWasLoaded) {
+          yield* effects.bootstrap(plistPath, recoveryTimeoutMs);
+        } else if (detachedServerWasStopped) {
+          yield* effects.restartDetached(config, recoveryTimeoutMs);
+        }
+      }).pipe(Effect.ensuring(activeTransaction.release.pipe(Effect.orDie)));
+      return boundedRecovery(recovery, recoveryTimeoutMs, exit);
+    }),
   );
 }
 
-async function removeLaunchAgent(dryRun: boolean): Promise<void> {
-  const launchAgentPath = expandPath(`~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist`);
-  const content = await readFileIfExists(launchAgentPath);
+function boundedRecovery<R>(
+  recovery: Effect.Effect<void, unknown, R>,
+  timeoutMs: number,
+  activationExit: Exit.Exit<unknown, unknown>,
+): Effect.Effect<void, Error, R> {
+  const activationFailure = Exit.isFailure(activationExit) ? Cause.pretty(activationExit.cause) : 'unknown failure';
+  return recovery.pipe(
+    Effect.interruptible,
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail(new Error(`LaunchAgent recovery timed out after ${timeoutMs / 1000}s.`)),
+    }),
+    Effect.mapError(
+      recoveryError =>
+        new Error(
+          `LaunchAgent activation failed: ${activationFailure}\nRecovery also failed: ${errorMessage(recoveryError)}`,
+        ),
+    ),
+  );
+}
+
+export const stageLaunchAgentPlist = Effect.fn('stageLaunchAgentPlist')(function* (plistPath: string, content: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* stageLaunchAgentPlistWithFileSystem(fs, plistPath, content);
+});
+
+function stageLaunchAgentPlistWithFileSystem(
+  fs: FileSystem.FileSystem,
+  plistPath: string,
+  content: string,
+): Effect.Effect<LaunchAgentPlistTransaction, unknown> {
+  return Effect.gen(function* () {
+    const stagePath = `${plistPath}.threadnote-stage-${process.pid}`;
+    const rollbackPath = `${plistPath}.threadnote-rollback-${process.pid}`;
+    const lockPath = `${plistPath}.threadnote-lock`;
+    yield* fs.makeDirectory(lockPath);
+    const prepare = Effect.gen(function* () {
+      const previous = yield* readOptionalFileEffect(fs, plistPath);
+      let committed = false;
+      yield* fs.writeFileString(stagePath, content, {mode: 0o600});
+      return {
+        hadPrevious: previous !== undefined,
+        commit: Effect.gen(function* () {
+          const current = yield* readOptionalFileEffect(fs, plistPath);
+          if (current !== previous) {
+            return yield* Effect.fail(new Error(`LaunchAgent plist changed while activation was staged: ${plistPath}`));
+          }
+          yield* fs.rename(stagePath, plistPath);
+          committed = true;
+        }),
+        release: fs.remove(lockPath, {force: true, recursive: true}),
+        rollback: Effect.gen(function* () {
+          yield* fs.remove(stagePath, {force: true});
+          const current = yield* readOptionalFileEffect(fs, plistPath);
+          const expected = committed ? content : previous;
+          if (current !== expected) {
+            return yield* Effect.fail(
+              new Error(`LaunchAgent plist changed before activation could roll back: ${plistPath}`),
+            );
+          }
+          if (!committed) {
+            return;
+          }
+          if (previous === undefined) {
+            yield* fs.remove(plistPath, {force: true});
+            return;
+          }
+          yield* fs.writeFileString(rollbackPath, previous, {mode: 0o600});
+          yield* fs.rename(rollbackPath, plistPath);
+        }),
+      } satisfies LaunchAgentPlistTransaction;
+    });
+    return yield* prepare.pipe(
+      Effect.onError(() => fs.remove(lockPath, {force: true, recursive: true}).pipe(Effect.orDie)),
+    );
+  });
+}
+
+const readOptionalFileEffect = Effect.fn('readOptionalFile')(function* (fs: FileSystem.FileSystem, path: string) {
+  return yield* fs.readFileString(path).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
+});
+
+const waitForOpenVikingShutdown = Effect.fn('waitForOpenVikingShutdown')(function* (
+  config: RuntimeConfig,
+  timeoutMs: number,
+) {
+  const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+  while ((yield* Clock.currentTimeMillis) <= deadline) {
+    const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+    if (!(yield* readOpenVikingHealthEffect(config, Math.max(1, Math.min(500, remainingMs))))) {
+      return true;
+    }
+    if (remainingMs <= 0) {
+      break;
+    }
+    yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+  }
+  return false;
+});
+
+export function waitForLaunchAgentHealth(
+  config: RuntimeConfig,
+  timeoutMs: number,
+  progressMessage: string,
+): Effect.Effect<string | undefined, unknown, CommandExecutor | HttpService> {
+  return waitForLaunchAgentHealthWithEffects(config, timeoutMs, progressMessage, liveLaunchAgentHealthEffects());
+}
+
+export function waitForLaunchAgentHealthWithEffects<R>(
+  config: RuntimeConfig,
+  timeoutMs: number,
+  progressMessage: string,
+  effects: LaunchAgentHealthEffects<R>,
+): Effect.Effect<string | undefined, unknown, R> {
+  return Effect.gen(function* () {
+    yield* Console.log(progressMessage);
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+    while ((yield* Clock.currentTimeMillis) <= deadline) {
+      const statusTimeoutMs = Math.max(1, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+      const status = yield* effects.readStatus(statusTimeoutMs);
+      if (status.running && status.pid !== undefined) {
+        const preOwnershipTimeoutMs = Math.max(1, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+        if (yield* effects.ownsPort(status.pid, config, preOwnershipTimeoutMs)) {
+          const requestTimeoutMs = Math.max(1, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+          const health = yield* effects.readHealth(config, requestTimeoutMs);
+          if (health !== undefined) {
+            const postOwnershipTimeoutMs = Math.max(1, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+            const ownsPort = yield* effects.ownsPort(status.pid, config, postOwnershipTimeoutMs);
+            const confirmationTimeoutMs = Math.max(1, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+            const confirmedStatus = yield* effects.readStatus(confirmationTimeoutMs);
+            if (ownsPort && launchAgentHealthIsStable(status, health, confirmedStatus)) {
+              return health;
+            }
+          }
+        }
+      }
+      const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+      if (remainingMs <= 0) {
+        break;
+      }
+      yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+    }
+    return undefined;
+  });
+}
+
+const launchdProcessOwnsPort = Effect.fn('launchdProcessOwnsPort')(function* (
+  pid: number,
+  config: RuntimeConfig,
+  timeoutMs: number,
+) {
+  const result = yield* runCommandEffect(
+    '/usr/sbin/lsof',
+    ['-nP', '-a', '-p', String(pid), `-iTCP@${config.host}:${config.port}`, '-sTCP:LISTEN', '-Fp'],
+    {allowFailure: true, timeoutMs},
+  );
+  return result.exitCode === 0 && result.stdout.split('\n').includes(`p${pid}`);
+});
+
+const readOpenVikingHealthEffect = Effect.fn('readOpenVikingHealth')(function* (
+  config: RuntimeConfig,
+  timeoutMs: number,
+) {
+  return yield* getTextEffect(openVikingHealthUrl(config), {timeoutMs}).pipe(
+    Effect.map(response => response.body),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+});
+
+function liveLaunchAgentHealthEffects(): LaunchAgentHealthEffects<CommandExecutor | HttpService> {
+  return {
+    ownsPort: (pid, config, timeoutMs) => launchdProcessOwnsPort(pid, config, timeoutMs),
+    readHealth: readOpenVikingHealthEffect,
+    readStatus: timeoutMs => readLaunchAgentStatus(undefined, timeoutMs),
+  };
+}
+
+const isTcpPortOpenEffect = Effect.fn('isTcpPortOpen')(function* (host: string, port: number, timeoutMs: number) {
+  return yield* fromPromise(`check TCP port ${host}:${port}`, () => isTcpPortOpen(host, port, timeoutMs));
+});
+
+const remainingBudget = Effect.fn('remainingLaunchAgentBudget')(function* (deadline: number, timeoutMs: number) {
+  const remaining = deadline - (yield* Clock.currentTimeMillis);
+  if (remaining <= 0) {
+    return yield* Effect.fail(new Error(`LaunchAgent activation timed out after ${timeoutMs / 1000}s.`));
+  }
+  return remaining;
+});
+
+export function launchAgentHealthIsStable(
+  initial: LaunchAgentStatus,
+  health: string | undefined,
+  confirmed: LaunchAgentStatus,
+): health is string {
+  return (
+    health !== undefined &&
+    initial.running &&
+    confirmed.running &&
+    initial.pid !== undefined &&
+    initial.pid === confirmed.pid
+  );
+}
+
+const removeLaunchAgent = Effect.fn('removeLaunchAgent')(function* (dryRun: boolean) {
+  const fs = yield* FileSystem.FileSystem;
+  const agentPath = launchAgentPath();
+  const content = yield* fs.readFileString(agentPath).pipe(
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () => Effect.succeed(undefined),
+    ),
+  );
   if (content === undefined) {
-    consoleOutput.log(`Already absent: ${launchAgentPath}`);
+    yield* Console.log(`Already absent: ${agentPath}`);
     return;
   }
   if (!content.includes(LAUNCHD_LABEL) || !content.includes(OPENVIKING_SERVER_COMMAND)) {
-    consoleOutput.log(`WARN not removing unmanaged LaunchAgent: ${launchAgentPath}`);
+    yield* Console.log(`WARN not removing unmanaged LaunchAgent: ${agentPath}`);
     return;
   }
-  await removePath(launchAgentPath, 'LaunchAgent', dryRun);
-}
+  if (dryRun) {
+    yield* Console.log(`Would remove LaunchAgent: ${agentPath}`);
+    return;
+  }
+  yield* fs.remove(agentPath);
+  yield* Console.log(`Removed LaunchAgent: ${agentPath}`);
+});
 
 async function eraseThreadnoteHome(path: string, dryRun: boolean): Promise<void> {
   assertSafeThreadnoteHomeForErase(path);

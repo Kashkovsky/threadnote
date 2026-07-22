@@ -67,7 +67,6 @@ const execute = <A>(
   }
   const response = client.execute(request).pipe(
     Effect.provideService(FetchHttpClient.Fetch, dynamicFetch),
-    Effect.timeout(options?.timeoutMs ?? 3000),
     Effect.mapError(
       cause =>
         new HttpRequestFailed({
@@ -78,7 +77,7 @@ const execute = <A>(
         }),
     ),
   );
-  return Effect.gen(function* () {
+  const completeResponse = Effect.gen(function* () {
     const current = yield* response;
     if (current.status < 200 || current.status >= 300) {
       return yield* new HttpStatusError({
@@ -101,6 +100,19 @@ const execute = <A>(
     );
     return {body, status: current.status};
   });
+  return completeResponse.pipe(
+    Effect.timeout(options?.timeoutMs ?? 3000),
+    Effect.mapError(cause =>
+      cause instanceof HttpRequestFailed || cause instanceof HttpStatusError
+        ? cause
+        : new HttpRequestFailed({
+            cause,
+            message: `GET ${urlText} failed`,
+            method: 'GET',
+            url: urlText,
+          }),
+    ),
+  );
 };
 
 const executeStatus = (

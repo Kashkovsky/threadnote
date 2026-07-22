@@ -52,4 +52,20 @@ describe('Effect HttpService', () => {
       expect(result.failure._tag).toBe('HttpStatusError');
     }
   });
+
+  it('times out while a successful response body is still streaming', async () => {
+    nextResponse = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('partial'));
+          },
+        }),
+        {status: 200},
+      );
+
+    await expect(
+      pipe(getTextEffect('http://localhost/health', {timeoutMs: 20}), Effect.provide(ApplicationLayer), runTestEffect),
+    ).rejects.toThrow('GET http://localhost/health failed');
+  });
 });
