@@ -1,10 +1,13 @@
-import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {spawn, type ChildProcess} from 'node:child_process';
+import {access, chmod, mkdir, mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
-import {Effect} from 'effect';
+import {NodeFileSystem} from '@effect/platform-node';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   ensureSupportedUvExecutable as ensureSupportedUvExecutablePromise,
+  findOpenVikingServerEffect,
   findSupportedUvExecutable,
   getInstallCommands,
   isLlamaWheelArchiveExtractionFailure,
@@ -13,15 +16,20 @@ import {
   openVikingSourceBuildRetryForArchiveFailure,
   openVikingToolPython,
   resolveOpenVikingInstallCommand,
+  stopDetachedOpenVikingServerForLaunchd,
 } from '../../src/lifecycle.js';
 import {fromPromise} from '../../src/effect/errors.js';
+import {CommandExecutor} from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 const WHEEL_INDEX_ENV = 'THREADNOTE_LLAMA_WHEEL_INDEX';
 const TOOL_PYTHON_ENV = 'THREADNOTE_OPENVIKING_PYTHON';
 const TEST_INDEX = 'https://wheels.example/whl/cpu';
 const METAL_INDEX = 'https://abetlen.github.io/llama-cpp-python/whl/metal';
+const posixIt = process.platform === 'win32' ? it.skip : it;
 const originalPath = process.env.PATH;
+const childProcesses: ChildProcess[] = [];
 const temporaryDirectories: string[] = [];
 const ensureSupportedUvExecutable = () =>
   Effect.runPromise(fromPromise('ensure supported uv executable', ensureSupportedUvExecutablePromise));
@@ -67,8 +75,70 @@ function restoreEnv(name: string, original: string | undefined): void {
 
 afterEach(async () => {
   restoreEnv('PATH', originalPath);
+  await Promise.all(childProcesses.splice(0).map(stopChild));
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, {force: true, recursive: true})));
 });
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  child.kill('SIGTERM');
+  if (await waitForChildExit(child, 1000)) {
+    return;
+  }
+  child.kill('SIGKILL');
+  if (!(await waitForChildExit(child, 1000))) {
+    throw new Error(`Could not stop test child ${child.pid ?? '<unknown>'}.`);
+  }
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = (): void => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    child.once('exit', onExit);
+  });
+}
+
+function formatPsStart(date: Date): string {
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map(value => String(value).padStart(2, '0'))
+    .join(':');
+  return `${weekdays[date.getDay()]} ${months[date.getMonth()]} ${String(date.getDate()).padStart(2, ' ')} ${time} ${date.getFullYear()}`;
+}
+
+function launchdProcessTestLayer(processStart: string, commands: string | readonly string[], pid: number) {
+  let psCalls = 0;
+  const executor = Layer.succeed(
+    CommandExecutor,
+    CommandExecutor.of({
+      execute: executable => {
+        if (executable === '/bin/ps') {
+          const command = typeof commands === 'string' ? commands : (commands[psCalls] ?? commands.at(-1) ?? '');
+          psCalls += 1;
+          return Effect.succeed({exitCode: 0, stderr: '', stdout: `${processStart} ${command}\n`});
+        }
+        if (executable === '/usr/sbin/lsof') {
+          return Effect.succeed({exitCode: 0, stderr: '', stdout: `p${pid}\n`});
+        }
+        return Effect.succeed({exitCode: 127, stderr: 'unexpected command', stdout: ''});
+      },
+    }),
+  );
+  return Layer.merge(NodeFileSystem.layer, executor);
+}
 
 function runtime(): RuntimeConfig {
   return {
@@ -307,5 +377,136 @@ describe('getInstallCommands', () => {
       'pip-system-certs',
       SPEC,
     ]);
+  });
+});
+
+describe('findOpenVikingServerEffect', () => {
+  it('interrupts Effect-native uv discovery at the supplied deadline', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-server-discovery-test-'));
+    temporaryDirectories.push(home);
+    const uv = join(home, 'uv');
+    await writeFile(uv, '#!/bin/sh\n');
+    await chmod(uv, 0o755);
+    process.env.PATH = home;
+    const layer = Layer.merge(
+      NodeFileSystem.layer,
+      Layer.succeed(
+        CommandExecutor,
+        CommandExecutor.of({
+          execute: () => Effect.never,
+        }),
+      ),
+    );
+
+    await expect(Effect.runPromise(findOpenVikingServerEffect(20).pipe(Effect.provide(layer)))).rejects.toThrow(
+      'discovery timed out',
+    );
+  });
+});
+
+describe('stopDetachedOpenVikingServerForLaunchd', () => {
+  posixIt('stops an identity-checked process through Effect command services', async () => {
+    const config = runtime();
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-detached-test-'));
+    temporaryDirectories.push(home);
+    const server = join(home, 'openviking-server');
+    await writeFile(server, `#!${process.execPath}\n`);
+    await chmod(server, 0o755);
+    process.env.PATH = home;
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore'});
+    childProcesses.push(child);
+    const pidPath = join(home, 'openviking-server.pid');
+    await writeFile(pidPath, `${child.pid}\n`);
+    const current = {...config, agentContextHome: home};
+    const processStart = formatPsStart((await stat(pidPath)).mtime);
+    const expectedCommand = [
+      process.execPath,
+      server,
+      '--config',
+      join(home, 'ov.conf'),
+      '--host',
+      current.host,
+      '--port',
+      String(current.port),
+    ].join(' ');
+
+    await Effect.runPromise(
+      stopDetachedOpenVikingServerForLaunchd(current, false, 2000).pipe(
+        Effect.provide(launchdProcessTestLayer(processStart, expectedCommand, child.pid!)),
+      ),
+    );
+
+    expect(child.signalCode).toBe('SIGTERM');
+    await expect(access(pidPath)).rejects.toThrow();
+  });
+
+  posixIt('refuses to signal a process when Effect inspection rejects its identity', async () => {
+    const config = runtime();
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-detached-test-'));
+    temporaryDirectories.push(home);
+    const server = join(home, 'openviking-server');
+    await writeFile(server, `#!${process.execPath}\n`);
+    await chmod(server, 0o755);
+    process.env.PATH = home;
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore'});
+    childProcesses.push(child);
+    const pidPath = join(home, 'openviking-server.pid');
+    await writeFile(pidPath, `${child.pid}\n`);
+    const processStart = formatPsStart((await stat(pidPath)).mtime);
+    const expectedCommand = [
+      process.execPath,
+      server,
+      '--config',
+      join(home, 'ov.conf'),
+      '--host',
+      config.host,
+      '--port',
+      String(config.port),
+    ].join(' ');
+
+    await expect(
+      Effect.runPromise(
+        stopDetachedOpenVikingServerForLaunchd({...config, agentContextHome: home}, false, 2000).pipe(
+          Effect.provide(
+            launchdProcessTestLayer(processStart, [expectedCommand, '/usr/bin/unrelated --malicious'], child.pid!),
+          ),
+        ),
+      ),
+    ).rejects.toThrow('Refusing to stop process');
+
+    expect(child.exitCode).toBeNull();
+  });
+
+  it('removes a malformed pid file without signaling a process', async () => {
+    const config = runtime();
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-detached-test-'));
+    temporaryDirectories.push(home);
+    const pidPath = join(home, 'openviking-server.pid');
+    await writeFile(pidPath, '');
+
+    const stopped = await Effect.runPromise(
+      stopDetachedOpenVikingServerForLaunchd({...config, agentContextHome: home}, false).pipe(
+        Effect.provide(ApplicationLayer),
+      ),
+    );
+
+    expect(stopped).toBe(false);
+    await expect(access(pidPath)).rejects.toThrow();
+  });
+
+  posixIt('propagates pid file read failures', async () => {
+    const config = runtime();
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-detached-test-'));
+    temporaryDirectories.push(home);
+    const pidPath = join(home, 'openviking-server.pid');
+    await mkdir(pidPath);
+
+    await expect(
+      Effect.runPromise(
+        stopDetachedOpenVikingServerForLaunchd({...config, agentContextHome: home}, false).pipe(
+          Effect.provide(ApplicationLayer),
+        ),
+      ),
+    ).rejects.toThrow();
   });
 });
