@@ -47,4 +47,12 @@ jobs:
 
       # No NODE_AUTH_TOKEN: auth comes from the OIDC trusted publisher.
       # Provenance is attached automatically; --provenance makes it explicit.
-      - run: npm publish --provenance --access public
+      - name: Publish to npm
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          tag=latest
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            tag=beta
+          fi
+          npm publish --provenance --access public --tag "$tag"

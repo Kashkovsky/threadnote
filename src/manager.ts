@@ -43,6 +43,7 @@ import {
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, updateRegistry} from './update.js';
+import {selectUpdateChannel} from './update_channel.js';
 import type {
   AgentClient,
   ConsolidationAgent,
@@ -320,7 +321,10 @@ function handleRequestEffect(
       const latest = yield* Effect.try({
         try: updateRegistry,
         catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      }).pipe(Effect.flatMap(fetchLatestVersion), Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}));
+      }).pipe(
+        Effect.flatMap(registry => fetchLatestVersion(registry, selectUpdateChannel(version))),
+        Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
+      );
       writeJson(response, 200, {
         agents,
         config: publicConfig(context.config),

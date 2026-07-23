@@ -121,6 +121,7 @@ export interface UninstallOptions {
 
 export interface UpdateOptions {
   readonly allowUntrustedRegistry?: boolean;
+  readonly beta?: boolean;
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;

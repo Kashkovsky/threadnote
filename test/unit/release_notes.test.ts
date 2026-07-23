@@ -1,5 +1,13 @@
-import {describe, expect, it} from 'vitest';
-import {formatWhatsNew, releaseForVersion, releasesBetween, type ReleaseNote} from '../../src/release_notes.js';
+import {Effect} from 'effect';
+import {afterEach, describe, expect, it, vi} from 'vitest';
+import {
+  fetchThreadnoteReleaseNotes,
+  formatWhatsNew,
+  releaseForVersion,
+  releasesBetween,
+  type ReleaseNote,
+} from '../../src/release_notes.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const releases: readonly ReleaseNote[] = [
   {
@@ -23,6 +31,44 @@ const releases: readonly ReleaseNote[] = [
     version: '0.7.7',
   },
 ];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('fetchThreadnoteReleaseNotes', () => {
+  it('includes GitHub prereleases only when the beta channel requests them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json([
+          {
+            body: '- Beta change.',
+            draft: false,
+            name: '3.0.0-beta.1',
+            prerelease: true,
+            tag_name: 'v3.0.0-beta.1',
+          },
+          {
+            body: '- Stable change.',
+            draft: false,
+            name: '2.0.4',
+            prerelease: false,
+            tag_name: 'v2.0.4',
+          },
+        ]),
+      ),
+    );
+
+    const stable = await Effect.runPromise(fetchThreadnoteReleaseNotes().pipe(Effect.provide(ApplicationLayer)));
+    const beta = await Effect.runPromise(
+      fetchThreadnoteReleaseNotes({includePrereleases: true}).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(stable.map(release => release.version)).toEqual(['2.0.4']);
+    expect(beta.map(release => release.version)).toEqual(['3.0.0-beta.1', '2.0.4']);
+  });
+});
 
 describe('releasesBetween', () => {
   it('returns newer releases up to latest in ascending order', () => {

@@ -12,7 +12,13 @@ export interface ReleaseNote {
   readonly version: string;
 }
 
-export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNotes')(function* () {
+interface ReleaseNotesOptions {
+  readonly includePrereleases?: boolean;
+}
+
+export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNotes')(function* (
+  options: ReleaseNotesOptions = {},
+) {
   const response = yield* getJsonEffect(GITHUB_RELEASES_URL, {
     headers: {
       accept: 'application/vnd.github+json',
@@ -23,7 +29,7 @@ export const fetchThreadnoteReleaseNotes = Effect.fn('fetchThreadnoteReleaseNote
   if (!Array.isArray(response.body)) {
     return yield* Effect.fail(new Error('GitHub releases response was not an array.'));
   }
-  return response.body.flatMap(parseGithubRelease);
+  return response.body.flatMap(value => parseGithubRelease(value, options.includePrereleases === true));
 });
 
 export function releasesBetween(
@@ -57,21 +63,23 @@ export function formatWhatsNew(releases: readonly ReleaseNote[]): readonly strin
   return lines;
 }
 
-export const whatsNewLinesForVersion = Effect.fn('whatsNewLinesForVersion')((version: string) =>
-  fetchThreadnoteReleaseNotes().pipe(
-    Effect.map(releases => {
-      const lines = formatWhatsNew(releaseForVersion(releases, version));
-      return lines.length > 0 ? lines : ["What's new:", `No GitHub release notes found for ${version}.`];
-    }),
-    Effect.catch(error => Effect.succeed([`What's new: unavailable (${errorMessage(error)})`])),
-  ),
+export const whatsNewLinesForVersion = Effect.fn('whatsNewLinesForVersion')(
+  (version: string, options: ReleaseNotesOptions = {}) =>
+    fetchThreadnoteReleaseNotes(options).pipe(
+      Effect.map(releases => {
+        const lines = formatWhatsNew(releaseForVersion(releases, version));
+        return lines.length > 0 ? lines : ["What's new:", `No GitHub release notes found for ${version}.`];
+      }),
+      Effect.catch(error => Effect.succeed([`What's new: unavailable (${errorMessage(error)})`])),
+    ),
 );
 
 export const whatsNewLinesForVersionRange = Effect.fn('whatsNewLinesForVersionRange')(function (
   currentVersion: string,
   latestVersion: string,
+  options: ReleaseNotesOptions = {},
 ) {
-  return fetchThreadnoteReleaseNotes().pipe(
+  return fetchThreadnoteReleaseNotes(options).pipe(
     Effect.map(releases => {
       const lines = formatWhatsNew(releasesBetween(releases, currentVersion, latestVersion));
       return lines.length > 0 ? lines : ["What's new:", 'No GitHub release notes found for this version range.'];
@@ -80,8 +88,8 @@ export const whatsNewLinesForVersionRange = Effect.fn('whatsNewLinesForVersionRa
   );
 });
 
-function parseGithubRelease(value: unknown): readonly ReleaseNote[] {
-  if (!isJsonObject(value) || value.draft === true || value.prerelease === true) {
+function parseGithubRelease(value: unknown, includePrereleases: boolean): readonly ReleaseNote[] {
+  if (!isJsonObject(value) || value.draft === true || (!includePrereleases && value.prerelease === true)) {
     return [];
   }
   const tagName = typeof value.tag_name === 'string' ? value.tag_name : '';

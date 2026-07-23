@@ -501,8 +501,9 @@ export function compareVersions(a: string, b: string): number {
   if (left.suffix === right.suffix) {
     return 0;
   }
-  // Same rank class with distinct suffixes (e.g. rc1 vs rc2) — order lexically.
-  return (left.suffix ?? '').localeCompare(right.suffix ?? '');
+  // Same rank class with distinct suffixes (e.g. beta.2 vs beta.10) — use
+  // numeric collation so multi-digit prerelease identifiers keep semver order.
+  return (left.suffix ?? '').localeCompare(right.suffix ?? '', 'en', {numeric: true});
 }
 
 /** PEP 440 post-releases sort after the release; pre/dev releases before it. */
