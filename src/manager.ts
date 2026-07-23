@@ -8,7 +8,16 @@ import {runCommandEffect} from './effect/command.js';
 import {captureConsole, capturePromiseConsole, consoleOutput} from './effect/console.js';
 import {fromPromiseError} from './effect/errors.js';
 import type {ApplicationServices} from './effect/runtime.js';
-import {runSharePublish} from './effect/share.js';
+import {withSharedRepositoryLock} from './effect/share_lock.js';
+import {
+  runShareInit,
+  runSharePublish,
+  runShareRemove,
+  runShareRename,
+  runShareSetUrl,
+  runShareSync,
+  runShareUnpublish,
+} from './effect/share.js';
 import {uriSegment} from './manifest.js';
 import {
   runArchive,
@@ -30,12 +39,6 @@ import {
   readTeamsFile,
   removeMemoryUri,
   resolveTeam,
-  runShareInit,
-  runShareRemove,
-  runShareRename,
-  runShareSetUrl,
-  runShareSync,
-  runShareUnpublish,
   sharedTeamNameForUri,
   vikingUriToWorktreeRelative,
   writeMemoryFile,
@@ -460,8 +463,9 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runShareUnpublish(context.config, requireString(body.uri, 'uri'), {team: optionalString(body.team)}),
+        await runCaptured(
+          () => runShareUnpublish(context.config, requireString(body.uri, 'uri'), {team: optionalString(body.team)}),
+          context.runEffect,
         ),
       );
       return;
@@ -517,8 +521,12 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runShareInit(context.config, requireString(body.remoteUrl, 'remoteUrl'), {team: optionalString(body.team)}),
+        await runCaptured(
+          () =>
+            runShareInit(context.config, requireString(body.remoteUrl, 'remoteUrl'), {
+              team: optionalString(body.team),
+            }),
+          context.runEffect,
         ),
       );
       return;
@@ -527,8 +535,13 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runShareRename(context.config, {team: requireString(body.team, 'team'), to: requireString(body.to, 'to')}),
+        await runCaptured(
+          () =>
+            runShareRename(context.config, {
+              team: requireString(body.team, 'team'),
+              to: requireString(body.to, 'to'),
+            }),
+          context.runEffect,
         ),
       );
       return;
@@ -537,8 +550,12 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runShareSetUrl(context.config, requireString(body.remoteUrl, 'remoteUrl'), {team: optionalString(body.team)}),
+        await runCaptured(
+          () =>
+            runShareSetUrl(context.config, requireString(body.remoteUrl, 'remoteUrl'), {
+              team: optionalString(body.team),
+            }),
+          context.runEffect,
         ),
       );
       return;
@@ -547,12 +564,14 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runShareRemove(context.config, {
-            keepFiles: body.keepFiles === true,
-            preserveLocal: body.preserveLocal === true,
-            team: optionalString(body.team),
-          }),
+        await runCaptured(
+          () =>
+            runShareRemove(context.config, {
+              keepFiles: body.keepFiles === true,
+              preserveLocal: body.preserveLocal === true,
+              team: optionalString(body.team),
+            }),
+          context.runEffect,
         ),
       );
       return;
@@ -560,7 +579,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() => runShareSync(context.config, {team: optionalString(body.team)})),
+        await runCaptured(() => runShareSync(context.config, {team: optionalString(body.team)}), context.runEffect),
       );
       return;
     case '/api/doctor/start':
@@ -696,7 +715,10 @@ async function saveMemory(
   const text = requireString(body.text, 'text');
   const replaceUri = optionalString(body.replaceUri);
   if (replaceUri && isRawMemoryDocument(text)) {
-    return runCaptured(() => writeRawMemory(config, replaceUri, text));
+    return runCaptured(() => {
+      const write = fromPromiseError(() => writeRawMemory(config, replaceUri, text));
+      return isInSharedNamespace(config, replaceUri) ? withSharedRepositoryLock(config, write) : write;
+    }, runEffect);
   }
   return runCaptured(
     () =>
@@ -760,8 +782,15 @@ async function moveMemory(
         );
       }
       const sharedTargetUri = sharedMemoryUriFor(config, targetTeam, metadata);
-      const output = await runCaptured(() =>
-        moveSharedWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
+      const output = await runCaptured(
+        () =>
+          withSharedRepositoryLock(
+            config,
+            fromPromiseError(() =>
+              moveSharedWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
+            ),
+          ),
+        runEffect,
       );
       return {...output, targetUri: sharedTargetUri};
     }
@@ -800,7 +829,14 @@ async function moveMemory(
         }),
       runEffect,
     );
-    const removed = await runCaptured(() => removeSharedSource(config, sourceUri));
+    const removed = await runCaptured(
+      () =>
+        withSharedRepositoryLock(
+          config,
+          fromPromiseError(() => removeSharedSource(config, sourceUri)),
+        ),
+      runEffect,
+    );
     return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
   }
   const output = await runCaptured(

@@ -7,6 +7,8 @@ import {consoleOutput, syncWithConsole} from './effect/console.js';
 import {fromPromiseError as attempt} from './effect/errors.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
+import {syncSharedReposBeforeAgentRead} from './effect/share.js';
+import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {
   inferProjectFromQuery,
   inferWorksetFromQuery,
@@ -28,13 +30,7 @@ import {
   topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
-import {
-  formatMemoryDocument,
-  inferMemoryMetadata,
-  isSharedMemoryUri,
-  memoryHeaderValue,
-  type MemoryMetadata,
-} from './memory_document.js';
+import {formatMemoryDocument, inferMemoryMetadata, memoryHeaderValue, type MemoryMetadata} from './memory_document.js';
 import {prepareRecallSections} from './recall/runtime.js';
 import {withIdentity} from './runtime.js';
 import type {
@@ -98,7 +94,6 @@ import {
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   stripPersonalProvenance,
-  syncSharedReposBeforeAgentRead,
   vikingUriToWorktreeRelative,
   writeMemoryFile,
 } from './share.js';
@@ -933,7 +928,7 @@ function projectMemoryLocations(): readonly ProjectMemoryLocation[] {
 
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
   if (options.dryRun !== true) {
-    yield* attempt(() => syncSharedReposAndLog(config));
+    yield* syncSharedReposAndLog(config);
   }
   const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
   const workspaceOptions = options.callerCwd
@@ -1036,11 +1031,11 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     }
   }
 
-  const recallOutputs: string[] = [];
   const exactMatches = yield* attempt(() =>
     collectExactMemoryMatches(config, ov, query, {dryRun, includeArchived, project}),
   );
   const {semanticSection, exactTail} = yield* prepareRecallSections(config, {
+    allowExactRescue: options.threshold === undefined,
     allowedUriScopes: options.uri ? [options.uri] : undefined,
     exactMatches,
     feedbackQuery: options.query,
@@ -1055,18 +1050,15 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   });
   if (semanticSection) {
     yield* syncWithConsole(() => consoleOutput.log(`\n${semanticSection}`));
-    recallOutputs.push(semanticSection);
   }
   if (exactTail) {
     yield* syncWithConsole(() => consoleOutput.log(`\n${exactTail}`));
-    recallOutputs.push(exactTail);
   }
-  const referencedSection = yield* attempt(() => referencedContextSection(config, recallOutputs.join('\n')));
+  const referencedSection = yield* attempt(() => referencedContextSection(config, semanticSection ?? ''));
   if (referencedSection) {
     yield* syncWithConsole(() => consoleOutput.log(`\n${referencedSection}`));
-    recallOutputs.push(referencedSection);
   }
-  yield* attempt(() => printRecallHygieneNudges(config, recallOutputs.join('\n')));
+  yield* attempt(() => printRecallHygieneNudges(config, semanticSection ?? ''));
 });
 
 const MAX_REFERENCED_CONTEXT = 5;
@@ -1122,8 +1114,8 @@ async function recallSearchHits(
   options: {readonly dryRun: boolean; readonly includeArchived: boolean},
 ): Promise<readonly RecallHit[]> {
   const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
-  consoleOutput.log(`${options.dryRun ? 'Would run' : 'Running'}: ${formatShellCommand(ov, jsonArgs)}`);
   if (options.dryRun) {
+    consoleOutput.log(`Would run: ${formatShellCommand(ov, jsonArgs)}`);
     return [];
   }
   let result = await runCommand(ov, jsonArgs, {allowFailure: true});
@@ -1156,7 +1148,7 @@ export function stripAdvancedSearchFlags(args: readonly string[]): readonly stri
 export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, uri: string, options: ReadOptions) {
   yield* attemptSync(() => assertVikingUri(uri));
   if (options.dryRun !== true) {
-    yield* attempt(() => syncSharedReposAndLog(config));
+    yield* syncSharedReposAndLog(config);
   }
   const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
   const result = yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
@@ -1175,19 +1167,25 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
   }
 });
 
-async function syncSharedReposAndLog(config: RuntimeConfig): Promise<void> {
-  try {
-    const syncResult = await syncSharedReposBeforeAgentRead(config);
+const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function* (config: RuntimeConfig) {
+  const syncResult = yield* syncSharedReposBeforeAgentRead(config).pipe(
+    Effect.catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      return syncWithConsole(() => consoleOutput.error(`Auto-sync warning: ${message}`)).pipe(Effect.as(undefined));
+    }),
+  );
+  if (!syncResult) {
+    return;
+  }
+  yield* syncWithConsole(() => {
     if (syncResult.syncedTeams.length > 0) {
       consoleOutput.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
     }
     for (const warning of syncResult.warnings) {
       consoleOutput.error(`Auto-sync warning: ${warning}`);
     }
-  } catch (err: unknown) {
-    consoleOutput.error(`Auto-sync warning: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
+  });
+});
 
 async function printRecallHygieneNudges(config: RuntimeConfig, recallOutput: string): Promise<void> {
   const uris = activePersonalMemoryUrisFromText(recallOutput, config.user);
@@ -1374,7 +1372,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
 
 function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
   const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
-  if (!uri.startsWith(prefix) || isSharedMemoryUri(uri)) {
+  if (!uri.startsWith(prefix)) {
     return undefined;
   }
   const relative = uri.slice(prefix.length);
@@ -1581,11 +1579,14 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
       return;
     }
     const fs = yield* FileSystem.FileSystem;
-    yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [options.replaceUri],
-      attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+    yield* withSharedRepositoryLock(
+      config,
+      withMemoryUriLocks(
+        fs,
+        config.agentContextHome,
+        [options.replaceUri],
+        attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+      ),
     );
     return;
   }

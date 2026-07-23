@@ -12,6 +12,7 @@ interface RecallRuntimeConfig {
 }
 
 interface PrepareRecallSectionsInput {
+  readonly allowExactRescue: boolean;
   readonly allowedUriScopes?: readonly string[];
   readonly exactMatches: readonly ExactMatch[];
   readonly feedbackQuery: string;
@@ -63,6 +64,7 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     {concurrency: 2},
   );
   return buildRecallSections(input.passes, input.exactMatches, input.limit, {
+    allowExactRescue: input.allowExactRescue,
     allowedUriScopes: input.allowedUriScopes,
     corpusStatistics: recallIndex?.corpusStatistics,
     feedbackByUri,

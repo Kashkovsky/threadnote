@@ -1,22 +1,30 @@
 import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Layer} from 'effect';
+import {Effect, Fiber, Layer} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
   resolveTeam: vi.fn(),
+  runShareConflicts: vi.fn(),
   runSharePublish: vi.fn(),
+  runShareSync: vi.fn(),
+  shareAgentArtifact: vi.fn(),
+  shareBundlePack: vi.fn(),
+  refreshSharedReposInBackground: vi.fn(),
+  syncSharedReposBeforeAgentRead: vi.fn(),
   sharedUriFor: vi.fn(),
   unused: vi.fn(),
 }));
 
 vi.mock('../../src/share.js', () => ({
   installSharedAgentArtifacts: shareMocks.unused,
+  listShareConflicts: shareMocks.unused,
   listSharedAgentArtifacts: shareMocks.unused,
   removeMemoryUri: shareMocks.unused,
+  refreshSharedReposInBackground: shareMocks.refreshSharedReposInBackground,
   resolveShareConflict: shareMocks.unused,
   resolveTeam: shareMocks.resolveTeam,
   runShareConflictResolve: shareMocks.unused,
-  runShareConflicts: shareMocks.unused,
+  runShareConflicts: shareMocks.runShareConflicts,
   runShareConflictShow: shareMocks.unused,
   runShareInit: shareMocks.unused,
   runShareInstallArtifacts: shareMocks.unused,
@@ -28,12 +36,22 @@ vi.mock('../../src/share.js', () => ({
   runShareRename: shareMocks.unused,
   runShareSetUrl: shareMocks.unused,
   runShareStatus: shareMocks.unused,
-  runShareSync: shareMocks.unused,
+  runShareSync: shareMocks.runShareSync,
   runShareUnpublish: shareMocks.unused,
+  shareAgentArtifact: shareMocks.shareAgentArtifact,
+  shareBundlePack: shareMocks.shareBundlePack,
+  SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS: 300_000,
   sharedUriFor: shareMocks.sharedUriFor,
+  showShareConflict: shareMocks.unused,
+  syncSharedReposBeforeAgentRead: shareMocks.syncSharedReposBeforeAgentRead,
 }));
 
-import {runSharePublish} from '../../src/effect/share.js';
+import {
+  runShareConflicts,
+  runSharePublish,
+  runShareSync,
+  syncSharedReposBeforeAgentRead,
+} from '../../src/effect/share.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 
 const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
@@ -90,5 +108,98 @@ describe('Effect share transaction', () => {
       expect.any(String),
       expect.objectContaining({team: 'alpha'}),
     );
+  });
+
+  it('keeps explicit sync blocked when an interrupted auto-sync Promise is still running', async () => {
+    const agentContextHome = await mkdtemp('threadnote-effect-share-sync-');
+    homes.push(agentContextHome);
+    const events: string[] = [];
+    let markFirstStarted: (() => void) | undefined;
+    let releaseFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>(resolve => {
+      markFirstStarted = resolve;
+    });
+    const firstBlocked = new Promise<void>(resolve => {
+      releaseFirst = resolve;
+    });
+    const config = {
+      account: 'local',
+      agentContextHome,
+      agentId: 'threadnote',
+      user: 'test-user',
+    };
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        shareMocks.syncSharedReposBeforeAgentRead.mockImplementationOnce(async () => {
+          events.push('first:start');
+          markFirstStarted?.();
+          await firstBlocked;
+          events.push('first:end');
+          return {syncedTeams: [], warnings: []};
+        });
+        shareMocks.runShareSync.mockImplementationOnce(async () => {
+          events.push('second:start');
+        });
+
+        const first = yield* Effect.forkChild(syncSharedReposBeforeAgentRead(config));
+        yield* Effect.promise(() => firstStarted);
+        const interruption = yield* Effect.forkChild(Fiber.interrupt(first));
+        yield* Effect.yieldNow;
+        const second = yield* Effect.forkChild(runShareSync(config, {}));
+        yield* Effect.yieldNow;
+        expect(events).toEqual(['first:start']);
+        yield* Effect.sync(() => releaseFirst?.());
+        yield* Fiber.join(interruption);
+        yield* Fiber.join(second);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    expect(events).toEqual(['first:start', 'first:end', 'second:start']);
+  });
+
+  it('keeps sync blocked while conflict inspection refreshes pending state', async () => {
+    const agentContextHome = await mkdtemp('threadnote-effect-share-conflicts-');
+    homes.push(agentContextHome);
+    const events: string[] = [];
+    let markInspectionStarted: (() => void) | undefined;
+    let releaseInspection: (() => void) | undefined;
+    const inspectionStarted = new Promise<void>(resolve => {
+      markInspectionStarted = resolve;
+    });
+    const inspectionBlocked = new Promise<void>(resolve => {
+      releaseInspection = resolve;
+    });
+    const config = {
+      account: 'local',
+      agentContextHome,
+      agentId: 'threadnote',
+      user: 'test-user',
+    };
+    shareMocks.runShareConflicts.mockImplementationOnce(async () => {
+      events.push('inspection:start');
+      markInspectionStarted?.();
+      await inspectionBlocked;
+      events.push('inspection:end');
+      return [];
+    });
+    shareMocks.runShareSync.mockImplementationOnce(async () => {
+      events.push('sync:start');
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const inspection = yield* Effect.forkChild(runShareConflicts(config, {}));
+        yield* Effect.promise(() => inspectionStarted);
+        const sync = yield* Effect.forkChild(runShareSync(config, {}));
+        yield* Effect.yieldNow;
+        expect(events).toEqual(['inspection:start']);
+        yield* Effect.sync(() => releaseInspection?.());
+        yield* Fiber.join(inspection);
+        yield* Fiber.join(sync);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
+    expect(events).toEqual(['inspection:start', 'inspection:end', 'sync:start']);
   });
 });

@@ -6,7 +6,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {Clock, Console, Effect, FileSystem, pipe} from 'effect';
+import {Clock, Effect, FileSystem, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -27,24 +27,14 @@ import {
 } from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
-  listShareConflicts,
-  installSharedAgentArtifacts,
   isInSharedNamespace,
-  listSharedAgentArtifacts,
   publishShareGitChange,
   resolveTeam,
-  resolveShareConflict,
   applyScrubber,
-  showShareConflict,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   sharedUriFor,
-  shareAgentArtifact,
-  shareBundlePack,
-  startShareBackgroundFetch,
-  stopShareBackgroundFetch,
   stripPersonalProvenance,
-  syncSharedReposBeforeAgentRead,
   vikingResourceExists as sharedVikingResourceExists,
   vikingUriToWorktreeRelative,
   writeMemoryFile,
@@ -74,12 +64,23 @@ import {
 } from './utils.js';
 import {withIdentity} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
-import {runWithConsole} from './effect/console.js';
 import {sha256Hex} from './effect/digest.js';
 import {fromPromiseError as attemptPromise} from './effect/errors.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ApplicationLayer} from './effect/runtime.js';
+import {
+  installSharedAgentArtifacts,
+  listShareConflicts,
+  listSharedAgentArtifacts,
+  monitorSharedRepositories,
+  resolveShareConflict,
+  shareAgentArtifact,
+  shareBundlePack,
+  showShareConflict,
+  syncSharedReposBeforeAgentRead,
+} from './effect/share.js';
+import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
@@ -205,11 +206,7 @@ const mainEffect = Effect.gen(function* () {
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
-  const output = yield* Console.Console;
-  yield* Effect.acquireRelease(
-    Effect.sync(() => runWithConsole(output, () => startShareBackgroundFetch(config))),
-    () => Effect.sync(() => stopShareBackgroundFetch(config)),
-  );
+  yield* Effect.forkScoped(monitorSharedRepositories(config));
   yield* Effect.sync(() => process.stderr.write('Threadnote local MCP adapter running\n'));
   return yield* server.run();
 });
@@ -469,7 +466,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name; omit to inspect all configured teams'),
       },
     },
-    async ({team}) => runShareConflictsTool(config, {team}),
+    ({team}) => runShareConflictsTool(config, {team}),
   );
 
   server.registerTool(
@@ -485,7 +482,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name when id is only a relative path'),
       },
     },
-    async ({id, team}) => {
+    ({id, team}) => {
       const checkedId = requiredText(id, 'share_conflict_show', 'id', {
         id: 'default:durable/projects/foo/bar.md',
       });
@@ -516,7 +513,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name when id is only a relative path'),
       },
     },
-    async ({dryRun, id, mergedContent, message, push, take, team}) => {
+    ({dryRun, id, mergedContent, message, push, take, team}) => {
       const checkedId = requiredText(id, 'share_conflict_resolve', 'id', {
         id: 'default:durable/projects/foo/bar.md',
       });
@@ -556,7 +553,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
-    async ({agent, allowBinary, force, kind, message, name, path, preview, push, redact, team}) => {
+    ({agent, allowBinary, force, kind, message, name, path, preview, push, redact, team}) => {
       const checkedPath = requiredText(path, 'share_skill', 'path', {
         path: '~/.codex/skills/example/SKILL.md',
       });
@@ -597,7 +594,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
-    async ({allowBinary, force, message, path, preview, push, redact, team}) => {
+    ({allowBinary, force, message, path, preview, push, redact, team}) => {
       const checkedPath = requiredText(path, 'share_bundle', 'path', {
         path: '~/src/reviewer/threadnote-bundle.json',
       });
@@ -621,7 +618,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
-    async ({agent, kind, name, team}) => runListSharedSkillsTool(config, {agent, kind, name, team}),
+    ({agent, kind, name, team}) => runListSharedSkillsTool(config, {agent, kind, name, team}),
   );
 
   server.registerTool(
@@ -639,7 +636,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         team: McpInput.string('Team name; defaults to the configured default team'),
       },
     },
-    async ({agent, dryRun, force, kind, name, team}) => {
+    ({agent, dryRun, force, kind, name, team}) => {
       const checkedName = requiredText(name, 'install_shared_skill', 'name', {name: 'reviewer'});
       if (!checkedName.ok) {
         return checkedName.error;
@@ -1619,7 +1616,7 @@ interface RecallToolParams {
 function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
   return Effect.gen(function* () {
     const syncWarnings: string[] = [];
-    const syncedTeams = yield* attemptPromise(() => syncSharedReposBeforeAgentRead(config)).pipe(
+    const syncedTeams = yield* syncSharedReposBeforeAgentRead(config).pipe(
       Effect.map(syncResult => {
         syncWarnings.push(...syncResult.warnings);
         return syncResult.syncedTeams;
@@ -1711,6 +1708,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       collectExactMemoryMatches(config, query, params.includeArchived, project),
     );
     const recallSections = yield* prepareRecallSections(config, {
+      allowExactRescue: params.threshold === undefined,
       allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
       exactMatches,
       feedbackQuery: params.query,
@@ -1735,11 +1733,11 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     if (exactTail) {
       sections.push(exactTail);
     }
-    const referencedContext = yield* attemptPromise(() => referencedContextSection(config, sections.join('\n\n')));
+    const referencedContext = yield* attemptPromise(() => referencedContextSection(config, semanticSection ?? ''));
     if (referencedContext) {
       sections.push(referencedContext);
     }
-    const hygieneHints = yield* attemptPromise(() => recallHygieneHintsSection(config, sections.join('\n\n')));
+    const hygieneHints = yield* attemptPromise(() => recallHygieneHintsSection(config, semanticSection ?? ''));
     if (hygieneHints) {
       sections.push(hygieneHints);
     }
@@ -1889,32 +1887,36 @@ function registerReadTool(
         uris: McpInput.stringOrStrings('Native OpenViking MCP read input: a single viking:// URI or array of URIs'),
       },
     },
-    async ({uri, uris}) => {
+    ({uri, uris}) => {
       const checkedUris = requiredVikingUriList(uris ?? uri, name, 'viking://user/you/memories/.abstract.md');
       if (!checkedUris.ok) {
         return checkedUris.error;
       }
-      let syncedTeams: readonly string[] = [];
-      const syncWarnings: string[] = [];
-      try {
-        const syncResult = await syncSharedReposBeforeAgentRead(config);
-        syncedTeams = syncResult.syncedTeams;
-        syncWarnings.push(...syncResult.warnings);
-      } catch (err: unknown) {
-        syncWarnings.push(errorMessage(err));
-      }
-      const result = await runOpenVikingReadTool(config, checkedUris.value);
-      if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
-        return result;
-      }
-      const syncMessages = [
-        syncedTeams.length > 0 ? `Auto-synced shared memories: ${syncedTeams.join(', ')}` : undefined,
-        ...syncWarnings.map(warning => `Auto-sync warning: ${warning}`),
-      ].filter((part): part is string => part !== undefined);
-      return {
-        ...result,
-        content: [...result.content, {type: 'text', text: syncMessages.join('\n')}],
-      };
+      return Effect.gen(function* () {
+        const syncWarnings: string[] = [];
+        const syncedTeams = yield* syncSharedReposBeforeAgentRead(config).pipe(
+          Effect.map(result => {
+            syncWarnings.push(...result.warnings);
+            return result.syncedTeams;
+          }),
+          Effect.catch(error => {
+            syncWarnings.push(error instanceof Error ? error.message : String(error));
+            return Effect.succeed([] as readonly string[]);
+          }),
+        );
+        const result = yield* attemptPromise(() => runOpenVikingReadTool(config, checkedUris.value));
+        if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
+          return result;
+        }
+        const syncMessages = [
+          syncedTeams.length > 0 ? `Auto-synced shared memories: ${syncedTeams.join(', ')}` : undefined,
+          ...syncWarnings.map(warning => `Auto-sync warning: ${warning}`),
+        ].filter((part): part is string => part !== undefined);
+        return {
+          ...result,
+          content: [...result.content, {type: 'text', text: syncMessages.join('\n')}],
+        };
+      });
     },
   );
 }
@@ -2647,7 +2649,7 @@ interface PreparedPersonalMemoryWrite {
 }
 
 function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
-  return Effect.gen(function* () {
+  const write = Effect.gen(function* () {
     const prepared = params.prepared ?? preparePersonalMemoryWrite(config, params);
     const fs = yield* FileSystem.FileSystem;
     return yield* withMemoryUriLocks(
@@ -2724,7 +2726,12 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
         };
       }),
     );
-  }).pipe(
+  });
+  const serializedWrite =
+    params.replaceUri && isInSharedNamespace(config, params.replaceUri)
+      ? withSharedRepositoryLock(config, write)
+      : write;
+  return serializedWrite.pipe(
     Effect.catch(error =>
       Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
     ),
@@ -3373,55 +3380,49 @@ interface InstallSharedSkillToolOptions {
   readonly team?: string;
 }
 
-async function runShareConflictsTool(
-  config: RuntimeConfig,
-  options: ShareConflictToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const conflicts = await listShareConflicts(config, options);
-    if (conflicts.length === 0) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: options.team
-              ? `No pending shared memory conflicts for team "${options.team}".`
-              : 'No pending shared memory conflicts.',
-          },
-        ],
-      };
-    }
-    const lines = [`Pending shared memory conflicts: ${conflicts.length}`];
-    for (const conflict of conflicts) {
-      lines.push(
-        '',
-        conflict.id,
-        `uri: ${conflict.uri}`,
-        `status: ${conflict.status}`,
-        `reason: ${conflict.reason}`,
-        `show: share_conflict_show({"id":${JSON.stringify(conflict.id)}})`,
-        `take shared: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"shared"})`,
-        `take local: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"local"})`,
-        `merged: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"mergedContent":"<merged MEMORY markdown>"})`,
-      );
-    }
-    return {content: [{type: 'text', text: lines.join('\n')}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+function runShareConflictsTool(config: RuntimeConfig, options: ShareConflictToolOptions) {
+  return listShareConflicts(config, options).pipe(
+    Effect.map(conflicts => {
+      if (conflicts.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: options.team
+                ? `No pending shared memory conflicts for team "${options.team}".`
+                : 'No pending shared memory conflicts.',
+            },
+          ],
+        };
+      }
+      const lines = [`Pending shared memory conflicts: ${conflicts.length}`];
+      for (const conflict of conflicts) {
+        lines.push(
+          '',
+          conflict.id,
+          `uri: ${conflict.uri}`,
+          `status: ${conflict.status}`,
+          `reason: ${conflict.reason}`,
+          `show: share_conflict_show({"id":${JSON.stringify(conflict.id)}})`,
+          `take shared: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"shared"})`,
+          `take local: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"take":"local"})`,
+          `merged: share_conflict_resolve({"id":${JSON.stringify(conflict.id)},"mergedContent":"<merged MEMORY markdown>"})`,
+        );
+      }
+      return {content: [{type: 'text' as const, text: lines.join('\n')}]};
+    }),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
-async function runShareConflictShowTool(
-  config: RuntimeConfig,
-  id: string,
-  options: ShareConflictToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const detail = await showShareConflict(config, id, options);
-    return {
+function runShareConflictShowTool(config: RuntimeConfig, id: string, options: ShareConflictToolOptions) {
+  return showShareConflict(config, id, options).pipe(
+    Effect.map(detail => ({
       content: [
         {
-          type: 'text',
+          type: 'text' as const,
           text: [
             `Conflict: ${detail.id}`,
             `URI: ${detail.uri}`,
@@ -3437,35 +3438,34 @@ async function runShareConflictShowTool(
           ].join('\n'),
         },
       ],
-    };
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+    })),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
-async function runShareConflictResolveTool(
-  config: RuntimeConfig,
-  id: string,
-  options: ShareConflictResolveToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const result = await resolveShareConflict(config, id, {
-      dryRun: options.dryRun,
-      mergedContent: options.mergedContent,
-      message: options.message,
-      push: options.push,
-      take: options.take,
-      team: options.team,
-    });
-    const lines = [...result.messages];
-    if (result.backupPath) {
-      lines.push(`Backup: ${result.backupPath}`);
-    }
-    lines.push(...result.gitMessages, `Resolved shared memory conflict: ${result.id}`);
-    return {content: [{type: 'text', text: lines.join('\n')}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+function runShareConflictResolveTool(config: RuntimeConfig, id: string, options: ShareConflictResolveToolOptions) {
+  return resolveShareConflict(config, id, {
+    dryRun: options.dryRun,
+    mergedContent: options.mergedContent,
+    message: options.message,
+    push: options.push,
+    take: options.take,
+    team: options.team,
+  }).pipe(
+    Effect.map(result => {
+      const lines = [...result.messages];
+      if (result.backupPath) {
+        lines.push(`Backup: ${result.backupPath}`);
+      }
+      lines.push(...result.gitMessages, `Resolved shared memory conflict: ${result.id}`);
+      return {content: [{type: 'text' as const, text: lines.join('\n')}]};
+    }),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: SharePublishToolOptions) {
@@ -3473,7 +3473,6 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
     if (isInSharedNamespace(config, sourceUri)) {
       return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
     }
-    const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
     const ov = yield* attemptPromise(requiredOpenVikingCli);
     const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [sourceUri]));
     const sourceText = textFromCallToolResult(readResult);
@@ -3490,9 +3489,10 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
     }
     const stripped = stripPersonalProvenance(sourceText);
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
-    const targetUri = sharedUriFor(config, sourceUri, resolved.name);
 
     if (options.preview === true) {
+      const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
+      const targetUri = sharedUriFor(config, sourceUri, resolved.name);
       const previewLines = [`PREVIEW source: ${sourceUri}`, `PREVIEW destination: ${targetUri}`];
       if (scrub.blocker) {
         previewLines.push(
@@ -3514,60 +3514,69 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
         `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass redact=true for soft-leak patterns.`,
       );
     }
-    const fs = yield* FileSystem.FileSystem;
-    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
-    const commitMessage = options.message ?? `share: publish ${relativePath}`;
-    const publication = yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [sourceUri, targetUri],
+    const {publication, targetUri} = yield* withSharedRepositoryLock(
+      config,
       Effect.gen(function* () {
-        const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
-        if (!currentSource) {
-          return {kind: 'source_missing' as const};
-        }
-        const currentScrub = applyScrubber(
-          stripPersonalProvenance(canonicalMemoryDocumentContent(currentSource.content)),
-          {
-            redact: options.redact === true,
-          },
+        const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
+        const targetUri = sharedUriFor(config, sourceUri, resolved.name);
+        const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+        const commitMessage = options.message ?? `share: publish ${relativePath}`;
+        const fs = yield* FileSystem.FileSystem;
+        const publication = yield* withMemoryUriLocks(
+          fs,
+          config.agentContextHome,
+          [sourceUri, targetUri],
+          Effect.gen(function* () {
+            const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+            if (!currentSource) {
+              return {kind: 'source_missing' as const};
+            }
+            const currentScrub = applyScrubber(
+              stripPersonalProvenance(canonicalMemoryDocumentContent(currentSource.content)),
+              {
+                redact: options.redact === true,
+              },
+            );
+            if (currentScrub.blocker) {
+              return {blocker: currentScrub.blocker, kind: 'blocked' as const};
+            }
+            // Refuse to silently overwrite an existing shared memory (e.g., a
+            // teammate already published the same project/topic).
+            if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
+              return {kind: 'target_conflict' as const};
+            }
+            yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
+            yield* attemptPromise(() =>
+              writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true}),
+            );
+            const [storedTarget] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [targetUri]));
+            if (
+              !storedTarget ||
+              canonicalMemoryDocumentContent(storedTarget.content) !==
+                canonicalMemoryDocumentContent(currentScrub.cleaned)
+            ) {
+              return {kind: 'target_verification_failed' as const};
+            }
+            const gitMessages = yield* attemptPromise(() =>
+              publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
+            );
+            const [sourceBeforeRemoval] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+            if (!sourceBeforeRemoval || sourceBeforeRemoval.content !== currentSource.content) {
+              return {
+                gitMessages,
+                kind: 'source_changed' as const,
+                redactions: currentScrub.redactions,
+              };
+            }
+            const removed = yield* removeVikingResourceWithRetry(ov, config, sourceUri);
+            return {
+              gitMessages,
+              kind: removed ? ('published' as const) : ('cleanup_pending' as const),
+              redactions: currentScrub.redactions,
+            };
+          }),
         );
-        if (currentScrub.blocker) {
-          return {blocker: currentScrub.blocker, kind: 'blocked' as const};
-        }
-        // Refuse to silently overwrite an existing shared memory (e.g., a
-        // teammate already published the same project/topic).
-        if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
-          return {kind: 'target_conflict' as const};
-        }
-        yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
-        yield* attemptPromise(() =>
-          writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true}),
-        );
-        const [storedTarget] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [targetUri]));
-        if (
-          !storedTarget ||
-          canonicalMemoryDocumentContent(storedTarget.content) !== canonicalMemoryDocumentContent(currentScrub.cleaned)
-        ) {
-          return {kind: 'target_verification_failed' as const};
-        }
-        const gitMessages = yield* attemptPromise(() =>
-          publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
-        );
-        const [sourceBeforeRemoval] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
-        if (!sourceBeforeRemoval || sourceBeforeRemoval.content !== currentSource.content) {
-          return {
-            gitMessages,
-            kind: 'source_changed' as const,
-            redactions: currentScrub.redactions,
-          };
-        }
-        const removed = yield* removeVikingResourceWithRetry(ov, config, sourceUri);
-        return {
-          gitMessages,
-          kind: removed ? ('published' as const) : ('cleanup_pending' as const),
-          redactions: currentScrub.redactions,
-        };
+        return {publication, targetUri};
       }),
     );
     if (publication.kind === 'source_missing') {
@@ -3624,23 +3633,21 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
   );
 }
 
-async function runShareSkillTool(
-  config: RuntimeConfig,
-  sourcePath: string,
-  options: ShareSkillToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const result = await shareAgentArtifact(config, sourcePath, options);
-    const lines = [...result.messages, ...result.gitMessages];
-    if (result.previewContent !== undefined) {
-      lines.push('-----BEGIN PREVIEW-----');
-      lines.push(result.previewContent);
-      lines.push('-----END PREVIEW-----');
-    }
-    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+function runShareSkillTool(config: RuntimeConfig, sourcePath: string, options: ShareSkillToolOptions) {
+  return shareAgentArtifact(config, sourcePath, options).pipe(
+    Effect.map(result => {
+      const lines = [...result.messages, ...result.gitMessages];
+      if (result.previewContent !== undefined) {
+        lines.push('-----BEGIN PREVIEW-----');
+        lines.push(result.previewContent);
+        lines.push('-----END PREVIEW-----');
+      }
+      return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
+    }),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 interface ShareBundleToolOptions {
@@ -3653,23 +3660,21 @@ interface ShareBundleToolOptions {
   readonly team?: string;
 }
 
-async function runShareBundleTool(
-  config: RuntimeConfig,
-  manifestPath: string,
-  options: ShareBundleToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const result = await shareBundlePack(config, manifestPath, options);
-    const lines = [...result.messages, ...result.gitMessages];
-    if (result.previewContent !== undefined) {
-      lines.push('-----BEGIN PREVIEW-----');
-      lines.push(result.previewContent);
-      lines.push('-----END PREVIEW-----');
-    }
-    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+function runShareBundleTool(config: RuntimeConfig, manifestPath: string, options: ShareBundleToolOptions) {
+  return shareBundlePack(config, manifestPath, options).pipe(
+    Effect.map(result => {
+      const lines = [...result.messages, ...result.gitMessages];
+      if (result.previewContent !== undefined) {
+        lines.push('-----BEGIN PREVIEW-----');
+        lines.push(result.previewContent);
+        lines.push('-----END PREVIEW-----');
+      }
+      return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
+    }),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 async function runThreadnoteGuideTool(config: RuntimeConfig, toolset: McpToolset): Promise<CallToolResult> {
@@ -3688,58 +3693,52 @@ async function probeServerUp(config: RuntimeConfig): Promise<boolean | undefined
   }
 }
 
-async function runListSharedSkillsTool(
-  config: RuntimeConfig,
-  options: SharedSkillFilterOptions,
-): Promise<CallToolResult> {
-  try {
-    const result = await listSharedAgentArtifacts(config, options);
-    if (result.artifacts.length === 0) {
+function runListSharedSkillsTool(config: RuntimeConfig, options: SharedSkillFilterOptions) {
+  return listSharedAgentArtifacts(config, options).pipe(
+    Effect.map(result => {
       const lines = shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings);
-      lines.push(`No shared skills or commands found for team "${result.team}".`);
-      return {content: [{type: 'text', text: lines.join('\n')}]};
-    }
-    const lines = shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings);
-    lines.push(`Shared skills and commands for team "${result.team}":`);
-    for (const artifact of result.artifacts) {
-      lines.push(
-        `- ${artifact.artifact.kind} ${artifact.artifact.agent}/${artifact.artifact.name} (${artifact.installStatus})`,
-      );
-      lines.push(
-        `  install: install_shared_skill({"name":"${artifact.artifact.name}","agent":"${artifact.artifact.agent}","kind":"${artifact.artifact.kind}"})`,
-      );
-    }
-    return {content: [{type: 'text', text: lines.join('\n')}], isError: false};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+      if (result.artifacts.length === 0) {
+        lines.push(`No shared skills or commands found for team "${result.team}".`);
+      } else {
+        lines.push(`Shared skills and commands for team "${result.team}":`);
+        for (const artifact of result.artifacts) {
+          lines.push(
+            `- ${artifact.artifact.kind} ${artifact.artifact.agent}/${artifact.artifact.name} (${artifact.installStatus})`,
+          );
+          lines.push(
+            `  install: install_shared_skill({"name":"${artifact.artifact.name}","agent":"${artifact.artifact.agent}","kind":"${artifact.artifact.kind}"})`,
+          );
+        }
+      }
+      return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
+    }),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
-async function runInstallSharedSkillTool(
-  config: RuntimeConfig,
-  name: string,
-  options: InstallSharedSkillToolOptions,
-): Promise<CallToolResult> {
-  try {
-    const result = await installSharedAgentArtifacts(config, {
-      ...options,
-      apply: options.dryRun !== true,
-      name,
-    });
-    return {
+function runInstallSharedSkillTool(config: RuntimeConfig, name: string, options: InstallSharedSkillToolOptions) {
+  return installSharedAgentArtifacts(config, {
+    ...options,
+    apply: options.dryRun !== true,
+    name,
+  }).pipe(
+    Effect.map(result => ({
       content: [
         {
-          type: 'text',
+          type: 'text' as const,
           text: [...shareArtifactToolHeader(result.team, result.syncedTeams, result.warnings), ...result.messages].join(
             '\n',
           ),
         },
       ],
       isError: false,
-    };
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
+    })),
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+  );
 }
 
 function shareArtifactToolHeader(team: string, syncedTeams: readonly string[], warnings: readonly string[]): string[] {
