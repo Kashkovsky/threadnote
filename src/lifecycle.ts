@@ -930,12 +930,20 @@ const spawnDetachedServer = Effect.fn('lifecycle.spawnDetachedServer')(function*
   logPath: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const logSink = fs.sink(logPath, {flag: 'a'}).pipe(Sink.as(new Uint8Array()));
+  const system = yield* SystemInfo;
+  const output = system.platform === 'win32' ? 'ignore' : fs.sink(logPath, {flag: 'a'}).pipe(Sink.as(new Uint8Array()));
+  if (system.platform === 'win32') {
+    yield* fs.writeFileString(
+      logPath,
+      'Detached Windows server output is not captured. Run threadnote start --foreground for diagnostics.\n',
+      {flag: 'a'},
+    );
+  }
   const child = yield* ChildProcess.make(server, [...args], {
     detached: true,
-    stderr: logSink,
+    stderr: output,
     stdin: 'ignore',
-    stdout: logSink,
+    stdout: output,
   });
   yield* child.unref;
   return Number(child.pid);
