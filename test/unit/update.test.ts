@@ -216,6 +216,42 @@ describe('runUpdate', () => {
     );
   });
 
+  it('reports an unpublished beta channel without attempting an update', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const fetch = vi.fn(async (_url: string | URL) => new Response('Not found', {status: 404}));
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await runTestEffect(
+      captureConsole(
+        runUpdate(config, {beta: true, dryRun: true, repair: false, runtime: 'npm'}).pipe(
+          Effect.provide(ApplicationLayer),
+        ),
+      ),
+    );
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
+    expect(result.output).toContain('Latest beta version: not published');
+    expect(result.output).toContain('No beta release is currently published.');
+    expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
+    expect(vi.mocked(utils.runInteractive)).not.toHaveBeenCalled();
+  });
+
+  it('does not hide a missing stable dist-tag', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('Not found', {status: 404})),
+    );
+
+    await expect(
+      runTestEffect(
+        runUpdate(config, {dryRun: true, repair: false, runtime: 'npm'}).pipe(Effect.provide(ApplicationLayer)),
+      ),
+    ).rejects.toThrow(/threadnote\/latest returned HTTP 404/);
+  });
+
   it('keeps an installed beta on the beta channel without another flag', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

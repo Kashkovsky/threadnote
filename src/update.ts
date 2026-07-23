@@ -43,7 +43,7 @@ interface UpdateInfo {
   readonly channel: UpdateChannel;
   readonly currentVersion: string;
   readonly isUpdateAvailable: boolean;
-  readonly latestVersion: string;
+  readonly latestVersion: string | undefined;
   readonly registry: string;
 }
 
@@ -120,10 +120,19 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   yield* syncWithConsole(() => {
     consoleOutput.log(keyValue('Current version', infoText(info.currentVersion)));
     consoleOutput.log(
-      keyValue(info.channel === 'beta' ? 'Latest beta version' : 'Latest version', infoText(info.latestVersion)),
+      keyValue(
+        info.channel === 'beta' ? 'Latest beta version' : 'Latest version',
+        info.latestVersion ? infoText(info.latestVersion) : warning('not published'),
+      ),
     );
     consoleOutput.log(keyValue('Registry', info.registry));
   });
+
+  if (info.latestVersion === undefined) {
+    yield* syncWithConsole(() => consoleOutput.log('No beta release is currently published.'));
+    return;
+  }
+  const latestVersion = info.latestVersion;
 
   if (options.check === true) {
     if (info.isUpdateAvailable) {
@@ -133,7 +142,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     } else {
       yield* syncWithConsole(() =>
         consoleOutput.log(
-          compareVersions(info.currentVersion, info.latestVersion) > 0
+          compareVersions(info.currentVersion, latestVersion) > 0
             ? warning(`Current version is newer than npm ${info.channel}.`)
             : success('Threadnote is up to date.'),
         ),
@@ -171,7 +180,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       '--from-version',
       info.currentVersion,
       '--to-version',
-      info.latestVersion,
+      latestVersion,
       ...(options.yes === true ? ['--yes'] : []),
     ];
     yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
@@ -189,14 +198,15 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 });
 
 function printWhatsNewIfAvailable(info: UpdateInfo) {
-  if (!info.isUpdateAvailable) {
+  if (!info.isUpdateAvailable || info.latestVersion === undefined) {
     return Effect.void;
   }
+  const latestVersion = info.latestVersion;
   return Effect.gen(function* () {
     yield* syncWithConsole(() => consoleOutput.log(''));
     const whatsNew = yield* withSpinnerEffect(
       'Fetching GitHub release notes',
-      whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion, {
+      whatsNewLinesForVersionRange(info.currentVersion, latestVersion, {
         includePrereleases: info.channel === 'beta',
       }),
     );
@@ -493,7 +503,7 @@ function getUpdateInfo(
       ? undefined
       : yield* fromPromise('read update cache', () => readFreshCache(config, options.registry, channel));
     const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry, channel));
-    if (!cached && options.allowCacheWrite) {
+    if (!cached && latestVersion !== undefined && options.allowCacheWrite) {
       yield* fromPromise('write update cache', () =>
         writeUpdateCache(config, {
           channel,
@@ -506,7 +516,7 @@ function getUpdateInfo(
     return {
       channel,
       currentVersion,
-      isUpdateAvailable: compareVersions(currentVersion, latestVersion) < 0,
+      isUpdateAvailable: latestVersion !== undefined && compareVersions(currentVersion, latestVersion) < 0,
       latestVersion,
       registry: options.registry,
     };
@@ -524,6 +534,9 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
     () => new URL(`${NPM_PACKAGE_NAME}/${channel}`, normalizeRegistry(registry)),
   );
   const response = yield* getJsonEffect(url, {headers: {accept: 'application/json'}, timeoutMs: 2500}).pipe(
+    Effect.catchTag('HttpStatusError', cause =>
+      channel === 'beta' && cause.status === 404 ? Effect.succeed(undefined) : Effect.fail(cause),
+    ),
     Effect.mapError(cause =>
       applicationError(
         'check npm for updates',
@@ -531,6 +544,9 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
       ),
     ),
   );
+  if (response === undefined) {
+    return undefined;
+  }
   if (!isJsonObject(response.body) || typeof response.body.version !== 'string') {
     return yield* Effect.fail(
       applicationError('check npm for updates', new Error('npm registry response did not include a version.')),
