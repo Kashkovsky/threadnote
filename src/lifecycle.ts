@@ -52,6 +52,7 @@ import {
   openVikingHealthUrl,
   openVikingLogPath,
   openVikingServerArgs,
+  renderJsonTemplate,
   renderTemplate,
   withIdentity,
 } from './runtime.js';
@@ -120,7 +121,9 @@ const WINDOWS_DETACHED_SERVER_START_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$hostArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $env:THREADNOTE_DETACHED_SERVER_HOST_COMMAND)",
   '$process = Start-Process -FilePath $env:THREADNOTE_DETACHED_POWERSHELL -ArgumentList $hostArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $env:THREADNOTE_DETACHED_HOST_STDOUT -RedirectStandardError $env:THREADNOTE_DETACHED_HOST_STDERR',
-  '[Console]::Out.WriteLine($process.Id)',
+  '$processId = $process.Id',
+  '$process.Dispose()',
+  '[Console]::Out.WriteLine($processId)',
   'exit 0',
 ].join('; ');
 const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
@@ -2592,7 +2595,7 @@ const writeTemplateIfMissing = Effect.fn('lifecycle.writeTemplateIfMissing')(fun
       yield* Console.log(`Already exists: ${options.destinationPath}`);
       return;
     }
-    const rendered = renderTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
+    const rendered = renderJsonTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
     if (options.dryRun) {
       yield* Console.log(`Would repair generated config: ${options.destinationPath}`);
       return;
@@ -2606,7 +2609,7 @@ const writeTemplateIfMissing = Effect.fn('lifecycle.writeTemplateIfMissing')(fun
     yield* Console.log(`Backup: ${backupPath}`);
     return;
   }
-  const rendered = renderTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
+  const rendered = renderJsonTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
   if (options.dryRun) {
     yield* Console.log(`Would write ${options.destinationPath}`);
     return;

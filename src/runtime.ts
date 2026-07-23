@@ -91,18 +91,35 @@ export function renderTemplate(
   config: RuntimeConfig,
   extras: Readonly<Record<string, string>> = {},
 ): string {
+  return renderTemplateWith(config, extras, value => value, template);
+}
+
+export function renderJsonTemplate(
+  template: string,
+  config: RuntimeConfig,
+  extras: Readonly<Record<string, string>> = {},
+): string {
+  return renderTemplateWith(config, extras, value => JSON.stringify(value).slice(1, -1), template);
+}
+
+function renderTemplateWith(
+  config: RuntimeConfig,
+  extras: Readonly<Record<string, string>>,
+  encode: (value: string) => string,
+  template: string,
+): string {
   let rendered = template
-    .replaceAll('{{THREADNOTE_HOME}}', config.agentContextHome)
-    .replaceAll('{{OPENVIKING_ACCOUNT}}', config.account)
-    .replaceAll('{{OPENVIKING_AGENT_ID}}', config.agentId)
-    .replaceAll('{{OPENVIKING_HOST}}', config.host)
+    .replaceAll('{{THREADNOTE_HOME}}', () => encode(config.agentContextHome))
+    .replaceAll('{{OPENVIKING_ACCOUNT}}', () => encode(config.account))
+    .replaceAll('{{OPENVIKING_AGENT_ID}}', () => encode(config.agentId))
+    .replaceAll('{{OPENVIKING_HOST}}', () => encode(config.host))
     .replaceAll('{{OPENVIKING_PORT}}', String(config.port))
-    .replaceAll('{{OPENVIKING_USER}}', config.user);
+    .replaceAll('{{OPENVIKING_USER}}', () => encode(config.user));
   for (const [key, value] of Object.entries(extras)) {
     // Replacement is a literal string — use the function form to bypass
     // String.replaceAll's $-pattern interpretation, so absolute paths
     // containing characters like `$&` render correctly.
-    rendered = rendered.replaceAll(`{{${key}}}`, () => value);
+    rendered = rendered.replaceAll(`{{${key}}}`, () => encode(value));
   }
   return rendered;
 }
