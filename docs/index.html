@@ -4,18 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <title>Threadnote - stop re-explaining context to coding agents</title>
+    <title>Threadnote - shared memory across users' coding agents</title>
     <meta
       name="description"
-      content="Threadnote gives Codex, Claude, Cursor, and Copilot one shared local memory for durable decisions, current handoffs, seeded repo docs, skills, and team knowledge."
+      content="Threadnote lets one user's coding agent publish curated engineering knowledge that every teammate's Codex, Claude Code, Cursor, or Copilot can recall."
     />
 
     <link rel="icon" type="image/svg+xml" href="threadnote-logo.svg" />
 
-    <meta property="og:title" content="Threadnote - shared local memory for coding agents" />
+    <meta property="og:title" content="Threadnote - one team's memory, across coding agents" />
     <meta
       property="og:description"
-      content="Stop re-explaining project context. Fresh agents recall the latest handoff, durable decisions, and team-shared knowledge."
+      content="One engineer teaches it once. Every teammate's coding agent can use it through local Markdown, Git, and MCP."
     />
     <meta property="og:image" content="threadnote-logo.svg" />
     <meta property="og:type" content="website" />
@@ -235,11 +235,15 @@
         align-items: flex-start;
       }
 
+      #hero h1 {
+        font-size: clamp(2.35rem, 5vw, 4rem);
+      }
+
       .hero-logo {
         display: block;
-        width: clamp(140px, 18vw, 220px);
+        width: clamp(120px, 15vw, 180px);
         height: auto;
-        margin-bottom: 1.5rem;
+        margin-bottom: 1.15rem;
         /* Override `#hero .slide-inner { align-items: flex-start }` for just
            this child so the logo sits centered above the left-aligned title. */
         align-self: center;
@@ -398,6 +402,202 @@
 
       .compare-col ul {
         margin-top: 0.5rem;
+      }
+
+      /* cross-user memory flow */
+      #shared-value {
+        background:
+          radial-gradient(circle at 50% 45%, rgba(94, 224, 197, 0.08), transparent 48%),
+          radial-gradient(circle at 82% 20%, rgba(124, 140, 255, 0.05), transparent 36%), var(--bg);
+      }
+
+      .memory-flow {
+        display: grid;
+        grid-template-columns: minmax(170px, 0.85fr) 56px minmax(230px, 1.25fr) 56px minmax(210px, 1fr);
+        gap: 0.75rem;
+        align-items: stretch;
+        margin-top: 2rem;
+      }
+
+      .flow-node {
+        min-width: 0;
+        background: var(--bg-elev);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 1.4rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 0.65rem;
+      }
+
+      .flow-node strong {
+        font-size: 1.05rem;
+      }
+
+      .flow-node p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .flow-node .agent-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+      }
+
+      .flow-node .agent-list code {
+        border: 1px solid var(--line);
+        background: var(--code-bg);
+      }
+
+      .flow-node.team-hub {
+        background: linear-gradient(145deg, rgba(94, 224, 197, 0.16), rgba(20, 20, 26, 0.96));
+        border-color: var(--accent-line);
+        text-align: center;
+      }
+
+      .flow-node.team-hub .pill {
+        align-self: center;
+      }
+
+      .flow-arrow {
+        align-self: center;
+        text-align: center;
+        color: var(--accent);
+        font-family: var(--font-mono);
+        font-size: 1.55rem;
+      }
+
+      .flow-arrow small {
+        display: block;
+        margin-top: 0.35rem;
+        color: var(--muted);
+        font-size: 0.66rem;
+        line-height: 1.35;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .flow-guardrail {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.75rem;
+        margin-top: 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.76rem;
+        color: var(--muted);
+      }
+
+      .flow-guardrail span {
+        padding: 0.65rem 0.8rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        text-align: center;
+      }
+
+      .flow-guardrail strong {
+        color: var(--text);
+      }
+
+      /* comparison matrix */
+      .table-shell {
+        width: 100%;
+        margin-top: 1.5rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--bg-elev);
+        overflow-x: auto;
+      }
+
+      table.matrix {
+        width: 100%;
+        min-width: 800px;
+        border-collapse: collapse;
+        font-size: 0.86rem;
+        line-height: 1.45;
+      }
+
+      .matrix th,
+      .matrix td {
+        padding: 0.82rem 0.95rem;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+        border-right: 1px solid var(--line);
+      }
+
+      .matrix th:last-child,
+      .matrix td:last-child {
+        border-right: 0;
+      }
+
+      .matrix tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .matrix thead th {
+        background: var(--bg-elev-2);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 0.76rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .matrix thead th.threadnote-col {
+        color: var(--accent);
+        background: rgba(94, 224, 197, 0.1);
+      }
+
+      .matrix tbody th {
+        width: 16%;
+        color: var(--text);
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.015);
+      }
+
+      .matrix td {
+        color: var(--muted);
+      }
+
+      .matrix td.threadnote-col {
+        color: #c7dcd8;
+        background: rgba(94, 224, 197, 0.035);
+      }
+
+      .source-note {
+        margin: 0.9rem 0 0;
+        color: var(--dim);
+        font-size: 0.76rem;
+        line-height: 1.5;
+      }
+
+      #vs-native .lead {
+        max-width: 82ch;
+        margin-top: 0;
+        font-size: 1.02rem;
+      }
+
+      #vs-native .table-shell {
+        margin-top: 1rem;
+      }
+
+      #vs-native .matrix {
+        font-size: 0.78rem;
+        line-height: 1.35;
+      }
+
+      #vs-native .matrix th,
+      #vs-native .matrix td {
+        padding: 0.56rem 0.75rem;
+      }
+
+      #vs-native .source-note {
+        margin-top: 0.55rem;
+        font-size: 0.68rem;
+        line-height: 1.4;
       }
 
       /* architecture diagram */
@@ -735,6 +935,19 @@
         transform: none;
       }
 
+      @media (max-width: 900px) {
+        .memory-flow {
+          grid-template-columns: 1fr;
+        }
+        .flow-arrow {
+          transform: rotate(90deg);
+          min-height: 40px;
+        }
+        .flow-arrow small {
+          display: none;
+        }
+      }
+
       @media (max-width: 720px) {
         .deck-nav {
           display: none;
@@ -746,6 +959,9 @@
         html {
           scroll-snap-type: none;
         }
+        .flow-guardrail {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -756,7 +972,9 @@
     <nav class="deck-nav" aria-label="Section progress">
       <a href="#hero" data-label="Intro"><span>Intro</span></a>
       <a href="#problem" data-label="Problem"><span>Problem</span></a>
-      <a href="#meet" data-label="Meet threadnote"><span>Meet</span></a>
+      <a href="#shared-value" data-label="Shared team memory"><span>Team memory</span></a>
+      <a href="#vs-native" data-label="vs Native memory"><span>vs Native</span></a>
+      <a href="#meet" data-label="Threadnote model"><span>Model</span></a>
       <a href="#vs-instructions" data-label="vs Markdown"><span>vs Markdown</span></a>
       <a href="#how" data-label="How it works"><span>How</span></a>
       <a href="#safety" data-label="Safety model"><span>Safety</span></a>
@@ -776,14 +994,15 @@
         <div class="slide-inner">
           <img class="hero-logo" src="threadnote-logo-inverted.svg" alt="" aria-hidden="true" />
           <h1 class="hero-title-gradient">
-            Stop re-explaining<br />context to <em class="hero-accent">coding agents</em>.
+            One engineer teaches it once.<br /><em class="hero-accent">Every teammate's agent can use it.</em>
           </h1>
           <p class="lead">
-            Threadnote gives Codex, Claude, Cursor, and Copilot one shared local memory for durable decisions, current
-            handoffs, seeded repo docs, reusable skills, and team knowledge.
+            Threadnote shares curated engineering knowledge across users, machines, and coding agents. Alice's Codex can
+            publish a decision that Bob's Claude Code, Cursor, or Copilot recalls during the next task.
           </p>
           <div class="cta-row">
-            <span class="pill"><span id="version-tag">v1.6.0</span> · local-first · AGPL-3.0-or-later</span>
+            <span class="pill">cross-user · cross-agent · Git-backed</span>
+            <span class="pill"><span id="version-tag">v2.0.4</span> · local semantic recall · AGPL-3.0-or-later</span>
           </div>
         </div>
         <div class="scroll-cue">scroll ↓ &nbsp;·&nbsp; <span class="kbd">↓</span> / <span class="kbd">j</span></div>
@@ -793,65 +1012,214 @@
       <section id="problem" class="slide">
         <div class="slide-inner">
           <span class="slide-eyebrow">01 · The problem</span>
-          <h2>Agent context is ephemeral. <span class="muted">You aren't.</span></h2>
+          <h2>Your team has a fleet of private context silos.</h2>
           <p class="lead">
-            Every new session your agent starts from zero. You re-explain the same architecture, repaste the same
-            handoff, and rediscover the same gotchas. Across four different agents this multiplies.
+            Persistent memory helps one user continue. It does not automatically move a hard-won decision into a
+            teammate's different coding agent, where the next change actually happens.
           </p>
           <ul class="flat reveal" style="margin-top: 2rem">
-            <li><strong>Conversation history evaporates.</strong> Compaction summarizes; the nuance is lost.</li>
-            <li><strong>Each agent has its own memory.</strong> Switching from Codex to Claude means starting over.</li>
             <li>
-              <strong>Markdown notes are passive.</strong> The agent still has to know which note matters now, whether
-              it is stale, and where to write the next handoff.
+              <strong>Useful discoveries stay trapped.</strong> The fix is in one person's chat, DM, or hosted project.
             </li>
             <li>
-              <strong>CLAUDE.md/AGENTS.md is per-repo and static.</strong> It can't carry an in-flight feature's design
-              decisions across sessions, much less across agents or repos.
+              <strong>Agent choice fragments the team.</strong> Codex, Claude Code, Cursor, and Copilot do not share one
+              native memory surface.
             </li>
             <li>
-              <strong>Hand-typed handoffs rot.</strong> The next session needs them, but you only remember to write them
-              half the time.
+              <strong>Persistence alone makes better silos.</strong> A memory that survives sessions but cannot travel
+              safely to another user's agent is still private context.
             </li>
             <li>
-              <strong>Team knowledge stays in DMs.</strong> Decisions made in Slack thread #1842 don't reach your
-              teammate's agent.
+              <strong>Chat sharing is not an engineering knowledge lifecycle.</strong> Teams need a current, addressable
+              decision—not a transcript to replay and reinterpret.
+            </li>
+            <li>
+              <strong>Copy-pasted notes lose ownership.</strong> Nobody knows whether the decision is current, private,
+              or safe to forward.
             </li>
           </ul>
         </div>
       </section>
 
-      <!-- 3. MEET THREADNOTE -->
+      <!-- 3. SHARED TEAM MEMORY -->
+      <section id="shared-value" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">02 · The differentiator</span>
+          <h2>The handoff between people—not just between sessions.</h2>
+          <p class="lead">
+            An agent captures a durable engineering record once. Threadnote publishes the reviewed, shareable part to
+            Git; every teammate's supported agent auto-syncs it before recall.
+          </p>
+
+          <div
+            class="memory-flow reveal"
+            role="img"
+            aria-label="Alice publishes a curated memory from Codex to a team Git repository; Bob and Chen recall it from different coding agents"
+          >
+            <div class="flow-node">
+              <span class="pill">Alice</span>
+              <strong>Codex learns the constraint</strong>
+              <p>“Token refresh must stay provider-only; these two tests enforce the boundary.”</p>
+            </div>
+            <div class="flow-arrow">→<small>preview · scrub · publish</small></div>
+            <div class="flow-node team-hub">
+              <span class="pill">Team-owned</span>
+              <strong>Curated memory in Git</strong>
+              <p>Plain Markdown, stable project/topic, reviewable diff, commit history.</p>
+            </div>
+            <div class="flow-arrow">→<small>auto-sync before recall</small></div>
+            <div class="flow-node">
+              <span class="pill">Bob + Chen</span>
+              <strong>Their own agents use it</strong>
+              <div class="agent-list">
+                <code>Claude Code</code>
+                <code>Cursor</code>
+                <code>Copilot</code>
+              </div>
+              <p>The right constraint appears during repository work, without forwarding Alice's chat.</p>
+            </div>
+          </div>
+
+          <div class="flow-guardrail reveal">
+            <span><strong>Private:</strong> handoffs and preferences stay local</span>
+            <span><strong>Explicit:</strong> only selected durable knowledge travels</span>
+            <span><strong>Portable:</strong> teammates can choose different agents</span>
+            <span><strong>Targeted:</strong> recall loads selected records, not full history</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. NATIVE MEMORY COMPARISON -->
+      <section id="vs-native" class="slide">
+        <div class="slide-inner">
+          <span class="slide-eyebrow">03 · Threadnote vs native memory</span>
+          <h2>Native memory remembers you. Threadnote connects your team's agents.</h2>
+          <p class="lead">
+            ChatGPT, Gemini, and Claude provide valuable continuity inside their products. ChatGPT and Claude have
+            shared projects; Gemini can share Gems and chats. Threadnote targets the missing boundary across products,
+            repositories, machines, and users.
+          </p>
+
+          <div class="table-shell reveal">
+            <table class="matrix">
+              <thead>
+                <tr>
+                  <th scope="col">Dimension</th>
+                  <th scope="col" class="threadnote-col">Threadnote</th>
+                  <th scope="col">Native chat memory</th>
+                  <th scope="col">Vendor collaboration spaces</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Primary job</th>
+                  <td class="threadnote-col">Share explicit engineering knowledge between users' coding agents</td>
+                  <td>Personalize later conversations from account history and settings</td>
+                  <td>Keep a group's project, Gem, chats, files, or instructions in one product</td>
+                </tr>
+                <tr>
+                  <th scope="row">Reach</th>
+                  <td class="threadnote-col">Codex, Claude Code, Cursor, and Copilot through one MCP workflow</td>
+                  <td>That provider's product and account</td>
+                  <td>That provider's shared project, Gem, or chat</td>
+                </tr>
+                <tr>
+                  <th scope="row">Team source</th>
+                  <td class="threadnote-col">Local Markdown plus a team Git repo you control</td>
+                  <td>Provider-managed memory, chats, and controls</td>
+                  <td>Provider-hosted content and permissions</td>
+                </tr>
+                <tr>
+                  <th scope="row">Recall path</th>
+                  <td class="threadnote-col">
+                    Local semantic index returns URI candidates; agents read selected records
+                  </td>
+                  <td>Provider-managed retrieval from available context</td>
+                  <td>Provider-managed search and context</td>
+                </tr>
+                <tr>
+                  <th scope="row">Knowledge unit</th>
+                  <td class="threadnote-col">Durable / handoff / archived record with a stable URI</td>
+                  <td>Provider-managed synthesis or retrieval</td>
+                  <td>Collaboration model varies by provider</td>
+                </tr>
+                <tr>
+                  <th scope="row">Privacy boundary</th>
+                  <td class="threadnote-col">Personal state local; only explicit durable publishing travels</td>
+                  <td>Account or workspace controls</td>
+                  <td>Membership, links, and provider controls</td>
+                </tr>
+                <tr>
+                  <th scope="row">Best when</th>
+                  <td class="threadnote-col">
+                    The team uses multiple coding agents in real repositories and terminals
+                  </td>
+                  <td>One person wants continuity inside one assistant</td>
+                  <td>The team standardizes collaboration inside one AI product</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="source-note">
+            Based on current official docs for
+            <a href="https://help.openai.com/en/articles/8590148-memory-in-chatgpt-faq" target="_blank" rel="noopener"
+              >ChatGPT memory</a
+            >,
+            <a href="https://help.openai.com/en/articles/10169521-projects-in-chatgpt" target="_blank" rel="noopener"
+              >ChatGPT projects</a
+            >,
+            <a href="https://support.google.com/gemini/answer/16598469?hl=en" target="_blank" rel="noopener"
+              >Gemini memory</a
+            >,
+            <a href="https://support.google.com/gemini/answer/16504957?hl=en" target="_blank" rel="noopener"
+              >Gemini shared Gems</a
+            >,
+            <a
+              href="https://support.anthropic.com/en/articles/10185728-understanding-claude-s-personalization-features"
+              target="_blank"
+              rel="noopener"
+              >Claude personalization</a
+            >, and
+            <a href="https://support.anthropic.com/en/articles/9517075-what-are-projects" target="_blank" rel="noopener"
+              >Claude projects</a
+            >. Availability varies by product, plan, account, and region.
+          </p>
+        </div>
+      </section>
+
+      <!-- 5. MEET THREADNOTE -->
       <section id="meet" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">02 · Meet threadnote</span>
-          <h2>A safe local memory layer for the agents you already use.</h2>
+          <span class="slide-eyebrow">04 · The model</span>
+          <h2>Persistence is the plumbing. Portability is the product.</h2>
           <p class="lead">
-            Threadnote sits between your agents and a local
-            <a href="https://openviking.ai/" target="_blank" rel="noopener">OpenViking</a> store. One stdio MCP adapter,
-            one URI scheme, one set of commands. Everything stays on your machine until you explicitly publish it.
+            Threadnote connects supported agents to a local
+            <a href="https://openviking.ai/" target="_blank" rel="noopener">OpenViking</a> store, then uses explicit Git
+            publishing for team knowledge. The local lifecycle makes shared records current, scoped, and safe enough to
+            reuse.
           </p>
 
           <div class="grid grid-2" style="margin-top: 2rem">
             <div class="card reveal">
-              <span class="card-kicker">Cross-agent</span>
-              <h3>One memory, four agents</h3>
+              <span class="card-kicker">Cross-user</span>
+              <h3>Knowledge travels to the next engineer</h3>
               <p>
-                Codex, Claude Code, Cursor, and Copilot all recall and write into the same OpenViking store via the
-                threadnote MCP adapter.
+                Curated durable memories and reusable agent artifacts live in a team Git repo and auto-sync into each
+                member's local recall.
               </p>
             </div>
             <div class="card reveal">
-              <span class="card-kicker">Cross-session</span>
-              <h3>More than compaction</h3>
+              <span class="card-kicker">Cross-agent</span>
+              <h3>One workflow, four agents</h3>
               <p>
-                Compaction summarizes a conversation. Threadnote stores explicit handoffs and durable memories the next
-                session can recall, inspect, update, archive, or share.
+                Codex, Claude Code, Cursor, and Copilot recall and write through the same MCP tools and
+                <code>viking://</code> pointers.
               </p>
             </div>
             <div class="card reveal">
               <span class="card-kicker">Lifecycle-aware</span>
-              <h3>Durable vs handoff</h3>
+              <h3>Current knowledge, not a transcript</h3>
               <p>
                 <code>kind: durable</code> for facts that should outlive a session. <code>kind: handoff</code> for
                 current work logs. One stable file per <code>project/topic</code>; updates replace rather than
@@ -859,51 +1227,21 @@
               </p>
             </div>
             <div class="card reveal">
-              <span class="card-kicker">Local-first</span>
-              <h3>Yours, on your machine</h3>
+              <span class="card-kicker">Local recall</span>
+              <h3>Find the record, not the whole history</h3>
               <p>
-                Nothing leaves <code>~/.openviking</code> unless you explicitly <code>share publish</code> a curated
-                memory to a team git repo. No telemetry, no SaaS, no network egress.
+                OpenViking runs a local GGUF embedding model through <code>llama.cpp</code> to rank matches. Agents read
+                only the selected <code>viking://</code> records; the Markdown source stays on disk.
               </p>
-            </div>
-          </div>
-
-          <div class="compare reveal" style="margin-top: 2rem">
-            <div class="compare-col">
-              <h3 class="warm">Before Threadnote</h3>
-              <ul class="flat">
-                <li>
-                  <strong>Codex:</strong> asks what changed, rediscovers the test command, and trusts a compacted chat
-                  summary to keep the important caveat.
-                </li>
-                <li>
-                  <strong>Claude Code:</strong> resumes a long debugging thread with the story arc, but not the exact
-                  blocker, command output, or decision that matters.
-                </li>
-              </ul>
-            </div>
-
-            <div class="compare-col">
-              <h3>With Threadnote</h3>
-              <ul class="flat">
-                <li>
-                  <strong>Codex:</strong> recalls the branch handoff and durable feature memory before editing: files
-                  touched, last failing check, design reason, next step.
-                </li>
-                <li>
-                  <strong>Claude Code:</strong> snapshots concrete state before compaction and reads the same memory in
-                  the next session instead of asking the user to reconstruct it.
-                </li>
-              </ul>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- 4. vs CLAUDE.md / AGENTS.md -->
+      <!-- 6. vs CLAUDE.md / AGENTS.md -->
       <section id="vs-instructions" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">03 · Why not just Markdown files?</span>
+          <span class="slide-eyebrow">05 · Why not just Markdown files?</span>
           <h2>Use Markdown. Threadnote makes it operational.</h2>
           <p class="lead">
             The source of truth is still plain files on disk. The difference is that agents can recall the right
@@ -959,10 +1297,10 @@
         </div>
       </section>
 
-      <!-- 5. HOW IT WORKS -->
+      <!-- 7. HOW IT WORKS -->
       <section id="how" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">04 · How it works</span>
+          <span class="slide-eyebrow">06 · How it works</span>
           <h2>One MCP adapter, one URI scheme, one local store.</h2>
 
           <div class="architecture reveal">
@@ -1039,7 +1377,7 @@
                 <text x="240" y="361" text-anchor="middle">~/.openviking/data/viking/&lt;account&gt;/...</text>
 
                 <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="640" y="361" text-anchor="middle">vectordb (LevelDB · semantic index)</text>
+                <text x="640" y="361" text-anchor="middle">vectordb (local semantic index)</text>
               </g>
             </svg>
             <div class="architecture-legend">
@@ -1052,15 +1390,19 @@
                 <strong>Storage is plain markdown</strong> on your filesystem. The vectordb is regenerable; the source
                 of truth is on disk.
               </div>
+              <div>
+                <strong>Recall is local and targeted.</strong> A GGUF embedding model running through
+                <code>llama.cpp</code> ranks candidates before the agent reads selected records.
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- 6. SAFETY -->
+      <!-- 8. SAFETY -->
       <section id="safety" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">05 · Safety model</span>
+          <span class="slide-eyebrow">07 · Safety model</span>
           <h2>Local by default. Explicit when it isn't.</h2>
           <p class="lead">
             Threadnote is designed for an environment where agents write to your memory. The defaults assume that's
@@ -1123,10 +1465,10 @@
         </div>
       </section>
 
-      <!-- 7. INSTALL -->
+      <!-- 9. INSTALL -->
       <section id="install" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">06 · Install</span>
+          <span class="slide-eyebrow">08 · Install</span>
           <h2>One command. Then point your agents at it.</h2>
           <p class="lead">
             The installer wires up the npm package, the OpenViking Python environment, and the local server. After that,
@@ -1184,10 +1526,10 @@
         </div>
       </section>
 
-      <!-- 8. SEEDING -->
+      <!-- 10. SEEDING -->
       <section id="seed" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">07 · Seeding repo context</span>
+          <span class="slide-eyebrow">09 · Seeding repo context</span>
           <h2>Pull just the curated docs into recall.</h2>
           <p class="lead">
             Threadnote does not index whole repos. Instead, point it at a seed manifest of paths you actually want
@@ -1263,10 +1605,10 @@ worksets:
         </div>
       </section>
 
-      <!-- 9. UPDATES -->
+      <!-- 11. UPDATES -->
       <section id="update" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">08 · Updates &amp; repair</span>
+          <span class="slide-eyebrow">10 · Updates &amp; repair</span>
           <h2>Always one command from a clean state.</h2>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1306,10 +1648,10 @@ worksets:
         </div>
       </section>
 
-      <!-- 10. LIFECYCLE -->
+      <!-- 12. LIFECYCLE -->
       <section id="lifecycle" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">09 · Memory lifecycle</span>
+          <span class="slide-eyebrow">11 · Memory lifecycle</span>
           <h2>Durable. Handoff. Archived.</h2>
           <p class="lead">
             Three lifecycle states, one stable URI per <code>project/topic</code>. Updates replace, never accrete.
@@ -1368,14 +1710,15 @@ threadnote remember \
         </div>
       </section>
 
-      <!-- 11. SHARE -->
+      <!-- 13. SHARE -->
       <section id="share" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">10 · Sharing across the team</span>
-          <h2>Curated memories. Yours to push. Theirs to pull.</h2>
+          <span class="slide-eyebrow">12 · Sharing across the team</span>
+          <h2>What one agent publishes, every teammate's agent can recall.</h2>
           <p class="lead">
-            <code>threadnote share</code> publishes a subset of durable memories into a git repo so other engineers'
-            agents can recall them. Personal handoffs, preferences, and unpublished durables always stay local.
+            <code>threadnote share</code> moves selected durable memories into a team Git repo, then auto-syncs clean
+            updates before teammates' normal recall/read calls. Personal handoffs, preferences, and unpublished durables
+            always stay local.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1460,10 +1803,10 @@ threadnote remember \
         </div>
       </section>
 
-      <!-- 12. WEB MANAGER -->
+      <!-- 14. WEB MANAGER -->
       <section id="manager" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">11 · Web manager</span>
+          <span class="slide-eyebrow">13 · Web manager</span>
           <h2>A local web UI for the whole memory store.</h2>
           <p class="lead">
             Prefer a UI to the CLI? <code>threadnote manage</code> serves a local React app on
@@ -1522,10 +1865,10 @@ threadnote remember \
         </div>
       </section>
 
-      <!-- 13. USE CASES -->
+      <!-- 15. USE CASES -->
       <section id="use-cases" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">12 · Real-world use cases</span>
+          <span class="slide-eyebrow">14 · Real-world use cases</span>
           <h2>What you say. What the agent does.</h2>
           <p class="lead">
             You don't run threadnote commands yourself. You talk to your agent the way you already do; the agent calls
@@ -1643,10 +1986,10 @@ Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process
         </div>
       </section>
 
-      <!-- 14. CLOSE -->
+      <!-- 16. CLOSE -->
       <section id="close" class="slide">
         <div class="slide-inner">
-          <span class="slide-eyebrow">13 · Get started</span>
+          <span class="slide-eyebrow">15 · Get started</span>
           <h2>Try it on your machine in 90 seconds.</h2>
 
           <pre style="margin-top: 1.5rem">
