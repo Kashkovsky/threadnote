@@ -1,6 +1,4 @@
-import {existsSync} from 'node:fs';
-import {userInfo} from 'node:os';
-import {join} from 'node:path';
+import {Effect, FileSystem, Path} from 'effect';
 import {
   DEFAULT_ACCOUNT,
   DEFAULT_AGENT_ID,
@@ -11,6 +9,7 @@ import {
 } from './constants.js';
 import type {RuntimeConfig} from './types.js';
 import {expandPath, parsePort, toolRoot} from './utils.js';
+import {SystemInfo} from './effect/system.js';
 
 export interface RuntimeOptions {
   readonly home?: string;
@@ -19,43 +18,59 @@ export interface RuntimeOptions {
   readonly port?: number;
 }
 
-export function getRuntimeConfig(options: RuntimeOptions = {}, manifestOverride?: string): RuntimeConfig {
-  const threadnoteHome = expandPath(options.home ?? process.env.THREADNOTE_HOME ?? '~/.openviking');
-  const manifestPath = expandPath(
-    manifestOverride ?? options.manifest ?? process.env.THREADNOTE_MANIFEST ?? defaultManifestPath(threadnoteHome),
-  );
+export const getRuntimeConfig = Effect.fn('runtime.getRuntimeConfig')(function* (
+  options: RuntimeOptions = {},
+  manifestOverride?: string,
+) {
+  const system = yield* SystemInfo;
+  const environment = system.environment();
+  const threadnoteHome = yield* expandPath(options.home ?? environment.THREADNOTE_HOME ?? '~/.openviking');
+  const configuredManifest = manifestOverride ?? options.manifest ?? environment.THREADNOTE_MANIFEST;
+  const manifestPath = yield* expandPath(configuredManifest ?? (yield* defaultManifestPath(threadnoteHome)));
   return {
-    account: process.env.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
+    account: environment.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
     agentContextHome: threadnoteHome,
-    agentId: process.env.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
-    host: options.host ?? process.env.THREADNOTE_HOST ?? DEFAULT_HOST,
+    agentId: environment.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
+    host: options.host ?? environment.THREADNOTE_HOST ?? DEFAULT_HOST,
     manifestPath,
-    openVikingVersion: process.env.THREADNOTE_OPENVIKING_VERSION ?? DEFAULT_OPENVIKING_VERSION,
-    port: options.port ?? parsePort(process.env.THREADNOTE_PORT ?? String(DEFAULT_PORT)),
-    user: process.env.THREADNOTE_USER ?? userInfo().username,
+    openVikingVersion: environment.THREADNOTE_OPENVIKING_VERSION ?? DEFAULT_OPENVIKING_VERSION,
+    port: options.port ?? parsePort(environment.THREADNOTE_PORT ?? String(DEFAULT_PORT)),
+    user: environment.THREADNOTE_USER ?? system.userName,
   };
-}
+});
 
-export function defaultManifestPath(agentContextHome: string): string {
-  const userManifest = join(agentContextHome, USER_MANIFEST_NAME);
-  return existsSync(userManifest) ? userManifest : builtInExampleManifestPath();
-}
+export const defaultManifestPath = Effect.fn('runtime.defaultManifestPath')(function* (agentContextHome: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const userManifest = pathService.join(agentContextHome, USER_MANIFEST_NAME);
+  return (yield* fs.exists(userManifest)) ? userManifest : yield* builtInExampleManifestPath();
+});
 
-export function builtInExampleManifestPath(): string {
-  return join(toolRoot(), 'config', 'seed-manifest.example.yaml');
-}
+export const builtInExampleManifestPath = Effect.fn('runtime.builtInExampleManifestPath')(function* () {
+  const pathService = yield* Path.Path;
+  return pathService.join(yield* toolRoot(), 'config', 'seed-manifest.example.yaml');
+});
 
 export function openVikingHealthUrl(config: RuntimeConfig): string {
   return `http://${config.host}:${config.port}/health`;
 }
 
-export function openVikingLogPath(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'logs', 'server.log');
-}
+export const openVikingLogPath = Effect.fn('runtime.openVikingLogPath')(function* (config: RuntimeConfig) {
+  const pathService = yield* Path.Path;
+  return pathService.join(config.agentContextHome, 'logs', 'server.log');
+});
 
-export function openVikingServerArgs(config: RuntimeConfig): readonly string[] {
-  return ['--config', join(config.agentContextHome, 'ov.conf'), '--host', config.host, '--port', String(config.port)];
-}
+export const openVikingServerArgs = Effect.fn('runtime.openVikingServerArgs')(function* (config: RuntimeConfig) {
+  const pathService = yield* Path.Path;
+  return [
+    '--config',
+    pathService.join(config.agentContextHome, 'ov.conf'),
+    '--host',
+    config.host,
+    '--port',
+    String(config.port),
+  ];
+});
 
 export interface AgentIdentity {
   readonly account: string;

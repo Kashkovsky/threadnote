@@ -1,24 +1,10 @@
-import {execFile, spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
-import {constants as fsConstants, existsSync} from 'node:fs';
-import {access, lstat, mkdir, readFile, readdir, rm, stat} from 'node:fs/promises';
-import {createConnection} from 'node:net';
-import {get as httpGet} from 'node:http';
-import {homedir} from 'node:os';
-import {basename, delimiter, dirname, isAbsolute, join, resolve, sep} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {command as commandText, failure, info, success, warning} from './cli_ui.js';
-import {consoleOutput} from './effect/console.js';
-import {
-  commandMaxOutputBytes,
-  commandTimeoutMs,
-  formatShellCommand,
-  isGitExecutable,
-  resolveCommandInvocation,
-  terminateCommandProcess,
-  type CommandOptions,
-  withoutGitEnvironment,
-} from './effect/command.js';
+import * as NodeSocket from '@effect/platform-node/NodeSocket';
+import {Console, Deferred, Effect, FileSystem, Option, Path, Stdio, Stream} from 'effect';
+import {failure, success, warning} from './cli_ui.js';
+import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect, type CommandOptions} from './effect/command.js';
+import {getStatusEffect, getTextEffect} from './effect/http.js';
+import {sha256Hex} from './effect/digest.js';
+import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {
   boundedMemoryAuthority,
   boundedMemoryTrust,
@@ -35,56 +21,51 @@ import {
   type RecallSignals,
 } from './recall/rank.js';
 import {redactSensitiveText} from './scrubber.js';
-import type {CommandResult, CommandStatus, JsonObject} from './types.js';
+import type {CommandStatus, JsonObject} from './types.js';
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
-
-const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function parseJsonConfigObject(content: string): JsonObject | undefined {
-  try {
-    const parsed: unknown = JSON.parse(content);
-    return isJsonObject(parsed) ? parsed : undefined;
-  } catch (_err: unknown) {
-    return undefined;
-  }
+  const parsed = Option.getOrUndefined(parseJson(content));
+  return isJsonObject(parsed) ? parsed : undefined;
 }
+
+const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
+const parseUrlPath = Option.liftThrowable((content: string): string => new URL(content).pathname);
 
 export function redactText(content: string): string {
   return redactSensitiveText(content);
 }
 
-export async function walkFiles(root: string): Promise<readonly string[]> {
+export const walkFiles = Effect.fn('utils.walkFiles')(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const files: string[] = [];
-  async function visit(path: string): Promise<void> {
-    let pathStat;
-    try {
-      pathStat = await lstat(path);
-    } catch (_err: unknown) {
-      return;
-    }
-    if (pathStat.isSymbolicLink()) {
-      return;
-    }
-    if (pathStat.isFile()) {
-      files.push(path);
-      return;
-    }
-    if (!pathStat.isDirectory()) {
-      return;
-    }
-    const entries = await readdir(path);
-    for (const entry of entries) {
-      await visit(join(path, entry));
-    }
-  }
-  await visit(root);
+  const visit = (currentPath: string): Effect.Effect<void, unknown> =>
+    Effect.gen(function* () {
+      const pathStat = yield* fs.stat(currentPath).pipe(Effect.option);
+      if (pathStat._tag === 'None' || pathStat.value.type === 'SymbolicLink') {
+        return;
+      }
+      if (pathStat.value.type === 'File') {
+        files.push(currentPath);
+        return;
+      }
+      if (pathStat.value.type !== 'Directory') {
+        return;
+      }
+      const entries = yield* fs.readDirectory(currentPath);
+      for (const entry of entries) {
+        yield* visit(pathService.join(currentPath, entry));
+      }
+    });
+  yield* visit(root);
   return files;
-}
+});
 
 export function globToRegExp(glob: string): RegExp {
   let output = '^';
@@ -134,51 +115,57 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export async function requiredOpenVikingCli(): Promise<string> {
-  const command = await findOpenVikingCli();
+export const requiredOpenVikingCli = Effect.fn('utils.requiredOpenVikingCli')(function* () {
+  const command = yield* findOpenVikingCli();
   if (!command) {
-    throw new Error(
-      'Neither ov nor openviking was found in PATH, uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. ' +
-        'Run threadnote install first.',
+    return yield* Effect.fail(
+      new Error(
+        'Neither ov nor openviking was found in PATH, uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. ' +
+          'Run threadnote install first.',
+      ),
     );
   }
   return command;
-}
+});
 
-export async function openVikingCliForMode(dryRun: boolean): Promise<string> {
+export const openVikingCliForMode = Effect.fn('utils.openVikingCliForMode')(function* (dryRun: boolean) {
   if (dryRun) {
-    return (await findOpenVikingCli()) ?? 'ov';
+    return (yield* findOpenVikingCli()) ?? 'ov';
   }
-  return requiredOpenVikingCli();
-}
+  return yield* requiredOpenVikingCli();
+});
 
-export async function findOpenVikingCli(): Promise<string | undefined> {
-  const override = process.env.THREADNOTE_OV?.trim();
+export const findOpenVikingCli = Effect.fn('utils.findOpenVikingCli')(function* () {
+  const system = yield* SystemInfo;
+  const pathService = yield* Path.Path;
+  const override = system.environment().THREADNOTE_OV?.trim();
   if (override) {
     return override;
   }
-  const onPath = await findExecutable(['ov', 'openviking']);
+  const onPath = yield* findExecutable(['ov', 'openviking']);
   if (onPath) {
     return onPath;
   }
-  for (const candidateDir of await openVikingToolCandidateDirs()) {
+  for (const candidateDir of yield* openVikingToolCandidateDirs()) {
     for (const command of ['ov', 'openviking']) {
-      for (const name of executableNames(command)) {
-        const candidate = join(candidateDir, name);
-        if (await isExecutable(candidate)) {
+      for (const name of executableNames(command, system.platform, system.environment().PATHEXT)) {
+        const candidate = pathService.join(candidateDir, name);
+        if (yield* isExecutable(candidate)) {
           return candidate;
         }
       }
     }
   }
   return undefined;
-}
+});
 
-async function openVikingToolCandidateDirs(): Promise<readonly string[]> {
+const openVikingToolCandidateDirs = Effect.fn('utils.openVikingToolCandidateDirs')(function* () {
+  const system = yield* SystemInfo;
+  const pathService = yield* Path.Path;
   const dirs: string[] = [];
-  const uv = await findExecutable(['uv']);
+  const uv = yield* findExecutable(['uv']);
   if (uv) {
-    const result = await runCommand(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
+    const result = yield* runCommandEffect(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
     if (result.exitCode === 0) {
       const dir = result.stdout.trim();
       if (dir) {
@@ -186,101 +173,115 @@ async function openVikingToolCandidateDirs(): Promise<readonly string[]> {
       }
     }
   }
-  if (process.env.UV_TOOL_BIN_DIR) {
-    dirs.push(process.env.UV_TOOL_BIN_DIR);
+  const environment = system.environment();
+  if (environment.UV_TOOL_BIN_DIR) {
+    dirs.push(environment.UV_TOOL_BIN_DIR);
   }
-  dirs.push(...(await pythonUserScriptsCandidateDirs()));
-  dirs.push(join(homedir(), '.local', 'bin'));
+  dirs.push(...(yield* pythonUserScriptsCandidateDirs()));
+  dirs.push(pathService.join(system.homeDirectory, '.local', 'bin'));
   return Array.from(new Set(dirs));
-}
+});
 
-export async function pythonUserScriptsCandidateDirs(
-  currentPlatform: NodeJS.Platform = process.platform,
-): Promise<readonly string[]> {
-  const commands = currentPlatform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+export const pythonUserScriptsCandidateDirs = Effect.fn('utils.pythonUserScriptsCandidateDirs')(function* (
+  currentPlatform?: NodeJS.Platform,
+) {
+  const system = yield* SystemInfo;
+  const pathService = yield* Path.Path;
+  const platform = currentPlatform ?? system.platform;
+  const commands = platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
   const directories: string[] = [];
   for (const command of commands) {
-    const executable = await findExecutable([command]);
+    const executable = yield* findExecutable([command]);
     if (!executable) {
       continue;
     }
-    const result = await runCommand(executable, ['-c', 'import site; print(site.getuserbase())'], {
+    const result = yield* runCommandEffect(executable, ['-c', 'import site; print(site.getuserbase())'], {
       allowFailure: true,
       timeoutMs: 5000,
     });
     const userBase = result.exitCode === 0 ? result.stdout.trim() : '';
     if (userBase) {
-      directories.push(join(userBase, currentPlatform === 'win32' ? 'Scripts' : 'bin'));
+      directories.push(pathService.join(userBase, platform === 'win32' ? 'Scripts' : 'bin'));
     }
   }
   return Array.from(new Set(directories));
-}
+});
 
-export async function requiredExecutable(command: string): Promise<string> {
-  const executable = await findExecutable([command]);
+export const requiredExecutable = Effect.fn('utils.requiredExecutable')(function* (command: string) {
+  const executable = yield* findExecutable([command]);
   if (!executable) {
-    throw new Error(`${command} was not found in PATH.`);
+    return yield* Effect.fail(new Error(`${command} was not found in PATH.`));
   }
   return executable;
-}
+});
 
-export async function findExecutable(commands: readonly string[]): Promise<string | undefined> {
+export const findExecutable = Effect.fn('utils.findExecutable')(function* (commands: readonly string[]) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
   for (const command of commands) {
-    for (const candidate of executablePathCandidatesForCommand(command)) {
-      if (await isExecutable(candidate)) {
+    for (const candidate of executablePathCandidatesForCommand(command, pathService, system)) {
+      if (yield* isExecutable(candidate)) {
         return candidate;
       }
     }
   }
   return undefined;
-}
+});
 
-export async function findWorkingExecutable(
+export const findWorkingExecutable = Effect.fn('utils.findWorkingExecutable')(function* (
   commands: readonly string[],
   args: readonly string[] = ['--version'],
-): Promise<string | undefined> {
-  for (const executable of await findExecutableCandidates(commands)) {
-    const result = await runCommand(executable, args, {allowFailure: true, timeoutMs: 5000});
+) {
+  for (const executable of yield* findExecutableCandidates(commands)) {
+    const result = yield* runCommandEffect(executable, args, {allowFailure: true, timeoutMs: 5000});
     if (result.exitCode === 0) {
       return executable;
     }
   }
   return undefined;
-}
+});
 
-export async function findExecutableCandidates(commands: readonly string[]): Promise<readonly string[]> {
+export const findExecutableCandidates = Effect.fn('utils.findExecutableCandidates')(function* (
+  commands: readonly string[],
+) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
   const candidates: string[] = [];
   const seen = new Set<string>();
   for (const command of commands) {
-    for (const candidate of executablePathCandidatesForCommand(command)) {
+    for (const candidate of executablePathCandidatesForCommand(command, pathService, system)) {
       if (seen.has(candidate)) {
         continue;
       }
       seen.add(candidate);
-      if (await isExecutable(candidate)) {
+      if (yield* isExecutable(candidate)) {
         candidates.push(candidate);
       }
     }
   }
   return candidates;
+});
+
+function executablePathCandidatesForCommand(
+  command: string,
+  pathService: Path.Path,
+  system: SystemInfoShape,
+): readonly string[] {
+  return pathService.isAbsolute(command) || command.includes('/') || command.includes('\\')
+    ? executableNames(command, system.platform, system.environment().PATHEXT)
+    : executablePathCandidates(command, pathService, system);
 }
 
-function executablePathCandidatesForCommand(command: string): readonly string[] {
-  return isAbsolute(command) || command.includes('/') || command.includes('\\')
-    ? executableNames(command)
-    : executablePathCandidates(command);
-}
-
-function executablePathCandidates(command: string): readonly string[] {
-  const pathDirectories = (process.env.PATH ?? '').split(delimiter);
-  const names = executableNames(command);
-  return pathDirectories.flatMap(directory => names.map(name => join(directory || '.', name)));
+function executablePathCandidates(command: string, pathService: Path.Path, system: SystemInfoShape): readonly string[] {
+  const pathDirectories = (system.environment().PATH ?? '').split(system.pathDelimiter);
+  const names = executableNames(command, system.platform, system.environment().PATHEXT);
+  return pathDirectories.flatMap(directory => names.map(name => pathService.join(directory || '.', name)));
 }
 
 export function executableNames(
   command: string,
-  currentPlatform: NodeJS.Platform = process.platform,
-  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+  currentPlatform: NodeJS.Platform,
+  pathExt = '.COM;.EXE;.BAT;.CMD',
 ): readonly string[] {
   if (currentPlatform !== 'win32') {
     return [command];
@@ -296,104 +297,22 @@ export function executableNames(
   return [...extensions.map(extension => `${command}${extension}`), command];
 }
 
-export async function maybeRun(
+export const maybeRun = Effect.fn('utils.maybeRun')(function* (
   dryRun: boolean,
   executable: string,
   args: readonly string[],
   options: {readonly allowFailure?: boolean; readonly cwd?: string; readonly env?: NodeJS.ProcessEnv} = {},
-): Promise<CommandResult | undefined> {
-  const cwdSuffix = options.cwd ? ` (cwd: ${options.cwd})` : '';
-  const label = dryRun ? warning('Would run') : info('Running');
-  consoleOutput.log(`${label}: ${commandText(formatShellCommand(executable, args))}${cwdSuffix}`);
-  if (dryRun) {
-    return undefined;
-  }
-  const result = await runCommand(executable, args, {
-    allowFailure: options.allowFailure === true,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  if (result.stdout.trim()) {
-    consoleOutput.log(result.stdout.trim());
-  }
-  if (result.stderr.trim()) {
-    consoleOutput.error(result.stderr.trim());
-  }
-  return result;
-}
+) {
+  return yield* maybeRunEffect(dryRun, executable, args, options);
+});
 
-export async function runCommand(
+export const runCommand = Effect.fn('utils.runCommand')(function* (
   executable: string,
   args: readonly string[],
   options: CommandOptions = {},
-): Promise<CommandResult> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const maxOutputBytes = options.maxOutputBytes ?? commandMaxOutputBytes();
-    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
-    let finished = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
-    let failureMessage: string | undefined;
-    const invocation = resolveCommandInvocation(executable, args);
-    const finish = (result: CommandResult): void => {
-      if (finished) return;
-      finished = true;
-      if (killTimer) clearTimeout(killTimer);
-      if (killEscalationTimer) clearTimeout(killEscalationTimer);
-      if (result.exitCode !== 0 && options.allowFailure !== true) {
-        rejectPromise(new Error(`${formatShellCommand(executable, args)} failed: ${result.stderr || result.stdout}`));
-      } else {
-        resolvePromise(result);
-      }
-    };
-    const child = execFile(
-      invocation.executable,
-      [...invocation.args],
-      {
-        cwd: options.cwd,
-        encoding: 'utf8',
-        env: isGitExecutable(executable) ? withoutGitEnvironment(options.env ?? process.env) : options.env,
-        maxBuffer: maxOutputBytes,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      },
-      (cause, stdout, stderr) => {
-        if (failureMessage) {
-          finish({exitCode: 124, stderr: failureMessage, stdout});
-          return;
-        }
-        if (!cause) {
-          finish({exitCode: 0, stderr, stdout});
-          return;
-        }
-        const error = cause as Error & {readonly code?: number | string};
-        const exitCode =
-          typeof error.code === 'number' ? error.code : error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 124 : 127;
-        finish({
-          exitCode,
-          stderr:
-            error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-              ? `${formatShellCommand(executable, args)} exceeded output limit of ${maxOutputBytes} bytes`
-              : stderr || errorMessage(error),
-          stdout,
-        });
-      },
-    );
-    if (timeoutMs > 0) {
-      killTimer = setTimeout(() => {
-        if (finished || child.exitCode !== null) return;
-        failureMessage = `${formatShellCommand(executable, args)} timed out after ${timeoutMs}ms`;
-        void terminateCommandProcess(child, invocation, false).catch(() => child.kill('SIGKILL'));
-        killEscalationTimer = setTimeout(() => {
-          if (!finished) {
-            void terminateCommandProcess(child, invocation, true).catch(() => child.kill('SIGKILL'));
-          }
-        }, 1000);
-        killEscalationTimer.unref?.();
-      }, timeoutMs);
-      killTimer.unref?.();
-    }
-  });
-}
+) {
+  return yield* runCommandEffect(executable, args, options);
+});
 
 /**
  * Upper bound (ms) for an `ov reindex --wait true` call. `ov reindex` has no
@@ -405,12 +324,16 @@ export async function runCommand(
  * queue is stuck and we bail rather than hang (the write already succeeded).
  * Override with THREADNOTE_REINDEX_TIMEOUT_MS.
  */
-export function reindexWaitTimeoutMs(): number {
-  return positiveIntegerFromEnv('THREADNOTE_REINDEX_TIMEOUT_MS') ?? 120_000;
-}
+export const reindexWaitTimeoutMs = Effect.fn('utils.reindexWaitTimeoutMs')(function* () {
+  const environment = (yield* SystemInfo).environment();
+  return positiveIntegerFromEnv(environment, 'THREADNOTE_REINDEX_TIMEOUT_MS') ?? 120_000;
+});
 
-function positiveIntegerFromEnv(name: string): number | undefined {
-  const value = process.env[name];
+function positiveIntegerFromEnv(
+  environment: Readonly<Record<string, string | undefined>>,
+  name: string,
+): number | undefined {
+  const value = environment[name];
   if (value === undefined) {
     return undefined;
   }
@@ -418,13 +341,16 @@ function positiveIntegerFromEnv(name: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export async function gitValue(args: readonly string[], cwd = getInvocationCwd()): Promise<string | undefined> {
-  const result = await runCommand('git', args, {allowFailure: true, cwd});
+export const gitValue = Effect.fn('utils.gitValue')(function* (args: readonly string[], cwd?: string) {
+  const result = yield* runCommandEffect('git', args, {
+    allowFailure: true,
+    cwd: cwd ?? (yield* getInvocationCwd()),
+  });
   if (result.exitCode !== 0) {
     return undefined;
   }
   return result.stdout.trim();
-}
+});
 
 /**
  * Resolves the canonical repository name for `cwd`, returning undefined when it
@@ -435,42 +361,45 @@ export async function gitValue(args: readonly string[], cwd = getInvocationCwd()
  * primary worktree name: linked worktree paths (`git worktree add`, Conductor
  * workspaces, …) often use the branch/workspace name instead of the project.
  */
-export async function resolveRepoName(cwd = getInvocationCwd()): Promise<string | undefined> {
-  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+export const resolveRepoName = Effect.fn('utils.resolveRepoName')(function* (cwd?: string) {
+  const resolvedCwd = cwd ?? (yield* getInvocationCwd());
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], resolvedCwd);
   if (!repoRoot) {
     return undefined;
   }
-  const remoteName = await resolveGitRemoteRepoName(repoRoot);
+  const remoteName = yield* resolveGitRemoteRepoName(repoRoot);
   if (remoteName) {
     return remoteName;
   }
-  return resolveRepoFolderName(repoRoot);
-}
+  return yield* resolveRepoFolderName(repoRoot);
+});
 
-export async function resolveRepoFolderName(cwd = getInvocationCwd()): Promise<string | undefined> {
-  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+export const resolveRepoFolderName = Effect.fn('utils.resolveRepoFolderName')(function* (cwd?: string) {
+  const pathService = yield* Path.Path;
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], cwd ?? (yield* getInvocationCwd()));
   if (!repoRoot) {
     return undefined;
   }
-  const commonDir = await gitValue(['rev-parse', '--git-common-dir'], repoRoot);
+  const commonDir = yield* gitValue(['rev-parse', '--git-common-dir'], repoRoot);
   if (commonDir) {
-    const absoluteCommonDir = isAbsolute(commonDir) ? commonDir : resolve(repoRoot, commonDir);
-    const primaryRoot = basename(absoluteCommonDir) === '.git' ? dirname(absoluteCommonDir) : absoluteCommonDir;
-    const name = basename(primaryRoot).replace(/\.git$/, '');
+    const absoluteCommonDir = pathService.isAbsolute(commonDir) ? commonDir : pathService.resolve(repoRoot, commonDir);
+    const primaryRoot =
+      pathService.basename(absoluteCommonDir) === '.git' ? pathService.dirname(absoluteCommonDir) : absoluteCommonDir;
+    const name = pathService.basename(primaryRoot).replace(/\.git$/, '');
     if (name && name !== '.') {
       return name;
     }
   }
-  return basename(repoRoot);
-}
+  return pathService.basename(repoRoot);
+});
 
-export async function resolveGitRemoteRepoName(repoRoot: string): Promise<string | undefined> {
-  const originUrl = await gitValue(['remote', 'get-url', 'origin'], repoRoot);
+export const resolveGitRemoteRepoName = Effect.fn('utils.resolveGitRemoteRepoName')(function* (repoRoot: string) {
+  const originUrl = yield* gitValue(['remote', 'get-url', 'origin'], repoRoot);
   const originName = originUrl ? gitRemoteRepoName(originUrl) : undefined;
   if (originName) {
     return originName;
   }
-  const remotes = await gitValue(['remote'], repoRoot);
+  const remotes = yield* gitValue(['remote'], repoRoot);
   const remote = remotes
     ?.split(/\r?\n/)
     .map(name => name.trim())
@@ -478,19 +407,18 @@ export async function resolveGitRemoteRepoName(repoRoot: string): Promise<string
   if (!remote) {
     return undefined;
   }
-  const remoteUrl = await gitValue(['remote', 'get-url', remote], repoRoot);
+  const remoteUrl = yield* gitValue(['remote', 'get-url', remote], repoRoot);
   return remoteUrl ? gitRemoteRepoName(remoteUrl) : undefined;
-}
+});
 
 function gitRemoteRepoName(remoteUrl: string): string | undefined {
   const trimmed = remoteUrl.trim();
   if (!trimmed) {
     return undefined;
   }
-  let remotePath = trimmed.replace(/[?#].*$/, '');
-  try {
-    remotePath = new URL(trimmed).pathname;
-  } catch (_err: unknown) {
+  const parsedUrlPath = parseUrlPath(trimmed);
+  let remotePath = Option.getOrUndefined(parsedUrlPath) ?? trimmed.replace(/[?#].*$/, '');
+  if (Option.isNone(parsedUrlPath)) {
     const scpLike = trimmed.match(/^[^@\s/]+@[^:\s]+:(.+)$/);
     if (scpLike?.[1]) {
       remotePath = scpLike[1];
@@ -505,52 +433,19 @@ function gitRemoteRepoName(remoteUrl: string): string | undefined {
   return name && name !== '.' && name !== '..' ? name : undefined;
 }
 
-export async function runInteractive(
+export const runInteractive = Effect.fn('utils.runInteractive')(function* (
   executable: string,
   args: readonly string[],
   options: {readonly env?: NodeJS.ProcessEnv} = {},
-): Promise<number> {
-  return new Promise(resolvePromise => {
-    const invocation = resolveCommandInvocation(executable, args);
-    const child = spawn(invocation.executable, invocation.args, {
-      env: options.env,
-      stdio: 'inherit',
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-    });
-    // `error` fires instead of `close` when the binary cannot be spawned
-    // (e.g. ENOENT). Resolve non-zero so callers surface a failure rather than
-    // hanging forever waiting for a `close` that never comes.
-    child.on('error', () => {
-      resolvePromise(1);
-    });
-    child.on('close', code => {
-      resolvePromise(code ?? 1);
-    });
-  });
-}
+) {
+  return (yield* runStreamingCommandEffect(executable, args, options)).exitCode;
+});
 
-export async function httpGetText(url: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const request = httpGet(url, response => {
-      const chunks: string[] = [];
-      response.on('data', chunk => chunks.push(String(chunk)));
-      response.on('end', () => {
-        const statusCode = response.statusCode ?? 0;
-        if (statusCode >= 200 && statusCode < 300) {
-          resolvePromise(chunks.join(''));
-        } else {
-          rejectPromise(new Error(`HTTP ${statusCode}`));
-        }
-      });
-    });
-    request.setTimeout(timeoutMs, () => request.destroy(new Error(`Timed out after ${timeoutMs}ms`)));
-    request.on('error', rejectPromise);
-  });
-}
+export const httpGetText = Effect.fn('utils.httpGetText')(function* (url: string, timeoutMs: number) {
+  return (yield* getTextEffect(url, {timeoutMs})).body;
+});
 
-export async function sleep(ms: number): Promise<void> {
-  return new Promise(resolvePromise => setTimeout(resolvePromise, ms));
-}
+export const sleep = (ms: number) => Effect.sleep(ms);
 
 /**
  * Compare two semver-ish / PEP 440 versions. Returns positive if `a > b`,
@@ -641,91 +536,72 @@ export function formatStaleVersionNotice(
   );
 }
 
-export async function readHttpStatus(url: string, timeoutMs: number): Promise<number | undefined> {
-  return new Promise(resolvePromise => {
-    const request = httpGet(url, response => {
-      response.resume();
-      resolvePromise(response.statusCode);
-    });
-    request.setTimeout(timeoutMs, () => {
-      request.destroy();
-      resolvePromise(undefined);
-    });
-    request.on('error', () => resolvePromise(undefined));
-  });
-}
+export const readHttpStatus = Effect.fn('utils.readHttpStatus')((url: string, timeoutMs: number) =>
+  getStatusEffect(url, {timeoutMs}).pipe(Effect.catch(() => Effect.succeed(undefined))),
+);
 
-export async function isTcpPortOpen(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise(resolvePromise => {
-    const socket = createConnection({host, port});
-    let resolved = false;
-    const finish = (value: boolean): void => {
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      socket.destroy();
-      resolvePromise(value);
-    };
-    socket.setTimeout(timeoutMs);
-    socket.once('connect', () => {
-      finish(true);
-    });
-    socket.once('timeout', () => {
-      finish(false);
-    });
-    socket.once('error', () => {
-      finish(false);
-    });
-  });
-}
+export const isTcpPortOpen = Effect.fn('utils.isTcpPortOpen')((host: string, port: number, timeoutMs: number) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const connected = yield* Deferred.make<boolean>();
+      const socket = yield* NodeSocket.makeNet({host, port});
+      yield* socket
+        .run(() => undefined, {onOpen: Deferred.succeed(connected, true)})
+        .pipe(
+          Effect.catch(() => Deferred.succeed(connected, false)),
+          Effect.forkScoped,
+        );
+      return yield* Deferred.await(connected).pipe(
+        Effect.timeoutOrElse({duration: timeoutMs, orElse: () => Effect.succeed(false)}),
+      );
+    }),
+  ),
+);
 
-export async function getInputText(optionText: string | undefined, useStdin: boolean): Promise<string> {
+export const getInputText = Effect.fn('utils.getInputText')(function* (
+  optionText: string | undefined,
+  useStdin: boolean,
+) {
   if (optionText !== undefined) {
     return optionText;
   }
   if (!useStdin) {
     return '';
   }
-  return new Promise(resolvePromise => {
-    const chunks: string[] = [];
-    process.stdin.on('data', chunk => {
-      chunks.push(String(chunk));
-    });
-    process.stdin.on('end', () => {
-      resolvePromise(chunks.join(''));
-    });
-  });
-}
+  const stdio = yield* Stdio.Stdio;
+  return yield* stdio.stdin.pipe(
+    Stream.decodeText,
+    Stream.runFold(
+      () => '',
+      (output, chunk) => `${output}${chunk}`,
+    ),
+  );
+});
 
-export async function ensureDirectory(path: string, dryRun: boolean): Promise<void> {
+export const ensureDirectory = Effect.fn('utils.ensureDirectory')(function* (path: string, dryRun: boolean) {
   if (dryRun) {
-    consoleOutput.log(`Would create directory: ${path}`);
+    yield* Console.log(`Would create directory: ${path}`);
     return;
   }
-  await mkdir(path, {recursive: true});
-}
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(path, {recursive: true});
+});
 
-export async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch (_err: unknown) {
-    return false;
-  }
-}
+export const exists = Effect.fn('utils.exists')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.exists(path);
+});
 
-export async function isExecutable(path: string): Promise<boolean> {
-  try {
-    if (!(await stat(path)).isFile()) {
-      return false;
-    }
-    await access(path, fsConstants.X_OK);
-    return true;
-  } catch (_err: unknown) {
-    return false;
-  }
-}
+export const isExecutable = Effect.fn('utils.isExecutable')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  const info = yield* fs.stat(path).pipe(Effect.option);
+  return (
+    info._tag === 'Some' &&
+    info.value.type === 'File' &&
+    (system.platform === 'win32' || (info.value.mode & 0o111) !== 0)
+  );
+});
 
 export function suggestedShellRc(shellPath: string | undefined, currentPlatform: NodeJS.Platform): string {
   const shell = shellPath ?? '';
@@ -741,46 +617,44 @@ export function suggestedShellRc(shellPath: string | undefined, currentPlatform:
   return 'your shell rc';
 }
 
-export async function isFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch (_err: unknown) {
-    return false;
-  }
-}
+export const isFile = Effect.fn('utils.isFile')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(path).pipe(Effect.option);
+  return info._tag === 'Some' && info.value.type === 'File';
+});
 
-export async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch (_err: unknown) {
-    return false;
-  }
-}
+export const isDirectory = Effect.fn('utils.isDirectory')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(path).pipe(Effect.option);
+  return info._tag === 'Some' && info.value.type === 'Directory';
+});
 
-export async function readFileIfExists(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (_err: unknown) {
-    return undefined;
-  }
-}
+export const readFileIfExists = Effect.fn('utils.readFileIfExists')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(path).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
-export async function removePathIfExists(path: string, label: string, dryRun: boolean): Promise<void> {
-  if (!(await exists(path))) {
-    consoleOutput.log(`Already absent: ${path}`);
+export const removePathIfExists = Effect.fn('utils.removePathIfExists')(function* (
+  path: string,
+  label: string,
+  dryRun: boolean,
+) {
+  if (!(yield* exists(path))) {
+    yield* Console.log(`Already absent: ${path}`);
     return;
   }
-  await removePath(path, label, dryRun);
-}
+  yield* removePath(path, label, dryRun);
+});
 
-export async function removePath(path: string, label: string, dryRun: boolean): Promise<void> {
+export const removePath = Effect.fn('utils.removePath')(function* (path: string, label: string, dryRun: boolean) {
   if (dryRun) {
-    consoleOutput.log(`Would remove ${label}: ${path}`);
+    yield* Console.log(`Would remove ${label}: ${path}`);
     return;
   }
-  await rm(path, {force: true, recursive: true});
-  consoleOutput.log(`Removed ${label}: ${path}`);
-}
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.remove(path, {force: true, recursive: true});
+  yield* Console.log(`Removed ${label}: ${path}`);
+});
 
 export function parsePort(value: string): number {
   const parsed = Number(value);
@@ -808,108 +682,122 @@ export function collectOption(value: string, previous: readonly string[]): reado
   return [...previous, value];
 }
 
-export function expandPath(path: string): string {
+export const expandPath = Effect.fn('utils.expandPath')(function* (path: string) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
   if (path === '~') {
-    return homedir();
+    return system.homeDirectory;
   }
-  if (path.startsWith(`~${sep}`) || path.startsWith('~/')) {
-    return join(homedir(), path.slice(2));
+  if (path.startsWith(`~${pathService.sep}`) || path.startsWith('~/')) {
+    return pathService.join(system.homeDirectory, path.slice(2));
   }
-  return isAbsolute(path) ? path : resolve(getInvocationCwd(), path);
-}
+  return pathService.isAbsolute(path) ? path : pathService.resolve(yield* getInvocationCwd(), path);
+});
 
-export function assertSafeThreadnoteHomeForErase(path: string): void {
-  const resolvedPath = resolve(path);
-  if (resolvedPath === '/' || resolvedPath === homedir() || resolvedPath === dirname(homedir())) {
-    throw new Error(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`);
+export const assertSafeThreadnoteHomeForErase = Effect.fn('utils.assertSafeThreadnoteHomeForErase')(function* (
+  path: string,
+) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const resolvedPath = pathService.resolve(path);
+  if (
+    resolvedPath === pathService.parse(resolvedPath).root ||
+    resolvedPath === system.homeDirectory ||
+    resolvedPath === pathService.dirname(system.homeDirectory)
+  ) {
+    return yield* Effect.fail(new Error(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`));
   }
-}
+});
 
-export function portablePath(path: string): string {
-  const home = homedir();
-  const resolvedPath = resolve(path);
+export const portablePath = Effect.fn('utils.portablePath')(function* (path: string) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const home = system.homeDirectory;
+  const resolvedPath = pathService.resolve(path);
   if (resolvedPath === home) {
     return '~';
   }
-  if (resolvedPath.startsWith(`${home}${sep}`)) {
+  if (resolvedPath.startsWith(`${home}${pathService.sep}`)) {
     return `~/${resolvedPath
       .slice(home.length + 1)
-      .split(sep)
+      .split(pathService.sep)
       .join('/')}`;
   }
   return resolvedPath;
-}
+});
 
-export function getInvocationCwd(): string {
-  return process.env.THREADNOTE_CALLER_CWD ?? process.cwd();
-}
+export const getInvocationCwd = Effect.fn('utils.getInvocationCwd')(function* () {
+  const system = yield* SystemInfo;
+  return system.environment().THREADNOTE_CALLER_CWD ?? system.currentDirectory();
+});
 
 export function recallQueryRequestsWorkspaceContext(query: string): boolean {
   const normalized = query.toLowerCase();
   return /\b(?:this|current)\s+(?:branch|repo|repository|workspace|worktree)\b/.test(normalized);
 }
 
-export async function enrichRecallQueryWithWorkspaceContext(
-  query: string,
-  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
-): Promise<string> {
-  return enrichRecallQueryWithWorkspaceTerms(query, options, true);
-}
+export const enrichRecallQueryWithWorkspaceContext = Effect.fn('utils.enrichRecallQueryWithWorkspaceContext')(
+  function* (query: string, options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {}) {
+    return yield* enrichRecallQueryWithWorkspaceTerms(query, options, true);
+  },
+);
 
-export async function enrichRecallQueryWithWorkspaceProjectContext(
-  query: string,
-  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
-): Promise<string> {
-  return enrichRecallQueryWithWorkspaceTerms(query, options, false);
-}
+export const enrichRecallQueryWithWorkspaceProjectContext = Effect.fn(
+  'utils.enrichRecallQueryWithWorkspaceProjectContext',
+)(function* (query: string, options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {}) {
+  return yield* enrichRecallQueryWithWorkspaceTerms(query, options, false);
+});
 
-export async function resolveWorkspaceRepoName(
+export const resolveWorkspaceRepoName = Effect.fn('utils.resolveWorkspaceRepoName')(function* (
   options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
-): Promise<string | undefined> {
-  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : getInvocationCwd());
-  if (!cwd || !isAbsolute(cwd)) {
+) {
+  const pathService = yield* Path.Path;
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : yield* getInvocationCwd());
+  if (!cwd || !pathService.isAbsolute(cwd)) {
     return undefined;
   }
-  return resolveRepoName(cwd);
-}
+  return yield* resolveRepoName(cwd);
+});
 
-async function enrichRecallQueryWithWorkspaceTerms(
+const enrichRecallQueryWithWorkspaceTerms = Effect.fn('utils.enrichRecallQueryWithWorkspaceTerms')(function* (
   query: string,
   options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
   includeBranch: boolean,
-): Promise<string> {
+) {
   if (!recallQueryRequestsWorkspaceContext(query)) {
     return query;
   }
-  const terms = await currentWorkspaceRecallTerms(options, includeBranch);
+  const terms = yield* currentWorkspaceRecallTerms(options, includeBranch);
   const additions = terms.filter(term => !query.toLowerCase().includes(term.toLowerCase()));
   return additions.length > 0 ? `${query} ${additions.join(' ')}` : query;
-}
+});
 
-async function currentWorkspaceRecallTerms(
+const currentWorkspaceRecallTerms = Effect.fn('utils.currentWorkspaceRecallTerms')(function* (
   options: {
     readonly cwd?: string;
     readonly includeProcessCwd?: boolean;
   },
   includeBranch: boolean,
-): Promise<readonly string[]> {
-  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : getInvocationCwd());
-  if (!cwd || !isAbsolute(cwd)) {
+) {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : yield* getInvocationCwd());
+  if (!cwd || !pathService.isAbsolute(cwd)) {
     return [];
   }
-  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], cwd);
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], cwd);
   if (!repoRoot) {
     return [];
   }
-  const branch = await gitValue(['branch', '--show-current'], repoRoot);
-  const repoName = await resolveWorkspaceRepoName({cwd, includeProcessCwd: false});
-  const parent = dirname(repoRoot);
+  const branch = yield* gitValue(['branch', '--show-current'], repoRoot);
+  const repoName = yield* resolveWorkspaceRepoName({cwd, includeProcessCwd: false});
+  const parent = pathService.dirname(repoRoot);
   return uniqueUsefulWorkspaceTerms([
     {source: 'branch', value: includeBranch ? branch : undefined},
     {source: 'path', value: repoName},
-    {source: 'path', value: parent === homedir() ? undefined : basename(parent)},
+    {source: 'path', value: parent === system.homeDirectory ? undefined : pathService.basename(parent)},
   ]);
-}
+});
 
 export function uniqueUsefulWorkspaceTerms(
   values: readonly {readonly source: 'branch' | 'path'; readonly value: string | undefined}[],
@@ -931,7 +819,7 @@ export function uniqueUsefulWorkspaceTerms(
 }
 
 export function toPosixPath(path: string): string {
-  return path.split(sep).join('/');
+  return path.replaceAll('\\', '/');
 }
 
 export function trimTrailingSlash(value: string): string {
@@ -944,9 +832,7 @@ export function parentVikingUri(uri: string): string {
   return slashIndex <= 'viking://'.length ? trimmedUri : trimmedUri.slice(0, slashIndex);
 }
 
-export function sha256(content: string | Buffer): string {
-  return createHash('sha256').update(content).digest('hex');
-}
+export const sha256 = sha256Hex;
 
 export function exactRecallTerms(query: string): readonly string[] {
   const stopWords = new Set([
@@ -1026,7 +912,9 @@ export function grepOutputHasMatches(output: string): boolean {
  * globally via THREADNOTE_RECALL_THRESHOLD, matching the THREADNOTE_* env
  * convention used for command timeout/output caps.
  */
-export const RECALL_SCORE_THRESHOLD = process.env.THREADNOTE_RECALL_THRESHOLD?.trim() || '0.45';
+export const recallScoreThreshold = Effect.fn('utils.recallScoreThreshold')(function* () {
+  return (yield* SystemInfo).environment().THREADNOTE_RECALL_THRESHOLD?.trim() || '0.45';
+});
 
 export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
 
@@ -1143,23 +1031,19 @@ export function grepUrisFromJson(output: string): readonly string[] {
   if (start < 0) {
     return [];
   }
-  try {
-    const parsed: unknown = JSON.parse(output.slice(start));
-    const result = isJsonObject(parsed) ? parsed.result : undefined;
-    const matches = isJsonObject(result) ? result.matches : undefined;
-    if (!Array.isArray(matches)) {
-      return [];
-    }
-    const uris: string[] = [];
-    for (const match of matches) {
-      if (isJsonObject(match) && typeof match.uri === 'string' && !isExcludedRecallUri(match.uri)) {
-        uris.push(match.uri);
-      }
-    }
-    return uris;
-  } catch (_err: unknown) {
+  const parsed = Option.getOrUndefined(parseJson(output.slice(start)));
+  const result = isJsonObject(parsed) ? parsed.result : undefined;
+  const matches = isJsonObject(result) ? result.matches : undefined;
+  if (!Array.isArray(matches)) {
     return [];
   }
+  const uris: string[] = [];
+  for (const match of matches) {
+    if (isJsonObject(match) && typeof match.uri === 'string' && !isExcludedRecallUri(match.uri)) {
+      uris.push(match.uri);
+    }
+  }
+  return uris;
 }
 
 export interface ExactMatch {
@@ -1234,38 +1118,34 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
   if (start < 0) {
     return [];
   }
-  try {
-    const parsed: unknown = JSON.parse(output.slice(start));
-    const result = isJsonObject(parsed) ? parsed.result : undefined;
-    if (!isJsonObject(result)) {
-      return [];
-    }
-    const hits: RecallHit[] = [];
-    for (const key of RECALL_CATEGORY_ORDER) {
-      const items = result[key];
-      if (!Array.isArray(items)) {
-        continue;
-      }
-      for (const item of items) {
-        if (!isJsonObject(item) || typeof item.uri !== 'string' || isExcludedRecallUri(item.uri)) {
-          continue;
-        }
-        if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
-          continue;
-        }
-        hits.push({
-          category: key,
-          contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
-          score: typeof item.score === 'number' ? item.score : 0,
-          snippet: recallSnippet(item.abstract ?? item.overview),
-          uri: item.uri,
-        });
-      }
-    }
-    return hits;
-  } catch (_err: unknown) {
+  const parsed = Option.getOrUndefined(parseJson(output.slice(start)));
+  const result = isJsonObject(parsed) ? parsed.result : undefined;
+  if (!isJsonObject(result)) {
     return [];
   }
+  const hits: RecallHit[] = [];
+  for (const key of RECALL_CATEGORY_ORDER) {
+    const items = result[key];
+    if (!Array.isArray(items)) {
+      continue;
+    }
+    for (const item of items) {
+      if (!isJsonObject(item) || typeof item.uri !== 'string' || isExcludedRecallUri(item.uri)) {
+        continue;
+      }
+      if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
+        continue;
+      }
+      hits.push({
+        category: key,
+        contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
+        score: typeof item.score === 'number' ? item.score : 0,
+        snippet: recallSnippet(item.abstract ?? item.overview),
+        uri: item.uri,
+      });
+    }
+  }
+  return hits;
 }
 
 /** Drop a chunk anchor (`#chunk_0001`) so a URI addresses its document. */
@@ -1710,7 +1590,7 @@ function hybridRankRecallHits(
           indexed?.fields?.project ??
           memoryUriProjectSegment(hit.uri) ??
           resourceProjectFromUri(hit.uri),
-        title: indexed?.fields?.title ?? basename(uri),
+        title: indexed?.fields?.title ?? uri.split('/').at(-1) ?? uri,
         topic: record?.metadata.topic ?? indexed?.fields?.topic ?? uriSlug(hit.uri),
       },
       kind: record?.metadata.kind ?? indexed?.kind ?? memoryKindFromUri(hit.uri),
@@ -1943,15 +1823,17 @@ export function exactMemoryScopeUris(params: {
  * recall an index of pointers rather than a dump of matching lines. `runGrep`
  * returns `ov grep --output json` stdout (or undefined on failure).
  */
-export async function collectExactMatches(
+export const collectExactMatches = Effect.fn('utils.collectExactMatches')(function* <E, R>(
   terms: readonly string[],
   scopes: readonly string[],
-  runGrep: (term: string, scope: string) => Promise<string | undefined>,
-): Promise<readonly ExactMatch[]> {
+  runGrep: (term: string, scope: string) => Effect.Effect<string | undefined, E, R>,
+) {
   // Run all term×scope greps concurrently, then fold the results in a fixed
   // order so dedup ranking stays deterministic regardless of completion order.
   const pairs = terms.flatMap(term => scopes.map(scope => ({scope, term})));
-  const outputs = await Promise.all(pairs.map(pair => runGrep(pair.term, pair.scope)));
+  const outputs = yield* Effect.forEach(pairs, pair => runGrep(pair.term, pair.scope), {
+    concurrency: 'unbounded',
+  });
   const byUri = new Map<string, {order: number; terms: Set<string>}>();
   let order = 0;
   for (const [index, pair] of pairs.entries()) {
@@ -1972,7 +1854,7 @@ export async function collectExactMatches(
   return [...byUri.entries()]
     .sort((left, right) => right[1].terms.size - left[1].terms.size || left[1].order - right[1].order)
     .map(([uri, value]) => ({terms: [...value.terms], uri}));
-}
+});
 
 export function formatExactMatchPointers(matches: readonly ExactMatch[], maxUris = 8): string | undefined {
   if (matches.length === 0) {
@@ -2015,21 +1897,29 @@ export function formatStatus(status: CommandStatus): string {
   return failure('FAIL');
 }
 
-export function toolRoot(): string {
-  if (existsSync(join(moduleDirectory, 'package.json'))) {
-    return moduleDirectory;
-  }
-  return resolve(moduleDirectory, '..');
-}
+export const toolRoot = Effect.fn('utils.toolRoot')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const modulePath = yield* pathService.fromFileUrl(new URL(import.meta.url));
+  const moduleDirectory = pathService.dirname(modulePath);
+  return (yield* fs.exists(pathService.join(moduleDirectory, 'package.json')))
+    ? moduleDirectory
+    : pathService.resolve(moduleDirectory, '..');
+});
 
-export async function currentPackageVersion(): Promise<string> {
-  const rawPackage = await readFile(join(toolRoot(), 'package.json'), 'utf8');
-  const parsed: unknown = JSON.parse(rawPackage);
+export const currentPackageVersion = Effect.fn('utils.currentPackageVersion')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const rawPackage = yield* fs.readFileString(pathService.join(yield* toolRoot(), 'package.json'));
+  const parsed = yield* Effect.try({
+    try: () => JSON.parse(rawPackage) as unknown,
+    catch: cause => new Error('Could not parse current threadnote package metadata.', {cause}),
+  });
   if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
-    throw new Error('Could not read current threadnote package version.');
+    return yield* Effect.fail(new Error('Could not read current threadnote package version.'));
   }
   return parsed.version;
-}
+});
 
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

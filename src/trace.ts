@@ -1,4 +1,4 @@
-import {open, readFile, stat} from 'node:fs/promises';
+import {Effect, FileSystem, Result, Stream} from 'effect';
 import {applyScrubber} from './share.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
@@ -55,8 +55,8 @@ function truncate(value: string, max: number): string {
  * agent-specific and unstable, so every field is defensive. Callers MUST scrub
  * the result before persisting — user intents can contain secrets.
  */
-export async function distillTrace(transcriptPath: string): Promise<string | undefined> {
-  const raw = await readTranscriptTail(transcriptPath);
+export const distillTrace = Effect.fn('trace.distill')(function* (transcriptPath: string) {
+  const raw = yield* readTranscriptTail(transcriptPath);
   if (raw === undefined) {
     return undefined;
   }
@@ -71,12 +71,11 @@ export async function distillTrace(transcriptPath: string): Promise<string | und
     if (!trimmed) {
       continue;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
+    const parsedResult = Result.try((): unknown => JSON.parse(trimmed));
+    if (Result.isFailure(parsedResult)) {
       continue;
     }
+    const parsed = parsedResult.success;
     if (!isRecord(parsed)) {
       continue;
     }
@@ -114,30 +113,30 @@ export async function distillTrace(transcriptPath: string): Promise<string | und
     }
   }
   return lines.join('\n');
-}
+});
 
-async function readTranscriptTail(transcriptPath: string): Promise<string | undefined> {
-  try {
-    const {size} = await stat(transcriptPath);
+const readTranscriptTail = Effect.fn('trace.readTail')((transcriptPath: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(transcriptPath);
+    const size = Number(info.size);
     if (size === 0) {
       return undefined;
     }
     if (size <= MAX_TRANSCRIPT_BYTES) {
-      return await readFile(transcriptPath, 'utf8');
+      return yield* fs.readFileString(transcriptPath);
     }
     const start = size - MAX_TRANSCRIPT_BYTES;
-    const buffer = Buffer.alloc(MAX_TRANSCRIPT_BYTES);
-    const file = await open(transcriptPath, 'r');
-    try {
-      const {bytesRead} = await file.read(buffer, 0, MAX_TRANSCRIPT_BYTES, start);
-      return buffer
-        .subarray(0, bytesRead)
-        .toString('utf8')
-        .replace(/^[^\n]*(?:\n|$)/, '');
-    } finally {
-      await file.close();
+    const chunks = yield* fs
+      .stream(transcriptPath, {bytesToRead: MAX_TRANSCRIPT_BYTES, offset: start})
+      .pipe(Stream.runCollect);
+    const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
     }
-  } catch {
-    return undefined;
-  }
-}
+    return new TextDecoder().decode(bytes).replace(/^[^\n]*(?:\n|$)/, '');
+  }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+);

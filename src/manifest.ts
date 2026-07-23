@@ -1,4 +1,4 @@
-import {readFile} from 'node:fs/promises';
+import {Effect, FileSystem} from 'effect';
 import yaml from 'js-yaml';
 import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
 import {escapeRegExp, isJsonObject} from './utils.js';
@@ -17,15 +17,17 @@ export function uriSegment(value: string): string {
  * when no project matches or the manifest can't be read. Callers use the
  * matched project's `uri` to scope a recall search at the right seeded subtree.
  */
-export async function inferProjectFromQuery(manifestPath: string, query: string): Promise<ProjectManifest | undefined> {
-  try {
-    const manifest = await readSeedManifest(manifestPath);
-    const normalized = query.toLowerCase();
-    return manifest.projects.find(project => normalized.includes(project.name.toLowerCase()));
-  } catch {
+export const inferProjectFromQuery = Effect.fn('manifest.inferProjectFromQuery')(function* (
+  manifestPath: string,
+  query: string,
+) {
+  const manifest = yield* readSeedManifest(manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'None') {
     return undefined;
   }
-}
+  const normalized = query.toLowerCase();
+  return manifest.value.projects.find(project => normalized.includes(project.name.toLowerCase()));
+});
 
 /**
  * Resolves a workset's member names to their `ProjectManifest` entries, dropping
@@ -41,49 +43,60 @@ function resolveWorksetProjects(manifest: SeedManifest, workset: WorksetManifest
 }
 
 /** Looks up a workset by exact (case-insensitive) name; undefined when unknown or unreadable. */
-export async function resolveWorkset(manifestPath: string, worksetName: string): Promise<ResolvedWorkset | undefined> {
-  try {
-    const manifest = await readSeedManifest(manifestPath);
-    const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
-    return workset ? resolveWorksetProjects(manifest, workset) : undefined;
-  } catch {
+export const resolveWorkset = Effect.fn('manifest.resolveWorkset')(function* (
+  manifestPath: string,
+  worksetName: string,
+) {
+  const manifest = yield* readSeedManifest(manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'None') {
     return undefined;
   }
-}
+  const workset = manifest.value.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
+  return workset ? resolveWorksetProjects(manifest.value, workset) : undefined;
+});
 
 /** Resolves an explicit workset name; throws when the manifest is readable but no such workset exists. */
-export async function requireWorkset(manifestPath: string, worksetName: string): Promise<ResolvedWorkset> {
-  const manifest = await readSeedManifest(manifestPath);
+export const requireWorkset = Effect.fn('manifest.requireWorkset')(function* (
+  manifestPath: string,
+  worksetName: string,
+) {
+  const manifest = yield* readSeedManifest(manifestPath);
   const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === worksetName.toLowerCase());
   if (!workset) {
-    throw new Error(`No workset named "${worksetName}" in ${manifestPath}.`);
+    return yield* Effect.fail(new Error(`No workset named "${worksetName}" in ${manifestPath}.`));
   }
   return resolveWorksetProjects(manifest, workset);
-}
+});
 
 /** Returns the workset whose name appears as a token in `query`, or undefined. */
-export async function inferWorksetFromQuery(manifestPath: string, query: string): Promise<ResolvedWorkset | undefined> {
-  try {
-    const manifest = await readSeedManifest(manifestPath);
-    if (!manifest.worksets || manifest.worksets.length === 0) {
-      return undefined;
-    }
-    const workset = manifest.worksets.find(entry => containsNameToken(query, entry.name));
-    return workset ? resolveWorksetProjects(manifest, workset) : undefined;
-  } catch {
+export const inferWorksetFromQuery = Effect.fn('manifest.inferWorksetFromQuery')(function* (
+  manifestPath: string,
+  query: string,
+) {
+  const manifest = yield* readSeedManifest(manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'None') {
     return undefined;
   }
-}
+  if (!manifest.value.worksets || manifest.value.worksets.length === 0) {
+    return undefined;
+  }
+  const workset = manifest.value.worksets.find(entry => containsNameToken(query, entry.name));
+  return workset ? resolveWorksetProjects(manifest.value, workset) : undefined;
+});
 
 function containsNameToken(query: string, name: string): boolean {
   const escaped = escapeRegExp(name.toLowerCase());
   return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(query.toLowerCase());
 }
 
-export async function readSeedManifest(path: string): Promise<SeedManifest> {
-  const raw = await readFile(path, 'utf8');
-  return parseSeedManifest(raw, path);
-}
+export const readSeedManifest = Effect.fn('manifest.readSeedManifest')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const raw = yield* fs.readFileString(path);
+  return yield* Effect.try({
+    try: () => parseSeedManifest(raw, path),
+    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+});
 
 export function parseSeedManifest(raw: string, path: string): SeedManifest {
   const loaded = yaml.load(raw);

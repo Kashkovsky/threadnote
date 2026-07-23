@@ -3,10 +3,19 @@ import {tmpdir} from 'node:os';
 import {basename, join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {
-  enrichRecallQueryWithWorkspaceContext,
-  enrichRecallQueryWithWorkspaceProjectContext,
-  runCommand,
+  enrichRecallQueryWithWorkspaceContext as enrichRecallQueryWithWorkspaceContextEffect,
+  enrichRecallQueryWithWorkspaceProjectContext as enrichRecallQueryWithWorkspaceProjectContextEffect,
+  runCommand as runCommandEffect,
 } from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const enrichRecallQueryWithWorkspaceContext = (
+  ...args: Parameters<typeof enrichRecallQueryWithWorkspaceContextEffect>
+) => runEffect(enrichRecallQueryWithWorkspaceContextEffect(...args));
+const enrichRecallQueryWithWorkspaceProjectContext = (
+  ...args: Parameters<typeof enrichRecallQueryWithWorkspaceProjectContextEffect>
+) => runEffect(enrichRecallQueryWithWorkspaceProjectContextEffect(...args));
+const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
 
 describe('workspace recall enrichment', () => {
   it('uses absolute caller cwd and keeps branch terms out of project inference context', async () => {

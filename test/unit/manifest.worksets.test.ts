@@ -2,7 +2,18 @@ import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {inferWorksetFromQuery, readSeedManifest, resolveWorkset} from '../../src/manifest.js';
+import {
+  inferWorksetFromQuery as inferWorksetFromQueryEffect,
+  readSeedManifest as readSeedManifestEffect,
+  resolveWorkset as resolveWorksetEffect,
+} from '../../src/manifest.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const inferWorksetFromQuery = (...args: Parameters<typeof inferWorksetFromQueryEffect>) =>
+  runEffect(inferWorksetFromQueryEffect(...args));
+const readSeedManifest = (...args: Parameters<typeof readSeedManifestEffect>) =>
+  runEffect(readSeedManifestEffect(...args));
+const resolveWorkset = (...args: Parameters<typeof resolveWorksetEffect>) => runEffect(resolveWorksetEffect(...args));
 
 const MANIFEST = `
 version: 1

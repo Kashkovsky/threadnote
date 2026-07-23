@@ -15,10 +15,10 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
-    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
+    requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
-    sleep: vi.fn().mockResolvedValue(undefined),
+    sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
@@ -66,11 +66,11 @@ describe('remember shared replacement', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
-    vi.mocked(utils.maybeRun).mockImplementation(async (dryRun, executable, args, options) =>
-      dryRun ? undefined : vi.mocked(utils.runCommand)(executable, args, options),
+    vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
+      dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
     );
-    vi.mocked(utils.openVikingCliForMode).mockResolvedValue('/ov');
-    vi.mocked(utils.requiredExecutable).mockResolvedValue('git');
+    vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
+    vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockReset();
   });
 
@@ -182,23 +182,23 @@ describe('remember shared replacement', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
-    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
-        return ok();
+        return Effect.succeed(ok());
       }
       if (executable === '/ov' && args[0] === 'write') {
-        return ok('written');
+        return Effect.succeed(ok('written'));
       }
       if (executable === 'git' && args.includes('add')) {
-        return ok();
+        return Effect.succeed(ok());
       }
       if (executable === 'git' && args.includes('commit')) {
-        return ok('[main abc123] share');
+        return Effect.succeed(ok('[main abc123] share'));
       }
       if (executable === 'git' && args.includes('push')) {
-        return fail('permission denied');
+        return Effect.succeed(fail('permission denied'));
       }
-      return ok();
+      return Effect.succeed(ok());
     });
 
     await expect(

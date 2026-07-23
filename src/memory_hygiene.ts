@@ -1,4 +1,3 @@
-import {basename} from 'node:path';
 import {uriSegment} from './manifest.js';
 import {
   formatMemoryDocument,
@@ -406,7 +405,7 @@ function branchFromBody(body: string): string | undefined {
 }
 
 function topicFromUri(uri: string): string | undefined {
-  const name = basename(uri).replace(/\.md$/, '');
+  const name = uriBasename(uri).replace(/\.md$/, '');
   return name.startsWith('threadnote-') ? undefined : name;
 }
 
@@ -440,7 +439,11 @@ function preferredKeepRecord(records: readonly MemoryRecord[], topic?: string): 
 
 function isStableRecord(record: MemoryRecord, topic?: string): boolean {
   const recordTopic = topic ?? topicForRecord(record);
-  return recordTopic !== undefined && basename(record.uri) === `${uriSegment(recordTopic)}.md`;
+  return recordTopic !== undefined && uriBasename(record.uri) === `${uriSegment(recordTopic)}.md`;
+}
+
+function uriBasename(uri: string): string {
+  return uri.replaceAll('\\', '/').split('/').at(-1) ?? uri;
 }
 
 function sortedNewestFirst<T extends MemoryRecord>(records: readonly T[]): readonly T[] {

@@ -1,19 +1,20 @@
 import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
   applyExactMatchBoost,
   buildRecallSections,
   categoryForUri,
-  collectExactMatches,
+  collectExactMatches as collectExactMatchesEffect,
   compareVersions,
-  enrichRecallQueryWithWorkspaceContext,
+  enrichRecallQueryWithWorkspaceContext as enrichRecallQueryWithWorkspaceContextEffect,
   escapeRegExp,
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
-  findOpenVikingCli,
+  findOpenVikingCli as findOpenVikingCliEffect,
   formatExactMatchPointers,
   formatRecallHits,
   formatShellCommand,
@@ -29,18 +30,32 @@ import {
   RECALL_LOW_CONFIDENCE_NOTE,
   type RecallHit,
   hasGlob,
-  isExecutable,
+  isExecutable as isExecutableEffect,
   isJsonObject,
   parseJsonConfigObject,
   recallQueryRequestsWorkspaceContext,
   redactText,
   reindexWaitTimeoutMs,
-  runCommand,
-  runInteractive,
+  runCommand as runCommandEffect,
+  runInteractive as runInteractiveEffect,
   shellQuote,
   suggestedShellRc,
   uniqueUsefulWorkspaceTerms,
 } from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const collectExactMatches = (
+  terms: readonly string[],
+  scopes: readonly string[],
+  runGrep: (term: string, scope: string) => Effect.Effect<string | undefined>,
+) => runEffect(collectExactMatchesEffect(terms, scopes, runGrep));
+const enrichRecallQueryWithWorkspaceContext = (
+  ...args: Parameters<typeof enrichRecallQueryWithWorkspaceContextEffect>
+) => runEffect(enrichRecallQueryWithWorkspaceContextEffect(...args));
+const findOpenVikingCli = () => runEffect(findOpenVikingCliEffect());
+const isExecutable = (...args: Parameters<typeof isExecutableEffect>) => runEffect(isExecutableEffect(...args));
+const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
+const runInteractive = (...args: Parameters<typeof runInteractiveEffect>) => runEffect(runInteractiveEffect(...args));
 
 describe('compareVersions', () => {
   it('returns 0 for equal versions', () => {
@@ -106,19 +121,19 @@ describe('reindexWaitTimeoutMs', () => {
 
   it('defaults to a bounded 2-minute wait', () => {
     delete process.env[ENV];
-    expect(reindexWaitTimeoutMs()).toBe(120_000);
+    return expect(runEffect(reindexWaitTimeoutMs())).resolves.toBe(120_000);
   });
 
   it('honors a positive integer override', () => {
     process.env[ENV] = '30000';
-    expect(reindexWaitTimeoutMs()).toBe(30_000);
+    return expect(runEffect(reindexWaitTimeoutMs())).resolves.toBe(30_000);
   });
 
-  it('falls back to the default for non-positive or invalid overrides', () => {
+  it('falls back to the default for non-positive or invalid overrides', async () => {
     process.env[ENV] = '0';
-    expect(reindexWaitTimeoutMs()).toBe(120_000);
+    await expect(runEffect(reindexWaitTimeoutMs())).resolves.toBe(120_000);
     process.env[ENV] = 'nope';
-    expect(reindexWaitTimeoutMs()).toBe(120_000);
+    await expect(runEffect(reindexWaitTimeoutMs())).resolves.toBe(120_000);
   });
 });
 
@@ -634,14 +649,16 @@ describe('grepUrisFromJson', () => {
 
 describe('collectExactMatches + formatExactMatchPointers', () => {
   it('dedupes by URI, strips chunk anchors, and ranks by distinct-term count', async () => {
-    const runGrep = async (term: string): Promise<string> => {
+    const runGrep = (term: string) => {
       const uris =
         term === 'style'
           ? ['viking://prefs.md#chunk_0001', 'viking://other.md']
           : term === 'tone'
             ? ['viking://prefs.md#chunk_0002']
             : [];
-      return JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}});
+      return Effect.succeed(
+        JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}}),
+      );
     };
     const matches = await collectExactMatches(['style', 'tone'], ['viking://scope'], runGrep);
     expect(matches).toEqual([
@@ -654,9 +671,11 @@ describe('collectExactMatches + formatExactMatchPointers', () => {
   });
 
   it('does not double-count a term when the same URI matches it in two scopes', async () => {
-    const runGrep = async (term: string, scope: string): Promise<string> => {
+    const runGrep = (term: string, scope: string) => {
       const uris = scope === 'viking://a' ? ['viking://dup.md'] : scope === 'viking://b' ? ['viking://dup.md'] : [];
-      return JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}});
+      return Effect.succeed(
+        JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}}),
+      );
     };
     const matches = await collectExactMatches(['term'], ['viking://a', 'viking://b'], runGrep);
     expect(matches).toEqual([{uri: 'viking://dup.md', terms: ['term']}]);

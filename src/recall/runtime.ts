@@ -11,7 +11,7 @@ interface RecallRuntimeConfig {
   readonly user: string;
 }
 
-interface PrepareRecallSectionsInput {
+interface PrepareRecallSectionsInput<R> {
   readonly allowExactRescue: boolean;
   readonly allowedUriScopes?: readonly string[];
   readonly exactMatches: readonly ExactMatch[];
@@ -22,7 +22,7 @@ interface PrepareRecallSectionsInput {
   readonly passes: ReadonlyArray<readonly RecallHit[]>;
   readonly project?: string;
   readonly query: string;
-  readonly readRecords: (uris: readonly string[]) => Effect.Effect<readonly MemoryRecord[], unknown>;
+  readonly readRecords: (uris: readonly string[]) => Effect.Effect<readonly MemoryRecord[], unknown, R>;
   readonly seedUris?: readonly string[];
 }
 
@@ -34,9 +34,9 @@ const INDEX_CANDIDATE_MINIMUM = 100;
  * responsible for their search passes and rendering, while record hydration,
  * feedback, local-index loading, and hybrid ranking follow one implementation.
  */
-export const prepareRecallSections = Effect.fn('recall.prepareSections')(function* (
+export const prepareRecallSections = Effect.fn('recall.prepareSections')(function* <R>(
   config: RecallRuntimeConfig,
-  input: PrepareRecallSectionsInput,
+  input: PrepareRecallSectionsInput<R>,
 ) {
   const rankingUris = [
     ...new Set([

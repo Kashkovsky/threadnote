@@ -1,10 +1,6 @@
-import {spawn} from 'node:child_process';
-import {closeSync, openSync} from 'node:fs';
-import {chmod, readdir, readFile, realpath, writeFile} from 'node:fs/promises';
-import {basename, delimiter, dirname, join, sep} from 'node:path';
-import {stdin as processStdin, stdout as processStdout} from 'node:process';
-import {createInterface} from 'node:readline/promises';
-import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path} from 'effect';
+import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path, Result, Sink, Terminal} from 'effect';
+import * as ChildProcess from 'effect/unstable/process/ChildProcess';
+import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -29,8 +25,6 @@ import {
   runStreamingCommandEffect,
   windowsTaskkillExecutable,
 } from './effect/command.js';
-import {consoleOutput, syncWithConsole} from './effect/console.js';
-import {applicationError, fromPromise} from './effect/errors.js';
 import {getTextEffect, HttpService} from './effect/http.js';
 import {SystemInfo} from './effect/system.js';
 import {startProgress} from './cli_ui.js';
@@ -105,10 +99,8 @@ import {
   removePath,
   removePathIfExists,
   runCommand,
-  runInteractive,
   safeTimestamp,
   shellQuote,
-  sleep,
   suggestedShellRc,
   toolRoot,
 } from './utils.js';
@@ -116,6 +108,7 @@ import {
 const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
 const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
 const STOP_SERVER_TIMEOUT_MS = 10_000;
+const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
 
 interface DetachedProcessRecord {
   readonly args?: readonly string[];
@@ -127,17 +120,12 @@ interface DetachedProcessRecord {
   readonly startedAt?: string;
 }
 
-export function pythonExecutableCandidates(currentPlatform: NodeJS.Platform = process.platform): readonly string[] {
+export function pythonExecutableCandidates(currentPlatform: NodeJS.Platform): readonly string[] {
   return currentPlatform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
 }
 
-export function shouldManageCommandShim(currentPlatform: NodeJS.Platform = process.platform): boolean {
+export function shouldManageCommandShim(currentPlatform: NodeJS.Platform): boolean {
   return currentPlatform !== 'win32';
-}
-
-interface UvExecutable {
-  readonly executable: string;
-  readonly version: string | undefined;
 }
 
 interface InstallCommandRetry {
@@ -174,97 +162,136 @@ export interface LaunchAgentHealthEffects<R = never> {
 
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
-export const runDoctor = Effect.fn('runDoctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
-  const system = yield* SystemInfo;
-  const checks = yield* fromPromise('collect doctor checks', () =>
-    collectDoctorChecks(config, options, system.platform),
-  );
-
-  yield* syncWithConsole(() => {
-    for (const check of checks) {
-      consoleOutput.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
-    }
-
-    const failureCount = checks.filter(check => check.status === 'fail').length;
-    const warningCount = checks.filter(check => check.status === 'warn').length;
-    consoleOutput.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
-    if (options.strict === true && failureCount > 0) {
-      process.exitCode = 1;
-    }
-  });
+const pathJoin = Effect.fn('lifecycle.pathJoin')(function* (...parts: readonly string[]) {
+  const path = yield* Path.Path;
+  return path.join(...parts);
 });
 
-export async function collectDoctorChecks(
+const pathBasename = Effect.fn('lifecycle.pathBasename')(function* (target: string) {
+  const path = yield* Path.Path;
+  return path.basename(target);
+});
+
+const pathDirname = Effect.fn('lifecycle.pathDirname')(function* (target: string) {
+  const path = yield* Path.Path;
+  return path.dirname(target);
+});
+
+const pathSeparator = Effect.map(Path.Path, path => path.sep);
+
+const chmod = Effect.fn('lifecycle.chmod')(function* (target: string, mode: number) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.chmod(target, mode);
+});
+
+const readdir = Effect.fn('lifecycle.readdir')(function* (target: string, options?: {readonly recursive?: boolean}) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readDirectory(target, options);
+});
+
+const readFile = Effect.fn('lifecycle.readFile')(function* (target: string, encoding: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(target, encoding);
+});
+
+const realpath = Effect.fn('lifecycle.realpath')(function* (target: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.realPath(target);
+});
+
+const writeFile = Effect.fn('lifecycle.writeFile')(function* (
+  target: string,
+  content: string,
+  options?: {readonly encoding?: string; readonly mode?: number},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.writeFileString(target, content, {mode: options?.mode});
+});
+
+export const runDoctor = Effect.fn('runDoctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
+  const system = yield* SystemInfo;
+  const checks = yield* collectDoctorChecks(config, options, system.platform);
+  for (const check of checks) {
+    yield* Console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
+  }
+  const failureCount = checks.filter(check => check.status === 'fail').length;
+  const warningCount = checks.filter(check => check.status === 'warn').length;
+  yield* Console.log(`\nSummary: ${failureCount} failure(s), ${warningCount} warning(s)`);
+  if (options.strict === true && failureCount > 0) {
+    yield* Effect.sync(() => system.setExitCode(1));
+  }
+});
+
+export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(function* (
   config: RuntimeConfig,
   options: DoctorOptions = {},
-  currentPlatform: NodeJS.Platform = process.platform,
-): Promise<DoctorCheck[]> {
+  currentPlatform?: NodeJS.Platform,
+) {
+  const system = yield* SystemInfo;
+  const platform = currentPlatform ?? system.platform;
   const checks: DoctorCheck[] = [];
   checks.push({name: 'mode', status: 'ok', detail: options.dryRun ? 'dry run; no writes' : 'read-only checks'});
   checks.push({
     name: 'platform',
-    status: ['darwin', 'linux', 'win32'].includes(currentPlatform) ? 'ok' : 'warn',
-    detail: currentPlatform,
+    status: ['darwin', 'linux', 'win32'].includes(platform) ? 'ok' : 'warn',
+    detail: platform,
   });
-  checks.push(await commandCheck('node', ['--version']));
-  checks.push(await firstCommandCheck('python', pythonExecutableCandidates(currentPlatform), ['--version']));
-  checks.push(await openVikingServerCheck());
-  checks.push(await openVikingCliCheck());
-  checks.push(await openVikingVersionCheck(config));
-  checks.push(await recallShapeCheck(config));
-  checks.push(await localEmbeddingCheck());
-  checks.push(await pythonSystemCertificatesCheck());
-  checks.push(await pythonInstallerCheck());
-  checks.push(await commandPresenceCheck('codex', ['--version']));
-  checks.push(await commandPresenceCheck('claude', ['--version']));
-  checks.push(await commandShimCheck());
-  checks.push(...(await userAgentInstructionsChecks()));
-  checks.push(await manifestCheck(config.manifestPath));
-  checks.push(await recallIndexFreshnessCheck(config));
-  checks.push(await memoryProjectConsistencyCheck(config));
-  checks.push(await fileCheck(join(toolRoot(), '.threadnoteignore'), 'ignore file'));
-  checks.push(await fileCheck(join(toolRoot(), 'config', 'ov.conf.template.json'), 'server config template'));
-  checks.push(await fileCheck(join(toolRoot(), 'config', 'ovcli.conf.template.json'), 'cli config template'));
-  checks.push(await healthCheck(config));
+  checks.push((yield* commandCheck('node', ['--version'])) as DoctorCheck);
+  checks.push((yield* firstCommandCheck('python', pythonExecutableCandidates(platform), ['--version'])) as DoctorCheck);
+  checks.push((yield* openVikingServerCheck()) as DoctorCheck);
+  checks.push((yield* openVikingCliCheck()) as DoctorCheck);
+  checks.push((yield* openVikingVersionCheck(config)) as DoctorCheck);
+  checks.push((yield* recallShapeCheck(config)) as DoctorCheck);
+  checks.push((yield* localEmbeddingCheck()) as DoctorCheck);
+  checks.push((yield* pythonSystemCertificatesCheck()) as DoctorCheck);
+  checks.push((yield* pythonInstallerCheck()) as DoctorCheck);
+  checks.push((yield* commandPresenceCheck('codex', ['--version'])) as DoctorCheck);
+  checks.push((yield* commandPresenceCheck('claude', ['--version'])) as DoctorCheck);
+  checks.push((yield* commandShimCheck()) as DoctorCheck);
+  checks.push(...((yield* userAgentInstructionsChecks()) as DoctorCheck[]));
+  checks.push((yield* manifestCheck(config.manifestPath)) as DoctorCheck);
+  checks.push((yield* recallIndexFreshnessCheck(config)) as DoctorCheck);
+  checks.push((yield* memoryProjectConsistencyCheck(config)) as DoctorCheck);
+  const root = yield* toolRoot();
+  checks.push((yield* fileCheck(yield* pathJoin(root, '.threadnoteignore'), 'ignore file')) as DoctorCheck);
+  checks.push(
+    (yield* fileCheck(
+      yield* pathJoin(root, 'config', 'ov.conf.template.json'),
+      'server config template',
+    )) as DoctorCheck,
+  );
+  checks.push(
+    (yield* fileCheck(
+      yield* pathJoin(root, 'config', 'ovcli.conf.template.json'),
+      'cli config template',
+    )) as DoctorCheck,
+  );
+  checks.push((yield* healthCheck(config)) as DoctorCheck);
   return checks;
-}
+});
 
 export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConfig, options: InstallOptions) {
   const repairInvalidConfigs = options.repairInvalidConfigs === true;
   const dryRun = options.dryRun === true;
-  yield* fromPromise('create Threadnote home', () => ensureDirectory(config.agentContextHome, dryRun));
-  yield* fromPromise('create Threadnote logs directory', () =>
-    ensureDirectory(join(config.agentContextHome, 'logs'), dryRun),
-  );
-  yield* fromPromise('create Threadnote redacted directory', () =>
-    ensureDirectory(join(config.agentContextHome, 'redacted'), dryRun),
-  );
-  yield* fromPromise('create Threadnote MCP directory', () =>
-    ensureDirectory(join(config.agentContextHome, 'mcp'), dryRun),
-  );
-  yield* fromPromise('install command shim', () => installCommandShim(dryRun));
-  yield* fromPromise('install user agent instructions', () => installUserAgentInstructions(dryRun));
+  yield* ensureDirectory(config.agentContextHome, dryRun);
+  yield* ensureDirectory(yield* pathJoin(config.agentContextHome, 'logs'), dryRun);
+  yield* ensureDirectory(yield* pathJoin(config.agentContextHome, 'redacted'), dryRun);
+  yield* ensureDirectory(yield* pathJoin(config.agentContextHome, 'mcp'), dryRun);
+  yield* installCommandShim(dryRun);
+  yield* installUserAgentInstructions(dryRun);
 
-  const serverPath = yield* fromPromise('find OpenViking server', findOpenVikingServer);
+  const serverPath = yield* findOpenVikingServer();
   // True only when an install/repair could have moved or created the
   // openviking-server binary itself. The python-certs branch patches the
   // existing Python env in place, so it does not flip this — the server
   // path is unchanged and the earlier resolution is still valid.
   let serverInstallRan = false;
   if (serverPath) {
-    yield* syncWithConsole(() => consoleOutput.log(`OpenViking server already installed: ${serverPath}`));
-    const localEmbeddingMissing =
-      (yield* fromPromise('check OpenViking local embedding dependency', () =>
-        hasLocalEmbeddingDependency(serverPath),
-      )) === false;
-    const pythonSystemCertificatesMissing =
-      (yield* fromPromise('check OpenViking Python certificate bridge', () =>
-        hasPythonSystemCertificatesPatch(serverPath),
-      )) === false;
+    yield* Console.log(`OpenViking server already installed: ${serverPath}`);
+    const localEmbeddingMissing = (yield* hasLocalEmbeddingDependency(serverPath)) === false;
+    const pythonSystemCertificatesMissing = (yield* hasPythonSystemCertificatesPatch(serverPath)) === false;
     if (options.force === true) {
-      yield* syncWithConsole(() =>
-        consoleOutput.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`),
-      );
+      yield* Console.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`);
       yield* runInstallCommands(config, options.packageManager, true, dryRun);
       serverInstallRan = true;
     } else if (localEmbeddingMissing) {
@@ -273,25 +300,19 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
       if (pythonSystemCertificatesMissing) {
         repairReasons.push('Python system certificate bridge is missing');
       }
-      yield* syncWithConsole(() => consoleOutput.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`));
+      yield* Console.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`);
       yield* runInstallCommands(config, options.packageManager, true, dryRun);
       serverInstallRan = true;
     } else if (pythonSystemCertificatesMissing) {
-      yield* syncWithConsole(() =>
-        consoleOutput.log('OpenViking install needs repair: Python system certificate bridge is missing.'),
-      );
-      const installCommand = yield* fromPromise('resolve Python certificate bridge install command', () =>
-        getPythonSystemCertificatesInstallCommand(serverPath),
-      );
+      yield* Console.log('OpenViking install needs repair: Python system certificate bridge is missing.');
+      const installCommand = yield* getPythonSystemCertificatesInstallCommand(serverPath);
       yield* maybeRunEffect(dryRun, installCommand.executable, installCommand.args);
     }
   } else {
     yield* runInstallCommands(config, options.packageManager, false, dryRun);
     serverInstallRan = true;
   }
-  const resolvedServerPath = serverInstallRan
-    ? yield* fromPromise('find installed OpenViking server', findOpenVikingServer)
-    : serverPath;
+  const resolvedServerPath = serverInstallRan ? yield* findOpenVikingServer() : serverPath;
   if (serverInstallRan && !resolvedServerPath && !dryRun) {
     // The install command reported success but the binary is unresolvable.
     // Fail loudly for `install`; for `repair` (requireServerBinary === false)
@@ -300,50 +321,48 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
       `OpenViking install ran but ${OPENVIKING_SERVER_COMMAND} was not found on PATH, in the uv tool bin dir, or ~/.local/bin. ` +
       'Re-run `threadnote install --force` (it streams the full build), then `threadnote doctor`.';
     if (options.requireServerBinary === false) {
-      yield* syncWithConsole(() => consoleOutput.warn(`WARN ${message}`));
+      yield* Console.warn(`WARN ${message}`);
     } else {
       return yield* Effect.fail(new Error(message));
     }
   }
   if (resolvedServerPath && !dryRun) {
-    yield* fromPromise('print OpenViking path hint', () => maybePrintOpenVikingPathHint(resolvedServerPath));
+    yield* maybePrintOpenVikingPathHint(resolvedServerPath);
   }
 
-  yield* fromPromise('write OpenViking server configuration', () =>
-    writeTemplateIfMissing({
-      config,
-      destinationPath: join(config.agentContextHome, 'ov.conf'),
-      dryRun,
-      shouldRepair: content =>
-        shouldRepairOpenVikingConfig(content, config) ||
-        (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
-      templatePath: join(toolRoot(), 'config', 'ov.conf.template.json'),
-    }),
-  );
-  yield* fromPromise('write OpenViking CLI configuration', () =>
-    writeTemplateIfMissing({
-      config,
-      destinationPath: join(config.agentContextHome, 'ovcli.conf'),
-      dryRun,
-      shouldRepair: content =>
-        shouldRepairLegacyOvCliConfig(content) ||
-        (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
-      templatePath: join(toolRoot(), 'config', 'ovcli.conf.template.json'),
-    }),
-  );
-  yield* fromPromise('configure OpenViking CLI language', () => configureOpenVikingCliLanguage(config, dryRun));
+  const root = yield* toolRoot();
+  yield* writeTemplateIfMissing({
+    config,
+    destinationPath: yield* pathJoin(config.agentContextHome, 'ov.conf'),
+    dryRun,
+    shouldRepair: content =>
+      shouldRepairOpenVikingConfig(content, config).pipe(
+        Effect.map(
+          shouldRepair => shouldRepair || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
+        ),
+      ),
+    templatePath: yield* pathJoin(root, 'config', 'ov.conf.template.json'),
+  });
+  yield* writeTemplateIfMissing({
+    config,
+    destinationPath: yield* pathJoin(config.agentContextHome, 'ovcli.conf'),
+    dryRun,
+    shouldRepair: content =>
+      shouldRepairLegacyOvCliConfig(content) || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
+    templatePath: yield* pathJoin(root, 'config', 'ovcli.conf.template.json'),
+  });
+  yield* configureOpenVikingCliLanguage(config, dryRun);
 
   if (options.start !== false) {
     const healthy = yield* repairServerHealth(config, dryRun);
     if (!healthy && !dryRun) {
-      return yield* Effect.fail(
-        new Error(`OpenViking did not become healthy. Check logs: ${openVikingLogPath(config)}`),
-      );
+      const logPath = yield* openVikingLogPath(config);
+      return yield* Effect.fail(new Error(`OpenViking did not become healthy. Check logs: ${logPath}`));
     }
   }
 
   if (options.printNextSteps !== false) {
-    yield* syncWithConsole(() => printInstallNextSteps({dryRun, startsServer: options.start !== false}));
+    yield* printInstallNextSteps({dryRun, startsServer: options.start !== false});
   }
 });
 
@@ -357,7 +376,7 @@ export const runRepair = Effect.fn('runRepair')(function* (config: RuntimeConfig
 function runRepairCore(config: RuntimeConfig, options: RepairOptions) {
   return Effect.gen(function* () {
     const dryRun = options.dryRun === true;
-    yield* syncWithConsole(() => consoleOutput.log('Repairing local OpenViking agent context from this checkout.'));
+    yield* Console.log('Repairing local OpenViking agent context from this checkout.');
 
     yield* runInstall(config, {
       dryRun,
@@ -367,23 +386,21 @@ function runRepairCore(config: RuntimeConfig, options: RepairOptions) {
       requireServerBinary: false,
       start: false,
     });
-    yield* fromPromise('repair seed manifest', () => repairManifest(config, dryRun));
+    yield* repairManifest(config, dryRun);
 
     if (options.start !== false) {
       yield* repairServerHealth(config, dryRun);
     } else {
-      yield* syncWithConsole(() => consoleOutput.log('Skipping server health repair because --no-start was provided.'));
+      yield* Console.log('Skipping server health repair because --no-start was provided.');
     }
-    yield* fromPromise('repair recall index', () => repairRecallIndex(config, dryRun));
+    yield* repairRecallIndex(config, dryRun);
 
-    const mcpClients = yield* fromPromise('resolve MCP clients for repair', () =>
-      resolveMcpClients(options.mcp ?? 'available', 'repair'),
-    );
+    const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
     if (mcpClients.length === 0) {
-      yield* syncWithConsole(() => consoleOutput.log('Skipping MCP config repair.'));
+      yield* Console.log('Skipping MCP config repair.');
     } else {
       for (const client of mcpClients) {
-        yield* syncWithConsole(() => consoleOutput.log(`Repairing ${client} MCP config for ${OPENVIKING_MCP_NAME}.`));
+        yield* Console.log(`Repairing ${client} MCP config for ${OPENVIKING_MCP_NAME}.`);
         yield* runMcpInstall(config, client, {apply: !dryRun, name: OPENVIKING_MCP_NAME});
       }
     }
@@ -391,14 +408,12 @@ function runRepairCore(config: RuntimeConfig, options: RepairOptions) {
     // Re-install agent hooks only if the user opted in previously (a managed
     // entry already exists). Never adds them unsolicited — `install-hooks` or
     // `install --with-hooks` is the opt-in.
-    if (yield* fromPromise('check managed Claude hooks', hasManagedClaudeHooks)) {
-      yield* syncWithConsole(() =>
-        consoleOutput.log('\nRepairing claude hooks (re-asserting threadnote-managed entries).'),
-      );
+    if (yield* hasManagedClaudeHooks()) {
+      yield* Console.log('\nRepairing claude hooks (re-asserting threadnote-managed entries).');
       yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
     }
 
-    yield* syncWithConsole(() => consoleOutput.log('\nPost-repair doctor:'));
+    yield* Console.log('\nPost-repair doctor:');
     yield* runDoctor(config, {dryRun, strict: false});
   });
 }
@@ -409,57 +424,55 @@ export const runUninstall = Effect.fn('runUninstall')(function* (config: Runtime
     yield* Effect.fail(new Error('Use either --erase-memories or --preserve-memories, not both.'));
   }
 
-  yield* syncWithConsole(() => consoleOutput.log('Uninstalling local Threadnote setup.'));
+  yield* Console.log('Uninstalling local Threadnote setup.');
   yield* runStop(config, {dryRun});
-  yield* fromPromise('remove OpenViking pid file', () =>
-    removePathIfExists(join(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun),
-  );
+  yield* removePathIfExists(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), 'pid file', dryRun);
   yield* removeLaunchAgent(dryRun);
-  yield* fromPromise('remove MCP configurations', () => removeMcpConfigs(options.mcp ?? 'available', dryRun));
-  yield* fromPromise('remove MCP snippets', () => removeMcpSnippets(config, dryRun));
-  if (yield* fromPromise('check managed Claude hooks', hasManagedClaudeHooks)) {
+  yield* removeMcpConfigs(options.mcp ?? 'available', dryRun);
+  yield* removeMcpSnippets(config, dryRun);
+  if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
-  yield* fromPromise('remove command shim', () => removeCommandShim(dryRun));
-  yield* fromPromise('remove user agent instructions', () => removeUserAgentInstructions(dryRun));
+  yield* removeCommandShim(dryRun);
+  yield* removeUserAgentInstructions(dryRun);
 
   if (options.eraseMemories === true) {
-    yield* fromPromise('erase Threadnote home', () => eraseThreadnoteHome(config.agentContextHome, dryRun));
+    yield* eraseThreadnoteHome(config.agentContextHome, dryRun);
   } else {
-    yield* syncWithConsole(() => {
-      consoleOutput.log(`Preserving local memories and OpenViking home: ${config.agentContextHome}`);
-      consoleOutput.log('Use --erase-memories to delete this directory during uninstall.');
-    });
+    yield* Console.log(`Preserving local memories and OpenViking home: ${config.agentContextHome}`);
+    yield* Console.log('Use --erase-memories to delete this directory during uninstall.');
   }
 
-  yield* syncWithConsole(() => {
-    consoleOutput.log('Uninstall complete.');
-    consoleOutput.log('The package remains installed. Remove it with your package manager if desired.');
-  });
+  yield* Console.log('Uninstall complete.');
+  yield* Console.log('The package remains installed. Remove it with your package manager if desired.');
 });
 
-async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<void> {
-  try {
-    await readSeedManifest(config.manifestPath);
-    consoleOutput.log(`Manifest OK: ${config.manifestPath}`);
-    return;
-  } catch (err: unknown) {
-    if (config.manifestPath === builtInExampleManifestPath()) {
-      consoleOutput.log(`WARN built-in manifest is not readable: ${errorMessage(err)}`);
-      return;
-    }
-    consoleOutput.log(`Manifest needs repair: ${config.manifestPath} (${errorMessage(err)})`);
-  }
-
-  let repoRoot: string;
-  try {
-    repoRoot = await resolveRepoRoot(getInvocationCwd());
-  } catch (err: unknown) {
-    consoleOutput.log(`WARN cannot create replacement manifest from current directory: ${errorMessage(err)}`);
+const repairManifest = Effect.fn('lifecycle.repairManifest')(function* (config: RuntimeConfig, dryRun: boolean) {
+  const manifestResult = yield* Effect.result(readSeedManifest(config.manifestPath));
+  if (Result.isSuccess(manifestResult)) {
+    yield* Console.log(`Manifest OK: ${config.manifestPath}`);
     return;
   }
+  if (config.manifestPath === (yield* builtInExampleManifestPath())) {
+    yield* Console.warn(`WARN built-in manifest is not readable: ${errorMessage(manifestResult.failure)}`);
+    return;
+  }
+  yield* Console.log(`Manifest needs repair: ${config.manifestPath} (${errorMessage(manifestResult.failure)})`);
 
-  const project = await projectManifestForRepo(repoRoot, []);
+  const repoRootResult = yield* Effect.result(
+    Effect.gen(function* () {
+      return yield* resolveRepoRoot(yield* getInvocationCwd());
+    }),
+  );
+  if (Result.isFailure(repoRootResult)) {
+    yield* Console.warn(
+      `WARN cannot create replacement manifest from current directory: ${errorMessage(repoRootResult.failure)}`,
+    );
+    return;
+  }
+  const repoRoot = repoRootResult.success;
+
+  const project = yield* projectManifestForRepo(repoRoot, []);
   const output = yaml.dump(
     {
       version: 1,
@@ -476,35 +489,35 @@ async function repairManifest(config: RuntimeConfig, dryRun: boolean): Promise<v
   );
 
   if (dryRun) {
-    consoleOutput.log(`# Would write replacement manifest: ${config.manifestPath}`);
-    consoleOutput.log(output.trimEnd());
+    yield* Console.log(`# Would write replacement manifest: ${config.manifestPath}`);
+    yield* Console.log(output.trimEnd());
     return;
   }
 
-  await ensureDirectory(dirname(config.manifestPath), false);
-  const currentContent = await readFileIfExists(config.manifestPath);
+  yield* ensureDirectory(yield* pathDirname(config.manifestPath), false);
+  const currentContent = yield* readFileIfExists(config.manifestPath);
   if (currentContent !== undefined) {
     const backupPath = `${config.manifestPath}.legacy-${safeTimestamp()}`;
-    await writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
-    await chmod(backupPath, 0o600);
-    consoleOutput.log(`Backup: ${backupPath}`);
+    yield* writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
+    yield* chmod(backupPath, 0o600);
+    yield* Console.log(`Backup: ${backupPath}`);
   }
-  await writeFile(config.manifestPath, output, {encoding: 'utf8', mode: 0o600});
-  await chmod(config.manifestPath, 0o600);
-  consoleOutput.log(`Wrote replacement manifest: ${config.manifestPath}`);
-}
+  yield* writeFile(config.manifestPath, output, {encoding: 'utf8', mode: 0o600});
+  yield* chmod(config.manifestPath, 0o600);
+  yield* Console.log(`Wrote replacement manifest: ${config.manifestPath}`);
+});
 
-async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promise<void> {
-  consoleOutput.log('\nRepairing recall index freshness.');
-  const ov = dryRun ? ((await findOpenVikingCli()) ?? 'ov') : await findOpenVikingCli();
+const repairRecallIndex = Effect.fn('lifecycle.repairRecallIndex')(function* (config: RuntimeConfig, dryRun: boolean) {
+  yield* Console.log('\nRepairing recall index freshness.');
+  const ov = dryRun ? ((yield* findOpenVikingCli()) ?? 'ov') : yield* findOpenVikingCli();
   if (!ov) {
-    consoleOutput.log('Skipping recall index repair: neither ov nor openviking was found.');
+    yield* Console.log('Skipping recall index repair: neither ov nor openviking was found.');
     return;
   }
 
-  const progress = startProgress('Scanning recall index freshness across memories and seeded resources.');
-  try {
-    const result = await repairStaleRecallIndex(config, ov, {
+  const progress = yield* startProgress('Scanning recall index freshness across memories and seeded resources.');
+  yield* Effect.gen(function* () {
+    const result = yield* repairStaleRecallIndex(config, ov, {
       collapseDepth: MAINTENANCE_COLLAPSE_DEPTH,
       collapseToRoots: true,
       consecutiveFailureLimit: MAINTENANCE_CONSECUTIVE_FAILURE_LIMIT,
@@ -516,52 +529,62 @@ async function repairRecallIndex(config: RuntimeConfig, dryRun: boolean): Promis
       onProgress: event => {
         if (event.type === 'scan-complete') {
           if (event.totalTargets === 0) {
-            progress.update('No stale recall index scopes found.');
+            return progress.update('No stale recall index scopes found.');
           } else {
-            progress.update(
+            return progress.update(
               `Found ${event.totalTargets} stale recall index scope(s); repairing ${event.repairTargetCount}.`,
             );
           }
         } else if (event.type === 'repair-start') {
-          progress.update(
+          return progress.update(
             `Reindexing ${event.index}/${event.total}: ${event.target.uri} (${event.target.staleCount} stale summaries).`,
           );
         } else if (event.type === 'repair-dry-run') {
-          progress.update(
+          return progress.update(
             `Planning reindex ${event.index}/${event.total}: ${event.target.uri} (${event.target.staleCount} stale summaries).`,
           );
         } else if (event.type === 'repair-skip-recent') {
-          progress.update(`Skipping recently repaired scope ${event.index}/${event.total}: ${event.target.uri}.`);
+          return progress.update(
+            `Skipping recently repaired scope ${event.index}/${event.total}: ${event.target.uri}.`,
+          );
         }
+        return Effect.void;
       },
     });
-    progress.stop();
+    yield* progress.stop();
     const messages = formatRecallIndexRepairMessages(result, {dryRun, maxUris: 20});
     if (messages.length === 0) {
-      consoleOutput.log('Recall index freshness OK.');
+      yield* Console.log('Recall index freshness OK.');
       return;
     }
     for (const message of messages) {
-      consoleOutput.log(message);
+      yield* Console.log(message);
     }
-  } catch (err: unknown) {
-    progress.stop();
-    consoleOutput.log(`WARN could not repair recall index freshness: ${errorMessage(err)}`);
-  }
-}
+  }).pipe(
+    Effect.catch(error =>
+      Effect.gen(function* () {
+        yield* progress.stop();
+        yield* Console.log(`WARN could not repair recall index freshness: ${errorMessage(error)}`);
+      }),
+    ),
+  );
+});
 
-async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boolean): Promise<void> {
-  const ov = dryRun ? ((await findOpenVikingCli()) ?? 'ov') : await findOpenVikingCli();
+const configureOpenVikingCliLanguage = Effect.fn('lifecycle.configureOpenVikingCliLanguage')(function* (
+  config: RuntimeConfig,
+  dryRun: boolean,
+) {
+  const ov = dryRun ? ((yield* findOpenVikingCli()) ?? 'ov') : yield* findOpenVikingCli();
   if (!ov) {
     return;
   }
-  const installedVersion = dryRun ? undefined : await readOpenVikingCliVersion(ov);
+  const installedVersion = dryRun ? undefined : yield* readOpenVikingCliVersion(ov);
   const effectiveVersion = installedVersion ?? config.openVikingVersion;
   if (compareVersions(effectiveVersion, '0.3.23') < 0) {
     return;
   }
-  await maybeRun(dryRun, ov, ['language', 'en'], {allowFailure: true});
-}
+  yield* maybeRun(dryRun, ov, ['language', 'en'], {allowFailure: true});
+});
 
 /**
  * Locate the openviking-server binary even when its install directory is not on
@@ -575,41 +598,43 @@ async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boo
  * three times. The resolved path itself is not memoised: a `threadnote install`
  * may create the binary mid-process and the second resolution must see it.
  */
-export async function findOpenVikingServer(): Promise<string | undefined> {
-  if (process.platform !== 'win32') {
-    const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+export const findOpenVikingServer = Effect.fn('lifecycle.findOpenVikingServer')(function* () {
+  const system = yield* SystemInfo;
+  if (system.platform !== 'win32') {
+    const onPath = yield* findExecutable([OPENVIKING_SERVER_COMMAND]);
     if (onPath) {
       return onPath;
     }
   } else {
-    for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
-      for (const name of openVikingServerExecutableNames()) {
-        const candidate = join(directory, name);
-        if (await isExecutable(candidate)) {
+    for (const directory of (system.environment().PATH ?? '').split(system.pathDelimiter).filter(Boolean)) {
+      for (const name of openVikingServerExecutableNames(system.platform, system.environment().PATHEXT)) {
+        const candidate = yield* pathJoin(directory, name);
+        if (yield* isExecutable(candidate)) {
           return candidate;
         }
       }
     }
   }
-  for (const candidateDir of await openVikingServerCandidateDirs()) {
-    for (const name of openVikingServerExecutableNames()) {
-      const candidate = join(candidateDir, name);
-      if (await isExecutable(candidate)) {
+  for (const candidateDir of yield* openVikingServerCandidateDirs()) {
+    for (const name of openVikingServerExecutableNames(system.platform, system.environment().PATHEXT)) {
+      const candidate = yield* pathJoin(candidateDir, name);
+      if (yield* isExecutable(candidate)) {
         return candidate;
       }
     }
   }
   return undefined;
-}
+});
 
 const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(function* (timeoutMs: number) {
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
   const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-  const pathDirectories = (process.env.PATH ?? '').split(system.platform === 'win32' ? ';' : ':').filter(Boolean);
+  const environment = system.environment();
+  const pathDirectories = (environment.PATH ?? '').split(system.pathDelimiter).filter(Boolean);
   for (const directory of pathDirectories) {
     for (const name of openVikingServerExecutableNames(system.platform)) {
-      const candidate = join(directory, name);
+      const candidate = yield* pathJoin(directory, name);
       if (yield* isExecutableFileEffect(fs, candidate, system.platform)) {
         return candidate;
       }
@@ -627,14 +652,14 @@ const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(functio
       candidateDirectories.push(result.stdout.trim());
     }
   }
-  if (process.env.UV_TOOL_BIN_DIR) {
-    candidateDirectories.push(process.env.UV_TOOL_BIN_DIR);
+  if (environment.UV_TOOL_BIN_DIR) {
+    candidateDirectories.push(environment.UV_TOOL_BIN_DIR);
   }
   candidateDirectories.push(...(yield* pythonUserScriptsCandidateDirsEffect()));
-  candidateDirectories.push(expandPath('~/.local/bin'));
+  candidateDirectories.push(yield* expandPath('~/.local/bin'));
   for (const directory of new Set(candidateDirectories)) {
     for (const name of openVikingServerExecutableNames(system.platform)) {
-      const candidate = join(directory, name);
+      const candidate = yield* pathJoin(directory, name);
       if (yield* isExecutableFileEffect(fs, candidate, system.platform)) {
         return candidate;
       }
@@ -644,8 +669,8 @@ const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(functio
 });
 
 export function openVikingServerExecutableNames(
-  currentPlatform: NodeJS.Platform = process.platform,
-  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+  currentPlatform: NodeJS.Platform,
+  pathExt = '.COM;.EXE;.BAT;.CMD',
 ): readonly string[] {
   const names = executableNames(OPENVIKING_SERVER_COMMAND, currentPlatform, pathExt);
   return currentPlatform === 'win32' ? names.filter(name => /\.(?:com|exe)$/i.test(name)) : names;
@@ -668,7 +693,7 @@ const findExecutableInDirectoriesEffect = Effect.fn('findExecutableInDirectories
 ) {
   for (const directory of directories) {
     for (const executableName of executableNames(name, currentPlatform)) {
-      const candidate = join(directory, executableName);
+      const candidate = yield* pathJoin(directory, executableName);
       if (yield* isExecutableFileEffect(fs, candidate, currentPlatform)) {
         return candidate;
       }
@@ -694,7 +719,7 @@ const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (
 const findExecutableEffect = Effect.fn('findExecutable')(function* (commands: readonly string[]) {
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
-  const directories = (process.env.PATH ?? '').split(system.platform === 'win32' ? ';' : ':').filter(Boolean);
+  const directories = (system.environment().PATH ?? '').split(system.pathDelimiter).filter(Boolean);
   for (const command of commands) {
     const executable = yield* findExecutableInDirectoriesEffect(fs, command, directories, system.platform);
     if (executable) {
@@ -725,20 +750,22 @@ const pythonUserScriptsCandidateDirsEffect = Effect.fn('pythonUserScriptsCandida
   return Array.from(new Set(directories));
 });
 
-let candidateDirsPromise: Promise<readonly string[]> | undefined;
+let candidateDirsCache: readonly string[] | undefined;
 
-async function openVikingServerCandidateDirs(): Promise<readonly string[]> {
-  if (!candidateDirsPromise) {
-    candidateDirsPromise = computeOpenVikingServerCandidateDirs();
+const openVikingServerCandidateDirs = Effect.fn('lifecycle.openVikingServerCandidateDirs')(function* () {
+  if (!candidateDirsCache) {
+    candidateDirsCache = yield* computeOpenVikingServerCandidateDirs();
   }
-  return candidateDirsPromise;
-}
+  return candidateDirsCache;
+});
 
-async function computeOpenVikingServerCandidateDirs(): Promise<readonly string[]> {
+const computeOpenVikingServerCandidateDirs = Effect.fn('lifecycle.computeOpenVikingServerCandidateDirs')(function* () {
+  const system = yield* SystemInfo;
+  const environment = system.environment();
   const dirs: string[] = [];
-  const uv = await findExecutable(['uv']);
+  const uv = yield* findExecutable(['uv']);
   if (uv) {
-    const result = await runCommand(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
+    const result = yield* runCommand(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
     if (result.exitCode === 0) {
       const dir = result.stdout.trim();
       if (dir) {
@@ -746,16 +773,16 @@ async function computeOpenVikingServerCandidateDirs(): Promise<readonly string[]
       }
     }
   }
-  if (process.env.UV_TOOL_BIN_DIR) {
-    dirs.push(process.env.UV_TOOL_BIN_DIR);
+  if (environment.UV_TOOL_BIN_DIR) {
+    dirs.push(environment.UV_TOOL_BIN_DIR);
   }
-  dirs.push(...(await pythonUserScriptsCandidateDirs()));
-  dirs.push(expandPath('~/.local/bin'));
+  dirs.push(...(yield* pythonUserScriptsCandidateDirs()));
+  dirs.push(yield* expandPath('~/.local/bin'));
   return Array.from(new Set(dirs));
-}
+});
 
-async function requireOpenVikingServer(): Promise<string> {
-  const resolved = await findOpenVikingServer();
+const requireOpenVikingServer = Effect.fn('lifecycle.requireOpenVikingServer')(function* () {
+  const resolved = yield* findOpenVikingServer();
   if (!resolved) {
     throw new Error(
       `${OPENVIKING_SERVER_COMMAND} was not found in PATH, uv tool bin dir, ` +
@@ -763,52 +790,46 @@ async function requireOpenVikingServer(): Promise<string> {
     );
   }
   return resolved;
-}
+});
 
-async function maybePrintOpenVikingPathHint(serverPath: string): Promise<void> {
-  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+const maybePrintOpenVikingPathHint = Effect.fn('lifecycle.maybePrintOpenVikingPathHint')(function* (
+  serverPath: string,
+) {
+  const onPath = yield* findExecutable([OPENVIKING_SERVER_COMMAND]);
   if (onPath) {
     return;
   }
-  const binDir = dirname(serverPath);
-  if (process.platform === 'win32') {
-    consoleOutput.log(
+  const system = yield* SystemInfo;
+  const binDir = yield* pathDirname(serverPath);
+  if (system.platform === 'win32') {
+    yield* Console.log(
       `Note: ${serverPath} is installed but ${binDir} is not on this PowerShell PATH. ` +
         `Run \`$env:Path = "${binDir};$env:Path"\` for this shell.`,
     );
     return;
   }
-  const rcHint = suggestedShellRc(process.env.SHELL, process.platform);
-  consoleOutput.log(
+  const rcHint = suggestedShellRc(system.environment().SHELL, system.platform);
+  yield* Console.log(
     `Note: ${serverPath} is installed but ${binDir} is not on this shell's PATH. ` +
       `Add \`export PATH="${binDir}:$PATH"\` to ${rcHint} so other tools can find openviking-server.`,
   );
-}
+});
 
 function repairServerHealth(config: RuntimeConfig, dryRun: boolean) {
   return Effect.gen(function* () {
-    const existingHealth = yield* fromPromise('check OpenViking health', () =>
-      readOpenVikingHealthIfAvailable(config, 800),
-    );
+    const existingHealth = yield* readOpenVikingHealthIfAvailable(config, 800);
     if (existingHealth) {
-      yield* syncWithConsole(() =>
-        consoleOutput.log(`OpenViking health OK at http://${config.host}:${config.port}/health`),
-      );
+      yield* Console.log(`OpenViking health OK at http://${config.host}:${config.port}/health`);
       return true;
     }
 
-    yield* syncWithConsole(() =>
-      consoleOutput.log(
-        `OpenViking health is not responding at http://${config.host}:${config.port}/health; starting server.`,
-      ),
+    yield* Console.log(
+      `OpenViking health is not responding at http://${config.host}:${config.port}/health; starting server.`,
     );
     return yield* runStart(config, {dryRun}).pipe(
       Effect.as(true),
       Effect.catch(error =>
-        syncWithConsole(() => {
-          consoleOutput.log(`WARN could not repair OpenViking health: ${errorMessage(error)}`);
-          return false;
-        }),
+        Console.log(`WARN could not repair OpenViking health: ${errorMessage(error)}`).pipe(Effect.as(false)),
       ),
     );
   });
@@ -824,23 +845,21 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
 
   const server =
     options.dryRun === true
-      ? ((yield* fromPromise('find OpenViking server', findOpenVikingServer)) ?? OPENVIKING_SERVER_COMMAND)
-      : yield* fromPromise('require OpenViking server', requireOpenVikingServer);
-  const args = openVikingServerArgs(config);
+      ? ((yield* findOpenVikingServer()) ?? OPENVIKING_SERVER_COMMAND)
+      : yield* requireOpenVikingServer();
+  const args = yield* openVikingServerArgs(config);
   if (options.dryRun === true) {
-    yield* syncWithConsole(() => consoleOutput.log(formatShellCommand(server, args)));
+    yield* Console.log(formatShellCommand(server, args));
     return;
   }
 
-  const existingHealth = yield* fromPromise('check existing OpenViking health', () =>
-    readOpenVikingHealthIfAvailable(config, 500),
-  );
+  const existingHealth = yield* readOpenVikingHealthIfAvailable(config, 500);
   const healthUrl = openVikingHealthUrl(config);
   if (existingHealth) {
-    yield* syncWithConsole(() => consoleOutput.log(`OpenViking is already healthy at ${healthUrl}`));
+    yield* Console.log(`OpenViking is already healthy at ${healthUrl}`);
     return;
   }
-  if (yield* fromPromise('check OpenViking TCP port', () => isTcpPortOpen(config.host, config.port, 500))) {
+  if (yield* isTcpPortOpen(config.host, config.port, 500)) {
     return yield* Effect.fail(
       new Error(
         `Port ${config.host}:${config.port} is already in use, but it is not a healthy OpenViking server. ` +
@@ -849,35 +868,23 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
     );
   }
 
-  const logPath = openVikingLogPath(config);
-  yield* fs.makeDirectory(dirname(logPath), {recursive: true});
+  const logPath = yield* openVikingLogPath(config);
+  yield* fs.makeDirectory(yield* pathDirname(logPath), {recursive: true});
   if (options.foreground === true) {
-    const result = yield* fromPromise('run OpenViking in foreground', () => runInteractive(server, args));
-    yield* syncWithConsole(() => {
-      process.exitCode = result;
-    });
+    const result = yield* runStreamingCommandEffect(server, args, {maxOutputChars: INSTALL_OUTPUT_TAIL_CHARS});
+    yield* Effect.sync(() => system.setExitCode(result.exitCode));
     return;
   }
 
-  const child = yield* Effect.try({
-    try: () => {
-      const logFd = openSync(logPath, 'a');
-      const spawned = spawnDetachedServerWithLog(server, args, logFd);
-      spawned.unref();
-      return spawned;
-    },
-    catch: cause => applicationError('start detached OpenViking server', cause),
-  });
-  if (child.pid === undefined) {
-    return yield* Effect.fail(new Error('Detached OpenViking server did not report a pid.'));
-  }
-  const childPid = child.pid;
+  const childPid = yield* Effect.scoped(spawnDetachedServer(server, args, logPath));
   yield* fs.writeFileString(
-    join(config.agentContextHome, 'openviking-server.pid'),
+    yield* pathJoin(config.agentContextHome, 'openviking-server.pid'),
     detachedProcessRecordContent(childPid, server, args, system.platform),
   );
-  const health = yield* fromPromise('wait for OpenViking health', () =>
-    waitForOpenVikingHealth(config, START_HEALTH_TIMEOUT_MS, `Waiting for OpenViking health at ${healthUrl}.`),
+  const health = yield* waitForOpenVikingHealth(
+    config,
+    START_HEALTH_TIMEOUT_MS,
+    `Waiting for OpenViking health at ${healthUrl}.`,
   );
   if (health) {
     let managedPid = childPid;
@@ -888,20 +895,18 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
         if (!termination.stopped) {
           return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
         }
-        yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+        yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
         return yield* Effect.fail(
           new Error('OpenViking became healthy, but Threadnote could not verify its Windows serving process.'),
         );
       }
       managedPid = servingProcess.pid;
       yield* fs.writeFileString(
-        join(config.agentContextHome, 'openviking-server.pid'),
+        yield* pathJoin(config.agentContextHome, 'openviking-server.pid'),
         windowsDetachedProcessRecordContent(childPid, server, args, servingProcess),
       );
     }
-    yield* syncWithConsole(() =>
-      consoleOutput.log(`Started OpenViking with pid ${managedPid}. Health OK at ${healthUrl}. Logs: ${logPath}`),
-    );
+    yield* Console.log(`Started OpenViking with pid ${managedPid}. Health OK at ${healthUrl}. Logs: ${logPath}`);
     return;
   }
   if (system.platform === 'win32') {
@@ -909,7 +914,7 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
     if (!termination.stopped) {
       return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
     }
-    yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+    yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
   }
   return yield* Effect.fail(
     new Error(
@@ -919,21 +924,22 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
   );
 });
 
-function spawnDetachedServerWithLog(server: string, args: readonly string[], logFd: number): ReturnType<typeof spawn> {
-  try {
-    return spawnDetachedServer(server, args, logFd);
-  } finally {
-    closeSync(logFd);
-  }
-}
-
-function spawnDetachedServer(server: string, args: readonly string[], logFd: number): ReturnType<typeof spawn> {
-  return spawn(server, args, {
+const spawnDetachedServer = Effect.fn('lifecycle.spawnDetachedServer')(function* (
+  server: string,
+  args: readonly string[],
+  logPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const logSink = fs.sink(logPath, {flag: 'a'}).pipe(Sink.as(new Uint8Array()));
+  const child = yield* ChildProcess.make(server, [...args], {
     detached: true,
-    stdio: ['ignore', logFd, logFd],
-    windowsHide: true,
+    stderr: logSink,
+    stdin: 'ignore',
+    stdout: logSink,
   });
-}
+  yield* child.unref;
+  return Number(child.pid);
+});
 
 const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServer')(function* (
   config: RuntimeConfig,
@@ -942,44 +948,32 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
 ) {
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
-  const logPath = openVikingLogPath(config);
-  yield* fs.makeDirectory(dirname(logPath), {recursive: true});
-  const child = yield* Effect.try({
-    try: () => {
-      const logFd = openSync(logPath, 'a');
-      const spawned = spawnDetachedServerWithLog(server, openVikingServerArgs(config), logFd);
-      spawned.unref();
-      return spawned;
-    },
-    catch: cause => applicationError('restore detached OpenViking server', cause),
-  });
-  if (child.pid === undefined) {
-    return yield* Effect.fail(new Error('Restored detached OpenViking server did not report a pid.'));
-  }
-  const childPid = child.pid;
+  const logPath = yield* openVikingLogPath(config);
+  yield* fs.makeDirectory(yield* pathDirname(logPath), {recursive: true});
+  const args = yield* openVikingServerArgs(config);
+  const childPid = yield* Effect.scoped(spawnDetachedServer(server, args, logPath));
   yield* fs.writeFileString(
-    join(config.agentContextHome, 'openviking-server.pid'),
-    detachedProcessRecordContent(childPid, server, openVikingServerArgs(config), system.platform),
+    yield* pathJoin(config.agentContextHome, 'openviking-server.pid'),
+    detachedProcessRecordContent(childPid, server, args, system.platform),
   );
   const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
   while ((yield* Clock.currentTimeMillis) < deadline) {
     const remainingMs = deadline - (yield* Clock.currentTimeMillis);
     if (yield* readOpenVikingHealthEffect(config, Math.max(1, Math.min(500, remainingMs)))) {
       if (system.platform === 'win32') {
-        const args = openVikingServerArgs(config);
         const servingProcess = yield* findWindowsServingProcess(childPid, config, server, args);
         if (!servingProcess) {
           const termination = yield* terminateWindowsProcessTree(childPid);
           if (!termination.stopped) {
             return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
           }
-          yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+          yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
           return yield* Effect.fail(
             new Error('Restored OpenViking became healthy, but its Windows serving process could not be verified.'),
           );
         }
         yield* fs.writeFileString(
-          join(config.agentContextHome, 'openviking-server.pid'),
+          yield* pathJoin(config.agentContextHome, 'openviking-server.pid'),
           windowsDetachedProcessRecordContent(childPid, server, args, servingProcess),
         );
       }
@@ -992,7 +986,7 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
     if (!termination.stopped) {
       return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
     }
-    yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+    yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
   } else {
     yield* signalProcessEffect(childPid, 'SIGTERM').pipe(Effect.ignore);
   }
@@ -1008,7 +1002,7 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     yield* bootoutLaunchAgent(options.dryRun === true, undefined, STOP_SERVER_TIMEOUT_MS);
   }
 
-  const pidPath = join(config.agentContextHome, 'openviking-server.pid');
+  const pidPath = yield* pathJoin(config.agentContextHome, 'openviking-server.pid');
   const pidText = yield* fs.readFileString(pidPath).pipe(
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
@@ -1016,38 +1010,36 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     ),
   );
   if (!pidText) {
-    yield* syncWithConsole(() => consoleOutput.log('No pid file found for detached OpenViking server.'));
+    yield* Console.log('No pid file found for detached OpenViking server.');
     return;
   }
   const processRecord = parseDetachedProcessRecord(pidText);
   const pid = processRecord?.pid ?? Number.NaN;
   if (!Number.isInteger(pid) || pid <= 0) {
-    yield* syncWithConsole(() => consoleOutput.log(`Invalid pid file: ${pidPath}`));
+    yield* Console.log(`Invalid pid file: ${pidPath}`);
     if (options.dryRun !== true) {
       yield* fs.remove(pidPath, {force: true});
     }
     return;
   }
   if (options.dryRun === true) {
-    yield* syncWithConsole(() => consoleOutput.log(`Would stop process ${pid}`));
+    yield* Console.log(`Would stop process ${pid}`);
     return;
   }
   if (!(yield* isProcessRunningEffect(pid))) {
     yield* fs.remove(pidPath, {force: true});
-    yield* syncWithConsole(() => consoleOutput.log(`Removed stale pid file for process ${pid}.`));
+    yield* Console.log(`Removed stale pid file for process ${pid}.`);
     return;
   }
   if (system.platform === 'win32') {
-    const server =
-      processRecord?.server ??
-      (yield* fromPromise('find OpenViking server for process verification', findOpenVikingServer));
+    const server = processRecord?.server ?? (yield* findOpenVikingServer());
     if (!server) {
       return yield* Effect.fail(
         new Error(`Refusing to stop process ${pid}: OpenViking server path is unavailable for verification.`),
       );
     }
     const expected = {
-      args: processRecord?.args ?? openVikingServerArgs(config),
+      args: processRecord?.args ?? (yield* openVikingServerArgs(config)),
       commandLine: processRecord?.commandLine,
       executablePath: processRecord?.executablePath,
       launcherPid: processRecord?.launcherPid,
@@ -1075,7 +1067,7 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
   }
   if (!signaled) {
     yield* fs.remove(pidPath, {force: true});
-    yield* syncWithConsole(() => consoleOutput.log(`Process ${pid} was already stopped.`));
+    yield* Console.log(`Process ${pid} was already stopped.`);
     return;
   }
   const deadline = (yield* Clock.currentTimeMillis) + STOP_SERVER_TIMEOUT_MS;
@@ -1087,7 +1079,7 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
   }
   yield* fs.remove(pidPath, {force: true});
-  yield* syncWithConsole(() => consoleOutput.log(`Stopped process ${pid}`));
+  yield* Console.log(`Stopped process ${pid}`);
 });
 
 function detachedProcessRecordContent(
@@ -1131,8 +1123,8 @@ function parseDetachedProcessRecord(content: string): DetachedProcessRecord | un
   if (!trimmed) {
     return undefined;
   }
-  try {
-    const value: unknown = JSON.parse(trimmed);
+  const value = Option.getOrUndefined(parseJson(trimmed));
+  if (value !== undefined) {
     if (typeof value === 'number') {
       return {pid: value};
     }
@@ -1152,10 +1144,9 @@ function parseDetachedProcessRecord(content: string): DetachedProcessRecord | un
       server: typeof value.server === 'string' ? value.server : undefined,
       startedAt: typeof value.startedAt === 'string' ? value.startedAt : undefined,
     };
-  } catch {
-    const pid = Number(trimmed);
-    return Number.isInteger(pid) ? {pid} : undefined;
   }
+  const pid = Number(trimmed);
+  return Number.isInteger(pid) ? {pid} : undefined;
 }
 
 const findWindowsServingProcess = Effect.fn('findWindowsServingProcess')(function* (
@@ -1201,50 +1192,49 @@ if ($null -eq $match) { exit 4 }
     return undefined;
   }
   const identity = parseWindowsProcessIdentity(result.stdout);
-  if (!identity || !matchesExpectedWindowsProcess(identity, server, args)) {
+  if (!identity || !(yield* matchesExpectedWindowsProcess(identity, server, args))) {
     return undefined;
   }
   return identity;
 });
 
 function parseWindowsProcessIdentity(output: string): WindowsProcessIdentity | undefined {
-  try {
-    const value: unknown = JSON.parse(output);
-    if (
-      !isJsonObject(value) ||
-      typeof value.CommandLine !== 'string' ||
-      typeof value.CreationTime !== 'string' ||
-      typeof value.ExecutablePath !== 'string' ||
-      typeof value.ProcessId !== 'number'
-    ) {
-      return undefined;
-    }
-    return {
-      commandLine: value.CommandLine,
-      executablePath: value.ExecutablePath,
-      pid: value.ProcessId,
-      startedAt: value.CreationTime,
-    };
-  } catch {
+  const value = Option.getOrUndefined(parseJson(output));
+  if (
+    !isJsonObject(value) ||
+    typeof value.CommandLine !== 'string' ||
+    typeof value.CreationTime !== 'string' ||
+    typeof value.ExecutablePath !== 'string' ||
+    typeof value.ProcessId !== 'number'
+  ) {
     return undefined;
   }
+  return {
+    commandLine: value.CommandLine,
+    executablePath: value.ExecutablePath,
+    pid: value.ProcessId,
+    startedAt: value.CreationTime,
+  };
 }
 
-function matchesExpectedWindowsProcess(
+const matchesExpectedWindowsProcess = Effect.fn('lifecycle.matchesExpectedWindowsProcess')(function* (
   identity: Pick<WindowsProcessIdentity, 'commandLine' | 'executablePath'>,
   server: string,
   args: readonly string[],
-): boolean {
+) {
   const commandLine = identity.commandLine.toLowerCase();
-  const expectedServer = basename(server).toLowerCase();
-  if (!commandLine.includes(expectedServer) && basename(identity.executablePath).toLowerCase() !== expectedServer) {
+  const expectedServer = (yield* pathBasename(server)).toLowerCase();
+  if (
+    !commandLine.includes(expectedServer) &&
+    (yield* pathBasename(identity.executablePath)).toLowerCase() !== expectedServer
+  ) {
     return false;
   }
   return args.every(arg => commandLine.includes(arg.toLowerCase()));
-}
+});
 
 const terminateWindowsProcessTree = Effect.fn('terminateWindowsProcessTree')(function* (pid: number) {
-  const result = yield* runCommandEffect(windowsTaskkillExecutable(), ['/pid', String(pid), '/t', '/f'], {
+  const result = yield* runCommandEffect(yield* windowsTaskkillExecutable(), ['/pid', String(pid), '/t', '/f'], {
     allowFailure: true,
     timeoutMs: 5000,
   });
@@ -1285,14 +1275,8 @@ const isManagedWindowsOpenVikingProcess = Effect.fn('isManagedWindowsOpenVikingP
   if (result.exitCode !== 0) {
     return false;
   }
-  let identity: JsonObject;
-  try {
-    const value: unknown = JSON.parse(result.stdout);
-    if (!isJsonObject(value)) {
-      return false;
-    }
-    identity = value;
-  } catch {
+  const identity = Option.getOrUndefined(parseJson(result.stdout));
+  if (!isJsonObject(identity)) {
     return false;
   }
   if (identity.OwnsPort !== true || typeof identity.CommandLine !== 'string') {
@@ -1306,7 +1290,7 @@ const isManagedWindowsOpenVikingProcess = Effect.fn('isManagedWindowsOpenVikingP
   if (expected.executablePath && executablePath.toLowerCase() !== expected.executablePath.toLowerCase()) {
     return false;
   }
-  if (!matchesExpectedWindowsProcess({commandLine, executablePath}, expected.server, expected.args)) {
+  if (!(yield* matchesExpectedWindowsProcess({commandLine, executablePath}, expected.server, expected.args))) {
     return false;
   }
   if (expected.startedAt) {
@@ -1326,7 +1310,7 @@ const stopDetachedOpenVikingServerForLaunchdCore = Effect.fn('stopDetachedOpenVi
   resolvedServer?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const pidPath = join(config.agentContextHome, 'openviking-server.pid');
+  const pidPath = yield* pathJoin(config.agentContextHome, 'openviking-server.pid');
   const pidText = yield* fs.readFileString(pidPath).pipe(
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
@@ -1359,7 +1343,7 @@ const stopDetachedOpenVikingServerForLaunchdCore = Effect.fn('stopDetachedOpenVi
     return yield* Effect.fail(new Error(`Refusing to stop process ${pid}: OpenViking server path is unavailable.`));
   }
   const expectedProcess = {
-    args: openVikingServerArgs(config),
+    args: yield* openVikingServerArgs(config),
     server,
     shebangInterpreter: yield* fs.readFileString(server).pipe(
       Effect.map(parseShebangInterpreter),
@@ -1468,59 +1452,49 @@ function parseShebangInterpreter(content: string): string | undefined {
 }
 
 const isProcessRunningEffect = Effect.fn('isProcessRunning')(function* (pid: number) {
-  return yield* Effect.try({
-    try: () => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch (cause: unknown) {
-        if (isNodeError(cause) && cause.code === 'ESRCH') {
-          return false;
-        }
-        throw cause;
-      }
-    },
-    catch: cause => applicationError(`check process ${pid}`, cause),
-  });
+  const system = yield* SystemInfo;
+  if (system.platform === 'win32') {
+    const result = yield* runCommandEffect('tasklist.exe', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
+      allowFailure: true,
+      timeoutMs: 5000,
+    });
+    return result.exitCode === 0 && new RegExp(`"${pid}"(?:,|$)`).test(result.stdout);
+  }
+  const result = yield* runCommandEffect('kill', ['-0', String(pid)], {allowFailure: true, timeoutMs: 5000});
+  return result.exitCode === 0;
 });
 
 const signalProcessEffect = Effect.fn('signalProcess')(function* (pid: number, signal: NodeJS.Signals) {
-  return yield* Effect.try({
-    try: () => {
-      try {
-        process.kill(pid, signal);
-        return true;
-      } catch (cause: unknown) {
-        if (isNodeError(cause) && cause.code === 'ESRCH') {
-          return false;
-        }
-        throw cause;
-      }
-    },
-    catch: cause => applicationError(`signal process ${pid}`, cause),
-  });
+  const system = yield* SystemInfo;
+  const result =
+    system.platform === 'win32'
+      ? yield* runCommandEffect(yield* windowsTaskkillExecutable(), ['/pid', String(pid), '/t'], {
+          allowFailure: true,
+          timeoutMs: 5000,
+        })
+      : yield* runCommandEffect('kill', [`-${signal.replace(/^SIG/, '')}`, String(pid)], {
+          allowFailure: true,
+          timeoutMs: 5000,
+        });
+  return result.exitCode === 0 || !(yield* isProcessRunningEffect(pid));
 });
 
-function isNodeError(value: unknown): value is NodeJS.ErrnoException {
-  return value instanceof Error && 'code' in value;
-}
-
-async function commandCheck(name: string, args: readonly string[]): Promise<DoctorCheck> {
-  const executable = await findExecutable([name]);
+const commandCheck = Effect.fn('lifecycle.commandCheck')(function* (name: string, args: readonly string[]) {
+  const executable = yield* findExecutable([name]);
   if (!executable) {
     return {name, status: 'fail', detail: 'missing from PATH'};
   }
-  const result = await runCommand(executable, args, {allowFailure: true});
+  const result = yield* runCommand(executable, args, {allowFailure: true});
   return {
     name,
     status: result.exitCode === 0 ? 'ok' : 'warn',
     detail: firstLine(result.stdout || result.stderr) || executable,
   };
-}
+});
 
-async function openVikingServerCheck(): Promise<DoctorCheck> {
+const openVikingServerCheck = Effect.fn('lifecycle.openVikingServerCheck')(function* () {
   const name = OPENVIKING_SERVER_COMMAND;
-  const executable = await findOpenVikingServer();
+  const executable = yield* findOpenVikingServer();
   if (!executable) {
     return {
       name,
@@ -1529,40 +1503,45 @@ async function openVikingServerCheck(): Promise<DoctorCheck> {
         'missing; run `threadnote install` to fetch it via uv or pipx (local-embed may compile from source on first install)',
     };
   }
-  const result = await runCommand(executable, ['--help'], {allowFailure: true});
-  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
-  const detail = onPath ? executable : `${executable} (found outside PATH; add ${dirname(executable)} to PATH)`;
+  const result = yield* runCommand(executable, ['--help'], {allowFailure: true});
+  const onPath = yield* findExecutable([OPENVIKING_SERVER_COMMAND]);
+  const detail = onPath
+    ? executable
+    : `${executable} (found outside PATH; add ${yield* pathDirname(executable)} to PATH)`;
   return {
     name,
     status: result.exitCode === 0 ? 'ok' : 'warn',
     detail: result.exitCode === 0 ? detail : firstLine(result.stderr || result.stdout) || detail,
   };
-}
+});
 
-async function commandPresenceCheck(name: string, args: readonly string[]): Promise<DoctorCheck> {
-  const executable = await findExecutable([name]);
+const commandPresenceCheck = Effect.fn('lifecycle.commandPresenceCheck')(function* (
+  name: string,
+  args: readonly string[],
+) {
+  const executable = yield* findExecutable([name]);
   if (!executable) {
     return {name, status: 'warn', detail: 'missing; only needed for MCP install'};
   }
-  const result = await runCommand(executable, args, {allowFailure: true});
+  const result = yield* runCommand(executable, args, {allowFailure: true});
   return {
     name,
     status: 'ok',
     detail: firstLine(result.stdout || result.stderr) || executable,
   };
-}
+});
 
-async function firstCommandCheck(
+const firstCommandCheck = Effect.fn('lifecycle.firstCommandCheck')(function* (
   name: string,
   commands: readonly string[],
   args: readonly string[],
-): Promise<DoctorCheck> {
+) {
   for (const command of commands) {
-    const executable = await findExecutable([command]);
+    const executable = yield* findExecutable([command]);
     if (!executable) {
       continue;
     }
-    const result = await runCommand(executable, args, {allowFailure: true});
+    const result = yield* runCommand(executable, args, {allowFailure: true});
     return {
       name,
       status: result.exitCode === 0 ? 'ok' : 'warn',
@@ -1570,16 +1549,17 @@ async function firstCommandCheck(
     };
   }
   return {name, status: 'fail', detail: `none found: ${commands.join(', ')}`};
-}
+});
 
-async function pythonInstallerCheck(): Promise<DoctorCheck> {
+const pythonInstallerCheck = Effect.fn('lifecycle.pythonInstallerCheck')(function* () {
+  const system = yield* SystemInfo;
   const failures: string[] = [];
   for (const manager of ['uv', 'pipx']) {
-    const executable = await findExecutable([manager]);
+    const executable = yield* findExecutable([manager]);
     if (!executable) {
       continue;
     }
-    const result = await runCommand(executable, ['--version'], {allowFailure: true});
+    const result = yield* runCommand(executable, ['--version'], {allowFailure: true});
     if (result.exitCode === 0) {
       return {
         name: 'python installer',
@@ -1589,12 +1569,12 @@ async function pythonInstallerCheck(): Promise<DoctorCheck> {
     }
     failures.push(`${manager}: ${firstLine(result.stderr || result.stdout) || 'not working'}`);
   }
-  for (const python of pythonExecutableCandidates()) {
-    const executable = await findExecutable([python]);
+  for (const python of pythonExecutableCandidates(system.platform)) {
+    const executable = yield* findExecutable([python]);
     if (!executable) {
       continue;
     }
-    const result = await runCommand(executable, ['-m', 'pip', '--version'], {allowFailure: true});
+    const result = yield* runCommand(executable, ['-m', 'pip', '--version'], {allowFailure: true});
     if (result.exitCode === 0) {
       return {
         name: 'python installer',
@@ -1609,35 +1589,37 @@ async function pythonInstallerCheck(): Promise<DoctorCheck> {
     status: 'fail',
     detail: failures.length > 0 ? failures.join('; ') : 'none found: uv, pipx, or Python with pip',
   };
-}
+});
 
-async function openVikingCliCheck(): Promise<DoctorCheck> {
-  const executable = await findOpenVikingCli();
+const openVikingCliCheck = Effect.fn('lifecycle.openVikingCliCheck')(function* () {
+  const executable = yield* findOpenVikingCli();
   if (!executable) {
     return {name: 'openviking cli', status: 'fail', detail: 'none found: ov, openviking'};
   }
-  const result = await runCommand(executable, ['--help'], {allowFailure: true});
-  const onPath = await findExecutable(['ov', 'openviking']);
-  const detail = onPath ? executable : `${executable} (found outside PATH; add ${dirname(executable)} to PATH)`;
+  const result = yield* runCommand(executable, ['--help'], {allowFailure: true});
+  const onPath = yield* findExecutable(['ov', 'openviking']);
+  const detail = onPath
+    ? executable
+    : `${executable} (found outside PATH; add ${yield* pathDirname(executable)} to PATH)`;
   return {
     name: 'openviking cli',
     status: result.exitCode === 0 ? 'ok' : 'warn',
     detail: result.exitCode === 0 ? detail : firstLine(result.stderr || result.stdout) || detail,
   };
-}
+});
 
 /**
  * Warns when the installed OpenViking CLI is older than the version Threadnote
  * pins. `install`/`doctor` (unlike `repair`/`update`) don't upgrade OpenViking,
  * so without this a healthy-but-stale server silently stays behind the pin.
  */
-async function openVikingVersionCheck(config: RuntimeConfig): Promise<DoctorCheck> {
-  const executable = await findOpenVikingCli();
+const openVikingVersionCheck = Effect.fn('lifecycle.openVikingVersionCheck')(function* (config: RuntimeConfig) {
+  const executable = yield* findOpenVikingCli();
   const pinned = config.openVikingVersion;
   if (!executable) {
     return {name: 'openviking version', status: 'warn', detail: `CLI not found; pinned ${pinned}`};
   }
-  const installed = await readOpenVikingCliVersion(executable);
+  const installed = yield* readOpenVikingCliVersion(executable);
   if (!installed) {
     return {
       name: 'openviking version',
@@ -1653,7 +1635,7 @@ async function openVikingVersionCheck(config: RuntimeConfig): Promise<DoctorChec
     };
   }
   return {name: 'openviking version', status: 'ok', detail: `${installed} (pinned ${pinned})`};
-}
+});
 
 /**
  * Recall reads its hits from a JSON object with `memories`/`resources`/`skills`
@@ -1662,13 +1644,13 @@ async function openVikingVersionCheck(config: RuntimeConfig): Promise<DoctorChec
  * recall. This probe asserts the shape is intact — empty buckets are fine, only
  * a missing/renamed bucket structure (or non-JSON output) warns.
  */
-async function recallShapeCheck(config: RuntimeConfig): Promise<DoctorCheck> {
-  const executable = await findOpenVikingCli();
+const recallShapeCheck = Effect.fn('lifecycle.recallShapeCheck')(function* (config: RuntimeConfig) {
+  const executable = yield* findOpenVikingCli();
   if (!executable) {
     return {name: 'recall shape', status: 'warn', detail: 'CLI not found'};
   }
   const args = withIdentity(config, ['find', 'threadnote', '--node-limit', '1', '--output', 'json']);
-  const result = await runCommand(executable, args, {allowFailure: true});
+  const result = yield* runCommand(executable, args, {allowFailure: true});
   if (result.exitCode !== 0) {
     return {name: 'recall shape', status: 'warn', detail: 'search failed; run threadnote repair'};
   }
@@ -1678,13 +1660,8 @@ async function recallShapeCheck(config: RuntimeConfig): Promise<DoctorCheck> {
   // first line beginning with `{`, exactly as recall parsing does — otherwise
   // this probe false-warns on a perfectly healthy OpenViking.
   const start = result.stdout.search(/^\{/m);
-  let envelope: unknown;
-  try {
-    const parsed: unknown = start >= 0 ? JSON.parse(result.stdout.slice(start)) : undefined;
-    envelope = isJsonObject(parsed) ? parsed.result : undefined;
-  } catch {
-    envelope = undefined;
-  }
+  const parsed = start >= 0 ? Option.getOrUndefined(parseJson(result.stdout.slice(start))) : undefined;
+  const envelope = isJsonObject(parsed) ? parsed.result : undefined;
   const buckets = ['memories', 'resources', 'skills'];
   if (!isJsonObject(envelope) || !buckets.some(key => Array.isArray(envelope[key]))) {
     return {
@@ -1694,14 +1671,14 @@ async function recallShapeCheck(config: RuntimeConfig): Promise<DoctorCheck> {
     };
   }
   return {name: 'recall shape', status: 'ok', detail: 'memories/resources/skills buckets present'};
-}
+});
 
-async function localEmbeddingCheck(): Promise<DoctorCheck> {
-  const serverPath = await findOpenVikingServer();
+const localEmbeddingCheck = Effect.fn('lifecycle.localEmbeddingCheck')(function* () {
+  const serverPath = yield* findOpenVikingServer();
   if (!serverPath) {
     return {name: 'local embedding extra', status: 'warn', detail: 'openviking-server missing'};
   }
-  const hasDependency = await hasLocalEmbeddingDependency(serverPath);
+  const hasDependency = yield* hasLocalEmbeddingDependency(serverPath);
   if (hasDependency === undefined) {
     return {
       name: 'local embedding extra',
@@ -1716,14 +1693,14 @@ async function localEmbeddingCheck(): Promise<DoctorCheck> {
         status: 'warn',
         detail: 'llama_cpp missing; install will repair with openviking[local-embed]',
       };
-}
+});
 
-async function pythonSystemCertificatesCheck(): Promise<DoctorCheck> {
-  const serverPath = await findOpenVikingServer();
+const pythonSystemCertificatesCheck = Effect.fn('lifecycle.pythonSystemCertificatesCheck')(function* () {
+  const serverPath = yield* findOpenVikingServer();
   if (!serverPath) {
     return {name: 'python system certs', status: 'warn', detail: 'openviking-server missing'};
   }
-  const hasDependency = await hasPythonSystemCertificatesPatch(serverPath);
+  const hasDependency = yield* hasPythonSystemCertificatesPatch(serverPath);
   if (hasDependency === undefined) {
     return {name: 'python system certs', status: 'warn', detail: 'could not inspect tool Python'};
   }
@@ -1734,11 +1711,12 @@ async function pythonSystemCertificatesCheck(): Promise<DoctorCheck> {
         status: 'warn',
         detail: `${PYTHON_SYSTEM_CERTS_MODULE} missing; install will repair corporate TLS support`,
       };
-}
+});
 
-async function commandShimCheck(): Promise<DoctorCheck> {
-  if (!shouldManageCommandShim()) {
-    const launcher = await findExecutable(['threadnote']);
+const commandShimCheck = Effect.fn('lifecycle.commandShimCheck')(function* () {
+  const system = yield* SystemInfo;
+  if (!shouldManageCommandShim(system.platform)) {
+    const launcher = yield* findExecutable(['threadnote']);
     return launcher
       ? {name: 'threadnote launcher', status: 'ok', detail: launcher}
       : {
@@ -1747,8 +1725,11 @@ async function commandShimCheck(): Promise<DoctorCheck> {
           detail: 'npm threadnote.cmd launcher is not on PATH; repair preserves package-manager launchers',
         };
   }
-  const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
-  const content = await readFileIfExists(shimPath);
+  const shimPath = yield* pathJoin(
+    yield* expandPath(system.environment().THREADNOTE_BIN_DIR ?? '~/.local/bin'),
+    'threadnote',
+  );
+  const content = yield* readFileIfExists(shimPath);
   if (content === undefined) {
     return {name: 'threadnote shim', status: 'warn', detail: `${shimPath} missing; repair will create it`};
   }
@@ -1759,7 +1740,7 @@ async function commandShimCheck(): Promise<DoctorCheck> {
       detail: `${shimPath} exists but was not generated by this tool; repair will not overwrite it`,
     };
   }
-  if (content !== renderCommandShim()) {
+  if (content !== (yield* renderCommandShim())) {
     return {
       name: 'threadnote shim',
       status: 'warn',
@@ -1767,101 +1748,113 @@ async function commandShimCheck(): Promise<DoctorCheck> {
     };
   }
   return {name: 'threadnote shim', status: 'ok', detail: shimPath};
-}
+});
 
-async function userAgentInstructionsChecks(): Promise<DoctorCheck[]> {
-  return Promise.all(
-    USER_AGENT_INSTRUCTION_TARGETS.map(async target => {
-      const expectedInstructions = await renderUserAgentInstructions(target);
-      const targetPath = expandPath(target.path);
-      const content = await readFileIfExists(targetPath);
-      if (content === undefined) {
-        return {name: target.label, status: 'warn', detail: `${targetPath} missing; install will create it`};
-      }
-      const existingBlock = extractManagedBlock(content);
-      if (existingBlock === undefined) {
-        return {
-          name: target.label,
-          status: 'warn',
-          detail: `${targetPath} missing threadnote block; install will add it`,
-        };
-      }
-      if (
-        (target.kind === 'file' && content !== expectedInstructions) ||
-        (target.kind === 'block' && existingBlock !== expectedInstructions)
-      ) {
-        return {
-          name: target.label,
-          status: 'warn',
-          detail: `${targetPath} has stale threadnote block; install will update it`,
-        };
-      }
-      return {name: target.label, status: 'ok', detail: targetPath};
-    }),
+const userAgentInstructionsChecks = Effect.fn('lifecycle.userAgentInstructionsChecks')(function* () {
+  return yield* Effect.forEach(
+    USER_AGENT_INSTRUCTION_TARGETS,
+    target =>
+      Effect.gen(function* () {
+        const expectedInstructions = yield* renderUserAgentInstructions(target);
+        const targetPath = yield* expandPath(target.path);
+        const content = yield* readFileIfExists(targetPath);
+        if (content === undefined) {
+          return {name: target.label, status: 'warn', detail: `${targetPath} missing; install will create it`};
+        }
+        const existingBlock = extractManagedBlock(content);
+        if (existingBlock === undefined) {
+          return {
+            name: target.label,
+            status: 'warn',
+            detail: `${targetPath} missing threadnote block; install will add it`,
+          };
+        }
+        if (
+          (target.kind === 'file' && content !== expectedInstructions) ||
+          (target.kind === 'block' && existingBlock !== expectedInstructions)
+        ) {
+          return {
+            name: target.label,
+            status: 'warn',
+            detail: `${targetPath} has stale threadnote block; install will update it`,
+          };
+        }
+        return {name: target.label, status: 'ok', detail: targetPath};
+      }),
+    {concurrency: 'unbounded'},
   );
-}
+});
 
-async function hasLocalEmbeddingDependency(serverPath: string): Promise<boolean | undefined> {
-  return hasPythonModule(serverPath, 'llama_cpp');
-}
+const hasLocalEmbeddingDependency = Effect.fn('lifecycle.hasLocalEmbeddingDependency')(function* (serverPath: string) {
+  return yield* hasPythonModule(serverPath, 'llama_cpp');
+});
 
-async function hasPythonSystemCertificatesPatch(serverPath: string): Promise<boolean | undefined> {
-  return hasPythonModule(serverPath, PYTHON_SYSTEM_CERTS_MODULE);
-}
+const hasPythonSystemCertificatesPatch = Effect.fn('lifecycle.hasPythonSystemCertificatesPatch')(function* (
+  serverPath: string,
+) {
+  return yield* hasPythonModule(serverPath, PYTHON_SYSTEM_CERTS_MODULE);
+});
 
-async function hasPythonModule(serverPath: string, moduleName: string): Promise<boolean | undefined> {
-  const pythonPath = await siblingPythonForExecutable(serverPath);
+const hasPythonModule = Effect.fn('lifecycle.hasPythonModule')(function* (serverPath: string, moduleName: string) {
+  const pythonPath = yield* siblingPythonForExecutable(serverPath);
   if (!pythonPath) {
     return undefined;
   }
-  const result = await runCommand(pythonPath, ['-c', `import ${moduleName}`], {allowFailure: true});
+  const result = yield* runCommand(pythonPath, ['-c', `import ${moduleName}`], {allowFailure: true});
   return result.exitCode === 0;
-}
+});
 
-async function siblingPythonForExecutable(executablePath: string): Promise<string | undefined> {
-  let resolvedPath: string;
-  try {
-    resolvedPath = await realpath(executablePath);
-  } catch (_err: unknown) {
+const siblingPythonForExecutable = Effect.fn('lifecycle.siblingPythonForExecutable')(function* (
+  executablePath: string,
+) {
+  const system = yield* SystemInfo;
+  const resolvedPath = yield* realpath(executablePath).pipe(Effect.option);
+  if (Option.isNone(resolvedPath)) {
     return undefined;
   }
-  const names = process.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
+  const names = system.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
   for (const name of names) {
-    const pythonPath = join(dirname(resolvedPath), name);
-    if (await exists(pythonPath)) {
+    const pythonPath = yield* pathJoin(yield* pathDirname(resolvedPath.value), name);
+    if (yield* exists(pythonPath)) {
       return pythonPath;
     }
   }
   return undefined;
-}
+});
 
-async function manifestCheck(path: string): Promise<DoctorCheck> {
-  try {
-    const manifest = await readSeedManifest(path);
-    return {name: 'manifest', status: 'ok', detail: `${path} (${manifest.projects.length} project(s))`};
-  } catch (err: unknown) {
-    return {name: 'manifest', status: 'fail', detail: errorMessage(err)};
-  }
-}
+const manifestCheck = Effect.fn('lifecycle.manifestCheck')((path: string) =>
+  readSeedManifest(path).pipe(
+    Effect.map(manifest => ({
+      name: 'manifest',
+      status: 'ok' as const,
+      detail: `${path} (${manifest.projects.length} project(s))`,
+    })),
+    Effect.catch(error => Effect.succeed({name: 'manifest', status: 'fail' as const, detail: errorMessage(error)})),
+  ),
+);
 
-async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorCheck> {
-  try {
-    if (await summaryAutoGenerationDisabled(config)) {
+const recallIndexFreshnessCheck = Effect.fn('lifecycle.recallIndexFreshnessCheck')((config: RuntimeConfig) =>
+  Effect.gen(function* () {
+    if (yield* summaryAutoGenerationDisabled(config)) {
       return {
         name: 'recall index freshness',
-        status: 'ok',
+        status: 'ok' as const,
         detail:
           'OpenViking L0/L1 summary auto-generation disabled in ov.conf; ' +
           'directory summary placeholders are expected and not reindexed',
       };
     }
-    const targets = await findStaleRecallIndexTargets(config, {
+    const targets = yield* findStaleRecallIndexTargets(config, {
       collapseToRoots: true,
       includeAgentSkills: true,
       includeManifestResources: true,
     });
     if (targets.length === 0) {
-      return {name: 'recall index freshness', status: 'ok', detail: 'no stale generated summaries found'};
+      return {
+        name: 'recall index freshness',
+        status: 'ok' as const,
+        detail: 'no stale generated summaries found',
+      };
     }
     const staleSummaryCount = targets.reduce((total, target) => total + target.staleCount, 0);
     const sampleUris = targets.slice(0, 3).map(target => target.uri);
@@ -1869,13 +1862,19 @@ async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorC
     const sample = `${sampleUris.join(', ')}${extraCount > 0 ? `, +${extraCount} more` : ''}`;
     return {
       name: 'recall index freshness',
-      status: 'warn',
+      status: 'warn' as const,
       detail: `${staleSummaryCount} stale generated summary file(s) under ${targets.length} scope(s); run repair to reindex ${sample}`,
     };
-  } catch (err: unknown) {
-    return {name: 'recall index freshness', status: 'warn', detail: errorMessage(err)};
-  }
-}
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        name: 'recall index freshness',
+        status: 'warn' as const,
+        detail: errorMessage(error),
+      }),
+    ),
+  ),
+);
 
 /**
  * Flag memories whose frontmatter `project` disagrees with the project segment
@@ -1885,9 +1884,11 @@ async function recallIndexFreshnessCheck(config: RuntimeConfig): Promise<DoctorC
  * walks the on-disk memories tree and reports; the fix is to re-store the memory
  * under the correct project (which relocates the file).
  */
-export async function memoryProjectConsistencyCheck(config: RuntimeConfig): Promise<DoctorCheck> {
+export const memoryProjectConsistencyCheck = Effect.fn('lifecycle.memoryProjectConsistencyCheck')(function* (
+  config: RuntimeConfig,
+) {
   const name = 'memory project consistency';
-  const memoriesRoot = join(
+  const memoriesRoot = yield* pathJoin(
     config.agentContextHome,
     'data',
     'viking',
@@ -1896,103 +1897,106 @@ export async function memoryProjectConsistencyCheck(config: RuntimeConfig): Prom
     uriSegment(config.user),
     'memories',
   );
-  try {
-    let entries: string[];
-    try {
-      entries = await readdir(memoriesRoot, {recursive: true});
-    } catch {
-      return {name, status: 'ok', detail: 'no memories directory yet'};
+  return yield* Effect.gen(function* () {
+    const entriesResult = yield* Effect.result(readdir(memoriesRoot, {recursive: true}));
+    if (Result.isFailure(entriesResult)) {
+      return {name, status: 'ok' as const, detail: 'no memories directory yet'};
     }
+    const entries = entriesResult.success;
     const mismatches: string[] = [];
     let checked = 0;
     for (const entry of entries) {
       if (!entry.endsWith('.md') || isSummarySidecarUri(entry)) {
         continue;
       }
-      const uri = `viking://user/${uriSegment(config.user)}/memories/${entry.split(sep).join('/')}`;
+      const uri = `viking://user/${uriSegment(config.user)}/memories/${entry.split(yield* pathSeparator).join('/')}`;
       const pathProject = memoryUriProjectSegment(uri);
       if (!pathProject) {
         continue;
       }
-      let content: string;
-      try {
-        content = await readFile(join(memoriesRoot, entry), 'utf8');
-      } catch {
+      const content = yield* readFile(yield* pathJoin(memoriesRoot, entry), 'utf8').pipe(Effect.option);
+      if (Option.isNone(content)) {
         // Removed mid-walk (concurrent forget/compact/archive) or transiently
         // unreadable — skip this file rather than aborting the whole check.
         continue;
       }
       checked += 1;
-      const frontProject = memoryFrontmatterField(content, 'project');
+      const frontProject = memoryFrontmatterField(content.value, 'project');
       if (frontProject && uriSegment(frontProject) !== pathProject) {
         mismatches.push(`${uri} (frontmatter "${frontProject}" vs path "${pathProject}")`);
       }
     }
     if (mismatches.length === 0) {
-      return {name, status: 'ok', detail: `${checked} project-scoped memories consistent`};
+      return {name, status: 'ok' as const, detail: `${checked} project-scoped memories consistent`};
     }
     const sample = mismatches.slice(0, 3).join('; ');
     const extra = Math.max(0, mismatches.length - 3);
     return {
       name,
-      status: 'warn',
+      status: 'warn' as const,
       detail:
         `${mismatches.length} memory(ies) whose frontmatter project differs from their storage path; ` +
         `re-store under the correct project to fix: ${sample}${extra > 0 ? `, +${extra} more` : ''}`,
     };
-  } catch (err: unknown) {
-    return {name, status: 'warn', detail: errorMessage(err)};
-  }
-}
+  }).pipe(Effect.catch(error => Effect.succeed({name, status: 'warn' as const, detail: errorMessage(error)})));
+});
 
-async function fileCheck(path: string, label: string): Promise<DoctorCheck> {
-  return (await exists(path))
+const fileCheck = Effect.fn('lifecycle.fileCheck')(function* (path: string, label: string) {
+  return (yield* exists(path))
     ? {name: label, status: 'ok', detail: path}
     : {name: label, status: 'fail', detail: `${path} missing`};
-}
+});
 
-async function healthCheck(config: RuntimeConfig): Promise<DoctorCheck> {
-  try {
-    const body = await readOpenVikingHealth(config, 1200);
-    return {name: 'openviking health', status: 'ok', detail: firstLine(body) || 'healthy'};
-  } catch (err: unknown) {
-    return {name: 'openviking health', status: 'warn', detail: errorMessage(err)};
-  }
-}
+const healthCheck = Effect.fn('lifecycle.healthCheck')((config: RuntimeConfig) =>
+  readOpenVikingHealth(config, 1200).pipe(
+    Effect.map(body => ({
+      name: 'openviking health',
+      status: 'ok' as const,
+      detail: firstLine(body) || 'healthy',
+    })),
+    Effect.catch(error =>
+      Effect.succeed({
+        name: 'openviking health',
+        status: 'warn' as const,
+        detail: errorMessage(error),
+      }),
+    ),
+  ),
+);
 
-async function readOpenVikingHealth(config: RuntimeConfig, timeoutMs: number): Promise<string> {
-  return httpGetText(openVikingHealthUrl(config), timeoutMs);
-}
+const readOpenVikingHealth = Effect.fn('lifecycle.readOpenVikingHealth')(function* (
+  config: RuntimeConfig,
+  timeoutMs: number,
+) {
+  return yield* httpGetText(openVikingHealthUrl(config), timeoutMs);
+});
 
-async function readOpenVikingHealthIfAvailable(config: RuntimeConfig, timeoutMs: number): Promise<string | undefined> {
-  try {
-    return await readOpenVikingHealth(config, timeoutMs);
-  } catch (_err: unknown) {
-    return undefined;
-  }
-}
+const readOpenVikingHealthIfAvailable = Effect.fn('lifecycle.readOpenVikingHealthIfAvailable')(function* (
+  config: RuntimeConfig,
+  timeoutMs: number,
+) {
+  return yield* readOpenVikingHealth(config, timeoutMs).pipe(Effect.catch(() => Effect.succeed(undefined)));
+});
 
-async function waitForOpenVikingHealth(
+const waitForOpenVikingHealth = Effect.fn('lifecycle.waitForOpenVikingHealth')(function* (
   config: RuntimeConfig,
   timeoutMs: number,
   progressMessage?: string,
-): Promise<string | undefined> {
-  const progress = progressMessage ? startProgress(progressMessage) : undefined;
-  try {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() <= deadline) {
-      const requestTimeoutMs = Math.max(100, Math.min(1000, deadline - Date.now()));
-      const health = await readOpenVikingHealthIfAvailable(config, requestTimeoutMs);
+) {
+  const progress = progressMessage ? yield* startProgress(progressMessage) : undefined;
+  return yield* Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+    while ((yield* Clock.currentTimeMillis) <= deadline) {
+      const requestTimeoutMs = Math.max(100, Math.min(1000, deadline - (yield* Clock.currentTimeMillis)));
+      const health = yield* readOpenVikingHealthIfAvailable(config, requestTimeoutMs);
       if (health) return health;
-      const remainingMs = deadline - Date.now();
+      const remainingMs = deadline - (yield* Clock.currentTimeMillis);
       if (remainingMs <= 0) break;
-      await sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+      yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
     }
     return undefined;
-  } finally {
-    progress?.stop();
-  }
-}
+  }).pipe(Effect.ensuring(progress ? progress.stop().pipe(Effect.ignore) : Effect.void));
+});
 
 const runInstallCommands = Effect.fn('runInstallCommands')(function* (
   config: RuntimeConfig,
@@ -2000,38 +2004,37 @@ const runInstallCommands = Effect.fn('runInstallCommands')(function* (
   force: boolean,
   dryRun: boolean,
 ) {
+  const system = yield* SystemInfo;
   // When the user didn't ask for a specific manager and detection fell back
   // to plain `pip`, offer to install `uv` first — `pip install --user` is
   // refused under PEP 668 on Homebrew / system-managed Python, which is most
   // macOS and modern Linux setups.
   let manager = preferred;
   if (manager === undefined && !dryRun) {
-    const detected = yield* fromPromise('detect OpenViking package manager', detectPackageManager);
-    if (detected === 'pip' && (yield* fromPromise('offer to install uv', offerToInstallUv))) {
-      const rediscovered = yield* fromPromise('rediscover OpenViking package manager', detectPackageManager);
+    const detected = yield* detectPackageManager();
+    if (detected === 'pip' && (yield* offerToInstallUv())) {
+      const rediscovered = yield* detectPackageManager();
       if (rediscovered === 'uv') {
         manager = 'uv';
       }
     }
   }
-  const installCommands = yield* fromPromise('build OpenViking install commands', () =>
-    getInstallCommands(config, manager, force),
-  );
+  const installCommands = yield* getInstallCommands(config, manager, force);
   for (const installCommand of installCommands) {
     if (dryRun) {
       yield* maybeRunEffect(true, installCommand.executable, installCommand.args);
       continue;
     }
-    const resolvedInstallCommand = yield* fromPromise('resolve OpenViking install command', () =>
-      resolveOpenVikingInstallCommand(installCommand),
-    );
+    const resolvedInstallCommand = yield* resolveOpenVikingInstallCommand(installCommand);
     // Stream live instead of buffering through runCommand. openviking[local-embed]
     // can compile llama-cpp-python from source (10-20 min, memory-heavy); buffering
     // hides all progress and the 10-minute command timeout would SIGKILL a
     // legitimate build. Because uv/pipx --force removes the existing tool env
     // first, a killed reinstall leaves openviking-server missing — so we also
     // print recovery guidance before failing.
-    consoleOutput.log(`Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`);
+    yield* Console.log(
+      `Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`,
+    );
     const result = yield* runStreamingCommandEffect(resolvedInstallCommand.executable, resolvedInstallCommand.args, {
       maxOutputChars: INSTALL_OUTPUT_TAIL_CHARS,
     });
@@ -2039,26 +2042,26 @@ const runInstallCommands = Effect.fn('runInstallCommands')(function* (
       const commandOutput = `${result.stderr}\n${result.stdout}`;
       const retry = openVikingSourceBuildRetryForArchiveFailure(resolvedInstallCommand, commandOutput);
       if (retry) {
-        consoleOutput.error('');
-        consoleOutput.error(
+        yield* Console.error('');
+        yield* Console.error(
           'The prebuilt llama-cpp-python wheel failed ZIP archive validation; retrying with a local source build.',
         );
-        consoleOutput.error('This avoids the rejected wheel and can take 10-20 minutes.');
-        consoleOutput.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
+        yield* Console.error('This avoids the rejected wheel and can take 10-20 minutes.');
+        yield* Console.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
         const retryResult = yield* runStreamingCommandEffect(retry.command.executable, retry.command.args, {
-          env: {...process.env, ...retry.env},
+          env: {...system.environment(), ...retry.env},
           maxOutputChars: INSTALL_OUTPUT_TAIL_CHARS,
         });
         if (retryResult.exitCode === 0) {
           continue;
         }
-        printOpenVikingInstallFailureHelp(retry.command, `${retryResult.stderr}\n${retryResult.stdout}`);
+        yield* printOpenVikingInstallFailureHelp(retry.command, `${retryResult.stderr}\n${retryResult.stdout}`);
         throw new Error(
           `${formatInstallCommand(retry.command, retry.env)} exited with ${retryResult.exitCode} after automatic source-build retry.`,
         );
       }
 
-      printOpenVikingInstallFailureHelp(resolvedInstallCommand, commandOutput);
+      yield* printOpenVikingInstallFailureHelp(resolvedInstallCommand, commandOutput);
       throw new Error(
         `${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)} exited with ${result.exitCode}.`,
       );
@@ -2066,11 +2069,14 @@ const runInstallCommands = Effect.fn('runInstallCommands')(function* (
   }
 });
 
-function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand, commandOutput: string): void {
+const printOpenVikingInstallFailureHelp = Effect.fn('lifecycle.printOpenVikingInstallFailureHelp')(function* (
+  failedCommand: MappedCommand,
+  commandOutput: string,
+) {
   for (const line of openVikingInstallFailureHelpLines(failedCommand, commandOutput)) {
-    consoleOutput.error(line);
+    yield* Console.error(line);
   }
-}
+});
 
 export function openVikingInstallFailureHelpLines(failedCommand: MappedCommand, commandOutput = ''): readonly string[] {
   if (isLlamaWheelArchiveExtractionFailure(commandOutput)) {
@@ -2176,136 +2182,134 @@ function extraIndexUrl(command: MappedCommand): string | undefined {
   return undefined;
 }
 
-async function offerToInstallUv(): Promise<boolean> {
-  if (processStdin.isTTY !== true || processStdout.isTTY !== true) {
-    if (process.platform === 'win32') {
-      consoleOutput.warn(
+const offerToInstallUv = Effect.fn('lifecycle.offerToInstallUv')(function* () {
+  const system = yield* SystemInfo;
+  if (!system.stdinIsTTY || !system.stdoutIsTTY) {
+    if (system.platform === 'win32') {
+      yield* Console.warn(
         'Neither uv nor pipx was found on PATH. Falling back to Python pip. ' +
           'Install uv with `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` ' +
           'and re-run with --package-manager uv for an isolated OpenViking environment.',
       );
       return false;
     }
-    consoleOutput.warn(
+    yield* Console.warn(
       'Neither uv nor pipx was found on PATH. Falling back to `python3 -m pip install --user`, which fails on PEP 668 (Homebrew/system) Python.\n' +
         'Re-run with --package-manager uv after installing uv (brew install uv), or pass --package-manager pipx.',
     );
     return false;
   }
-  const readline = createInterface({input: processStdin, output: processStdout});
-  let answer: string;
-  try {
-    answer = (
-      await readline.question(
-        'OpenViking installs into Python; neither uv nor pipx is on PATH so threadnote would fall back to `pip install --user`, which fails on PEP 668 setups.\nInstall uv now? [Y/n] ',
-      )
-    )
-      .trim()
-      .toLowerCase();
-  } finally {
-    readline.close();
-  }
+  const terminal = yield* Terminal.Terminal;
+  yield* terminal.display(
+    'OpenViking installs into Python; neither uv nor pipx is on PATH so threadnote would fall back to `pip install --user`, which fails on PEP 668 setups.\nInstall uv now? [Y/n] ',
+  );
+  const answer = (yield* terminal.readLine).trim().toLowerCase();
   if (answer === 'n' || answer === 'no') {
-    consoleOutput.log(
+    yield* Console.log(
       'Continuing with `python3 -m pip install --user`. You may hit PEP 668 errors on managed Pythons.',
     );
     return false;
   }
-  return await installUv();
-}
+  return yield* installUv();
+});
 
-async function installUv(): Promise<boolean> {
-  if (process.platform === 'win32') {
-    const powershell = await findExecutable(['powershell', 'pwsh']);
+const installUv = Effect.fn('lifecycle.installUv')(function* () {
+  const system = yield* SystemInfo;
+  if (system.platform === 'win32') {
+    const powershell = yield* findExecutable(['powershell', 'pwsh']);
     if (!powershell) {
-      consoleOutput.warn('Could not install uv automatically because PowerShell was not found.');
+      yield* Console.warn('Could not install uv automatically because PowerShell was not found.');
       return false;
     }
-    consoleOutput.log('Installing uv via the official PowerShell installer...');
-    const result = await runCommand(
+    yield* Console.log('Installing uv via the official PowerShell installer...');
+    const result = yield* runCommand(
       powershell,
       ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://astral.sh/uv/install.ps1 | iex'],
       {allowFailure: true},
     );
     if (result.exitCode === 0) {
-      process.env.PATH = [join(expandPath('~'), '.local', 'bin'), process.env.PATH ?? ''].join(delimiter);
-      if (await findExecutable(['uv'])) {
-        candidateDirsPromise = undefined;
+      const localBin = yield* pathJoin(yield* expandPath('~'), '.local', 'bin');
+      system.setEnvironmentVariable('PATH', [localBin, system.environment().PATH ?? ''].join(system.pathDelimiter));
+      if (yield* findExecutable(['uv'])) {
+        candidateDirsCache = undefined;
         return true;
       }
     }
-    consoleOutput.warn('uv installation did not produce an executable on PATH. Open a new PowerShell and retry.');
+    yield* Console.warn('uv installation did not produce an executable on PATH. Open a new PowerShell and retry.');
     return false;
   }
-  const brew = await findExecutable(['brew']);
+  const brew = yield* findExecutable(['brew']);
   if (brew) {
-    consoleOutput.log('Installing uv via Homebrew...');
-    const result = await runCommand(brew, ['install', 'uv'], {allowFailure: true});
+    yield* Console.log('Installing uv via Homebrew...');
+    const result = yield* runCommand(brew, ['install', 'uv'], {allowFailure: true});
     if (result.exitCode === 0) {
       if (result.stdout.trim()) {
-        consoleOutput.log(result.stdout.trim());
+        yield* Console.log(result.stdout.trim());
       }
-      if (await findExecutable(['uv'])) {
+      if (yield* findExecutable(['uv'])) {
         // Drop the candidate-dirs cache so subsequent openviking-server
         // resolutions can query `uv tool dir --bin` now that uv is on PATH.
-        candidateDirsPromise = undefined;
+        candidateDirsCache = undefined;
         return true;
       }
     } else {
-      consoleOutput.warn(`brew install uv failed: ${(result.stderr || result.stdout).trim()}`);
+      yield* Console.warn(`brew install uv failed: ${(result.stderr || result.stdout).trim()}`);
     }
   }
   // Fall back to the official install script. Requires curl + sh; honors any
   // proxy env vars the user already has.
-  if ((await findExecutable(['curl'])) && (await findExecutable(['sh']))) {
-    consoleOutput.log(
+  if ((yield* findExecutable(['curl'])) && (yield* findExecutable(['sh']))) {
+    yield* Console.log(
       'Installing uv via the official install script (curl -LsSf https://astral.sh/uv/install.sh | sh)...',
     );
-    const result = await runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], {
+    const result = yield* runCommand('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], {
       allowFailure: true,
     });
     if (result.exitCode === 0) {
       if (result.stdout.trim()) {
-        consoleOutput.log(result.stdout.trim());
+        yield* Console.log(result.stdout.trim());
       }
-      if (await findExecutable(['uv'])) {
-        candidateDirsPromise = undefined;
+      if (yield* findExecutable(['uv'])) {
+        candidateDirsCache = undefined;
         return true;
       }
-      consoleOutput.warn(
+      yield* Console.warn(
         'uv installed, but the new binary is not yet on this shell PATH. Open a new shell (or `source ~/.zshrc` / `source ~/.bashrc`) and re-run `threadnote install`.',
       );
       return false;
     }
-    consoleOutput.warn(`uv install script failed: ${(result.stderr || result.stdout).trim()}`);
+    yield* Console.warn(`uv install script failed: ${(result.stderr || result.stdout).trim()}`);
   }
-  consoleOutput.warn(
+  yield* Console.warn(
     'Could not install uv automatically. Install it manually (brew install uv) and re-run threadnote install.',
   );
   return false;
-}
+});
 
-async function uvExecutables(): Promise<readonly UvExecutable[]> {
-  const executables = await findExecutableCandidates(['uv']);
-  return await Promise.all(
-    executables.map(async executable => {
-      const result = await runCommand(executable, ['--version'], {allowFailure: true, timeoutMs: 5000});
-      const match = `${result.stdout}\n${result.stderr}`.match(/\buv\s+v?(\d+(?:\.\d+){1,2})\b/i);
-      return {executable, version: match?.[1]};
-    }),
+const uvExecutables = Effect.fn('lifecycle.uvExecutables')(function* () {
+  const executables = yield* findExecutableCandidates(['uv']);
+  return yield* Effect.forEach(
+    executables,
+    executable =>
+      Effect.gen(function* () {
+        const result = yield* runCommand(executable, ['--version'], {allowFailure: true, timeoutMs: 5000});
+        const match = `${result.stdout}\n${result.stderr}`.match(/\buv\s+v?(\d+(?:\.\d+){1,2})\b/i);
+        return {executable, version: match?.[1]};
+      }),
+    {concurrency: 'unbounded'},
   );
-}
+});
 
-export async function findSupportedUvExecutable(): Promise<string | undefined> {
-  const candidates = await uvExecutables();
+export const findSupportedUvExecutable = Effect.fn('lifecycle.findSupportedUvExecutable')(function* () {
+  const candidates = yield* uvExecutables();
   return candidates.find(
     candidate =>
       candidate.version !== undefined && compareVersions(candidate.version, MINIMUM_UV_SYSTEM_CERTS_VERSION) >= 0,
   )?.executable;
-}
+});
 
-export async function ensureSupportedUvExecutable(): Promise<string | undefined> {
-  const candidates = await uvExecutables();
+export const ensureSupportedUvExecutable = Effect.fn('lifecycle.ensureSupportedUvExecutable')(function* () {
+  const candidates = yield* uvExecutables();
   const supported = candidates.find(
     candidate =>
       candidate.version !== undefined && compareVersions(candidate.version, MINIMUM_UV_SYSTEM_CERTS_VERSION) >= 0,
@@ -2317,22 +2321,22 @@ export async function ensureSupportedUvExecutable(): Promise<string | undefined>
     return undefined;
   }
 
-  consoleOutput.log(`Updating uv to ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer for system certificate support.`);
+  yield* Console.log(`Updating uv to ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer for system certificate support.`);
   for (const candidate of candidates) {
-    const result = await runCommand(candidate.executable, ['self', 'update'], {allowFailure: true});
+    const result = yield* runCommand(candidate.executable, ['self', 'update'], {allowFailure: true});
     if (result.exitCode === 0) {
-      const updated = await findSupportedUvExecutable();
+      const updated = yield* findSupportedUvExecutable();
       if (updated) {
         return updated;
       }
     }
   }
 
-  const brew = await findExecutable(['brew']);
+  const brew = yield* findExecutable(['brew']);
   if (brew) {
-    const result = await runCommand(brew, ['upgrade', 'uv'], {allowFailure: true});
+    const result = yield* runCommand(brew, ['upgrade', 'uv'], {allowFailure: true});
     if (result.exitCode === 0) {
-      const updated = await findSupportedUvExecutable();
+      const updated = yield* findSupportedUvExecutable();
       if (updated) {
         return updated;
       }
@@ -2347,40 +2351,44 @@ export async function ensureSupportedUvExecutable(): Promise<string | undefined>
       `Found ${found}; automatic update did not produce a compatible uv. ` +
       'Run `uv self update` (standalone install) or `brew upgrade uv`, then re-run `threadnote update`.',
   );
-}
+});
 
-function isUvExecutable(executable: string): boolean {
-  const name = basename(executable).toLowerCase();
+const isUvExecutable = Effect.fn('lifecycle.isUvExecutable')(function* (executable: string) {
+  const name = (yield* pathBasename(executable)).toLowerCase();
   return name === 'uv' || name === 'uv.exe';
-}
+});
 
-export async function resolveOpenVikingInstallCommand(command: MappedCommand): Promise<MappedCommand> {
-  if (!isUvExecutable(command.executable)) {
+export const resolveOpenVikingInstallCommand = Effect.fn('lifecycle.resolveOpenVikingInstallCommand')(function* (
+  command: MappedCommand,
+) {
+  if (!(yield* isUvExecutable(command.executable))) {
     return command;
   }
-  const uv = await ensureSupportedUvExecutable();
+  const uv = yield* ensureSupportedUvExecutable();
   if (!uv) {
     throw new Error(
       `uv was selected to install OpenViking but was not found on PATH. Install uv ${MINIMUM_UV_SYSTEM_CERTS_VERSION} or newer and re-run Threadnote.`,
     );
   }
   return {...command, executable: uv};
-}
+});
 
-async function getPythonSystemCertificatesInstallCommand(serverPath: string): Promise<MappedCommand> {
-  const pythonPath = await siblingPythonForExecutable(serverPath);
-  if (!pythonPath) {
-    throw new Error(`Could not find the OpenViking Python environment for ${serverPath}`);
-  }
-  const uvPath = await ensureSupportedUvExecutable();
-  if (uvPath) {
-    return {
-      executable: uvPath,
-      args: ['pip', 'install', '--system-certs', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
-    };
-  }
-  return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
-}
+const getPythonSystemCertificatesInstallCommand = Effect.fn('lifecycle.getPythonSystemCertificatesInstallCommand')(
+  function* (serverPath: string) {
+    const pythonPath = yield* siblingPythonForExecutable(serverPath);
+    if (!pythonPath) {
+      throw new Error(`Could not find the OpenViking Python environment for ${serverPath}`);
+    }
+    const uvPath = yield* ensureSupportedUvExecutable();
+    if (uvPath) {
+      return {
+        executable: uvPath,
+        args: ['pip', 'install', '--system-certs', '--python', pythonPath, PYTHON_SYSTEM_CERTS_PACKAGE],
+      };
+    }
+    return {executable: pythonPath, args: ['-m', 'pip', 'install', PYTHON_SYSTEM_CERTS_PACKAGE]};
+  },
+);
 
 /**
  * Prebuilt llama-cpp-python wheel index for openviking[local-embed]. PyPI ships
@@ -2390,14 +2398,15 @@ async function getPythonSystemCertificatesInstallCommand(serverPath: string): Pr
  * to disable it, e.g. air-gapped) can override via THREADNOTE_LLAMA_WHEEL_INDEX;
  * setting it empty turns the extra index off and restores a from-source build.
  */
-export function localEmbedWheelIndexUrl(): string | undefined {
-  const override = process.env.THREADNOTE_LLAMA_WHEEL_INDEX;
+export const localEmbedWheelIndexUrl = Effect.fn('lifecycle.localEmbedWheelIndexUrl')(function* () {
+  const system = yield* SystemInfo;
+  const override = system.environment().THREADNOTE_LLAMA_WHEEL_INDEX;
   if (override !== undefined) {
     return override.trim() === '' ? undefined : override.trim();
   }
   const base = 'https://abetlen.github.io/llama-cpp-python/whl';
-  return process.platform === 'darwin' ? `${base}/metal` : `${base}/cpu`;
-}
+  return system.platform === 'darwin' ? `${base}/metal` : `${base}/cpu`;
+});
 
 /**
  * CPython version the uv-managed OpenViking tool is pinned to, so local-embed
@@ -2407,22 +2416,23 @@ export function localEmbedWheelIndexUrl(): string | undefined {
  * default interpreter — useful in locked or offline environments where a managed
  * CPython cannot be fetched.
  */
-export function openVikingToolPython(): string | undefined {
-  const override = process.env.THREADNOTE_OPENVIKING_PYTHON;
+export const openVikingToolPython = Effect.fn('lifecycle.openVikingToolPython')(function* () {
+  const system = yield* SystemInfo;
+  const override = system.environment().THREADNOTE_OPENVIKING_PYTHON;
   if (override !== undefined) {
     return override.trim() === '' ? undefined : override.trim();
   }
   return OPENVIKING_TOOL_PYTHON;
-}
+});
 
-export async function getInstallCommands(
+export const getInstallCommands = Effect.fn('lifecycle.getInstallCommands')(function* (
   config: RuntimeConfig,
   preferred: PackageManager | undefined,
   force: boolean,
-): Promise<readonly MappedCommand[]> {
+) {
   const packageSpec = `${OPENVIKING_PACKAGE_NAME}==${config.openVikingVersion}`;
-  const wheelIndex = localEmbedWheelIndexUrl();
-  const manager = preferred ?? (await detectPackageManager());
+  const wheelIndex = yield* localEmbedWheelIndexUrl();
+  const manager = preferred ?? (yield* detectPackageManager());
   if (manager === 'pipx') {
     const installArgs = force ? ['install', '--force'] : ['install'];
     if (wheelIndex) {
@@ -2443,7 +2453,7 @@ export async function getInstallCommands(
     // --python pins the tool to a wheel-supported interpreter (uv fetches a
     // managed CPython when none is present), so local-embed resolves a prebuilt
     // wheel instead of compiling. --extra-index-url points at that wheel index.
-    const toolPython = openVikingToolPython();
+    const toolPython = yield* openVikingToolPython();
     const uvArgs = [
       'tool',
       'install',
@@ -2469,189 +2479,203 @@ export async function getInstallCommands(
   }
   pipArgs.push(PYTHON_SYSTEM_CERTS_PACKAGE);
   pipArgs.push(packageSpec);
-  const executable = (await findExecutable(pythonExecutableCandidates())) ?? pythonExecutableCandidates()[0]!;
+  const system = yield* SystemInfo;
+  const pythonCandidates = pythonExecutableCandidates(system.platform);
+  const executable = (yield* findExecutable(pythonCandidates)) ?? pythonCandidates[0]!;
   return [{executable, args: pipArgs}];
-}
+});
 
-async function detectPackageManager(): Promise<PackageManager> {
-  if (await findExecutable(['uv'])) {
+const detectPackageManager = Effect.fn('lifecycle.detectPackageManager')(function* () {
+  if (yield* findExecutable(['uv'])) {
     return 'uv';
   }
-  if (await findExecutable(['pipx'])) {
+  if (yield* findExecutable(['pipx'])) {
     return 'pipx';
   }
   return 'pip';
-}
+});
 
-function printInstallNextSteps(options: {readonly dryRun: boolean; readonly startsServer: boolean}): void {
+const printInstallNextSteps = Effect.fn('lifecycle.printInstallNextSteps')(function* (options: {
+  readonly dryRun: boolean;
+  readonly startsServer: boolean;
+}) {
   if (options.dryRun) {
-    consoleOutput.log('Dry run complete. Run without --dry-run to install and start OpenViking.');
+    yield* Console.log('Dry run complete. Run without --dry-run to install and start OpenViking.');
     return;
   }
 
   if (options.startsServer) {
-    consoleOutput.log('Install complete. OpenViking health is ready. Next:');
-    consoleOutput.log('  threadnote doctor --dry-run');
+    yield* Console.log('Install complete. OpenViking health is ready. Next:');
+    yield* Console.log('  threadnote doctor --dry-run');
     return;
   }
 
-  consoleOutput.log('Install complete. Run start, then doctor:');
-  consoleOutput.log('  threadnote start');
-  consoleOutput.log('  threadnote doctor --dry-run');
-}
+  yield* Console.log('Install complete. Run start, then doctor:');
+  yield* Console.log('  threadnote start');
+  yield* Console.log('  threadnote doctor --dry-run');
+});
 
-async function writeTemplateIfMissing(options: {
+const writeTemplateIfMissing = Effect.fn('lifecycle.writeTemplateIfMissing')(function* (options: {
   readonly config: RuntimeConfig;
   readonly destinationPath: string;
   readonly dryRun: boolean;
-  readonly shouldRepair?: (content: string) => boolean;
+  readonly shouldRepair?: (content: string) => boolean | Effect.Effect<boolean, unknown, Path.Path>;
   readonly templatePath: string;
-}): Promise<void> {
-  if (await exists(options.destinationPath)) {
-    const currentContent = await readFile(options.destinationPath, 'utf8');
-    if (options.shouldRepair?.(currentContent) !== true) {
-      consoleOutput.log(`Already exists: ${options.destinationPath}`);
+}) {
+  if (yield* exists(options.destinationPath)) {
+    const currentContent = yield* readFile(options.destinationPath, 'utf8');
+    const repairDecision = options.shouldRepair?.(currentContent);
+    const shouldRepair = Effect.isEffect(repairDecision) ? yield* repairDecision : repairDecision;
+    if (shouldRepair !== true) {
+      yield* Console.log(`Already exists: ${options.destinationPath}`);
       return;
     }
-    const rendered = renderTemplate(await readFile(options.templatePath, 'utf8'), options.config);
+    const rendered = renderTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
     if (options.dryRun) {
-      consoleOutput.log(`Would repair generated config: ${options.destinationPath}`);
+      yield* Console.log(`Would repair generated config: ${options.destinationPath}`);
       return;
     }
     const backupPath = `${options.destinationPath}.legacy-${safeTimestamp()}`;
-    await writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
-    await chmod(backupPath, 0o600);
-    await writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
-    await chmod(options.destinationPath, 0o600);
-    consoleOutput.log(`Repaired generated config: ${options.destinationPath}`);
-    consoleOutput.log(`Backup: ${backupPath}`);
+    yield* writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
+    yield* chmod(backupPath, 0o600);
+    yield* writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
+    yield* chmod(options.destinationPath, 0o600);
+    yield* Console.log(`Repaired generated config: ${options.destinationPath}`);
+    yield* Console.log(`Backup: ${backupPath}`);
     return;
   }
-  const rendered = renderTemplate(await readFile(options.templatePath, 'utf8'), options.config);
+  const rendered = renderTemplate(yield* readFile(options.templatePath, 'utf8'), options.config);
   if (options.dryRun) {
-    consoleOutput.log(`Would write ${options.destinationPath}`);
+    yield* Console.log(`Would write ${options.destinationPath}`);
     return;
   }
-  await ensureDirectory(dirname(options.destinationPath), false);
-  await writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
-  await chmod(options.destinationPath, 0o600);
-  consoleOutput.log(`Wrote ${options.destinationPath}`);
-}
+  yield* ensureDirectory(yield* pathDirname(options.destinationPath), false);
+  yield* writeFile(options.destinationPath, rendered, {encoding: 'utf8', mode: 0o600});
+  yield* chmod(options.destinationPath, 0o600);
+  yield* Console.log(`Wrote ${options.destinationPath}`);
+});
 
-async function installCommandShim(dryRun: boolean): Promise<void> {
-  if (!shouldManageCommandShim()) {
-    consoleOutput.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
+const installCommandShim = Effect.fn('lifecycle.installCommandShim')(function* (dryRun: boolean) {
+  const system = yield* SystemInfo;
+  if (!shouldManageCommandShim(system.platform)) {
+    yield* Console.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
     return;
   }
-  const binDir = expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin');
-  const shimPath = join(binDir, 'threadnote');
-  const existingContent = await readFileIfExists(shimPath);
+  const binDir = yield* expandPath(system.environment().THREADNOTE_BIN_DIR ?? '~/.local/bin');
+  const shimPath = yield* pathJoin(binDir, 'threadnote');
+  const existingContent = yield* readFileIfExists(shimPath);
   if (existingContent && !isManagedCommandShim(existingContent)) {
-    consoleOutput.log(`WARN not overwriting existing command shim: ${shimPath}`);
+    yield* Console.log(`WARN not overwriting existing command shim: ${shimPath}`);
     return;
   }
 
-  const content = renderCommandShim();
+  const content = yield* renderCommandShim();
   if (existingContent === content) {
-    consoleOutput.log(`Already exists: ${shimPath}`);
+    yield* Console.log(`Already exists: ${shimPath}`);
     return;
   }
   if (dryRun) {
-    consoleOutput.log(`Would write command shim: ${shimPath}`);
+    yield* Console.log(`Would write command shim: ${shimPath}`);
     return;
   }
-  await ensureDirectory(binDir, false);
-  await writeFile(shimPath, content, {encoding: 'utf8', mode: 0o755});
-  await chmod(shimPath, 0o755);
-  consoleOutput.log(`Wrote command shim: ${shimPath}`);
-}
+  yield* ensureDirectory(binDir, false);
+  yield* writeFile(shimPath, content, {encoding: 'utf8', mode: 0o755});
+  yield* chmod(shimPath, 0o755);
+  yield* Console.log(`Wrote command shim: ${shimPath}`);
+});
 
-async function removeCommandShim(dryRun: boolean): Promise<void> {
-  if (!shouldManageCommandShim()) {
-    consoleOutput.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
+const removeCommandShim = Effect.fn('lifecycle.removeCommandShim')(function* (dryRun: boolean) {
+  const system = yield* SystemInfo;
+  if (!shouldManageCommandShim(system.platform)) {
+    yield* Console.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
     return;
   }
-  const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
-  const content = await readFileIfExists(shimPath);
+  const shimPath = yield* pathJoin(
+    yield* expandPath(system.environment().THREADNOTE_BIN_DIR ?? '~/.local/bin'),
+    'threadnote',
+  );
+  const content = yield* readFileIfExists(shimPath);
   if (content === undefined) {
-    consoleOutput.log(`Already absent: ${shimPath}`);
+    yield* Console.log(`Already absent: ${shimPath}`);
     return;
   }
   if (!isManagedCommandShim(content)) {
-    consoleOutput.log(`WARN not removing unmanaged command shim: ${shimPath}`);
+    yield* Console.log(`WARN not removing unmanaged command shim: ${shimPath}`);
     return;
   }
-  await removePath(shimPath, 'command shim', dryRun);
-}
+  yield* removePath(shimPath, 'command shim', dryRun);
+});
 
-async function installUserAgentInstructions(dryRun: boolean): Promise<void> {
+const installUserAgentInstructions = Effect.fn('lifecycle.installUserAgentInstructions')(function* (dryRun: boolean) {
   for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
-    const instructions = await renderUserAgentInstructions(target);
-    const targetPath = expandPath(target.path);
-    const currentContent = await readFileIfExists(targetPath);
+    const instructions = yield* renderUserAgentInstructions(target);
+    const targetPath = yield* expandPath(target.path);
+    const currentContent = yield* readFileIfExists(targetPath);
     if (target.kind === 'file' && currentContent !== undefined && extractManagedBlock(currentContent) === undefined) {
-      consoleOutput.log(`WARN ${targetPath} is not managed by threadnote; not modifying it`);
+      yield* Console.log(`WARN ${targetPath} is not managed by threadnote; not modifying it`);
       continue;
     }
     const nextContent = target.kind === 'file' ? instructions : upsertManagedBlock(currentContent ?? '', instructions);
     if (nextContent === undefined) {
-      consoleOutput.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
+      yield* Console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
       continue;
     }
     if (currentContent === nextContent) {
-      consoleOutput.log(`Already exists: ${targetPath}`);
+      yield* Console.log(`Already exists: ${targetPath}`);
       continue;
     }
     if (dryRun) {
-      consoleOutput.log(currentContent === undefined ? `Would write ${targetPath}` : `Would update ${targetPath}`);
+      yield* Console.log(currentContent === undefined ? `Would write ${targetPath}` : `Would update ${targetPath}`);
       continue;
     }
-    await ensureDirectory(dirname(targetPath), false);
-    await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
-    consoleOutput.log(currentContent === undefined ? `Wrote ${targetPath}` : `Updated ${targetPath}`);
+    yield* ensureDirectory(yield* pathDirname(targetPath), false);
+    yield* writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
+    yield* Console.log(currentContent === undefined ? `Wrote ${targetPath}` : `Updated ${targetPath}`);
   }
-}
+});
 
-async function removeUserAgentInstructions(dryRun: boolean): Promise<void> {
+const removeUserAgentInstructions = Effect.fn('lifecycle.removeUserAgentInstructions')(function* (dryRun: boolean) {
   for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
-    const targetPath = expandPath(target.path);
-    const currentContent = await readFileIfExists(targetPath);
+    const targetPath = yield* expandPath(target.path);
+    const currentContent = yield* readFileIfExists(targetPath);
     if (currentContent === undefined) {
-      consoleOutput.log(`Already absent: ${targetPath}`);
+      yield* Console.log(`Already absent: ${targetPath}`);
       continue;
     }
     if (target.kind === 'file') {
       if (extractManagedBlock(currentContent) === undefined) {
-        consoleOutput.log(`WARN ${targetPath} is not managed by threadnote; not removing it`);
+        yield* Console.log(`WARN ${targetPath} is not managed by threadnote; not removing it`);
         continue;
       }
-      await removePath(targetPath, target.label, dryRun);
+      yield* removePath(targetPath, target.label, dryRun);
       continue;
     }
     const nextContent = removeManagedBlock(currentContent);
     if (nextContent === undefined) {
-      consoleOutput.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
+      yield* Console.log(`WARN ${targetPath} has partial threadnote markers; not modifying it`);
       continue;
     }
     if (nextContent === currentContent) {
-      consoleOutput.log(`No threadnote block found: ${targetPath}`);
+      yield* Console.log(`No threadnote block found: ${targetPath}`);
       continue;
     }
     if (nextContent.trim().length === 0) {
-      await removePath(targetPath, target.label, dryRun);
+      yield* removePath(targetPath, target.label, dryRun);
       continue;
     }
     if (dryRun) {
-      consoleOutput.log(`Would update ${targetPath}`);
+      yield* Console.log(`Would update ${targetPath}`);
       continue;
     }
-    await writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
-    consoleOutput.log(`Updated ${targetPath}`);
+    yield* writeFile(targetPath, nextContent, {encoding: 'utf8', mode: 0o644});
+    yield* Console.log(`Updated ${targetPath}`);
   }
-}
+});
 
-async function renderUserAgentInstructions(target: UserAgentInstructionTarget): Promise<string> {
-  const block = await renderUserAgentInstructionsBlock();
+const renderUserAgentInstructions = Effect.fn('lifecycle.renderUserAgentInstructions')(function* (
+  target: UserAgentInstructionTarget,
+) {
+  const block = yield* renderUserAgentInstructionsBlock();
   if (target.kind === 'block') {
     return block;
   }
@@ -2664,12 +2688,15 @@ async function renderUserAgentInstructions(target: UserAgentInstructionTarget): 
     '',
     block,
   ].join('\n');
-}
+});
 
-async function renderUserAgentInstructionsBlock(): Promise<string> {
-  const instructions = (await readFile(join(toolRoot(), 'docs', 'agent-instructions.md'), 'utf8')).trim();
+const renderUserAgentInstructionsBlock = Effect.fn('lifecycle.renderUserAgentInstructionsBlock')(function* () {
+  const instructions = (yield* readFile(
+    yield* pathJoin(yield* toolRoot(), 'docs', 'agent-instructions.md'),
+    'utf8',
+  )).trim();
   return `${USER_INSTRUCTIONS_START_MARKER}\n${instructions}\n${USER_INSTRUCTIONS_END_MARKER}`;
-}
+});
 
 function extractManagedBlock(content: string): string | undefined {
   const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
@@ -2713,8 +2740,8 @@ function joinMarkdownSections(sections: readonly string[]): string {
   return `${sections.filter(section => section.length > 0).join('\n\n')}\n`;
 }
 
-function renderCommandShim(): string {
-  const root = toolRoot();
+const renderCommandShim = Effect.fn('lifecycle.renderCommandShim')(function* () {
+  const root = yield* toolRoot();
   return [
     '#!/usr/bin/env bash',
     `# ${SHIM_MARKER}`,
@@ -2739,7 +2766,7 @@ function renderCommandShim(): string {
     'exit 127',
     '',
   ].join('\n');
-}
+});
 
 function isManagedCommandShim(content: string): boolean {
   return content.includes(SHIM_MARKER);
@@ -2767,8 +2794,8 @@ const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: Ru
       ),
     );
   }
-  const source = join(toolRoot(), 'config', 'launchd', `${LAUNCHD_LABEL}.plist.template`);
-  const destination = launchAgentPath();
+  const source = yield* pathJoin(yield* toolRoot(), 'config', 'launchd', `${LAUNCHD_LABEL}.plist.template`);
+  const destination = yield* launchAgentPath();
   const rendered = renderTemplate(yield* fs.readFileString(source), config, {
     OPENVIKING_SERVER_PATH: resolvedServer ?? OPENVIKING_SERVER_COMMAND,
   });
@@ -2781,12 +2808,12 @@ const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: Ru
     yield* bootstrapLaunchAgent(destination, true);
     return;
   }
-  yield* fs.makeDirectory(dirname(destination), {recursive: true});
-  yield* fs.makeDirectory(dirname(openVikingLogPath(config)), {recursive: true});
+  yield* fs.makeDirectory(yield* pathDirname(destination), {recursive: true});
+  yield* fs.makeDirectory(yield* pathDirname(yield* openVikingLogPath(config)), {recursive: true});
   const healthUrl = openVikingHealthUrl(config);
   const activationTimeoutMs = yield* remainingBudget(installDeadline, START_HEALTH_TIMEOUT_MS);
   const health = yield* activateLaunchAgent<
-    CommandExecutor | FileSystem.FileSystem | HttpService | Path.Path | SystemInfo
+    ChildProcessSpawner | CommandExecutor | FileSystem.FileSystem | HttpService | Path.Path | SystemInfo
   >(config, destination, rendered, activationTimeoutMs, {
     bootout: timeoutMs => bootoutLaunchAgent(false, undefined, timeoutMs),
     bootstrap: (plistPath, timeoutMs) => bootstrapLaunchAgent(plistPath, false, undefined, timeoutMs),
@@ -2806,7 +2833,7 @@ const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: Ru
   return yield* Effect.fail(
     new Error(
       `Installed and started ${LAUNCHD_LABEL}, but ${healthUrl} did not become healthy within ` +
-        `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${openVikingLogPath(config)}`,
+        `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${yield* openVikingLogPath(config)}`,
     ),
   );
 });
@@ -2920,17 +2947,19 @@ function boundedRecovery<R>(
 
 export const stageLaunchAgentPlist = Effect.fn('stageLaunchAgentPlist')(function* (plistPath: string, content: string) {
   const fs = yield* FileSystem.FileSystem;
-  return yield* stageLaunchAgentPlistWithFileSystem(fs, plistPath, content);
+  const system = yield* SystemInfo;
+  return yield* stageLaunchAgentPlistWithFileSystem(fs, plistPath, content, system.processId);
 });
 
 function stageLaunchAgentPlistWithFileSystem(
   fs: FileSystem.FileSystem,
   plistPath: string,
   content: string,
+  processId: number,
 ): Effect.Effect<LaunchAgentPlistTransaction, unknown> {
   return Effect.gen(function* () {
-    const stagePath = `${plistPath}.threadnote-stage-${process.pid}`;
-    const rollbackPath = `${plistPath}.threadnote-rollback-${process.pid}`;
+    const stagePath = `${plistPath}.threadnote-stage-${processId}`;
+    const rollbackPath = `${plistPath}.threadnote-rollback-${processId}`;
     const lockPath = `${plistPath}.threadnote-lock`;
     yield* fs.makeDirectory(lockPath);
     const prepare = Effect.gen(function* () {
@@ -3006,7 +3035,7 @@ export function waitForLaunchAgentHealth(
   config: RuntimeConfig,
   timeoutMs: number,
   progressMessage: string,
-): Effect.Effect<string | undefined, unknown, CommandExecutor | HttpService> {
+): Effect.Effect<string | undefined, unknown, CommandExecutor | HttpService | SystemInfo> {
   return waitForLaunchAgentHealthWithEffects(config, timeoutMs, progressMessage, liveLaunchAgentHealthEffects());
 }
 
@@ -3071,7 +3100,7 @@ const readOpenVikingHealthEffect = Effect.fn('readOpenVikingHealth')(function* (
   );
 });
 
-function liveLaunchAgentHealthEffects(): LaunchAgentHealthEffects<CommandExecutor | HttpService> {
+function liveLaunchAgentHealthEffects(): LaunchAgentHealthEffects<CommandExecutor | HttpService | SystemInfo> {
   return {
     ownsPort: (pid, config, timeoutMs) => launchdProcessOwnsPort(pid, config, timeoutMs),
     readHealth: readOpenVikingHealthEffect,
@@ -3080,7 +3109,7 @@ function liveLaunchAgentHealthEffects(): LaunchAgentHealthEffects<CommandExecuto
 }
 
 const isTcpPortOpenEffect = Effect.fn('isTcpPortOpen')(function* (host: string, port: number, timeoutMs: number) {
-  return yield* fromPromise(`check TCP port ${host}:${port}`, () => isTcpPortOpen(host, port, timeoutMs));
+  return yield* isTcpPortOpen(host, port, timeoutMs);
 });
 
 const remainingBudget = Effect.fn('remainingLaunchAgentBudget')(function* (deadline: number, timeoutMs: number) {
@@ -3107,7 +3136,7 @@ export function launchAgentHealthIsStable(
 
 const removeLaunchAgent = Effect.fn('removeLaunchAgent')(function* (dryRun: boolean) {
   const fs = yield* FileSystem.FileSystem;
-  const agentPath = launchAgentPath();
+  const agentPath = yield* launchAgentPath();
   const content = yield* fs.readFileString(agentPath).pipe(
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
@@ -3130,12 +3159,15 @@ const removeLaunchAgent = Effect.fn('removeLaunchAgent')(function* (dryRun: bool
   yield* Console.log(`Removed LaunchAgent: ${agentPath}`);
 });
 
-async function eraseThreadnoteHome(path: string, dryRun: boolean): Promise<void> {
+const eraseThreadnoteHome = Effect.fn('lifecycle.eraseThreadnoteHome')(function* (path: string, dryRun: boolean) {
   assertSafeThreadnoteHomeForErase(path);
-  await removePathIfExists(path, 'THREADNOTE_HOME and all memories', dryRun);
-}
+  yield* removePathIfExists(path, 'THREADNOTE_HOME and all memories', dryRun);
+});
 
-function shouldRepairOpenVikingConfig(content: string, config: RuntimeConfig): boolean {
+const shouldRepairOpenVikingConfig = Effect.fn('lifecycle.shouldRepairOpenVikingConfig')(function* (
+  content: string,
+  config: RuntimeConfig,
+) {
   const parsed = parseJsonConfigObject(content);
   if (!parsed) {
     return false;
@@ -3144,10 +3176,10 @@ function shouldRepairOpenVikingConfig(content: string, config: RuntimeConfig): b
     return true;
   }
   return (
-    isGeneratedLocalPilotConfig(parsed, config) &&
+    (yield* isGeneratedLocalPilotConfig(parsed, config)) &&
     (parsed.auto_generate_l0 !== false || parsed.auto_generate_l1 !== false)
   );
-}
+});
 
 function isLegacyOpenVikingConfig(parsed: JsonObject): boolean {
   return (
@@ -3159,7 +3191,10 @@ function isLegacyOpenVikingConfig(parsed: JsonObject): boolean {
   );
 }
 
-function isGeneratedLocalPilotConfig(parsed: JsonObject, config: RuntimeConfig): boolean {
+const isGeneratedLocalPilotConfig = Effect.fn('lifecycle.isGeneratedLocalPilotConfig')(function* (
+  parsed: JsonObject,
+  config: RuntimeConfig,
+) {
   const allowedKeys = new Set([
     'auto_generate_l0',
     'auto_generate_l1',
@@ -3178,7 +3213,10 @@ function isGeneratedLocalPilotConfig(parsed: JsonObject, config: RuntimeConfig):
   if (typeof parsed.default_user !== 'string') {
     return false;
   }
-  if (!isJsonObject(parsed.storage) || parsed.storage.workspace !== join(config.agentContextHome, 'data')) {
+  if (
+    !isJsonObject(parsed.storage) ||
+    parsed.storage.workspace !== (yield* pathJoin(config.agentContextHome, 'data'))
+  ) {
     return false;
   }
   return (
@@ -3186,7 +3224,7 @@ function isGeneratedLocalPilotConfig(parsed: JsonObject, config: RuntimeConfig):
     parsed.server.host === config.host &&
     String(parsed.server.port) === String(config.port)
   );
-}
+});
 
 function shouldRepairLegacyOvCliConfig(content: string): boolean {
   const parsed = parseJsonConfigObject(content);

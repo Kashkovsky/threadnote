@@ -1,6 +1,4 @@
-import {chmod, readFile, realpath, stat, writeFile} from 'node:fs/promises';
-import {basename, dirname, join, relative} from 'node:path';
-import {Console, Effect, FileSystem} from 'effect';
+import {Console, Effect, FileSystem, Option, Path, Result} from 'effect';
 import yaml from 'js-yaml';
 import {
   DEFAULT_SEED_PATTERNS,
@@ -11,8 +9,8 @@ import {
 } from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {maybeRunEffect} from './effect/command.js';
-import {consoleOutput} from './effect/console.js';
-import {applicationError, fromPromise} from './effect/errors.js';
+import {applicationError} from './effect/errors.js';
+import {SystemInfo} from './effect/system.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import {detectSecretMatches} from './scrubber.js';
@@ -27,7 +25,6 @@ import type {
 } from './types.js';
 import {
   ensureDirectory,
-  errorMessage,
   exists,
   expandPath,
   getGlobBase,
@@ -51,6 +48,7 @@ import {
 
 interface SeedStateEntry {
   readonly mtimeMs: number;
+  readonly sha256?: string;
   readonly size: number;
 }
 
@@ -98,11 +96,13 @@ const log = Console.log;
 export function runSeed(config: RuntimeConfig, options: SeedOptions) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
-    const ignorePatterns = yield* fromPromise('read seed ignore patterns', loadIgnorePatterns);
-    const ov = yield* fromPromise('find OpenViking CLI for seed', () => openVikingCliForMode(options.dryRun === true));
-    const watchIntervalMinutes = parseSeedWatchIntervalMinutes(process.env[SEED_WATCH_INTERVAL_ENV]);
-    const statePath = join(config.agentContextHome, SEED_STATE_FILE);
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const manifest = yield* readSeedManifest(config.manifestPath);
+    const ignorePatterns = yield* loadIgnorePatterns();
+    const ov = yield* openVikingCliForMode(options.dryRun === true);
+    const watchIntervalMinutes = parseSeedWatchIntervalMinutes(system.environment()[SEED_WATCH_INTERVAL_ENV]);
+    const statePath = path.join(config.agentContextHome, SEED_STATE_FILE);
     const state: {files: Record<string, SeedStateEntry>; version: 1} =
       options.force === true ? {files: {}, version: 1} : yield* readSeedState(statePath);
     const projects = yield* Effect.try({
@@ -114,25 +114,27 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
     let unchangedCount = 0;
 
     for (const project of projects) {
-      const projectRoot = expandPath(project.path);
+      const projectRoot = yield* expandPath(project.path);
       if (!(yield* fs.exists(projectRoot))) {
         yield* log(`WARN project missing: ${project.name} (${projectRoot})`);
         continue;
       }
 
-      const candidates = yield* fromPromise('collect seed candidates', () =>
-        collectSeedCandidates(project, projectRoot, ignorePatterns),
-      );
+      const candidates = yield* collectSeedCandidates(project, projectRoot, ignorePatterns);
       for (const candidate of candidates) {
         const fileStat = yield* statSeedFile(candidate.filePath);
         const recorded = state.files[candidate.destinationUri];
-        if (fileStat && recorded && recorded.mtimeMs === fileStat.mtimeMs && recorded.size === fileStat.size) {
+        if (
+          fileStat &&
+          recorded &&
+          recorded.mtimeMs === fileStat.mtimeMs &&
+          recorded.size === fileStat.size &&
+          recorded.sha256 === fileStat.sha256
+        ) {
           unchangedCount += 1;
           continue;
         }
-        const importPath = yield* fromPromise('prepare seed file', () =>
-          prepareSeedFile(config, candidate, options.dryRun === true),
-        );
+        const importPath = yield* prepareSeedFile(config, candidate, options.dryRun === true);
         if (!importPath) {
           skippedCount += 1;
           continue;
@@ -152,7 +154,7 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
         yield* maybeRunEffect(options.dryRun === true, ov, args);
         importedCount += 1;
         if (fileStat && options.dryRun !== true) {
-          state.files[candidate.destinationUri] = {mtimeMs: fileStat.mtimeMs, size: fileStat.size};
+          state.files[candidate.destinationUri] = fileStat;
         }
       }
     }
@@ -187,9 +189,10 @@ export function seedDependencyGraphs(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const factsByProject = new Map<string, DependencyFacts>();
     for (const project of manifest.projects) {
-      const projectRoot = expandPath(project.path);
+      const projectRoot = yield* expandPath(project.path);
       if (!(yield* fs.exists(projectRoot))) {
         continue;
       }
@@ -231,8 +234,8 @@ export function seedDependencyGraphs(
         written += 1;
         continue;
       }
-      const graphPath = join(config.agentContextHome, 'graph', graphCacheFileName(project.name));
-      yield* fs.makeDirectory(dirname(graphPath), {recursive: true});
+      const graphPath = path.join(config.agentContextHome, 'graph', yield* graphCacheFileName(project.name));
+      yield* fs.makeDirectory(path.dirname(graphPath), {recursive: true});
       yield* fs.writeFileString(graphPath, document, {mode: 0o600});
       yield* fs.chmod(graphPath, 0o600);
       yield* maybeRunEffect(
@@ -266,13 +269,17 @@ function filterProjects(
 }
 
 function statSeedFile(path: string) {
-  return fromPromise('stat seed file', () => stat(path)).pipe(
-    Effect.map(result => ({mtimeMs: result.mtimeMs, size: result.size})),
-    Effect.catchIf(
-      error => (error.cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT',
-      () => Effect.succeed(undefined),
-    ),
-  );
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(path).pipe(Effect.option);
+    return info._tag === 'Some'
+      ? {
+          mtimeMs: Option.getOrElse(info.value.mtime, () => new Date(0)).getTime(),
+          sha256: yield* sha256(yield* fs.readFile(path)),
+          size: Number(info.value.size),
+        }
+      : undefined;
+  });
 }
 
 function readSeedState(path: string) {
@@ -287,28 +294,33 @@ function readSeedState(path: string) {
     if (raw === undefined) {
       return {files: {}, version: 1} as const;
     }
-    try {
-      const parsed = JSON.parse(raw) as Partial<SeedStateFile>;
-      if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
-        return {files: {}, version: 1} as const;
-      }
-      const files: Record<string, SeedStateEntry> = {};
-      for (const [uri, entry] of Object.entries(parsed.files)) {
-        if (isJsonObject(entry) && typeof entry.mtimeMs === 'number' && typeof entry.size === 'number') {
-          files[uri] = {mtimeMs: entry.mtimeMs, size: entry.size};
-        }
-      }
-      return {files, version: 1 as const};
-    } catch (_err: unknown) {
+    const parsedResult = Result.try(() => JSON.parse(raw) as Partial<SeedStateFile>);
+    if (Result.isFailure(parsedResult)) {
       return {files: {}, version: 1} as const;
     }
+    const parsed = parsedResult.success;
+    if (parsed.version !== 1 || !isJsonObject(parsed.files)) {
+      return {files: {}, version: 1} as const;
+    }
+    const files: Record<string, SeedStateEntry> = {};
+    for (const [uri, entry] of Object.entries(parsed.files)) {
+      if (isJsonObject(entry) && typeof entry.mtimeMs === 'number' && typeof entry.size === 'number') {
+        files[uri] = {
+          mtimeMs: entry.mtimeMs,
+          sha256: typeof entry.sha256 === 'string' ? entry.sha256 : undefined,
+          size: entry.size,
+        };
+      }
+    }
+    return {files, version: 1 as const};
   });
 }
 
 function writeSeedState(path: string, state: SeedStateFile) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(path), {recursive: true});
+    const pathService = yield* Path.Path;
+    yield* fs.makeDirectory(pathService.dirname(path), {recursive: true});
     yield* fs.writeFileString(path, `${JSON.stringify(state, undefined, 2)}\n`, {mode: 0o600});
   });
 }
@@ -316,33 +328,33 @@ function writeSeedState(path: string, state: SeedStateFile) {
 export function runInitManifest(config: RuntimeConfig, options: InitManifestOptions) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const manifestPath = expandPath(
-      options.path ?? process.env.THREADNOTE_MANIFEST ?? join(config.agentContextHome, USER_MANIFEST_NAME),
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const manifestPath = yield* expandPath(
+      options.path ??
+        system.environment().THREADNOTE_MANIFEST ??
+        path.join(config.agentContextHome, USER_MANIFEST_NAME),
     );
-    const repoInputs = options.repo && options.repo.length > 0 ? options.repo : [getInvocationCwd()];
+    const repoInputs = options.repo && options.repo.length > 0 ? options.repo : [yield* getInvocationCwd()];
     const existingManifest =
-      options.replace === true || !(yield* fs.exists(manifestPath))
-        ? undefined
-        : yield* fromPromise('read existing seed manifest', () => readSeedManifest(manifestPath));
+      options.replace === true || !(yield* fs.exists(manifestPath)) ? undefined : yield* readSeedManifest(manifestPath);
     const existingProjects = existingManifest?.projects ?? [];
     const projects = [...existingProjects];
     const seen = new Set<string>();
 
     for (const project of existingProjects) {
-      seen.add(yield* fromPromise('resolve project identity', () => projectIdentity(project.path)));
+      seen.add(yield* projectIdentity(project.path));
     }
 
     for (const repoInput of repoInputs) {
-      const repoRoot = yield* fromPromise('resolve repository root', () => resolveRepoRoot(repoInput));
-      const identity = yield* fromPromise('resolve project identity', () => projectIdentity(repoRoot));
+      const repoRoot = yield* resolveRepoRoot(repoInput);
+      const identity = yield* projectIdentity(repoRoot);
       if (seen.has(identity)) {
         yield* log(`Already in manifest: ${repoRoot}`);
         continue;
       }
       seen.add(identity);
-      projects.push(
-        yield* fromPromise('build project manifest entry', () => projectManifestForRepo(repoRoot, projects)),
-      );
+      projects.push(yield* projectManifestForRepo(repoRoot, projects));
     }
 
     const outputManifest: Record<string, unknown> = {
@@ -377,7 +389,7 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
       return;
     }
 
-    yield* fs.makeDirectory(dirname(manifestPath), {recursive: true});
+    yield* fs.makeDirectory(path.dirname(manifestPath), {recursive: true});
     yield* fs.writeFileString(manifestPath, output, {mode: 0o600});
     yield* fs.chmod(manifestPath, 0o600);
     yield* log(`Wrote manifest: ${manifestPath}`);
@@ -389,7 +401,7 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
 
 export function runWorksetList(config: RuntimeConfig) {
   return Effect.gen(function* () {
-    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
+    const manifest = yield* readSeedManifest(config.manifestPath);
     const worksets = manifest.worksets ?? [];
     if (worksets.length === 0) {
       yield* log(
@@ -407,7 +419,7 @@ export function runWorksetList(config: RuntimeConfig) {
 
 export function runWorksetShow(config: RuntimeConfig, name: string) {
   return Effect.gen(function* () {
-    const manifest = yield* fromPromise('read seed manifest', () => readSeedManifest(config.manifestPath));
+    const manifest = yield* readSeedManifest(config.manifestPath);
     const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
     if (!workset) {
       return yield* Effect.fail(
@@ -428,10 +440,8 @@ export function runWorksetShow(config: RuntimeConfig, name: string) {
 
 export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
   return Effect.gen(function* () {
-    const ov = yield* fromPromise('find OpenViking CLI for skill seed', () =>
-      openVikingCliForMode(options.dryRun === true),
-    );
-    const catalogItems = yield* fromPromise('collect skill candidates', () => collectSkillCandidates(config));
+    const ov = yield* openVikingCliForMode(options.dryRun === true);
+    const catalogItems = yield* collectSkillCandidates(config);
     const nativeMode = options.native === true;
     yield* log(
       nativeMode
@@ -459,55 +469,54 @@ export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
   });
 }
 
-export async function resolveRepoRoot(repoInput: string): Promise<string> {
-  const inputPath = expandPath(repoInput);
-  if (!(await isDirectory(inputPath))) {
-    throw new Error(`Repo path is not a directory: ${inputPath}`);
+export const resolveRepoRoot = Effect.fn('seeding.resolveRepoRoot')(function* (repoInput: string) {
+  const inputPath = yield* expandPath(repoInput);
+  if (!(yield* isDirectory(inputPath))) {
+    return yield* Effect.fail(new Error(`Repo path is not a directory: ${inputPath}`));
   }
-  return (await gitValue(['rev-parse', '--show-toplevel'], inputPath)) ?? inputPath;
-}
+  return (yield* gitValue(['rev-parse', '--show-toplevel'], inputPath)) ?? inputPath;
+});
 
-async function projectIdentity(path: string): Promise<string> {
-  const expanded = expandPath(path);
-  try {
-    return await realpath(expanded);
-  } catch (_err: unknown) {
-    return expanded;
-  }
-}
+const projectIdentity = Effect.fn('seeding.projectIdentity')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const expanded = yield* expandPath(path);
+  return yield* fs.realPath(expanded).pipe(Effect.catch(() => Effect.succeed(expanded)));
+});
 
-export async function projectManifestForRepo(
+export const projectManifestForRepo = Effect.fn('seeding.projectManifestForRepo')(function* (
   repoRoot: string,
   existingProjects: readonly ProjectManifest[],
-): Promise<ProjectManifest> {
-  const baseName = uriSegment((await resolveRepoName(repoRoot)) ?? basename(repoRoot));
+) {
+  const path = yield* Path.Path;
+  const baseName = uriSegment((yield* resolveRepoName(repoRoot)) ?? path.basename(repoRoot));
   const usedNames = new Set(existingProjects.map(project => project.name));
   const usedUris = new Set(existingProjects.map(project => project.uri));
   let name = baseName;
   let uri = `viking://resources/repos/${name}`;
   if (usedNames.has(name) || usedUris.has(uri)) {
-    name = `${baseName}-${sha256(repoRoot).slice(0, 8)}`;
+    name = `${baseName}-${(yield* sha256(repoRoot)).slice(0, 8)}`;
     uri = `viking://resources/repos/${name}`;
   }
   return {
     name,
-    path: portablePath(repoRoot),
+    path: yield* portablePath(repoRoot),
     seed: DEFAULT_SEED_PATTERNS,
     uri,
   };
-}
+});
 
-async function collectSeedCandidates(
+const collectSeedCandidates = Effect.fn('seeding.collectSeedCandidates')(function* (
   project: ProjectManifest,
   projectRoot: string,
   ignorePatterns: readonly string[],
-): Promise<readonly SeedCandidate[]> {
+) {
+  const path = yield* Path.Path;
   const candidates: SeedCandidate[] = [];
   const seen = new Set<string>();
   for (const pattern of project.seed) {
-    const files = await resolveProjectPattern(projectRoot, pattern);
+    const files = yield* resolveProjectPattern(projectRoot, pattern);
     for (const filePath of files) {
-      const relativePath = toPosixPath(relative(projectRoot, filePath));
+      const relativePath = toPosixPath(path.relative(projectRoot, filePath));
       if (seen.has(relativePath) || matchesIgnore(relativePath, ignorePatterns)) {
         continue;
       }
@@ -521,38 +530,44 @@ async function collectSeedCandidates(
     }
   }
   return candidates;
-}
+});
 
-async function resolveProjectPattern(projectRoot: string, pattern: string): Promise<readonly string[]> {
+const resolveProjectPattern = Effect.fn('seeding.resolveProjectPattern')(function* (
+  projectRoot: string,
+  pattern: string,
+) {
+  const path = yield* Path.Path;
   const normalizedPattern = toPosixPath(pattern);
   if (!hasGlob(normalizedPattern)) {
-    const filePath = join(projectRoot, normalizedPattern);
-    return (await isFile(filePath)) ? [filePath] : [];
+    const filePath = path.join(projectRoot, normalizedPattern);
+    return (yield* isFile(filePath)) ? [filePath] : [];
   }
 
   const globBase = getGlobBase(normalizedPattern);
-  const basePath = join(projectRoot, globBase);
-  if (!(await exists(basePath))) {
+  const basePath = path.join(projectRoot, globBase);
+  if (!(yield* exists(basePath))) {
     return [];
   }
 
   const regex = globToRegExp(normalizedPattern);
-  const files = await walkFiles(basePath);
-  return files.filter(filePath => regex.test(toPosixPath(relative(projectRoot, filePath))));
-}
+  const files = yield* walkFiles(basePath);
+  return files.filter(filePath => regex.test(toPosixPath(path.relative(projectRoot, filePath))));
+});
 
-async function prepareSeedFile(
+const prepareSeedFile = Effect.fn('seeding.prepareSeedFile')(function* (
   config: RuntimeConfig,
   candidate: SeedCandidate,
   dryRun: boolean,
-): Promise<string | undefined> {
-  const content = await readFile(candidate.filePath, 'utf8');
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const content = yield* fs.readFileString(candidate.filePath);
   const redactedContent = shouldRedactPath(candidate.relativePath)
     ? redactContent(candidate.relativePath, content)
     : content;
   const secretMatches = detectSecretMatches(redactedContent);
   if (secretMatches.length > 0) {
-    consoleOutput.log(
+    yield* Console.log(
       `SKIP ${candidate.projectName}/${candidate.relativePath}: possible secret (${secretMatches
         .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
         .join(', ')})`,
@@ -564,22 +579,23 @@ async function prepareSeedFile(
     return candidate.filePath;
   }
 
-  const redactedPath = join(config.agentContextHome, 'redacted', candidate.projectName, candidate.relativePath);
+  const redactedPath = path.join(config.agentContextHome, 'redacted', candidate.projectName, candidate.relativePath);
   if (dryRun) {
-    consoleOutput.log(`Would write redacted copy: ${redactedPath}`);
+    yield* Console.log(`Would write redacted copy: ${redactedPath}`);
     return redactedPath;
   }
-  await ensureDirectory(dirname(redactedPath), false);
-  await writeFile(redactedPath, redactedContent, {encoding: 'utf8', mode: 0o600});
-  await chmod(redactedPath, 0o600);
+  yield* ensureDirectory(path.dirname(redactedPath), false);
+  yield* fs.writeFileString(redactedPath, redactedContent, {mode: 0o600});
+  yield* fs.chmod(redactedPath, 0o600);
   return redactedPath;
-}
+});
 
-function graphCacheFileName(projectName: string): string {
-  return `${uriSegment(projectName)}-${sha256(projectName).slice(0, 8)}.graph.md`;
-}
+const graphCacheFileName = Effect.fn('seeding.graphCacheFileName')(function* (projectName: string) {
+  return `${uriSegment(projectName)}-${(yield* sha256(projectName)).slice(0, 8)}.graph.md`;
+});
 
-async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly SkillCandidate[]> {
+const collectSkillCandidates = Effect.fn('seeding.collectSkillCandidates')(function* (config: RuntimeConfig) {
+  const fs = yield* FileSystem.FileSystem;
   const sources: Array<{
     readonly kind: SkillCandidate['kind'];
     readonly pattern: string;
@@ -591,9 +607,9 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
     {kind: 'command', pattern: '~/.claude/commands/**/*.md', source: 'claude-commands-global'},
   ];
 
-  try {
-    const manifest = await readSeedManifest(config.manifestPath);
-    for (const project of manifest.projects) {
+  const manifest = yield* readSeedManifest(config.manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'Some') {
+    for (const project of manifest.value.projects) {
       sources.push({
         kind: 'skill',
         pattern: `${project.path}/.claude/skills/**/SKILL.md`,
@@ -605,22 +621,22 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
         source: `repo-local:${project.name}:claude-commands`,
       });
     }
-  } catch (err: unknown) {
-    consoleOutput.log(`WARN cannot read manifest for repo-local skill/command discovery: ${errorMessage(err)}`);
+  } else {
+    yield* Console.log('WARN cannot read manifest for repo-local skill/command discovery.');
   }
 
   const seenHashes = new Set<string>();
   const skills: SkillCandidate[] = [];
   for (const source of sources) {
-    const files = await resolveAbsolutePattern(expandPath(source.pattern));
+    const files = yield* resolveAbsolutePattern(yield* expandPath(source.pattern));
     for (const filePath of files) {
-      const content = await readFile(filePath, 'utf8');
+      const content = yield* fs.readFileString(filePath);
       const matches = detectSecretMatches(content);
       if (matches.length > 0) {
-        consoleOutput.log(`SKIP skill with possible secret: ${filePath}`);
+        yield* Console.log(`SKIP skill with possible secret: ${filePath}`);
         continue;
       }
-      const hash = sha256(content);
+      const hash = yield* sha256(content);
       if (seenHashes.has(hash)) {
         continue;
       }
@@ -629,44 +645,47 @@ async function collectSkillCandidates(config: RuntimeConfig): Promise<readonly S
     }
   }
   return skills;
-}
+});
 
-async function resolveAbsolutePattern(pattern: string): Promise<readonly string[]> {
+const resolveAbsolutePattern = Effect.fn('seeding.resolveAbsolutePattern')(function* (pattern: string) {
   const normalizedPattern = toPosixPath(pattern);
   if (!hasGlob(normalizedPattern)) {
-    return (await isFile(normalizedPattern)) ? [normalizedPattern] : [];
+    return (yield* isFile(normalizedPattern)) ? [normalizedPattern] : [];
   }
   const globBase = getGlobBase(normalizedPattern);
   const basePath = globBase.startsWith('/') ? globBase : `/${globBase}`;
-  if (!(await exists(basePath))) {
+  if (!(yield* exists(basePath))) {
     return [];
   }
   const regex = globToRegExp(normalizedPattern);
-  const files = await walkFiles(basePath);
+  const files = yield* walkFiles(basePath);
   return files.filter(filePath => regex.test(toPosixPath(filePath)));
-}
+});
 
 function skillResourceUri(skill: SkillCandidate): string {
   return `viking://resources/agent-skills/${uriSegment(skill.source)}/${skillResourceName(skill)}-${skill.hash.slice(0, 12)}.md`;
 }
 
 function skillResourceName(skill: SkillCandidate): string {
-  const fileName = basename(skill.filePath);
+  const parts = toPosixPath(skill.filePath).split('/');
+  const fileName = parts.at(-1) ?? skill.filePath;
   if (fileName.toLowerCase() === 'skill.md') {
-    return uriSegment(basename(dirname(skill.filePath)));
+    return uriSegment(parts.at(-2) ?? 'skill');
   }
   const extensionIndex = fileName.lastIndexOf('.');
   const stem = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
   return uriSegment(stem);
 }
 
-async function loadIgnorePatterns(): Promise<readonly string[]> {
-  const raw = await readFile(join(toolRoot(), '.threadnoteignore'), 'utf8');
+const loadIgnorePatterns = Effect.fn('seeding.loadIgnorePatterns')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const raw = yield* fs.readFileString(path.join(yield* toolRoot(), '.threadnoteignore'));
   return raw
     .split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 0 && !line.startsWith('#'));
-}
+});
 
 function matchesIgnore(relativePath: string, patterns: readonly string[]): boolean {
   const path = toPosixPath(relativePath);
@@ -698,12 +717,10 @@ function shouldRedactPath(relativePath: string): boolean {
 
 function redactContent(relativePath: string, content: string): string {
   if (relativePath.endsWith('.json')) {
-    try {
-      const parsed: unknown = JSON.parse(content);
-      return `${JSON.stringify(redactJsonValue(parsed), null, 2)}\n`;
-    } catch (_err: unknown) {
-      return redactText(content);
-    }
+    const parsed = Result.try((): unknown => JSON.parse(content));
+    return Result.isSuccess(parsed)
+      ? `${JSON.stringify(redactJsonValue(parsed.success), null, 2)}\n`
+      : redactText(content);
   }
   return redactText(content);
 }

@@ -1,9 +1,8 @@
-import {homedir} from 'node:os';
-import {join} from 'node:path';
-import {Clock, Effect} from 'effect';
+import {Clock, Effect, Path} from 'effect';
 import {LAUNCHD_LABEL} from './constants.js';
 import {maybeRunEffect, runCommandEffect} from './effect/command.js';
 import {applicationError} from './effect/errors.js';
+import {SystemInfo} from './effect/system.js';
 
 export interface LaunchAgentStatus {
   readonly loaded: boolean;
@@ -11,9 +10,11 @@ export interface LaunchAgentStatus {
   readonly running: boolean;
 }
 
-export function launchAgentPath(): string {
-  return join(homedir(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-}
+export const launchAgentPath = Effect.fn('launchd.launchAgentPath')(function* () {
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
+  return pathService.join(system.homeDirectory, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+});
 
 export function launchAgentDomainTarget(uid: number): string {
   return `gui/${uid}`;
@@ -102,16 +103,10 @@ const resolveUserId = Effect.fn('resolveLaunchdUserId')(function* (uid?: number)
   if (uid !== undefined) {
     return uid;
   }
-  return yield* Effect.try({
-    try: () => {
-      const current = process.getuid?.();
-      if (current === undefined) {
-        throw new Error('Cannot resolve the current user id for launchd.');
-      }
-      return current;
-    },
-    catch: cause => applicationError('resolve current user id for launchd', cause),
-  });
+  const system = yield* SystemInfo;
+  return system.userId === undefined
+    ? yield* Effect.fail(applicationError('resolve current user id for launchd', new Error('User id is unavailable.')))
+    : system.userId;
 });
 
 const deadlineFromTimeout = Effect.fn('launchdDeadlineFromTimeout')(function* (timeoutMs?: number) {

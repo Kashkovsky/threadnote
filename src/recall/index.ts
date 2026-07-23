@@ -2,6 +2,7 @@ import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {SEED_STATE_FILE} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
+import {SystemInfo} from '../effect/system.js';
 import {parseSeedManifest, uriSegment} from '../manifest.js';
 import {
   boundedMemoryAuthority,
@@ -671,23 +672,18 @@ function readCache(
       return undefined;
     }
     const raw = yield* fs.readFileString(path);
-    return yield* Effect.sync(() => {
-      try {
-        const parsed = parseCache(JSON.parse(raw));
-        if (parsed) {
-          decodedCacheByPath.set(path, parsed);
-        }
-        return parsed;
-      } catch {
-        return undefined;
-      }
-    });
+    const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(raw));
+    const parsed = parseCache(value);
+    if (parsed) {
+      decodedCacheByPath.set(path, parsed);
+    }
+    return parsed;
   });
 }
 
 function loadCanonicalResourcePolicy(
   config: RecallIndexConfig,
-): Effect.Effect<CanonicalResourcePolicy, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> {
+): Effect.Effect<CanonicalResourcePolicy, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo> {
   if (!config.manifestPath) {
     return Effect.succeed({entryKeyByUri: new Map(), sourcePathByUri: new Map()});
   }
@@ -721,7 +717,7 @@ function loadCanonicalResourcePolicy(
         yield* sha256Hex(
           JSON.stringify({
             project: {
-              path: expandPath(match.project.path),
+              path: yield* expandPath(match.project.path),
               seed: [...match.project.seed],
               uri: normalizedResourceRoot(match.project.uri),
             },
@@ -779,14 +775,14 @@ function resolveSeededResourceSource(
   projects: readonly ProjectManifest[],
   uri: string,
   recorded: SeedStateEntry,
-): Effect.Effect<string | undefined, never, Path.Path> {
+): Effect.Effect<string | undefined, never, Path.Path | SystemInfo> {
   return Effect.gen(function* () {
     const pathService = yield* Path.Path;
     const match = seededResourceMatch(projects, uri);
     if (!match) {
       return undefined;
     }
-    const projectRoot = expandPath(match.project.path);
+    const projectRoot = yield* expandPath(match.project.path);
     const sourcePath = pathService.join(projectRoot, ...match.relativePath.split('/'));
     const relativeSourcePath = pathService.relative(projectRoot, sourcePath);
     if (

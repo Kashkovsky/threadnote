@@ -1,26 +1,25 @@
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Layer} from 'effect';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
-const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
 const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
-  Effect.runPromise(runSharePublishEffect(...args).pipe(Effect.provide(TestLayer)));
+  runEffect(runSharePublishEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
-    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
+    requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
-    sleep: vi.fn().mockResolvedValue(undefined),
+    sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
@@ -62,33 +61,33 @@ async function makeRuntime(): Promise<ShareRuntime> {
 }
 
 function mockPublishCommands(sourceUri: string, targetUri: string, pushResult: CommandResult): void {
-  vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+  vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
     const command = args[0];
     if (executable === '/ov' && command === 'read') {
-      return ok('MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n');
+      return Effect.succeed(ok('MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n'));
     }
     if (executable === '/ov' && command === 'stat') {
-      return args[1] === targetUri ? fail('[NOT_FOUND]') : ok();
+      return Effect.succeed(args[1] === targetUri ? fail('[NOT_FOUND]') : ok());
     }
     if (executable === '/ov' && command === 'write') {
-      return ok('written');
+      return Effect.succeed(ok('written'));
     }
     if (executable === '/ov' && command === 'rm' && args[1] === sourceUri) {
-      return ok('removed');
+      return Effect.succeed(ok('removed'));
     }
     if (executable === 'git' && args.includes('add')) {
-      return ok();
+      return Effect.succeed(ok());
     }
     if (executable === 'git' && args.includes('commit')) {
-      return ok('[main abc123] share');
+      return Effect.succeed(ok('[main abc123] share'));
     }
     if (executable === 'git' && args.includes('push')) {
-      return pushResult;
+      return Effect.succeed(pushResult);
     }
-    return ok();
+    return Effect.succeed(ok());
   });
-  vi.mocked(utils.maybeRun).mockImplementation(async (dryRun, executable, args, options) =>
-    dryRun ? undefined : vi.mocked(utils.runCommand)(executable, args, options),
+  vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
+    dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
   );
 }
 

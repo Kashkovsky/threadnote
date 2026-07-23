@@ -1,4 +1,3 @@
-import {spawn} from 'node:child_process';
 import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, dirname, join, resolve} from 'node:path';
@@ -7,7 +6,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Effect} from 'effect';
 import {expect, it, vi} from 'vitest';
-import {resolveCommandInvocation, terminateCommandProcess} from '../../src/effect/command.js';
+import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runUpdate} from '../../src/update.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -122,14 +121,14 @@ windowsIt('updates and repairs through native runtime launchers outside the inst
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL | Request) => {
-        const url = String(input);
-        if (url.includes('api.github.com')) {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        if (url.hostname === 'api.github.com') {
           return Response.json([]);
         }
-        if (url.endsWith('/beta')) {
+        if (url.pathname.endsWith('/beta')) {
           return Response.json({version: '99.0.0-beta.1'});
         }
-        if (url.endsWith('/latest')) {
+        if (url.pathname.endsWith('/latest')) {
           return Response.json({version: '99.0.0'});
         }
         return new Response('Not found', {status: 404});
@@ -537,31 +536,14 @@ async function runProcess(
     readonly timeoutMs?: number;
   } = {},
 ): Promise<ProcessResult> {
-  return new Promise((resolveResult, reject) => {
-    const invocation = resolveCommandInvocation(command, args);
-    const child = spawn(invocation.executable, invocation.args, {
+  const result = await Effect.runPromise(
+    runCommandEffect(command, args, {
+      allowFailure: true,
       cwd: options.cwd ?? REPO_ROOT,
       env: options.env ?? process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-    });
-    const maxOutputChars = 1_000_000;
-    let stderr = '';
-    let stdout = '';
-    child.stdout.on('data', chunk => {
-      stdout = `${stdout}${chunk.toString('utf8')}`.slice(-maxOutputChars);
-    });
-    child.stderr.on('data', chunk => {
-      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-maxOutputChars);
-    });
-    child.once('error', reject);
-    const timeout = setTimeout(() => {
-      void terminateCommandProcess(child, invocation, true).catch(reject);
-    }, options.timeoutMs ?? 120_000);
-    child.once('close', code => {
-      clearTimeout(timeout);
-      resolveResult({code, stderr, stdout});
-    });
-  });
+      maxOutputBytes: 1_000_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+  return {code: result.exitCode, stderr: result.stderr, stdout: result.stdout};
 }

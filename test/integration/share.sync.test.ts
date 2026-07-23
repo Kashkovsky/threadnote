@@ -1,8 +1,6 @@
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {listShareConflicts, showShareConflict} from '../../src/share.js';
 import {
@@ -12,14 +10,12 @@ import {
 } from '../../src/effect/share.js';
 import type {ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
-const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
-const runShareInit = (...args: Parameters<typeof runShareInitEffect>) =>
-  Effect.runPromise(runShareInitEffect(...args).pipe(Effect.provide(TestLayer)));
-const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) =>
-  Effect.runPromise(runShareSyncEffect(...args).pipe(Effect.provide(TestLayer)));
+const runShareInit = (...args: Parameters<typeof runShareInitEffect>) => runEffect(runShareInitEffect(...args));
+const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => runEffect(runShareSyncEffect(...args));
 const resolveShareConflict = (...args: Parameters<typeof resolveShareConflictEffect>) =>
-  Effect.runPromise(resolveShareConflictEffect(...args).pipe(Effect.provide(TestLayer)));
+  runEffect(resolveShareConflictEffect(...args));
 
 interface TestShareRepo {
   readonly config: ShareRuntime;
@@ -54,11 +50,11 @@ let savedThreadnoteOv: string | undefined;
 let savedFakeOvStore: string | undefined;
 
 async function git(args: readonly string[], cwd?: string): Promise<void> {
-  await runCommand('git', args, {cwd});
+  await runEffect(runCommand('git', args, {cwd}));
 }
 
 async function gitOutput(args: readonly string[], cwd?: string): Promise<string> {
-  const result = await runCommand('git', args, {cwd});
+  const result = await runEffect(runCommand('git', args, {cwd}));
   return result.stdout.trim();
 }
 
@@ -522,7 +518,7 @@ describe('share sync git handling', () => {
       code: 'ENOENT',
     });
     await expect(readFile(fakeOvFile(store, uri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
-    await expect(listShareConflicts(config, {team: 'default'})).resolves.toEqual([]);
+    await expect(runEffect(listShareConflicts(config, {team: 'default'}))).resolves.toEqual([]);
   });
 
   it('keeps a pending added reindex blocked when OpenViking has a real local edit', async () => {
@@ -594,14 +590,14 @@ describe('share sync git handling', () => {
       'utf8',
     );
 
-    const conflicts = await listShareConflicts(config, {team: 'default'});
+    const conflicts = await runEffect(listShareConflicts(config, {team: 'default'}));
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]).toMatchObject({
       id,
       reason: 'local OpenViking content differs from the newly added shared file',
       status: 'added',
     });
-    const detail = await showShareConflict(config, id);
+    const detail = await runEffect(showShareConflict(config, id));
     expect(detail.diff).toContain('local edit');
     expect(detail.diff).toContain('shared body');
 

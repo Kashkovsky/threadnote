@@ -2,7 +2,12 @@ import {mkdtemp, mkdir, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {basename, join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {resolveRepoName, runCommand} from '../../src/utils.js';
+import {resolveRepoName as resolveRepoNameEffect, runCommand as runCommandEffect} from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const resolveRepoName = (...args: Parameters<typeof resolveRepoNameEffect>) =>
+  runEffect(resolveRepoNameEffect(...args));
+const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
 
 const GIT_ENV_KEYS = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
 

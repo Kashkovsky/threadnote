@@ -1,4 +1,5 @@
-import {NodeRuntime, NodeServices} from '@effect/platform-node';
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
+import * as NodeServices from '@effect/platform-node/NodeServices';
 import {Effect, FileSystem, Path} from 'effect';
 
 const clean = Effect.gen(function* () {

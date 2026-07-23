@@ -1,15 +1,10 @@
-import {writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {createInterface} from 'node:readline/promises';
-import {stdin as input, stdout as output} from 'node:process';
-import {Effect, FileSystem, Path, pipe} from 'effect';
+import {Console, Effect, FileSystem, Path, Result, Terminal, pipe} from 'effect';
 import {heading, info as infoText, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
-import {runCommandEffect} from './effect/command.js';
-import {consoleOutput, syncWithConsole} from './effect/console.js';
-import {applicationError, fromPromise, fromSync} from './effect/errors.js';
+import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
+import {applicationError, fromSync} from './effect/errors.js';
 import {getJsonEffect, getStatusEffect} from './effect/http.js';
 import {pollUntilEffect} from './effect/time.js';
-import {SystemInfo} from './effect/system.js';
+import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
@@ -23,10 +18,8 @@ import {
   findOpenVikingCli,
   isTcpPortOpen,
   isJsonObject,
-  maybeRun,
   readFileIfExists,
   runCommand,
-  runInteractive,
   toolRoot,
   formatShellCommand,
 } from './utils.js';
@@ -76,35 +69,32 @@ export function parseUpdateRuntime(value: string): UpdateRuntime {
 }
 
 export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryRun?: boolean} = {}) {
-  if (isUpdateNotificationDisabled()) {
-    return Effect.void;
-  }
-  return fromSync('resolve update registry', updateRegistry).pipe(
-    Effect.flatMap(registry =>
-      getUpdateInfo(config, {
-        allowCacheWrite: options.dryRun !== true,
-        betaRequested: false,
-        preferFresh: false,
-        registry,
-      }),
-    ),
-    Effect.tap(info =>
-      info.isUpdateAvailable
-        ? syncWithConsole(() => {
-            consoleOutput.log('');
-            consoleOutput.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
-            consoleOutput.log(`Run: ${infoText('threadnote update')}`);
-          })
-        : Effect.void,
-    ),
-    Effect.asVoid,
-    Effect.catch(() => Effect.void),
-  );
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    if (isUpdateNotificationDisabled(system.environment())) {
+      return;
+    }
+    const registry = yield* fromSync('resolve update registry', () =>
+      resolveUpdateRegistry(undefined, false, system.environment()),
+    );
+    const info = yield* getUpdateInfo(config, {
+      allowCacheWrite: options.dryRun !== true,
+      betaRequested: false,
+      preferFresh: false,
+      registry,
+    });
+    if (info.isUpdateAvailable) {
+      yield* Console.log('');
+      yield* Console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
+      yield* Console.log(`Run: ${infoText('threadnote update')}`);
+    }
+  }).pipe(Effect.catch(() => Effect.void));
 }
 
 export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
+  const system = yield* SystemInfo;
   const registry = yield* fromSync('resolve update registry', () =>
-    resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry),
+    resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry, system.environment()),
   );
   const info = yield* withSpinnerEffect(
     'Checking npm for latest threadnote version',
@@ -116,19 +106,17 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     }),
   );
 
-  yield* syncWithConsole(() => {
-    consoleOutput.log(keyValue('Current version', infoText(info.currentVersion)));
-    consoleOutput.log(
-      keyValue(
-        info.channel === 'beta' ? 'Latest beta version' : 'Latest version',
-        info.latestVersion ? infoText(info.latestVersion) : warning('not published'),
-      ),
-    );
-    consoleOutput.log(keyValue('Registry', info.registry));
-  });
+  yield* Console.log(keyValue('Current version', infoText(info.currentVersion)));
+  yield* Console.log(
+    keyValue(
+      info.channel === 'beta' ? 'Latest beta version' : 'Latest version',
+      info.latestVersion ? infoText(info.latestVersion) : warning('not published'),
+    ),
+  );
+  yield* Console.log(keyValue('Registry', info.registry));
 
   if (info.latestVersion === undefined) {
-    yield* syncWithConsole(() => consoleOutput.log('No beta release is currently published.'));
+    yield* Console.log('No beta release is currently published.');
     return;
   }
   const latestVersion = info.latestVersion;
@@ -136,30 +124,26 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   if (options.check === true) {
     if (info.isUpdateAvailable) {
       const command = options.beta === true ? 'threadnote update --beta' : 'threadnote update';
-      yield* syncWithConsole(() => consoleOutput.log(warning(`Update available. Run: ${command}`)));
+      yield* Console.log(warning(`Update available. Run: ${command}`));
       yield* printWhatsNewIfAvailable(info);
     } else {
-      yield* syncWithConsole(() =>
-        consoleOutput.log(
-          compareVersions(info.currentVersion, latestVersion) > 0
-            ? warning(`Current version is newer than npm ${info.channel}.`)
-            : success('Threadnote is up to date.'),
-        ),
+      yield* Console.log(
+        compareVersions(info.currentVersion, latestVersion) > 0
+          ? warning(`Current version is newer than npm ${info.channel}.`)
+          : success('Threadnote is up to date.'),
       );
     }
     return;
   }
 
   if (!info.isUpdateAvailable && options.force !== true) {
-    yield* syncWithConsole(() => consoleOutput.log(success('Threadnote is up to date.')));
+    yield* Console.log(success('Threadnote is up to date.'));
     return;
   }
 
-  const runtime = yield* fromPromise('resolve update runtime', () => resolveUpdateRuntime(options.runtime ?? 'auto'));
-  const runtimeExecutable = yield* fromPromise('resolve update runtime executable', async () => {
-    return (await findExecutable([runtime])) ?? runtime;
-  });
-  const updateCommand = updatePackageCommand(runtime, registry, info.channel, runtimeExecutable);
+  const runtime = yield* resolveUpdateRuntime(options.runtime ?? 'auto');
+  const runtimeExecutable = (yield* findExecutable([runtime])) ?? runtime;
+  const updateCommand = updatePackageCommand(runtime, registry, info.channel, runtimeExecutable, system.environment());
   yield* runStreamingSubcommand(
     options.dryRun === true,
     updateCommand.executable,
@@ -168,16 +152,14 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   );
 
   if (options.repair === false) {
-    yield* syncWithConsole(() => consoleOutput.log('Skipping repair because --no-repair was provided.'));
+    yield* Console.log('Skipping repair because --no-repair was provided.');
     yield* printWhatsNewIfAvailable(info);
     return;
   }
 
   const threadnoteCommand = yield* installedThreadnoteCommand(runtime, runtimeExecutable);
-  yield* syncWithConsole(() => {
-    consoleOutput.log('');
-    consoleOutput.log('Repairing local Threadnote setup after package update.');
-  });
+  yield* Console.log('');
+  yield* Console.log('Repairing local Threadnote setup after package update.');
   yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
   if (options.postUpdate !== false) {
     const postUpdateArgs = [
@@ -190,14 +172,10 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     ];
     yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
   } else {
-    yield* syncWithConsole(() =>
-      consoleOutput.log('Skipping post-update migration prompts because --no-post-update was provided.'),
-    );
+    yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
-  yield* syncWithConsole(() =>
-    consoleOutput.log(
-      'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
-    ),
+  yield* Console.log(
+    'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
   );
   yield* printWhatsNewIfAvailable(info);
 });
@@ -208,18 +186,16 @@ function printWhatsNewIfAvailable(info: UpdateInfo) {
   }
   const latestVersion = info.latestVersion;
   return Effect.gen(function* () {
-    yield* syncWithConsole(() => consoleOutput.log(''));
+    yield* Console.log('');
     const whatsNew = yield* withSpinnerEffect(
       'Fetching GitHub release notes',
       whatsNewLinesForVersionRange(info.currentVersion, latestVersion, {
         includePrereleases: info.channel === 'beta',
       }),
     );
-    yield* syncWithConsole(() => {
-      for (const line of whatsNew) {
-        consoleOutput.log(line === "What's new:" ? heading(line) : line);
-      }
-    });
+    for (const line of whatsNew) {
+      yield* Console.log(line === "What's new:" ? heading(line) : line);
+    }
   });
 }
 
@@ -234,63 +210,55 @@ export const runPostUpdate = Effect.fn('runPostUpdate')(function* (config: Runti
   }
   const fromVersion = options.fromVersion;
   const toVersion = options.toVersion;
-  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const system = yield* SystemInfo;
+  const interactive = system.stdinIsTTY && system.stdoutIsTTY;
   yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun === true});
-  yield* fromPromise('run post-update memory migrations', () =>
-    runApplicablePostUpdateMigrations(config, {
-      dryRun: options.dryRun === true,
-      fromVersion,
-      interactive,
-      markHandled: true,
-      toVersion,
-      yes: options.yes === true,
-    }),
-  );
+  yield* runApplicablePostUpdateMigrations(config, {
+    dryRun: options.dryRun === true,
+    fromVersion,
+    interactive,
+    markHandled: true,
+    toVersion,
+    yes: options.yes === true,
+  });
 });
 
 export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {readonly dryRun: boolean}) {
   return Effect.gen(function* () {
-    const toVersion = yield* fromPromise('read current package version', currentPackageVersion);
-    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    const system = yield* SystemInfo;
+    const toVersion = yield* currentPackageVersion();
+    const interactive = system.stdinIsTTY && system.stdoutIsTTY;
     yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun});
-    const state = yield* fromPromise('read post-update state', () => readPostUpdateState(config));
-    const migrations = yield* fromPromise('find applicable post-update migrations', () =>
-      applicablePostUpdateMigrations(config, {
-        fromVersion: '0.0.0',
-        handledMigrationIds: state.handledMigrationIds,
-        toVersion,
-      }),
-    );
+    const state = yield* readPostUpdateState(config);
+    const migrations = yield* applicablePostUpdateMigrations(config, {
+      fromVersion: '0.0.0',
+      handledMigrationIds: state.handledMigrationIds,
+      toVersion,
+    });
     if (migrations.length === 0) {
       return;
     }
-    yield* syncWithConsole(() => {
-      consoleOutput.log('');
-      consoleOutput.log('Repair found package post-update migrations.');
-      consoleOutput.log(
-        'This also covers updates launched by older Threadnote versions that only knew how to run repair.',
-      );
-    });
-    if (!interactive) {
-      yield* syncWithConsole(() => {
-        consoleOutput.log(
-          'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
-        );
-        consoleOutput.log(
-          `Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`,
-        );
-      });
-    }
-    yield* fromPromise('run post-update migrations after repair', () =>
-      runApplicablePostUpdateMigrations(config, {
-        dryRun: options.dryRun,
-        fromVersion: '0.0.0',
-        interactive,
-        markHandled: true,
-        toVersion,
-        yes: false,
-      }),
+    yield* Console.log('');
+    yield* Console.log('Repair found package post-update migrations.');
+    yield* Console.log(
+      'This also covers updates launched by older Threadnote versions that only knew how to run repair.',
     );
+    if (!interactive) {
+      yield* Console.log(
+        'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
+      );
+      yield* Console.log(
+        `Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`,
+      );
+    }
+    yield* runApplicablePostUpdateMigrations(config, {
+      dryRun: options.dryRun,
+      fromVersion: '0.0.0',
+      interactive,
+      markHandled: true,
+      toVersion,
+      yes: false,
+    });
   });
 }
 
@@ -313,16 +281,14 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
  */
 function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readonly dryRun: boolean}) {
   return Effect.gen(function* () {
-    const ov = yield* fromPromise('find OpenViking CLI', findOpenVikingCli);
+    const ov = yield* findOpenVikingCli();
     if (!ov) {
       return;
     }
-    const installedVersion = yield* fromPromise('read OpenViking CLI version', () => readOpenVikingCliVersion(ov));
+    const installedVersion = yield* readOpenVikingCliVersion(ov);
     if (!installedVersion) {
-      yield* syncWithConsole(() =>
-        consoleOutput.log(
-          `Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`,
-        ),
+      yield* Console.log(
+        `Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`,
       );
       return;
     }
@@ -330,11 +296,9 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
     if (compareVersions(installedVersion, pinned) >= 0) {
       return;
     }
-    yield* syncWithConsole(() => {
-      consoleOutput.log('');
-      consoleOutput.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
-      consoleOutput.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
-    });
+    yield* Console.log('');
+    yield* Console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
+    yield* Console.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
 
     // Capture the server state BEFORE we swap binaries so we know what to
     // restart afterward. install --no-start leaves the existing process
@@ -345,16 +309,12 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
     const usingLaunchd = yield* isLaunchAgentInstalled();
 
     const threadnoteCommand =
-      currentThreadnoteCommand() ??
-      (yield* fromPromise('find threadnote executable', () => findExecutable([NPM_PACKAGE_NAME]))) ??
-      NPM_PACKAGE_NAME;
+      currentThreadnoteCommand(yield* SystemInfo) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
     yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
 
     if (options.dryRun) {
       if (wasRunning || usingLaunchd) {
-        yield* syncWithConsole(() =>
-          consoleOutput.log('Would restart OpenViking server so the new binary takes effect.'),
-        );
+        yield* Console.log('Would restart OpenViking server so the new binary takes effect.');
       }
       return;
     }
@@ -363,18 +323,14 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
       return;
     }
 
-    yield* syncWithConsole(() => consoleOutput.log('Restarting OpenViking server so the new binary takes effect.'));
+    yield* Console.log('Restarting OpenViking server so the new binary takes effect.');
     if (usingLaunchd) {
       const system = yield* SystemInfo;
       const path = yield* Path.Path;
       const launchAgentPath = launchAgentPlistPath(system.homeDirectory, path);
-      yield* fromPromise('unload OpenViking launch agent', () =>
-        runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true}),
-      );
+      yield* runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true});
       yield* waitForOpenVikingPortClosed(config, 15_000);
-      yield* fromPromise('load OpenViking launch agent', () =>
-        runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true}),
-      );
+      yield* runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
     } else {
       yield* runStreamingSubcommand(false, threadnoteCommand, ['stop']);
       yield* waitForOpenVikingPortClosed(config, 15_000);
@@ -382,12 +338,10 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
     }
     const healthyAfter = yield* waitForOpenVikingHealthy(config, 10_000);
     if (!healthyAfter) {
-      yield* syncWithConsole(() => {
-        consoleOutput.log(
-          `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
-        );
-        consoleOutput.log('Check the server log or run: threadnote start');
-      });
+      yield* Console.log(
+        `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
+      );
+      yield* Console.log('Check the server log or run: threadnote start');
     }
   });
 }
@@ -401,20 +355,16 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
  */
 function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
   if (dryRun) {
-    return fromPromise('print subcommand', () =>
-      env ? maybeRun(true, executable, args, {env}) : maybeRun(true, executable, args),
-    ).pipe(Effect.asVoid);
+    return maybeRunEffect(true, executable, args).pipe(Effect.asVoid);
   }
   return Effect.gen(function* () {
-    yield* syncWithConsole(() => consoleOutput.log(`Running: ${formatShellCommand(executable, args)}`));
-    const exitCode = yield* fromPromise('run interactive subcommand', () =>
-      env ? runInteractive(executable, args, {env}) : runInteractive(executable, args),
-    );
-    if (exitCode !== 0) {
+    yield* Console.log(`Running: ${formatShellCommand(executable, args)}`);
+    const result = yield* runStreamingCommandEffect(executable, args, env ? {env} : undefined);
+    if (result.exitCode !== 0) {
       return yield* Effect.fail(
         applicationError(
           'run interactive subcommand',
-          new Error(`${formatShellCommand(executable, args)} exited with ${exitCode}.`),
+          new Error(`${formatShellCommand(executable, args)} exited with ${result.exitCode}.`),
         ),
       );
     }
@@ -447,14 +397,10 @@ function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number) {
 
 function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number) {
   return Effect.gen(function* () {
-    yield* syncWithConsole(() =>
-      consoleOutput.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`),
-    );
+    yield* Console.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`);
     const closed = yield* pipe(
       pollUntilEffect(
-        fromPromise('check OpenViking TCP port', () => isTcpPortOpen(config.host, config.port, 300)).pipe(
-          Effect.map(open => (open ? undefined : true)),
-        ),
+        isTcpPortOpen(config.host, config.port, 300).pipe(Effect.map(open => (open ? undefined : true))),
         {intervalMs: 300, timeoutMs},
       ),
       Effect.map(result => result === true),
@@ -462,10 +408,8 @@ function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number) {
     if (closed) {
       return true;
     }
-    yield* syncWithConsole(() =>
-      consoleOutput.log(
-        `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
-      ),
+    yield* Console.log(
+      `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
     );
     return false;
   });
@@ -489,8 +433,8 @@ function isLaunchAgentInstalled() {
   });
 }
 
-export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
-  const result = await runCommand(ov, ['--version'], {allowFailure: true});
+export const readOpenVikingCliVersion = Effect.fn('update.readOpenVikingCliVersion')(function* (ov: string) {
+  const result = yield* runCommand(ov, ['--version'], {allowFailure: true});
   if (result.exitCode !== 0) {
     return undefined;
   }
@@ -500,7 +444,7 @@ export async function readOpenVikingCliVersion(ov: string): Promise<string | und
     /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im,
   );
   return match ? match[1] : undefined;
-}
+});
 
 function getUpdateInfo(
   config: RuntimeConfig,
@@ -512,21 +456,17 @@ function getUpdateInfo(
   },
 ) {
   return Effect.gen(function* () {
-    const currentVersion = yield* fromPromise('read current package version', currentPackageVersion);
+    const currentVersion = yield* currentPackageVersion();
     const channel = selectUpdateChannel(currentVersion, options.betaRequested);
-    const cached = options.preferFresh
-      ? undefined
-      : yield* fromPromise('read update cache', () => readFreshCache(config, options.registry, channel));
+    const cached = options.preferFresh ? undefined : yield* readFreshCache(config, options.registry, channel);
     const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry, channel));
     if (!cached && latestVersion !== undefined && options.allowCacheWrite) {
-      yield* fromPromise('write update cache', () =>
-        writeUpdateCache(config, {
-          channel,
-          checkedAt: new Date().toISOString(),
-          latestVersion,
-          registry: options.registry,
-        }),
-      );
+      yield* writeUpdateCache(config, {
+        channel,
+        checkedAt: new Date().toISOString(),
+        latestVersion,
+        registry: options.registry,
+      });
     }
     return {
       channel,
@@ -570,46 +510,48 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
   return response.body.version;
 });
 
-async function readFreshCache(
+const readFreshCache = Effect.fn('update.readFreshCache')(function* (
   config: RuntimeConfig,
   registry: string,
   channel: UpdateChannel,
-): Promise<UpdateCache | undefined> {
-  const rawCache = await readFileIfExists(updateCachePath(config));
+) {
+  const rawCache = yield* readFileIfExists(yield* updateCachePath(config));
   if (!rawCache) {
     return undefined;
   }
-  try {
-    const parsed: unknown = JSON.parse(rawCache);
-    if (
-      !isJsonObject(parsed) ||
-      parsed.channel !== channel ||
-      typeof parsed.checkedAt !== 'string' ||
-      typeof parsed.latestVersion !== 'string' ||
-      parsed.registry !== registry
-    ) {
-      return undefined;
-    }
-    const checkedAt = Date.parse(parsed.checkedAt);
-    if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
-      return undefined;
-    }
-    return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, registry};
-  } catch (_err: unknown) {
+  const parsedResult = Result.try((): unknown => JSON.parse(rawCache));
+  if (Result.isFailure(parsedResult)) {
     return undefined;
   }
-}
+  const parsed = parsedResult.success;
+  if (
+    !isJsonObject(parsed) ||
+    parsed.channel !== channel ||
+    typeof parsed.checkedAt !== 'string' ||
+    typeof parsed.latestVersion !== 'string' ||
+    parsed.registry !== registry
+  ) {
+    return undefined;
+  }
+  const checkedAt = Date.parse(parsed.checkedAt);
+  if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
+    return undefined;
+  }
+  return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, registry};
+});
 
-async function writeUpdateCache(config: RuntimeConfig, cache: UpdateCache): Promise<void> {
-  await ensureDirectory(config.agentContextHome, false);
-  await writeFile(updateCachePath(config), `${JSON.stringify(cache, null, 2)}\n`, {encoding: 'utf8', mode: 0o600});
-}
+const writeUpdateCache = Effect.fn('update.writeCache')(function* (config: RuntimeConfig, cache: UpdateCache) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* ensureDirectory(config.agentContextHome, false);
+  yield* fs.writeFileString(yield* updateCachePath(config), `${JSON.stringify(cache, null, 2)}\n`, {mode: 0o600});
+});
 
-function updateCachePath(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'update-check.json');
-}
+const updateCachePath = Effect.fn('update.cachePath')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  return path.join(config.agentContextHome, 'update-check.json');
+});
 
-async function runApplicablePostUpdateMigrations(
+const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrations')(function* (
   config: RuntimeConfig,
   options: {
     readonly dryRun: boolean;
@@ -619,62 +561,63 @@ async function runApplicablePostUpdateMigrations(
     readonly toVersion: string;
     readonly yes: boolean;
   },
-): Promise<void> {
-  const state = await readPostUpdateState(config);
-  const migrations = await applicablePostUpdateMigrations(config, {
+) {
+  const system = yield* SystemInfo;
+  const state = yield* readPostUpdateState(config);
+  const migrations = yield* applicablePostUpdateMigrations(config, {
     fromVersion: options.fromVersion,
     handledMigrationIds: state.handledMigrationIds,
     toVersion: options.toVersion,
   });
   if (migrations.length === 0) {
-    consoleOutput.log('No post-update memory migrations apply.');
+    yield* Console.log('No post-update memory migrations apply.');
     return;
   }
 
-  consoleOutput.log('');
-  consoleOutput.log('Post-update memory migrations are available.');
+  yield* Console.log('');
+  yield* Console.log('Post-update memory migrations are available.');
   const threadnoteCommand =
-    currentThreadnoteCommand() ?? (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
+    currentThreadnoteCommand(system) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
   const handledMigrationIds = new Set(state.handledMigrationIds);
   for (const migration of migrations) {
-    printPostUpdateMigration(migration);
+    yield* printPostUpdateMigration(migration);
     const accepted =
       options.dryRun ||
       options.yes ||
-      (options.interactive && (await confirmPostUpdateMigration('Apply this migration now? [y/N] ')));
+      (options.interactive && (yield* confirmPostUpdateMigration('Apply this migration now? [y/N] ')));
     if (!accepted) {
-      consoleOutput.log('Skipped. Run manually later:');
-      consoleOutput.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
+      yield* Console.log('Skipped. Run manually later:');
+      yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
       continue;
     }
-    await runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
+    yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
     if (!options.dryRun) {
       handledMigrationIds.add(migration.id);
       for (const instruction of migration.instructions) {
-        consoleOutput.log(instruction);
+        yield* Console.log(instruction);
       }
     } else {
-      consoleOutput.log('After this migration succeeds, Threadnote will print:');
+      yield* Console.log('After this migration succeeds, Threadnote will print:');
       for (const instruction of migration.instructions) {
-        consoleOutput.log(`  ${instruction}`);
+        yield* Console.log(`  ${instruction}`);
       }
     }
   }
 
   if (!options.dryRun && options.markHandled) {
-    await writePostUpdateState(config, {handledMigrationIds: [...handledMigrationIds].sort()});
+    yield* writePostUpdateState(config, {handledMigrationIds: [...handledMigrationIds].sort()});
   }
-}
+});
 
-async function applicablePostUpdateMigrations(
+const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(function* (
   config: RuntimeConfig,
   options: {
     readonly fromVersion: string;
     readonly handledMigrationIds: readonly string[];
     readonly toVersion: string;
   },
-): Promise<readonly PostUpdateMigration[]> {
-  const migrations = await readPostUpdateMigrations();
+) {
+  const migrations = yield* readPostUpdateMigrations();
   const handled = new Set(options.handledMigrationIds);
   const applicable: PostUpdateMigration[] = [];
   for (const migration of migrations) {
@@ -687,28 +630,32 @@ async function applicablePostUpdateMigrations(
     if (compareVersions(migration.introducedIn, options.toVersion) > 0) {
       continue;
     }
-    if (migration.requiresLegacyHandoffs === true && !(await hasLegacyLifecycleHandoffCandidates(config))) {
+    if (migration.requiresLegacyHandoffs === true && !(yield* hasLegacyLifecycleHandoffCandidates(config))) {
       continue;
     }
-    if (migration.requiresProjectNameConsolidation === true && !(await hasProjectNameMigrationCandidates(config))) {
+    if (migration.requiresProjectNameConsolidation === true && !(yield* hasProjectNameMigrationCandidates(config))) {
       continue;
     }
     applicable.push(migration);
   }
   return applicable;
-}
+});
 
-async function readPostUpdateMigrations(): Promise<readonly PostUpdateMigration[]> {
-  const raw = await readFileIfExists(join(toolRoot(), 'config', POST_UPDATE_MIGRATIONS_FILE));
+const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(function* () {
+  const path = yield* Path.Path;
+  const raw = yield* readFileIfExists(path.join(yield* toolRoot(), 'config', POST_UPDATE_MIGRATIONS_FILE));
   if (!raw) {
     return [];
   }
-  const parsed: unknown = JSON.parse(raw);
+  const parsed = yield* Effect.try({
+    try: (): unknown => JSON.parse(raw),
+    catch: cause => new Error(`Could not parse ${POST_UPDATE_MIGRATIONS_FILE}.`, {cause}),
+  });
   if (!isJsonObject(parsed) || !Array.isArray(parsed.migrations)) {
     throw new Error(`${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`);
   }
   return parsed.migrations.map(parsePostUpdateMigration);
-}
+});
 
 function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
   if (
@@ -742,79 +689,83 @@ function stringArray(value: JsonObject, key: string): readonly string[] {
   return raw;
 }
 
-function printPostUpdateMigration(migration: PostUpdateMigration): void {
-  consoleOutput.log('');
-  consoleOutput.log(`${migration.title} (${migration.introducedIn})`);
+const printPostUpdateMigration = Effect.fn('update.printPostUpdateMigration')(function* (
+  migration: PostUpdateMigration,
+) {
+  yield* Console.log('');
+  yield* Console.log(`${migration.title} (${migration.introducedIn})`);
   for (const line of migration.description) {
-    consoleOutput.log(`- ${line}`);
+    yield* Console.log(`- ${line}`);
   }
-}
+});
 
-async function confirmPostUpdateMigration(prompt: string, defaultYes = false): Promise<boolean> {
-  const readline = createInterface({input, output});
-  try {
-    const answer = (await readline.question(prompt)).trim().toLowerCase();
-    if (answer === '') {
-      return defaultYes;
-    }
-    return answer === 'y' || answer === 'yes';
-  } finally {
-    readline.close();
-  }
-}
+const confirmPostUpdateMigration = Effect.fn('update.confirmPostUpdateMigration')(function* (
+  prompt: string,
+  defaultYes = false,
+) {
+  const terminal = yield* Terminal.Terminal;
+  yield* terminal.display(prompt);
+  const answer = (yield* terminal.readLine).trim().toLowerCase();
+  return answer === '' ? defaultYes : answer === 'y' || answer === 'yes';
+});
 
 function formatMigrationCommand(executable: string, args: readonly string[]): string {
   return [executable, ...args].map(part => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ');
 }
 
-function currentThreadnoteCommand(): string | undefined {
-  const entrypoint = process.argv[1]?.trim();
+function currentThreadnoteCommand(system: SystemInfoShape): string | undefined {
+  const entrypoint = system.processArguments[1]?.trim();
   return entrypoint ? entrypoint : undefined;
 }
 
-async function readPostUpdateState(config: RuntimeConfig): Promise<PostUpdateState> {
-  const raw = await readFileIfExists(postUpdateStatePath(config));
+const readPostUpdateState = Effect.fn('update.readPostUpdateState')(function* (config: RuntimeConfig) {
+  const raw = yield* readFileIfExists(yield* postUpdateStatePath(config));
   if (!raw) {
     return {handledMigrationIds: []};
   }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
-      return {handledMigrationIds: []};
-    }
-    return {handledMigrationIds: parsed.handledMigrationIds.filter((id): id is string => typeof id === 'string')};
-  } catch (_err: unknown) {
+  const parsedResult = Result.try((): unknown => JSON.parse(raw));
+  if (Result.isFailure(parsedResult)) {
     return {handledMigrationIds: []};
   }
-}
+  const parsed = parsedResult.success;
+  if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
+    return {handledMigrationIds: []};
+  }
+  return {handledMigrationIds: parsed.handledMigrationIds.filter((id): id is string => typeof id === 'string')};
+});
 
-async function writePostUpdateState(config: RuntimeConfig, state: PostUpdateState): Promise<void> {
-  await ensureDirectory(config.agentContextHome, false);
-  await writeFile(postUpdateStatePath(config), `${JSON.stringify(state, null, 2)}\n`, {encoding: 'utf8', mode: 0o600});
-}
+const writePostUpdateState = Effect.fn('update.writePostUpdateState')(function* (
+  config: RuntimeConfig,
+  state: PostUpdateState,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* ensureDirectory(config.agentContextHome, false);
+  yield* fs.writeFileString(yield* postUpdateStatePath(config), `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
+});
 
-function postUpdateStatePath(config: RuntimeConfig): string {
-  return join(config.agentContextHome, POST_UPDATE_STATE_FILE);
-}
+const postUpdateStatePath = Effect.fn('update.postUpdateStatePath')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  return path.join(config.agentContextHome, POST_UPDATE_STATE_FILE);
+});
 
-async function resolveUpdateRuntime(runtime: UpdateRuntime): Promise<Exclude<UpdateRuntime, 'auto'>> {
+const resolveUpdateRuntime = Effect.fn('update.resolveRuntime')(function* (runtime: UpdateRuntime) {
   if (runtime !== 'auto') {
-    await requireRuntime(runtime);
+    yield* requireRuntime(runtime);
     return runtime;
   }
   for (const candidate of ['npm', 'bun', 'deno'] as const) {
-    if (await findExecutable([candidate])) {
+    if (yield* findExecutable([candidate])) {
       return candidate;
     }
   }
-  throw new Error('Install Node/npm, Bun, or Deno to update threadnote.');
-}
+  return yield* Effect.fail(new Error('Install Node/npm, Bun, or Deno to update threadnote.'));
+});
 
-async function requireRuntime(runtime: Exclude<UpdateRuntime, 'auto'>): Promise<void> {
-  if (!(await findExecutable([runtime]))) {
-    throw new Error(`${runtime} was requested but was not found on PATH.`);
+const requireRuntime = Effect.fn('update.requireRuntime')(function* (runtime: Exclude<UpdateRuntime, 'auto'>) {
+  if (!(yield* findExecutable([runtime]))) {
+    return yield* Effect.fail(new Error(`${runtime} was requested but was not found on PATH.`));
   }
-}
+});
 
 const installedThreadnoteCommand = Effect.fn('installedThreadnoteCommand')(function* (
   runtime: Exclude<UpdateRuntime, 'auto'>,
@@ -826,10 +777,7 @@ const installedThreadnoteCommand = Effect.fn('installedThreadnoteCommand')(funct
   if (runtimeBin && (yield* isExecutableFileEffect(fs, runtimeBin, system.platform))) {
     return runtimeBin;
   }
-  return (
-    (yield* fromPromise('find installed threadnote executable', () => findExecutable([NPM_PACKAGE_NAME]))) ??
-    NPM_PACKAGE_NAME
-  );
+  return (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
 });
 
 const runtimeThreadnoteBin = Effect.fn('runtimeThreadnoteBin')(function* (
@@ -848,8 +796,9 @@ const runtimeThreadnoteBin = Effect.fn('runtimeThreadnoteBin')(function* (
     const binDir = result.stdout.trim();
     return binDir ? runtimeThreadnoteBinPath(runtime, binDir, system.platform) : undefined;
   }
+  const environment = system.environment();
   const denoRoot =
-    process.env.DENO_INSTALL_ROOT ?? process.env.DENO_INSTALL ?? path.join(system.homeDirectory, '.deno');
+    environment.DENO_INSTALL_ROOT ?? environment.DENO_INSTALL ?? path.join(system.homeDirectory, '.deno');
   return runtimeThreadnoteBinPath(runtime, path.join(denoRoot, 'bin'), system.platform);
 });
 
@@ -865,7 +814,7 @@ const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (
 export function runtimeThreadnoteBinPath(
   runtime: Exclude<UpdateRuntime, 'auto'>,
   root: string,
-  currentPlatform: NodeJS.Platform = process.platform,
+  currentPlatform: NodeJS.Platform,
 ): string {
   const separator = currentPlatform === 'win32' ? '\\' : '/';
   const append = (...segments: readonly string[]): string => {
@@ -883,6 +832,7 @@ function updatePackageCommand(
   registry: string,
   channel: UpdateChannel,
   runtimeExecutable: string = runtime,
+  environment: NodeJS.ProcessEnv,
 ): {
   readonly args: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
@@ -910,7 +860,7 @@ function updatePackageCommand(
       '--allow-net',
       `npm:${packageSpec}`,
     ],
-    env: {...process.env, NPM_CONFIG_REGISTRY: registry},
+    env: {...environment, NPM_CONFIG_REGISTRY: registry},
   };
 }
 
@@ -923,16 +873,17 @@ export function normalizeRegistry(registry: string): string {
   return url.toString();
 }
 
-export function updateRegistry(): string {
-  return resolveUpdateRegistry(undefined, false);
+export function updateRegistry(environment: NodeJS.ProcessEnv): string {
+  return resolveUpdateRegistry(undefined, false, environment);
 }
 
 export function resolveUpdateRegistry(
   registry: string | undefined,
   allowUntrustedRegistry: boolean | undefined,
+  environment: NodeJS.ProcessEnv,
 ): string {
-  const normalized = normalizeRegistry(registry ?? process.env.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
-  if (normalized !== DEFAULT_NPM_REGISTRY && !allowsUntrustedRegistry(allowUntrustedRegistry)) {
+  const normalized = normalizeRegistry(registry ?? environment.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
+  if (normalized !== DEFAULT_NPM_REGISTRY && !allowsUntrustedRegistry(allowUntrustedRegistry, environment)) {
     throw new Error(
       `Refusing custom npm registry ${normalized}: threadnote update does not verify package signatures from alternate registries. Use the default registry, pass --allow-untrusted-registry, or set ${ALLOW_UNTRUSTED_REGISTRY_ENV}=1 only for an approved mirror.`,
     );
@@ -940,18 +891,18 @@ export function resolveUpdateRegistry(
   return normalized;
 }
 
-function allowsUntrustedRegistry(option: boolean | undefined): boolean {
+function allowsUntrustedRegistry(option: boolean | undefined, environment: NodeJS.ProcessEnv): boolean {
   if (option === true) {
     return true;
   }
-  const envValue = process.env[ALLOW_UNTRUSTED_REGISTRY_ENV]?.trim().toLowerCase();
+  const envValue = environment[ALLOW_UNTRUSTED_REGISTRY_ENV]?.trim().toLowerCase();
   return envValue === '1' || envValue === 'true' || envValue === 'yes';
 }
 
-function isUpdateNotificationDisabled(): boolean {
+function isUpdateNotificationDisabled(environment: NodeJS.ProcessEnv): boolean {
   return (
-    process.env.CI !== undefined ||
-    process.env.NO_UPDATE_NOTIFIER !== undefined ||
-    process.env.THREADNOTE_NO_UPDATE_CHECK !== undefined
+    environment.CI !== undefined ||
+    environment.NO_UPDATE_NOTIFIER !== undefined ||
+    environment.THREADNOTE_NO_UPDATE_CHECK !== undefined
   );
 }

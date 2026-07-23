@@ -1,4 +1,5 @@
-import {NodeRuntime, NodeServices} from '@effect/platform-node';
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
+import * as NodeServices from '@effect/platform-node/NodeServices';
 import {Console, Effect, FileSystem} from 'effect';
 
 const budgets = [
@@ -17,7 +18,7 @@ const checkBundleSizes = Effect.gen(function* () {
     exceeded ||= size > budget.bytes;
   }
   if (exceeded) {
-    process.exitCode = 1;
+    return yield* Effect.fail(new Error('Bundle size budget exceeded.'));
   }
 });
 

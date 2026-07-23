@@ -1,15 +1,22 @@
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   filterStaleRecallSummaryRows,
-  findStaleRecallIndexTargets,
+  findStaleRecallIndexTargets as findStaleRecallIndexTargetsEffect,
   formatRecallIndexRepairMessages,
-  repairStaleRecallIndex,
+  repairStaleRecallIndex as repairStaleRecallIndexEffect,
 } from '../../src/index_repair.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const findStaleRecallIndexTargets = (...args: Parameters<typeof findStaleRecallIndexTargetsEffect>) =>
+  runEffect(findStaleRecallIndexTargetsEffect(...args));
+const repairStaleRecallIndex = (...args: Parameters<typeof repairStaleRecallIndexEffect>) =>
+  runEffect(repairStaleRecallIndexEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -40,7 +47,7 @@ describe('recall index auto repair', () => {
 
   beforeEach(() => {
     vi.mocked(utils.runCommand).mockReset();
-    vi.mocked(utils.runCommand).mockResolvedValue(ok('reindexed'));
+    vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok('reindexed')));
   });
 
   afterEach(async () => {
@@ -253,7 +260,7 @@ describe('recall index auto repair', () => {
     );
     await mkdir(summaryDir, {recursive: true});
     await writeFile(join(summaryDir, '.overview.md'), '# threadnote\n\n[Directory overview is not ready]');
-    vi.mocked(utils.runCommand).mockResolvedValueOnce({exitCode: 1, stderr: 'INTERNAL', stdout: ''});
+    vi.mocked(utils.runCommand).mockReturnValueOnce(Effect.succeed({exitCode: 1, stderr: 'INTERNAL', stdout: ''}));
     const failures: string[] = [];
 
     const result = await repairStaleRecallIndex(config, '/ov', {
@@ -316,11 +323,13 @@ describe('recall index auto repair', () => {
       await mkdir(summaryDir, {recursive: true});
       await writeFile(join(summaryDir, '.overview.md'), `# ${project}\n\n[Directory overview is not ready]`);
     }
-    vi.mocked(utils.runCommand).mockResolvedValue({
-      exitCode: 1,
-      stderr: 'CONFLICT: Failed to acquire tree lock',
-      stdout: '',
-    });
+    vi.mocked(utils.runCommand).mockReturnValue(
+      Effect.succeed({
+        exitCode: 1,
+        stderr: 'CONFLICT: Failed to acquire tree lock',
+        stdout: '',
+      }),
+    );
 
     const result = await repairStaleRecallIndex(config, '/ov', {consecutiveFailureLimit: 2, ignoreBackoff: true});
 
@@ -377,10 +386,10 @@ describe('recall index auto repair', () => {
     }
     const conflict = {exitCode: 1, stderr: 'CONFLICT: Failed to acquire tree lock', stdout: ''};
     vi.mocked(utils.runCommand)
-      .mockResolvedValueOnce(conflict)
-      .mockResolvedValueOnce(ok('reindexed'))
-      .mockResolvedValueOnce(conflict)
-      .mockResolvedValueOnce(conflict);
+      .mockReturnValueOnce(Effect.succeed(conflict))
+      .mockReturnValueOnce(Effect.succeed(ok('reindexed')))
+      .mockReturnValueOnce(Effect.succeed(conflict))
+      .mockReturnValueOnce(Effect.succeed(conflict));
 
     const result = await repairStaleRecallIndex(config, '/ov', {consecutiveFailureLimit: 2, ignoreBackoff: true});
 

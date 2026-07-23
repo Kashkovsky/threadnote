@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {RECALL_RANKER_VERSION} from './rank.js';
@@ -176,28 +176,24 @@ function parseFeedbackEvent(line: string): RecallFeedbackEvent | undefined {
   if (!line.trim()) {
     return undefined;
   }
-  try {
-    const value: unknown = JSON.parse(line);
-    if (
-      typeof value !== 'object' ||
-      value === null ||
-      !('version' in value) ||
-      value.version !== 1 ||
-      !('action' in value) ||
-      !isFeedbackAction(value.action) ||
-      !('queryFingerprint' in value) ||
-      typeof value.queryFingerprint !== 'string' ||
-      !('timestamp' in value) ||
-      typeof value.timestamp !== 'string' ||
-      !('uri' in value) ||
-      typeof value.uri !== 'string'
-    ) {
-      return undefined;
-    }
-    return value as RecallFeedbackEvent;
-  } catch {
+  const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(line));
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('version' in value) ||
+    value.version !== 1 ||
+    !('action' in value) ||
+    !isFeedbackAction(value.action) ||
+    !('queryFingerprint' in value) ||
+    typeof value.queryFingerprint !== 'string' ||
+    !('timestamp' in value) ||
+    typeof value.timestamp !== 'string' ||
+    !('uri' in value) ||
+    typeof value.uri !== 'string'
+  ) {
     return undefined;
   }
+  return value as RecallFeedbackEvent;
 }
 
 function isFeedbackAction(value: unknown): value is RecallFeedbackAction {

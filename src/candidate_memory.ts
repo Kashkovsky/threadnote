@@ -2,6 +2,7 @@ import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256Hex} from './effect/digest.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {safeChildDirectoryNames, scanFilesWithinBoundary} from './effect/safe_scan.js';
+import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRecord} from './memory_document.js';
 import type {MemoryKind} from './types.js';
@@ -430,7 +431,7 @@ export function withCandidateReviewLock<A, E, R>(
   agentContextHome: string,
   reviewId: string,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | unknown, Crypto.Crypto | R | FileSystem.FileSystem | Path.Path> {
+): Effect.Effect<A, E | unknown, Crypto.Crypto | R | FileSystem.FileSystem | Path.Path | SystemInfo> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
@@ -667,13 +668,13 @@ function readCandidateAudit(
     const raw = yield* fs.readFileString(path);
     return raw
       .split('\n')
-      .map(line => {
-        try {
-          return line.trim() ? (JSON.parse(line) as CandidateAuditEvent) : undefined;
-        } catch {
-          return undefined;
-        }
-      })
+      .map(line =>
+        line.trim()
+          ? Option.getOrUndefined(
+              Option.liftThrowable((content: string) => JSON.parse(content) as CandidateAuditEvent)(line),
+            )
+          : undefined,
+      )
       .filter((event): event is CandidateAuditEvent => event !== undefined)
       .slice(-MAX_CANDIDATE_AUDIT_EVENTS);
   });

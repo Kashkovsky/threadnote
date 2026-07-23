@@ -4,6 +4,7 @@ import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import {memoryProjectConsistencyCheck} from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 const homes: string[] = [];
 
@@ -50,7 +51,7 @@ async function writeMemory(root: string, relPath: string, project: string | unde
 describe('memoryProjectConsistencyCheck', () => {
   it('is ok before any memories exist', async () => {
     const config = await makeConfig();
-    const check = await memoryProjectConsistencyCheck(config);
+    const check = await runEffect(memoryProjectConsistencyCheck(config));
     expect(check.status).toBe('ok');
     expect(check.detail).toMatch(/no memories directory/);
   });
@@ -63,7 +64,7 @@ describe('memoryProjectConsistencyCheck', () => {
     await writeMemory(root, 'preferences/coding-style.md', 'whatever'); // project-less kind → skipped
     await writeMemory(root, 'shared/docs-desktop/durable/projects/coda/pagerduty.md', 'mobile-native'); // drift
 
-    const check = await memoryProjectConsistencyCheck(config);
+    const check = await runEffect(memoryProjectConsistencyCheck(config));
     expect(check.status).toBe('warn');
     expect(check.detail).toContain('shared/docs-desktop/durable/projects/coda/pagerduty.md');
     expect(check.detail).toContain('frontmatter "mobile-native" vs path "coda"');
@@ -76,7 +77,7 @@ describe('memoryProjectConsistencyCheck', () => {
     await writeMemory(root, 'durable/projects/mobile-native/a.md', 'mobile-native');
     await writeMemory(root, 'handoffs/active/threadnote/b.md', 'threadnote');
     await writeMemory(root, 'incidents/active/coda/c.md', 'coda');
-    const check = await memoryProjectConsistencyCheck(config);
+    const check = await runEffect(memoryProjectConsistencyCheck(config));
     expect(check.status).toBe('ok');
     expect(check.detail).toMatch(/3 project-scoped memories consistent/);
   });
@@ -88,7 +89,7 @@ describe('memoryProjectConsistencyCheck', () => {
     await writeMemory(root, 'durable/projects/coda/notes.txt', 'mobile-native'); // not .md → skipped
     await writeMemory(root, 'durable/projects/coda/.overview.md', 'mobile-native'); // sidecar → skipped
     await mkdir(join(root, 'durable/projects/coda/isdir.md'), {recursive: true}); // dir → readFile throws, skipped
-    const check = await memoryProjectConsistencyCheck(config);
+    const check = await runEffect(memoryProjectConsistencyCheck(config));
     expect(check.status).toBe('ok');
     expect(check.detail).toMatch(/1 project-scoped memories consistent/);
   });
@@ -99,7 +100,7 @@ describe('memoryProjectConsistencyCheck', () => {
     for (const project of ['a', 'b', 'c', 'd']) {
       await writeMemory(root, `durable/projects/${project}/m.md`, 'wrong');
     }
-    const check = await memoryProjectConsistencyCheck(config);
+    const check = await runEffect(memoryProjectConsistencyCheck(config));
     expect(check.status).toBe('warn');
     expect(check.detail).toMatch(/^4 memory/);
     expect(check.detail).toContain('+1 more');

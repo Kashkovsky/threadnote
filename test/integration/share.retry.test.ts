@@ -4,13 +4,14 @@ import {writeMemoryFile} from '../../src/share.js';
 import {removeMemoryUri as removeMemoryUriEffect} from '../../src/effect/share.js';
 import * as utils from '../../src/utils.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
     runCommand: vi.fn(),
-    sleep: vi.fn().mockResolvedValue(undefined),
+    sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
@@ -24,13 +25,13 @@ const runtime: ShareRuntime = {
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
 const fail = (stderr: string): CommandResult => ({exitCode: 1, stdout: '', stderr});
 const removeMemoryUri = (...args: Parameters<typeof removeMemoryUriEffect>) =>
-  Effect.runPromise(removeMemoryUriEffect(...args));
+  runEffect(removeMemoryUriEffect(...args));
 
 function commandSequence(...results: readonly CommandResult[]): void {
   const runCommand = vi.mocked(utils.runCommand);
   runCommand.mockReset();
   for (const result of results) {
-    runCommand.mockResolvedValueOnce(result);
+    runCommand.mockReturnValueOnce(Effect.succeed(result));
   }
 }
 
@@ -129,14 +130,16 @@ describe('writeMemoryFile index refresh', () => {
       ok('written'),
       ok('reindexed'),
     );
-    await writeMemoryFile(
-      runtime,
-      '/ov',
-      'viking://user/me/memories/durable/projects/threadnote/x.md',
-      'body',
-      'create',
-      false,
-      {quiet: true},
+    await runEffect(
+      writeMemoryFile(
+        runtime,
+        '/ov',
+        'viking://user/me/memories/durable/projects/threadnote/x.md',
+        'body',
+        'create',
+        false,
+        {quiet: true},
+      ),
     );
     const runCommand = vi.mocked(utils.runCommand);
     expect(runCommand).toHaveBeenCalledTimes(3);
@@ -158,14 +161,16 @@ describe('writeMemoryFile index refresh', () => {
       fail('temporary reindex failure'),
     );
     await expect(
-      writeMemoryFile(
-        runtime,
-        '/ov',
-        'viking://user/me/memories/durable/projects/threadnote/x.md',
-        'body',
-        'create',
-        false,
-        {quiet: true},
+      runEffect(
+        writeMemoryFile(
+          runtime,
+          '/ov',
+          'viking://user/me/memories/durable/projects/threadnote/x.md',
+          'body',
+          'create',
+          false,
+          {quiet: true},
+        ),
       ),
     ).resolves.toBeUndefined();
   });
@@ -180,14 +185,16 @@ describe('writeMemoryFile index refresh', () => {
     );
 
     await expect(
-      writeMemoryFile(
-        runtime,
-        '/ov',
-        'viking://user/me/memories/durable/projects/threadnote/x.md',
-        'approved body',
-        'create',
-        false,
-        {quiet: true},
+      runEffect(
+        writeMemoryFile(
+          runtime,
+          '/ov',
+          'viking://user/me/memories/durable/projects/threadnote/x.md',
+          'approved body',
+          'create',
+          false,
+          {quiet: true},
+        ),
       ),
     ).rejects.toThrow(/Create conflict/);
     expect(vi.mocked(utils.runCommand).mock.calls.filter(call => call[1]?.includes('write'))).toHaveLength(1);

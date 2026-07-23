@@ -306,7 +306,7 @@ describe('init-manifest', () => {
 
     await captureConsole(runInitManifest(config, {path: manifestPath, repo: [newRepo]}));
 
-    const manifest = await readSeedManifest(manifestPath);
+    const manifest = await run(readSeedManifest(manifestPath));
     expect(manifest.projects).toHaveLength(2);
     expect(manifest.projects[0]?.name).toBe('existing-repo');
     expect(manifest.projects[1]?.path).toContain('threadnote-new-repo-');
@@ -329,8 +329,10 @@ describe('init-manifest', () => {
     }
     try {
       await mkdir(repo);
-      await runCommand('git', ['init'], {cwd: repo});
-      await runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repo});
+      await run(runCommand('git', ['init'], {cwd: repo}));
+      await run(
+        runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {cwd: repo}),
+      );
       const manifestPath = join(contextHome, 'seed-manifest.yaml');
       const config: RuntimeConfig = {
         account: 'local',
@@ -345,7 +347,7 @@ describe('init-manifest', () => {
 
       await captureConsole(runInitManifest(config, {path: manifestPath, repo: [repo]}));
 
-      const manifest = await readSeedManifest(manifestPath);
+      const manifest = await run(readSeedManifest(manifestPath));
       expect(manifest.projects[0]?.name).toBe('threadnote');
       expect(manifest.projects[0]?.uri).toBe('viking://resources/repos/threadnote');
     } finally {

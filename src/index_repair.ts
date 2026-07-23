@@ -1,5 +1,4 @@
-import {readFile, readdir, writeFile} from 'node:fs/promises';
-import {dirname, join, relative} from 'node:path';
+import {Effect, FileSystem, Path, Result} from 'effect';
 import {inferProjectFromQuery, readSeedManifest, uriSegment} from './manifest.js';
 import {withIdentity} from './runtime.js';
 import type {CommandResult} from './types.js';
@@ -74,7 +73,7 @@ export type RecallIndexRepairProgress =
       readonly type: 'repair-dry-run';
     };
 
-export async function repairStaleRecallIndex(
+export const repairStaleRecallIndex = Effect.fn('indexRepair.repair')(function* (
   config: RecallIndexRepairConfig,
   ov: string,
   options: {
@@ -86,13 +85,13 @@ export async function repairStaleRecallIndex(
     readonly includeAgentSkills?: boolean;
     readonly includeManifestResources?: boolean;
     readonly maxTargets?: number;
-    readonly onRepairFailure?: (target: StaleIndexTarget, result: CommandResult) => Promise<void> | void;
+    readonly onRepairFailure?: (target: StaleIndexTarget, result: CommandResult) => Effect.Effect<void, unknown> | void;
     readonly onProgress?: (progress: RecallIndexRepairProgress) => void;
     readonly query?: string;
   } = {},
-): Promise<RecallIndexRepairResult> {
+) {
   options.onProgress?.({type: 'scan-start'});
-  const targets = await findStaleRecallIndexTargets(config, options);
+  const targets = yield* findStaleRecallIndexTargets(config, options);
   const repairTargets = targets.slice(0, options.maxTargets ?? MAX_REPAIR_TARGETS);
   const consecutiveFailureLimit = options.consecutiveFailureLimit;
   options.onProgress?.({
@@ -104,7 +103,10 @@ export async function repairStaleRecallIndex(
     return {repairedUris: [], skippedRecentUris: [], warnings: []};
   }
 
-  const state = options.dryRun === true ? {entries: {}, version: 1 as const} : await readAutoRepairState(config);
+  let state: AutoRepairState = {entries: {}, version: 1};
+  if (options.dryRun !== true) {
+    state = yield* readAutoRepairState(config);
+  }
   const now = Date.now();
   const repairedUris: string[] = [];
   const skippedRecentUris: string[] = [];
@@ -132,14 +134,14 @@ export async function repairStaleRecallIndex(
     }
 
     options.onProgress?.({...progressBase, type: 'repair-start'});
-    const result = await runCommand(
+    const result = yield* runCommand(
       ov,
       withIdentity(config, ['reindex', target.uri, '--mode', 'semantic_and_vectors', '--wait', 'true']),
       // Bound the wait: `ov reindex` has no --timeout, so a stuck/poisoned
       // semantic queue would block each target for the full 10-min command
       // timeout. A timed-out target counts as a failure and trips the
       // consecutive-failure stop instead of hanging the whole repair.
-      {allowFailure: true, timeoutMs: reindexWaitTimeoutMs()},
+      {allowFailure: true, timeoutMs: yield* reindexWaitTimeoutMs()},
     );
     if (result.exitCode === 0) {
       consecutiveFailures = 0;
@@ -148,7 +150,15 @@ export async function repairStaleRecallIndex(
     } else {
       consecutiveFailures += 1;
       warnings.push(indexRepairWarning(target.uri, result));
-      await options.onRepairFailure?.(target, result);
+      if (options.onRepairFailure) {
+        const failureHook = yield* Effect.try({
+          try: () => options.onRepairFailure?.(target, result),
+          catch: cause => cause,
+        });
+        if (Effect.isEffect(failureHook)) {
+          yield* failureHook;
+        }
+      }
       const remaining = repairTargets.length - (targetIndex + 1);
       if (consecutiveFailureLimit !== undefined && consecutiveFailures >= consecutiveFailureLimit && remaining > 0) {
         warnings.push(
@@ -161,13 +171,13 @@ export async function repairStaleRecallIndex(
   }
 
   if (options.dryRun !== true && repairedUris.length > 0) {
-    await writeAutoRepairState(config, state);
+    yield* writeAutoRepairState(config, state);
   }
 
   return {repairedUris, skippedRecentUris, warnings};
-}
+});
 
-export async function findStaleRecallIndexTargets(
+export const findStaleRecallIndexTargets = Effect.fn('indexRepair.findTargets')(function* (
   config: RecallIndexRepairConfig,
   options: {
     readonly collapseToRoots?: boolean;
@@ -176,17 +186,17 @@ export async function findStaleRecallIndexTargets(
     readonly includeManifestResources?: boolean;
     readonly query?: string;
   } = {},
-): Promise<readonly StaleIndexTarget[]> {
-  if (await summaryAutoGenerationDisabled(config)) {
+) {
+  if (yield* summaryAutoGenerationDisabled(config)) {
     return [];
   }
-  const roots = await scanRoots(config, options);
+  const roots = yield* scanRoots(config, options);
   const byUri = new Map<string, {parts: string[]; staleCount: number; uri: string}>();
   for (const root of roots) {
-    if (!(await exists(root.path))) {
+    if (!(yield* exists(root.path))) {
       continue;
     }
-    const sidecars = await staleSidecars(root.path, root.uri);
+    const sidecars = yield* staleSidecars(root.path, root.uri);
     if (options.collapseToRoots === true) {
       for (const sidecar of sidecars) {
         const uri = collapseStaleSidecarUri(root.uri, sidecar.relativePath, options.collapseDepth);
@@ -204,12 +214,12 @@ export async function findStaleRecallIndexTargets(
       byUri.set(sidecar.uri, current);
     }
   }
-  return [...byUri.values()].map(target => ({
-    signature: sha256([target.uri, ...target.parts.sort()].join('\n---\n')),
-    staleCount: target.staleCount,
-    uri: target.uri,
-  }));
-}
+  return yield* Effect.forEach([...byUri.values()], target =>
+    sha256([target.uri, ...target.parts.sort()].join('\n---\n')).pipe(
+      Effect.map(signature => ({signature, staleCount: target.staleCount, uri: target.uri})),
+    ),
+  );
+});
 
 function collapseStaleSidecarUri(rootUri: string, relativePath: string, depth = 0): string {
   const normalizedRootUri = trimLocalRootUri(rootUri);
@@ -258,7 +268,7 @@ function isStaleRecallSummaryRow(line: string): boolean {
   return /viking:\/\/\S+\/\.(?:abstract|overview)\.md\b/.test(line) && isStaleSummary(line);
 }
 
-async function scanRoots(
+const scanRoots = Effect.fn('indexRepair.scanRoots')(function* (
   config: RecallIndexRepairConfig,
   options: {
     readonly collapseToRoots?: boolean;
@@ -266,20 +276,21 @@ async function scanRoots(
     readonly includeManifestResources?: boolean;
     readonly query?: string;
   },
-): Promise<readonly {readonly path: string; readonly uri: string}[]> {
-  const accountRoot = join(config.agentContextHome, 'data', 'viking', config.account);
+) {
+  const path = yield* Path.Path;
+  const accountRoot = path.join(config.agentContextHome, 'data', 'viking', config.account);
   const roots: Array<{path: string; uri: string}> = [
     {
-      path: join(accountRoot, 'user', uriSegment(config.user), 'memories'),
+      path: path.join(accountRoot, 'user', uriSegment(config.user), 'memories'),
       uri: `viking://user/${uriSegment(config.user)}/memories`,
     },
   ];
 
   const query = options.query;
   if (query) {
-    const project = await inferProjectFromQuery(config.manifestPath, query);
+    const project = yield* inferProjectFromQuery(config.manifestPath, query);
     const projectPath = project?.uri.startsWith('viking://resources/')
-      ? join(accountRoot, 'resources', ...project.uri.slice('viking://resources/'.length).split('/'))
+      ? path.join(accountRoot, 'resources', ...project.uri.slice('viking://resources/'.length).split('/'))
       : undefined;
     if (project && projectPath) {
       roots.push({path: projectPath, uri: project.uri});
@@ -287,34 +298,34 @@ async function scanRoots(
   }
 
   if (options.includeManifestResources === true) {
-    roots.push(...(await manifestResourceRoots(config, accountRoot)));
+    roots.push(...(yield* manifestResourceRoots(config, accountRoot)));
   }
 
   const scanAgentSkills =
     options.includeAgentSkills === true || (query ? /\bskills?\b/.test(query.toLowerCase()) : false);
   if (scanAgentSkills) {
-    roots.push({path: join(accountRoot, 'resources', 'agent-skills'), uri: 'viking://resources/agent-skills'});
+    roots.push({path: path.join(accountRoot, 'resources', 'agent-skills'), uri: 'viking://resources/agent-skills'});
   }
 
   return dedupeRoots(roots);
-}
+});
 
-async function manifestResourceRoots(
+const manifestResourceRoots = Effect.fn('indexRepair.manifestRoots')(function* (
   config: RecallIndexRepairConfig,
   accountRoot: string,
-): Promise<readonly {readonly path: string; readonly uri: string}[]> {
-  try {
-    const manifest = await readSeedManifest(config.manifestPath);
-    return manifest.projects
-      .filter(project => project.uri.startsWith('viking://resources/'))
-      .map(project => ({
-        path: join(accountRoot, 'resources', ...project.uri.slice('viking://resources/'.length).split('/')),
-        uri: project.uri,
-      }));
-  } catch (_err: unknown) {
+) {
+  const path = yield* Path.Path;
+  const manifest = yield* readSeedManifest(config.manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'None') {
     return [];
   }
-}
+  return manifest.value.projects
+    .filter(project => project.uri.startsWith('viking://resources/'))
+    .map(project => ({
+      path: path.join(accountRoot, 'resources', ...project.uri.slice('viking://resources/'.length).split('/')),
+      uri: project.uri,
+    }));
+});
 
 function dedupeRoots(
   roots: readonly {readonly path: string; readonly uri: string}[],
@@ -337,46 +348,45 @@ interface StaleSidecar {
   readonly uri: string;
 }
 
-async function staleSidecars(rootPath: string, rootUri: string): Promise<readonly StaleSidecar[]> {
+const staleSidecars = Effect.fn('indexRepair.staleSidecars')(function* (rootPath: string, rootUri: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const results: StaleSidecar[] = [];
 
-  async function visit(path: string, depth: number): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(path, {withFileTypes: true});
-    } catch (_err: unknown) {
-      return;
-    }
-
-    for (const entry of entries) {
-      const childPath = join(path, entry.name);
-      if (entry.isFile() && isSummarySidecar(entry.name)) {
-        let content;
-        try {
-          content = await readFile(childPath, 'utf8');
-        } catch (_err: unknown) {
+  const visit = (path: string, depth: number): Effect.Effect<void, never> =>
+    Effect.gen(function* () {
+      const entries = yield* fs.readDirectory(path).pipe(Effect.catch(() => Effect.succeed([])));
+      for (const entry of entries) {
+        const childPath = pathService.join(path, entry);
+        const info = yield* fs.stat(childPath).pipe(Effect.option);
+        if (info._tag === 'None') {
           continue;
         }
-        if (!isStaleSummary(content)) {
-          continue;
+        if (info.value.type === 'File' && isSummarySidecar(entry)) {
+          const content = yield* fs.readFileString(childPath).pipe(Effect.option);
+          if (content._tag === 'None') {
+            continue;
+          }
+          if (!isStaleSummary(content.value)) {
+            continue;
+          }
+          const parentPath = pathService.dirname(childPath);
+          const parentRelative = toPosixPath(pathService.relative(rootPath, parentPath));
+          const relativePath = toPosixPath(pathService.relative(rootPath, childPath));
+          results.push({
+            content: content.value.trim(),
+            relativePath,
+            uri: parentRelative ? `${trimLocalRootUri(rootUri)}/${parentRelative}` : trimLocalRootUri(rootUri),
+          });
+        } else if (info.value.type === 'Directory' && depth < MAX_SCAN_DEPTH) {
+          yield* visit(childPath, depth + 1);
         }
-        const parentPath = dirname(childPath);
-        const parentRelative = toPosixPath(relative(rootPath, parentPath));
-        const relativePath = toPosixPath(relative(rootPath, childPath));
-        results.push({
-          content: content.trim(),
-          relativePath,
-          uri: parentRelative ? `${trimLocalRootUri(rootUri)}/${parentRelative}` : trimLocalRootUri(rootUri),
-        });
-      } else if (entry.isDirectory() && depth < MAX_SCAN_DEPTH) {
-        await visit(childPath, depth + 1);
       }
-    }
-  }
+    });
 
-  await visit(rootPath, 0);
+  yield* visit(rootPath, 0);
   return results;
-}
+});
 
 function isSummarySidecar(name: string): boolean {
   return name === '.abstract.md' || name === '.overview.md';
@@ -393,18 +403,21 @@ function isSummarySidecar(name: string): boolean {
  * the semantic + vector index, not these summaries, so skipping the scan is
  * safe. Unknown/unparseable config is treated as enabled to preserve behavior.
  */
-export async function summaryAutoGenerationDisabled(config: RecallIndexRepairConfig): Promise<boolean> {
-  const raw = await readFileIfExists(join(config.agentContextHome, 'ov.conf'));
+export const summaryAutoGenerationDisabled = Effect.fn('indexRepair.summaryAutoGenerationDisabled')(function* (
+  config: RecallIndexRepairConfig,
+) {
+  const path = yield* Path.Path;
+  const raw = yield* readFileIfExists(path.join(config.agentContextHome, 'ov.conf'));
   if (!raw) {
     return false;
   }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isJsonObject(parsed) && parsed.auto_generate_l0 === false && parsed.auto_generate_l1 === false;
-  } catch (_err: unknown) {
+  const parsedResult = Result.try((): unknown => JSON.parse(raw));
+  if (Result.isFailure(parsedResult)) {
     return false;
   }
-}
+  const parsed = parsedResult.success;
+  return isJsonObject(parsed) && parsed.auto_generate_l0 === false && parsed.auto_generate_l1 === false;
+});
 
 function isStaleSummary(content: string): boolean {
   return content.includes('[Directory overview is not ready]') || content.includes('[Directory abstract is not ready]');
@@ -414,37 +427,43 @@ function trimLocalRootUri(uri: string): string {
   return uri.endsWith('/') ? uri.slice(0, -1) : uri;
 }
 
-async function readAutoRepairState(config: RecallIndexRepairConfig): Promise<AutoRepairState> {
-  const raw = await readFileIfExists(autoRepairStatePath(config));
+const readAutoRepairState = Effect.fn('indexRepair.readState')(function* (config: RecallIndexRepairConfig) {
+  const raw = yield* readFileIfExists(yield* autoRepairStatePath(config));
   if (!raw) {
-    return {entries: {}, version: 1};
+    return {entries: {}, version: 1 as const};
   }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isJsonObject(parsed) || parsed.version !== 1 || !isJsonObject(parsed.entries)) {
-      return {entries: {}, version: 1};
-    }
-    const entries: Record<string, AutoRepairStateEntry> = {};
-    for (const [uri, entry] of Object.entries(parsed.entries)) {
-      if (isJsonObject(entry) && typeof entry.signature === 'string' && typeof entry.repairedAt === 'string') {
-        entries[uri] = {repairedAt: entry.repairedAt, signature: entry.signature};
-      }
-    }
-    return {entries, version: 1};
-  } catch (_err: unknown) {
-    return {entries: {}, version: 1};
+  const parsedResult = Result.try((): unknown => JSON.parse(raw));
+  if (Result.isFailure(parsedResult)) {
+    return {entries: {}, version: 1 as const};
   }
-}
+  const parsed = parsedResult.success;
+  if (!isJsonObject(parsed) || parsed.version !== 1 || !isJsonObject(parsed.entries)) {
+    return {entries: {}, version: 1 as const};
+  }
+  const entries: Record<string, AutoRepairStateEntry> = {};
+  for (const [uri, entry] of Object.entries(parsed.entries)) {
+    if (isJsonObject(entry) && typeof entry.signature === 'string' && typeof entry.repairedAt === 'string') {
+      entries[uri] = {repairedAt: entry.repairedAt, signature: entry.signature};
+    }
+  }
+  return {entries, version: 1 as const};
+});
 
-async function writeAutoRepairState(config: RecallIndexRepairConfig, state: AutoRepairState): Promise<void> {
-  const path = autoRepairStatePath(config);
-  await ensureDirectory(dirname(path), false);
-  await writeFile(path, `${JSON.stringify(state, undefined, 2)}\n`, {encoding: 'utf8', mode: 0o600});
-}
+const writeAutoRepairState = Effect.fn('indexRepair.writeState')(function* (
+  config: RecallIndexRepairConfig,
+  state: AutoRepairState,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const path = yield* autoRepairStatePath(config);
+  yield* ensureDirectory(pathService.dirname(path), false);
+  yield* fs.writeFileString(path, `${JSON.stringify(state, undefined, 2)}\n`, {mode: 0o600});
+});
 
-function autoRepairStatePath(config: RecallIndexRepairConfig): string {
-  return join(config.agentContextHome, AUTO_REPAIR_STATE_FILE);
-}
+const autoRepairStatePath = Effect.fn('indexRepair.statePath')(function* (config: RecallIndexRepairConfig) {
+  const path = yield* Path.Path;
+  return path.join(config.agentContextHome, AUTO_REPAIR_STATE_FILE);
+});
 
 function indexRepairWarning(uri: string, result: CommandResult): string {
   return `${uri}: ${result.stderr.trim() || result.stdout.trim() || 'reindex failed'}`;

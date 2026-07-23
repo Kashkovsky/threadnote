@@ -1,14 +1,8 @@
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
-import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {
-  CommandExecutor,
-  isGitExecutable,
-  resolveCommandInvocation,
-  runCommandEffect,
-} from '../../src/effect/command.js';
+import {isGitExecutable, resolveCommandInvocation, runCommandEffect} from '../../src/effect/command.js';
 import {
   openVikingServerExecutableNames,
   pythonExecutableCandidates,
@@ -22,6 +16,7 @@ import {
   pythonUserScriptsCandidateDirs,
   runCommand,
 } from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 const posixIt = process.platform === 'win32' ? it.skip : it;
@@ -113,7 +108,7 @@ describe('Windows executable discovery', () => {
       await chmod(executable, 0o755);
       process.env.PATH = [first, second].join(delimiter);
 
-      await expect(findExecutable(['uv'])).resolves.toBe(executable);
+      await expect(runEffect(findExecutable(['uv']))).resolves.toBe(executable);
     } finally {
       process.env.PATH = originalPath;
       await rm(root, {force: true, recursive: true});
@@ -172,14 +167,16 @@ describe('Windows command execution', () => {
       );
       await writeFile(shim, '@ECHO off\r\n"%CAPTURE_NODE%" "%CAPTURE_SCRIPT%" %*\r\n');
 
-      const result = await runCommand(shim, args, {
-        env: {
-          ...process.env,
-          CAPTURE_NODE: process.execPath,
-          CAPTURE_OUTPUT: output,
-          CAPTURE_SCRIPT: script,
-        },
-      });
+      const result = await runEffect(
+        runCommand(shim, args, {
+          env: {
+            ...process.env,
+            CAPTURE_NODE: process.execPath,
+            CAPTURE_OUTPUT: output,
+            CAPTURE_SCRIPT: script,
+          },
+        }),
+      );
 
       expect(result.exitCode).toBe(0);
       await expect(readFile(output, 'utf8').then(value => JSON.parse(value))).resolves.toEqual(args);
@@ -200,7 +197,7 @@ describe('Windows command execution', () => {
       );
       await writeFile(shim, '@ECHO off\r\n"%TIMEOUT_NODE%" "%TIMEOUT_SCRIPT%" "%TIMEOUT_PID%"\r\n');
 
-      const result = await Effect.runPromise(
+      const result = await runEffect(
         runCommandEffect(shim, [], {
           allowFailure: true,
           env: {
@@ -210,7 +207,7 @@ describe('Windows command execution', () => {
             TIMEOUT_SCRIPT: script,
           },
           timeoutMs: 5000,
-        }).pipe(Effect.provide(CommandExecutor.layer)),
+        }),
       );
       const childPid = Number(await readFile(pidPath, 'utf8'));
 

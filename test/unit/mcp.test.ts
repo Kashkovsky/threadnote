@@ -4,7 +4,6 @@ import {delimiter, join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
-import {fromPromise} from '../../src/effect/errors.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {parseMcpToolset} from '../../src/mcp_toolset.js';
@@ -97,9 +96,7 @@ describe('MCP agent executable resolution', () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-    const resolution = await run(
-      captureConsole(fromPromise('resolve MCP clients', () => resolveMcpClients('codex', 'repair'))),
-    );
+    const resolution = await run(captureConsole(resolveMcpClients('codex', 'repair')));
     expect(resolution.value).toEqual([]);
     expect(resolution.output).toMatch(/codex command.*not working/i);
     await expect(run(runMcpInstall(runtime(), 'codex', {apply: true}))).rejects.toThrow(

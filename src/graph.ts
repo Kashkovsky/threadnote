@@ -1,5 +1,4 @@
-import {join} from 'node:path';
-import {Effect, FileSystem} from 'effect';
+import {Effect, FileSystem, Option, Path} from 'effect';
 
 export interface DependencyFacts {
   readonly dependencies: readonly string[];
@@ -26,12 +25,7 @@ const readIfExists = Effect.fn('graph.readIfExists')(function* (path: string) {
 function parsePackageJson(
   content: string,
 ): {readonly dependencies: readonly string[]; readonly publishedName?: string} | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    return undefined;
-  }
+  const parsed = Option.getOrUndefined(Option.liftThrowable((value: string): unknown => JSON.parse(value))(content));
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return undefined;
   }
@@ -95,9 +89,10 @@ export function extractDependencyFacts(projectRoot: string) {
     const dependencies = new Set<string>();
     const ecosystems: string[] = [];
     const manifestFiles: string[] = [];
+    const pathService = yield* Path.Path;
     let publishedName: string | undefined;
 
-    const packageJson = yield* readIfExists(join(projectRoot, 'package.json'));
+    const packageJson = yield* readIfExists(pathService.join(projectRoot, 'package.json'));
     if (packageJson !== undefined) {
       const parsed = parsePackageJson(packageJson);
       if (parsed) {
@@ -110,7 +105,7 @@ export function extractDependencyFacts(projectRoot: string) {
       }
     }
 
-    const goMod = yield* readIfExists(join(projectRoot, 'go.mod'));
+    const goMod = yield* readIfExists(pathService.join(projectRoot, 'go.mod'));
     if (goMod !== undefined) {
       const parsed = parseGoMod(goMod);
       manifestFiles.push('go.mod');

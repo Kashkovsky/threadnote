@@ -1,9 +1,7 @@
 import {Effect, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {CommandExecutor, runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
-
-const run = <A, E>(effect: Effect.Effect<A, E, CommandExecutor>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(CommandExecutor.layer)));
+import {runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
+import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
   it('returns captured output for successful commands', async () => {

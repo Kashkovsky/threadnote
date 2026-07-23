@@ -1,7 +1,5 @@
-import {clearLine, cursorTo} from 'node:readline';
-import {stdout} from 'node:process';
-import {Effect} from 'effect';
-import {consoleOutput} from './effect/console.js';
+import {Console, Effect, Fiber, Ref, Schedule, Terminal} from 'effect';
+import {SystemInfo} from './effect/system.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
 
@@ -15,6 +13,18 @@ const ANSI: Record<ColorName | 'bold' | 'reset', string> = {
   reset: '\u001b[0m',
   yellow: '\u001b[33m',
 };
+
+let colorEnabled = false;
+
+export const initializeCliUi = Effect.fn('cliUi.initialize')(function* () {
+  const system = yield* SystemInfo;
+  const environment = system.environment();
+  colorEnabled =
+    system.stdoutIsTTY &&
+    environment.NO_COLOR === undefined &&
+    environment.CI === undefined &&
+    environment.TERM !== 'dumb';
+});
 
 export function color(name: ColorName, text: string): string {
   if (!shouldUseColor()) {
@@ -63,83 +73,66 @@ export function keyValue(label: string, value: string): string {
 }
 
 export function shouldUseColor(): boolean {
-  return (
-    stdout.isTTY === true &&
-    process.env.NO_COLOR === undefined &&
-    process.env.CI === undefined &&
-    process.env.TERM !== 'dumb'
-  );
+  return colorEnabled;
 }
 
-export function withSpinnerEffect<A, E, R>(message: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
-  if (stdout.isTTY !== true || process.env.CI !== undefined || process.env.THREADNOTE_NO_SPINNER !== undefined) {
-    return effect;
-  }
-  return Effect.acquireUseRelease(
-    Effect.sync(() => startSpinner(message)),
-    () => effect,
-    spinner => Effect.sync(spinner.stop),
-  );
+export function withSpinnerEffect<A, E, R>(message: string, effect: Effect.Effect<A, E, R>) {
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    const environment = system.environment();
+    if (!system.stdoutIsTTY || environment.CI !== undefined || environment.THREADNOTE_NO_SPINNER !== undefined) {
+      return yield* effect;
+    }
+    return yield* Effect.acquireUseRelease(
+      startSpinner(message),
+      () => effect,
+      spinner => spinner.stop(),
+    );
+  });
 }
 
-function startSpinner(message: string): {readonly stop: () => void} {
+const startSpinner = Effect.fn('cliUi.startSpinner')(function* (message: string) {
+  const terminal = yield* Terminal.Terminal;
   const frames = ['-', '\\', '|', '/'];
-  let frameIndex = 0;
-  const render = () => {
-    clearLine(stdout, 0);
-    cursorTo(stdout, 0);
-    stdout.write(`${muted(frames[frameIndex])} ${message}`);
-    frameIndex = (frameIndex + 1) % frames.length;
-  };
-  render();
-  const timer = setInterval(render, 100);
+  const frameIndex = yield* Ref.make(0);
+  const render = Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length).pipe(
+    Effect.flatMap(index => terminal.display(`\r\u001b[2K${muted(frames[index])} ${message}`)),
+  );
+  yield* render;
+  const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
-    stop: () => {
-      clearInterval(timer);
-      clearLine(stdout, 0);
-      cursorTo(stdout, 0);
-    },
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
-}
+});
 
 export interface ProgressIndicator {
-  update(message: string): void;
-  stop(): void;
+  update(message: string): Effect.Effect<void>;
+  stop(): Effect.Effect<void>;
 }
 
-export function startProgress(message: string): ProgressIndicator {
-  if (stdout.isTTY !== true || process.env.CI !== undefined || process.env.THREADNOTE_NO_SPINNER !== undefined) {
-    consoleOutput.log(message);
+export const startProgress = Effect.fn('cliUi.startProgress')(function* (message: string) {
+  const system = yield* SystemInfo;
+  const environment = system.environment();
+  if (!system.stdoutIsTTY || environment.CI !== undefined || environment.THREADNOTE_NO_SPINNER !== undefined) {
+    yield* Console.log(message);
     return {
-      update(nextMessage: string): void {
-        consoleOutput.log(nextMessage);
-      },
-      stop(): void {
-        return;
-      },
+      update: (nextMessage: string) => Console.log(nextMessage),
+      stop: () => Effect.void,
     };
   }
 
+  const terminal = yield* Terminal.Terminal;
   const frames = ['-', '\\', '|', '/'];
-  let frameIndex = 0;
-  let currentMessage = message;
-  const render = () => {
-    clearLine(stdout, 0);
-    cursorTo(stdout, 0);
-    stdout.write(`${muted(frames[frameIndex])} ${currentMessage}`);
-    frameIndex = (frameIndex + 1) % frames.length;
-  };
-  const timer = setInterval(render, 100);
-  render();
+  const frameIndex = yield* Ref.make(0);
+  const currentMessage = yield* Ref.make(message);
+  const render = Effect.all([
+    Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length),
+    Ref.get(currentMessage),
+  ]).pipe(Effect.flatMap(([index, text]) => terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`)));
+  yield* render;
+  const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
-    update(nextMessage: string): void {
-      currentMessage = nextMessage;
-      render();
-    },
-    stop(): void {
-      clearInterval(timer);
-      clearLine(stdout, 0);
-      cursorTo(stdout, 0);
-    },
+    update: (nextMessage: string) => Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
-}
+});

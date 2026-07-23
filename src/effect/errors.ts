@@ -1,5 +1,4 @@
 import {Effect, Schema} from 'effect';
-import {tryPromiseWithConsole} from './console.js';
 
 export class ApplicationError extends Schema.TaggedErrorClass<ApplicationError>()('ApplicationError', {
   cause: Schema.Defect(),
@@ -16,10 +15,10 @@ export function applicationError(operation: string, cause: unknown): Application
 }
 
 export const fromPromise = <A>(operation: string, evaluate: () => Promise<A>) =>
-  tryPromiseWithConsole({try: evaluate, catch: cause => applicationError(operation, cause)});
+  Effect.tryPromise({try: evaluate, catch: cause => applicationError(operation, cause)});
 
 export const fromPromiseError = <A>(evaluate: () => PromiseLike<A>) =>
-  tryPromiseWithConsole({
+  Effect.tryPromise({
     try: evaluate,
     catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
   });
