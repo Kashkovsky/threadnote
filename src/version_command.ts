@@ -3,24 +3,31 @@ import {heading, info, keyValue, success, warning, withSpinnerEffect} from './cl
 import {applicationError, fromPromise} from './effect/errors.js';
 import type {RuntimeConfig, VersionOptions} from './types.js';
 import {currentPackageVersion, fetchLatestVersion, resolveUpdateRegistry} from './update.js';
+import {selectUpdateChannel} from './update_channel.js';
 import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
 
 export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConfig, options: VersionOptions) {
   const currentVersion = yield* fromPromise('read current package version', currentPackageVersion);
+  const channel = selectUpdateChannel(currentVersion);
   const registry = yield* Effect.try({
     try: () => resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry),
     catch: cause => applicationError('resolve update registry', cause),
   });
   const latest = yield* withSpinnerEffect(
     'Checking npm for latest threadnote version',
-    fetchLatestVersion(registry),
+    fetchLatestVersion(registry, channel),
   ).pipe(Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}));
   const latestVersion = Result.isSuccess(latest) ? latest.success : undefined;
   const latestWarning = Result.isFailure(latest) ? errorMessage(latest.failure) : undefined;
 
   yield* Console.log(keyValue('Current version', info(currentVersion)));
-  yield* Console.log(keyValue('Latest version', latestVersion ? info(latestVersion) : warning('unavailable')));
+  yield* Console.log(
+    keyValue(
+      channel === 'beta' ? 'Latest beta version' : 'Latest version',
+      latestVersion ? info(latestVersion) : warning('unavailable'),
+    ),
+  );
   if (latestWarning) {
     yield* Console.log(warning(`Warning: ${latestWarning}`));
   }
@@ -31,10 +38,13 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
   const comparison = compareVersions(currentVersion, latestVersion);
   if (comparison >= 0) {
     yield* Console.log(
-      success(comparison > 0 ? 'Current version is newer than npm latest.' : 'Threadnote is up to date.'),
+      success(comparison > 0 ? `Current version is newer than npm ${channel}.` : 'Threadnote is up to date.'),
     );
     yield* Console.log('');
-    const whatsNew = yield* withSpinnerEffect('Fetching GitHub release notes', whatsNewLinesForVersion(currentVersion));
+    const whatsNew = yield* withSpinnerEffect(
+      'Fetching GitHub release notes',
+      whatsNewLinesForVersion(currentVersion, {includePrereleases: channel === 'beta'}),
+    );
     yield* printWhatsNew(whatsNew);
     return;
   }
@@ -42,7 +52,7 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
   yield* Console.log('');
   const whatsNew = yield* withSpinnerEffect(
     'Fetching GitHub release notes',
-    whatsNewLinesForVersionRange(currentVersion, latestVersion),
+    whatsNewLinesForVersionRange(currentVersion, latestVersion, {includePrereleases: channel === 'beta'}),
   );
   yield* printWhatsNew(whatsNew);
 });

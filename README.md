@@ -87,6 +87,16 @@ New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it ca
 (server health, configured share teams, seeded projects) and offers to run each step
 with you. The walkthrough only loads when you ask, so it never sits in context otherwise.
 
+## Updates
+
+```bash
+threadnote update         # latest stable release
+threadnote update --beta  # latest beta release
+```
+
+Stable installs only report and install stable releases. After opting into a beta, ordinary `threadnote version` and
+`threadnote update` calls stay on the beta channel until a stable Threadnote version is installed again.
+
 ## Why Not Just Markdown Files?
 
 Use Markdown files. Threadnote makes them operational.

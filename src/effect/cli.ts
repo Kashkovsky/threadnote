@@ -209,6 +209,7 @@ const update = Command.make(
       'allow-untrusted-registry',
       'Allow a non-default npm registry without package signature verification',
     ),
+    beta: boolean('beta', 'Update to the latest beta release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
     force: boolean('force', 'Run package-manager update even if this version is already current'),

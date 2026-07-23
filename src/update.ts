@@ -13,6 +13,7 @@ import {pollUntilEffect} from './effect/time.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
+import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {
   compareVersions,
   ensureDirectory,
@@ -39,6 +40,7 @@ const POST_UPDATE_MIGRATIONS_FILE = 'post-update-migrations.json';
 const POST_UPDATE_STATE_FILE = 'post-update-state.json';
 
 interface UpdateInfo {
+  readonly channel: UpdateChannel;
   readonly currentVersion: string;
   readonly isUpdateAvailable: boolean;
   readonly latestVersion: string;
@@ -46,6 +48,7 @@ interface UpdateInfo {
 }
 
 interface UpdateCache {
+  readonly channel: UpdateChannel;
   readonly checkedAt: string;
   readonly latestVersion: string;
   readonly registry: string;
@@ -81,6 +84,7 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
     Effect.flatMap(registry =>
       getUpdateInfo(config, {
         allowCacheWrite: options.dryRun !== true,
+        betaRequested: false,
         preferFresh: false,
         registry,
       }),
@@ -107,6 +111,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     'Checking npm for latest threadnote version',
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
+      betaRequested: options.beta === true,
       preferFresh: true,
       registry,
     }),
@@ -114,19 +119,22 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 
   yield* syncWithConsole(() => {
     consoleOutput.log(keyValue('Current version', infoText(info.currentVersion)));
-    consoleOutput.log(keyValue('Latest version', infoText(info.latestVersion)));
+    consoleOutput.log(
+      keyValue(info.channel === 'beta' ? 'Latest beta version' : 'Latest version', infoText(info.latestVersion)),
+    );
     consoleOutput.log(keyValue('Registry', info.registry));
   });
 
   if (options.check === true) {
     if (info.isUpdateAvailable) {
-      yield* syncWithConsole(() => consoleOutput.log(warning('Update available. Run: threadnote update')));
+      const command = options.beta === true ? 'threadnote update --beta' : 'threadnote update';
+      yield* syncWithConsole(() => consoleOutput.log(warning(`Update available. Run: ${command}`)));
       yield* printWhatsNewIfAvailable(info);
     } else {
       yield* syncWithConsole(() =>
         consoleOutput.log(
           compareVersions(info.currentVersion, info.latestVersion) > 0
-            ? warning('Current version is newer than npm latest.')
+            ? warning(`Current version is newer than npm ${info.channel}.`)
             : success('Threadnote is up to date.'),
         ),
       );
@@ -140,7 +148,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   const runtime = yield* fromPromise('resolve update runtime', () => resolveUpdateRuntime(options.runtime ?? 'auto'));
-  const updateCommand = updatePackageCommand(runtime, registry);
+  const updateCommand = updatePackageCommand(runtime, registry, info.channel);
   yield* runStreamingSubcommand(options.dryRun === true, updateCommand.executable, updateCommand.args);
 
   if (options.repair === false) {
@@ -188,7 +196,9 @@ function printWhatsNewIfAvailable(info: UpdateInfo) {
     yield* syncWithConsole(() => consoleOutput.log(''));
     const whatsNew = yield* withSpinnerEffect(
       'Fetching GitHub release notes',
-      whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion),
+      whatsNewLinesForVersionRange(info.currentVersion, info.latestVersion, {
+        includePrereleases: info.channel === 'beta',
+      }),
     );
     yield* syncWithConsole(() => {
       for (const line of whatsNew) {
@@ -471,22 +481,30 @@ function getUpdateInfo(
   config: RuntimeConfig,
   options: {
     readonly allowCacheWrite: boolean;
+    readonly betaRequested: boolean;
     readonly preferFresh: boolean;
     readonly registry: string;
   },
 ) {
   return Effect.gen(function* () {
     const currentVersion = yield* fromPromise('read current package version', currentPackageVersion);
+    const channel = selectUpdateChannel(currentVersion, options.betaRequested);
     const cached = options.preferFresh
       ? undefined
-      : yield* fromPromise('read update cache', () => readFreshCache(config, options.registry));
-    const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry));
+      : yield* fromPromise('read update cache', () => readFreshCache(config, options.registry, channel));
+    const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry, channel));
     if (!cached && options.allowCacheWrite) {
       yield* fromPromise('write update cache', () =>
-        writeUpdateCache(config, {checkedAt: new Date().toISOString(), latestVersion, registry: options.registry}),
+        writeUpdateCache(config, {
+          channel,
+          checkedAt: new Date().toISOString(),
+          latestVersion,
+          registry: options.registry,
+        }),
       );
     }
     return {
+      channel,
       currentVersion,
       isUpdateAvailable: compareVersions(currentVersion, latestVersion) < 0,
       latestVersion,
@@ -497,10 +515,13 @@ function getUpdateInfo(
 
 export {currentPackageVersion};
 
-export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (registry: string) {
+export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
+  registry: string,
+  channel: UpdateChannel = 'latest',
+) {
   const url = yield* fromSync(
     'build npm registry URL',
-    () => new URL(`${NPM_PACKAGE_NAME}/latest`, normalizeRegistry(registry)),
+    () => new URL(`${NPM_PACKAGE_NAME}/${channel}`, normalizeRegistry(registry)),
   );
   const response = yield* getJsonEffect(url, {headers: {accept: 'application/json'}, timeoutMs: 2500}).pipe(
     Effect.mapError(cause =>
@@ -518,7 +539,11 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (reg
   return response.body.version;
 });
 
-async function readFreshCache(config: RuntimeConfig, registry: string): Promise<UpdateCache | undefined> {
+async function readFreshCache(
+  config: RuntimeConfig,
+  registry: string,
+  channel: UpdateChannel,
+): Promise<UpdateCache | undefined> {
   const rawCache = await readFileIfExists(updateCachePath(config));
   if (!rawCache) {
     return undefined;
@@ -527,6 +552,7 @@ async function readFreshCache(config: RuntimeConfig, registry: string): Promise<
     const parsed: unknown = JSON.parse(rawCache);
     if (
       !isJsonObject(parsed) ||
+      parsed.channel !== channel ||
       typeof parsed.checkedAt !== 'string' ||
       typeof parsed.latestVersion !== 'string' ||
       parsed.registry !== registry
@@ -537,7 +563,7 @@ async function readFreshCache(config: RuntimeConfig, registry: string): Promise<
     if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
       return undefined;
     }
-    return {checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, registry};
+    return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, registry};
   } catch (_err: unknown) {
     return undefined;
   }
@@ -784,15 +810,17 @@ async function runtimeThreadnoteBin(runtime: Exclude<UpdateRuntime, 'auto'>): Pr
 function updatePackageCommand(
   runtime: Exclude<UpdateRuntime, 'auto'>,
   registry: string,
+  channel: UpdateChannel,
 ): {
   readonly args: readonly string[];
   readonly executable: string;
 } {
+  const packageSpec = `${NPM_PACKAGE_NAME}@${channel}`;
   if (runtime === 'npm') {
-    return {executable: 'npm', args: ['install', '--global', `${NPM_PACKAGE_NAME}@latest`, `--registry=${registry}`]};
+    return {executable: 'npm', args: ['install', '--global', packageSpec, `--registry=${registry}`]};
   }
   if (runtime === 'bun') {
-    return {executable: 'bun', args: ['install', '--global', `${NPM_PACKAGE_NAME}@latest`, `--registry=${registry}`]};
+    return {executable: 'bun', args: ['install', '--global', packageSpec, `--registry=${registry}`]};
   }
   return {
     executable: 'env',
@@ -809,7 +837,7 @@ function updatePackageCommand(
       '--allow-run',
       '--allow-env',
       '--allow-net',
-      `npm:${NPM_PACKAGE_NAME}@latest`,
+      `npm:${packageSpec}`,
     ],
   };
 }

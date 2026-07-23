@@ -4,16 +4,18 @@ import {dirname} from 'node:path';
 import {Effect} from 'effect';
 import {getJsonEffect} from './effect/http.js';
 import {fromPromiseError} from './effect/errors.js';
+import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {compareVersions, isJsonObject} from './utils.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const NPM_LATEST_URL = 'https://registry.npmjs.org/threadnote/latest';
+const NPM_REGISTRY_URL = 'https://registry.npmjs.org/threadnote/';
 const FETCH_TIMEOUT_MS = 3000;
 
 interface UpdateCacheFile {
+  readonly channel: UpdateChannel;
   readonly checkedAt: string;
   readonly latestVersion: string;
-  readonly version: 1;
+  readonly version: 2;
 }
 
 export interface UpdateCheckResult {
@@ -39,22 +41,25 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
     return Effect.succeed(undefined);
   }
   return Effect.gen(function* () {
+    const channel = selectUpdateChannel(args.currentVersion);
     const cached = yield* fromPromiseError(() => readUpdateCache(args.cachePath));
-    if (cached && isCacheFresh(cached)) {
-      return toUpdateCheckResult(args.currentVersion, cached.latestVersion);
+    const channelCache = cached?.channel === channel ? cached : undefined;
+    if (channelCache && isCacheFresh(channelCache)) {
+      return toUpdateCheckResult(args.currentVersion, channelCache.latestVersion);
     }
-    const fresh = yield* fetchLatestVersionEffect();
+    const fresh = yield* fetchLatestVersionEffect(channel);
     if (fresh) {
       yield* fromPromiseError(() =>
         writeUpdateCache(args.cachePath, {
+          channel,
           checkedAt: new Date().toISOString(),
           latestVersion: fresh,
-          version: 1,
+          version: 2,
         }),
       );
       return toUpdateCheckResult(args.currentVersion, fresh);
     }
-    return cached ? toUpdateCheckResult(args.currentVersion, cached.latestVersion) : undefined;
+    return channelCache ? toUpdateCheckResult(args.currentVersion, channelCache.latestVersion) : undefined;
   });
 }
 
@@ -100,10 +105,20 @@ async function readUpdateCache(cachePath: string): Promise<UpdateCacheFile | und
   try {
     const raw = await readFile(cachePath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<UpdateCacheFile>;
-    if (parsed.version !== 1 || typeof parsed.latestVersion !== 'string' || typeof parsed.checkedAt !== 'string') {
+    if (
+      parsed.version !== 2 ||
+      (parsed.channel !== 'beta' && parsed.channel !== 'latest') ||
+      typeof parsed.latestVersion !== 'string' ||
+      typeof parsed.checkedAt !== 'string'
+    ) {
       return undefined;
     }
-    return {checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, version: 1};
+    return {
+      channel: parsed.channel,
+      checkedAt: parsed.checkedAt,
+      latestVersion: parsed.latestVersion,
+      version: 2,
+    };
   } catch {
     return undefined;
   }
@@ -118,8 +133,11 @@ async function writeUpdateCache(cachePath: string, contents: UpdateCacheFile): P
   }
 }
 
-const fetchLatestVersionEffect = Effect.fn('fetchLatestHookVersion')(() =>
-  getJsonEffect(NPM_LATEST_URL, {headers: {accept: 'application/json'}, timeoutMs: FETCH_TIMEOUT_MS}).pipe(
+const fetchLatestVersionEffect = Effect.fn('fetchLatestHookVersion')((channel: UpdateChannel) =>
+  getJsonEffect(`${NPM_REGISTRY_URL}${channel}`, {
+    headers: {accept: 'application/json'},
+    timeoutMs: FETCH_TIMEOUT_MS,
+  }).pipe(
     Effect.map(response =>
       isJsonObject(response.body) && typeof response.body.version === 'string' && response.body.version.length > 0
         ? response.body.version

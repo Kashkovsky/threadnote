@@ -9,6 +9,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
+    currentPackageVersion: vi.fn(actual.currentPackageVersion),
     findExecutable: vi.fn(),
     findOpenVikingCli: vi.fn(),
     isExecutable: vi.fn(),
@@ -27,6 +28,8 @@ import {
   runPostUpdate,
   runUpdate,
 } from '../../src/update.js';
+import {runVersion} from '../../src/version_command.js';
+import {captureConsole} from '../../src/effect/console.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
@@ -65,16 +68,25 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   };
 }
 
-function mockLatestVersion(version: string): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string | URL) => {
-      if (String(url).includes('/health')) {
-        return new Response('healthy');
-      }
-      return Response.json({version});
-    }),
-  );
+function mockRegistryVersions(latest: string, beta: string) {
+  const fetch = vi.fn(async (url: string | URL) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes('/health')) {
+      return new Response('healthy');
+    }
+    if (parsed.pathname.endsWith('/threadnote/beta')) {
+      return Response.json({version: beta});
+    }
+    if (parsed.pathname.endsWith('/threadnote/latest')) {
+      return Response.json({version: latest});
+    }
+    if (parsed.hostname === 'api.github.com') {
+      return Response.json([]);
+    }
+    return new Response('Not found', {status: 404});
+  });
+  vi.stubGlobal('fetch', fetch);
+  return fetch;
 }
 
 describe('parseUpdateRuntime', () => {
@@ -87,6 +99,7 @@ describe('parseUpdateRuntime', () => {
     vi.mocked(utils.runCommand).mockReset();
     vi.mocked(utils.runInteractive).mockReset();
     vi.mocked(utils.sleep).mockReset();
+    vi.mocked(utils.currentPackageVersion).mockResolvedValue('2.0.4');
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
     vi.mocked(utils.findOpenVikingCli).mockResolvedValue(undefined);
     vi.mocked(utils.runCommand).mockResolvedValue(ok());
@@ -127,6 +140,7 @@ describe('runUpdate', () => {
     vi.mocked(utils.runCommand).mockReset();
     vi.mocked(utils.runInteractive).mockReset();
     vi.mocked(utils.sleep).mockReset();
+    vi.mocked(utils.currentPackageVersion).mockResolvedValue('2.0.4');
     vi.mocked(utils.findExecutable).mockImplementation(async commands => {
       if (commands.includes('npm')) {
         return '/usr/bin/npm';
@@ -167,10 +181,11 @@ describe('runUpdate', () => {
   it('streams the package update and repair output instead of buffering it', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    mockLatestVersion('99.0.0');
+    const fetch = mockRegistryVersions('99.0.0', '100.0.0-beta.1');
 
     await runTestEffect(runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(Effect.provide(ApplicationLayer)));
 
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/latest'))).toBe(true);
     expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(
       'npm',
       expect.arrayContaining(['install', '--global', 'threadnote@latest']),
@@ -180,6 +195,63 @@ describe('runUpdate', () => {
       '--no-post-update',
     ]);
     expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
+  });
+
+  it('updates to the beta dist-tag when --beta is requested', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const fetch = mockRegistryVersions('2.0.4', '3.0.0-beta.1');
+
+    await runTestEffect(
+      runUpdate(config, {beta: true, dryRun: true, repair: false, runtime: 'npm'}).pipe(
+        Effect.provide(ApplicationLayer),
+      ),
+    );
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
+    expect(vi.mocked(utils.maybeRun)).toHaveBeenCalledWith(
+      true,
+      'npm',
+      expect.arrayContaining(['install', '--global', 'threadnote@beta']),
+    );
+  });
+
+  it('keeps an installed beta on the beta channel without another flag', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockResolvedValue('3.0.0-beta.1');
+    const fetch = mockRegistryVersions('2.0.4', '3.0.0-beta.2');
+
+    await runTestEffect(
+      runUpdate(config, {dryRun: true, repair: false, runtime: 'npm'}).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
+    expect(vi.mocked(utils.maybeRun)).toHaveBeenCalledWith(
+      true,
+      'npm',
+      expect.arrayContaining(['install', '--global', 'threadnote@beta']),
+    );
+  });
+
+  it('shows beta versions in version output only for an installed beta', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const stableFetch = mockRegistryVersions('2.0.4', '3.0.0-beta.2');
+
+    const stable = await runTestEffect(captureConsole(runVersion(config, {}).pipe(Effect.provide(ApplicationLayer))));
+
+    expect(stableFetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/latest'))).toBe(true);
+    expect(stable.output).toContain('Latest version');
+    expect(stable.output).not.toContain('3.0.0-beta.2');
+
+    vi.mocked(utils.currentPackageVersion).mockResolvedValue('3.0.0-beta.1');
+    const betaFetch = mockRegistryVersions('2.0.4', '3.0.0-beta.2');
+    const beta = await runTestEffect(captureConsole(runVersion(config, {}).pipe(Effect.provide(ApplicationLayer))));
+
+    expect(betaFetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
+    expect(beta.output).toContain('Latest beta version');
+    expect(beta.output).toContain('3.0.0-beta.2');
   });
 
   it('rejects custom npm registries unless explicitly allowed', () => {

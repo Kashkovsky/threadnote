@@ -70,6 +70,10 @@ describe('compareVersions', () => {
     expect(compareVersions('1.0.0-rc1', '1.0.0-rc1')).toBe(0);
   });
 
+  it('orders numeric prerelease identifiers numerically', () => {
+    expect(compareVersions('1.0.0-beta.10', '1.0.0-beta.2')).toBeGreaterThan(0);
+  });
+
   it('coerces missing or non-numeric components to 0', () => {
     expect(compareVersions('1', '1.0.0')).toBe(0);
     expect(compareVersions('1.2', '1.2.0')).toBe(0);

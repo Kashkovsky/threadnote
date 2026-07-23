@@ -19,6 +19,11 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('threadnote migrate-project-names [flags]');
   });
 
+  it('exposes beta updates as an explicit opt-in', async () => {
+    const result = await runCli(['update', '--help']);
+    expect(result.stdout).toContain('--beta');
+  });
+
   it('accepts shared runtime flags after the subcommand', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-'));
     try {
