@@ -44,7 +44,7 @@ describe('Windows executable discovery', () => {
       await writeFile(join(root, 'threadnote'), '#!/bin/sh\n');
       await writeFile(join(root, 'threadnote.cmd'), '@ECHO off\r\n');
       process.env.PATH = root;
-      await expect(findExecutable(['threadnote'])).resolves.toBe(join(root, 'threadnote.CMD'));
+      await expect(runEffect(findExecutable(['threadnote']))).resolves.toBe(join(root, 'threadnote.CMD'));
     } finally {
       process.env.PATH = originalPath;
       await rm(root, {force: true, recursive: true});
@@ -59,7 +59,7 @@ describe('Windows executable discovery', () => {
       await writeFile(join(root, 'ov.exe'), '');
       process.env.PATH = '';
       process.env.UV_TOOL_BIN_DIR = root;
-      await expect(findOpenVikingCli()).resolves.toBe(join(root, 'ov.EXE'));
+      await expect(runEffect(findOpenVikingCli())).resolves.toBe(join(root, 'ov.EXE'));
     } finally {
       process.env.PATH = originalPath;
       if (originalToolBin === undefined) {
@@ -83,7 +83,7 @@ describe('Windows executable discovery', () => {
       process.env.PATH = fakeBin;
       process.env.THREADNOTE_TEST_USER_BASE = userBase;
 
-      await expect(pythonUserScriptsCandidateDirs('win32')).resolves.toEqual([join(userBase, 'Scripts')]);
+      await expect(runEffect(pythonUserScriptsCandidateDirs('win32'))).resolves.toEqual([join(userBase, 'Scripts')]);
     } finally {
       process.env.PATH = originalPath;
       if (originalUserBase === undefined) {
@@ -126,9 +126,9 @@ describe('Windows command execution', () => {
         'C:\\Windows\\System32\\cmd.exe',
       ),
     ).toEqual({
-      args: ['/d', '/s', '/c', '"C:\\Program^ Files\\nodejs\\npm.cmd ^"install^" ^"package^ with^ spaces^""'],
-      executable: 'C:\\Windows\\System32\\cmd.exe',
-      windowsVerbatimArguments: true,
+      args: [],
+      executable: 'C:\\Program^ Files\\nodejs\\npm.cmd ^"install^" ^"package^ with^ spaces^"',
+      shell: 'C:\\Windows\\System32\\cmd.exe',
     });
   });
 
@@ -136,7 +136,6 @@ describe('Windows command execution', () => {
     expect(resolveCommandInvocation('C:\\Python312\\python.exe', ['--version'], 'win32')).toEqual({
       args: ['--version'],
       executable: 'C:\\Python312\\python.exe',
-      windowsVerbatimArguments: false,
     });
   });
 

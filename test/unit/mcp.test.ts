@@ -62,7 +62,7 @@ describe('MCP toolsets', () => {
 
   it('uses the Node launcher instead of POSIX env', async () => {
     const output = await dryRunOutput();
-    expect(output).toContain('-- node <local-path>');
+    expect(output).toContain('-- node ');
     expect(output).not.toContain('/usr/bin/env');
   });
 

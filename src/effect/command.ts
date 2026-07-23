@@ -17,7 +17,7 @@ export interface CommandOptions {
 export interface CommandInvocation {
   readonly args: readonly string[];
   readonly executable: string;
-  readonly windowsVerbatimArguments: boolean;
+  readonly shell?: string;
 }
 
 export interface StreamingCommandOptions {
@@ -173,6 +173,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
         cwd: options.cwd,
         env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
+        shell: invocation.shell,
         stdin: 'ignore',
       }).pipe(Effect.mapError(spawnFailed));
       const [stdout, stderr, exitCode] = yield* Effect.all(
@@ -247,6 +248,7 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
         env: options.env,
         forceKillAfter: 1000,
+        shell: invocation.shell,
         stdin: 'inherit',
       }).pipe(Effect.mapError(spawnFailed));
       const stdio = yield* Stdio.Stdio;
@@ -350,7 +352,7 @@ export function resolveCommandInvocation(
   comspec = 'cmd.exe',
 ): CommandInvocation {
   if (currentPlatform !== 'win32' || !/\.(?:bat|cmd)$/i.test(executable)) {
-    return {args, executable, windowsVerbatimArguments: false};
+    return {args, executable};
   }
   for (const value of [executable, ...args]) {
     if (value.includes('\0') || /[\r\n]/.test(value)) {
@@ -361,9 +363,9 @@ export function resolveCommandInvocation(
   const command = escapeWindowsCommand(executable);
   const escapedArgs = args.map(arg => escapeWindowsArgument(arg, doubleEscape));
   return {
-    args: ['/d', '/s', '/c', `"${[command, ...escapedArgs].join(' ')}"`],
-    executable: comspec,
-    windowsVerbatimArguments: true,
+    args: [],
+    executable: [command, ...escapedArgs].join(' '),
+    shell: comspec,
   };
 }
 

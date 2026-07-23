@@ -1,6 +1,6 @@
 import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
@@ -187,8 +187,8 @@ describe('runUpdate', () => {
     homes.push(config.agentContextHome);
     const fetch = mockRegistryVersions('99.0.0', '100.0.0-beta.1');
     const prefix = join(config.agentContextHome, 'npm-global');
-    const threadnote = join(prefix, 'bin', 'threadnote');
-    await mkdir(join(prefix, 'bin'), {recursive: true});
+    const threadnote = runtimeThreadnoteBinPath('npm', prefix, process.platform);
+    await mkdir(dirname(threadnote), {recursive: true});
     await writeFile(threadnote, '#!/bin/sh\n');
     await chmod(threadnote, 0o755);
     const executeStreaming = vi.fn(
