@@ -109,10 +109,11 @@ const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
 const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
 const STOP_SERVER_TIMEOUT_MS = 10_000;
 const WINDOWS_DETACHED_SERVER_SCRIPT = [
-  "$ErrorActionPreference = 'Continue'",
+  "$ErrorActionPreference = 'Stop'",
   '$serverArgs = @(ConvertFrom-Json -InputObject $env:THREADNOTE_DETACHED_SERVER_ARGS)',
-  '& $env:THREADNOTE_DETACHED_SERVER @serverArgs *>> $env:THREADNOTE_DETACHED_SERVER_LOG',
-  'exit $LASTEXITCODE',
+  `$argumentLine = ($serverArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '`,
+  '$process = Start-Process -FilePath $env:THREADNOTE_DETACHED_SERVER -ArgumentList $argumentLine -WindowStyle Hidden -PassThru -RedirectStandardOutput $env:THREADNOTE_DETACHED_SERVER_STDOUT -RedirectStandardError $env:THREADNOTE_DETACHED_SERVER_LOG',
+  '[Console]::Out.WriteLine($process.Id)',
 ].join('; ');
 const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
 
@@ -942,7 +943,7 @@ const spawnDetachedServer = Effect.fn('lifecycle.spawnDetachedServer')(function*
     if (!powershell) {
       return yield* Effect.fail(new Error('PowerShell is required to start OpenViking in the background on Windows.'));
     }
-    const child = yield* ChildProcess.make(
+    const launched = yield* runCommandEffect(
       powershell,
       [
         '-NoLogo',
@@ -954,20 +955,21 @@ const spawnDetachedServer = Effect.fn('lifecycle.spawnDetachedServer')(function*
         WINDOWS_DETACHED_SERVER_SCRIPT,
       ],
       {
-        detached: true,
         env: {
+          ...system.environment(),
           THREADNOTE_DETACHED_SERVER: server,
           THREADNOTE_DETACHED_SERVER_ARGS: JSON.stringify(args),
           THREADNOTE_DETACHED_SERVER_LOG: logPath,
+          THREADNOTE_DETACHED_SERVER_STDOUT: `${logPath}.stdout`,
         },
-        extendEnv: true,
-        stderr: 'ignore',
-        stdin: 'ignore',
-        stdout: 'ignore',
+        timeoutMs: STOP_SERVER_TIMEOUT_MS,
       },
     );
-    yield* child.unref;
-    return Number(child.pid);
+    const childPid = Number(launched.stdout.trim().split(/\s+/).at(-1));
+    if (!Number.isInteger(childPid) || childPid <= 0) {
+      return yield* Effect.fail(new Error('PowerShell did not report the detached OpenViking server pid.'));
+    }
+    return childPid;
   }
   const logSink = fs.sink(logPath, {flag: 'a'}).pipe(Sink.as(new Uint8Array()));
   const child = yield* ChildProcess.make(server, [...args], {
