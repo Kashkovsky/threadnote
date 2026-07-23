@@ -112,11 +112,12 @@ const optionalArgument = (name: string, description: string, fallback: string): 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
     home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
-    host: defaultString('host', 'OpenViking host', '127.0.0.1'),
+    host: optionalString('host', 'Override THREADNOTE_HOST for this invocation'),
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
-    port: describeFlag(integerFlag('port'), 'OpenViking port').pipe(
-      Flag.withSchema(Config.Port),
-      Flag.withDefault(1933),
+    port: optional(
+      describeFlag(integerFlag('port'), 'Override THREADNOTE_PORT for this invocation').pipe(
+        Flag.withSchema(Config.Port),
+      ),
     ),
   }),
 );

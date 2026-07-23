@@ -232,7 +232,12 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
     const port = await freeTcpPort();
     env.THREADNOTE_PORT = String(port);
     env.THREADNOTE_OPENVIKING_MCP_URL = `http://127.0.0.1:${port}/mcp`;
-    expectSuccess(await runCli(cli, ['start'], env), 'threadnote start');
+    const started = await runCli(cli, ['start'], env);
+    const serverLog =
+      started.code === 0
+        ? ''
+        : await readFile(join(home, 'logs', 'server.log'), 'utf8').catch(cause => `unavailable: ${String(cause)}`);
+    expectSuccess({...started, stderr: `${started.stderr}\nserver log:\n${serverLog}`}, 'threadnote start');
     await expectHealth(port, true);
     expectSuccess(await runCli(cli, ['doctor', '--strict'], env), 'threadnote doctor --strict');
 

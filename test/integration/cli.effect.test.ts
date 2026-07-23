@@ -69,6 +69,15 @@ describe('Effect CLI', () => {
     });
   });
 
+  it('honors runtime host and port environment variables when flags are omitted', async () => {
+    const result = await runCli(['start', '--dry-run'], {
+      THREADNOTE_HOST: '127.0.0.2',
+      THREADNOTE_PORT: '24567',
+    });
+
+    expect(result.stdout).toContain('--host 127.0.0.2 --port 24567');
+  });
+
   it('preserves dash-prefixed and equals-containing string values', async () => {
     const result = await runCli([
       'handoff',
@@ -103,9 +112,9 @@ describe('Effect CLI', () => {
   });
 });
 
-function runCli(args: readonly string[]) {
+function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
   return execFilePromise(process.execPath, ['--import', 'tsx', 'src/threadnote.ts', ...args], {
     cwd: process.cwd(),
-    env: {...process.env, NO_COLOR: '1'},
+    env: {...process.env, ...environment, NO_COLOR: '1'},
   });
 }
