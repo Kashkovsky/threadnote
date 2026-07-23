@@ -182,6 +182,7 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
   const prefix = join(root, 'npm global prefix');
   const cli = join(prefix, 'threadnote.cmd');
   const pidPath = join(home, 'openviking-server.pid');
+  const launcherPids: number[] = [];
   const copilotConfig = join(home, 'AppData', 'Roaming', 'Code', 'User', 'mcp.json');
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -238,6 +239,7 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
         ? ''
         : await readFile(join(home, 'logs', 'server.log'), 'utf8').catch(cause => `unavailable: ${String(cause)}`);
     expectSuccess({...started, stderr: `${started.stderr}\nserver log:\n${serverLog}`}, 'threadnote start');
+    launcherPids.push(await readLauncherPid(pidPath));
     await expectHealth(port, true);
     expectSuccess(await runCli(cli, ['doctor', '--strict'], env), 'threadnote doctor --strict');
 
@@ -316,6 +318,7 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
 
     expectSuccess(await runCli(cli, ['stop'], env), 'threadnote stop');
     await expectHealth(port, false);
+    await expectProcessStopped(launcherPids.at(-1)!);
     await expect(access(pidPath)).rejects.toMatchObject({code: 'ENOENT'});
 
     await writeFile(pidPath, `${process.pid}\n`, 'utf8');
@@ -329,6 +332,7 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
     await expect(access(pidPath)).rejects.toMatchObject({code: 'ENOENT'});
 
     expectSuccess(await runCli(cli, ['start'], env), 'threadnote restart');
+    launcherPids.push(await readLauncherPid(pidPath));
     await expectHealth(port, true);
 
     expectSuccess(
@@ -336,6 +340,7 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
       'memory-preserving uninstall',
     );
     await expectHealth(port, false);
+    await expectProcessStopped(launcherPids.at(-1)!);
     await expect(access(cli)).resolves.toBeUndefined();
     const memory = await stat(
       join(
@@ -357,7 +362,13 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
     if (await exists(cli)) {
       await runCli(cli, ['stop'], env).catch(() => undefined);
     }
-    await rm(root, {force: true, recursive: true});
+    const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+    for (const launcherPid of [...launcherPids].reverse()) {
+      await runProcess(taskkill, ['/pid', String(launcherPid), '/t', '/f'], {env, timeoutMs: 10_000}).catch(
+        () => undefined,
+      );
+    }
+    await rm(root, {force: true, maxRetries: 10, recursive: true, retryDelay: 100});
   }
 });
 
@@ -499,6 +510,34 @@ async function expectHealth(port: number, healthy: boolean): Promise<void> {
     await new Promise(resolveWait => setTimeout(resolveWait, 100));
   }
   throw new Error(`OpenViking health did not become ${healthy ? 'ready' : 'unavailable'}.`);
+}
+
+async function readLauncherPid(pidPath: string): Promise<number> {
+  const record = JSON.parse(await readFile(pidPath, 'utf8')) as {readonly launcherPid?: unknown};
+  expect(record.launcherPid).toEqual(expect.any(Number));
+  return record.launcherPid as number;
+}
+
+async function expectProcessStopped(pid: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && isProcessRunning(pid)) {
+    await new Promise(resolveWait => setTimeout(resolveWait, 100));
+  }
+  expect(isProcessRunning(pid), `Windows launcher process ${pid} is still running`).toBe(false);
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause: unknown) {
+    return !(
+      typeof cause === 'object' &&
+      cause !== null &&
+      'code' in cause &&
+      (cause as {readonly code?: unknown}).code === 'ESRCH'
+    );
+  }
 }
 
 async function freeTcpPort(): Promise<number> {
