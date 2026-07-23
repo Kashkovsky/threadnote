@@ -184,38 +184,42 @@ describe('Windows command execution', () => {
     }
   });
 
-  windowsIt('terminates the complete cmd process tree on timeout', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'threadnote cmd timeout '));
-    const shim = join(root, 'wait.cmd');
-    const script = join(root, 'wait.cjs');
-    const pidPath = join(root, 'child.pid');
-    try {
-      await writeFile(
-        script,
-        "require('node:fs').writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)\n",
-      );
-      await writeFile(shim, '@ECHO off\r\n"%TIMEOUT_NODE%" "%TIMEOUT_SCRIPT%" "%TIMEOUT_PID%"\r\n');
+  windowsIt(
+    'terminates the complete cmd process tree on timeout',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'threadnote cmd timeout '));
+      const shim = join(root, 'wait.cmd');
+      const script = join(root, 'wait.cjs');
+      const pidPath = join(root, 'child.pid');
+      try {
+        await writeFile(
+          script,
+          "require('node:fs').writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)\n",
+        );
+        await writeFile(shim, '@ECHO off\r\n"%TIMEOUT_NODE%" "%TIMEOUT_SCRIPT%" "%TIMEOUT_PID%"\r\n');
 
-      const result = await runEffect(
-        runCommandEffect(shim, [], {
-          allowFailure: true,
-          env: {
-            ...process.env,
-            TIMEOUT_NODE: process.execPath,
-            TIMEOUT_PID: pidPath,
-            TIMEOUT_SCRIPT: script,
-          },
-          timeoutMs: 5000,
-        }),
-      );
-      const childPid = Number(await readFile(pidPath, 'utf8'));
+        const result = await runEffect(
+          runCommandEffect(shim, [], {
+            allowFailure: true,
+            env: {
+              ...process.env,
+              TIMEOUT_NODE: process.execPath,
+              TIMEOUT_PID: pidPath,
+              TIMEOUT_SCRIPT: script,
+            },
+            timeoutMs: 1000,
+          }),
+        );
+        const childPid = Number(await readFile(pidPath, 'utf8'));
 
-      expect(result.exitCode).toBe(124);
-      expect(() => process.kill(childPid, 0)).toThrow();
-    } finally {
-      await rm(root, {force: true, recursive: true});
-    }
-  });
+        expect(result.exitCode).toBe(124);
+        expect(() => process.kill(childPid, 0)).toThrow();
+      } finally {
+        await rm(root, {force: true, recursive: true});
+      }
+    },
+    10_000,
+  );
 });
 
 describe('Windows lifecycle defaults', () => {
