@@ -4,6 +4,7 @@ import {delimiter, join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {isGitExecutable, resolveCommandInvocation, runCommandEffect} from '../../src/effect/command.js';
 import {
+  encodeWindowsPowerShellCommand,
   openVikingServerExecutableNames,
   pythonExecutableCandidates,
   shouldManageCommandShim,
@@ -223,6 +224,12 @@ describe('Windows command execution', () => {
 });
 
 describe('Windows lifecycle defaults', () => {
+  it('encodes detached host scripts for Windows PowerShell', () => {
+    expect(encodeWindowsPowerShellCommand("Write-Output 'ok'")).toBe(
+      'VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnAG8AawAnAA==',
+    );
+  });
+
   it('uses native Python launcher candidates and preserves npm command wrappers', () => {
     expect(pythonExecutableCandidates('win32')).toEqual(['py', 'python', 'python3']);
     expect(shouldManageCommandShim('win32')).toBe(false);
