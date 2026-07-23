@@ -62,7 +62,7 @@ windowsIt('forwards PowerShell bootstrap switches and explicit package managers'
     await writeFile(join(fakeBin, 'uv.cmd'), '@ECHO off\r\n@exit /b 0\r\n');
     expectSuccess(await runBootstrap(env, ['-DryRun', '-Force', '-WithHooks', '-PackageManager', 'uv']), 'uv');
 
-    const calls = await readFile(log, 'utf8');
+    const calls = (await readFile(log, 'utf8')).replaceAll('"', '');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pip');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pipx');
     expect(calls).toContain('threadnote install --dry-run --force --with-hooks --package-manager uv');
@@ -142,7 +142,7 @@ windowsIt('updates and repairs through native runtime launchers outside the inst
       runUpdate(config, {postUpdate: false, runtime: 'deno'}).pipe(Effect.provide(ApplicationLayer)),
     );
 
-    const calls = await readFile(log, 'utf8');
+    const calls = (await readFile(log, 'utf8')).replaceAll('"', '');
     expect(calls).toContain('npm install --global');
     expect(calls).toContain('--registry=https://registry.npmjs.org/');
     expect(calls).toContain('npm-threadnote repair --no-post-update');

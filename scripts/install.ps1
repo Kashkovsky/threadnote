@@ -45,6 +45,10 @@ if (-not $threadnotePath -or -not (Test-Path -LiteralPath $threadnotePath)) {
 $needsUv = -not $PackageManager -or $PackageManager -eq 'uv'
 if ($needsUv -and -not (Get-Command uv.exe -ErrorAction SilentlyContinue) -and -not (Get-Command uv -ErrorAction SilentlyContinue)) {
   Write-Host 'Installing uv for the isolated OpenViking environment'
+  $powerShellModulePath = Join-Path $PSHOME 'Modules'
+  if (-not (($env:PSModulePath -split ';') -contains $powerShellModulePath)) {
+    $env:PSModulePath = "$powerShellModulePath;$env:PSModulePath"
+  }
   Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
   $uvBin = Join-Path $HOME '.local\bin'
   if (Test-Path -LiteralPath $uvBin) {
