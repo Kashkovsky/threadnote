@@ -49,6 +49,10 @@ if ($needsUv -and -not (Get-Command uv.exe -ErrorAction SilentlyContinue) -and -
   if (-not (($env:PSModulePath -split ';') -contains $powerShellModulePath)) {
     $env:PSModulePath = "$powerShellModulePath;$env:PSModulePath"
   }
+  $securityModule = Join-Path $powerShellModulePath 'Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+  if (Test-Path -LiteralPath $securityModule) {
+    Import-Module $securityModule -Force -ErrorAction Stop
+  }
   Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
   $uvBin = Join-Path $HOME '.local\bin'
   if (Test-Path -LiteralPath $uvBin) {
