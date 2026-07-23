@@ -1,4 +1,4 @@
-import {Cause, Clock, Console, Effect, Encoding, Exit, FileSystem, Option, Path, Result, Sink, Terminal} from 'effect';
+import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path, Result, Sink, Terminal} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import yaml from 'js-yaml';
@@ -109,34 +109,7 @@ import {
 const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
 const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
 const STOP_SERVER_TIMEOUT_MS = 10_000;
-const WINDOWS_DETACHED_SERVER_HOST_SCRIPT = [
-  "$ErrorActionPreference = 'Continue'",
-  "'Launching OpenViking.' | Out-File -LiteralPath $env:THREADNOTE_DETACHED_SERVER_LOG -Append -Encoding utf8",
-  '$serverArgs = @(ConvertFrom-Json -InputObject $env:THREADNOTE_DETACHED_SERVER_ARGS)',
-  '& $env:THREADNOTE_DETACHED_SERVER @serverArgs 2>&1 | Out-File -LiteralPath $env:THREADNOTE_DETACHED_SERVER_LOG -Append -Encoding utf8',
-  'exit $LASTEXITCODE',
-].join('; ');
-const WINDOWS_DETACHED_SERVER_HOST_COMMAND = encodeWindowsPowerShellCommand(WINDOWS_DETACHED_SERVER_HOST_SCRIPT);
-const WINDOWS_DETACHED_SERVER_START_SCRIPT = [
-  "$ErrorActionPreference = 'Stop'",
-  "$hostArguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $env:THREADNOTE_DETACHED_SERVER_HOST_COMMAND)",
-  '$process = Start-Process -FilePath $env:THREADNOTE_DETACHED_POWERSHELL -ArgumentList $hostArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $env:THREADNOTE_DETACHED_HOST_STDOUT -RedirectStandardError $env:THREADNOTE_DETACHED_HOST_STDERR',
-  '$processId = $process.Id',
-  '$process.Dispose()',
-  '[Console]::Out.WriteLine($processId)',
-  'exit 0',
-].join('; ');
 const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
-
-export function encodeWindowsPowerShellCommand(script: string): string {
-  const bytes = new Uint8Array(script.length * 2);
-  for (let index = 0; index < script.length; index += 1) {
-    const codeUnit = script.charCodeAt(index);
-    bytes[index * 2] = codeUnit & 0xff;
-    bytes[index * 2 + 1] = codeUnit >>> 8;
-  }
-  return Encoding.encodeBase64(bytes);
-}
 
 interface DetachedProcessRecord {
   readonly args?: readonly string[];
@@ -960,40 +933,19 @@ const spawnDetachedServer = Effect.fn('lifecycle.spawnDetachedServer')(function*
   const fs = yield* FileSystem.FileSystem;
   const system = yield* SystemInfo;
   if (system.platform === 'win32') {
-    const powershell = yield* findExecutable(['powershell']);
-    if (!powershell) {
-      return yield* Effect.fail(new Error('PowerShell is required to start OpenViking in the background on Windows.'));
-    }
-    const launched = yield* runCommandEffect(
-      powershell,
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-WindowStyle',
-        'Hidden',
-        '-Command',
-        WINDOWS_DETACHED_SERVER_START_SCRIPT,
-      ],
-      {
-        env: {
-          ...system.environment(),
-          THREADNOTE_DETACHED_HOST_STDERR: `${logPath}.host.stderr`,
-          THREADNOTE_DETACHED_HOST_STDOUT: `${logPath}.host.stdout`,
-          THREADNOTE_DETACHED_POWERSHELL: powershell,
-          THREADNOTE_DETACHED_SERVER: server,
-          THREADNOTE_DETACHED_SERVER_ARGS: JSON.stringify(args),
-          THREADNOTE_DETACHED_SERVER_HOST_COMMAND: WINDOWS_DETACHED_SERVER_HOST_COMMAND,
-          THREADNOTE_DETACHED_SERVER_LOG: logPath,
-        },
-        timeoutMs: STOP_SERVER_TIMEOUT_MS,
-      },
+    yield* fs.writeFileString(
+      logPath,
+      'Detached Windows server output is not captured. Run threadnote start --foreground for diagnostics.\n',
+      {flag: 'a'},
     );
-    const childPid = Number(launched.stdout.trim().split(/\s+/).at(-1));
-    if (!Number.isInteger(childPid) || childPid <= 0) {
-      return yield* Effect.fail(new Error('PowerShell did not report the detached OpenViking server pid.'));
-    }
-    return childPid;
+    const child = yield* ChildProcess.make(server, [...args], {
+      detached: true,
+      stderr: 'ignore',
+      stdin: 'ignore',
+      stdout: 'ignore',
+    });
+    yield* child.unref;
+    return Number(child.pid);
   }
   const logSink = fs.sink(logPath, {flag: 'a'}).pipe(Sink.as(new Uint8Array()));
   const child = yield* ChildProcess.make(server, [...args], {
