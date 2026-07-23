@@ -1096,7 +1096,15 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     yield* Console.log(`Removed stale pid file for process ${pid}.`);
     return;
   }
+  let windowsTerminationPid = pid;
   if (system.platform === 'win32') {
+    const launcherPid = processRecord?.launcherPid;
+    if (launcherPid !== undefined && (!Number.isInteger(launcherPid) || launcherPid <= 0)) {
+      return yield* Effect.fail(new Error(`Refusing to stop process ${pid}: its launcher pid record is invalid.`));
+    }
+    const runningLauncherPid =
+      launcherPid !== undefined && (yield* isProcessRunningEffect(launcherPid)) ? launcherPid : undefined;
+    windowsTerminationPid = runningLauncherPid ?? pid;
     const server = processRecord?.server ?? (yield* findOpenVikingServer());
     if (!server) {
       return yield* Effect.fail(
@@ -1107,7 +1115,7 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
       args: processRecord?.args ?? (yield* openVikingServerArgs(config)),
       commandLine: processRecord?.commandLine,
       executablePath: processRecord?.executablePath,
-      launcherPid: processRecord?.launcherPid,
+      launcherPid: runningLauncherPid,
       server,
       startedAt: processRecord?.startedAt,
     };
@@ -1122,9 +1130,9 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
   }
   let signaled: boolean;
   if (system.platform === 'win32') {
-    const termination = yield* terminateWindowsProcessTree(pid);
+    const termination = yield* terminateWindowsProcessTree(windowsTerminationPid);
     if (!termination.stopped) {
-      return yield* Effect.fail(windowsTerminationError(pid, termination.result));
+      return yield* Effect.fail(windowsTerminationError(windowsTerminationPid, termination.result));
     }
     signaled = true;
   } else {
@@ -1327,11 +1335,28 @@ const isManagedWindowsOpenVikingProcess = Effect.fn('isManagedWindowsOpenVikingP
   if (!powershell) {
     return false;
   }
+  const launcherPid = expected.launcherPid;
+  if (launcherPid !== undefined && (!Number.isInteger(launcherPid) || launcherPid <= 0)) {
+    return false;
+  }
   const script = [
     `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'`,
     'if ($null -eq $process) { exit 3 }',
+    '$descendsFromLauncher = $true',
+    ...(launcherPid === undefined
+      ? []
+      : [
+          '$processes = @(Get-CimInstance Win32_Process)',
+          '$cursor = $process',
+          '$descendsFromLauncher = $false',
+          'while ($null -ne $cursor -and [uint32]$cursor.ProcessId -gt 0) {',
+          `if ([uint32]$cursor.ProcessId -eq ${launcherPid}) { $descendsFromLauncher = $true; break }`,
+          '$parentId = [uint32]$cursor.ParentProcessId',
+          '$cursor = $processes | Where-Object { [uint32]$_.ProcessId -eq $parentId } | Select-Object -First 1',
+          '}',
+        ]),
     `$owners = @(Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)`,
-    `[pscustomobject]@{CommandLine=$process.CommandLine;CreationTime=$process.CreationDate.ToUniversalTime().ToString('o');ExecutablePath=$process.ExecutablePath;OwnsPort=($owners -contains ${pid})} | ConvertTo-Json -Compress`,
+    `[pscustomobject]@{CommandLine=$process.CommandLine;CreationTime=$process.CreationDate.ToUniversalTime().ToString('o');DescendsFromLauncher=$descendsFromLauncher;ExecutablePath=$process.ExecutablePath;OwnsPort=($owners -contains ${pid})} | ConvertTo-Json -Compress`,
   ].join('; ');
   const result = yield* runCommandEffect(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
     allowFailure: true,
@@ -1344,7 +1369,11 @@ const isManagedWindowsOpenVikingProcess = Effect.fn('isManagedWindowsOpenVikingP
   if (!isJsonObject(identity)) {
     return false;
   }
-  if (identity.OwnsPort !== true || typeof identity.CommandLine !== 'string') {
+  if (
+    identity.DescendsFromLauncher !== true ||
+    identity.OwnsPort !== true ||
+    typeof identity.CommandLine !== 'string'
+  ) {
     return false;
   }
   const commandLine = identity.CommandLine;
