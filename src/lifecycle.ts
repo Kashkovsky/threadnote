@@ -1,11 +1,10 @@
 import {spawn} from 'node:child_process';
 import {closeSync, openSync} from 'node:fs';
 import {chmod, readdir, readFile, realpath, writeFile} from 'node:fs/promises';
-import {platform} from 'node:os';
 import {basename, delimiter, dirname, join, sep} from 'node:path';
-import {stderr as processStderr, stdin as processStdin, stdout as processStdout} from 'node:process';
+import {stdin as processStdin, stdout as processStdout} from 'node:process';
 import {createInterface} from 'node:readline/promises';
-import {Cause, Clock, Console, Effect, Exit, FileSystem, Option} from 'effect';
+import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import yaml from 'js-yaml';
 import {
   LAUNCHD_LABEL,
@@ -23,10 +22,17 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
-import {CommandExecutor, maybeRunEffect, runCommandEffect} from './effect/command.js';
+import {
+  CommandExecutor,
+  maybeRunEffect,
+  runCommandEffect,
+  runStreamingCommandEffect,
+  windowsTaskkillExecutable,
+} from './effect/command.js';
 import {consoleOutput, syncWithConsole} from './effect/console.js';
 import {applicationError, fromPromise} from './effect/errors.js';
 import {getTextEffect, HttpService} from './effect/http.js';
+import {SystemInfo} from './effect/system.js';
 import {startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
@@ -75,6 +81,7 @@ import {
   compareVersions,
   ensureDirectory,
   errorMessage,
+  executableNames,
   exists,
   expandPath,
   findExecutable,
@@ -93,6 +100,7 @@ import {
   memoryFrontmatterField,
   memoryUriProjectSegment,
   parseJsonConfigObject,
+  pythonUserScriptsCandidateDirs,
   readFileIfExists,
   removePath,
   removePathIfExists,
@@ -108,6 +116,24 @@ import {
 const INSTALL_OUTPUT_TAIL_CHARS = 64_000;
 const MINIMUM_UV_SYSTEM_CERTS_VERSION = '0.11.0';
 const STOP_SERVER_TIMEOUT_MS = 10_000;
+
+interface DetachedProcessRecord {
+  readonly args?: readonly string[];
+  readonly commandLine?: string;
+  readonly executablePath?: string;
+  readonly launcherPid?: number;
+  readonly pid: number;
+  readonly server?: string;
+  readonly startedAt?: string;
+}
+
+export function pythonExecutableCandidates(currentPlatform: NodeJS.Platform = process.platform): readonly string[] {
+  return currentPlatform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+}
+
+export function shouldManageCommandShim(currentPlatform: NodeJS.Platform = process.platform): boolean {
+  return currentPlatform !== 'win32';
+}
 
 interface UvExecutable {
   readonly executable: string;
@@ -149,7 +175,10 @@ export interface LaunchAgentHealthEffects<R = never> {
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
 export const runDoctor = Effect.fn('runDoctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
-  const checks = yield* fromPromise('collect doctor checks', () => collectDoctorChecks(config, options));
+  const system = yield* SystemInfo;
+  const checks = yield* fromPromise('collect doctor checks', () =>
+    collectDoctorChecks(config, options, system.platform),
+  );
 
   yield* syncWithConsole(() => {
     for (const check of checks) {
@@ -165,19 +194,27 @@ export const runDoctor = Effect.fn('runDoctor')(function* (config: RuntimeConfig
   });
 });
 
-export async function collectDoctorChecks(config: RuntimeConfig, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
+export async function collectDoctorChecks(
+  config: RuntimeConfig,
+  options: DoctorOptions = {},
+  currentPlatform: NodeJS.Platform = process.platform,
+): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   checks.push({name: 'mode', status: 'ok', detail: options.dryRun ? 'dry run; no writes' : 'read-only checks'});
-  checks.push({name: 'platform', status: platform() === 'darwin' ? 'ok' : 'warn', detail: platform()});
+  checks.push({
+    name: 'platform',
+    status: ['darwin', 'linux', 'win32'].includes(currentPlatform) ? 'ok' : 'warn',
+    detail: currentPlatform,
+  });
   checks.push(await commandCheck('node', ['--version']));
-  checks.push(await commandCheck('python3', ['--version']));
+  checks.push(await firstCommandCheck('python', pythonExecutableCandidates(currentPlatform), ['--version']));
   checks.push(await openVikingServerCheck());
   checks.push(await openVikingCliCheck());
   checks.push(await openVikingVersionCheck(config));
   checks.push(await recallShapeCheck(config));
   checks.push(await localEmbeddingCheck());
   checks.push(await pythonSystemCertificatesCheck());
-  checks.push(await firstCommandCheck('python installer', ['pipx', 'uv', 'pip3'], ['--version']));
+  checks.push(await pythonInstallerCheck());
   checks.push(await commandPresenceCheck('codex', ['--version']));
   checks.push(await commandPresenceCheck('claude', ['--version']));
   checks.push(await commandShimCheck());
@@ -228,9 +265,7 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
       yield* syncWithConsole(() =>
         consoleOutput.log(`Reinstalling OpenViking at pinned version ${config.openVikingVersion} (--force).`),
       );
-      yield* fromPromise('reinstall OpenViking', () =>
-        runInstallCommands(config, options.packageManager, true, dryRun),
-      );
+      yield* runInstallCommands(config, options.packageManager, true, dryRun);
       serverInstallRan = true;
     } else if (localEmbeddingMissing) {
       const repairReasons: string[] = [];
@@ -239,9 +274,7 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
         repairReasons.push('Python system certificate bridge is missing');
       }
       yield* syncWithConsole(() => consoleOutput.log(`OpenViking install needs repair: ${repairReasons.join('; ')}.`));
-      yield* fromPromise('repair OpenViking installation', () =>
-        runInstallCommands(config, options.packageManager, true, dryRun),
-      );
+      yield* runInstallCommands(config, options.packageManager, true, dryRun);
       serverInstallRan = true;
     } else if (pythonSystemCertificatesMissing) {
       yield* syncWithConsole(() =>
@@ -253,7 +286,7 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
       yield* maybeRunEffect(dryRun, installCommand.executable, installCommand.args);
     }
   } else {
-    yield* fromPromise('install OpenViking', () => runInstallCommands(config, options.packageManager, false, dryRun));
+    yield* runInstallCommands(config, options.packageManager, false, dryRun);
     serverInstallRan = true;
   }
   const resolvedServerPath = serverInstallRan
@@ -543,14 +576,27 @@ async function configureOpenVikingCliLanguage(config: RuntimeConfig, dryRun: boo
  * may create the binary mid-process and the second resolution must see it.
  */
 export async function findOpenVikingServer(): Promise<string | undefined> {
-  const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
-  if (onPath) {
-    return onPath;
+  if (process.platform !== 'win32') {
+    const onPath = await findExecutable([OPENVIKING_SERVER_COMMAND]);
+    if (onPath) {
+      return onPath;
+    }
+  } else {
+    for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+      for (const name of openVikingServerExecutableNames()) {
+        const candidate = join(directory, name);
+        if (await isExecutable(candidate)) {
+          return candidate;
+        }
+      }
+    }
   }
   for (const candidateDir of await openVikingServerCandidateDirs()) {
-    const candidate = join(candidateDir, OPENVIKING_SERVER_COMMAND);
-    if (await isExecutable(candidate)) {
-      return candidate;
+    for (const name of openVikingServerExecutableNames()) {
+      const candidate = join(candidateDir, name);
+      if (await isExecutable(candidate)) {
+        return candidate;
+      }
     }
   }
   return undefined;
@@ -558,17 +604,20 @@ export async function findOpenVikingServer(): Promise<string | undefined> {
 
 const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(function* (timeoutMs: number) {
   const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
   const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-  const pathDirectories = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const pathDirectories = (process.env.PATH ?? '').split(system.platform === 'win32' ? ';' : ':').filter(Boolean);
   for (const directory of pathDirectories) {
-    const candidate = join(directory, OPENVIKING_SERVER_COMMAND);
-    if (yield* isExecutableFileEffect(fs, candidate)) {
-      return candidate;
+    for (const name of openVikingServerExecutableNames(system.platform)) {
+      const candidate = join(directory, name);
+      if (yield* isExecutableFileEffect(fs, candidate, system.platform)) {
+        return candidate;
+      }
     }
   }
 
   const candidateDirectories: string[] = [];
-  const uv = yield* findExecutableInDirectoriesEffect(fs, 'uv', pathDirectories);
+  const uv = yield* findExecutableInDirectoriesEffect(fs, 'uv', pathDirectories, system.platform);
   if (uv) {
     const result = yield* runCommandEffect(uv, ['tool', 'dir', '--bin'], {
       allowFailure: true,
@@ -581,15 +630,26 @@ const findOpenVikingServerEffectCore = Effect.fn('findOpenVikingServer')(functio
   if (process.env.UV_TOOL_BIN_DIR) {
     candidateDirectories.push(process.env.UV_TOOL_BIN_DIR);
   }
+  candidateDirectories.push(...(yield* pythonUserScriptsCandidateDirsEffect()));
   candidateDirectories.push(expandPath('~/.local/bin'));
   for (const directory of new Set(candidateDirectories)) {
-    const candidate = join(directory, OPENVIKING_SERVER_COMMAND);
-    if (yield* isExecutableFileEffect(fs, candidate)) {
-      return candidate;
+    for (const name of openVikingServerExecutableNames(system.platform)) {
+      const candidate = join(directory, name);
+      if (yield* isExecutableFileEffect(fs, candidate, system.platform)) {
+        return candidate;
+      }
     }
   }
   return undefined;
 });
+
+export function openVikingServerExecutableNames(
+  currentPlatform: NodeJS.Platform = process.platform,
+  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+): readonly string[] {
+  const names = executableNames(OPENVIKING_SERVER_COMMAND, currentPlatform, pathExt);
+  return currentPlatform === 'win32' ? names.filter(name => /\.(?:com|exe)$/i.test(name)) : names;
+}
 
 export function findOpenVikingServerEffect(timeoutMs: number) {
   return findOpenVikingServerEffectCore(timeoutMs).pipe(
@@ -604,24 +664,65 @@ const findExecutableInDirectoriesEffect = Effect.fn('findExecutableInDirectories
   fs: FileSystem.FileSystem,
   name: string,
   directories: readonly string[],
+  currentPlatform: NodeJS.Platform,
 ) {
   for (const directory of directories) {
-    const candidate = join(directory, name);
-    if (yield* isExecutableFileEffect(fs, candidate)) {
-      return candidate;
+    for (const executableName of executableNames(name, currentPlatform)) {
+      const candidate = join(directory, executableName);
+      if (yield* isExecutableFileEffect(fs, candidate, currentPlatform)) {
+        return candidate;
+      }
     }
   }
   return undefined;
 });
 
-const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (fs: FileSystem.FileSystem, path: string) {
+const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (
+  fs: FileSystem.FileSystem,
+  path: string,
+  currentPlatform: NodeJS.Platform,
+) {
   const info = yield* fs.stat(path).pipe(
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
       () => Effect.succeed(undefined),
     ),
   );
-  return info?.type === 'File' && (info.mode & 0o111) !== 0;
+  return info?.type === 'File' && (currentPlatform === 'win32' || (info.mode & 0o111) !== 0);
+});
+
+const findExecutableEffect = Effect.fn('findExecutable')(function* (commands: readonly string[]) {
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  const directories = (process.env.PATH ?? '').split(system.platform === 'win32' ? ';' : ':').filter(Boolean);
+  for (const command of commands) {
+    const executable = yield* findExecutableInDirectoriesEffect(fs, command, directories, system.platform);
+    if (executable) {
+      return executable;
+    }
+  }
+  return undefined;
+});
+
+const pythonUserScriptsCandidateDirsEffect = Effect.fn('pythonUserScriptsCandidateDirs')(function* () {
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const directories: string[] = [];
+  for (const command of pythonExecutableCandidates(system.platform)) {
+    const executable = yield* findExecutableEffect([command]);
+    if (!executable) {
+      continue;
+    }
+    const result = yield* runCommandEffect(executable, ['-c', 'import site; print(site.getuserbase())'], {
+      allowFailure: true,
+      timeoutMs: 5000,
+    });
+    const userBase = result.exitCode === 0 ? result.stdout.trim() : '';
+    if (userBase) {
+      directories.push(path.join(userBase, system.platform === 'win32' ? 'Scripts' : 'bin'));
+    }
+  }
+  return Array.from(new Set(directories));
 });
 
 let candidateDirsPromise: Promise<readonly string[]> | undefined;
@@ -648,6 +749,7 @@ async function computeOpenVikingServerCandidateDirs(): Promise<readonly string[]
   if (process.env.UV_TOOL_BIN_DIR) {
     dirs.push(process.env.UV_TOOL_BIN_DIR);
   }
+  dirs.push(...(await pythonUserScriptsCandidateDirs()));
   dirs.push(expandPath('~/.local/bin'));
   return Array.from(new Set(dirs));
 }
@@ -669,7 +771,14 @@ async function maybePrintOpenVikingPathHint(serverPath: string): Promise<void> {
     return;
   }
   const binDir = dirname(serverPath);
-  const rcHint = suggestedShellRc(process.env.SHELL, platform());
+  if (process.platform === 'win32') {
+    consoleOutput.log(
+      `Note: ${serverPath} is installed but ${binDir} is not on this PowerShell PATH. ` +
+        `Run \`$env:Path = "${binDir};$env:Path"\` for this shell.`,
+    );
+    return;
+  }
+  const rcHint = suggestedShellRc(process.env.SHELL, process.platform);
   consoleOutput.log(
     `Note: ${serverPath} is installed but ${binDir} is not on this shell's PATH. ` +
       `Add \`export PATH="${binDir}:$PATH"\` to ${rcHint} so other tools can find openviking-server.`,
@@ -707,6 +816,7 @@ function repairServerHealth(config: RuntimeConfig, dryRun: boolean) {
 
 export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, options: StartOptions) {
   const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
   if (options.launchd === true) {
     yield* installLaunchAgent(config, options.dryRun === true);
     return;
@@ -758,19 +868,52 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
     },
     catch: cause => applicationError('start detached OpenViking server', cause),
   });
-  yield* fs.writeFileString(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`);
+  if (child.pid === undefined) {
+    return yield* Effect.fail(new Error('Detached OpenViking server did not report a pid.'));
+  }
+  const childPid = child.pid;
+  yield* fs.writeFileString(
+    join(config.agentContextHome, 'openviking-server.pid'),
+    detachedProcessRecordContent(childPid, server, args, system.platform),
+  );
   const health = yield* fromPromise('wait for OpenViking health', () =>
     waitForOpenVikingHealth(config, START_HEALTH_TIMEOUT_MS, `Waiting for OpenViking health at ${healthUrl}.`),
   );
   if (health) {
+    let managedPid = childPid;
+    if (system.platform === 'win32') {
+      const servingProcess = yield* findWindowsServingProcess(childPid, config, server, args);
+      if (!servingProcess) {
+        const termination = yield* terminateWindowsProcessTree(childPid);
+        if (!termination.stopped) {
+          return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+        }
+        yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+        return yield* Effect.fail(
+          new Error('OpenViking became healthy, but Threadnote could not verify its Windows serving process.'),
+        );
+      }
+      managedPid = servingProcess.pid;
+      yield* fs.writeFileString(
+        join(config.agentContextHome, 'openviking-server.pid'),
+        windowsDetachedProcessRecordContent(childPid, server, args, servingProcess),
+      );
+    }
     yield* syncWithConsole(() =>
-      consoleOutput.log(`Started OpenViking with pid ${child.pid}. Health OK at ${healthUrl}. Logs: ${logPath}`),
+      consoleOutput.log(`Started OpenViking with pid ${managedPid}. Health OK at ${healthUrl}. Logs: ${logPath}`),
     );
     return;
   }
+  if (system.platform === 'win32') {
+    const termination = yield* terminateWindowsProcessTree(childPid);
+    if (!termination.stopped) {
+      return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+    }
+    yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+  }
   return yield* Effect.fail(
     new Error(
-      `Started OpenViking with pid ${child.pid}, but ${healthUrl} did not become healthy within ` +
+      `Started OpenViking with pid ${childPid}, but ${healthUrl} did not become healthy within ` +
         `${START_HEALTH_TIMEOUT_MS / 1000}s. Logs: ${logPath}`,
     ),
   );
@@ -788,6 +931,7 @@ function spawnDetachedServer(server: string, args: readonly string[], logFd: num
   return spawn(server, args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
+    windowsHide: true,
   });
 }
 
@@ -797,6 +941,7 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
   timeoutMs: number,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
   const logPath = openVikingLogPath(config);
   yield* fs.makeDirectory(dirname(logPath), {recursive: true});
   const child = yield* Effect.try({
@@ -811,16 +956,46 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
   if (child.pid === undefined) {
     return yield* Effect.fail(new Error('Restored detached OpenViking server did not report a pid.'));
   }
-  yield* fs.writeFileString(join(config.agentContextHome, 'openviking-server.pid'), `${child.pid}\n`);
+  const childPid = child.pid;
+  yield* fs.writeFileString(
+    join(config.agentContextHome, 'openviking-server.pid'),
+    detachedProcessRecordContent(childPid, server, openVikingServerArgs(config), system.platform),
+  );
   const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
   while ((yield* Clock.currentTimeMillis) < deadline) {
     const remainingMs = deadline - (yield* Clock.currentTimeMillis);
     if (yield* readOpenVikingHealthEffect(config, Math.max(1, Math.min(500, remainingMs)))) {
+      if (system.platform === 'win32') {
+        const args = openVikingServerArgs(config);
+        const servingProcess = yield* findWindowsServingProcess(childPid, config, server, args);
+        if (!servingProcess) {
+          const termination = yield* terminateWindowsProcessTree(childPid);
+          if (!termination.stopped) {
+            return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+          }
+          yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+          return yield* Effect.fail(
+            new Error('Restored OpenViking became healthy, but its Windows serving process could not be verified.'),
+          );
+        }
+        yield* fs.writeFileString(
+          join(config.agentContextHome, 'openviking-server.pid'),
+          windowsDetachedProcessRecordContent(childPid, server, args, servingProcess),
+        );
+      }
       return;
     }
     yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
   }
-  yield* signalProcessEffect(child.pid, 'SIGTERM').pipe(Effect.ignore);
+  if (system.platform === 'win32') {
+    const termination = yield* terminateWindowsProcessTree(childPid);
+    if (!termination.stopped) {
+      return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+    }
+    yield* fs.remove(join(config.agentContextHome, 'openviking-server.pid'), {force: true});
+  } else {
+    yield* signalProcessEffect(childPid, 'SIGTERM').pipe(Effect.ignore);
+  }
   return yield* Effect.fail(
     new Error(`Restored detached OpenViking server did not become healthy within ${timeoutMs}ms.`),
   );
@@ -828,7 +1003,8 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
 
 export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, options: ForgetOptions) {
   const fs = yield* FileSystem.FileSystem;
-  if (platform() === 'darwin') {
+  const system = yield* SystemInfo;
+  if (system.platform === 'darwin') {
     yield* bootoutLaunchAgent(options.dryRun === true, undefined, STOP_SERVER_TIMEOUT_MS);
   }
 
@@ -843,23 +1019,304 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     yield* syncWithConsole(() => consoleOutput.log('No pid file found for detached OpenViking server.'));
     return;
   }
-  const pid = Number(pidText.trim());
+  const processRecord = parseDetachedProcessRecord(pidText);
+  const pid = processRecord?.pid ?? Number.NaN;
   if (!Number.isInteger(pid) || pid <= 0) {
     yield* syncWithConsole(() => consoleOutput.log(`Invalid pid file: ${pidPath}`));
+    if (options.dryRun !== true) {
+      yield* fs.remove(pidPath, {force: true});
+    }
     return;
   }
   if (options.dryRun === true) {
     yield* syncWithConsole(() => consoleOutput.log(`Would stop process ${pid}`));
     return;
   }
-  yield* syncWithConsole(() => {
-    try {
-      process.kill(pid, 'SIGTERM');
-      consoleOutput.log(`Stopped process ${pid}`);
-    } catch (err: unknown) {
-      consoleOutput.log(`Could not stop process ${pid}: ${errorMessage(err)}`);
+  if (!(yield* isProcessRunningEffect(pid))) {
+    yield* fs.remove(pidPath, {force: true});
+    yield* syncWithConsole(() => consoleOutput.log(`Removed stale pid file for process ${pid}.`));
+    return;
+  }
+  if (system.platform === 'win32') {
+    const server =
+      processRecord?.server ??
+      (yield* fromPromise('find OpenViking server for process verification', findOpenVikingServer));
+    if (!server) {
+      return yield* Effect.fail(
+        new Error(`Refusing to stop process ${pid}: OpenViking server path is unavailable for verification.`),
+      );
     }
+    const expected = {
+      args: processRecord?.args ?? openVikingServerArgs(config),
+      commandLine: processRecord?.commandLine,
+      executablePath: processRecord?.executablePath,
+      launcherPid: processRecord?.launcherPid,
+      server,
+      startedAt: processRecord?.startedAt,
+    };
+    if (!(yield* isManagedWindowsOpenVikingProcess(pid, config, expected))) {
+      return yield* Effect.fail(
+        new Error(`Refusing to stop process ${pid}: the pid file does not identify this Threadnote OpenViking server.`),
+      );
+    }
+    if (!(yield* isManagedWindowsOpenVikingProcess(pid, config, expected))) {
+      return yield* Effect.fail(new Error(`Refusing to stop process ${pid}: its identity changed before signaling.`));
+    }
+  }
+  let signaled: boolean;
+  if (system.platform === 'win32') {
+    const termination = yield* terminateWindowsProcessTree(pid);
+    if (!termination.stopped) {
+      return yield* Effect.fail(windowsTerminationError(pid, termination.result));
+    }
+    signaled = true;
+  } else {
+    signaled = yield* signalProcessEffect(pid, 'SIGTERM');
+  }
+  if (!signaled) {
+    yield* fs.remove(pidPath, {force: true});
+    yield* syncWithConsole(() => consoleOutput.log(`Process ${pid} was already stopped.`));
+    return;
+  }
+  const deadline = (yield* Clock.currentTimeMillis) + STOP_SERVER_TIMEOUT_MS;
+  while (yield* isProcessRunningEffect(pid)) {
+    const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+    if (remainingMs <= 0) {
+      return yield* Effect.fail(new Error(`Process ${pid} did not stop within ${STOP_SERVER_TIMEOUT_MS / 1000}s.`));
+    }
+    yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+  }
+  yield* fs.remove(pidPath, {force: true});
+  yield* syncWithConsole(() => consoleOutput.log(`Stopped process ${pid}`));
+});
+
+function detachedProcessRecordContent(
+  pid: number,
+  server: string,
+  args: readonly string[],
+  currentPlatform: NodeJS.Platform,
+): string {
+  if (currentPlatform !== 'win32') {
+    return `${pid}\n`;
+  }
+  return `${JSON.stringify({args, pid, server, startedAt: new Date().toISOString()})}\n`;
+}
+
+interface WindowsProcessIdentity {
+  readonly commandLine: string;
+  readonly executablePath: string;
+  readonly pid: number;
+  readonly startedAt: string;
+}
+
+function windowsDetachedProcessRecordContent(
+  launcherPid: number,
+  server: string,
+  args: readonly string[],
+  servingProcess: WindowsProcessIdentity,
+): string {
+  return `${JSON.stringify({
+    args,
+    commandLine: servingProcess.commandLine,
+    executablePath: servingProcess.executablePath,
+    launcherPid,
+    pid: servingProcess.pid,
+    server,
+    startedAt: servingProcess.startedAt,
+  })}\n`;
+}
+
+function parseDetachedProcessRecord(content: string): DetachedProcessRecord | undefined {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    const value: unknown = JSON.parse(trimmed);
+    if (typeof value === 'number') {
+      return {pid: value};
+    }
+    if (!isJsonObject(value) || typeof value.pid !== 'number') {
+      return undefined;
+    }
+    const args =
+      Array.isArray(value.args) && value.args.every(arg => typeof arg === 'string')
+        ? (value.args as readonly string[])
+        : undefined;
+    return {
+      args,
+      commandLine: typeof value.commandLine === 'string' ? value.commandLine : undefined,
+      executablePath: typeof value.executablePath === 'string' ? value.executablePath : undefined,
+      launcherPid: typeof value.launcherPid === 'number' ? value.launcherPid : undefined,
+      pid: value.pid,
+      server: typeof value.server === 'string' ? value.server : undefined,
+      startedAt: typeof value.startedAt === 'string' ? value.startedAt : undefined,
+    };
+  } catch {
+    const pid = Number(trimmed);
+    return Number.isInteger(pid) ? {pid} : undefined;
+  }
+}
+
+const findWindowsServingProcess = Effect.fn('findWindowsServingProcess')(function* (
+  launcherPid: number,
+  config: RuntimeConfig,
+  server: string,
+  args: readonly string[],
+) {
+  const powershell = yield* findExecutableEffect(['powershell.exe', 'pwsh.exe', 'powershell', 'pwsh']);
+  if (!powershell) {
+    return undefined;
+  }
+  const script = `
+$processes = @(Get-CimInstance Win32_Process)
+$owners = @(Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)
+$match = $null
+foreach ($owner in $owners) {
+  $candidate = $processes | Where-Object { $_.ProcessId -eq $owner } | Select-Object -First 1
+  $cursor = [uint32]$owner
+  while ($null -ne $candidate -and $cursor -gt 0) {
+    if ($cursor -eq ${launcherPid}) {
+      $match = $processes | Where-Object { $_.ProcessId -eq $owner } | Select-Object -First 1
+      break
+    }
+    $cursor = [uint32]$candidate.ParentProcessId
+    $candidate = $processes | Where-Object { $_.ProcessId -eq $cursor } | Select-Object -First 1
+  }
+  if ($null -ne $match) { break }
+}
+if ($null -eq $match) { exit 4 }
+[pscustomobject]@{
+  CommandLine = $match.CommandLine
+  CreationTime = $match.CreationDate.ToUniversalTime().ToString('o')
+  ExecutablePath = $match.ExecutablePath
+  ProcessId = $match.ProcessId
+} | ConvertTo-Json -Compress
+`.trim();
+  const result = yield* runCommandEffect(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    allowFailure: true,
+    timeoutMs: 5000,
   });
+  if (result.exitCode !== 0) {
+    return undefined;
+  }
+  const identity = parseWindowsProcessIdentity(result.stdout);
+  if (!identity || !matchesExpectedWindowsProcess(identity, server, args)) {
+    return undefined;
+  }
+  return identity;
+});
+
+function parseWindowsProcessIdentity(output: string): WindowsProcessIdentity | undefined {
+  try {
+    const value: unknown = JSON.parse(output);
+    if (
+      !isJsonObject(value) ||
+      typeof value.CommandLine !== 'string' ||
+      typeof value.CreationTime !== 'string' ||
+      typeof value.ExecutablePath !== 'string' ||
+      typeof value.ProcessId !== 'number'
+    ) {
+      return undefined;
+    }
+    return {
+      commandLine: value.CommandLine,
+      executablePath: value.ExecutablePath,
+      pid: value.ProcessId,
+      startedAt: value.CreationTime,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function matchesExpectedWindowsProcess(
+  identity: Pick<WindowsProcessIdentity, 'commandLine' | 'executablePath'>,
+  server: string,
+  args: readonly string[],
+): boolean {
+  const commandLine = identity.commandLine.toLowerCase();
+  const expectedServer = basename(server).toLowerCase();
+  if (!commandLine.includes(expectedServer) && basename(identity.executablePath).toLowerCase() !== expectedServer) {
+    return false;
+  }
+  return args.every(arg => commandLine.includes(arg.toLowerCase()));
+}
+
+const terminateWindowsProcessTree = Effect.fn('terminateWindowsProcessTree')(function* (pid: number) {
+  const result = yield* runCommandEffect(windowsTaskkillExecutable(), ['/pid', String(pid), '/t', '/f'], {
+    allowFailure: true,
+    timeoutMs: 5000,
+  });
+  return {result, stopped: !(yield* isProcessRunningEffect(pid))};
+});
+
+function windowsTerminationError(pid: number, result: CommandResult): Error {
+  const detail = firstLine(result.stderr) || firstLine(result.stdout) || `taskkill exited with ${result.exitCode}`;
+  return new Error(`Could not terminate Windows process tree ${pid}; preserving its pid record: ${detail}`);
+}
+
+const isManagedWindowsOpenVikingProcess = Effect.fn('isManagedWindowsOpenVikingProcess')(function* (
+  pid: number,
+  config: RuntimeConfig,
+  expected: {
+    readonly args: readonly string[];
+    readonly commandLine?: string;
+    readonly executablePath?: string;
+    readonly launcherPid?: number;
+    readonly server: string;
+    readonly startedAt?: string;
+  },
+) {
+  const powershell = yield* findExecutableEffect(['powershell.exe', 'pwsh.exe', 'powershell', 'pwsh']);
+  if (!powershell) {
+    return false;
+  }
+  const script = [
+    `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'`,
+    'if ($null -eq $process) { exit 3 }',
+    `$owners = @(Get-NetTCPConnection -LocalPort ${config.port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)`,
+    `[pscustomobject]@{CommandLine=$process.CommandLine;CreationTime=$process.CreationDate.ToUniversalTime().ToString('o');ExecutablePath=$process.ExecutablePath;OwnsPort=($owners -contains ${pid})} | ConvertTo-Json -Compress`,
+  ].join('; ');
+  const result = yield* runCommandEffect(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    allowFailure: true,
+    timeoutMs: 5000,
+  });
+  if (result.exitCode !== 0) {
+    return false;
+  }
+  let identity: JsonObject;
+  try {
+    const value: unknown = JSON.parse(result.stdout);
+    if (!isJsonObject(value)) {
+      return false;
+    }
+    identity = value;
+  } catch {
+    return false;
+  }
+  if (identity.OwnsPort !== true || typeof identity.CommandLine !== 'string') {
+    return false;
+  }
+  const commandLine = identity.CommandLine;
+  const executablePath = typeof identity.ExecutablePath === 'string' ? identity.ExecutablePath : '';
+  if (expected.commandLine && commandLine.toLowerCase() !== expected.commandLine.toLowerCase()) {
+    return false;
+  }
+  if (expected.executablePath && executablePath.toLowerCase() !== expected.executablePath.toLowerCase()) {
+    return false;
+  }
+  if (!matchesExpectedWindowsProcess({commandLine, executablePath}, expected.server, expected.args)) {
+    return false;
+  }
+  if (expected.startedAt) {
+    const recordedAt = Date.parse(expected.startedAt);
+    const createdAt = typeof identity.CreationTime === 'string' ? Date.parse(identity.CreationTime) : Number.NaN;
+    if (!Number.isFinite(recordedAt) || !Number.isFinite(createdAt) || Math.abs(recordedAt - createdAt) > 30_000) {
+      return false;
+    }
+  }
+  return true;
 });
 
 const stopDetachedOpenVikingServerForLaunchdCore = Effect.fn('stopDetachedOpenVikingServerForLaunchd')(function* (
@@ -1115,6 +1572,45 @@ async function firstCommandCheck(
   return {name, status: 'fail', detail: `none found: ${commands.join(', ')}`};
 }
 
+async function pythonInstallerCheck(): Promise<DoctorCheck> {
+  const failures: string[] = [];
+  for (const manager of ['uv', 'pipx']) {
+    const executable = await findExecutable([manager]);
+    if (!executable) {
+      continue;
+    }
+    const result = await runCommand(executable, ['--version'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      return {
+        name: 'python installer',
+        status: 'ok',
+        detail: `${manager}: ${firstLine(result.stdout || result.stderr) || executable}`,
+      };
+    }
+    failures.push(`${manager}: ${firstLine(result.stderr || result.stdout) || 'not working'}`);
+  }
+  for (const python of pythonExecutableCandidates()) {
+    const executable = await findExecutable([python]);
+    if (!executable) {
+      continue;
+    }
+    const result = await runCommand(executable, ['-m', 'pip', '--version'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      return {
+        name: 'python installer',
+        status: 'ok',
+        detail: `${python} -m pip: ${firstLine(result.stdout || result.stderr) || executable}`,
+      };
+    }
+    failures.push(`${python} -m pip: ${firstLine(result.stderr || result.stdout) || 'not working'}`);
+  }
+  return {
+    name: 'python installer',
+    status: 'fail',
+    detail: failures.length > 0 ? failures.join('; ') : 'none found: uv, pipx, or Python with pip',
+  };
+}
+
 async function openVikingCliCheck(): Promise<DoctorCheck> {
   const executable = await findOpenVikingCli();
   if (!executable) {
@@ -1241,6 +1737,16 @@ async function pythonSystemCertificatesCheck(): Promise<DoctorCheck> {
 }
 
 async function commandShimCheck(): Promise<DoctorCheck> {
+  if (!shouldManageCommandShim()) {
+    const launcher = await findExecutable(['threadnote']);
+    return launcher
+      ? {name: 'threadnote launcher', status: 'ok', detail: launcher}
+      : {
+          name: 'threadnote launcher',
+          status: 'warn',
+          detail: 'npm threadnote.cmd launcher is not on PATH; repair preserves package-manager launchers',
+        };
+  }
   const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
   const content = await readFileIfExists(shimPath);
   if (content === undefined) {
@@ -1319,8 +1825,14 @@ async function siblingPythonForExecutable(executablePath: string): Promise<strin
   } catch (_err: unknown) {
     return undefined;
   }
-  const pythonPath = join(dirname(resolvedPath), 'python');
-  return (await exists(pythonPath)) ? pythonPath : undefined;
+  const names = process.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
+  for (const name of names) {
+    const pythonPath = join(dirname(resolvedPath), name);
+    if (await exists(pythonPath)) {
+      return pythonPath;
+    }
+  }
+  return undefined;
 }
 
 async function manifestCheck(path: string): Promise<DoctorCheck> {
@@ -1482,33 +1994,37 @@ async function waitForOpenVikingHealth(
   }
 }
 
-async function runInstallCommands(
+const runInstallCommands = Effect.fn('runInstallCommands')(function* (
   config: RuntimeConfig,
   preferred: PackageManager | undefined,
   force: boolean,
   dryRun: boolean,
-): Promise<void> {
+) {
   // When the user didn't ask for a specific manager and detection fell back
   // to plain `pip`, offer to install `uv` first — `pip install --user` is
   // refused under PEP 668 on Homebrew / system-managed Python, which is most
   // macOS and modern Linux setups.
   let manager = preferred;
   if (manager === undefined && !dryRun) {
-    const detected = await detectPackageManager();
-    if (detected === 'pip' && (await offerToInstallUv())) {
-      const rediscovered = await detectPackageManager();
+    const detected = yield* fromPromise('detect OpenViking package manager', detectPackageManager);
+    if (detected === 'pip' && (yield* fromPromise('offer to install uv', offerToInstallUv))) {
+      const rediscovered = yield* fromPromise('rediscover OpenViking package manager', detectPackageManager);
       if (rediscovered === 'uv') {
         manager = 'uv';
       }
     }
   }
-  const installCommands = await getInstallCommands(config, manager, force);
+  const installCommands = yield* fromPromise('build OpenViking install commands', () =>
+    getInstallCommands(config, manager, force),
+  );
   for (const installCommand of installCommands) {
     if (dryRun) {
-      await maybeRun(true, installCommand.executable, installCommand.args);
+      yield* maybeRunEffect(true, installCommand.executable, installCommand.args);
       continue;
     }
-    const resolvedInstallCommand = await resolveOpenVikingInstallCommand(installCommand);
+    const resolvedInstallCommand = yield* fromPromise('resolve OpenViking install command', () =>
+      resolveOpenVikingInstallCommand(installCommand),
+    );
     // Stream live instead of buffering through runCommand. openviking[local-embed]
     // can compile llama-cpp-python from source (10-20 min, memory-heavy); buffering
     // hides all progress and the 10-minute command timeout would SIGKILL a
@@ -1516,7 +2032,9 @@ async function runInstallCommands(
     // first, a killed reinstall leaves openviking-server missing — so we also
     // print recovery guidance before failing.
     consoleOutput.log(`Running: ${formatShellCommand(resolvedInstallCommand.executable, resolvedInstallCommand.args)}`);
-    const result = await runInstallCommand(resolvedInstallCommand);
+    const result = yield* runStreamingCommandEffect(resolvedInstallCommand.executable, resolvedInstallCommand.args, {
+      maxOutputChars: INSTALL_OUTPUT_TAIL_CHARS,
+    });
     if (result.exitCode !== 0) {
       const commandOutput = `${result.stderr}\n${result.stdout}`;
       const retry = openVikingSourceBuildRetryForArchiveFailure(resolvedInstallCommand, commandOutput);
@@ -1527,7 +2045,10 @@ async function runInstallCommands(
         );
         consoleOutput.error('This avoids the rejected wheel and can take 10-20 minutes.');
         consoleOutput.log(`Running: ${formatInstallCommand(retry.command, retry.env)}`);
-        const retryResult = await runInstallCommand(retry.command, retry.env);
+        const retryResult = yield* runStreamingCommandEffect(retry.command.executable, retry.command.args, {
+          env: {...process.env, ...retry.env},
+          maxOutputChars: INSTALL_OUTPUT_TAIL_CHARS,
+        });
         if (retryResult.exitCode === 0) {
           continue;
         }
@@ -1543,54 +2064,7 @@ async function runInstallCommands(
       );
     }
   }
-}
-
-async function runInstallCommand(
-  command: MappedCommand,
-  env: Readonly<Record<string, string>> = {},
-): Promise<CommandResult> {
-  return new Promise(resolvePromise => {
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const child = spawn(command.executable, command.args, {
-      env: Object.keys(env).length === 0 ? process.env : {...process.env, ...env},
-      stdio: ['inherit', 'pipe', 'pipe'],
-    });
-
-    child.stdout?.on('data', chunk => {
-      const text = String(chunk);
-      processStdout.write(text);
-      stdout = appendInstallOutputTail(stdout, text);
-    });
-    child.stderr?.on('data', chunk => {
-      const text = String(chunk);
-      processStderr.write(text);
-      stderr = appendInstallOutputTail(stderr, text);
-    });
-    child.on('error', err => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      const message = errorMessage(err);
-      processStderr.write(`${message}\n`);
-      resolvePromise({exitCode: 1, stderr: appendInstallOutputTail(stderr, message), stdout});
-    });
-    child.on('close', code => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolvePromise({exitCode: code ?? 1, stderr, stdout});
-    });
-  });
-}
-
-function appendInstallOutputTail(current: string, chunk: string): string {
-  const next = `${current}${chunk}`;
-  return next.length <= INSTALL_OUTPUT_TAIL_CHARS ? next : next.slice(next.length - INSTALL_OUTPUT_TAIL_CHARS);
-}
+});
 
 function printOpenVikingInstallFailureHelp(failedCommand: MappedCommand, commandOutput: string): void {
   for (const line of openVikingInstallFailureHelpLines(failedCommand, commandOutput)) {
@@ -1704,6 +2178,14 @@ function extraIndexUrl(command: MappedCommand): string | undefined {
 
 async function offerToInstallUv(): Promise<boolean> {
   if (processStdin.isTTY !== true || processStdout.isTTY !== true) {
+    if (process.platform === 'win32') {
+      consoleOutput.warn(
+        'Neither uv nor pipx was found on PATH. Falling back to Python pip. ' +
+          'Install uv with `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` ' +
+          'and re-run with --package-manager uv for an isolated OpenViking environment.',
+      );
+      return false;
+    }
     consoleOutput.warn(
       'Neither uv nor pipx was found on PATH. Falling back to `python3 -m pip install --user`, which fails on PEP 668 (Homebrew/system) Python.\n' +
         'Re-run with --package-manager uv after installing uv (brew install uv), or pass --package-manager pipx.',
@@ -1733,6 +2215,28 @@ async function offerToInstallUv(): Promise<boolean> {
 }
 
 async function installUv(): Promise<boolean> {
+  if (process.platform === 'win32') {
+    const powershell = await findExecutable(['powershell', 'pwsh']);
+    if (!powershell) {
+      consoleOutput.warn('Could not install uv automatically because PowerShell was not found.');
+      return false;
+    }
+    consoleOutput.log('Installing uv via the official PowerShell installer...');
+    const result = await runCommand(
+      powershell,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://astral.sh/uv/install.ps1 | iex'],
+      {allowFailure: true},
+    );
+    if (result.exitCode === 0) {
+      process.env.PATH = [join(expandPath('~'), '.local', 'bin'), process.env.PATH ?? ''].join(delimiter);
+      if (await findExecutable(['uv'])) {
+        candidateDirsPromise = undefined;
+        return true;
+      }
+    }
+    consoleOutput.warn('uv installation did not produce an executable on PATH. Open a new PowerShell and retry.');
+    return false;
+  }
   const brew = await findExecutable(['brew']);
   if (brew) {
     consoleOutput.log('Installing uv via Homebrew...');
@@ -1892,7 +2396,7 @@ export function localEmbedWheelIndexUrl(): string | undefined {
     return override.trim() === '' ? undefined : override.trim();
   }
   const base = 'https://abetlen.github.io/llama-cpp-python/whl';
-  return platform() === 'darwin' ? `${base}/metal` : `${base}/cpu`;
+  return process.platform === 'darwin' ? `${base}/metal` : `${base}/cpu`;
 }
 
 /**
@@ -1965,7 +2469,8 @@ export async function getInstallCommands(
   }
   pipArgs.push(PYTHON_SYSTEM_CERTS_PACKAGE);
   pipArgs.push(packageSpec);
-  return [{executable: 'python3', args: pipArgs}];
+  const executable = (await findExecutable(pythonExecutableCandidates())) ?? pythonExecutableCandidates()[0]!;
+  return [{executable, args: pipArgs}];
 }
 
 async function detectPackageManager(): Promise<PackageManager> {
@@ -2034,6 +2539,10 @@ async function writeTemplateIfMissing(options: {
 }
 
 async function installCommandShim(dryRun: boolean): Promise<void> {
+  if (!shouldManageCommandShim()) {
+    consoleOutput.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
+    return;
+  }
   const binDir = expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin');
   const shimPath = join(binDir, 'threadnote');
   const existingContent = await readFileIfExists(shimPath);
@@ -2058,6 +2567,10 @@ async function installCommandShim(dryRun: boolean): Promise<void> {
 }
 
 async function removeCommandShim(dryRun: boolean): Promise<void> {
+  if (!shouldManageCommandShim()) {
+    consoleOutput.log('Preserving the package-manager threadnote.cmd launcher on Windows.');
+    return;
+  }
   const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
   const content = await readFileIfExists(shimPath);
   if (content === undefined) {
@@ -2234,7 +2747,8 @@ function isManagedCommandShim(content: string): boolean {
 
 const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: RuntimeConfig, dryRun: boolean) {
   const fs = yield* FileSystem.FileSystem;
-  if (platform() !== 'darwin') {
+  const system = yield* SystemInfo;
+  if (system.platform !== 'darwin') {
     return yield* Effect.fail(new Error('launchd autostart is only supported on macOS.'));
   }
   // launchd uses a minimal default PATH (/usr/bin:/bin:/usr/sbin:/sbin) and
@@ -2271,24 +2785,20 @@ const installLaunchAgent = Effect.fn('installLaunchAgent')(function* (config: Ru
   yield* fs.makeDirectory(dirname(openVikingLogPath(config)), {recursive: true});
   const healthUrl = openVikingHealthUrl(config);
   const activationTimeoutMs = yield* remainingBudget(installDeadline, START_HEALTH_TIMEOUT_MS);
-  const health = yield* activateLaunchAgent<CommandExecutor | FileSystem.FileSystem | HttpService>(
-    config,
-    destination,
-    rendered,
-    activationTimeoutMs,
-    {
-      bootout: timeoutMs => bootoutLaunchAgent(false, undefined, timeoutMs),
-      bootstrap: (plistPath, timeoutMs) => bootstrapLaunchAgent(plistPath, false, undefined, timeoutMs),
-      isPortOpen: (current, timeoutMs) => isTcpPortOpenEffect(current.host, current.port, Math.min(500, timeoutMs)),
-      stagePlist: (plistPath, content) => stageLaunchAgentPlist(plistPath, content),
-      stopDetached: (current, timeoutMs) =>
-        stopDetachedOpenVikingServerForLaunchd(current, false, timeoutMs, resolvedServer),
-      restartDetached: (current, timeoutMs) => restartDetachedOpenVikingServer(current, resolvedServer!, timeoutMs),
-      waitForHealth: (current, timeoutMs) =>
-        waitForLaunchAgentHealth(current, timeoutMs, `Waiting for OpenViking health at ${healthUrl}.`),
-      waitForShutdown: waitForOpenVikingShutdown,
-    },
-  );
+  const health = yield* activateLaunchAgent<
+    CommandExecutor | FileSystem.FileSystem | HttpService | Path.Path | SystemInfo
+  >(config, destination, rendered, activationTimeoutMs, {
+    bootout: timeoutMs => bootoutLaunchAgent(false, undefined, timeoutMs),
+    bootstrap: (plistPath, timeoutMs) => bootstrapLaunchAgent(plistPath, false, undefined, timeoutMs),
+    isPortOpen: (current, timeoutMs) => isTcpPortOpenEffect(current.host, current.port, Math.min(500, timeoutMs)),
+    stagePlist: (plistPath, content) => stageLaunchAgentPlist(plistPath, content),
+    stopDetached: (current, timeoutMs) =>
+      stopDetachedOpenVikingServerForLaunchd(current, false, timeoutMs, resolvedServer),
+    restartDetached: (current, timeoutMs) => restartDetachedOpenVikingServer(current, resolvedServer!, timeoutMs),
+    waitForHealth: (current, timeoutMs) =>
+      waitForLaunchAgentHealth(current, timeoutMs, `Waiting for OpenViking health at ${healthUrl}.`),
+    waitForShutdown: waitForOpenVikingShutdown,
+  });
   if (health) {
     yield* Console.log(`Installed and started ${LAUNCHD_LABEL}. Health OK at ${healthUrl}`);
     return;

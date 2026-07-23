@@ -280,12 +280,12 @@ function buildMcpInstallCommand(
     if (agent === 'codex') {
       return {
         executable: agentExecutable,
-        args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', '/usr/bin/env', ...command],
+        args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', ...command],
       };
     }
     return {
       executable: agentExecutable,
-      args: ['mcp', 'add', '--scope', claudeScope, name, '--', '/usr/bin/env', ...env, ...command],
+      args: ['mcp', 'add', '--scope', claudeScope, name, ...env.flatMap(value => ['--env', value]), '--', ...command],
       cwd: claudeCwd,
     };
   }
@@ -313,7 +313,7 @@ function buildMcpInstallCommand(
 }
 
 function mcpAdapterCommand(): readonly string[] {
-  return [join(toolRoot(), 'bin', 'threadnote-mcp-server.cjs')];
+  return ['node', join(toolRoot(), 'bin', 'threadnote-mcp-server.cjs')];
 }
 
 function buildMcpRemoveCommand(agent: AgentClient, agentExecutable: string, name: string): MappedCommand {
@@ -385,9 +385,10 @@ function buildCursorMcpServerConfig(
     }
     return server;
   }
+  const command = mcpAdapterCommand();
   return {
-    args: [mcpAdapterCommand()[0]],
-    command: '/usr/bin/env',
+    args: command.slice(1),
+    command: command[0],
     env: mcpEnvironmentObject(config, options.toolset),
   };
 }
@@ -408,9 +409,10 @@ function buildCopilotMcpServerConfig(
     }
     return server;
   }
+  const command = mcpAdapterCommand();
   return {
-    args: [mcpAdapterCommand()[0]],
-    command: '/usr/bin/env',
+    args: command.slice(1),
+    command: command[0],
     env: mcpEnvironmentObject(config, options.toolset),
     type: 'stdio',
   };

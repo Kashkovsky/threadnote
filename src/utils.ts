@@ -13,6 +13,9 @@ import {
   commandMaxOutputBytes,
   commandTimeoutMs,
   formatShellCommand,
+  isGitExecutable,
+  resolveCommandInvocation,
+  terminateCommandProcess,
   type CommandOptions,
   withoutGitEnvironment,
 } from './effect/command.js';
@@ -160,9 +163,11 @@ export async function findOpenVikingCli(): Promise<string | undefined> {
   }
   for (const candidateDir of await openVikingToolCandidateDirs()) {
     for (const command of ['ov', 'openviking']) {
-      const candidate = join(candidateDir, command);
-      if (await isExecutable(candidate)) {
-        return candidate;
+      for (const name of executableNames(command)) {
+        const candidate = join(candidateDir, name);
+        if (await isExecutable(candidate)) {
+          return candidate;
+        }
       }
     }
   }
@@ -184,8 +189,31 @@ async function openVikingToolCandidateDirs(): Promise<readonly string[]> {
   if (process.env.UV_TOOL_BIN_DIR) {
     dirs.push(process.env.UV_TOOL_BIN_DIR);
   }
+  dirs.push(...(await pythonUserScriptsCandidateDirs()));
   dirs.push(join(homedir(), '.local', 'bin'));
   return Array.from(new Set(dirs));
+}
+
+export async function pythonUserScriptsCandidateDirs(
+  currentPlatform: NodeJS.Platform = process.platform,
+): Promise<readonly string[]> {
+  const commands = currentPlatform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+  const directories: string[] = [];
+  for (const command of commands) {
+    const executable = await findExecutable([command]);
+    if (!executable) {
+      continue;
+    }
+    const result = await runCommand(executable, ['-c', 'import site; print(site.getuserbase())'], {
+      allowFailure: true,
+      timeoutMs: 5000,
+    });
+    const userBase = result.exitCode === 0 ? result.stdout.trim() : '';
+    if (userBase) {
+      directories.push(join(userBase, currentPlatform === 'win32' ? 'Scripts' : 'bin'));
+    }
+  }
+  return Array.from(new Set(directories));
 }
 
 export async function requiredExecutable(command: string): Promise<string> {
@@ -198,9 +226,10 @@ export async function requiredExecutable(command: string): Promise<string> {
 
 export async function findExecutable(commands: readonly string[]): Promise<string | undefined> {
   for (const command of commands) {
-    const result = await runCommand('which', [command], {allowFailure: true});
-    if (result.exitCode === 0 && result.stdout.trim()) {
-      return result.stdout.trim();
+    for (const candidate of executablePathCandidatesForCommand(command)) {
+      if (await isExecutable(candidate)) {
+        return candidate;
+      }
     }
   }
   return undefined;
@@ -221,13 +250,14 @@ export async function findWorkingExecutable(
 
 export async function findExecutableCandidates(commands: readonly string[]): Promise<readonly string[]> {
   const candidates: string[] = [];
+  const seen = new Set<string>();
   for (const command of commands) {
-    const paths =
-      isAbsolute(command) || command.includes('/') || command.includes('\\')
-        ? [command]
-        : executablePathCandidates(command);
-    for (const candidate of paths) {
-      if (!candidates.includes(candidate) && (await isExecutable(candidate))) {
+    for (const candidate of executablePathCandidatesForCommand(command)) {
+      if (seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+      if (await isExecutable(candidate)) {
         candidates.push(candidate);
       }
     }
@@ -235,14 +265,27 @@ export async function findExecutableCandidates(commands: readonly string[]): Pro
   return candidates;
 }
 
+function executablePathCandidatesForCommand(command: string): readonly string[] {
+  return isAbsolute(command) || command.includes('/') || command.includes('\\')
+    ? executableNames(command)
+    : executablePathCandidates(command);
+}
+
 function executablePathCandidates(command: string): readonly string[] {
   const pathDirectories = (process.env.PATH ?? '').split(delimiter);
-  const names = process.platform === 'win32' ? windowsExecutableNames(command) : [command];
+  const names = executableNames(command);
   return pathDirectories.flatMap(directory => names.map(name => join(directory || '.', name)));
 }
 
-function windowsExecutableNames(command: string): readonly string[] {
-  const extensions = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+export function executableNames(
+  command: string,
+  currentPlatform: NodeJS.Platform = process.platform,
+  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+): readonly string[] {
+  if (currentPlatform !== 'win32') {
+    return [command];
+  }
+  const extensions = pathExt
     .split(';')
     .map(extension => extension.trim())
     .filter(Boolean);
@@ -250,14 +293,14 @@ function windowsExecutableNames(command: string): readonly string[] {
   if (extensions.some(extension => lowerCommand.endsWith(extension.toLowerCase()))) {
     return [command];
   }
-  return [command, ...extensions.map(extension => `${command}${extension}`)];
+  return [...extensions.map(extension => `${command}${extension}`), command];
 }
 
 export async function maybeRun(
   dryRun: boolean,
   executable: string,
   args: readonly string[],
-  options: {readonly allowFailure?: boolean; readonly cwd?: string} = {},
+  options: {readonly allowFailure?: boolean; readonly cwd?: string; readonly env?: NodeJS.ProcessEnv} = {},
 ): Promise<CommandResult | undefined> {
   const cwdSuffix = options.cwd ? ` (cwd: ${options.cwd})` : '';
   const label = dryRun ? warning('Would run') : info('Running');
@@ -265,7 +308,11 @@ export async function maybeRun(
   if (dryRun) {
     return undefined;
   }
-  const result = await runCommand(executable, args, {allowFailure: options.allowFailure === true, cwd: options.cwd});
+  const result = await runCommand(executable, args, {
+    allowFailure: options.allowFailure === true,
+    cwd: options.cwd,
+    env: options.env,
+  });
   if (result.stdout.trim()) {
     consoleOutput.log(result.stdout.trim());
   }
@@ -287,6 +334,7 @@ export async function runCommand(
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
     let failureMessage: string | undefined;
+    const invocation = resolveCommandInvocation(executable, args);
     const finish = (result: CommandResult): void => {
       if (finished) return;
       finished = true;
@@ -299,13 +347,14 @@ export async function runCommand(
       }
     };
     const child = execFile(
-      executable,
-      [...args],
+      invocation.executable,
+      [...invocation.args],
       {
         cwd: options.cwd,
         encoding: 'utf8',
-        env: basename(executable) === 'git' ? withoutGitEnvironment(options.env ?? process.env) : options.env,
+        env: isGitExecutable(executable) ? withoutGitEnvironment(options.env ?? process.env) : options.env,
         maxBuffer: maxOutputBytes,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       },
       (cause, stdout, stderr) => {
         if (failureMessage) {
@@ -333,9 +382,11 @@ export async function runCommand(
       killTimer = setTimeout(() => {
         if (finished || child.exitCode !== null) return;
         failureMessage = `${formatShellCommand(executable, args)} timed out after ${timeoutMs}ms`;
-        child.kill('SIGTERM');
+        void terminateCommandProcess(child, invocation, false).catch(() => child.kill('SIGKILL'));
         killEscalationTimer = setTimeout(() => {
-          if (!finished) child.kill('SIGKILL');
+          if (!finished) {
+            void terminateCommandProcess(child, invocation, true).catch(() => child.kill('SIGKILL'));
+          }
         }, 1000);
         killEscalationTimer.unref?.();
       }, timeoutMs);
@@ -454,9 +505,18 @@ function gitRemoteRepoName(remoteUrl: string): string | undefined {
   return name && name !== '.' && name !== '..' ? name : undefined;
 }
 
-export async function runInteractive(executable: string, args: readonly string[]): Promise<number> {
+export async function runInteractive(
+  executable: string,
+  args: readonly string[],
+  options: {readonly env?: NodeJS.ProcessEnv} = {},
+): Promise<number> {
   return new Promise(resolvePromise => {
-    const child = spawn(executable, args, {stdio: 'inherit'});
+    const invocation = resolveCommandInvocation(executable, args);
+    const child = spawn(invocation.executable, invocation.args, {
+      env: options.env,
+      stdio: 'inherit',
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
     // `error` fires instead of `close` when the binary cannot be spawned
     // (e.g. ENOENT). Resolve non-zero so callers surface a failure rather than
     // hanging forever waiting for a `close` that never comes.
@@ -657,6 +717,9 @@ export async function exists(path: string): Promise<boolean> {
 
 export async function isExecutable(path: string): Promise<boolean> {
   try {
+    if (!(await stat(path)).isFile()) {
+      return false;
+    }
     await access(path, fsConstants.X_OK);
     return true;
   } catch (_err: unknown) {

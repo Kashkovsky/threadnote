@@ -35,6 +35,7 @@ async function dryRunOutput(toolset?: 'core' | 'full'): Promise<string> {
 
 const originalPath = process.env.PATH;
 const temporaryDirectories: string[] = [];
+const posixIt = process.platform === 'win32' ? it.skip : it;
 
 async function codexLauncher(script: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'threadnote-codex-'));
@@ -60,6 +61,12 @@ describe('MCP toolsets', () => {
     await expect(dryRunOutput()).resolves.toContain('THREADNOTE_MCP_TOOLSET=core');
   });
 
+  it('uses the Node launcher instead of POSIX env', async () => {
+    const output = await dryRunOutput();
+    expect(output).toContain('-- node <local-path>');
+    expect(output).not.toContain('/usr/bin/env');
+  });
+
   it('installs the full stdio toolset when requested', async () => {
     await expect(dryRunOutput('full')).resolves.toContain('THREADNOTE_MCP_TOOLSET=full');
   });
@@ -70,7 +77,7 @@ describe('MCP toolsets', () => {
 });
 
 describe('MCP agent executable resolution', () => {
-  it('uses a healthy later PATH entry when the first Codex launcher is stale', async () => {
+  posixIt('uses a healthy later PATH entry when the first Codex launcher is stale', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     const callsPath = join(tmpdir(), `threadnote-codex-calls-${process.pid}-${Date.now()}`);
     const healthy = await codexLauncher(
@@ -86,7 +93,7 @@ describe('MCP agent executable resolution', () => {
     await rm(callsPath, {force: true});
   });
 
-  it('skips a broken Codex launcher during repair and gives explicit installs an actionable error', async () => {
+  posixIt('skips a broken Codex launcher during repair and gives explicit installs an actionable error', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
 

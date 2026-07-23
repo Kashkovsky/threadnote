@@ -63,3 +63,28 @@ jobs:
       - run: npm run test:e2e:install-openviking
 
       - run: npm run test:e2e:local-bins
+
+  windows-e2e:
+    name: E2E tests · windows · node 22
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test -- --run test/unit/windows-support.test.ts test/unit/update.test.ts test/unit/mcp.test.ts
+
+      - run: npm run test:e2e:windows

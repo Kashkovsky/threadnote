@@ -1,7 +1,7 @@
-import {mkdtemp, rm} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 
@@ -27,11 +27,13 @@ import {
   resolveUpdateRegistry,
   runPostUpdate,
   runUpdate,
+  runtimeThreadnoteBinPath,
 } from '../../src/update.js';
 import {runVersion} from '../../src/version_command.js';
 import {captureConsole} from '../../src/effect/console.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 
 const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
@@ -154,7 +156,7 @@ describe('runUpdate', () => {
     vi.mocked(utils.isExecutable).mockResolvedValue(true);
     vi.mocked(utils.maybeRun).mockResolvedValue(ok());
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
-      if (executable === 'npm' && args[0] === 'prefix') {
+      if (executable.endsWith('/npm') && args[0] === 'prefix') {
         return ok('/tmp/npm-global\n');
       }
       return ok();
@@ -182,19 +184,80 @@ describe('runUpdate', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const fetch = mockRegistryVersions('99.0.0', '100.0.0-beta.1');
+    const prefix = join(config.agentContextHome, 'npm-global');
+    const threadnote = join(prefix, 'bin', 'threadnote');
+    await mkdir(join(prefix, 'bin'), {recursive: true});
+    await writeFile(threadnote, '#!/bin/sh\n');
+    await chmod(threadnote, 0o755);
+    const commandLayer = Layer.succeed(
+      CommandExecutor,
+      CommandExecutor.of({
+        execute: (_executable, args) => Effect.succeed(args[0] === 'prefix' ? ok(`${prefix}\n`) : ok()),
+      }),
+    );
 
-    await runTestEffect(runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(Effect.provide(ApplicationLayer)));
+    await runTestEffect(
+      runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(
+        Effect.provide(commandLayer),
+        Effect.provide(ApplicationLayer),
+      ),
+    );
 
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/latest'))).toBe(true);
     expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(
-      'npm',
+      '/usr/bin/npm',
       expect.arrayContaining(['install', '--global', 'threadnote@latest']),
     );
-    expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith('/tmp/npm-global/bin/threadnote', [
-      'repair',
-      '--no-post-update',
-    ]);
+    expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update']);
     expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
+  });
+
+  it('runs Deno directly with the registry in its environment', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    mockRegistryVersions('99.0.0', '100.0.0-beta.1');
+    const deno = 'C:\\Program Files\\Deno\\deno.exe';
+    const originalDenoInstallRoot = process.env.DENO_INSTALL_ROOT;
+    const originalDenoInstall = process.env.DENO_INSTALL;
+    const denoInstall = join(config.agentContextHome, 'deno-root');
+    const denoBin = join(denoInstall, 'bin');
+    const threadnote = runtimeThreadnoteBinPath('deno', denoBin);
+    await mkdir(denoBin, {recursive: true});
+    await writeFile(threadnote, '#!/bin/sh\n');
+    await chmod(threadnote, 0o755);
+    process.env.DENO_INSTALL_ROOT = denoInstall;
+    delete process.env.DENO_INSTALL;
+    vi.mocked(utils.findExecutable).mockImplementation(async commands => {
+      if (commands.includes('deno')) {
+        return deno;
+      }
+      return undefined;
+    });
+
+    try {
+      await runTestEffect(
+        runUpdate(config, {postUpdate: false, runtime: 'deno'}).pipe(Effect.provide(ApplicationLayer)),
+      );
+    } finally {
+      if (originalDenoInstallRoot === undefined) {
+        delete process.env.DENO_INSTALL_ROOT;
+      } else {
+        process.env.DENO_INSTALL_ROOT = originalDenoInstallRoot;
+      }
+      if (originalDenoInstall === undefined) {
+        delete process.env.DENO_INSTALL;
+      } else {
+        process.env.DENO_INSTALL = originalDenoInstall;
+      }
+    }
+
+    expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(
+      deno,
+      expect.arrayContaining(['install', '--global', 'npm:threadnote@latest']),
+      {env: expect.objectContaining({NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'})},
+    );
+    expect(vi.mocked(utils.runInteractive)).not.toHaveBeenCalledWith('env', expect.any(Array), expect.anything());
+    expect(vi.mocked(utils.runInteractive)).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update']);
   });
 
   it('updates to the beta dist-tag when --beta is requested', async () => {
@@ -211,7 +274,7 @@ describe('runUpdate', () => {
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
     expect(vi.mocked(utils.maybeRun)).toHaveBeenCalledWith(
       true,
-      'npm',
+      '/usr/bin/npm',
       expect.arrayContaining(['install', '--global', 'threadnote@beta']),
     );
   });
@@ -265,7 +328,7 @@ describe('runUpdate', () => {
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
     expect(vi.mocked(utils.maybeRun)).toHaveBeenCalledWith(
       true,
-      'npm',
+      '/usr/bin/npm',
       expect.arrayContaining(['install', '--global', 'threadnote@beta']),
     );
   });

@@ -8,9 +8,11 @@ Run:
 threadnote install
 ```
 
-The installer prefers `uv`, then `pipx`, then `python3 -m pip install --user`. For `curl | sh` installs, the wrapper
-reattaches `threadnote install` to your terminal when possible so it can prompt to install `uv` and continue instead of
-falling straight through to the pip fallback.
+The installer prefers `uv`, then `pipx`, then the platform Python launcher (`py`/`python` on Windows or `python3` on
+macOS and Linux). For `curl | sh` installs, the wrapper reattaches `threadnote install` to your terminal when possible
+so it can prompt to install `uv` and continue instead of falling straight through to the pip fallback. Native Windows
+uses `scripts/install.ps1`, preserves npm's `threadnote.cmd` launcher, and can install `uv` with its official PowerShell
+bootstrap.
 
 ## `uv` Fails With `UnknownIssuer`
 

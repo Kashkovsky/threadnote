@@ -1,15 +1,15 @@
-import {constants as fsConstants} from 'node:fs';
-import {access, writeFile} from 'node:fs/promises';
-import {homedir} from 'node:os';
+import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline/promises';
 import {stdin as input, stdout as output} from 'node:process';
-import {Effect, pipe} from 'effect';
+import {Effect, FileSystem, Path, pipe} from 'effect';
 import {heading, info as infoText, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
+import {runCommandEffect} from './effect/command.js';
 import {consoleOutput, syncWithConsole} from './effect/console.js';
 import {applicationError, fromPromise, fromSync} from './effect/errors.js';
 import {getJsonEffect, getStatusEffect} from './effect/http.js';
 import {pollUntilEffect} from './effect/time.js';
+import {SystemInfo} from './effect/system.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
@@ -21,7 +21,6 @@ import {
   findExecutable,
   currentPackageVersion,
   findOpenVikingCli,
-  isExecutable,
   isTcpPortOpen,
   isJsonObject,
   maybeRun,
@@ -157,8 +156,16 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   const runtime = yield* fromPromise('resolve update runtime', () => resolveUpdateRuntime(options.runtime ?? 'auto'));
-  const updateCommand = updatePackageCommand(runtime, registry, info.channel);
-  yield* runStreamingSubcommand(options.dryRun === true, updateCommand.executable, updateCommand.args);
+  const runtimeExecutable = yield* fromPromise('resolve update runtime executable', async () => {
+    return (await findExecutable([runtime])) ?? runtime;
+  });
+  const updateCommand = updatePackageCommand(runtime, registry, info.channel, runtimeExecutable);
+  yield* runStreamingSubcommand(
+    options.dryRun === true,
+    updateCommand.executable,
+    updateCommand.args,
+    updateCommand.env,
+  );
 
   if (options.repair === false) {
     yield* syncWithConsole(() => consoleOutput.log('Skipping repair because --no-repair was provided.'));
@@ -166,9 +173,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     return;
   }
 
-  const threadnoteCommand = yield* fromPromise('resolve installed threadnote command', () =>
-    installedThreadnoteCommand(runtime),
-  );
+  const threadnoteCommand = yield* installedThreadnoteCommand(runtime, runtimeExecutable);
   yield* syncWithConsole(() => {
     consoleOutput.log('');
     consoleOutput.log('Repairing local Threadnote setup after package update.');
@@ -360,7 +365,9 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
 
     yield* syncWithConsole(() => consoleOutput.log('Restarting OpenViking server so the new binary takes effect.'));
     if (usingLaunchd) {
-      const launchAgentPath = launchAgentPlistPath();
+      const system = yield* SystemInfo;
+      const path = yield* Path.Path;
+      const launchAgentPath = launchAgentPlistPath(system.homeDirectory, path);
       yield* fromPromise('unload OpenViking launch agent', () =>
         runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true}),
       );
@@ -392,13 +399,17 @@ function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readon
  * package install, an OpenViking reinstall, or a churning repair). Dry-run
  * defers to `maybeRun` so it only prints the command it would run.
  */
-function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[]) {
+function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
   if (dryRun) {
-    return fromPromise('print subcommand', () => maybeRun(true, executable, args)).pipe(Effect.asVoid);
+    return fromPromise('print subcommand', () =>
+      env ? maybeRun(true, executable, args, {env}) : maybeRun(true, executable, args),
+    ).pipe(Effect.asVoid);
   }
   return Effect.gen(function* () {
     yield* syncWithConsole(() => consoleOutput.log(`Running: ${formatShellCommand(executable, args)}`));
-    const exitCode = yield* fromPromise('run interactive subcommand', () => runInteractive(executable, args));
+    const exitCode = yield* fromPromise('run interactive subcommand', () =>
+      env ? runInteractive(executable, args, {env}) : runInteractive(executable, args),
+    );
     if (exitCode !== 0) {
       return yield* Effect.fail(
         applicationError(
@@ -460,18 +471,22 @@ function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number) {
   });
 }
 
-function launchAgentPlistPath(): string {
-  return join(homedir(), 'Library', 'LaunchAgents', 'io.threadnote.openviking.plist');
+function launchAgentPlistPath(homeDirectory: string, path: Path.Path): string {
+  return path.join(homeDirectory, 'Library', 'LaunchAgents', 'io.threadnote.openviking.plist');
 }
 
 function isLaunchAgentInstalled() {
-  if (process.platform !== 'darwin') {
-    return Effect.succeed(false);
-  }
-  return fromPromise('check OpenViking launch agent', () => access(launchAgentPlistPath(), fsConstants.F_OK)).pipe(
-    Effect.as(true),
-    Effect.catch(() => Effect.succeed(false)),
-  );
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    if (system.platform !== 'darwin') {
+      return false;
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return yield* fs
+      .exists(launchAgentPlistPath(system.homeDirectory, path))
+      .pipe(Effect.catch(() => Effect.succeed(false)));
+  });
 }
 
 export async function readOpenVikingCliVersion(ov: string): Promise<string | undefined> {
@@ -801,48 +816,88 @@ async function requireRuntime(runtime: Exclude<UpdateRuntime, 'auto'>): Promise<
   }
 }
 
-async function installedThreadnoteCommand(runtime: Exclude<UpdateRuntime, 'auto'>): Promise<string> {
-  const runtimeBin = await runtimeThreadnoteBin(runtime);
-  if (runtimeBin && (await isExecutable(runtimeBin))) {
+const installedThreadnoteCommand = Effect.fn('installedThreadnoteCommand')(function* (
+  runtime: Exclude<UpdateRuntime, 'auto'>,
+  runtimeExecutable: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  const runtimeBin = yield* runtimeThreadnoteBin(runtime, runtimeExecutable);
+  if (runtimeBin && (yield* isExecutableFileEffect(fs, runtimeBin, system.platform))) {
     return runtimeBin;
   }
-  return (await findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-}
+  return (
+    (yield* fromPromise('find installed threadnote executable', () => findExecutable([NPM_PACKAGE_NAME]))) ??
+    NPM_PACKAGE_NAME
+  );
+});
 
-async function runtimeThreadnoteBin(runtime: Exclude<UpdateRuntime, 'auto'>): Promise<string | undefined> {
+const runtimeThreadnoteBin = Effect.fn('runtimeThreadnoteBin')(function* (
+  runtime: Exclude<UpdateRuntime, 'auto'>,
+  runtimeExecutable: string,
+) {
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
   if (runtime === 'npm') {
-    const result = await runCommand('npm', ['prefix', '--global'], {allowFailure: true});
+    const result = yield* runCommandEffect(runtimeExecutable, ['prefix', '--global'], {allowFailure: true});
     const prefix = result.stdout.trim();
-    return prefix ? join(prefix, 'bin', NPM_PACKAGE_NAME) : undefined;
+    return prefix ? runtimeThreadnoteBinPath(runtime, prefix, system.platform) : undefined;
   }
   if (runtime === 'bun') {
-    const result = await runCommand('bun', ['pm', 'bin', '-g'], {allowFailure: true});
+    const result = yield* runCommandEffect(runtimeExecutable, ['pm', 'bin', '-g'], {allowFailure: true});
     const binDir = result.stdout.trim();
-    return binDir ? join(binDir, NPM_PACKAGE_NAME) : undefined;
+    return binDir ? runtimeThreadnoteBinPath(runtime, binDir, system.platform) : undefined;
   }
-  return join(process.env.DENO_INSTALL ?? join(homedir(), '.deno'), 'bin', NPM_PACKAGE_NAME);
+  const denoRoot =
+    process.env.DENO_INSTALL_ROOT ?? process.env.DENO_INSTALL ?? path.join(system.homeDirectory, '.deno');
+  return runtimeThreadnoteBinPath(runtime, path.join(denoRoot, 'bin'), system.platform);
+});
+
+const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (
+  fs: FileSystem.FileSystem,
+  filePath: string,
+  currentPlatform: NodeJS.Platform,
+) {
+  const info = yield* fs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return info?.type === 'File' && (currentPlatform === 'win32' || (info.mode & 0o111) !== 0);
+});
+
+export function runtimeThreadnoteBinPath(
+  runtime: Exclude<UpdateRuntime, 'auto'>,
+  root: string,
+  currentPlatform: NodeJS.Platform = process.platform,
+): string {
+  const separator = currentPlatform === 'win32' ? '\\' : '/';
+  const append = (...segments: readonly string[]): string => {
+    const base = root.replace(/[\\/]+$/, '') || separator;
+    return `${base}${base.endsWith(separator) ? '' : separator}${segments.join(separator)}`;
+  };
+  if (currentPlatform === 'win32') {
+    return append(`${NPM_PACKAGE_NAME}.cmd`);
+  }
+  return runtime === 'npm' ? append('bin', NPM_PACKAGE_NAME) : append(NPM_PACKAGE_NAME);
 }
 
 function updatePackageCommand(
   runtime: Exclude<UpdateRuntime, 'auto'>,
   registry: string,
   channel: UpdateChannel,
+  runtimeExecutable: string = runtime,
 ): {
   readonly args: readonly string[];
+  readonly env?: NodeJS.ProcessEnv;
   readonly executable: string;
 } {
   const packageSpec = `${NPM_PACKAGE_NAME}@${channel}`;
   if (runtime === 'npm') {
-    return {executable: 'npm', args: ['install', '--global', packageSpec, `--registry=${registry}`]};
+    return {executable: runtimeExecutable, args: ['install', '--global', packageSpec, `--registry=${registry}`]};
   }
   if (runtime === 'bun') {
-    return {executable: 'bun', args: ['install', '--global', packageSpec, `--registry=${registry}`]};
+    return {executable: runtimeExecutable, args: ['install', '--global', packageSpec, `--registry=${registry}`]};
   }
   return {
-    executable: 'env',
+    executable: runtimeExecutable,
     args: [
-      `NPM_CONFIG_REGISTRY=${registry}`,
-      'deno',
       'install',
       '--global',
       '--force',
@@ -855,6 +910,7 @@ function updatePackageCommand(
       '--allow-net',
       `npm:${packageSpec}`,
     ],
+    env: {...process.env, NPM_CONFIG_REGISTRY: registry},
   };
 }
 

@@ -1,6 +1,6 @@
 import {Effect, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
 
 const run = <A, E>(effect: Effect.Effect<A, E, CommandExecutor>) =>
   Effect.runPromise(effect.pipe(Effect.provide(CommandExecutor.layer)));
@@ -64,5 +64,15 @@ describe('Effect CommandExecutor', () => {
     );
 
     expect(result).toEqual({exitCode: 3, stderr: 'bad', stdout: ''});
+  });
+
+  it('interrupts streaming commands through the command boundary', async () => {
+    await expect(
+      run(
+        runStreamingCommandEffect(process.execPath, ['-e', 'setInterval(() => undefined, 1000)']).pipe(
+          Effect.timeout(25),
+        ),
+      ),
+    ).rejects.toThrow();
   });
 });

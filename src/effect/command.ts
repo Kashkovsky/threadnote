@@ -1,5 +1,4 @@
-import {execFile, type ChildProcess} from 'node:child_process';
-import {basename} from 'node:path';
+import {execFile, spawn, type ChildProcess} from 'node:child_process';
 import {Console, Context, Effect, Layer, Schema} from 'effect';
 import {command as commandText, info, warning} from '../cli_ui.js';
 import {redactSensitiveText} from '../scrubber.js';
@@ -11,6 +10,17 @@ export interface CommandOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly maxOutputBytes?: number;
   readonly timeoutMs?: number;
+}
+
+export interface CommandInvocation {
+  readonly args: readonly string[];
+  readonly executable: string;
+  readonly windowsVerbatimArguments: boolean;
+}
+
+export interface StreamingCommandOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly maxOutputChars?: number;
 }
 
 const CommandFields = {
@@ -44,7 +54,17 @@ export class CommandSpawnFailed extends Schema.TaggedErrorClass<CommandSpawnFail
   cause: Schema.Defect(),
 }) {}
 
-export type CommandExecutionError = CommandFailed | CommandOutputLimitExceeded | CommandSpawnFailed | CommandTimedOut;
+export class CommandTerminationFailed extends Schema.TaggedErrorClass<CommandTerminationFailed>()(
+  'CommandTerminationFailed',
+  {
+    ...CommandFields,
+    cause: Schema.Defect(),
+    pid: Schema.Number,
+  },
+) {}
+
+export type CommandExecutionError =
+  CommandFailed | CommandOutputLimitExceeded | CommandSpawnFailed | CommandTerminationFailed | CommandTimedOut;
 
 export class CommandExecutor extends Context.Service<
   CommandExecutor,
@@ -54,9 +74,16 @@ export class CommandExecutor extends Context.Service<
       args: readonly string[],
       options?: CommandOptions,
     ) => Effect.Effect<CommandResult, CommandExecutionError>;
+    readonly executeStreaming?: (
+      executable: string,
+      args: readonly string[],
+      options?: StreamingCommandOptions,
+    ) => Effect.Effect<CommandResult>;
   }
 >()('threadnote/effect/CommandExecutor') {
-  static readonly layer = Layer.sync(CommandExecutor, () => CommandExecutor.of({execute: executeCommand}));
+  static readonly layer = Layer.sync(CommandExecutor, () =>
+    CommandExecutor.of({execute: executeCommand, executeStreaming: executeStreamingCommand}),
+  );
 }
 
 export const runCommandEffect = Effect.fn('runCommandEffect')(function* (
@@ -66,6 +93,15 @@ export const runCommandEffect = Effect.fn('runCommandEffect')(function* (
 ) {
   const command = yield* CommandExecutor;
   return yield* command.execute(executable, args, options);
+});
+
+export const runStreamingCommandEffect = Effect.fn('runStreamingCommandEffect')(function* (
+  executable: string,
+  args: readonly string[],
+  options: StreamingCommandOptions = {},
+) {
+  const command = yield* CommandExecutor;
+  return yield* (command.executeStreaming ?? executeStreamingCommand)(executable, args, options);
 });
 
 export const maybeRunEffect = Effect.fn('maybeRunEffect')(function* (
@@ -100,34 +136,15 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
   const command = formatShellCommand(executable, args);
   const safeArgs = redactCommandArgs(args);
   const safeExecutable = redactSensitiveText(executable);
+  const invocation = resolveCommandInvocation(executable, args);
   const run = Effect.callback<CommandResult, CommandExecutionError>(resume => {
     let child: ChildProcess | undefined;
     let finished = false;
-    let killEscalationTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const clearTimers = (): void => {
-      if (killEscalationTimer) {
-        clearTimeout(killEscalationTimer);
-      }
-    };
-    const terminate = (): void => {
-      if (!child || child.exitCode !== null) {
-        return;
-      }
-      child.kill('SIGTERM');
-      killEscalationTimer = setTimeout(() => {
-        if (!finished && child && child.exitCode === null) {
-          child.kill('SIGKILL');
-        }
-      }, 1000);
-      killEscalationTimer.unref?.();
-    };
     const complete = (result: CommandResult, error?: CommandExecutionError): void => {
       if (finished) {
         return;
       }
       finished = true;
-      clearTimers();
       if (error && options.allowFailure !== true) {
         resume(Effect.fail(error));
       } else {
@@ -137,13 +154,14 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
 
     try {
       child = execFile(
-        executable,
-        [...args],
+        invocation.executable,
+        [...invocation.args],
         {
           cwd: options.cwd,
           encoding: 'utf8',
           env: commandEnvironment(executable, options.env),
           maxBuffer: maxOutputBytes,
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         },
         (cause, stdout, stderr) => {
           if (!cause) {
@@ -193,12 +211,16 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
       complete({exitCode: 127, stderr: error.message, stdout: ''}, spawnError);
     }
 
-    return Effect.sync(() => {
-      if (!finished) {
-        clearTimers();
-        terminate();
-      }
-    });
+    return child && !finished
+      ? terminationCleanupEffect(child, invocation, false).pipe(
+          Effect.andThen(Effect.sleep(1000)),
+          Effect.andThen(
+            Effect.suspend(() =>
+              child && child.exitCode === null ? terminationCleanupEffect(child, invocation, true) : Effect.void,
+            ),
+          ),
+        )
+      : Effect.void;
   });
   if (timeoutMs <= 0) {
     return run;
@@ -220,6 +242,180 @@ const executeCommand = Effect.fn('CommandExecutor.execute')((
   );
 });
 
+const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')((
+  executable: string,
+  args: readonly string[],
+  options: StreamingCommandOptions = {},
+) => {
+  const invocation = resolveCommandInvocation(executable, args);
+  const maxOutputChars = options.maxOutputChars ?? 64_000;
+  return Effect.callback<CommandResult>(resume => {
+    let child: ChildProcess | undefined;
+    let finished = false;
+    let stderr = '';
+    let stdout = '';
+    const appendTail = (current: string, chunk: string): string => {
+      const next = `${current}${chunk}`;
+      return next.length <= maxOutputChars ? next : next.slice(next.length - maxOutputChars);
+    };
+    const complete = (result: CommandResult): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      resume(Effect.succeed(result));
+    };
+    try {
+      child = spawn(invocation.executable, invocation.args, {
+        env: options.env,
+        stdio: ['inherit', 'pipe', 'pipe'],
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      });
+      child.stdout?.on('data', chunk => {
+        const text = String(chunk);
+        process.stdout.write(text);
+        stdout = appendTail(stdout, text);
+      });
+      child.stderr?.on('data', chunk => {
+        const text = String(chunk);
+        process.stderr.write(text);
+        stderr = appendTail(stderr, text);
+      });
+      child.on('error', cause => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        process.stderr.write(`${message}\n`);
+        complete({exitCode: 1, stderr: appendTail(stderr, message), stdout});
+      });
+      child.on('close', code => complete({exitCode: code ?? 1, stderr, stdout}));
+    } catch (cause: unknown) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      complete({exitCode: 1, stderr: appendTail(stderr, message), stdout});
+    }
+    return child && !finished ? terminationCleanupEffect(child, invocation, true) : Effect.void;
+  });
+});
+
+const WINDOWS_COMMAND_META = /([()\][%!^"`<>&|;, *?])/g;
+
+export function resolveCommandInvocation(
+  executable: string,
+  args: readonly string[],
+  currentPlatform: NodeJS.Platform = process.platform,
+  comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe',
+): CommandInvocation {
+  if (currentPlatform !== 'win32' || !/\.(?:bat|cmd)$/i.test(executable)) {
+    return {args, executable, windowsVerbatimArguments: false};
+  }
+  for (const value of [executable, ...args]) {
+    if (value.includes('\0') || /[\r\n]/.test(value)) {
+      throw new Error('Windows batch commands do not accept NUL, CR, or LF characters.');
+    }
+  }
+  const doubleEscape = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(executable);
+  const command = escapeWindowsCommand(executable);
+  const escapedArgs = args.map(arg => escapeWindowsArgument(arg, doubleEscape));
+  return {
+    args: ['/d', '/s', '/c', `"${[command, ...escapedArgs].join(' ')}"`],
+    executable: comspec,
+    windowsVerbatimArguments: true,
+  };
+}
+
+function escapeWindowsCommand(value: string): string {
+  return value.replace(WINDOWS_COMMAND_META, '^$1');
+}
+
+function escapeWindowsArgument(value: string, doubleEscape: boolean): string {
+  let escaped = value.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"').replace(/(?=(\\+?)?)\1$/, '$1$1');
+  escaped = `"${escaped}"`.replace(WINDOWS_COMMAND_META, '^$1');
+  return doubleEscape ? escaped.replace(WINDOWS_COMMAND_META, '^$1') : escaped;
+}
+
+export function isGitExecutable(executable: string): boolean {
+  const name = executable.replaceAll('\\', '/').split('/').at(-1) ?? '';
+  return /^(?:git)(?:\.(?:bat|cmd|com|exe))?$/i.test(name);
+}
+
+export function windowsTaskkillExecutable(): string {
+  return `${(process.env.SystemRoot ?? 'C:\\Windows').replace(/[\\/]+$/, '')}\\System32\\taskkill.exe`;
+}
+
+export function terminateCommandProcessEffect(
+  child: ChildProcess,
+  _invocation: CommandInvocation,
+  force: boolean,
+): Effect.Effect<void, CommandTerminationFailed> {
+  return Effect.callback<void, CommandTerminationFailed>(resume => {
+    beginCommandProcessTermination(child, force, cause => {
+      if (cause && child.exitCode === null) {
+        resume(
+          Effect.fail(
+            new CommandTerminationFailed({
+              args: [],
+              cause: redactedError(cause),
+              executable: windowsTaskkillExecutable(),
+              message: redactSensitiveText(
+                `Could not terminate process tree ${child.pid ?? 'unknown'}: ${cause.message}`,
+              ),
+              pid: child.pid ?? -1,
+            }),
+          ),
+        );
+        return;
+      }
+      resume(Effect.void);
+    });
+  });
+}
+
+function terminationCleanupEffect(child: ChildProcess, invocation: CommandInvocation, force: boolean) {
+  return terminateCommandProcessEffect(child, invocation, force).pipe(
+    Effect.catch(error =>
+      Effect.sync(() => {
+        process.stderr.write(`Warning: ${error.message}\n`);
+      }),
+    ),
+  );
+}
+
+export function terminateCommandProcess(
+  child: ChildProcess,
+  _invocation: CommandInvocation,
+  force: boolean,
+): Promise<void> {
+  return new Promise((resolveTermination, rejectTermination) => {
+    beginCommandProcessTermination(child, force, cause => {
+      if (cause && child.exitCode === null) {
+        rejectTermination(cause);
+      } else {
+        resolveTermination();
+      }
+    });
+  });
+}
+
+function beginCommandProcessTermination(child: ChildProcess, force: boolean, complete: (cause?: Error) => void): void {
+  if (child.exitCode !== null) {
+    complete();
+    return;
+  }
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    execFile(windowsTaskkillExecutable(), ['/pid', String(child.pid), '/t', '/f'], {windowsHide: true}, cause => {
+      const error = cause instanceof Error ? cause : undefined;
+      if (error && child.exitCode === null) {
+        child.kill('SIGKILL');
+      }
+      complete(error);
+    });
+    return;
+  }
+  try {
+    child.kill(force ? 'SIGKILL' : 'SIGTERM');
+  } finally {
+    complete();
+  }
+}
+
 const GIT_ENVIRONMENT_KEYS = [
   'GIT_DIR',
   'GIT_WORK_TREE',
@@ -240,7 +436,7 @@ export function withoutGitEnvironment(env: NodeJS.ProcessEnv = process.env): Nod
 }
 
 function commandEnvironment(executable: string, env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv | undefined {
-  return basename(executable) === 'git' ? withoutGitEnvironment(env ?? process.env) : env;
+  return isGitExecutable(executable) ? withoutGitEnvironment(env ?? process.env) : env;
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {
