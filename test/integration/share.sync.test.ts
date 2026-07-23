@@ -1,7 +1,8 @@
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {Effect} from 'effect';
+import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {listShareConflicts, showShareConflict} from '../../src/share.js';
 import {
@@ -12,10 +13,13 @@ import {
 import type {ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
 
-const runShareInit = (...args: Parameters<typeof runShareInitEffect>) => Effect.runPromise(runShareInitEffect(...args));
-const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => Effect.runPromise(runShareSyncEffect(...args));
+const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
+const runShareInit = (...args: Parameters<typeof runShareInitEffect>) =>
+  Effect.runPromise(runShareInitEffect(...args).pipe(Effect.provide(TestLayer)));
+const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) =>
+  Effect.runPromise(runShareSyncEffect(...args).pipe(Effect.provide(TestLayer)));
 const resolveShareConflict = (...args: Parameters<typeof resolveShareConflictEffect>) =>
-  Effect.runPromise(resolveShareConflictEffect(...args));
+  Effect.runPromise(resolveShareConflictEffect(...args).pipe(Effect.provide(TestLayer)));
 
 interface TestShareRepo {
   readonly config: ShareRuntime;
@@ -497,6 +501,28 @@ describe('share sync git handling', () => {
       'MEMORY\nkind: durable\nstatus: active\n\nshared body\n',
     );
     await expect(readFile(pendingPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('does not ingest shared agent artifacts as memory conflicts', async () => {
+    const {config, home, root, seed} = await makeShareRepo();
+    const {ov, store} = await installFakeOv(root);
+    process.env.THREADNOTE_OV = ov;
+    process.env.THREADNOTE_FAKE_OV_STORE = store;
+    const relativePath = 'agent-artifacts/skills/codex/reviewer/SKILL.md';
+    const uri = 'viking://user/denys/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md';
+    await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+    await writeFile(join(seed, relativePath), '# Reviewer\n\nReview pull requests.\n', 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add shared skill'], seed);
+    await git(['push', 'origin', 'main'], seed);
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(join(home, 'share', 'auto-sync-pending-reindexes.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(fakeOvFile(store, uri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(listShareConflicts(config, {team: 'default'})).resolves.toEqual([]);
   });
 
   it('keeps a pending added reindex blocked when OpenViking has a real local edit', async () => {

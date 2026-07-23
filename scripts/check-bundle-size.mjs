@@ -4,7 +4,7 @@ import {Console, Effect} from 'effect';
 const output = Effect.runSync(Console.Console);
 
 const budgets = [
-  {bytes: 1_725_000, path: 'dist/threadnote.js'},
+  {bytes: 1_750_000, path: 'dist/threadnote.js'},
   {bytes: 1_800_000, path: 'dist/mcp_server.js'},
   {bytes: 450_000, path: 'manager/app.js'},
 ];

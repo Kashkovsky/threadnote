@@ -807,6 +807,55 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     );
   });
 
+  it('rescues an authoritative exact shared memory before hybrid reranking', () => {
+    const uri = 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md';
+    const sections = buildRecallSections(
+      [
+        [
+          {
+            category: 'memories',
+            contextType: 'memory',
+            score: 0.71,
+            snippet: 'Windows installation remains unsupported and is documented in shared durable memory.',
+            uri: 'viking://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
+          },
+        ],
+      ],
+      [{terms: ['windows'], uri}],
+      5,
+      {
+        allowExactRescue: true,
+        minimumScore: 0.45,
+        project: 'threadnote',
+        query: 'threadnote can users install reliably on native Windows what remains unsupported',
+        records: [
+          {
+            body: 'Native Windows installation remains unsupported until package, OpenViking, and lifecycle gates pass.',
+            content:
+              'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: windows-installation-support\n\nNative Windows installation remains unsupported until package, OpenViking, and lifecycle gates pass.',
+            headerTitle: 'MEMORY',
+            metadata: {
+              kind: 'durable',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              status: 'active',
+              timestamp: '2026-07-23T00:00:00.000Z',
+              topic: 'windows-installation-support',
+            },
+            uri,
+          },
+        ],
+      },
+    );
+
+    expect(sections.ranked[0]?.uri).toBe(uri);
+    expect(sections.ranked[0]?.score).toBe(0);
+    expect(sections.ranked[0]?.rankReasons?.map(reason => reason.code)).toEqual(
+      expect.arrayContaining(['bm25_lexical', 'exact_term_match', 'field_match', 'memory_kind_intent']),
+    );
+    expect(sections.semanticSection).not.toContain(RECALL_LOW_CONFIDENCE_NOTE);
+  });
+
   it('caps hydrated record authority and trust at the personal-memory boundary', () => {
     const uri = 'viking://user/me/memories/durable/projects/threadnote/unreviewed.md';
     const sections = buildRecallSections(

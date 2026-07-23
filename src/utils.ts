@@ -1491,12 +1491,14 @@ function renderRecallHits(
     lines.push(`(+${overflow} more — refine the query or read a URI above)`);
   }
   const noSemanticMatch = shown.every(hit => hit.score === 0);
+  const showLowConfidenceNote =
+    noSemanticMatch && (confidence === undefined || confidence.level === 'low' || confidence.level === 'no_answer');
   const confidenceLine = confidence
     ? `Recall confidence: ${confidence.level.replace('_', ' ')} (${confidence.score.toFixed(2)}) — ${confidence.reason}`
     : undefined;
   return [
     ...(confidenceLine ? [confidenceLine] : []),
-    ...(noSemanticMatch ? [RECALL_LOW_CONFIDENCE_NOTE] : []),
+    ...(showLowConfidenceNote ? [RECALL_LOW_CONFIDENCE_NOTE] : []),
     ...lines,
   ].join('\n');
 }
@@ -1525,6 +1527,7 @@ const RECALL_INDEX_PRESELECTION_MULTIPLIER = 10;
 const RECALL_INDEX_PRESELECTION_MINIMUM = 100;
 
 interface HybridRecallOptions {
+  readonly allowExactRescue?: boolean;
   readonly allowedUriScopes?: readonly string[];
   readonly corpusStatistics?: RecallCorpusStatistics;
   readonly feedbackByUri?: ReadonlyMap<string, number>;
@@ -1635,9 +1638,10 @@ function hybridRankRecallHits(
     return {
       ...indexed,
       authority: indexed?.authority ?? (record ? boundedMemoryAuthority(uri, record.metadata) : recallAuthority(hit)),
+      exactTerms: hit.exactTerms,
       feedback: context.feedbackByUri?.get(uri),
       fields: {
-        identifiers: hit.exactTerms ?? indexed?.fields?.identifiers,
+        identifiers: indexed?.fields?.identifiers,
         project:
           record?.metadata.project ??
           indexed?.fields?.project ??

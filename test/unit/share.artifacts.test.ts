@@ -1,7 +1,8 @@
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {shareAgentArtifact, shareBundlePack} from '../../src/share.js';
 import {
@@ -12,12 +13,13 @@ import {
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 
+const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
 const runShareInstallArtifacts = (...args: Parameters<typeof runShareInstallArtifactsEffect>) =>
-  Effect.runPromise(runShareInstallArtifactsEffect(...args));
+  Effect.runPromise(runShareInstallArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
 const listSharedAgentArtifacts = (...args: Parameters<typeof listSharedAgentArtifactsEffect>) =>
-  Effect.runPromise(listSharedAgentArtifactsEffect(...args));
+  Effect.runPromise(listSharedAgentArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
 const installSharedAgentArtifacts = (...args: Parameters<typeof installSharedAgentArtifactsEffect>) =>
-  Effect.runPromise(installSharedAgentArtifactsEffect(...args));
+  Effect.runPromise(installSharedAgentArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();

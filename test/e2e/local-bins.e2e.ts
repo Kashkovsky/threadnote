@@ -626,7 +626,7 @@ describe('published local bins', () => {
 
       expect(firstText).toContain('Recall confidence:');
       expect(firstText).toContain('why:');
-      expect(firstStructured.rankerVersion).toBe('hybrid-v1');
+      expect(firstStructured.rankerVersion).toBe('hybrid-v2');
       expect(firstStructured.confidence.level).not.toBe('no_answer');
       expect(firstTarget).toBeDefined();
       expect(firstTarget?.finalScore).toBeGreaterThan(0);

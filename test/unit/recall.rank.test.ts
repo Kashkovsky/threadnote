@@ -34,6 +34,230 @@ describe('hybrid recall ranker', () => {
     );
   });
 
+  it('prefers an exact compound topic over a general body match', () => {
+    const ranked = rankRecallCandidates(
+      'threadnote user preference posting style for release notes',
+      [
+        {
+          fields: {
+            project: 'agent-posting',
+            title: 'Denys writing style',
+            topic: 'denys-writing-style',
+          },
+          kind: 'preference',
+          semantic: 0.69,
+          text: 'General posting style guidance that mentions release notes among many other formats.',
+          uri: 'viking://user/me/memories/preferences/denys-writing-style.md',
+        },
+        {
+          fields: {
+            project: 'github',
+            title: 'Release notes',
+            topic: 'release-notes',
+          },
+          kind: 'preference',
+          semantic: 0.68,
+          text: 'Release descriptions should emphasize end-user value.',
+          uri: 'viking://user/me/memories/preferences/release-notes.md',
+        },
+      ],
+      {project: 'threadnote', now: new Date('2026-07-23T00:00:00.000Z')},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('release-notes.md');
+    expect(ranked.results[0]?.reasons.map(reason => reason.code)).toContain('memory_kind_intent');
+    expect(ranked.results[0]?.signals.field).toBeGreaterThan(ranked.results[1]?.signals.field ?? 0);
+  });
+
+  it('uses memory-kind intent to prefer durable contracts over related handoffs', () => {
+    const ranked = rankRecallCandidates(
+      'threadnote native Windows support contract and unsupported installation requirements',
+      [
+        {
+          fields: {project: 'threadnote', title: 'Recall and memory formation', topic: 'recall-and-memory-formation'},
+          kind: 'handoff',
+          semantic: 0.73,
+          text: 'Windows installation remains unsupported and is documented in shared durable memory.',
+          uri: 'viking://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
+        },
+        {
+          authority: 'reviewed_shared',
+          fields: {
+            project: 'threadnote',
+            title: 'Windows installation support',
+            topic: 'windows-installation-support',
+          },
+          kind: 'durable',
+          semantic: 0.68,
+          text: 'Native Windows installation is unsupported until the package, OpenViking, and lifecycle gates pass.',
+          trust: 'approved',
+          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+        },
+      ],
+      {project: 'threadnote', now: new Date('2026-07-23T00:00:00.000Z')},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('windows-installation-support.md');
+    expect(ranked.results[0]?.signals.kindIntent).toBe(1);
+    expect(ranked.results[1]?.signals.kindIntent).toBe(0);
+  });
+
+  it('rescues a focused exact field without boosting a project-name-only match', () => {
+    const ranked = rankRecallCandidates(
+      'threadnote can users install reliably on native Windows what remains unsupported',
+      [
+        {
+          exactTerms: ['threadnote'],
+          fields: {project: 'threadnote', title: 'Threadnote macOS native app', topic: 'macos-native-app'},
+          kind: 'durable',
+          semantic: 0.69,
+          text: 'Threadnote macOS application guidance.',
+          uri: 'viking://user/me/memories/durable/projects/threadnote/macos-native-app.md',
+        },
+        {
+          authority: 'reviewed_shared',
+          exactTerms: ['windows'],
+          fields: {
+            project: 'threadnote',
+            title: 'Windows installation support',
+            topic: 'windows-installation-support',
+          },
+          kind: 'durable',
+          text: 'Native Windows installation remains unsupported.',
+          trust: 'approved',
+          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+        },
+      ],
+      {
+        allowExactRescue: true,
+        minimumScore: 0.45,
+        project: 'threadnote',
+        now: new Date('2026-07-23T00:00:00.000Z'),
+      },
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('windows-installation-support.md');
+    expect(ranked.results[0]?.signals.exact).toBe(1);
+    expect(ranked.results.find(result => result.candidate.uri.includes('macos-native-app'))).toBeUndefined();
+  });
+
+  it('weights discriminative exact terms above common project-name matches', () => {
+    const ranked = rankRecallCandidates(
+      'Threadnote Windows installation issue durable decision',
+      [
+        {
+          exactTerms: ['Threadnote', 'installation', 'decision'],
+          fields: {project: 'threadnote', title: 'macos-native-app.md', topic: 'macos-native-app'},
+          kind: 'durable',
+          semantic: 0.62,
+          text: 'Threadnote native app installation decision.',
+          uri: 'viking://user/me/memories/durable/projects/threadnote/macos-native-app.md',
+        },
+        {
+          authority: 'reviewed_shared',
+          exactTerms: ['Windows', 'installation', 'decision'],
+          fields: {project: 'threadnote', title: 'Current status', topic: 'windows-installation-support'},
+          kind: 'durable',
+          text: 'Windows installation remains unsupported by a durable product decision.',
+          trust: 'approved',
+          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+        },
+      ],
+      {
+        corpusStatistics: {
+          averageDocumentLength: 100,
+          documentCount: 59,
+          documentFrequency: {
+            decision: 7,
+            durable: 18,
+            installation: 7,
+            issue: 7,
+            threadnote: 55,
+            windows: 4,
+          },
+          totalDocumentLength: 5_900,
+        },
+        allowExactRescue: true,
+        minimumScore: 0.5,
+        now: new Date('2026-07-23T00:00:00.000Z'),
+        project: 'threadnote',
+      },
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('windows-installation-support.md');
+    expect(ranked.results[0]?.signals.exact).toBeGreaterThan(ranked.results[1]?.signals.exact ?? 0);
+  });
+
+  it('does not let default exact rescue bypass an explicit strict minimum', () => {
+    const ranked = rankRecallCandidates(
+      'Windows installation decision',
+      [
+        {
+          exactTerms: ['Windows', 'installation', 'decision'],
+          fields: {project: 'threadnote', title: 'Windows installation', topic: 'windows-installation'},
+          kind: 'durable',
+          text: 'Windows installation decision.',
+          uri: 'viking://user/me/memories/windows-installation.md',
+        },
+      ],
+      {allowExactRescue: false, minimumScore: 0.95, project: 'threadnote'},
+    );
+
+    expect(ranked.results).toEqual([]);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('does not treat a matching project field as topical evidence by itself', () => {
+    const ranked = rankRecallCandidates('threadnote quantum networking policy', [
+      {
+        fields: {project: 'threadnote'},
+        text: 'Unrelated deployment instructions.',
+        uri: 'viking://user/me/memories/unrelated.md',
+      },
+    ]);
+
+    expect(ranked.results).toEqual([]);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('does not treat a project-only exact identifier as topical evidence', () => {
+    const ranked = rankRecallCandidates(
+      'my-project quantum networking',
+      [
+        {
+          exactTerms: ['my-project'],
+          fields: {project: 'my-project'},
+          kind: 'durable',
+          text: 'Unrelated deployment instructions.',
+          uri: 'viking://user/me/memories/unrelated.md',
+        },
+      ],
+      {allowExactRescue: true, minimumScore: 0.45, project: 'my-project'},
+    );
+
+    expect(ranked.results).toEqual([]);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('does not reuse a generic kind-intent term as exact rescue evidence', () => {
+    const ranked = rankRecallCandidates(
+      'quantum networking policy',
+      [
+        {
+          exactTerms: ['policy'],
+          fields: {title: 'Policy'},
+          kind: 'durable',
+          text: 'Policy for unrelated deployments.',
+          uri: 'viking://user/me/memories/unrelated-policy.md',
+        },
+      ],
+      {allowExactRescue: true, minimumScore: 0.45},
+    );
+
+    expect(ranked.results).toEqual([]);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
   it('uses typed graph proximity without allowing authority to bypass topical relevance', () => {
     const seedUri = 'viking://resources/repos/threadnote/design.md';
     const ranked = rankRecallCandidates(
@@ -149,6 +373,7 @@ describe('hybrid recall ranker', () => {
       'release channel',
       [
         {
+          exactTerms: ['release', 'channel'],
           fields: {project: 'threadnote', title: 'Release channel'},
           semantic: 1,
           status: 'archived',

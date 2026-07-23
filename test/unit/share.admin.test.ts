@@ -1,7 +1,8 @@
 import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {publishShareGitChange} from '../../src/share.js';
 import {
@@ -12,12 +13,13 @@ import {
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 
+const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
 const runShareRemove = (...args: Parameters<typeof runShareRemoveEffect>) =>
-  Effect.runPromise(runShareRemoveEffect(...args));
+  Effect.runPromise(runShareRemoveEffect(...args).pipe(Effect.provide(TestLayer)));
 const runShareRename = (...args: Parameters<typeof runShareRenameEffect>) =>
-  Effect.runPromise(runShareRenameEffect(...args));
+  Effect.runPromise(runShareRenameEffect(...args).pipe(Effect.provide(TestLayer)));
 const runShareSetUrl = (...args: Parameters<typeof runShareSetUrlEffect>) =>
-  Effect.runPromise(runShareSetUrlEffect(...args));
+  Effect.runPromise(runShareSetUrlEffect(...args).pipe(Effect.provide(TestLayer)));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();

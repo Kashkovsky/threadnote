@@ -82,7 +82,7 @@ const PACK_FILES_DIR = 'files';
 // back to the real install directory at install time so hardcoded paths resolve
 // on a teammate's machine.
 const PACK_ROOT_TOKEN = '${THREADNOTE_PACK_ROOT}';
-const AUTO_SHARE_FETCH_INTERVAL_MS = 5 * 60 * 1000;
+export const SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
 export {applyScrubber, scrubberBlocker} from './scrubber.js';
@@ -185,7 +185,6 @@ interface AutoShareState {
   lastCheckedAt: number;
   operationPromise?: Promise<unknown>;
   pendingReindexes: Map<string, readonly ChangedFile[]>;
-  timer?: ReturnType<typeof setInterval>;
 }
 
 const autoShareStates = new Map<string, AutoShareState>();
@@ -238,11 +237,6 @@ interface PendingReindexFile {
 }
 
 export function clearAutoShareStateForTest(): void {
-  for (const state of autoShareStates.values()) {
-    if (state.timer) {
-      clearInterval(state.timer);
-    }
-  }
   autoShareStates.clear();
 }
 
@@ -380,29 +374,8 @@ export async function runShareStatus(config: ShareRuntime, options: ShareStatusO
   }
 }
 
-export function startShareBackgroundFetch(config: ShareRuntime): void {
-  const state = autoShareState(config);
-  if (state.timer) {
-    return;
-  }
-  void refreshShareUpdateState(config, {force: true}).catch(err => {
-    consoleOutput.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
-  state.timer = setInterval(() => {
-    void refreshShareUpdateState(config, {force: false}).catch(err => {
-      consoleOutput.error(`share auto-fetch failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }, AUTO_SHARE_FETCH_INTERVAL_MS);
-  state.timer.unref?.();
-}
-
-export function stopShareBackgroundFetch(config: ShareRuntime): void {
-  const key = `${config.agentContextHome}:${config.account}:${config.user}`;
-  const state = autoShareStates.get(key);
-  if (state?.timer) {
-    clearInterval(state.timer);
-  }
-  autoShareStates.delete(key);
+export async function refreshSharedReposInBackground(config: ShareRuntime, force: boolean): Promise<void> {
+  return refreshShareUpdateState(config, {force});
 }
 
 export async function syncSharedReposBeforeAgentRead(config: ShareRuntime): Promise<AutoShareSyncResult> {
@@ -526,7 +499,11 @@ async function refreshShareUpdateStateLocked(
   options: {readonly force: boolean},
 ): Promise<string[]> {
   const now = Date.now();
-  if (!options.force && state.lastCheckedAt > 0 && now - state.lastCheckedAt < AUTO_SHARE_FETCH_INTERVAL_MS) {
+  if (
+    !options.force &&
+    state.lastCheckedAt > 0 &&
+    now - state.lastCheckedAt < SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS
+  ) {
     return [];
   }
   try {
@@ -4428,11 +4405,7 @@ async function applyChangesToOpenViking(
   const ov = await openVikingCliForMode(false);
   const failed: ChangedFile[] = [];
   for (const change of changes) {
-    if (!change.relativePath.endsWith('.md')) {
-      continue;
-    }
-    const firstSegment = change.relativePath.split('/')[0];
-    if (!SHAREABLE_TOP_LEVEL_DIRS.includes(firstSegment)) {
+    if (!isShareableMemoryChange(change)) {
       continue;
     }
     const uri = workfileToVikingUri(config, team, change.path);
