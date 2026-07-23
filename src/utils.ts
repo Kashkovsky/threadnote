@@ -16,6 +16,21 @@ import {
   type CommandOptions,
   withoutGitEnvironment,
 } from './effect/command.js';
+import {
+  boundedMemoryAuthority,
+  boundedMemoryTrust,
+  isSharedMemoryUri,
+  type MemoryRecord,
+  type MemoryRelation,
+} from './memory_document.js';
+import {
+  rankRecallCandidates,
+  type RecallCandidate,
+  type RecallConfidence,
+  type RecallCorpusStatistics,
+  type RecallReason,
+  type RecallSignals,
+} from './recall/rank.js';
 import {redactSensitiveText} from './scrubber.js';
 import type {CommandResult, CommandStatus, JsonObject} from './types.js';
 
@@ -1108,6 +1123,10 @@ export interface RecallHit {
    * semantic hits.
    */
   readonly exactTerms?: readonly string[];
+  readonly finalScore?: number;
+  readonly rankReasons?: readonly RecallReason[];
+  readonly rankSignals?: RecallSignals;
+  readonly rankWarnings?: readonly string[];
   readonly score: number;
   readonly snippet: string;
   readonly uri: string;
@@ -1441,25 +1460,50 @@ export const RECALL_LOW_CONFIDENCE_NOTE =
  * corroborated; when the whole window is keyword-only, a low-confidence note
  * leads the list.
  */
-function renderRecallHits(shown: readonly RecallHit[], overflow: number): string | undefined {
+function renderRecallHits(
+  shown: readonly RecallHit[],
+  overflow: number,
+  confidence?: RecallConfidence,
+): string | undefined {
   if (shown.length === 0) {
-    return undefined;
+    return confidence?.level === 'no_answer'
+      ? `⚠ Recall confidence: no answer (${confidence.score.toFixed(2)}) — ${confidence.reason}`
+      : undefined;
   }
   const lines = shown.flatMap((hit, index) => {
+    const finalScorePart = hit.finalScore === undefined ? undefined : `rank ${hit.finalScore.toFixed(2)}`;
     const scorePart = hit.score > 0 ? `score ${hit.score.toFixed(2)}` : undefined;
     const exactLabel = hit.score > 0 ? 'exact' : 'keyword-only';
     const exactPart = hit.exactTerms?.length ? `${exactLabel}: ${hit.exactTerms.join(', ')}` : undefined;
-    const head = `${index + 1}. ${[hit.contextType, scorePart, exactPart].filter(Boolean).join(' · ')} · ${hit.uri}`;
-    return hit.snippet ? [head, `   ${hit.snippet}`] : [head];
+    const head = `${index + 1}. ${[hit.contextType, finalScorePart, scorePart, exactPart].filter(Boolean).join(' · ')} · ${hit.uri}`;
+    const explanation = hit.rankReasons?.length
+      ? `   why: ${hit.rankReasons
+          .slice(0, 3)
+          .map(reason => `${reason.code} ${reason.contribution >= 0 ? '+' : ''}${reason.contribution.toFixed(2)}`)
+          .join('; ')}`
+      : undefined;
+    const warnings = hit.rankWarnings?.length ? `   warning: ${hit.rankWarnings.join('; ')}` : undefined;
+    return [head, hit.snippet ? `   ${hit.snippet}` : undefined, explanation, warnings].filter(
+      (line): line is string => line !== undefined,
+    );
   });
   if (overflow > 0) {
     lines.push(`(+${overflow} more — refine the query or read a URI above)`);
   }
   const noSemanticMatch = shown.every(hit => hit.score === 0);
-  return (noSemanticMatch ? [RECALL_LOW_CONFIDENCE_NOTE, ...lines] : lines).join('\n');
+  const confidenceLine = confidence
+    ? `Recall confidence: ${confidence.level.replace('_', ' ')} (${confidence.score.toFixed(2)}) — ${confidence.reason}`
+    : undefined;
+  return [
+    ...(confidenceLine ? [confidenceLine] : []),
+    ...(noSemanticMatch ? [RECALL_LOW_CONFIDENCE_NOTE] : []),
+    ...lines,
+  ].join('\n');
 }
 
 export interface RecallSections {
+  /** Result-set confidence from the hybrid ranker. */
+  readonly confidence?: RecallConfidence;
   /**
    * Final ranked hits (merged, exact-boosted, content-deduped). Exposed for
    * tests and inspection; the CLI and MCP callers emit the rendered sections.
@@ -1477,6 +1521,22 @@ export interface RecallSections {
  * still lead and still take every slot the reserve pass leaves over.
  */
 export const RECALL_CATEGORY_RESERVE = 2;
+const RECALL_INDEX_PRESELECTION_MULTIPLIER = 10;
+const RECALL_INDEX_PRESELECTION_MINIMUM = 100;
+
+interface HybridRecallOptions {
+  readonly allowedUriScopes?: readonly string[];
+  readonly corpusStatistics?: RecallCorpusStatistics;
+  readonly feedbackByUri?: ReadonlyMap<string, number>;
+  readonly includeInactive?: boolean;
+  readonly indexedCandidates?: readonly RecallCandidate[];
+  readonly minimumScore?: number;
+  readonly now?: Date;
+  readonly project?: string;
+  readonly query: string;
+  readonly records?: readonly MemoryRecord[];
+  readonly seedUris?: readonly string[];
+}
 
 /**
  * Pick which `limit` hits fill the shown window. A reserve pass first takes up
@@ -1524,15 +1584,223 @@ export function buildRecallSections(
   passes: ReadonlyArray<readonly RecallHit[]>,
   exactMatches: readonly ExactMatch[],
   limit: number,
+  ranking?: HybridRecallOptions,
 ): RecallSections {
-  const ranked = dedupeByContent(applyExactMatchBoost(mergeRecallHits(passes), exactMatches));
-  const shown = selectShownHits(ranked, limit, RECALL_CATEGORY_RESERVE);
+  const scopedExactMatches = ranking
+    ? exactMatches.filter(match => uriMatchesRecallScopes(match.uri, ranking.allowedUriScopes))
+    : exactMatches;
+  const legacyRanked = dedupeByContent(
+    applyExactMatchBoost(
+      mergeRecallHits(passes).filter(hit => uriMatchesRecallScopes(hit.uri, ranking?.allowedUriScopes)),
+      scopedExactMatches,
+    ),
+  );
+  const hybrid = ranking ? hybridRankRecallHits(ranking.query, legacyRanked, ranking, limit) : undefined;
+  const ranked = hybrid?.ranked ?? legacyRanked;
+  const shown = hybrid ? ranked.slice(0, limit) : selectShownHits(ranked, limit, RECALL_CATEGORY_RESERVE);
   const shownUris = new Set(shown.map(hit => stripAnchor(hit.uri)));
   return {
-    exactTail: formatExactMatchPointers(exactMatches.filter(match => !shownUris.has(stripAnchor(match.uri)))),
+    confidence: hybrid?.confidence,
+    exactTail:
+      hybrid?.confidence.level === 'no_answer'
+        ? undefined
+        : formatExactMatchPointers(scopedExactMatches.filter(match => !shownUris.has(stripAnchor(match.uri)))),
     ranked,
-    semanticSection: renderRecallHits(shown, ranked.length - shown.length),
+    semanticSection: renderRecallHits(shown, ranked.length - shown.length, hybrid?.confidence),
   };
+}
+
+function hybridRankRecallHits(
+  query: string,
+  hits: readonly RecallHit[],
+  context: HybridRecallOptions,
+  resultLimit: number,
+): {readonly confidence: RecallConfidence; readonly ranked: readonly RecallHit[]} {
+  const byUri = new Map(hits.map(hit => [stripAnchor(hit.uri), hit]));
+  const recordsByUri = new Map(
+    (context.records ?? [])
+      .filter(record => uriMatchesRecallScopes(record.uri, context.allowedUriScopes))
+      .map(record => [stripAnchor(record.uri), record]),
+  );
+  const scopedIndexedCandidates = boundedRecallIndexCandidates(
+    context.indexedCandidates ?? [],
+    context.allowedUriScopes,
+    resultLimit,
+  );
+  const indexedByUri = new Map(scopedIndexedCandidates.map(candidate => [stripAnchor(candidate.uri), candidate]));
+  const hitCandidates = hits.map(hit => {
+    const uri = stripAnchor(hit.uri);
+    const record = recordsByUri.get(uri);
+    const indexed = indexedByUri.get(uri);
+    return {
+      ...indexed,
+      authority: indexed?.authority ?? (record ? boundedMemoryAuthority(uri, record.metadata) : recallAuthority(hit)),
+      feedback: context.feedbackByUri?.get(uri),
+      fields: {
+        identifiers: hit.exactTerms ?? indexed?.fields?.identifiers,
+        project:
+          record?.metadata.project ??
+          indexed?.fields?.project ??
+          memoryUriProjectSegment(hit.uri) ??
+          resourceProjectFromUri(hit.uri),
+        title: indexed?.fields?.title ?? basename(uri),
+        topic: record?.metadata.topic ?? indexed?.fields?.topic ?? uriSlug(hit.uri),
+      },
+      kind: record?.metadata.kind ?? indexed?.kind ?? memoryKindFromUri(hit.uri),
+      relations: record
+        ? recallRelations(record, context.seedUris ?? [])
+        : [...(indexed?.relations ?? []), ...containmentRelations(hit.uri, context.seedUris ?? [])],
+      semantic: hit.score,
+      status: record?.metadata.status ?? indexed?.status ?? memoryStatusFromUri(hit.uri),
+      text: record?.body ?? indexed?.text ?? hit.snippet,
+      timestamp: record?.metadata.timestamp ?? indexed?.timestamp,
+      trust:
+        indexed?.trust ??
+        (record
+          ? boundedMemoryTrust(uri, record.metadata)
+          : hit.category === 'resources'
+            ? 'untrusted'
+            : isSharedMemoryUri(hit.uri)
+              ? 'approved'
+              : 'inferred'),
+      uri,
+      validFrom: record?.metadata.validFrom ?? indexed?.validFrom,
+      validTo: record?.metadata.validTo ?? indexed?.validTo,
+    } satisfies RecallCandidate;
+  });
+  const hitUris = new Set(hitCandidates.map(candidate => candidate.uri));
+  const candidates = [
+    ...hitCandidates,
+    ...scopedIndexedCandidates
+      .filter(candidate => !hitUris.has(stripAnchor(candidate.uri)))
+      .map(candidate => ({
+        ...candidate,
+        feedback: context.feedbackByUri?.get(stripAnchor(candidate.uri)),
+        uri: stripAnchor(candidate.uri),
+      })),
+  ];
+  for (const candidate of candidates) {
+    if (!byUri.has(candidate.uri)) {
+      const category = categoryForUri(candidate.uri);
+      byUri.set(candidate.uri, {
+        category,
+        contextType: contextTypeForCategory(category),
+        score: 0,
+        snippet: '',
+        uri: candidate.uri,
+      });
+    }
+  }
+  const result = rankRecallCandidates(query, candidates, context);
+  return {
+    confidence: result.confidence,
+    ranked:
+      result.confidence.level === 'no_answer'
+        ? []
+        : result.results.map(ranked => {
+            const hit = byUri.get(ranked.candidate.uri);
+            if (!hit) {
+              throw new Error(`Hybrid ranker returned unknown URI: ${ranked.candidate.uri}`);
+            }
+            return {
+              ...hit,
+              finalScore: ranked.finalScore,
+              rankReasons: ranked.reasons,
+              rankSignals: ranked.signals,
+              rankWarnings: ranked.warnings,
+            };
+          }),
+  };
+}
+
+function uriMatchesRecallScopes(uri: string, scopes: readonly string[] | undefined): boolean {
+  if (!scopes || scopes.length === 0) {
+    return true;
+  }
+  const documentUri = stripAnchor(uri);
+  return scopes.some(scope => {
+    const normalizedScope = stripAnchor(scope).replace(/\/+$/, '');
+    return documentUri === normalizedScope || documentUri.startsWith(`${normalizedScope}/`);
+  });
+}
+
+function boundedRecallIndexCandidates(
+  candidates: readonly RecallCandidate[],
+  allowedUriScopes: readonly string[] | undefined,
+  resultLimit: number,
+): readonly RecallCandidate[] {
+  const preselectionLimit = Math.max(
+    RECALL_INDEX_PRESELECTION_MINIMUM,
+    resultLimit * RECALL_INDEX_PRESELECTION_MULTIPLIER,
+  );
+  const bounded: RecallCandidate[] = [];
+  for (const candidate of candidates) {
+    if (uriMatchesRecallScopes(candidate.uri, allowedUriScopes)) {
+      bounded.push(candidate);
+      if (bounded.length >= preselectionLimit) {
+        break;
+      }
+    }
+  }
+  return bounded;
+}
+
+function recallAuthority(hit: RecallHit): 'agent_generated' | 'external' | 'reviewed_shared' {
+  if (hit.category === 'resources') {
+    return 'external';
+  }
+  if (isSharedMemoryUri(hit.uri)) {
+    return 'reviewed_shared';
+  }
+  return 'agent_generated';
+}
+
+function memoryKindFromUri(uri: string): 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke' | undefined {
+  const match = /\/memories\/(?:shared\/[^/]+\/)?(durable|handoffs|incidents|preferences|smoke)\//.exec(uri)?.[1];
+  return match === 'handoffs'
+    ? 'handoff'
+    : match === 'incidents'
+      ? 'incident'
+      : match === 'preferences'
+        ? 'preference'
+        : match === 'durable' || match === 'smoke'
+          ? match
+          : undefined;
+}
+
+function memoryStatusFromUri(uri: string): 'active' | 'archived' | 'superseded' | undefined {
+  return uri.includes('/archived/')
+    ? 'archived'
+    : uri.includes('/superseded/')
+      ? 'superseded'
+      : uri.includes('/memories/')
+        ? 'active'
+        : undefined;
+}
+
+function resourceProjectFromUri(uri: string): string | undefined {
+  return /^viking:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
+}
+
+function recallRelations(record: MemoryRecord, seedUris: readonly string[]): readonly MemoryRelation[] {
+  return [
+    ...(record.metadata.relations ?? []),
+    ...(record.metadata.references ?? []).map(uri => ({type: 'references' as const, uri})),
+    ...(record.metadata.evidence ?? [])
+      .filter(evidence => evidence.startsWith('viking://'))
+      .map(uri => ({type: 'evidence_for' as const, uri})),
+    ...(record.metadata.supersedes ? [{type: 'supersedes' as const, uri: record.metadata.supersedes}] : []),
+    ...containmentRelations(record.uri, seedUris),
+  ];
+}
+
+function containmentRelations(
+  uri: string,
+  seedUris: readonly string[],
+): readonly {readonly type: 'related_to'; readonly uri: string}[] {
+  return seedUris
+    .filter(seedUri => uri.startsWith(`${seedUri.replace(/\/$/, '')}/`))
+    .map(seedUri => ({type: 'related_to' as const, uri: seedUri}));
 }
 
 /**

@@ -5,7 +5,13 @@ describe('buildOnboardingGuide', () => {
   it('lists core calls and catalogs advanced capability categories', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: []});
     expect(guide).toContain('# Threadnote — what you can do here');
-    for (const call of ['recall_context(', 'remember_context(', 'share_publish(']) {
+    for (const call of [
+      'recall_context(',
+      'review_session_context(',
+      'apply_memory_candidates',
+      'remember_context(',
+      'share_publish(',
+    ]) {
       expect(guide).toContain(call);
     }
     expect(guide).not.toContain('compact_context(');

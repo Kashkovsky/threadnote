@@ -6,7 +6,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {readdir, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {Console, Effect, pipe} from 'effect';
+import {Clock, Console, Effect, FileSystem, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -50,7 +50,6 @@ import {
   writeMemoryFile,
 } from './share.js';
 import {
-  buildRecallSections,
   collectExactMatches,
   currentPackageVersion,
   type ExactMatch,
@@ -76,9 +75,36 @@ import {
 import {withIdentity} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
 import {runWithConsole} from './effect/console.js';
+import {sha256Hex} from './effect/digest.js';
 import {fromPromiseError as attemptPromise} from './effect/errors.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
+import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ApplicationLayer} from './effect/runtime.js';
+import {
+  canonicalMemoryDocumentContent,
+  formatMemoryDocument,
+  isSharedMemoryUri,
+  type MemoryMetadata,
+} from './memory_document.js';
+import {
+  buildCandidateReview,
+  candidateReviewWithAuditEvent,
+  candidateReviewWithApplyStage,
+  candidateReviewWithApplying,
+  candidateReviewWithState,
+  loadCandidateReview,
+  readActiveProjectMemories,
+  saveCandidateReview,
+  type CandidateReview,
+  type CandidateApplyOperation,
+  type MemoryCandidate,
+  type SessionCloseoutInput,
+  validateSessionCloseoutInput,
+  withCandidateReviewLock,
+} from './candidate_memory.js';
+import {recordRecallFeedback} from './recall/feedback.js';
+import {RECALL_RANKER_VERSION} from './recall/rank.js';
+import {prepareRecallSections} from './recall/runtime.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -87,21 +113,6 @@ interface RuntimeConfig {
   readonly manifestPath: string;
   readonly openVikingMcpUrl: string;
   readonly user: string;
-}
-
-type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
-type MemoryStatus = 'active' | 'archived' | 'superseded';
-
-interface MemoryMetadata {
-  readonly archivedFrom?: string;
-  readonly kind: MemoryKind;
-  readonly project?: string;
-  readonly references?: readonly string[];
-  readonly sourceAgentClient: string;
-  readonly status: MemoryStatus;
-  readonly supersedes?: string;
-  readonly timestamp: string;
-  readonly topic?: string;
 }
 
 type CheckedText =
@@ -190,7 +201,7 @@ const mainEffect = Effect.gen(function* () {
   });
   mcpStartupVersion = yield* attemptPromise(currentPackageVersion).pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
-    'Threadnote provides local context. On non-trivial work, call `recall_context` with repo/project in `query` and absolute `callerCwd`; read relevant `viking://` URIs. Store reusable facts as durable and progress as handoff with stable project/topic; replace instead of duplicate. Do not store secrets, credentials, customer data, or raw production logs. Confirm before publishing durable memories; never publish handoffs or preferences. Use `threadnote_guide` for capabilities and CLI for absent advanced tools.';
+    'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `viking://` results. At task closeout call `review_session_context`, show recommendations, then call `apply_memory_candidates` only after explicit user approval/edit/defer/reject. Store approved facts as durable and progress as handoff with stable project/topic; replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
@@ -257,6 +268,8 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
   }
 
+  registerCandidateMemoryTools(server, config);
+
   if (toolset === 'full') {
     registerArchiveTool(
       server,
@@ -266,6 +279,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     );
     registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
     registerCompactTool(server, config);
+    registerRecallFeedbackTool(server, config);
   }
 
   server.registerTool(
@@ -631,6 +645,530 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         return checkedName.error;
       }
       return runInstallSharedSkillTool(config, checkedName.value, {agent, dryRun, force, kind, team});
+    },
+  );
+}
+
+function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerTool(
+    'review_session_context',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false},
+      description:
+        'At meaningful task closeout, form up to three reviewable decision, invariant, preference, and handoff candidates. Compares active project/topic memories and persists only a pending review plus audit event; it never creates durable memory.',
+      inputSchema: {
+        callerCwd: McpInput.string('Absolute caller workspace path, used to infer project when project is omitted'),
+        decisions: McpInput.stringOrStrings('Decisions worth carrying into later agent sessions'),
+        evidence: McpInput.stringOrStrings('Bounded evidence pointers such as files, commits, or session turn IDs'),
+        handoff: McpInput.stringOrStrings('Current status, blockers, checks, and next steps'),
+        invariants: McpInput.stringOrStrings('Stable constraints or contracts future work must preserve'),
+        outcome: McpInput.string('Required concise task outcome'),
+        preferences: McpInput.stringOrStrings('User preferences explicitly expressed during this session'),
+        project: McpInput.string('Stable project/repo namespace; inferred from callerCwd when omitted'),
+        sourceAgentClient: McpInput.string('Originating client, for example codex or claude'),
+        sourceCommit: McpInput.string('Optional source commit'),
+        sourceSessionId: McpInput.string('Optional source session/thread identifier'),
+        task: McpInput.string('Required concise task description'),
+        topic: McpInput.string('Stable memory topic; defaults to a slug derived from task'),
+      },
+    },
+    ({
+      callerCwd,
+      decisions,
+      evidence,
+      handoff,
+      invariants,
+      outcome,
+      preferences,
+      project,
+      sourceAgentClient,
+      sourceCommit,
+      sourceSessionId,
+      task,
+      topic,
+    }) => {
+      const checkedTask = requiredText(task, 'review_session_context', 'task', {
+        task: 'Improve recall and memory formation',
+      });
+      if (!checkedTask.ok) {
+        return checkedTask.error;
+      }
+      const checkedOutcome = requiredText(outcome, 'review_session_context', 'outcome', {
+        outcome: 'Implemented candidate review workflow',
+      });
+      if (!checkedOutcome.ok) {
+        return checkedOutcome.error;
+      }
+      return Effect.gen(function* () {
+        const candidatePolicy = yield* Effect.sync(() => parseCandidatePolicy(process.env.THREADNOTE_CANDIDATE_POLICY));
+        if (candidatePolicy === 'off') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Session memory suggestions are disabled by THREADNOTE_CANDIDATE_POLICY=off.',
+              },
+            ],
+            structuredContent: {candidates: [], noAction: true},
+          };
+        }
+        const inferredProject =
+          normalizeOptionalMetadata(project) ??
+          (callerCwd
+            ? yield* attemptPromise(() => resolveWorkspaceRepoName({cwd: callerCwd, includeProcessCwd: false}))
+            : undefined);
+        if (!inferredProject) {
+          return argumentError(
+            'review_session_context requires project or an absolute callerCwd from which the repo can be inferred.',
+          );
+        }
+        const rawCloseout: SessionCloseoutInput = {
+          decisions: candidatePolicy === 'handoff-only' ? [] : stringList(decisions),
+          evidence: stringList(evidence),
+          handoff: stringList(handoff),
+          invariants: candidatePolicy === 'handoff-only' ? [] : stringList(invariants),
+          outcome: checkedOutcome.value,
+          preferences: candidatePolicy === 'handoff-only' ? [] : stringList(preferences),
+          project: inferredProject,
+          sourceAgentClient: sourceAgentClient?.trim() || 'mcp',
+          sourceCommit: normalizeOptionalMetadata(sourceCommit),
+          sourceSessionId: normalizeOptionalMetadata(sourceSessionId),
+          task: checkedTask.value,
+          topic: normalizeOptionalMetadata(topic) ?? uriSegment(checkedTask.value),
+        };
+        const closeoutSizeError = validateSessionCloseoutInput(rawCloseout);
+        if (closeoutSizeError) {
+          return argumentError(`Refusing session review: ${closeoutSizeError}`);
+        }
+        const closeout = scrubSessionCloseout(rawCloseout);
+        if (!closeout.ok) {
+          return argumentError(closeout.error);
+        }
+        if (sessionCloseoutHasCandidateMaterial(closeout.input) && !sessionCloseoutHasEvidence(closeout.input)) {
+          return argumentError(
+            'review_session_context requires at least one evidence pointer, sourceSessionId, or sourceCommit before proposing durable memory.',
+          );
+        }
+        const existing = yield* readActiveProjectMemories(config, closeout.input.project);
+        const now = new Date(yield* Clock.currentTimeMillis);
+        const review = yield* buildCandidateReview(closeout.input, existing, now);
+        yield* saveCandidateReview(config.agentContextHome, review);
+        return candidateReviewResult(review);
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    'apply_memory_candidates',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true},
+      description:
+        'Record an explicit user decision for one pending session-memory candidate. approve may create or replace active memory; reject and defer never write memory. Pass the review revision to prevent stale decisions.',
+      inputSchema: {
+        action: McpInput.literals(['approve', 'defer', 'reject'], 'Explicit user decision for this candidate'),
+        approved: McpInput.boolean('Must be true for approve, confirming the user explicitly approved this write'),
+        candidateId: McpInput.string('Candidate ID returned by review_session_context'),
+        editedText: McpInput.string('Optional user-edited replacement for the proposed memory text'),
+        operation: McpInput.literals(
+          ['create', 'replace'],
+          'Required for replace/manual-review candidates: explicitly create a new memory or replace the reviewed target',
+        ),
+        replaceUri: McpInput.string(
+          'Required with operation=replace; must exactly match the target returned by review_session_context',
+        ),
+        reviewId: McpInput.string('Review ID returned by review_session_context'),
+        revision: McpInput.integer('Review revision returned by review_session_context', {minimum: 1}),
+      },
+    },
+    ({action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}) => {
+      const checkedReviewId = requiredText(reviewId, 'apply_memory_candidates', 'reviewId', {
+        reviewId: 'review-0123456789abcdef',
+      });
+      if (!checkedReviewId.ok) {
+        return checkedReviewId.error;
+      }
+      const checkedCandidateId = requiredText(candidateId, 'apply_memory_candidates', 'candidateId', {
+        candidateId: 'review-0123456789abcdef-1',
+      });
+      if (!checkedCandidateId.ok) {
+        return checkedCandidateId.error;
+      }
+      const checkedReplaceUri = optionalVikingUri(replaceUri, 'apply_memory_candidates');
+      if (!checkedReplaceUri.ok) {
+        return checkedReplaceUri.error;
+      }
+      if (!action) {
+        return argumentError('apply_memory_candidates requires action: approve, defer, or reject.');
+      }
+      if (revision === undefined) {
+        return argumentError('apply_memory_candidates requires the current review revision.');
+      }
+      if (action === 'approve' && approved !== true) {
+        return argumentError('approve requires approved=true after explicit user approval.');
+      }
+      return withCandidateReviewLock(
+        config.agentContextHome,
+        checkedReviewId.value,
+        Effect.gen(function* () {
+          const review = yield* loadCandidateReview(config.agentContextHome, checkedReviewId.value);
+          const candidate = review.candidates.find(item => item.candidateId === checkedCandidateId.value);
+          if (!candidate) {
+            return argumentError(`Candidate ${checkedCandidateId.value} is not part of ${checkedReviewId.value}.`);
+          }
+          if (
+            action === 'approve' &&
+            candidate.state === 'applied' &&
+            (review.revision === revision || review.revision === revision + 1)
+          ) {
+            const memoryMessage = candidate.applyTargetUri ? ` at ${candidate.applyTargetUri}` : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Candidate ${candidate.candidateId} was already approved${memoryMessage}.`,
+                },
+              ],
+              structuredContent: {
+                action: candidate.applyTargetUri ? 'approve' : 'no_action',
+                candidateId: candidate.candidateId,
+                memoryUri: candidate.applyTargetUri,
+                reviewId: review.reviewId,
+                revision: review.revision,
+              },
+            };
+          }
+          if (review.revision !== revision) {
+            return argumentError(
+              `Candidate review revision changed: expected ${revision}, current ${review.revision}. Review it again before applying.`,
+            );
+          }
+          if (candidate.state === 'applying' && candidate.applyTargetUri) {
+            const [appliedRecord] = yield* attemptPromise(() =>
+              readMemoryRecordsByUri(config, [candidate?.applyTargetUri as string]),
+            );
+            if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
+              if (
+                !candidate.applyContentHash ||
+                (yield* sha256Hex(canonicalMemoryDocumentContent(appliedRecord.content))) !== candidate.applyContentHash
+              ) {
+                return yield* persistCandidateConflict(
+                  config,
+                  review,
+                  candidate,
+                  `Candidate ${candidate.candidateId} found mismatched content at ${candidate.applyTargetUri}. The partial apply is recorded as a conflict.`,
+                );
+              }
+              const cleanup = yield* reconcileCandidateReplacementCleanup(config, candidate);
+              if (cleanup === 'conflict') {
+                return yield* persistCandidateConflict(
+                  config,
+                  review,
+                  candidate,
+                  `Candidate ${candidate.candidateId} was written at ${candidate.applyTargetUri}, but its reviewed replacement target changed before cleanup. The partial apply is recorded as a conflict; review both memories before continuing.`,
+                );
+              }
+              if (cleanup === 'pending') {
+                const pendingCleanup = candidateReviewWithApplyStage(review, candidate.candidateId, 'cleanup_pending');
+                yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Candidate ${candidate.candidateId} is stored at ${candidate.applyTargetUri}, but its reviewed replacement still exists. Retry this approval to finish cleanup.`,
+                    },
+                  ],
+                  isError: true,
+                  structuredContent: {
+                    action: 'cleanup_pending',
+                    candidateId: candidate.candidateId,
+                    memoryUri: candidate.applyTargetUri,
+                    reviewId: review.reviewId,
+                    revision: review.revision,
+                  },
+                };
+              }
+              const withBeginAudit = candidateReviewWithAuditEvent(review, {
+                action: 'begin_apply',
+                at: appliedRecord.metadata.timestamp,
+                candidateId: candidate.candidateId,
+                memoryUri: candidate.applyTargetUri,
+                reviewId: review.reviewId,
+                revision: review.revision,
+              });
+              const recovered = candidateReviewWithState(withBeginAudit, candidate.candidateId, 'applied', {
+                action: 'apply',
+                at: appliedRecord.metadata.timestamp,
+                memoryUri: candidate.applyTargetUri,
+              });
+              yield* saveCandidateReview(config.agentContextHome, recovered);
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Recovered approved candidate ${candidate.candidateId} at ${candidate.applyTargetUri}.`,
+                  },
+                ],
+                structuredContent: {
+                  action: 'approve',
+                  candidateId: candidate.candidateId,
+                  memoryUri: candidate.applyTargetUri,
+                  reviewId: review.reviewId,
+                  revision: recovered.revision,
+                },
+              };
+            }
+          }
+          if (candidate.state === 'applied' || candidate.state === 'conflict' || candidate.state === 'rejected') {
+            return argumentError(`Candidate ${candidate.candidateId} is already ${candidate.state}.`);
+          }
+          const at = new Date(yield* Clock.currentTimeMillis).toISOString();
+          if (action === 'defer' || action === 'reject') {
+            if (candidate.state === 'applying') {
+              return argumentError(
+                `Candidate ${candidate.candidateId} has an interrupted approval in progress. Retry approve to recover it before recording another decision.`,
+              );
+            }
+            if (action === 'defer' && candidate.state === 'deferred') {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Candidate ${candidate.candidateId} is already deferred in review ${review.reviewId}.`,
+                  },
+                ],
+                structuredContent: {
+                  action,
+                  candidateId: candidate.candidateId,
+                  reviewId: review.reviewId,
+                  revision: review.revision,
+                },
+              };
+            }
+            const updated = candidateReviewWithState(
+              review,
+              candidate.candidateId,
+              action === 'defer' ? 'deferred' : 'rejected',
+              {action, at},
+            );
+            yield* saveCandidateReview(config.agentContextHome, updated);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    action === 'defer'
+                      ? `Deferred candidate ${candidate.candidateId}. It remains available in review ${review.reviewId}.`
+                      : `Rejected candidate ${candidate.candidateId}. No memory was written.`,
+                },
+              ],
+              structuredContent: {
+                action,
+                candidateId: candidate.candidateId,
+                reviewId: review.reviewId,
+                revision: updated.revision,
+              },
+            };
+          }
+          if (candidate.recommendation === 'no_action') {
+            if (!(yield* reviewedCandidateTargetIsCurrent(config, candidate))) {
+              return argumentError(
+                `Duplicate candidate ${candidate.candidateId} is stale because its reviewed target changed or disappeared. Run review_session_context again.`,
+              );
+            }
+            const updated = candidateReviewWithState(review, candidate.candidateId, 'applied', {
+              action: 'apply',
+              at,
+            });
+            yield* saveCandidateReview(config.agentContextHome, updated);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Confirmed no action for duplicate candidate ${candidate.candidateId}. No memory was written.`,
+                },
+              ],
+              structuredContent: {
+                action: 'no_action',
+                candidateId: candidate.candidateId,
+                reviewId: review.reviewId,
+                revision: updated.revision,
+              },
+            };
+          }
+          const text = normalizeOptionalMetadata(editedText) ?? candidate.proposedText;
+          const scrub = applyScrubber(text, {redact: true});
+          if (scrub.blocker) {
+            return argumentError(
+              `Refusing to store candidate ${candidate.candidateId}: possible ${scrub.blocker}. Remove the sensitive value first.`,
+            );
+          }
+          const reviewedTargetUri = candidate.targetUri;
+          const effectiveOperation = operation ?? candidate.applyOperation;
+          const effectiveReplaceUri = checkedReplaceUri.value ?? candidate.applyReplaceUri;
+          const requiresExplicitOperation =
+            candidate.recommendation === 'replace' || candidate.recommendation === 'manual_review';
+          if (requiresExplicitOperation && effectiveOperation === undefined) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} requires an explicit operation: create or replace.`,
+            );
+          }
+          if (candidate.applyOperation && operation && operation !== candidate.applyOperation) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} is recovering an approved ${candidate.applyOperation} operation; the retry cannot change it to ${operation}.`,
+            );
+          }
+          if (
+            candidate.applyReplaceUri &&
+            checkedReplaceUri.value &&
+            checkedReplaceUri.value !== candidate.applyReplaceUri
+          ) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} is recovering approved target ${candidate.applyReplaceUri}; the retry cannot change it.`,
+            );
+          }
+          const reviewedTargetIsShared = reviewedTargetUri !== undefined && isSharedMemoryUri(reviewedTargetUri);
+          if (
+            effectiveOperation === 'create' &&
+            !reviewedTargetIsShared &&
+            (candidate.recommendation === 'replace' || candidate.comparison === 'contradiction')
+          ) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} has the same stable identity as active memory and cannot be created separately; choose operation=replace with its reviewed target.`,
+            );
+          }
+          if (effectiveOperation === 'replace' && reviewedTargetUri === undefined) {
+            return argumentError(`Candidate ${candidate.candidateId} has no reviewed replacement target.`);
+          }
+          if (
+            effectiveOperation === 'replace' &&
+            (effectiveReplaceUri === undefined || effectiveReplaceUri !== reviewedTargetUri)
+          ) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} requires replaceUri=${reviewedTargetUri} for the reviewed replacement.`,
+            );
+          }
+          if (effectiveOperation !== 'replace' && effectiveReplaceUri !== undefined) {
+            return argumentError(`Candidate ${candidate.candidateId} cannot use replaceUri without operation=replace.`);
+          }
+          const targetUri = effectiveOperation === 'replace' ? reviewedTargetUri : undefined;
+          if (targetUri && isSharedMemoryUri(targetUri)) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} targets shared memory. Choose operation=create to store the reviewed candidate personally without overwriting the shared source.`,
+            );
+          }
+          if (targetUri) {
+            if (!candidate.targetContentHash) {
+              return argumentError(`Candidate ${candidate.candidateId} has no reviewed content hash for ${targetUri}.`);
+            }
+          }
+          const approvedOperation: CandidateApplyOperation = effectiveOperation ?? 'create';
+          const approvedAt = candidate.applyApprovedAt ?? at;
+          const metadata = approvedCandidateMetadata(review, candidate, approvedAt);
+          const writeParams: WriteDurableMemoryParams = {
+            bodyText: scrub.cleaned,
+            expectedReplaceContentHash: targetUri ? candidate.targetContentHash : undefined,
+            metadata,
+            operation: approvedOperation,
+            replaceUri: targetUri,
+          };
+          const preparedWrite = preparePersonalMemoryWrite(config, writeParams);
+          const intendedMemoryUri = preparedWrite.memoryUri;
+          const approvedContentHash = yield* sha256Hex(canonicalMemoryDocumentContent(preparedWrite.memory));
+          if (candidate.applyContentHash && candidate.applyContentHash !== approvedContentHash) {
+            return argumentError(
+              `Candidate ${candidate.candidateId} retry does not match the previously approved content. Retry with the same editedText or start a new review.`,
+            );
+          }
+          const applying =
+            candidate.state === 'applying'
+              ? review
+              : candidateReviewWithApplying(
+                  review,
+                  candidate.candidateId,
+                  {
+                    contentHash: approvedContentHash,
+                    operation: approvedOperation,
+                    replaceUri: targetUri,
+                    targetUri: intendedMemoryUri,
+                  },
+                  approvedAt,
+                );
+          if (candidate.state !== 'applying') {
+            yield* saveCandidateReview(config.agentContextHome, applying);
+          }
+          const result = yield* writeDurableMemory(config, {
+            ...writeParams,
+            prepared: preparedWrite,
+          });
+          if (result.isError === true) {
+            const resultText = textFromCallToolResult(result);
+            if (resultText.includes('Candidate replacement is stale')) {
+              return yield* persistCandidateConflict(
+                config,
+                applying,
+                applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
+                `${resultText} The approval is recorded as a conflict; start a new review against the current target.`,
+              );
+            }
+            const [possiblyWritten] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [intendedMemoryUri]));
+            const destinationCanConflict = approvedOperation === 'create' || intendedMemoryUri !== targetUri;
+            if (
+              (destinationCanConflict &&
+                possiblyWritten &&
+                possiblyWritten.metadata.candidateId !== candidate.candidateId) ||
+              resultText.includes('Create conflict')
+            ) {
+              return yield* persistCandidateConflict(
+                config,
+                applying,
+                applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
+                `Candidate ${candidate.candidateId} could not be created because ${intendedMemoryUri} contains another memory. The apply is recorded as a conflict.`,
+              );
+            }
+            return result;
+          }
+          if (replacementCleanupIsPending(result)) {
+            const pendingCleanup = candidateReviewWithApplyStage(applying, candidate.candidateId, 'cleanup_pending');
+            yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
+            return {
+              ...result,
+              isError: true,
+              structuredContent: {
+                action: 'cleanup_pending',
+                candidateId: candidate.candidateId,
+                memoryUri: intendedMemoryUri,
+                reviewId: review.reviewId,
+                revision: review.revision,
+              },
+            };
+          }
+          const memoryUri = storedMemoryUri(result) ?? intendedMemoryUri;
+          const updated = candidateReviewWithState(applying, candidate.candidateId, 'applied', {
+            action: 'apply',
+            at,
+            memoryUri,
+          });
+          yield* saveCandidateReview(config.agentContextHome, updated);
+          return {
+            ...result,
+            structuredContent: {
+              action: 'approve',
+              candidateId: candidate.candidateId,
+              memoryUri,
+              reviewId: review.reviewId,
+              revision: updated.revision,
+            },
+          };
+        }),
+      ).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
     },
   );
 }
@@ -1041,7 +1579,7 @@ function registerSearchTool(
         ),
       },
     },
-    async ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
+    ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -1050,16 +1588,19 @@ function registerSearchTool(
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return withStaleVersionNotice(
-        await runRecallTool(config, {
-          callerCwd,
-          query: checkedQuery.value,
-          pinnedUri: checkedUri.value,
-          nodeLimit,
-          includeArchived: includeArchived === true,
-          threshold: threshold === undefined ? undefined : String(threshold),
-          workset: workset?.trim() || undefined,
-        }),
+      return runRecallTool(config, {
+        callerCwd,
+        query: checkedQuery.value,
+        pinnedUri: checkedUri.value,
+        nodeLimit,
+        includeArchived: includeArchived === true,
+        threshold: threshold === undefined ? undefined : String(threshold),
+        workset: workset?.trim() || undefined,
+      }).pipe(
+        Effect.flatMap(result => attemptPromise(() => withStaleVersionNotice(result))),
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
       );
     },
   );
@@ -1075,137 +1616,160 @@ interface RecallToolParams {
   readonly workset: string | undefined;
 }
 
-async function runRecallTool(config: RuntimeConfig, params: RecallToolParams): Promise<CallToolResult> {
-  let syncedTeams: readonly string[] = [];
-  const syncWarnings: string[] = [];
-  try {
-    const syncResult = await syncSharedReposBeforeAgentRead(config);
-    syncedTeams = syncResult.syncedTeams;
-    syncWarnings.push(...syncResult.warnings);
-  } catch (err: unknown) {
-    syncWarnings.push(errorMessage(err));
-  }
-  const query = await enrichRecallQueryWithWorkspaceContext(params.query, {
-    cwd: params.callerCwd,
-    includeProcessCwd: false,
-  });
-  const projectQuery = await enrichRecallQueryWithWorkspaceProjectContext(params.query, {
-    cwd: params.callerCwd,
-    includeProcessCwd: false,
-  });
-  let indexRepairMessages: readonly string[];
-  try {
-    const ov = await requiredOpenVikingCli();
-    const indexRepair = await repairStaleRecallIndex(config, ov, {query: projectQuery});
-    indexRepairMessages = formatRecallIndexRepairMessages(indexRepair);
-  } catch (err: unknown) {
-    indexRepairMessages = [`Auto-index repair warning: ${errorMessage(err)}`];
-  }
-  const project = params.pinnedUri ? undefined : await inferProjectFromQuery(config.manifestPath, projectQuery);
-  const projectMemoryName = params.pinnedUri
-    ? undefined
-    : await resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false});
-  const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
-  const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
-  const explicitWorkset = params.workset ? await requireWorkset(config.manifestPath, params.workset) : undefined;
-  // Run the global base pass plus a seeded project pass, then merge into one
-  // deduped ranked list (per document, chunk anchors stripped) so the seeded
-  // pass only adds project docs the base missed. --level 2 keeps Level-2
-  // content and drops the L0/L1 .overview/.abstract summary sidecars.
-  const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
-  const base = await recallSearchHits(
-    config,
-    ['search', query, ...pinnedArgs, ...limitArgs],
-    threshold,
-    params.includeArchived,
-  );
-  const passes: Array<readonly RecallHit[]> = [base.hits];
-  const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
-  for (const scope of projectMemoryScopeUris(config, projectMemoryName, params.includeArchived)) {
-    if (!scopedRecallUris.has(scope)) {
-      scopedRecallUris.add(scope);
-      const projectMemoryPass = await recallSearchHits(
-        config,
-        ['search', query, '--uri', scope, ...limitArgs],
-        threshold,
-        params.includeArchived,
-      );
-      passes.push(projectMemoryPass.hits);
-    }
-  }
-  const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
-  if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
-    const seeded = await recallSearchHits(
-      config,
-      ['search', params.query, '--uri', seededUri, ...limitArgs],
-      threshold,
-      params.includeArchived,
+function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
+  return Effect.gen(function* () {
+    const syncWarnings: string[] = [];
+    const syncedTeams = yield* attemptPromise(() => syncSharedReposBeforeAgentRead(config)).pipe(
+      Effect.map(syncResult => {
+        syncWarnings.push(...syncResult.warnings);
+        return syncResult.syncedTeams;
+      }),
+      Effect.catch(error => {
+        syncWarnings.push(errorMessage(error));
+        return Effect.succeed([] as readonly string[]);
+      }),
     );
-    passes.push(seeded.hits);
-  }
-
-  // Workset expansion (see src/memory.ts:runRecall): recall a named set of
-  // manifest repos as one working set. Skipped when a pinned URI scopes the
-  // search. The merge dedupes overlapping hits; scopes are deduped and capped.
-  const sections: string[] = [];
-  const workset = params.pinnedUri
-    ? undefined
-    : explicitWorkset
-      ? explicitWorkset
-      : await inferWorksetFromQuery(config.manifestPath, projectQuery);
-  if (workset && workset.projects.length > 0) {
-    sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
-    const alreadyScoped = new Set(
-      [params.pinnedUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
+    const query = yield* attemptPromise(() =>
+      enrichRecallQueryWithWorkspaceContext(params.query, {
+        cwd: params.callerCwd,
+        includeProcessCwd: false,
+      }),
     );
-    const worksetScopes = worksetScopeUris(config, workset)
-      .filter(uri => !alreadyScoped.has(uri))
-      .slice(0, MAX_WORKSET_PASSES);
-    for (const scope of worksetScopes) {
-      const worksetPass = await recallSearchHits(
-        config,
-        ['search', query, '--uri', scope, ...limitArgs],
-        threshold,
-        params.includeArchived,
-      );
-      passes.push(worksetPass.hits);
+    const projectQuery = yield* attemptPromise(() =>
+      enrichRecallQueryWithWorkspaceProjectContext(params.query, {
+        cwd: params.callerCwd,
+        includeProcessCwd: false,
+      }),
+    );
+    const indexRepairMessages = yield* Effect.gen(function* () {
+      const ov = yield* attemptPromise(requiredOpenVikingCli);
+      const indexRepair = yield* attemptPromise(() => repairStaleRecallIndex(config, ov, {query: projectQuery}));
+      return formatRecallIndexRepairMessages(indexRepair);
+    }).pipe(Effect.catch(error => Effect.succeed([`Auto-index repair warning: ${errorMessage(error)}`])));
+    const project = params.pinnedUri
+      ? undefined
+      : yield* attemptPromise(() => inferProjectFromQuery(config.manifestPath, projectQuery));
+    const projectMemoryName = params.pinnedUri
+      ? undefined
+      : yield* attemptPromise(() => resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false}));
+    const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
+    const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
+    const explicitWorkset = params.workset
+      ? yield* attemptPromise(() => requireWorkset(config.manifestPath, params.workset as string))
+      : undefined;
+    const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
+    const base = yield* attemptPromise(() =>
+      recallSearchHits(config, ['search', query, ...pinnedArgs, ...limitArgs], threshold, params.includeArchived),
+    );
+    const passes: Array<readonly RecallHit[]> = [base.hits];
+    const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
+    for (const scope of projectMemoryScopeUris(config, projectMemoryName, params.includeArchived)) {
+      if (!scopedRecallUris.has(scope)) {
+        scopedRecallUris.add(scope);
+        const projectMemoryPass = yield* attemptPromise(() =>
+          recallSearchHits(config, ['search', query, '--uri', scope, ...limitArgs], threshold, params.includeArchived),
+        );
+        passes.push(projectMemoryPass.hits);
+      }
     }
-  }
+    const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
+    if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
+      const seeded = yield* attemptPromise(() =>
+        recallSearchHits(
+          config,
+          ['search', params.query, '--uri', seededUri, ...limitArgs],
+          threshold,
+          params.includeArchived,
+        ),
+      );
+      passes.push(seeded.hits);
+    }
 
-  const exactMatches = await collectExactMemoryMatches(config, query, params.includeArchived, project);
-  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, params.nodeLimit ?? 12);
-  if (semanticSection) {
-    sections.push(semanticSection);
-  } else if (!base.ok) {
-    // Semantic search failed even after the plain fallback (e.g. ov down).
-    // Degrade rather than abort: note it and still run exact below.
-    sections.push(`Recall semantic search unavailable: ${base.errorText || 'ov search failed'}`);
-  }
-  if (indexRepairMessages.length > 0) {
-    sections.push(indexRepairMessages.join('\n'));
-  }
-  if (exactTail) {
-    sections.push(exactTail);
-  }
-  const referencedContext = await referencedContextSection(config, sections.join('\n\n'));
-  if (referencedContext) {
-    sections.push(referencedContext);
-  }
-  const hygieneHints = await recallHygieneHintsSection(config, sections.join('\n\n'));
-  if (hygieneHints) {
-    sections.push(hygieneHints);
-  }
-  if (syncedTeams.length > 0) {
-    sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
-  }
-  for (const warning of syncWarnings) {
-    sections.push(`Auto-sync warning: ${warning}`);
-  }
-  if (sections.length === 0) {
-    return {content: [{type: 'text', text: 'No recall results found.'}]};
-  }
-  const onlyErrorNote = !base.ok && !semanticSection && sections.length === 1;
-  return {content: [{type: 'text', text: sections.join('\n\n')}], isError: onlyErrorNote || undefined};
+    const sections: string[] = [];
+    const workset = params.pinnedUri
+      ? undefined
+      : explicitWorkset
+        ? explicitWorkset
+        : yield* attemptPromise(() => inferWorksetFromQuery(config.manifestPath, projectQuery));
+    if (workset && workset.projects.length > 0) {
+      sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
+      const alreadyScoped = new Set(
+        [params.pinnedUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
+      );
+      const worksetScopes = worksetScopeUris(config, workset)
+        .filter(uri => !alreadyScoped.has(uri))
+        .slice(0, MAX_WORKSET_PASSES);
+      for (const scope of worksetScopes) {
+        const worksetPass = yield* attemptPromise(() =>
+          recallSearchHits(config, ['search', query, '--uri', scope, ...limitArgs], threshold, params.includeArchived),
+        );
+        passes.push(worksetPass.hits);
+      }
+    }
+
+    const exactMatches = yield* attemptPromise(() =>
+      collectExactMemoryMatches(config, query, params.includeArchived, project),
+    );
+    const recallSections = yield* prepareRecallSections(config, {
+      allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+      exactMatches,
+      feedbackQuery: params.query,
+      includeInactive: params.includeArchived,
+      limit: params.nodeLimit ?? 12,
+      minimumScore: Number(threshold),
+      passes,
+      project: projectMemoryName ?? project?.name,
+      query,
+      readRecords: uris => attemptPromise(() => readMemoryRecordsByUri(config, uris)),
+      seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
+    });
+    const {semanticSection, exactTail} = recallSections;
+    if (semanticSection) {
+      sections.push(semanticSection);
+    } else if (!base.ok) {
+      sections.push(`Recall semantic search unavailable: ${base.errorText || 'ov search failed'}`);
+    }
+    if (indexRepairMessages.length > 0) {
+      sections.push(indexRepairMessages.join('\n'));
+    }
+    if (exactTail) {
+      sections.push(exactTail);
+    }
+    const referencedContext = yield* attemptPromise(() => referencedContextSection(config, sections.join('\n\n')));
+    if (referencedContext) {
+      sections.push(referencedContext);
+    }
+    const hygieneHints = yield* attemptPromise(() => recallHygieneHintsSection(config, sections.join('\n\n')));
+    if (hygieneHints) {
+      sections.push(hygieneHints);
+    }
+    if (syncedTeams.length > 0) {
+      sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
+    }
+    for (const warning of syncWarnings) {
+      sections.push(`Auto-sync warning: ${warning}`);
+    }
+    if (sections.length === 0) {
+      return {content: [{type: 'text' as const, text: 'No recall results found.'}]};
+    }
+    const onlyErrorNote = !base.ok && !semanticSection && sections.length === 1;
+    return {
+      content: [{type: 'text' as const, text: sections.join('\n\n')}],
+      isError: onlyErrorNote || undefined,
+      structuredContent: {
+        confidence: recallSections.confidence,
+        rankerVersion: RECALL_RANKER_VERSION,
+        results: recallSections.ranked.slice(0, params.nodeLimit ?? 12).map(hit => ({
+          category: hit.category,
+          finalScore: hit.finalScore,
+          reasons: hit.rankReasons,
+          signals: hit.rankSignals,
+          uri: hit.uri,
+          warnings: hit.rankWarnings,
+        })),
+      },
+    };
+  });
 }
 
 /**
@@ -1453,6 +2017,305 @@ function registerStoreTool(
   );
 }
 
+function stringList(value: string | readonly string[] | undefined): readonly string[] {
+  return typeof value === 'string' ? [value] : (value ?? []);
+}
+
+function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {
+  return [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0);
+}
+
+function sessionCloseoutHasEvidence(input: SessionCloseoutInput): boolean {
+  return (input.evidence?.length ?? 0) > 0 || input.sourceSessionId !== undefined || input.sourceCommit !== undefined;
+}
+
+function parseCandidatePolicy(value: string | undefined): 'handoff-only' | 'off' | 'suggest' {
+  const normalized = value?.trim() || 'suggest';
+  if (normalized === 'suggest' || normalized === 'handoff-only' || normalized === 'off') {
+    return normalized;
+  }
+  throw new Error(`Invalid THREADNOTE_CANDIDATE_POLICY=${normalized}. Expected suggest, handoff-only, or off.`);
+}
+
+function scrubSessionCloseout(
+  input: SessionCloseoutInput,
+): {readonly input: SessionCloseoutInput; readonly ok: true} | {readonly error: string; readonly ok: false} {
+  const scrubText = (value: string): {readonly blocker?: string; readonly cleaned: string} =>
+    applyScrubber(value, {redact: true});
+  const scalarValues = [
+    ['task', input.task],
+    ['outcome', input.outcome],
+    ['project', input.project],
+    ['topic', input.topic],
+    ['sourceAgentClient', input.sourceAgentClient],
+    ['sourceCommit', input.sourceCommit],
+    ['sourceSessionId', input.sourceSessionId],
+  ] as const;
+  const scrubbedScalars = new Map<string, string | undefined>();
+  for (const [key, value] of scalarValues) {
+    if (value === undefined) {
+      scrubbedScalars.set(key, undefined);
+      continue;
+    }
+    const scrubbed = scrubText(value);
+    if (scrubbed.blocker) {
+      return {error: `Refusing session review: ${key} may contain ${scrubbed.blocker}.`, ok: false};
+    }
+    scrubbedScalars.set(key, scrubbed.cleaned);
+  }
+  const scrubList = (key: string, values: readonly string[] | undefined): readonly string[] | undefined => {
+    if (!values) {
+      return undefined;
+    }
+    const result: string[] = [];
+    for (const value of values) {
+      const scrubbed = scrubText(value);
+      if (scrubbed.blocker) {
+        throw new Error(`${key} may contain ${scrubbed.blocker}`);
+      }
+      result.push(scrubbed.cleaned);
+    }
+    return result;
+  };
+  try {
+    return {
+      input: {
+        decisions: scrubList('decisions', input.decisions),
+        evidence: scrubList('evidence', input.evidence),
+        handoff: scrubList('handoff', input.handoff),
+        invariants: scrubList('invariants', input.invariants),
+        outcome: scrubbedScalars.get('outcome') as string,
+        preferences: scrubList('preferences', input.preferences),
+        project: scrubbedScalars.get('project') as string,
+        sourceAgentClient: scrubbedScalars.get('sourceAgentClient') as string,
+        sourceCommit: scrubbedScalars.get('sourceCommit'),
+        sourceSessionId: scrubbedScalars.get('sourceSessionId'),
+        task: scrubbedScalars.get('task') as string,
+        topic: scrubbedScalars.get('topic') as string,
+      },
+      ok: true,
+    };
+  } catch (cause: unknown) {
+    return {error: `Refusing session review: ${errorMessage(cause)}.`, ok: false};
+  }
+}
+
+function candidateReviewResult(review: CandidateReview): CallToolResult {
+  const actionable = review.candidates.filter(candidate => candidate.recommendation !== 'no_action');
+  const lines =
+    review.candidates.length === 0
+      ? ['No memory candidates found in this task closeout. No durable memory was written.']
+      : actionable.length === 0
+        ? ['No memory update is recommended; every candidate duplicates active memory.']
+        : [
+            `Review ${review.reviewId} · revision ${review.revision}`,
+            'Present these recommendations in the current conversation. Do not write memory until the user decides:',
+            ...review.candidates.map(
+              (candidate, index) =>
+                `${index + 1}. [${candidate.recommendation}] ${candidate.kind}/${candidate.topic} · ${candidate.reason}\n` +
+                `   candidate: ${candidate.candidateId}` +
+                (candidate.targetUri ? `\n   target: ${candidate.targetUri}` : '') +
+                `\n${candidate.proposedText
+                  .split('\n')
+                  .map(line => `   ${line}`)
+                  .join('\n')}`,
+            ),
+          ];
+  return {
+    content: [{type: 'text', text: lines.join('\n')}],
+    structuredContent: {
+      candidates: review.candidates,
+      noAction: actionable.length === 0,
+      reviewId: review.reviewId,
+      revision: review.revision,
+    },
+  };
+}
+
+function approvedCandidateMetadata(
+  review: CandidateReview,
+  candidate: MemoryCandidate,
+  approvedAt: string,
+): MemoryMetadata {
+  return {
+    authority: 'user_approved',
+    candidateId: candidate.candidateId,
+    evidence: candidate.evidence,
+    kind: candidate.kind,
+    lastReviewed: approvedAt,
+    project: candidate.project,
+    schemaVersion: 2,
+    sourceAgentClient: review.sourceAgentClient,
+    sourceCommit: review.sourceCommit,
+    sourceObservedAt: review.createdAt,
+    sourceSessionId: review.sourceSessionId,
+    status: 'active',
+    timestamp: approvedAt,
+    topic: candidate.topic,
+    trust: 'approved',
+  };
+}
+
+function storedMemoryUri(result: CallToolResult): string | undefined {
+  const structuredMemoryUri = result.structuredContent?.memoryUri;
+  if (typeof structuredMemoryUri === 'string') {
+    return structuredMemoryUri;
+  }
+  const text = textFromCallToolResult(result);
+  return /Stored memory:\s+(viking:\/\/\S+)/.exec(text)?.[1];
+}
+
+function replacementCleanupIsPending(result: CallToolResult): boolean {
+  return result.structuredContent?.replacementCleanupPending === true;
+}
+
+function reviewedCandidateTargetIsCurrent(config: RuntimeConfig, candidate: MemoryCandidate) {
+  if (!candidate.targetUri || !candidate.targetContentHash) {
+    return Effect.succeed(false);
+  }
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [candidate.targetUri],
+      Effect.gen(function* () {
+        const [target] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [candidate.targetUri as string]));
+        return (
+          target !== undefined &&
+          (yield* sha256Hex(canonicalMemoryDocumentContent(target.content))) === candidate.targetContentHash
+        );
+      }),
+    );
+  });
+}
+
+function persistCandidateConflict(
+  config: RuntimeConfig,
+  review: CandidateReview,
+  candidate: MemoryCandidate,
+  message: string,
+) {
+  return Effect.gen(function* () {
+    const conflicted = candidateReviewWithState(
+      candidateReviewWithApplyStage(review, candidate.candidateId, 'conflict'),
+      candidate.candidateId,
+      'conflict',
+      {
+        action: 'conflict',
+        at: new Date(yield* Clock.currentTimeMillis).toISOString(),
+        memoryUri: candidate.applyTargetUri,
+      },
+    );
+    yield* saveCandidateReview(config.agentContextHome, conflicted);
+    return argumentError(message);
+  });
+}
+
+function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: MemoryCandidate) {
+  if (
+    candidate.applyOperation !== 'replace' ||
+    !candidate.applyReplaceUri ||
+    !candidate.applyTargetUri ||
+    candidate.applyReplaceUri === candidate.applyTargetUri
+  ) {
+    return Effect.succeed('complete');
+  }
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [candidate.applyReplaceUri, candidate.applyTargetUri],
+      Effect.gen(function* () {
+        const [currentTarget] = yield* attemptPromise(() =>
+          readMemoryRecordsByUri(config, [candidate.applyReplaceUri as string]),
+        );
+        if (!currentTarget) {
+          return 'complete' as const;
+        }
+        if (
+          !candidate.targetContentHash ||
+          (yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))) !== candidate.targetContentHash
+        ) {
+          return 'conflict' as const;
+        }
+        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        const removed = yield* removeVikingResourceWithRetry(ov, config, candidate.applyReplaceUri as string);
+        if (!removed) {
+          return 'pending' as const;
+        }
+        const stillExists = yield* attemptPromise(() =>
+          vikingResourceExists(ov, config, candidate.applyReplaceUri as string),
+        );
+        return stillExists ? ('pending' as const) : ('complete' as const);
+      }),
+    );
+  });
+}
+
+function registerRecallFeedbackTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerTool(
+    'recall_feedback',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false},
+      description:
+        'Record bounded local feedback for one recall result. Stores a query fingerprint, never the full query. Feedback cannot bypass topical relevance and decays over time.',
+      inputSchema: {
+        action: McpInput.literals(['dismiss', 'pin', 'useful', 'wrong']),
+        project: McpInput.string('Optional project scope; pin is never global'),
+        query: McpInput.string('The recall query; only its SHA-256 fingerprint is stored'),
+        uri: McpInput.string('The viking:// result URI receiving feedback'),
+      },
+    },
+    ({action, project, query, uri}) => {
+      const checkedQuery = requiredText(query, 'recall_feedback', 'query', {query: 'threadnote recall quality'});
+      if (!checkedQuery.ok) {
+        return checkedQuery.error;
+      }
+      const checkedUri = requiredVikingUri(
+        uri,
+        'recall_feedback',
+        'viking://user/example/memories/durable/projects/threadnote/recall.md',
+      );
+      if (!checkedUri.ok) {
+        return checkedUri.error;
+      }
+      if (!action) {
+        return argumentError('recall_feedback requires action: useful, wrong, pin, or dismiss.');
+      }
+      const normalizedProject = normalizeOptionalMetadata(project);
+      if (action === 'pin' && normalizedProject === undefined) {
+        return argumentError('recall_feedback requires project when action is pin; pins are never global.');
+      }
+      return Effect.gen(function* () {
+        const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const result = yield* recordRecallFeedback(config.agentContextHome, {
+          action,
+          project: normalizedProject,
+          query: checkedQuery.value,
+          timestamp,
+          uri: checkedUri.value,
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: result.recorded
+                ? `Recorded ${action} feedback for ${checkedUri.value}.`
+                : `Equivalent recent ${action} feedback already exists for ${checkedUri.value}; no duplicate was added.`,
+            },
+          ],
+        };
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
+    },
+  );
+}
+
 function registerArchiveTool(
   server: EffectMcpServerAdapter,
   config: RuntimeConfig,
@@ -1477,6 +2340,11 @@ function registerArchiveTool(
         return checkedUri.error;
       }
       return Effect.gen(function* () {
+        const [sourceRecord] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [checkedUri.value]));
+        if (!sourceRecord) {
+          return argumentError(`Could not resolve local memory content for ${checkedUri.value} before archiving.`);
+        }
+        const sourceContent = sourceRecord.content;
         const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [checkedUri.value]));
         const original = textFromCallToolResult(readResult);
         if (!original) {
@@ -1496,12 +2364,13 @@ function registerArchiveTool(
         };
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+          expectedSourceContent: [{content: sourceContent, uri: checkedUri.value}],
           metadata,
         });
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = yield* forgetVikingResourceWithRetry(config, checkedUri.value);
+        const removedOriginal = yield* forgetVikingResourceWithRetry(config, checkedUri.value, false, sourceContent);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -1570,9 +2439,16 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
         const ov = yield* attemptPromise(requiredOpenVikingCli);
         const appliedMessages: string[] = [];
         for (const action of plan.keepUpdates) {
-          yield* attemptPromise(() =>
-            writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true}),
+          const keepResult = yield* writeMemoryContentWithExpectedHash(
+            config,
+            ov,
+            action.uri,
+            action.content,
+            action.expectedContent,
           );
+          if (keepResult.isError === true) {
+            return keepResult;
+          }
           appliedMessages.push(`Updated kept memory: ${action.uri}`);
         }
         for (const action of plan.archives) {
@@ -1586,7 +2462,7 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
           }
         }
         for (const action of plan.forgets) {
-          const removed = yield* forgetVikingResourceWithRetry(config, action.uri);
+          const removed = yield* forgetVikingResourceWithRetry(config, action.uri, false, action.expectedContent);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -1619,6 +2495,7 @@ function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
     }
     const archiveResult = yield* writeDurableMemory(config, {
       bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+      expectedSourceContent: [{content: action.expectedContent, uri: action.uri}],
       metadata: {
         archivedFrom: action.uri,
         kind: action.kind,
@@ -1632,7 +2509,7 @@ function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
     if (archiveResult.isError === true) {
       return archiveResult;
     }
-    const removedOriginal = yield* forgetVikingResourceWithRetry(config, action.uri);
+    const removedOriginal = yield* forgetVikingResourceWithRetry(config, action.uri, false, action.expectedContent);
     const [content] = archiveResult.content;
     const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
     return {
@@ -1730,7 +2607,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
 
 function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
   const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
-  if (!uri.startsWith(prefix) || uri.includes('/shared/')) {
+  if (!uri.startsWith(prefix)) {
     return undefined;
   }
   const relative = uri.slice(prefix.length);
@@ -1754,49 +2631,127 @@ async function readTextIfExists(path: string): Promise<string | undefined> {
 
 interface WriteDurableMemoryParams {
   readonly bodyText: string;
+  readonly expectedReplaceContentHash?: string;
+  readonly expectedSourceContent?: readonly {readonly content: string; readonly uri: string}[];
   readonly metadata: MemoryMetadata;
+  readonly operation?: 'create' | 'replace' | 'upsert';
+  readonly prepared?: PreparedPersonalMemoryWrite;
   readonly replaceUri?: string;
+}
+
+interface PreparedPersonalMemoryWrite {
+  readonly finalMetadata: MemoryMetadata;
+  readonly isInPlaceUpdate: boolean;
+  readonly memory: string;
+  readonly memoryUri: string;
 }
 
 function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
   return Effect.gen(function* () {
-    const ov = yield* attemptPromise(requiredOpenVikingCli);
-    if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
-      return yield* attemptPromise(() => writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string));
-    }
-    const directoryUri = memoryDirectoryUri(config, params.metadata);
-    yield* attemptPromise(() => ensureMemoryDirectory(ov, config, directoryUri));
-
-    // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
-    // Drops the supersedes line when replaceUri points at the URI we're about
-    // to write to (in-place update).
-    const candidateMetadata: MemoryMetadata = {...params.metadata, supersedes: params.replaceUri};
-    const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
-    const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
-    const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
-    const finalMetadata: MemoryMetadata = isInPlaceUpdate
-      ? {...params.metadata, supersedes: undefined}
-      : candidateMetadata;
-    const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
-    const writeMode = yield* attemptPromise(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
-    yield* attemptPromise(() => writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true}));
-    const messages = [`Stored memory: ${memoryUri}`];
-    if (params.replaceUri && !isInPlaceUpdate) {
-      const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, params.replaceUri);
-      messages.push(
-        removedReplacedMemory
-          ? `Forgot replaced memory: ${params.replaceUri}`
-          : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${params.replaceUri}`,
-      );
-    } else if (isInPlaceUpdate) {
-      messages.push(`Updated existing memory in place: ${memoryUri}`);
-    }
-    return {content: [{type: 'text' as const, text: messages.join('\n')}]};
+    const prepared = params.prepared ?? preparePersonalMemoryWrite(config, params);
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [params.replaceUri, prepared.memoryUri, ...(params.expectedSourceContent ?? []).map(source => source.uri)],
+      Effect.gen(function* () {
+        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        if (params.operation === 'replace' && !params.replaceUri) {
+          return argumentError('A replace write requires replaceUri.');
+        }
+        if (params.replaceUri && params.expectedReplaceContentHash) {
+          const [currentTarget] = yield* attemptPromise(() =>
+            readMemoryRecordsByUri(config, [params.replaceUri as string]),
+          );
+          if (
+            !currentTarget ||
+            (yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))) !==
+              params.expectedReplaceContentHash
+          ) {
+            return argumentError(
+              `Candidate replacement is stale because ${params.replaceUri} changed after review. Run review_session_context again before replacing it.`,
+            );
+          }
+        }
+        for (const source of params.expectedSourceContent ?? []) {
+          const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [source.uri]));
+          if (!currentSource || currentSource.content !== source.content) {
+            return argumentError(
+              `Memory ${source.uri} changed after this mutation was planned. Re-run the operation before writing.`,
+            );
+          }
+        }
+        if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
+          return yield* attemptPromise(() =>
+            writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string),
+          );
+        }
+        const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
+        const destinationExists = yield* attemptPromise(() => vikingResourceExists(ov, config, memoryUri));
+        if (params.operation === 'replace' && destinationExists && params.replaceUri !== memoryUri) {
+          const [destinationRecord] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [memoryUri]));
+          if (destinationRecord?.metadata.candidateId !== params.metadata.candidateId) {
+            return argumentError(`Replacement destination already contains another memory: ${memoryUri}.`);
+          }
+        }
+        const directoryUri = memoryDirectoryUri(config, finalMetadata);
+        yield* attemptPromise(() => ensureMemoryDirectory(ov, config, directoryUri));
+        const writeMode =
+          params.operation === 'create'
+            ? 'create'
+            : params.operation === 'replace'
+              ? destinationExists
+                ? 'replace'
+                : 'create'
+              : yield* attemptPromise(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
+        yield* attemptPromise(() => writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true}));
+        const messages = [`Stored memory: ${memoryUri}`];
+        let replacementCleanupPending = false;
+        if (params.replaceUri && !isInPlaceUpdate) {
+          const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, params.replaceUri);
+          replacementCleanupPending = !removedReplacedMemory;
+          messages.push(
+            removedReplacedMemory
+              ? `Forgot replaced memory: ${params.replaceUri}`
+              : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${params.replaceUri}`,
+          );
+        } else if (isInPlaceUpdate) {
+          messages.push(`Updated existing memory in place: ${memoryUri}`);
+        }
+        return {
+          content: [{type: 'text' as const, text: messages.join('\n')}],
+          structuredContent: {memoryUri, replacementCleanupPending},
+        };
+      }),
+    );
   }).pipe(
     Effect.catch(error =>
       Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
     ),
   );
+}
+
+/**
+ * Computes the exact personal-memory destination and final document before a
+ * candidate enters its recoverable `applying` state. The writer consumes this
+ * same prepared value so recovery and the actual write cannot disagree.
+ */
+function preparePersonalMemoryWrite(
+  config: RuntimeConfig,
+  params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
+): PreparedPersonalMemoryWrite {
+  // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
+  // Drops the supersedes line when replaceUri points at the URI we're about
+  // to write to (in-place update).
+  const candidateMetadata: MemoryMetadata = {...params.metadata, supersedes: params.replaceUri};
+  const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
+  const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
+  const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
+  const finalMetadata: MemoryMetadata = isInPlaceUpdate
+    ? {...params.metadata, supersedes: undefined}
+    : candidateMetadata;
+  const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
+  return {finalMetadata, isInPlaceUpdate, memory, memoryUri};
 }
 
 async function writeSharedMemoryReplacement(
@@ -1856,8 +2811,7 @@ function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: s
 
 function runOpenVikingRemoveTool(config: RuntimeConfig, uri: string, recursive: boolean) {
   return Effect.gen(function* () {
-    const ov = yield* attemptPromise(requiredOpenVikingCli);
-    const removed = yield* removeVikingResourceWithRetry(ov, config, uri, recursive);
+    const removed = yield* forgetVikingResourceWithRetry(config, uri, recursive);
     return {
       content: [
         {
@@ -2004,22 +2958,6 @@ function projectMemoryScopeUris(
         `${base}/incidents/archived/${projectSegment}`,
       ]
     : scopes;
-}
-
-function formatMemoryDocument(title: 'MEMORY', metadata: MemoryMetadata, body: string): string {
-  const header = [
-    title,
-    `kind: ${metadata.kind}`,
-    `status: ${metadata.status}`,
-    metadata.project ? `project: ${metadata.project}` : undefined,
-    metadata.topic ? `topic: ${metadata.topic}` : undefined,
-    `source_agent_client: ${metadata.sourceAgentClient}`,
-    `timestamp: ${metadata.timestamp}`,
-    metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
-    metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
-    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
-  ].filter((line): line is string => line !== undefined);
-  return [...header, '', body.trim()].join('\n');
 }
 
 function normalizeOptionalMetadata(value: string | undefined): string | undefined {
@@ -2333,10 +3271,57 @@ function textFromCallToolResult(result: CallToolResult): string {
     .trim();
 }
 
-function forgetVikingResourceWithRetry(config: RuntimeConfig, uri: string) {
-  return attemptPromise(requiredOpenVikingCli).pipe(
-    Effect.flatMap(ov => removeVikingResourceWithRetry(ov, config, uri)),
-  );
+function writeMemoryContentWithExpectedHash(
+  config: RuntimeConfig,
+  ov: string,
+  uri: string,
+  content: string,
+  expectedContent: string,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [uri],
+      Effect.gen(function* () {
+        const [current] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [uri]));
+        if (!current || current.content !== expectedContent) {
+          return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
+        }
+        yield* attemptPromise(() => writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true}));
+        return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
+      }),
+    );
+  });
+}
+
+function forgetVikingResourceWithRetry(
+  config: RuntimeConfig,
+  uri: string,
+  recursive = false,
+  expectedContent?: string,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [uri],
+      Effect.gen(function* () {
+        if (expectedContent) {
+          const [current] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [uri]));
+          if (!current || current.content !== expectedContent) {
+            return yield* Effect.fail(
+              new Error(`Memory ${uri} changed after this removal was planned. Re-run the operation.`),
+            );
+          }
+        }
+        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        return yield* removeVikingResourceWithRetry(ov, config, uri, recursive);
+      }),
+    );
+  });
 }
 
 interface SharePublishToolOptions {
@@ -2529,40 +3514,99 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
         `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass redact=true for soft-leak patterns.`,
       );
     }
-    const content = scrub.cleaned;
-    // Refuse to silently overwrite an existing shared memory (e.g., a teammate
-    // already published the same project/topic). Mirrors the CLI publish path.
-    if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
+    const fs = yield* FileSystem.FileSystem;
+    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+    const commitMessage = options.message ?? `share: publish ${relativePath}`;
+    const publication = yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [sourceUri, targetUri],
+      Effect.gen(function* () {
+        const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+        if (!currentSource) {
+          return {kind: 'source_missing' as const};
+        }
+        const currentScrub = applyScrubber(
+          stripPersonalProvenance(canonicalMemoryDocumentContent(currentSource.content)),
+          {
+            redact: options.redact === true,
+          },
+        );
+        if (currentScrub.blocker) {
+          return {blocker: currentScrub.blocker, kind: 'blocked' as const};
+        }
+        // Refuse to silently overwrite an existing shared memory (e.g., a
+        // teammate already published the same project/topic).
+        if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
+          return {kind: 'target_conflict' as const};
+        }
+        yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
+        yield* attemptPromise(() =>
+          writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true}),
+        );
+        const [storedTarget] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [targetUri]));
+        if (
+          !storedTarget ||
+          canonicalMemoryDocumentContent(storedTarget.content) !== canonicalMemoryDocumentContent(currentScrub.cleaned)
+        ) {
+          return {kind: 'target_verification_failed' as const};
+        }
+        const gitMessages = yield* attemptPromise(() =>
+          publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
+        );
+        const [sourceBeforeRemoval] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+        if (!sourceBeforeRemoval || sourceBeforeRemoval.content !== currentSource.content) {
+          return {
+            gitMessages,
+            kind: 'source_changed' as const,
+            redactions: currentScrub.redactions,
+          };
+        }
+        const removed = yield* removeVikingResourceWithRetry(ov, config, sourceUri);
+        return {
+          gitMessages,
+          kind: removed ? ('published' as const) : ('cleanup_pending' as const),
+          redactions: currentScrub.redactions,
+        };
+      }),
+    );
+    if (publication.kind === 'source_missing') {
+      return argumentError(`Could not resolve local memory content for ${sourceUri} before publishing.`);
+    }
+    if (publication.kind === 'blocked') {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: possible ${publication.blocker}. Strip the sensitive value or pass redact=true for soft-leak patterns.`,
+      );
+    }
+    if (publication.kind === 'target_conflict') {
       return argumentError(
         `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
       );
     }
-    yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
-    yield* attemptPromise(() => writeMemoryFile(config, ov, targetUri, content, 'create', false, {quiet: true}));
+    if (publication.kind === 'target_verification_failed') {
+      return argumentError(
+        `Shared target verification failed after writing ${targetUri}. The personal source was preserved for recovery.`,
+      );
+    }
     const messages = [`Published ${sourceUri} -> ${targetUri}`];
-    for (const redaction of scrub.redactions) {
+    for (const redaction of publication.redactions) {
       messages.push(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
     }
-    const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
-    const commitMessage = options.message ?? `share: publish ${relativePath}`;
-    const gitMessages = yield* attemptPromise(() =>
-      publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
-    );
-    const sourceError = yield* forgetVikingResourceWithRetry(config, sourceUri).pipe(
-      Effect.as(undefined),
-      Effect.catch(error => Effect.succeed(error)),
-    );
-    if (sourceError !== undefined) {
+    if (publication.kind === 'source_changed' || publication.kind === 'cleanup_pending') {
+      const cleanupReason =
+        publication.kind === 'source_changed'
+          ? `Memory ${sourceUri} changed while publication was in progress.`
+          : `Resource is still being processed: ${sourceUri}`;
       return {
         content: [
           {
             type: 'text',
             text: [
               ...messages,
-              ...gitMessages,
+              ...publication.gitMessages,
               `Could not remove the personal source after publish: ${sourceUri}.`,
               `Retry cleanup later with: threadnote forget ${sourceUri}`,
-              sourceError instanceof Error ? sourceError.message : String(sourceError),
+              cleanupReason,
             ].join('\n'),
           },
         ],
@@ -2570,7 +3614,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
       };
     }
     return {
-      content: [{type: 'text', text: [...messages, ...gitMessages].join('\n')}],
+      content: [{type: 'text', text: [...messages, ...publication.gitMessages].join('\n')}],
       isError: false,
     };
   }).pipe(

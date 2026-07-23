@@ -1,4 +1,4 @@
-import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createServer, type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -17,6 +17,8 @@ const CORE_TOOL_NAMES = [
   'read_context',
   'list_context',
   'remember_context',
+  'review_session_context',
+  'apply_memory_candidates',
   'threadnote_guide',
   'share_publish',
 ];
@@ -29,6 +31,7 @@ const ADVANCED_TOOL_NAMES = [
   'archive',
   'archive_context',
   'compact_context',
+  'recall_feedback',
   'forget',
   'add_resource',
   'grep',
@@ -166,7 +169,7 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 async function withMcpClient<T>(
-  fn: (client: Client) => Promise<T>,
+  fn: (client: Client, fixture: {readonly home: string; readonly root: string}) => Promise<T>,
   options: {readonly nativeMcpUrl?: string; readonly toolset?: 'core' | 'full' | null} = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-ov-parity-'));
@@ -183,7 +186,7 @@ async function withMcpClient<T>(
     THREADNOTE_HOME: home,
     THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
     THREADNOTE_OPENVIKING_MCP_URL: options.nativeMcpUrl ?? nativeMcp?.url ?? '',
-    THREADNOTE_USER: 'denyskashkovskyi',
+    THREADNOTE_USER: 'test-user',
   } as Record<string, string>;
   if (options.toolset === null) {
     delete environment.THREADNOTE_MCP_TOOLSET;
@@ -200,7 +203,7 @@ async function withMcpClient<T>(
   const client = new Client({name: 'threadnote-test', version: '0.0.0'});
   try {
     await client.connect(transport);
-    return await fn(client);
+    return await fn(client, {home, root});
   } finally {
     await client.close().catch(() => undefined);
     await nativeMcp?.close().catch(() => undefined);
@@ -229,7 +232,7 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
-        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(6_000);
+        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(12_000);
       },
       {toolset: null},
     );
@@ -257,6 +260,263 @@ describe('Threadnote MCP toolsets', () => {
           query: 'threadnote',
         });
         expect(validationError).toContain('greater than or equal to 1');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('returns hybrid recall confidence and ranking explanations as structured content', async () => {
+    await withMcpClient(
+      async client => {
+        const result = await client.callTool(
+          {arguments: {query: 'threadnote recall ranking'}, name: 'recall_context'},
+          undefined,
+          {timeout: 5000},
+        );
+
+        expect(result.structuredContent).toMatchObject({
+          confidence: {
+            level: expect.stringMatching(/^(?:high|medium|low|no_answer)$/),
+          },
+          rankerVersion: 'hybrid-v1',
+          results: expect.any(Array),
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('reviews task-closeout candidates and records a deferred decision without writing memory', async () => {
+    await withMcpClient(
+      async client => {
+        const review = await callText(client, 'review_session_context', {
+          decisions: ['Keep candidate review inside the agent session.'],
+          evidence: ['docs/recall-and-memory-formation-plan.md'],
+          outcome: 'Added task-closeout candidate review.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          sourceSessionId: 'session-test',
+          task: 'Implement candidate memory workflow',
+          topic: 'candidate-memory',
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(review)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(review)?.[1];
+        expect(reviewId).toBeDefined();
+        expect(candidateId).toBeDefined();
+
+        const deferred = await callText(client, 'apply_memory_candidates', {
+          action: 'defer',
+          candidateId,
+          reviewId,
+          revision: 1,
+        });
+
+        expect(deferred).toContain(`Deferred candidate ${candidateId}`);
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('writes an approved candidate only with explicit approval and the current revision', async () => {
+    await withMcpClient(
+      async client => {
+        const review = await callText(client, 'review_session_context', {
+          decisions: ['Use a stable candidate review identifier.'],
+          evidence: ['test/integration/mcp.openviking-parity.test.ts'],
+          outcome: 'Implemented candidate audit records.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Implement approved memory candidates',
+          topic: 'approved-candidates',
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(review)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(review)?.[1];
+
+        await expect(
+          callErrorText(client, 'apply_memory_candidates', {
+            action: 'approve',
+            candidateId,
+            reviewId,
+            revision: 1,
+          }),
+        ).resolves.toContain('approved=true');
+
+        const applied = await callText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId,
+          reviewId,
+          revision: 1,
+        });
+
+        expect(applied).toContain(
+          'Stored memory: viking://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
+        );
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('records an applying-state content mismatch as a recoverable conflict', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'candidate-recovery-conflict';
+        const reviewText = await callText(client, 'review_session_context', {
+          decisions: ['Persist the exact approved candidate payload hash.'],
+          evidence: ['test/integration/mcp.openviking-parity.test.ts'],
+          outcome: 'Prepared deterministic applying-state recovery.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Recover interrupted candidate approval',
+          topic,
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(reviewText)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(reviewText)?.[1];
+        expect(reviewId).toBeDefined();
+        expect(candidateId).toBeDefined();
+        const reviewPath = join(fixture.home, 'threadnote', 'candidates', 'v1', 'reviews', `${reviewId}.json`);
+        const review = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+          candidates: Array<Record<string, unknown>>;
+        };
+        const destinationUri = `viking://user/test-user/memories/durable/projects/threadnote/${topic}.md`;
+        review.candidates[0] = {
+          ...review.candidates[0],
+          applyApprovedAt: '2026-07-23T10:00:00.000Z',
+          applyContentHash: '0'.repeat(64),
+          applyOperation: 'create',
+          applyStage: 'prepared',
+          applyTargetUri: destinationUri,
+          state: 'applying',
+        };
+        await writeFile(reviewPath, `${JSON.stringify(review, undefined, 2)}\n`, 'utf8');
+        const destinationPath = join(
+          fixture.home,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          `${topic}.md`,
+        );
+        await mkdir(join(destinationPath, '..'), {recursive: true});
+        await writeFile(
+          destinationPath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: codex',
+            `candidate_id: ${candidateId}`,
+            'timestamp: 2026-07-23T10:00:00.000Z',
+            '',
+            'Different content than the approved payload.',
+          ].join('\n'),
+          'utf8',
+        );
+
+        await expect(
+          callErrorText(client, 'apply_memory_candidates', {
+            action: 'approve',
+            approved: true,
+            candidateId,
+            reviewId,
+            revision: 1,
+          }),
+        ).resolves.toContain('mismatched content');
+        const conflicted = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+          candidates: Array<{state?: string}>;
+        };
+        expect(conflicted.candidates[0]?.state).toBe('conflict');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('allows a reviewed shared-memory conflict to create a personal candidate', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'shared-candidate-personal-copy';
+        const sharedPath = join(
+          fixture.home,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'team',
+          'durable',
+          'projects',
+          'threadnote',
+          `${topic}.md`,
+        );
+        await mkdir(join(sharedPath, '..'), {recursive: true});
+        await writeFile(
+          sharedPath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: teammate',
+            'timestamp: 2026-07-22T00:00:00.000Z',
+            '',
+            'Use the old shared candidate policy.',
+          ].join('\n'),
+          'utf8',
+        );
+        const review = await callText(client, 'review_session_context', {
+          decisions: ['Use the new reviewed candidate policy.'],
+          evidence: ['test/integration/mcp.openviking-parity.test.ts'],
+          outcome: 'Reviewed a changed shared memory.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Create a personal candidate from shared conflict',
+          topic,
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(review)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(review)?.[1];
+        expect(review).toContain('[replace]');
+        expect(review).toContain('/memories/shared/team/');
+
+        const applied = await callText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId,
+          operation: 'create',
+          reviewId,
+          revision: 1,
+        });
+
+        expect(applied).toContain(
+          `Stored memory: viking://user/test-user/memories/durable/projects/threadnote/${topic}.md`,
+        );
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('requires evidence before proposing durable candidates', async () => {
+    await withMcpClient(
+      async client => {
+        await expect(
+          callErrorText(client, 'review_session_context', {
+            decisions: ['This unsupported claim must not become durable memory.'],
+            outcome: 'Attempted an unsupported closeout.',
+            project: 'threadnote',
+            sourceAgentClient: 'codex',
+            task: 'Check evidence enforcement',
+            topic: 'evidence-enforcement',
+          }),
+        ).resolves.toContain('requires at least one evidence pointer');
       },
       {toolset: 'core'},
     );
@@ -470,12 +730,12 @@ describe('Threadnote MCP OpenViking parity tools', () => {
       );
       const mixedRead = await callText(client, 'read_context', {
         uris: [
-          'viking://user/denyskashkovskyi/memories/durable/projects/threadnote/example.md',
+          'viking://user/test-user/memories/durable/projects/threadnote/example.md',
           'viking://resources/native-missing.md',
         ],
       });
       expect(mixedRead).toContain(
-        'read:{"uris":["viking://user/denyskashkovskyi/memories/durable/projects/threadnote/example.md"]}',
+        'read:{"uris":["viking://user/test-user/memories/durable/projects/threadnote/example.md"]}',
       );
       expect(mixedRead).toContain('"read","viking://resources/native-missing.md"');
     });

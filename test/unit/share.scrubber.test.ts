@@ -141,6 +141,29 @@ describe('stripPersonalProvenance', () => {
     expect(out).toContain('Body mentioning references:');
   });
 
+  it('removes local candidate, session, evidence, and relation provenance', () => {
+    const input = [
+      'MEMORY',
+      'schema_version: 2',
+      'kind: durable',
+      'candidate_id: review-abc-1',
+      'source_session_id: local-session',
+      'evidence: /Users/me/repo/file.ts',
+      'relation: evidence_for viking://user/me/memories/private.md',
+      'authority: user_approved',
+      'trust: approved',
+      '',
+      'Reviewed body.',
+    ].join('\n');
+
+    const out = stripPersonalProvenance(input);
+
+    expect(out).not.toMatch(/^(?:candidate_id|source_session_id|evidence|relation):/m);
+    expect(out).toContain('authority: user_approved');
+    expect(out).toContain('trust: approved');
+    expect(out).toContain('Reviewed body.');
+  });
+
   it('leaves content unchanged when there is no header to strip', () => {
     const input = 'just a body\nwith no provenance';
     expect(stripPersonalProvenance(input)).toBe(input);

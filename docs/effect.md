@@ -14,6 +14,8 @@ upgrades are explicit and must pass the protocol and bundle gates below.
 - `src/effect/http.ts` owns HTTP status/text/JSON requests and typed transport/status failures.
 - `src/effect/time.ts` owns polling and retry schedules. Tests use `TestClock`, so they do not wait in real time.
 - `src/effect/openviking.ts` applies typed transient failures and scheduled retries to OpenViking resource removal.
+- `src/effect/file_lock.ts` provides Effect-native, token-owned local critical sections for bounded candidate and
+  feedback stores, including retry and stale-lock recovery.
 - `src/effect/runtime.ts` only assembles the application layer. It does not own a `ManagedRuntime` or expose execution
   helpers.
 - Each executable builds one Effect, provides the application layer once, and calls `NodeRuntime.runMain` once. Library
@@ -30,6 +32,9 @@ upgrades are explicit and must pass the protocol and bundle gates below.
 - Graph manifest reads, seeding, MCP installation, hook installation, lifecycle commands, recall, memory migration,
   pack I/O, and command execution compose through the application layer. Pure graph parsing, edge resolution, and
   Markdown rendering remain plain TypeScript.
+- Recall feedback, candidate-review persistence, audit writes, session-closeout orchestration, and MCP candidate
+  application compose as Effects using the shared filesystem and clock services. Deterministic BM25/ranking,
+  confidence, explanation, candidate comparison, and memory document transforms remain pure TypeScript.
 - `src/effect/share.ts` is the Effect-facing adapter for the transaction-oriented sharing implementation. This keeps
   the CLI error channel and runtime boundary uniform while the lower-level rollback callbacks remain Promise-based.
 - Long-lived servers and Effect-owned temporary directories use `Scope`/`acquireRelease`, so interruption closes

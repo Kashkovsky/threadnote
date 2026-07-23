@@ -4,6 +4,7 @@ import {basename, dirname, isAbsolute, join, relative, sep} from 'node:path';
 import {TextDecoder} from 'node:util';
 import {consoleOutput} from './effect/console.js';
 import {uriSegment} from './manifest.js';
+import {canonicalMemoryDocumentContent} from './memory_document.js';
 import {withIdentity} from './runtime.js';
 import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 import type {
@@ -1502,36 +1503,52 @@ export async function runSharePublish(
       `Refusing to publish ${sourceUri}: possible ${scrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
     );
   }
-  for (const redaction of scrub.redactions) {
-    consoleOutput.log(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
-  }
-  const content = scrub.cleaned;
-
-  if (!dryRun && (await vikingResourceExists(ov, config, targetUri))) {
-    throw new Error(
-      `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
-    );
-  }
-  await ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
-  await writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
-
   const worktree = team.config.worktree;
   const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
   const message = options.message ?? `share: publish ${relativePath}`;
-  const gitMessages = await publishShareGitChange(worktree, relativePath, message, {
-    dryRun,
-    push: options.push,
-  });
+  const publish = async () => {
+    const currentRawContent = dryRun ? rawContent : await readMemoryContent(config, ov, sourceUri, false);
+    const currentScrub = applyScrubber(stripPersonalProvenance(currentRawContent), {
+      redact: options.redact === true,
+    });
+    if (currentScrub.blocker) {
+      throw new Error(
+        `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
+      );
+    }
+    if (!dryRun && (await vikingResourceExists(ov, config, targetUri))) {
+      throw new Error(
+        `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
+      );
+    }
+    await ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
+    await writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', dryRun);
+    if (!dryRun) {
+      const storedTarget = await readMemoryContent(config, ov, targetUri, false);
+      if (canonicalMemoryDocumentContent(storedTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)) {
+        throw new Error(`Shared target verification failed after writing ${targetUri}; personal source preserved.`);
+      }
+    }
+    const gitMessages = await publishShareGitChange(worktree, relativePath, message, {
+      dryRun,
+      push: options.push,
+    });
+    if (!dryRun) {
+      const sourceBeforeRemoval = await readMemoryContent(config, ov, sourceUri, false);
+      if (sourceBeforeRemoval.trim() !== currentRawContent.trim()) {
+        throw new Error(`Memory ${sourceUri} changed during publication; personal source preserved.`);
+      }
+    }
+    await removeMemoryUri(config, ov, sourceUri, dryRun);
+    return {gitMessages, redactions: currentScrub.redactions};
+  };
+  const published = await publish();
+  for (const redaction of published.redactions) {
+    consoleOutput.log(`Redacted ${redaction.count}× ${redaction.name} before publish.`);
+  }
+  const gitMessages = published.gitMessages;
   for (const gitMessage of gitMessages) {
     consoleOutput.log(gitMessage);
-  }
-  try {
-    await removeMemoryUri(config, ov, sourceUri, dryRun);
-  } catch (err: unknown) {
-    throw new Error(
-      `Published ${sourceUri} -> ${targetUri}, but could not remove the personal source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
-      {cause: err},
-    );
   }
   consoleOutput.log(`Published ${sourceUri} -> ${targetUri}`);
 }
@@ -3906,14 +3923,12 @@ function printShareArtifactResult(result: ShareArtifactResult, preview: boolean)
 }
 
 /**
- * Removes `supersedes:` and `archived_from:` lines from the header block of
- * a memory document before it's published to a team's shared git repo. Those
- * lines point at viking:// URIs that only resolve on the publisher's machine —
- * teammates pull via git and have no way to dereference them — so they are
- * always noise at the publish boundary. They also frequently leak the
- * publisher's personal-namespace path or a stale self-reference (the
- * remember --replace <self> bug fixed in storeMemory). Defence-in-depth: even
- * if a regression re-introduces a supersedes-self line, it stops here.
+ * Removes personal lifecycle, candidate, session, evidence, and relation
+ * provenance from the header block before a memory is published to a team's
+ * shared git repo. Personal viking:// URIs do not resolve for teammates, and
+ * candidate/session IDs are local workflow state rather than durable knowledge.
+ * Defence-in-depth: even if a producer accidentally retains local provenance,
+ * it stops here.
  *
  * Operates only on the contiguous header block (everything up to the first
  * blank line). Prose mentions of "supersedes:" elsewhere in the body are
@@ -3930,7 +3945,9 @@ export function stripPersonalProvenance(content: string): string {
   }
   const cleaned: string[] = [];
   for (let index = 0; index < headerEnd; index += 1) {
-    if (/^(?:supersedes|archived_from|references):\s/.test(lines[index])) {
+    if (
+      /^(?:archived_from|candidate_id|evidence|references|relation|source_session_id|supersedes):\s/.test(lines[index])
+    ) {
       continue;
     }
     cleaned.push(lines[index]);
@@ -4061,13 +4078,17 @@ async function writeOvFileWithRetry(
   const existedBeforeWrite = await vikingResourceExists(ov, config, uri);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const existsNow = attempt === 0 ? existedBeforeWrite : await vikingResourceExists(ov, config, uri);
-    const ourWriteLanded = existsNow && !existedBeforeWrite;
-    // First attempt honors the caller's intent. If create fails because the
-    // target already exists, OV returns a non-transient error and we surface
-    // it loudly rather than silently overwriting. The flip to "replace" only
-    // happens on retries where the resource appeared between attempts (i.e.,
-    // our own previous attempt landed despite a transient post-write error).
-    const mode = attempt === 0 ? initialMode : ourWriteLanded ? 'replace' : initialMode;
+    if (attempt > 0 && existsNow) {
+      if (await openVikingContentMatches(config, ov, uri, fromFile)) {
+        return;
+      }
+      if (initialMode === 'create' && !existedBeforeWrite) {
+        throw new Error(`Create conflict: ${uri} appeared with different content while the write was retrying.`);
+      }
+    }
+    // Preserve the caller's operation on every retry. In particular, a create
+    // must never flip to replace merely because some writer made the URI exist.
+    const mode = initialMode;
     const args = withIdentity(config, [
       'write',
       uri,
@@ -4095,7 +4116,7 @@ async function writeOvFileWithRetry(
     if (
       isTransientOvFailure(result.stderr, result.stdout) &&
       (await vikingResourceExists(ov, config, uri)) &&
-      !existedBeforeWrite
+      (await openVikingContentMatches(config, ov, uri, fromFile))
     ) {
       // The write succeeded server-side (URI now exists where it didn't before
       // this call started) even though OV returned an error before the --wait
@@ -4107,6 +4128,9 @@ async function writeOvFileWithRetry(
       }
       await waitForOvQueue(ov, config, options);
       return;
+    }
+    if (initialMode === 'create' && !existedBeforeWrite && (await vikingResourceExists(ov, config, uri))) {
+      throw new Error(`Create conflict: ${uri} exists with content not written by this invocation.`);
     }
     if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
       throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
@@ -4127,6 +4151,19 @@ async function writeOvFileWithRetry(
       await sleep(1000 * (attempt + 1));
     }
   }
+}
+
+async function openVikingContentMatches(
+  config: ShareRuntime,
+  ov: string,
+  uri: string,
+  fromFile: string,
+): Promise<boolean> {
+  const [expected, actual] = await Promise.all([
+    readFile(fromFile, 'utf8'),
+    runCommand(ov, withIdentity(config, ['read', uri]), {allowFailure: true}),
+  ]);
+  return actual.exitCode === 0 && actual.stdout.trim() === expected.trim();
 }
 
 async function refreshMemoryIndex(

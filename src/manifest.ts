@@ -82,6 +82,10 @@ function containsNameToken(query: string, name: string): boolean {
 
 export async function readSeedManifest(path: string): Promise<SeedManifest> {
   const raw = await readFile(path, 'utf8');
+  return parseSeedManifest(raw, path);
+}
+
+export function parseSeedManifest(raw: string, path: string): SeedManifest {
   const loaded = yaml.load(raw);
   if (!isJsonObject(loaded)) {
     throw new Error(`Manifest must be an object: ${path}`);

@@ -47,6 +47,35 @@ interface TextContent {
   readonly type: 'text';
 }
 
+interface CandidateReviewContent {
+  readonly candidates: readonly {
+    readonly candidateId: string;
+    readonly comparison: string;
+    readonly proposedText: string;
+    readonly recommendation: string;
+    readonly state: string;
+    readonly targetUri?: string;
+  }[];
+  readonly noAction: boolean;
+  readonly reviewId: string;
+  readonly revision: number;
+}
+
+interface RecallContent {
+  readonly confidence: {
+    readonly level: string;
+    readonly score: number;
+  };
+  readonly rankerVersion: string;
+  readonly results: readonly {
+    readonly finalScore: number;
+    readonly reasons: readonly {readonly code: string; readonly contribution: number}[];
+    readonly signals: Readonly<Record<string, number>>;
+    readonly uri: string;
+    readonly warnings: readonly string[];
+  }[];
+}
+
 beforeAll(async () => {
   LIVE_OV = await startLiveOpenViking();
 }, 120_000);
@@ -571,6 +600,461 @@ describe('published local bins', () => {
     }
   });
 
+  it('runs hybrid recall explanations and feedback through the packaged MCP bin', async () => {
+    const fixture = await makeFixture('hybrid-recall');
+    const project = 'threadnote';
+    const query = `${project} ZXQ-91827 retrieval anchor`;
+    const uri = `viking://user/e2e/memories/durable/projects/${project}/e2e-zxq-91827.md`;
+
+    await withMcpClient(fixture, LIVE_OV.mcpUrl, 'full', async client => {
+      expect(
+        await callToolText(client, 'remember_context', {
+          project,
+          text: 'ZXQ-91827 is the approved retrieval anchor for the packaged hybrid recall E2E workflow.',
+          topic: 'e2e-zxq-91827',
+        }),
+      ).toContain(uri);
+
+      const firstRecall = await callToolResult(client, 'recall_context', {
+        callerCwd: REPO_ROOT,
+        nodeLimit: 5,
+        query,
+      });
+      const firstText = textFromToolResult(firstRecall);
+      const firstStructured = structuredContentFromToolResult<RecallContent>(firstRecall);
+      const firstTarget = firstStructured.results.find(result => result.uri === uri);
+
+      expect(firstText).toContain('Recall confidence:');
+      expect(firstText).toContain('why:');
+      expect(firstStructured.rankerVersion).toBe('hybrid-v1');
+      expect(firstStructured.confidence.level).not.toBe('no_answer');
+      expect(firstTarget).toBeDefined();
+      expect(firstTarget?.finalScore).toBeGreaterThan(0);
+      expect(firstTarget?.signals.bm25).toBeGreaterThan(0);
+      expect(firstTarget?.reasons.map(reason => reason.code)).toContain('bm25_lexical');
+
+      expect(
+        await callToolText(client, 'recall_feedback', {
+          action: 'useful',
+          project,
+          query,
+          uri,
+        }),
+      ).toContain(`Recorded useful feedback for ${uri}`);
+      expect(
+        await callToolText(client, 'recall_feedback', {
+          action: 'useful',
+          project,
+          query,
+          uri,
+        }),
+      ).toContain('no duplicate was added');
+      const projectlessPin = await client.callTool({
+        arguments: {action: 'pin', query, uri},
+        name: 'recall_feedback',
+      });
+      expect(projectlessPin.isError).toBe(true);
+      expect(textFromToolResult(projectlessPin)).toContain('requires project when action is pin');
+
+      const secondRecall = await callToolResult(client, 'recall_context', {
+        callerCwd: REPO_ROOT,
+        nodeLimit: 5,
+        query,
+      });
+      const secondStructured = structuredContentFromToolResult<RecallContent>(secondRecall);
+      const secondTarget = secondStructured.results.find(result => result.uri === uri);
+      expect(secondTarget?.signals.feedback).toBeGreaterThan(0);
+      expect(secondTarget?.finalScore).toBeGreaterThanOrEqual(firstTarget?.finalScore ?? 0);
+    });
+  });
+
+  it('runs reviewed task-closeout creation, decisions, deduplication, and stale-write protection', async () => {
+    const fixture = await makeFixture('candidate-closeout');
+    const project = 'e2e-candidate-closeout';
+    const topic = 'agent-closeout';
+    const durableUri = `viking://user/e2e/memories/durable/projects/${project}/${topic}.md`;
+    const preferenceUri = `viking://user/e2e/memories/preferences/${topic}.md`;
+    const handoffUri = `viking://user/e2e/memories/handoffs/active/${project}/${topic}.md`;
+    const closeoutInput = {
+      decisions: ['Use reviewed task-closeout candidates before writing durable memory.'],
+      evidence: ['test/e2e/local-bins.e2e.ts'],
+      handoff: ['The packaged candidate workflow completed its E2E checks.'],
+      invariants: ['Silence is never approval for a candidate memory write.'],
+      outcome: 'Covered the task-closeout memory workflow end to end.',
+      preferences: ['Present memory suggestions inside the current agent session.'],
+      project,
+      sourceAgentClient: 'codex-e2e',
+      sourceSessionId: 'candidate-closeout-e2e',
+      task: 'Test task-closeout candidate memory',
+      topic,
+    } as const;
+
+    await withMcpClient(fixture, LIVE_OV.mcpUrl, 'core', async client => {
+      const reviewResult = await callToolResult(client, 'review_session_context', closeoutInput);
+      const review = structuredContentFromToolResult<CandidateReviewContent>(reviewResult);
+      expect(textFromToolResult(reviewResult)).toContain('Do not write memory until the user decides');
+      expect(review).toMatchObject({noAction: false, revision: 1});
+      expect(review.candidates).toHaveLength(3);
+      expect(review.candidates.map(candidate => candidate.recommendation)).toEqual(['create', 'create', 'create']);
+      expect(review.candidates.every(candidate => candidate.state === 'pending')).toBe(true);
+
+      const beforeApproval = await client.callTool({arguments: {uri: durableUri}, name: 'read_context'});
+      expect(beforeApproval.isError).toBe(true);
+
+      const durableCandidate = review.candidates[0];
+      const preferenceCandidate = review.candidates[1];
+      const handoffCandidate = review.candidates[2];
+      expect(durableCandidate).toBeDefined();
+      expect(preferenceCandidate).toBeDefined();
+      expect(handoffCandidate).toBeDefined();
+
+      const missingApproval = await client.callTool({
+        arguments: {
+          action: 'approve',
+          candidateId: durableCandidate?.candidateId,
+          reviewId: review.reviewId,
+          revision: review.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(missingApproval.isError).toBe(true);
+      expect(textFromToolResult(missingApproval)).toContain('approved=true');
+
+      const unsafeTargetOverride = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: durableCandidate?.candidateId,
+          operation: 'replace',
+          replaceUri: `${durableUri}.other`,
+          reviewId: review.reviewId,
+          revision: review.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(unsafeTargetOverride.isError).toBe(true);
+      expect(textFromToolResult(unsafeTargetOverride)).toContain('has no reviewed replacement target');
+
+      const approved = await callToolResult(client, 'apply_memory_candidates', {
+        action: 'approve',
+        approved: true,
+        candidateId: durableCandidate?.candidateId,
+        reviewId: review.reviewId,
+        revision: review.revision,
+      });
+      expect(textFromToolResult(approved)).toContain(`Stored memory: ${durableUri}`);
+      const reviewPath = join(fixture.home, 'threadnote', 'candidates', 'v1', 'reviews', `${review.reviewId}.json`);
+      const interruptedReview = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+        auditEvents: Array<{readonly action: string}>;
+        candidates: Array<Record<string, unknown>>;
+        revision: number;
+      };
+      interruptedReview.revision = 1;
+      interruptedReview.auditEvents = interruptedReview.auditEvents.filter(event => event.action !== 'apply');
+      interruptedReview.candidates[0] = {
+        ...interruptedReview.candidates[0],
+        applyStage: 'prepared',
+        state: 'applying',
+      };
+      await writeFile(reviewPath, `${JSON.stringify(interruptedReview, undefined, 2)}\n`, 'utf8');
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId: durableCandidate?.candidateId,
+          reviewId: review.reviewId,
+          revision: review.revision,
+        }),
+      ).toContain(`Recovered approved candidate ${durableCandidate?.candidateId} at ${durableUri}`);
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId: durableCandidate?.candidateId,
+          reviewId: review.reviewId,
+          revision: review.revision,
+        }),
+      ).toContain(`was already approved at ${durableUri}`);
+
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'defer',
+          candidateId: preferenceCandidate?.candidateId,
+          reviewId: review.reviewId,
+          revision: 2,
+        }),
+      ).toContain(`Deferred candidate ${preferenceCandidate?.candidateId}`);
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'reject',
+          candidateId: handoffCandidate?.candidateId,
+          reviewId: review.reviewId,
+          revision: 3,
+        }),
+      ).toContain(`Rejected candidate ${handoffCandidate?.candidateId}`);
+
+      const stored = await callToolText(client, 'read_context', {uri: durableUri});
+      expect(stored).toContain('authority: user_approved');
+      expect(stored).toContain('trust: approved');
+      expect(stored).toContain(`candidate_id: ${durableCandidate?.candidateId}`);
+      expect(stored).toContain('evidence: test/e2e/local-bins.e2e.ts');
+      expect((await client.callTool({arguments: {uri: preferenceUri}, name: 'read_context'})).isError).toBe(true);
+      expect((await client.callTool({arguments: {uri: handoffUri}, name: 'read_context'})).isError).toBe(true);
+      const storedOnDisk = await readFile(
+        join(
+          fixture.home,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'e2e',
+          'memories',
+          'durable',
+          'projects',
+          project,
+          `${topic}.md`,
+        ),
+        'utf8',
+      );
+      expect(storedOnDisk).toContain('Use reviewed task-closeout candidates before writing durable memory.');
+      expect(storedOnDisk).toContain('Silence is never approval for a candidate memory write.');
+      expect(storedOnDisk).toContain('<!-- MEMORY_FIELDS');
+
+      const audit = (await readFile(join(fixture.home, 'threadnote', 'candidates', 'v1', 'audit.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line) as {readonly action: string; readonly reviewId: string})
+        .filter(event => event.reviewId === review.reviewId);
+      expect(audit.map(event => event.action)).toEqual(['create_review', 'begin_apply', 'apply', 'defer', 'reject']);
+
+      const duplicateResult = await callToolResult(client, 'review_session_context', {
+        decisions: closeoutInput.decisions,
+        evidence: closeoutInput.evidence,
+        invariants: closeoutInput.invariants,
+        outcome: 'Rechecked unchanged closeout knowledge.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Recheck task-closeout candidate memory',
+        topic,
+      });
+      const duplicate = structuredContentFromToolResult<CandidateReviewContent>(duplicateResult);
+      expect(duplicate, JSON.stringify(duplicate, undefined, 2)).toMatchObject({noAction: true, revision: 1});
+      expect(duplicate.candidates[0]).toMatchObject({
+        comparison: 'duplicate',
+        recommendation: 'no_action',
+        targetUri: durableUri,
+      });
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId: duplicate.candidates[0]?.candidateId,
+          reviewId: duplicate.reviewId,
+          revision: duplicate.revision,
+        }),
+      ).toContain('Confirmed no action for duplicate candidate');
+
+      const possibleDuplicateTopic = `${topic}-copy`;
+      const possibleDuplicateUri = `viking://user/e2e/memories/durable/projects/${project}/${possibleDuplicateTopic}.md`;
+      const possibleDuplicateResult = await callToolResult(client, 'review_session_context', {
+        decisions: closeoutInput.decisions,
+        evidence: closeoutInput.evidence,
+        invariants: closeoutInput.invariants,
+        outcome: 'Proposed an explicitly reviewed copy under another topic.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Review a cross-topic possible duplicate',
+        topic: possibleDuplicateTopic,
+      });
+      const possibleDuplicate = structuredContentFromToolResult<CandidateReviewContent>(possibleDuplicateResult);
+      expect(possibleDuplicate.candidates[0]).toMatchObject({
+        comparison: 'possible_duplicate',
+        recommendation: 'manual_review',
+        targetUri: durableUri,
+      });
+      const ambiguousApproval = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: possibleDuplicate.candidates[0]?.candidateId,
+          reviewId: possibleDuplicate.reviewId,
+          revision: possibleDuplicate.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(ambiguousApproval.isError).toBe(true);
+      expect(textFromToolResult(ambiguousApproval)).toContain('requires an explicit operation');
+      expect(
+        await callToolText(client, 'apply_memory_candidates', {
+          action: 'approve',
+          approved: true,
+          candidateId: possibleDuplicate.candidates[0]?.candidateId,
+          operation: 'create',
+          reviewId: possibleDuplicate.reviewId,
+          revision: possibleDuplicate.revision,
+        }),
+      ).toContain(`Stored memory: ${possibleDuplicateUri}`);
+      expect(await callToolText(client, 'read_context', {uri: durableUri})).toContain(
+        'Use reviewed task-closeout candidates',
+      );
+
+      const createRaceTopic = `${topic}-create-race`;
+      const createRaceUri = `viking://user/e2e/memories/durable/projects/${project}/${createRaceTopic}.md`;
+      const createRaceResult = await callToolResult(client, 'review_session_context', {
+        decisions: ['Use a uniquely named create-only candidate destination.'],
+        evidence: closeoutInput.evidence,
+        outcome: 'Prepared a create-only candidate before a concurrent writer.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Protect a create-only candidate from concurrent overwrite',
+        topic: createRaceTopic,
+      });
+      const createRace = structuredContentFromToolResult<CandidateReviewContent>(createRaceResult);
+      expect(createRace.candidates[0]).toMatchObject({recommendation: 'create'});
+      expect(
+        await callToolText(client, 'remember_context', {
+          project,
+          text: 'A concurrent writer claimed the reviewed create-only destination.',
+          topic: createRaceTopic,
+        }),
+      ).toContain(`Stored memory: ${createRaceUri}`);
+      const createRaceApply = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: createRace.candidates[0]?.candidateId,
+          reviewId: createRace.reviewId,
+          revision: createRace.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(createRaceApply.isError).toBe(true);
+      expect(textFromToolResult(createRaceApply).toLowerCase()).toContain('conflict');
+      expect(await callToolText(client, 'read_context', {uri: createRaceUri})).toContain('concurrent writer claimed');
+
+      const replacementResult = await callToolResult(client, 'review_session_context', {
+        decisions: ['Use a newer candidate policy after the E2E review.'],
+        evidence: closeoutInput.evidence,
+        outcome: 'Proposed a replacement for existing closeout knowledge.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Replace task-closeout candidate memory',
+        topic,
+      });
+      const replacement = structuredContentFromToolResult<CandidateReviewContent>(replacementResult);
+      expect(replacement.candidates[0]).toMatchObject({recommendation: 'replace', targetUri: durableUri});
+      const staleDuplicateResult = await callToolResult(client, 'review_session_context', {
+        decisions: closeoutInput.decisions,
+        evidence: closeoutInput.evidence,
+        invariants: closeoutInput.invariants,
+        outcome: 'Prepared a duplicate before its target changed.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Reject stale duplicate no-action approval',
+        topic,
+      });
+      const staleDuplicate = structuredContentFromToolResult<CandidateReviewContent>(staleDuplicateResult);
+      expect(staleDuplicate.candidates[0]).toMatchObject({
+        recommendation: 'no_action',
+        targetUri: durableUri,
+      });
+
+      expect(
+        await callToolText(client, 'remember_context', {
+          project,
+          replaceUri: durableUri,
+          text: 'A concurrent manual update changed this memory after candidate review.',
+          topic,
+        }),
+      ).toContain(`Updated existing memory in place: ${durableUri}`);
+
+      const staleApply = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: replacement.candidates[0]?.candidateId,
+          operation: 'replace',
+          replaceUri: durableUri,
+          reviewId: replacement.reviewId,
+          revision: replacement.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(staleApply.isError).toBe(true);
+      expect(textFromToolResult(staleApply)).toContain('is stale');
+      const staleRetry = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: replacement.candidates[0]?.candidateId,
+          operation: 'replace',
+          replaceUri: durableUri,
+          reviewId: replacement.reviewId,
+          revision: replacement.revision + 1,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(staleRetry.isError).toBe(true);
+      expect(textFromToolResult(staleRetry)).toContain('already conflict');
+      const staleDuplicateApply = await client.callTool({
+        arguments: {
+          action: 'approve',
+          approved: true,
+          candidateId: staleDuplicate.candidates[0]?.candidateId,
+          reviewId: staleDuplicate.reviewId,
+          revision: staleDuplicate.revision,
+        },
+        name: 'apply_memory_candidates',
+      });
+      expect(staleDuplicateApply.isError).toBe(true);
+      expect(textFromToolResult(staleDuplicateApply)).toContain('is stale');
+      expect(await callToolText(client, 'read_context', {uri: durableUri})).toContain('concurrent manual update');
+
+      const successfulReplacementTopic = `${topic}-successful-replacement`;
+      const successfulReplacementUri = `viking://user/e2e/memories/durable/projects/${project}/${successfulReplacementTopic}.md`;
+      const successfulReplacementResult = await callToolResult(client, 'review_session_context', {
+        decisions: ['A concurrent manual update changed this memory after candidate review.'],
+        evidence: closeoutInput.evidence,
+        outcome: 'Prepared a reviewed cross-topic replacement.',
+        project,
+        sourceAgentClient: 'codex-e2e',
+        task: 'Complete a reviewed candidate replacement',
+        topic: successfulReplacementTopic,
+      });
+      const successfulReplacement =
+        structuredContentFromToolResult<CandidateReviewContent>(successfulReplacementResult);
+      expect(successfulReplacement.candidates[0]).toMatchObject({
+        recommendation: 'manual_review',
+        targetUri: durableUri,
+      });
+      const replacementArguments = {
+        action: 'approve',
+        approved: true,
+        candidateId: successfulReplacement.candidates[0]?.candidateId,
+        operation: 'replace',
+        replaceUri: durableUri,
+        reviewId: successfulReplacement.reviewId,
+        revision: successfulReplacement.revision,
+      } as const;
+      let successfulApply = await client.callTool({
+        arguments: replacementArguments,
+        name: 'apply_memory_candidates',
+      });
+      if (successfulApply.isError === true && textFromToolResult(successfulApply).includes('Retry this approval')) {
+        successfulApply = await client.callTool({
+          arguments: replacementArguments,
+          name: 'apply_memory_candidates',
+        });
+      }
+      expect(successfulApply.isError, textFromToolResult(successfulApply)).not.toBe(true);
+      expect(textFromToolResult(successfulApply)).toMatch(/Stored memory:|Recovered approved candidate/);
+      expect(await callToolText(client, 'read_context', {uri: successfulReplacementUri})).toContain(
+        'concurrent manual update changed',
+      );
+      expect((await client.callTool({arguments: {uri: durableUri}, name: 'read_context'})).isError).toBe(true);
+    });
+  });
+
   it('serves core and full MCP protocols through the packaged stdio bin', async () => {
     const fixture = await makeFixture('mcp');
     await withMcpClient(fixture, LIVE_OV.mcpUrl, 'core', async client => {
@@ -580,6 +1064,8 @@ describe('published local bins', () => {
         'read_context',
         'list_context',
         'remember_context',
+        'review_session_context',
+        'apply_memory_candidates',
         'threadnote_guide',
         'share_publish',
       ]);
@@ -1059,10 +1545,22 @@ async function withMcpClient<T>(
 }
 
 async function callToolText(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
+  return textFromToolResult(await callToolResult(client, name, args));
+}
+
+async function callToolResult(client: Client, name: string, args: Record<string, unknown>) {
   const result = await client.callTool({arguments: args, name}, undefined, {timeout: 10_000});
-  const text = textFromToolResult(result);
-  expect(result.isError, `${name} failed: ${text}`).not.toBe(true);
-  return text;
+  expect(result.isError, `${name} failed: ${textFromToolResult(result)}`).not.toBe(true);
+  return result;
+}
+
+function structuredContentFromToolResult<T>(result: unknown): T {
+  const structuredContent =
+    typeof result === 'object' && result !== null && 'structuredContent' in result
+      ? (result as {readonly structuredContent?: unknown}).structuredContent
+      : undefined;
+  expect(structuredContent).toBeDefined();
+  return structuredContent as T;
 }
 
 function textFromToolResult(result: unknown): string {

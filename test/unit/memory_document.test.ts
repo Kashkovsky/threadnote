@@ -1,0 +1,181 @@
+import {describe, expect, it} from 'vitest';
+import {
+  boundedMemoryAuthority,
+  boundedMemoryTrust,
+  canonicalMemoryDocumentContent,
+  formatMemoryDocument,
+  inferMemoryMetadata,
+  parseMemoryDocument,
+  type MemoryMetadata,
+} from '../../src/memory_document.js';
+
+describe('memory document contract', () => {
+  it('preserves the legacy document format when versioned metadata is absent', () => {
+    const metadata: MemoryMetadata = {
+      kind: 'durable',
+      project: 'threadnote',
+      references: ['viking://resources/repos/threadnote/README.md'],
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-07-23T10:00:00.000Z',
+      topic: 'recall',
+    };
+
+    const document = formatMemoryDocument('MEMORY', metadata, 'Use the shared ranker.');
+
+    expect(document).toBe(
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: recall',
+        'source_agent_client: codex',
+        'timestamp: 2026-07-23T10:00:00.000Z',
+        'references: viking://resources/repos/threadnote/README.md',
+        '',
+        'Use the shared ranker.',
+      ].join('\n'),
+    );
+    expect(parseMemoryDocument('viking://user/me/memory.md', document)?.metadata).toEqual(metadata);
+  });
+
+  it('round-trips authority, validity, provenance, evidence, and typed relations', () => {
+    const metadata: MemoryMetadata = {
+      authority: 'user_approved',
+      candidateId: 'candidate-1',
+      evidence: ['session:turn-12', 'commit:abc123'],
+      kind: 'durable',
+      lastReviewed: '2026-07-23T10:10:00.000Z',
+      project: 'threadnote',
+      relations: [
+        {type: 'depends_on', uri: 'viking://resources/repos/threadnote/docs/effect.md'},
+        {type: 'supersedes', uri: 'viking://user/me/memories/old.md'},
+      ],
+      schemaVersion: 2,
+      sourceAgentClient: 'codex',
+      sourceCommit: 'abc123',
+      sourceObservedAt: '2026-07-23T10:00:00.000Z',
+      sourceSessionId: 'session-1',
+      status: 'active',
+      timestamp: '2026-07-23T10:11:00.000Z',
+      topic: 'recall',
+      trust: 'approved',
+      validFrom: '2026-07-23T00:00:00.000Z',
+      validTo: '2027-07-23T00:00:00.000Z',
+    };
+
+    const document = formatMemoryDocument('MEMORY', metadata, 'Effect workflows compose upward.');
+    const parsed = parseMemoryDocument('viking://user/me/memory.md', document);
+
+    expect(parsed?.metadata).toEqual(metadata);
+    expect(parsed?.body).toBe('Effect workflows compose upward.');
+  });
+
+  it('excludes the managed OpenViking memory-fields trailer from the parsed body', () => {
+    const document = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'source_agent_client: codex',
+      'timestamp: 2026-07-23T10:00:00.000Z',
+      '',
+      'Only this text belongs to the memory body.',
+      '',
+      '<!-- MEMORY_FIELDS',
+      '{',
+      '  "version": 1',
+      '}',
+      '-->',
+    ].join('\n');
+
+    const parsed = parseMemoryDocument('viking://user/me/memory.md', document);
+
+    expect(parsed?.body).toBe('Only this text belongs to the memory body.');
+    expect(parsed?.content).toBe(document);
+    expect(canonicalMemoryDocumentContent(document)).toBe(
+      document.slice(0, document.indexOf('\n\n<!-- MEMORY_FIELDS')),
+    );
+  });
+
+  it('accepts reviewed-candidate authority without allowing ordinary memories to self-elevate', () => {
+    const uri = 'viking://user/me/memories/durable/projects/threadnote/recall.md';
+    expect(boundedMemoryAuthority(uri, {authority: 'canonical_repo', trust: 'approved'})).toBe('agent_generated');
+    expect(boundedMemoryTrust(uri, {authority: 'canonical_repo', trust: 'approved'})).toBe('inferred');
+    const reviewed: Partial<MemoryMetadata> = {
+      authority: 'user_approved',
+      candidateId: 'candidate-1',
+      lastReviewed: '2026-07-23T10:00:00.000Z',
+      sourceObservedAt: '2026-07-23T09:59:00.000Z',
+      trust: 'approved',
+    };
+    expect(boundedMemoryAuthority(uri, reviewed)).toBe('user_approved');
+    expect(boundedMemoryTrust(uri, reviewed)).toBe('approved');
+    const projectNamedShared = 'viking://user/me/memories/durable/projects/shared/topic.md';
+    expect(boundedMemoryAuthority(projectNamedShared)).toBe('agent_generated');
+    expect(boundedMemoryTrust(projectNamedShared)).toBe('inferred');
+    const teamShared = 'viking://user/me/memories/shared/team/durable/projects/threadnote/topic.md';
+    expect(boundedMemoryAuthority(teamShared)).toBe('reviewed_shared');
+    expect(boundedMemoryTrust(teamShared)).toBe('approved');
+    const importedResource = 'viking://resources/imports/external.md';
+    expect(boundedMemoryAuthority(importedResource)).toBe('external');
+    expect(boundedMemoryTrust(importedResource)).toBe('untrusted');
+    expect(boundedMemoryAuthority(importedResource, undefined, {canonicalResource: true})).toBe('canonical_repo');
+    expect(boundedMemoryTrust(importedResource, undefined, {canonicalResource: true})).toBe('approved');
+  });
+
+  it('rejects line breaks in scalar and repeated metadata headers', () => {
+    const metadata: MemoryMetadata = {
+      kind: 'durable',
+      project: 'threadnote',
+      sourceAgentClient: 'codex',
+      sourceSessionId: 'session-1\ncandidate_id: injected',
+      status: 'active',
+      timestamp: '2026-07-23T10:00:00.000Z',
+      topic: 'recall',
+    };
+
+    expect(() => formatMemoryDocument('MEMORY', metadata, 'Body')).toThrow(
+      'Memory metadata source_session_id must not contain line breaks.',
+    );
+    expect(() =>
+      formatMemoryDocument(
+        'MEMORY',
+        {...metadata, evidence: ['safe\nsupersedes: injected'], sourceSessionId: undefined},
+        'Body',
+      ),
+    ).toThrow('Memory metadata evidence must not contain line breaks.');
+  });
+
+  it('ignores malformed and untyped relations', () => {
+    const parsed = parseMemoryDocument(
+      'viking://user/me/memory.md',
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'source_agent_client: codex',
+        'timestamp: 2026-07-23T10:00:00.000Z',
+        'relation: unknown viking://user/me/other.md',
+        'relation: related_to https://example.com',
+        '',
+        'Body',
+      ].join('\n'),
+    );
+
+    expect(parsed?.metadata.relations).toBeUndefined();
+  });
+
+  it('infers legacy repo and task aliases', () => {
+    expect(
+      inferMemoryMetadata(
+        ['HANDOFF', 'repo: threadnote', 'task: recall-quality', 'source_agent_client: claude', '', 'Body'].join('\n'),
+      ),
+    ).toMatchObject({
+      kind: 'handoff',
+      project: 'threadnote',
+      sourceAgentClient: 'claude',
+      topic: 'recall-quality',
+    });
+  });
+});

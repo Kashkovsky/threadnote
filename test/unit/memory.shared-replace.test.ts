@@ -58,7 +58,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     manifestPath: join(home, 'manifest.json'),
     openVikingVersion: '0.0.0',
     port: 1933,
-    user: 'denyskashkovskyi',
+    user: 'test-user',
   };
 }
 
@@ -87,7 +87,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -118,7 +118,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -146,7 +146,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -171,7 +171,7 @@ describe('remember shared replacement', () => {
         runRemember(config, {
           dryRun: true,
           kind: 'handoff',
-          replace: 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/foo/bar.md',
+          replace: 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
           text: 'Not shareable.',
         }).pipe(Effect.provide(ApplicationLayer)),
       ),
@@ -181,7 +181,7 @@ describe('remember shared replacement', () => {
   it('surfaces git push failures instead of reporting a successful shared update', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sharedUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
     vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
         return ok();

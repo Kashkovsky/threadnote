@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "uri": "viking://resources/repos/threadnote/alpha-42.md",
+      "text": "Alpha-42 uses bounded retries and preserves the original cause.",
+      "authority": "canonical_repo",
+      "trust": "approved",
+      "fields": {
+        "title": "Alpha-42 retry policy",
+        "topic": "alpha-42",
+        "project": "threadnote",
+        "identifiers": ["alpha-42"]
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/common-retry.md",
+      "text": "General retry rollout background and common operational notes.",
+      "authority": "agent_generated",
+      "trust": "inferred",
+      "fields": {
+        "title": "Retry notes",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/active-channel.md",
+      "text": "The current release channel is stable.",
+      "authority": "user_approved",
+      "trust": "approved",
+      "kind": "durable",
+      "status": "active",
+      "timestamp": "2026-07-20T00:00:00.000Z",
+      "validFrom": "2026-07-01T00:00:00.000Z",
+      "fields": {
+        "title": "Release channel",
+        "topic": "release-channel",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/superseded-channel.md",
+      "text": "The release channel is beta.",
+      "authority": "user_approved",
+      "trust": "approved",
+      "kind": "durable",
+      "status": "superseded",
+      "timestamp": "2025-01-01T00:00:00.000Z",
+      "validTo": "2026-06-30T23:59:59.000Z",
+      "fields": {
+        "title": "Release channel",
+        "topic": "release-channel",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/current-handoff.md",
+      "text": "Candidate review wiring is complete; run the full validation suite next.",
+      "authority": "agent_generated",
+      "trust": "inferred",
+      "kind": "handoff",
+      "status": "active",
+      "timestamp": "2026-07-23T09:00:00.000Z",
+      "fields": {
+        "title": "Current candidate workflow handoff",
+        "topic": "candidate-memory",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/old-handoff.md",
+      "text": "Candidate review still needs design and implementation.",
+      "authority": "agent_generated",
+      "trust": "inferred",
+      "kind": "handoff",
+      "status": "archived",
+      "timestamp": "2025-01-01T00:00:00.000Z",
+      "fields": {
+        "title": "Old candidate workflow handoff",
+        "topic": "candidate-memory",
+        "project": "threadnote"
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "rare-identifier",
+      "query": "threadnote alpha-42 retry policy",
+      "project": "threadnote",
+      "expectedAnswerability": "answerable",
+      "relevance": {
+        "viking://resources/repos/threadnote/alpha-42.md": 3
+      },
+      "requiredReasonCodes": ["semantic_similarity", "bm25_lexical", "field_match"],
+      "semanticScores": {
+        "viking://resources/repos/threadnote/alpha-42.md": 0.72,
+        "viking://user/me/memories/common-retry.md": 0.62
+      }
+    },
+    {
+      "id": "active-over-superseded",
+      "query": "threadnote current release channel",
+      "project": "threadnote",
+      "now": "2026-07-23T10:00:00.000Z",
+      "expectedAnswerability": "answerable",
+      "relevance": {
+        "viking://user/me/memories/active-channel.md": 3
+      },
+      "forbiddenUris": ["viking://user/me/memories/superseded-channel.md"],
+      "requiredReasonCodes": ["lifecycle", "temporal_validity"],
+      "semanticScores": {
+        "viking://user/me/memories/active-channel.md": 0.74,
+        "viking://user/me/memories/superseded-channel.md": 0.81
+      }
+    },
+    {
+      "id": "current-handoff",
+      "query": "threadnote latest candidate memory handoff",
+      "project": "threadnote",
+      "now": "2026-07-23T10:00:00.000Z",
+      "expectedAnswerability": "answerable",
+      "relevance": {
+        "viking://user/me/memories/current-handoff.md": 3
+      },
+      "forbiddenUris": ["viking://user/me/memories/old-handoff.md"],
+      "requiredReasonCodes": ["freshness", "lifecycle"],
+      "semanticScores": {
+        "viking://user/me/memories/current-handoff.md": 0.7,
+        "viking://user/me/memories/old-handoff.md": 0.72
+      }
+    },
+    {
+      "id": "no-answer-service-mesh",
+      "query": "threadnote kubernetes service mesh topology",
+      "project": "threadnote",
+      "expectedAnswerability": "no_answer",
+      "relevance": {},
+      "semanticScores": {}
+    }
+  ]
+}
