@@ -1130,9 +1130,12 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
   }
   let signaled: boolean;
   if (system.platform === 'win32') {
-    const termination = yield* terminateWindowsProcessTree(windowsTerminationPid);
-    if (!termination.stopped) {
-      return yield* Effect.fail(windowsTerminationError(windowsTerminationPid, termination.result));
+    const terminationPids = windowsTerminationPid === pid ? [pid] : [pid, windowsTerminationPid];
+    for (const terminationPid of terminationPids) {
+      const termination = yield* terminateWindowsProcessTree(terminationPid);
+      if (!termination.stopped) {
+        return yield* Effect.fail(windowsTerminationError(terminationPid, termination.result));
+      }
     }
     signaled = true;
   } else {
@@ -1144,7 +1147,12 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     return;
   }
   const deadline = (yield* Clock.currentTimeMillis) + STOP_SERVER_TIMEOUT_MS;
-  while (yield* isProcessRunningEffect(pid)) {
+  while (
+    (yield* isProcessRunningEffect(pid)) ||
+    (system.platform === 'win32' &&
+      windowsTerminationPid !== pid &&
+      (yield* isProcessRunningEffect(windowsTerminationPid)))
+  ) {
     const remainingMs = deadline - (yield* Clock.currentTimeMillis);
     if (remainingMs <= 0) {
       return yield* Effect.fail(new Error(`Process ${pid} did not stop within ${STOP_SERVER_TIMEOUT_MS / 1000}s.`));
