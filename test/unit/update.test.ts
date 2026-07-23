@@ -70,17 +70,17 @@ async function makeRuntime(): Promise<RuntimeConfig> {
 
 function mockRegistryVersions(latest: string, beta: string) {
   const fetch = vi.fn(async (url: string | URL) => {
-    const href = String(url);
-    if (href.includes('/health')) {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes('/health')) {
       return new Response('healthy');
     }
-    if (href.includes('/threadnote/beta')) {
+    if (parsed.pathname.endsWith('/threadnote/beta')) {
       return Response.json({version: beta});
     }
-    if (href.includes('/threadnote/latest')) {
+    if (parsed.pathname.endsWith('/threadnote/latest')) {
       return Response.json({version: latest});
     }
-    if (href.includes('api.github.com')) {
+    if (parsed.hostname === 'api.github.com') {
       return Response.json([]);
     }
     return new Response('Not found', {status: 404});
