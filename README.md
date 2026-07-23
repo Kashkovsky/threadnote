@@ -37,6 +37,10 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   machine.
 - **Targeted local recall.** OpenViking runs a local GGUF embedding model through `llama.cpp` to rank semantic matches;
   agents load selected `viking://` records instead of replaying the entire memory history.
+- **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, currentness, authority, and bounded
+  feedback produce a confidence level and inspectable ranking reasons.
+- **Useful memory is suggested, not silently assumed.** At meaningful task closeout, the agent proposes up to three
+  deduplicated updates in the current conversation and writes only what the user approves.
 - **Durable and addressable.** Stable pointers let agents update one current `project/topic` instead of accumulating
   stale notes.
 - **Built for engineering work.** Decisions, contracts, gotchas, release workflows, and current branch state have
@@ -78,9 +82,10 @@ threadnote doctor --dry-run
 ```
 
 The CLI remains Threadnote's complete execution surface. The default stdio adapter is a compact interoperability layer
-with six core tools: `recall_context`, `read_context`, `list_context`, `remember_context`, `share_publish`, and
-`threadnote_guide`. Advanced workflows can run through the CLI without reconfiguring MCP; install with `--toolset full`
-only when the agent needs those workflows as MCP tools.
+with eight core tools: `recall_context`, `read_context`, `list_context`, `remember_context`,
+`review_session_context`, `apply_memory_candidates`, `share_publish`, and `threadnote_guide`. Advanced workflows can
+run through the CLI without reconfiguring MCP; install with `--toolset full` only when the agent needs those workflows
+as MCP tools.
 
 New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it calls the
 `threadnote_guide` MCP tool, which returns a short walkthrough tailored to your setup
@@ -134,11 +139,13 @@ memory and continues without asking the user to reconstruct it."
 - **Switch agents:** "Save where we are" -> agent stores a handoff the next MCP-enabled agent can read.
 - **Survive compaction:** Claude Code's hook can snapshot a handoff before compaction; other agents can recall it later.
 - **Remember a repo fact:** "This repo cuts release notes from CI" -> agent stores a durable workflow memory.
+- **Review what this task taught the next agent:** the agent proposes decisions, invariants, preferences, and handoff
+  state after delivering the result; approve, edit, defer, or reject in the same conversation.
 - **Share with teammates:** publish a curated durable memory or reusable skill to a team git repo.
 - **Clean up overlap:** run `threadnote compact --project <repo> --topic <issue> --dry-run` before archiving stale
   handoffs or forgetting exact duplicates.
 
-The adapter keeps the six core tools above as its default surface. `threadnote_guide` catalogs advanced categories and
+The adapter keeps the eight core tools above as its default surface. `threadnote_guide` catalogs advanced categories and
 their CLI equivalents without loading their schemas into every agent session. Pass `--toolset full` to `mcp-install`
 to expose compatibility aliases, memory maintenance, advanced sharing/artifact tools, and raw OpenViking parity tools
 with `ov_*` names.

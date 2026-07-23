@@ -722,6 +722,201 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     expect(hits.map(hit => hit.uri)).toEqual(['viking://user/me/memories/durable/projects/x/real.md']);
   });
 
+  it('uses the hybrid ranker for live recall and explains why a relevant canonical resource leads', () => {
+    const sections = buildRecallSections(
+      [
+        parseRecallHits(
+          json({
+            ok: true,
+            result: {
+              memories: [
+                {
+                  context_type: 'memory',
+                  uri: 'viking://user/me/memories/durable/projects/threadnote/general.md',
+                  score: 0.71,
+                  abstract: 'General retry notes.',
+                },
+              ],
+              resources: [
+                {
+                  context_type: 'resource',
+                  uri: 'viking://resources/repos/threadnote/alpha-42.md',
+                  score: 0.68,
+                  abstract: 'Alpha-42 bounded retry policy.',
+                },
+              ],
+            },
+          }),
+        ),
+      ],
+      [{terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'}],
+      12,
+      {project: 'threadnote', query: 'threadnote alpha-42 retry policy'},
+    );
+
+    expect(sections.ranked[0]?.uri).toContain('alpha-42.md');
+    expect(sections.confidence?.level).not.toBe('no_answer');
+    expect(sections.semanticSection).toContain('Recall confidence:');
+    expect(sections.semanticSection).toContain('why:');
+    expect(sections.ranked[0]?.rankReasons?.map(reason => reason.code)).toContain('field_match');
+  });
+
+  it('suppresses weak keyword-only filler when hybrid confidence is no answer', () => {
+    const sections = buildRecallSections(
+      [],
+      [
+        {
+          terms: ['kubernetes'],
+          uri: 'viking://user/me/memories/durable/projects/threadnote/incidental.md',
+        },
+      ],
+      12,
+      {project: 'threadnote', query: 'kubernetes service mesh topology'},
+    );
+
+    expect(sections.confidence?.level).toBe('no_answer');
+    expect(sections.semanticSection).toContain('Recall confidence: no answer');
+    expect(sections.exactTail).toBeUndefined();
+    expect(sections.semanticSection).not.toContain('keyword-only:');
+  });
+
+  it('surfaces a strong lexical-only identifier from the full local index without grep promotion', () => {
+    const sections = buildRecallSections([], [], 12, {
+      indexedCandidates: [
+        {
+          authority: 'canonical_repo',
+          fields: {
+            identifiers: ['alpha-42'],
+            project: 'threadnote',
+            title: 'Alpha-42 contract',
+            topic: 'alpha-42',
+          },
+          text: 'alpha-42 bounded retry policy',
+          trust: 'approved',
+          uri: 'viking://resources/repos/threadnote/alpha-42.md',
+        },
+      ],
+      project: 'threadnote',
+      query: 'alpha-42',
+    });
+
+    expect(sections.ranked[0]?.uri).toContain('alpha-42.md');
+    expect(sections.ranked[0]?.score).toBe(0);
+    expect(sections.ranked[0]?.rankReasons?.map(reason => reason.code)).toEqual(
+      expect.arrayContaining(['bm25_lexical', 'field_match']),
+    );
+  });
+
+  it('caps hydrated record authority and trust at the personal-memory boundary', () => {
+    const uri = 'viking://user/me/memories/durable/projects/threadnote/unreviewed.md';
+    const sections = buildRecallSections(
+      [
+        [
+          {
+            category: 'memories',
+            contextType: 'memory',
+            score: 0.8,
+            snippet: 'authority boundary anchor',
+            uri,
+          },
+        ],
+      ],
+      [],
+      12,
+      {
+        query: 'authority boundary anchor',
+        records: [
+          {
+            body: 'authority boundary anchor',
+            content: 'authority boundary anchor',
+            headerTitle: 'MEMORY',
+            metadata: {
+              authority: 'canonical_repo',
+              kind: 'durable',
+              project: 'threadnote',
+              sourceAgentClient: 'external-writer',
+              status: 'active',
+              timestamp: '2026-07-23T00:00:00.000Z',
+              topic: 'unreviewed',
+              trust: 'approved',
+            },
+            uri,
+          },
+        ],
+      },
+    );
+
+    expect(sections.ranked[0]?.rankSignals?.authority).toBeCloseTo(0.6);
+  });
+
+  it('keeps indexed and exact results inside an explicitly pinned URI scope', () => {
+    const sections = buildRecallSections(
+      [],
+      [
+        {terms: ['alpha-42'], uri: 'viking://resources/repos/other/alpha-42.md'},
+        {terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'},
+      ],
+      12,
+      {
+        allowedUriScopes: ['viking://resources/repos/threadnote'],
+        indexedCandidates: [
+          {
+            fields: {identifiers: ['alpha-42']},
+            text: 'alpha-42',
+            uri: 'viking://resources/repos/other/alpha-42.md',
+          },
+          {
+            fields: {identifiers: ['alpha-42']},
+            text: 'alpha-42',
+            uri: 'viking://resources/repos/threadnote/alpha-42.md',
+          },
+        ],
+        query: 'alpha-42',
+      },
+    );
+
+    expect(sections.ranked.map(hit => hit.uri)).toEqual(['viking://resources/repos/threadnote/alpha-42.md']);
+    expect(sections.exactTail).toBeUndefined();
+  });
+
+  it('applies the configured minimum hybrid score to returned results', () => {
+    const sections = buildRecallSections(
+      [
+        [
+          {
+            category: 'memories',
+            contextType: 'memory',
+            score: 0.2,
+            snippet: 'weak alpha match',
+            uri: 'viking://user/me/memories/weak.md',
+          },
+        ],
+      ],
+      [],
+      12,
+      {minimumScore: 0.95, query: 'alpha'},
+    );
+
+    expect(sections.ranked).toEqual([]);
+    expect(sections.confidence?.level).toBe('no_answer');
+  });
+
+  it('bounds full hybrid ranking of lexical index matches before graph and BM25 work', () => {
+    const indexedCandidates = Array.from({length: 250}, (_unused, index) => ({
+      fields: {identifiers: ['alpha-42']},
+      text: `alpha-42 candidate ${index}`,
+      uri: `viking://resources/repos/threadnote/${String(index).padStart(3, '0')}.md`,
+    }));
+
+    const sections = buildRecallSections([], [], 3, {
+      indexedCandidates,
+      query: 'alpha-42',
+    });
+
+    expect(sections.ranked.length).toBeLessThanOrEqual(100);
+    expect(sections.ranked.length).toBeGreaterThan(0);
+  });
+
   it('leads with a low-confidence note when the window is entirely keyword-only', () => {
     // No semantic pass matched; every shown hit is a promoted exact-only doc.
     const {semanticSection} = buildRecallSections(

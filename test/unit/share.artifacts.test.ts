@@ -64,7 +64,7 @@ async function makeRuntime(): Promise<ShareRuntime> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    user: 'denyskashkovskyi',
+    user: 'test-user',
   };
 }
 
@@ -116,7 +116,7 @@ describe('shared agent artifacts', () => {
     const result = await shareAgentArtifact(config, sourcePath, {});
 
     expect(result.targetUri).toBe(
-      'viking://user/denyskashkovskyi/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+      'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
     );
     expect(vi.mocked(utils.runCommand).mock.calls).toEqual(
       expect.arrayContaining([
@@ -124,7 +124,7 @@ describe('shared agent artifacts', () => {
           '/ov',
           expect.arrayContaining([
             'write',
-            'viking://user/denyskashkovskyi/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+            'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
           ]),
           {allowFailure: true},
         ],
@@ -424,7 +424,7 @@ describe('shared agent artifacts', () => {
     const result = await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {});
 
     expect(result.targetUri).toBe(
-      'viking://user/denyskashkovskyi/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+      'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
     );
     const sharedRoot = join(
       config.agentContextHome,
@@ -694,7 +694,7 @@ describe('shared agent artifacts', () => {
     const result = await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
 
     expect(result.targetUri).toBe(
-      'viking://user/denyskashkovskyi/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.md',
+      'viking://user/test-user/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.md',
     );
     const packRoot = join(
       config.agentContextHome,

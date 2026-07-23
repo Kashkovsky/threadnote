@@ -1,14 +1,16 @@
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
+import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 
+const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
 const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
-  Effect.runPromise(runSharePublishEffect(...args));
+  Effect.runPromise(runSharePublishEffect(...args).pipe(Effect.provide(TestLayer)));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -55,7 +57,7 @@ async function makeRuntime(): Promise<ShareRuntime> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    user: 'denyskashkovskyi',
+    user: 'test-user',
   };
 }
 
@@ -106,8 +108,8 @@ describe('runSharePublish transaction ordering', () => {
   it('pushes the shared memory before removing the personal source', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sourceUri = 'viking://user/denyskashkovskyi/memories/durable/projects/foo/bar.md';
-    const targetUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/foo/bar.md';
+    const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
+    const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
     mockPublishCommands(sourceUri, targetUri, ok('pushed'));
 
     await runSharePublish(config, sourceUri, {});
@@ -125,8 +127,8 @@ describe('runSharePublish transaction ordering', () => {
   it('does not remove the personal source when git push fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sourceUri = 'viking://user/denyskashkovskyi/memories/durable/projects/foo/bar.md';
-    const targetUri = 'viking://user/denyskashkovskyi/memories/shared/default/durable/projects/foo/bar.md';
+    const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
+    const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
     mockPublishCommands(sourceUri, targetUri, fail('permission denied'));
 
     await expect(runSharePublish(config, sourceUri, {})).rejects.toThrow(/git push failed/);

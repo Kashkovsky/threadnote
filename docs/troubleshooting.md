@@ -171,11 +171,11 @@ Threadnote uses its bundled stdio MCP adapter by default, even when the installe
 `/mcp`. The adapter adds Threadnote-specific tools and behavior such as shared-memory sync, exact recall fallback,
 seeded-resource recall augmentation, and recall-index repair.
 
-The adapter exposes six tools by default: `recall_context`, `read_context`, `list_context`, `remember_context`,
-`share_publish`, and `threadnote_guide`. Install with `--toolset full` to also expose memory maintenance, advanced
-sharing/artifact tools, compatibility aliases, and raw OpenViking parity tools with `ov_*` names for native behaviors
-such as code symbol navigation, watch management, raw search/read/list/store/remember, grep/glob, resource import, and
-forget.
+The adapter exposes eight tools by default: `recall_context`, `read_context`, `list_context`, `remember_context`,
+`review_session_context`, `apply_memory_candidates`, `share_publish`, and `threadnote_guide`. Install with
+`--toolset full` to also expose memory maintenance, advanced sharing/artifact tools, compatibility aliases, and raw
+OpenViking parity tools with `ov_*` names for native behaviors such as code symbol navigation, watch management, raw
+search/read/list/store/remember, grep/glob, resource import, and forget.
 
 Use the default stdio adapter:
 

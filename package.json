@@ -60,6 +60,7 @@
     "test:coverage": "vitest run --coverage",
     "threadnote": "npm run build --silent && node ./bin/threadnote.cjs",
     "doctor": "npm run build --silent && node ./bin/threadnote.cjs doctor",
+    "eval:recall": "tsx scripts/evaluate-recall.ts",
     "mcp-server": "npm run build --silent && node ./bin/threadnote-mcp-server.cjs",
     "pack:dry-run": "npm pack --dry-run",
     "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit"

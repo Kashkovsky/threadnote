@@ -1,28 +1,17 @@
 import {basename} from 'node:path';
 import {uriSegment} from './manifest.js';
+import {
+  formatMemoryDocument,
+  isSharedMemoryUri,
+  parseMemoryDocument,
+  type MemoryMetadata,
+  type MemoryRecord,
+} from './memory_document.js';
 import type {MemoryKind, MemoryStatus} from './types.js';
 
 export type CompactableMemoryKind = Extract<MemoryKind, 'durable' | 'handoff' | 'incident'>;
-
-export interface MemoryMetadata {
-  readonly archivedFrom?: string;
-  readonly kind: MemoryKind;
-  readonly project?: string;
-  readonly references?: readonly string[];
-  readonly sourceAgentClient: string;
-  readonly status: MemoryStatus;
-  readonly supersedes?: string;
-  readonly timestamp: string;
-  readonly topic?: string;
-}
-
-export interface MemoryRecord {
-  readonly body: string;
-  readonly content: string;
-  readonly headerTitle: 'MEMORY' | 'HANDOFF';
-  readonly metadata: MemoryMetadata;
-  readonly uri: string;
-}
+export {parseMemoryDocument};
+export type {MemoryMetadata, MemoryRecord};
 
 export interface CompactPlanOptions {
   readonly kind?: CompactableMemoryKind;
@@ -33,12 +22,14 @@ export interface CompactPlanOptions {
 
 export interface KeepUpdateAction {
   readonly content: string;
+  readonly expectedContent: string;
   readonly reason: string;
   readonly sourceUris: readonly string[];
   readonly uri: string;
 }
 
 export interface ArchiveAction {
+  readonly expectedContent: string;
   readonly kind: CompactableMemoryKind;
   readonly project: string;
   readonly reason: string;
@@ -47,6 +38,7 @@ export interface ArchiveAction {
 }
 
 export interface ForgetAction {
+  readonly expectedContent: string;
   readonly reason: string;
   readonly uri: string;
 }
@@ -81,43 +73,6 @@ interface ParsedMemoryUri {
 
 const HYGIENE_SOURCES_HEADING = '## Threadnote Hygiene Sources';
 const STALE_HANDOFF_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-
-export function parseMemoryDocument(uri: string, content: string): MemoryRecord | undefined {
-  const trimmed = content.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const separatorIndex = trimmed.indexOf('\n\n');
-  const header = separatorIndex === -1 ? trimmed : trimmed.slice(0, separatorIndex);
-  const body = separatorIndex === -1 ? '' : trimmed.slice(separatorIndex + 2).trim();
-  const firstLine = header.split('\n')[0]?.trim();
-  if (firstLine !== 'MEMORY' && firstLine !== 'HANDOFF') {
-    return undefined;
-  }
-  const kind =
-    parseOptionalMemoryKind(headerValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined);
-  const status = parseOptionalMemoryStatus(headerValue(header, 'status')) ?? 'active';
-  if (!kind) {
-    return undefined;
-  }
-  return {
-    body,
-    content: trimmed,
-    headerTitle: firstLine,
-    metadata: {
-      archivedFrom: headerValue(header, 'archived_from'),
-      kind,
-      project: normalizeOptionalMetadata(headerValue(header, 'project') ?? headerValue(header, 'repo')),
-      references: headerValues(header, 'references'),
-      sourceAgentClient: headerValue(header, 'source_agent_client') ?? 'unknown',
-      status,
-      supersedes: headerValue(header, 'supersedes'),
-      timestamp: headerValue(header, 'timestamp') ?? new Date(0).toISOString(),
-      topic: normalizeOptionalMetadata(headerValue(header, 'topic')),
-    },
-    uri,
-  };
-}
 
 export function buildCompactPlan(records: readonly MemoryRecord[], options: CompactPlanOptions): CompactPlan {
   const now = options.now ?? new Date();
@@ -157,7 +112,11 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
       const duplicateKeep = preferredKeepRecord(duplicateGroup, topic);
       for (const duplicate of sortedNewestFirst(duplicateGroup).filter(record => record.uri !== duplicateKeep.uri)) {
         duplicateForgetUris.add(duplicate.uri);
-        forgets.push({reason: `exact duplicate of ${duplicateKeep.uri}`, uri: duplicate.uri});
+        forgets.push({
+          expectedContent: duplicate.content,
+          reason: `exact duplicate of ${duplicateKeep.uri}`,
+          uri: duplicate.uri,
+        });
       }
       if (distinctBodyCount === 1 || kind !== 'handoff') {
         keepUpdates.push({
@@ -165,6 +124,7 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
             duplicateKeep,
             duplicateGroup.map(record => record.uri),
           ),
+          expectedContent: duplicateKeep.content,
           reason: 'keep exact duplicate group with source URIs',
           sourceUris: duplicateGroup.map(record => record.uri),
           uri: duplicateKeep.uri,
@@ -187,6 +147,7 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
       if (record.metadata.supersedes === record.uri) {
         keepUpdates.push({
           content: memoryContentWithHygieneSources(record, [record.uri]),
+          expectedContent: record.content,
           reason: 'strip self-supersedes header',
           sourceUris: [record.uri],
           uri: record.uri,
@@ -203,12 +164,14 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
       const sourceUris = recordsInGroup.map(record => record.uri);
       keepUpdates.push({
         content: memoryContentWithHygieneSources(keep, sourceUris),
+        expectedContent: keep.content,
         reason: 'keep latest handoff and preserve source URIs',
         sourceUris,
         uri: keep.uri,
       });
       for (const record of sortedNewestFirst(remainingRecords).filter(item => item.uri !== keep.uri)) {
         archives.push({
+          expectedContent: record.content,
           kind,
           project,
           reason: `older handoff for ${project}/${topic ?? 'unknown'}`,
@@ -382,7 +345,7 @@ export function activePersonalMemoryUrisFromText(text: string, user: string): re
 
 export function parsePersonalMemoryUri(uri: string, user: string): ParsedMemoryUri | undefined {
   const prefix = `viking://user/${uriSegment(user)}/memories/`;
-  if (!uri.startsWith(prefix) || uri.includes('/shared/')) {
+  if (!uri.startsWith(prefix) || isSharedMemoryUri(uri)) {
     return undefined;
   }
   const rest = uri.slice(prefix.length);
@@ -528,61 +491,6 @@ function dedupeByUri<T extends {readonly uri: string}>(items: readonly T[]): rea
     result.push(item);
   }
   return result;
-}
-
-function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
-  const header = [
-    title,
-    `kind: ${metadata.kind}`,
-    `status: ${metadata.status}`,
-    metadata.project ? `project: ${metadata.project}` : undefined,
-    metadata.topic ? `topic: ${metadata.topic}` : undefined,
-    `source_agent_client: ${metadata.sourceAgentClient}`,
-    `timestamp: ${metadata.timestamp}`,
-    metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
-    metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
-    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
-  ].filter((line): line is string => line !== undefined);
-  return [...header, '', body.trim()].join('\n');
-}
-
-function headerValue(header: string, key: string): string | undefined {
-  const prefix = `${key}:`;
-  return header
-    .split('\n')
-    .find(line => line.startsWith(prefix))
-    ?.slice(prefix.length)
-    .trim();
-}
-
-function headerValues(header: string, key: string): readonly string[] | undefined {
-  const prefix = `${key}:`;
-  const values = header
-    .split('\n')
-    .filter(line => line.startsWith(prefix))
-    .map(line => line.slice(prefix.length).trim())
-    .filter(value => value.length > 0);
-  return values.length > 0 ? values : undefined;
-}
-
-function parseOptionalMemoryKind(value: string | undefined): MemoryKind | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (['durable', 'handoff', 'incident', 'preference', 'smoke'].includes(value)) {
-    return value as MemoryKind;
-  }
-  return undefined;
-}
-
-function parseOptionalMemoryStatus(value: string | undefined): MemoryStatus | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (['active', 'archived', 'superseded'].includes(value)) {
-    return value as MemoryStatus;
-  }
-  return undefined;
 }
 
 function normalizeOptionalMetadata(value: string | undefined): string | undefined {

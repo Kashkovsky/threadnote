@@ -5,6 +5,7 @@ import {Console, Effect, FileSystem, pipe} from 'effect';
 import {maybeRunEffect} from './effect/command.js';
 import {consoleOutput, syncWithConsole} from './effect/console.js';
 import {fromPromiseError as attempt} from './effect/errors.js';
+import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {
   inferProjectFromQuery,
@@ -27,6 +28,14 @@ import {
   topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
+import {
+  formatMemoryDocument,
+  inferMemoryMetadata,
+  isSharedMemoryUri,
+  memoryHeaderValue,
+  type MemoryMetadata,
+} from './memory_document.js';
+import {prepareRecallSections} from './recall/runtime.js';
 import {withIdentity} from './runtime.js';
 import type {
   ArchiveOptions,
@@ -49,7 +58,6 @@ import type {
 } from './types.js';
 import {
   assertVikingUri,
-  buildRecallSections,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   ensureDirectory,
@@ -95,6 +103,8 @@ import {
   writeMemoryFile,
 } from './share.js';
 
+const LAST_MEMORY_STAGING_LOCK_URI = 'threadnote://local/last-memory-staging';
+
 interface LegacyMemoryCandidate {
   readonly comparableHash: string;
   readonly hash: string;
@@ -102,18 +112,6 @@ interface LegacyMemoryCandidate {
   readonly sourceArchive: string;
   readonly sourceSession: string;
   readonly text: string;
-}
-
-interface MemoryMetadata {
-  readonly archivedFrom?: string;
-  readonly kind: MemoryKind;
-  readonly project?: string;
-  readonly references?: readonly string[];
-  readonly sourceAgentClient: string;
-  readonly status: MemoryStatus;
-  readonly supersedes?: string;
-  readonly timestamp: string;
-  readonly topic?: string;
 }
 
 interface StoreMemoryOptions {
@@ -142,6 +140,7 @@ interface ProjectNameMigrationCandidate {
   readonly destinationContent: string;
   readonly destinationExistsWithSameContent: boolean;
   readonly destinationUri: string;
+  readonly sourceContent: string;
   readonly sourceUri: string;
 }
 
@@ -326,7 +325,9 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
           yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata)));
           yield* attempt(() => writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create'));
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+          expectedContent: candidate.original,
+        });
         if (!removedOriginal) {
           yield* Console.error(
             `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
@@ -413,7 +414,9 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
             writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false),
           );
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri);
+        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+          expectedContent: candidate.sourceContent,
+        });
         if (!removedOriginal) {
           yield* Console.error(
             `Migrated copy stored, but original is still processing. Retry later: threadnote forget ${candidate.sourceUri}`,
@@ -682,6 +685,7 @@ async function projectNameMigrationCandidates(
         destinationContent,
         destinationExistsWithSameContent: destination.existsWithSameContent,
         destinationUri: `${destinationDirectoryUri}/${destination.filename}`,
+        sourceContent: content,
         sourceUri,
       });
       if (limit !== undefined && candidates.length >= limit) {
@@ -1036,7 +1040,19 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const exactMatches = yield* attempt(() =>
     collectExactMemoryMatches(config, ov, query, {dryRun, includeArchived, project}),
   );
-  const {semanticSection, exactTail} = buildRecallSections(passes, exactMatches, nodeLimit ?? 12);
+  const {semanticSection, exactTail} = yield* prepareRecallSections(config, {
+    allowedUriScopes: options.uri ? [options.uri] : undefined,
+    exactMatches,
+    feedbackQuery: options.query,
+    includeInactive: includeArchived,
+    limit: nodeLimit ?? 12,
+    minimumScore: Number(options.threshold ?? RECALL_SCORE_THRESHOLD),
+    passes,
+    project: projectMemoryName ?? project?.name,
+    query,
+    readRecords: uris => attempt(() => readMemoryRecordsByUri(config, uris)),
+    seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+  });
   if (semanticSection) {
     yield* syncWithConsole(() => consoleOutput.log(`\n${semanticSection}`));
     recallOutputs.push(semanticSection);
@@ -1358,7 +1374,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
 
 function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
   const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
-  if (!uri.startsWith(prefix) || uri.includes('/shared/')) {
+  if (!uri.startsWith(prefix) || isSharedMemoryUri(uri)) {
     return undefined;
   }
   const relative = uri.slice(prefix.length);
@@ -1428,6 +1444,10 @@ export const runArchive = Effect.fn('runArchive')(function* (
     return;
   }
   const originalMemory = yield* requireValue(original, `Could not read ${uri} before archiving.`);
+  const originalLocalPath = localMemoryPathForUri(config, uri);
+  const originalLocalContent = originalLocalPath
+    ? yield* attempt(() => readFileIfExists(originalLocalPath))
+    : undefined;
 
   const inferredMetadata = inferMemoryMetadata(originalMemory);
   const metadata: MemoryMetadata = {
@@ -1445,7 +1465,9 @@ export const runArchive = Effect.fn('runArchive')(function* (
     metadata,
     title: 'MEMORY',
   });
-  const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, uri);
+  const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, uri, {
+    expectedContent: originalLocalContent ?? originalMemory,
+  });
   if (removedOriginal) {
     yield* Console.log(`Archived original memory: ${uri}`);
   } else {
@@ -1554,7 +1576,17 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   }
   const ov = yield* attempt(() => openVikingCliForMode(options.dryRun));
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
-    yield* attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string));
+    if (options.dryRun) {
+      yield* attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string));
+      return;
+    }
+    const fs = yield* FileSystem.FileSystem;
+    yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [options.replaceUri],
+      attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+    );
     return;
   }
   const memoryPath = join(config.agentContextHome, 'last-memory.txt');
@@ -1574,8 +1606,8 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   const memory = isInPlaceUpdate
     ? formatMemoryDocument(options.title, finalMetadata, options.bodyText)
     : candidateMemory;
-  const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
   if (options.dryRun) {
+    const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
     yield* Console.log(memory);
     yield* Console.log('\nWould run:');
     yield* Console.log(
@@ -1599,23 +1631,34 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
     }
     return;
   }
-  yield* attempt(() => writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600}));
-  yield* attempt(() => chmod(memoryPath, 0o600));
-  yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata)));
-  yield* attempt(() => writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode));
-  yield* Console.log(`Stored memory: ${memoryUri}`);
-  if (options.replaceUri && !isInPlaceUpdate) {
-    const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri);
-    if (removedReplacedMemory) {
-      yield* Console.log(`Forgot replaced memory: ${options.replaceUri}`);
-    } else {
-      yield* Console.error(
-        `Replacement stored, but the superseded memory is still processing. Retry later: threadnote forget ${options.replaceUri}`,
-      );
-    }
-  } else if (isInPlaceUpdate) {
-    yield* Console.log(`Updated existing memory in place: ${memoryUri}`);
-  }
+  const fs = yield* FileSystem.FileSystem;
+  yield* withMemoryUriLocks(
+    fs,
+    config.agentContextHome,
+    [LAST_MEMORY_STAGING_LOCK_URI, options.replaceUri, memoryUri],
+    Effect.gen(function* () {
+      const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
+      yield* attempt(() => writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600}));
+      yield* attempt(() => chmod(memoryPath, 0o600));
+      yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata)));
+      yield* attempt(() => writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode));
+      yield* Console.log(`Stored memory: ${memoryUri}`);
+      if (options.replaceUri && !isInPlaceUpdate) {
+        const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri, {
+          alreadyLocked: true,
+        });
+        if (removedReplacedMemory) {
+          yield* Console.log(`Forgot replaced memory: ${options.replaceUri}`);
+        } else {
+          yield* Console.error(
+            `Replacement stored, but the superseded memory is still processing. Retry later: threadnote forget ${options.replaceUri}`,
+          );
+        }
+      } else if (isInPlaceUpdate) {
+        yield* Console.log(`Updated existing memory in place: ${memoryUri}`);
+      }
+    }),
+  );
 });
 
 /**
@@ -1704,9 +1747,14 @@ async function writeDurableMemoryFile(
   await writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
 }
 
-function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string) {
+function removeVikingResourceWithRetry(
+  ov: string,
+  config: RuntimeConfig,
+  uri: string,
+  options: {readonly alreadyLocked?: boolean; readonly expectedContent?: string} = {},
+) {
   const args = withIdentity(config, ['rm', uri]);
-  return Console.consoleWith(output =>
+  const remove = Console.consoleWith(output =>
     pipe(
       removeOpenVikingResourceEffect(ov, args, {
         isBusy: isResourceBusy,
@@ -1720,6 +1768,29 @@ function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: s
       }),
     ),
   );
+  if (options.alreadyLocked) {
+    return remove;
+  }
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [uri],
+      Effect.gen(function* () {
+        if (options.expectedContent !== undefined) {
+          const localPath = localMemoryPathForUri(config, uri);
+          const currentContent = localPath ? yield* attempt(() => readFileIfExists(localPath)) : undefined;
+          if (currentContent === undefined || currentContent.trim() !== options.expectedContent.trim()) {
+            return yield* Effect.fail(
+              new Error(`Memory changed before removal; review the current content and retry: ${uri}`),
+            );
+          }
+        }
+        return yield* remove;
+      }),
+    );
+  });
 }
 
 async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
@@ -1928,52 +1999,6 @@ function vikingDirectoryChain(directoryUri: string): readonly string[] {
   return chain;
 }
 
-function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
-  const header = [
-    title,
-    `kind: ${metadata.kind}`,
-    `status: ${metadata.status}`,
-    metadata.project ? `project: ${metadata.project}` : undefined,
-    metadata.topic ? `topic: ${metadata.topic}` : undefined,
-    `source_agent_client: ${metadata.sourceAgentClient}`,
-    `timestamp: ${metadata.timestamp}`,
-    metadata.supersedes ? `supersedes: ${metadata.supersedes}` : undefined,
-    metadata.archivedFrom ? `archived_from: ${metadata.archivedFrom}` : undefined,
-    ...(metadata.references ?? []).map(uri => `references: ${uri}`),
-  ].filter((line): line is string => line !== undefined);
-  return [...header, '', body.trim()].join('\n');
-}
-
-function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
-  const header = memory.slice(0, Math.max(0, memory.indexOf('\n\n')) || memory.length);
-  const firstLine = header.split('\n')[0]?.trim();
-  const kind =
-    parseOptionalMemoryKind(parseHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined);
-  const status = parseOptionalMemoryStatus(parseHeaderValue(header, 'status'));
-  const project =
-    normalizeOptionalMetadata(parseHeaderValue(header, 'project')) ??
-    normalizeOptionalMetadata(parseHeaderValue(header, 'repo'));
-  const topic =
-    normalizeOptionalMetadata(parseHeaderValue(header, 'topic')) ??
-    normalizeOptionalMetadata(parseHeaderValue(header, 'task'));
-  return {
-    kind,
-    project,
-    sourceAgentClient: parseHeaderValue(header, 'source_agent_client') ?? undefined,
-    status,
-    topic,
-  };
-}
-
-function parseHeaderValue(header: string, key: string): string | undefined {
-  const prefix = `${key}:`;
-  return header
-    .split('\n')
-    .find(line => line.startsWith(prefix))
-    ?.slice(prefix.length)
-    .trim();
-}
-
 function isClearLegacyHandoffMemory(memory: string): boolean {
   if (/^kind:\s*/m.test(memory) || /^status:\s*/m.test(memory)) {
     return false;
@@ -1995,37 +2020,15 @@ function memoryBody(memory: string): string {
 
 function inferLegacyProject(memory: string): string {
   const explicit =
-    parseHeaderValue(memory, 'project') ??
-    parseHeaderValue(memory, 'repo') ??
-    parseHeaderValue(memory, 'repo_path') ??
+    memoryHeaderValue(memory, 'project') ??
+    memoryHeaderValue(memory, 'repo') ??
+    memoryHeaderValue(memory, 'repo_path') ??
     /\brepo(?:_path)?\s+([~/A-Za-z0-9_.:/-]+)/.exec(memory)?.[1];
   if (!explicit) {
     return 'general';
   }
   const trimmed = explicit.trim().replace(/[`.,;]+$/g, '');
   return trimmed.includes('/') ? basename(trimmed) : trimmed;
-}
-
-function parseOptionalMemoryKind(value: string | undefined): MemoryKind | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    return parseMemoryKind(value);
-  } catch (_err: unknown) {
-    return undefined;
-  }
-}
-
-function parseOptionalMemoryStatus(value: string | undefined): MemoryStatus | undefined {
-  if (!value) {
-    return undefined;
-  }
-  try {
-    return parseMemoryStatus(value);
-  } catch (_err: unknown) {
-    return undefined;
-  }
 }
 
 function normalizeOptionalMetadata(value: string | undefined): string | undefined {

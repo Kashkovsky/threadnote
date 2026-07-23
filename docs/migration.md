@@ -47,8 +47,9 @@ Create a handoff for the next agent before you stop.
 
 For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
 to user-level Codex, Claude, Cursor, and Copilot instruction files. That guidance tells agents to recall context at task
-start, store durable memories when explicitly asked or when a reusable workflow fact is learned, and create handoffs
-automatically before stopping meaningful work.
+start and, after meaningful work, review candidate decisions, invariants, preferences, and handoff state in the current
+conversation. Active memory is written only after the user approves; direct `remember_context` requests remain
+available.
 
 ## Migration Steps
 

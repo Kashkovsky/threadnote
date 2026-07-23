@@ -18,7 +18,7 @@ const runtime: ShareRuntime = {
   account: 'local',
   agentContextHome: '/tmp/.openviking',
   agentId: 'threadnote',
-  user: 'denyskashkovskyi',
+  user: 'test-user',
 };
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
@@ -168,5 +168,28 @@ describe('writeMemoryFile index refresh', () => {
         {quiet: true},
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it('does not treat a foreign create appearing after a transient failure as its own write', async () => {
+    commandSequence(
+      fail('not found'), // stat before write
+      fail('connection reset'), // ambiguous create
+      ok('exists'), // post-failure stat
+      ok('foreign body'), // verify destination content
+      ok('exists'), // conflict check
+    );
+
+    await expect(
+      writeMemoryFile(
+        runtime,
+        '/ov',
+        'viking://user/me/memories/durable/projects/threadnote/x.md',
+        'approved body',
+        'create',
+        false,
+        {quiet: true},
+      ),
+    ).rejects.toThrow(/Create conflict/);
+    expect(vi.mocked(utils.runCommand).mock.calls.filter(call => call[1]?.includes('write'))).toHaveLength(1);
   });
 });

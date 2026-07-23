@@ -1,4 +1,6 @@
-import {fromPromise} from './errors.js';
+import {Effect, FileSystem} from 'effect';
+import {fromPromise, fromSync} from './errors.js';
+import {withMemoryUriLocks} from './memory_lock.js';
 import {
   installSharedAgentArtifacts as installSharedAgentArtifactsPromise,
   listSharedAgentArtifacts as listSharedAgentArtifactsPromise,
@@ -19,7 +21,10 @@ import {
   runShareStatus as runShareStatusPromise,
   runShareSync as runShareSyncPromise,
   runShareUnpublish as runShareUnpublishPromise,
+  resolveTeam,
+  sharedUriFor,
 } from '../share.js';
+import type {SharePublishOptions, ShareRuntime} from '../types.js';
 
 const effectify =
   <Args extends readonly unknown[], A>(operation: string, evaluate: (...args: Args) => Promise<A>) =>
@@ -32,7 +37,23 @@ export const runShareSync = effectify('synchronize shared memory repository', ru
 export const runShareConflicts = effectify('list shared memory conflicts', runShareConflictsPromise);
 export const runShareConflictShow = effectify('show shared memory conflict', runShareConflictShowPromise);
 export const runShareConflictResolve = effectify('resolve shared memory conflict', runShareConflictResolvePromise);
-export const runSharePublish = effectify('publish shared memory', runSharePublishPromise);
+export const runSharePublish = Effect.fn('share.publish')(function* (
+  config: ShareRuntime,
+  sourceUri: string,
+  options: SharePublishOptions,
+) {
+  const publish = fromPromise('publish shared memory', () => runSharePublishPromise(config, sourceUri, options));
+  if (options.dryRun === true || options.preview === true) {
+    return yield* publish;
+  }
+  const team = yield* fromPromise('resolve shared memory team', () => resolveTeam(config, options.team));
+  const targetUri = yield* fromSync('resolve shared memory target', () => sharedUriFor(config, sourceUri, team.name));
+  const fs = yield* FileSystem.FileSystem;
+  const resolvedPublish = fromPromise('publish shared memory', () =>
+    runSharePublishPromise(config, sourceUri, {...options, team: team.name}),
+  );
+  return yield* withMemoryUriLocks(fs, config.agentContextHome, [sourceUri, targetUri], resolvedPublish);
+});
 export const runSharePublishArtifact = effectify('publish shared artifact', runSharePublishArtifactPromise);
 export const runSharePublishBundle = effectify('publish shared artifact bundle', runSharePublishBundlePromise);
 export const runShareInstallArtifacts = effectify('install shared artifacts', runShareInstallArtifactsPromise);

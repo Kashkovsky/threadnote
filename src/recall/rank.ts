@@ -1,0 +1,595 @@
+import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_document.js';
+import type {MemoryKind, MemoryStatus} from '../types.js';
+
+export const RECALL_RANKER_VERSION = 'hybrid-v1';
+
+export interface RecallFields {
+  readonly identifiers?: readonly string[];
+  readonly project?: string;
+  readonly title?: string;
+  readonly topic?: string;
+}
+
+export interface RecallCandidate {
+  readonly authority?: MemoryAuthority;
+  readonly feedback?: number;
+  readonly fields?: RecallFields;
+  readonly kind?: MemoryKind;
+  readonly relations?: readonly MemoryRelation[];
+  readonly semantic?: number;
+  readonly status?: MemoryStatus;
+  readonly text: string;
+  readonly timestamp?: string;
+  readonly trust?: MemoryTrust;
+  readonly uri: string;
+  readonly validFrom?: string;
+  readonly validTo?: string;
+}
+
+export interface RecallRankContext {
+  readonly corpusStatistics?: RecallCorpusStatistics;
+  readonly includeInactive?: boolean;
+  readonly includeTemporallyInvalid?: boolean;
+  readonly minimumScore?: number;
+  readonly now?: Date;
+  readonly project?: string;
+  readonly seedUris?: readonly string[];
+}
+
+export interface RecallCorpusStatistics {
+  readonly averageDocumentLength: number;
+  readonly documentCount: number;
+  readonly documentFrequency: Readonly<Record<string, number>>;
+  readonly totalDocumentLength: number;
+}
+
+export interface RecallSignals {
+  readonly authority: number;
+  readonly bm25: number;
+  readonly feedback: number;
+  readonly field: number;
+  readonly freshness: number;
+  readonly graph: number;
+  readonly lifecycle: number;
+  readonly scope: number;
+  readonly semantic: number;
+  readonly temporal: number;
+}
+
+export interface RecallReason {
+  readonly code: string;
+  readonly contribution: number;
+  readonly detail: string;
+}
+
+export interface RankedRecallCandidate {
+  readonly candidate: RecallCandidate;
+  readonly finalScore: number;
+  readonly passedRelevanceGate: boolean;
+  readonly relevanceScore: number;
+  readonly reasons: readonly RecallReason[];
+  readonly signals: RecallSignals;
+  readonly warnings: readonly string[];
+}
+
+export type RecallConfidenceLevel = 'high' | 'low' | 'medium' | 'no_answer';
+
+export interface RecallConfidence {
+  readonly level: RecallConfidenceLevel;
+  readonly margin: number;
+  readonly reason: string;
+  readonly score: number;
+}
+
+export interface RankedRecallSet {
+  readonly confidence: RecallConfidence;
+  readonly rankerVersion: typeof RECALL_RANKER_VERSION;
+  readonly results: readonly RankedRecallCandidate[];
+}
+
+const SIGNAL_WEIGHTS = {
+  authority: 0.04,
+  bm25: 0.23,
+  feedback: 0.03,
+  field: 0.14,
+  freshness: 0.05,
+  graph: 0.07,
+  lifecycle: 0.05,
+  scope: 0.05,
+  semantic: 0.32,
+  temporal: 0.02,
+} as const;
+
+const FIELD_WEIGHTS = {
+  identifiers: 0.15,
+  project: 0.2,
+  title: 0.35,
+  topic: 0.3,
+} as const;
+
+const BM25_SATURATION = 1.2;
+const BM25_LENGTH_NORMALIZATION = 0.75;
+const BM25_IDF_SMOOTHING = 0.5;
+const RELEVANCE_GATE_MINIMUM = 0.08;
+const NO_ANSWER_SCORE_MINIMUM = 0.2;
+const LEXICAL_ONLY_ANSWER_MINIMUM = 0.5;
+const SIGNAL_ABSENCE_MAXIMUM = 0.05;
+const TEMPORALLY_INVALID_SCORE_MULTIPLIER = 0.25;
+const UNKNOWN_FRESHNESS_SCORE = 0.5;
+const UNKNOWN_SCOPE_SCORE = 0.5;
+
+const FRESHNESS_HALF_LIFE_DAYS: Readonly<Record<MemoryKind, number>> = {
+  durable: 180,
+  handoff: 14,
+  incident: 90,
+  preference: 365,
+  smoke: 14,
+};
+
+const AUTHORITY_SCORES: Readonly<Record<MemoryAuthority, number>> = {
+  agent_generated: 0.6,
+  canonical_repo: 1,
+  external: 0.45,
+  reviewed_shared: 0.85,
+  user_approved: 0.95,
+};
+
+const TRUST_SCORES: Readonly<Record<MemoryTrust, number>> = {
+  approved: 1,
+  inferred: 0.6,
+  untrusted: 0.2,
+};
+
+const UNKNOWN_AUTHORITY_SCORE = 0.5;
+const UNKNOWN_TRUST_SCORE = 0.5;
+const AUTHORITY_BLEND_WEIGHT = 0.7;
+const TRUST_BLEND_WEIGHT = 0.3;
+
+const LIFECYCLE_SCORES: Readonly<Record<MemoryStatus, number>> = {
+  active: 1,
+  archived: 0.15,
+  superseded: 0,
+};
+
+const LIFECYCLE_SCORE_MULTIPLIERS: Readonly<Record<MemoryStatus, number>> = {
+  active: 1,
+  archived: 0.35,
+  superseded: 0.15,
+};
+
+const RELATION_WEIGHTS: Readonly<Record<MemoryRelation['type'], number>> = {
+  depends_on: 0.9,
+  evidence_for: 1,
+  references: 0.65,
+  related_to: 0.55,
+  supersedes: 0.8,
+};
+
+const MAX_GRAPH_DISTANCE = 3;
+const GRAPH_DISTANCE_PENALTY = 0.5;
+const GRAPH_SEMANTIC_ANCHOR_MINIMUM = 0.65;
+const MAX_GRAPH_SEMANTIC_ANCHORS = 2;
+const SAME_IDENTITY_RELATION_WEIGHT = 0.75;
+const SAME_IDENTITY_EDGE_WEIGHT = Math.sqrt(SAME_IDENTITY_RELATION_WEIGHT);
+const IDENTITY_GRAPH_NODE_PREFIX = '\u0000identity:';
+const EXPLANATION_CONTRIBUTION_MINIMUM = 0.005;
+const CORROBORATING_SIGNAL_MINIMUM = 0.15;
+const HIGH_CONFIDENCE_SCORE_MINIMUM = 0.58;
+const HIGH_CONFIDENCE_MARGIN_MINIMUM = 0.08;
+const HIGH_CONFIDENCE_SIGNAL_COUNT = 3;
+const MEDIUM_CONFIDENCE_SCORE_MINIMUM = 0.36;
+const MEDIUM_CONFIDENCE_SIGNAL_COUNT = 2;
+const MILLISECONDS_PER_DAY = 86_400_000;
+const HALF_LIFE_DECAY_BASE = 2;
+const DETERMINISTIC_DEFAULT_NOW = new Date(0);
+
+export function rankRecallCandidates(
+  query: string,
+  candidates: readonly RecallCandidate[],
+  context: RecallRankContext = {},
+): RankedRecallSet {
+  const queryTerms = tokenize(query);
+  const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
+  const corpusStatistics = context.corpusStatistics ?? buildRecallCorpusStatistics(candidates);
+  const semanticAnchors = candidates
+    .filter(candidate => (candidate.semantic ?? 0) >= GRAPH_SEMANTIC_ANCHOR_MINIMUM)
+    .sort((left, right) => (right.semantic ?? 0) - (left.semantic ?? 0))
+    .slice(0, MAX_GRAPH_SEMANTIC_ANCHORS)
+    .map(candidate => candidate.uri);
+  const graphDistances = typedGraphDistances(candidates, [
+    ...new Set([...(context.seedUris ?? []), ...semanticAnchors]),
+  ]);
+  const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
+  const ranked = candidates
+    .map((candidate, index) =>
+      scoreCandidate(candidate, queryTerms, corpus[index] ?? [], corpusStatistics, graphDistances, {...context, now}),
+    )
+    .filter(
+      result =>
+        result.passedRelevanceGate &&
+        (context.minimumScore === undefined || result.relevanceScore >= context.minimumScore) &&
+        (context.includeInactive === true || result.signals.lifecycle === LIFECYCLE_SCORES.active) &&
+        (context.includeTemporallyInvalid === true || result.signals.temporal === 1),
+    )
+    .sort(
+      (left, right) =>
+        right.finalScore - left.finalScore ||
+        right.signals.semantic - left.signals.semantic ||
+        left.candidate.uri.localeCompare(right.candidate.uri),
+    );
+  return {
+    confidence: assessConfidence(ranked),
+    rankerVersion: RECALL_RANKER_VERSION,
+    results: ranked,
+  };
+}
+
+function scoreCandidate(
+  candidate: RecallCandidate,
+  queryTerms: readonly string[],
+  documentTerms: readonly string[],
+  corpusStatistics: RecallCorpusStatistics,
+  graphDistances: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
+  context: RecallRankContext & {readonly now: Date},
+): RankedRecallCandidate {
+  const semantic = clamp(candidate.semantic ?? 0);
+  const bm25 = normalizedBm25(queryTerms, documentTerms, corpusStatistics);
+  const field = fieldScore(queryTerms, candidate.fields);
+  const graph = graphScore(candidate.uri, graphDistances);
+  const scope = scopeScore(context.project, candidate.fields?.project);
+  const freshness = freshnessScore(candidate.timestamp, candidate.kind, context.now);
+  const authority = authorityScore(candidate.authority, candidate.trust);
+  const lifecycle = lifecycleScore(candidate.status);
+  const temporal = temporalScore(candidate.validFrom, candidate.validTo, context.now);
+  const feedback = clampSigned(candidate.feedback ?? 0);
+  const signals: RecallSignals = {
+    authority,
+    bm25,
+    feedback,
+    field,
+    freshness,
+    graph,
+    lifecycle,
+    scope,
+    semantic,
+    temporal,
+  };
+  const passedRelevanceGate = Math.max(semantic, bm25, field) >= RELEVANCE_GATE_MINIMUM;
+  const temporalMultiplier = temporal === 0 ? TEMPORALLY_INVALID_SCORE_MULTIPLIER : 1;
+  const lifecycleMultiplier = LIFECYCLE_SCORE_MULTIPLIERS[candidate.status ?? 'active'];
+  const relevanceScore = passedRelevanceGate ? clamp(weightedScore(signals) * temporalMultiplier) : 0;
+  const finalScore = clamp(relevanceScore * lifecycleMultiplier);
+  const reasons = explainSignals(signals, candidate, context);
+  const lexicalOnly =
+    semantic <= SIGNAL_ABSENCE_MAXIMUM &&
+    graph <= SIGNAL_ABSENCE_MAXIMUM &&
+    Math.max(bm25, field) >= RELEVANCE_GATE_MINIMUM;
+  const warnings = [
+    ...(candidate.status && candidate.status !== 'active' ? [`memory is ${candidate.status}`] : []),
+    ...(temporal === 0 ? ['outside temporal validity window'] : []),
+    ...(lexicalOnly ? ['lexical-only result; no semantic or graph corroboration'] : []),
+    ...(!passedRelevanceGate ? ['failed topical relevance gate'] : []),
+  ];
+  return {candidate, finalScore, passedRelevanceGate, reasons, relevanceScore, signals, warnings};
+}
+
+function weightedScore(signals: RecallSignals): number {
+  return (
+    signals.semantic * SIGNAL_WEIGHTS.semantic +
+    signals.bm25 * SIGNAL_WEIGHTS.bm25 +
+    signals.field * SIGNAL_WEIGHTS.field +
+    signals.graph * SIGNAL_WEIGHTS.graph +
+    signals.scope * SIGNAL_WEIGHTS.scope +
+    signals.freshness * SIGNAL_WEIGHTS.freshness +
+    signals.authority * SIGNAL_WEIGHTS.authority +
+    signals.lifecycle * SIGNAL_WEIGHTS.lifecycle +
+    signals.temporal * SIGNAL_WEIGHTS.temporal +
+    signals.feedback * SIGNAL_WEIGHTS.feedback
+  );
+}
+
+function normalizedBm25(
+  queryTerms: readonly string[],
+  documentTerms: readonly string[],
+  corpusStatistics: RecallCorpusStatistics,
+): number {
+  if (queryTerms.length === 0 || documentTerms.length === 0) {
+    return 0;
+  }
+  const termFrequency = new Map<string, number>();
+  for (const term of documentTerms) {
+    termFrequency.set(term, (termFrequency.get(term) ?? 0) + 1);
+  }
+  const documentCount = Math.max(1, corpusStatistics.documentCount);
+  let score = 0;
+  let maximum = 0;
+  for (const term of new Set(queryTerms)) {
+    const frequency = termFrequency.get(term) ?? 0;
+    const documentsWithTerm = corpusStatistics.documentFrequency[term] ?? 0;
+    const idf = Math.log(
+      1 + (documentCount - documentsWithTerm + BM25_IDF_SMOOTHING) / (documentsWithTerm + BM25_IDF_SMOOTHING),
+    );
+    maximum += idf * (BM25_SATURATION + 1);
+    if (frequency === 0) {
+      continue;
+    }
+    const denominator =
+      frequency +
+      BM25_SATURATION *
+        (1 -
+          BM25_LENGTH_NORMALIZATION +
+          BM25_LENGTH_NORMALIZATION * (documentTerms.length / Math.max(1, corpusStatistics.averageDocumentLength)));
+    score += idf * ((frequency * (BM25_SATURATION + 1)) / denominator);
+  }
+  return maximum === 0 ? 0 : clamp(score / maximum);
+}
+
+function fieldScore(queryTerms: readonly string[], fields: RecallFields | undefined): number {
+  if (queryTerms.length === 0 || !fields) {
+    return 0;
+  }
+  const uniqueQuery = new Set(queryTerms);
+  const coverage = (value: string | readonly string[] | undefined): number => {
+    const terms = new Set(Array.isArray(value) ? value.flatMap(tokenize) : tokenize(value ?? ''));
+    return [...uniqueQuery].filter(term => terms.has(term)).length / uniqueQuery.size;
+  };
+  return clamp(
+    coverage(fields.title) * FIELD_WEIGHTS.title +
+      coverage(fields.topic) * FIELD_WEIGHTS.topic +
+      coverage(fields.project) * FIELD_WEIGHTS.project +
+      coverage(fields.identifiers) * FIELD_WEIGHTS.identifiers,
+  );
+}
+
+function typedGraphDistances(
+  candidates: readonly RecallCandidate[],
+  seeds: readonly string[],
+): ReadonlyMap<string, {readonly distance: number; readonly weight: number}> {
+  if (seeds.length === 0) {
+    return new Map();
+  }
+  const adjacency = new Map<string, Array<{readonly target: string; readonly weight: number}>>();
+  const addEdge = (source: string, target: string, weight: number): void => {
+    const edges = adjacency.get(source);
+    if (edges) {
+      edges.push({target, weight});
+    } else {
+      adjacency.set(source, [{target, weight}]);
+    }
+  };
+  for (const candidate of candidates) {
+    for (const relation of candidate.relations ?? []) {
+      const weight = RELATION_WEIGHTS[relation.type];
+      addEdge(candidate.uri, relation.uri, weight);
+      addEdge(relation.uri, candidate.uri, weight);
+    }
+  }
+  const sameIdentity = new Map<string, RecallCandidate[]>();
+  for (const candidate of candidates) {
+    const project = candidate.fields?.project?.trim().toLowerCase();
+    const topic = candidate.fields?.topic?.trim().toLowerCase();
+    if (!project || !topic) {
+      continue;
+    }
+    const key = `${project}\n${topic}`;
+    const group = sameIdentity.get(key);
+    if (group) {
+      group.push(candidate);
+    } else {
+      sameIdentity.set(key, [candidate]);
+    }
+  }
+  for (const [identity, related] of sameIdentity) {
+    const identityNode = `${IDENTITY_GRAPH_NODE_PREFIX}${identity}`;
+    for (const candidate of related) {
+      addEdge(candidate.uri, identityNode, SAME_IDENTITY_EDGE_WEIGHT);
+      addEdge(identityNode, candidate.uri, SAME_IDENTITY_EDGE_WEIGHT);
+    }
+  }
+  const distances = new Map<string, {distance: number; weight: number}>();
+  const queue = seeds.map(uri => ({distance: 0, uri, weight: 1}));
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head];
+    if (!current || current.distance > MAX_GRAPH_DISTANCE) {
+      continue;
+    }
+    const previous = distances.get(current.uri);
+    if (previous && (previous.distance < current.distance || previous.weight >= current.weight)) {
+      continue;
+    }
+    distances.set(current.uri, {distance: current.distance, weight: current.weight});
+    for (const edge of adjacency.get(current.uri) ?? []) {
+      queue.push({
+        distance: current.distance + 1,
+        uri: edge.target,
+        weight: current.weight * edge.weight,
+      });
+    }
+  }
+  return distances;
+}
+
+function graphScore(
+  uri: string,
+  distances: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
+): number {
+  const graph = distances.get(uri);
+  return graph && graph.distance > 0 ? clamp(graph.weight / (1 + graph.distance * GRAPH_DISTANCE_PENALTY)) : 0;
+}
+
+function freshnessScore(timestamp: string | undefined, kind: MemoryKind | undefined, now: Date): number {
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(parsed)) {
+    return UNKNOWN_FRESHNESS_SCORE;
+  }
+  const ageDays = Math.max(0, (now.getTime() - parsed) / MILLISECONDS_PER_DAY);
+  const halfLifeDays = FRESHNESS_HALF_LIFE_DAYS[kind ?? 'durable'];
+  return clamp(HALF_LIFE_DECAY_BASE ** (-ageDays / halfLifeDays));
+}
+
+function temporalScore(validFrom: string | undefined, validTo: string | undefined, now: Date): number {
+  const nowMs = now.getTime();
+  const fromMs = validFrom ? Date.parse(validFrom) : Number.NaN;
+  const toMs = validTo ? Date.parse(validTo) : Number.NaN;
+  if (Number.isFinite(fromMs) && nowMs < fromMs) {
+    return 0;
+  }
+  if (Number.isFinite(toMs) && nowMs > toMs) {
+    return 0;
+  }
+  return 1;
+}
+
+function authorityScore(authority: MemoryAuthority | undefined, trust: MemoryTrust | undefined): number {
+  const authorityValue = authority ? AUTHORITY_SCORES[authority] : UNKNOWN_AUTHORITY_SCORE;
+  const trustValue = trust ? TRUST_SCORES[trust] : UNKNOWN_TRUST_SCORE;
+  return authorityValue * AUTHORITY_BLEND_WEIGHT + trustValue * TRUST_BLEND_WEIGHT;
+}
+
+function lifecycleScore(status: MemoryStatus | undefined): number {
+  return status ? LIFECYCLE_SCORES[status] : LIFECYCLE_SCORES.active;
+}
+
+function scopeScore(currentProject: string | undefined, project: string | undefined): number {
+  if (!currentProject || !project) {
+    return UNKNOWN_SCOPE_SCORE;
+  }
+  return currentProject.toLowerCase() === project.toLowerCase() ? 1 : 0;
+}
+
+function explainSignals(
+  signals: RecallSignals,
+  candidate: RecallCandidate,
+  context: RecallRankContext,
+): readonly RecallReason[] {
+  const reasons: RecallReason[] = [
+    reason(
+      'semantic_similarity',
+      signals.semantic * SIGNAL_WEIGHTS.semantic,
+      `semantic similarity ${signals.semantic.toFixed(2)}`,
+    ),
+    reason('bm25_lexical', signals.bm25 * SIGNAL_WEIGHTS.bm25, `BM25/IDF lexical score ${signals.bm25.toFixed(2)}`),
+    reason(
+      'field_match',
+      signals.field * SIGNAL_WEIGHTS.field,
+      `title/topic/project/identifier score ${signals.field.toFixed(2)}`,
+    ),
+    reason(
+      'graph_proximity',
+      signals.graph * SIGNAL_WEIGHTS.graph,
+      `typed graph proximity ${signals.graph.toFixed(2)}`,
+    ),
+    reason('freshness', signals.freshness * SIGNAL_WEIGHTS.freshness, `recency score ${signals.freshness.toFixed(2)}`),
+    reason(
+      'authority_trust',
+      signals.authority * SIGNAL_WEIGHTS.authority,
+      `authority/trust score ${signals.authority.toFixed(2)}`,
+    ),
+    reason(
+      'lifecycle',
+      signals.lifecycle * SIGNAL_WEIGHTS.lifecycle,
+      `lifecycle score ${signals.lifecycle.toFixed(2)}`,
+    ),
+    reason(
+      'temporal_validity',
+      signals.temporal * SIGNAL_WEIGHTS.temporal,
+      `temporal validity ${signals.temporal.toFixed(2)}`,
+    ),
+    reason(
+      'user_feedback',
+      signals.feedback * SIGNAL_WEIGHTS.feedback,
+      `bounded user feedback ${signals.feedback.toFixed(2)}`,
+    ),
+  ];
+  if (context.project && candidate.fields?.project) {
+    reasons.push(
+      reason('project_scope', signals.scope * SIGNAL_WEIGHTS.scope, `project scope ${signals.scope.toFixed(2)}`),
+    );
+  }
+  return reasons
+    .filter(item => Math.abs(item.contribution) >= EXPLANATION_CONTRIBUTION_MINIMUM)
+    .sort((left, right) => right.contribution - left.contribution);
+}
+
+function reason(code: string, contribution: number, detail: string): RecallReason {
+  return {code, contribution, detail};
+}
+
+function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConfidence {
+  const first = results[0]?.relevanceScore ?? 0;
+  const second = results[1]?.relevanceScore ?? 0;
+  const margin = Math.max(0, first - second);
+  const topSignals = results[0]?.signals;
+  const corroboratingSignals = results[0]
+    ? [results[0].signals.semantic, results[0].signals.bm25, results[0].signals.field, results[0].signals.graph].filter(
+        signal => signal >= CORROBORATING_SIGNAL_MINIMUM,
+      ).length
+    : 0;
+  const weakLexicalOnly =
+    topSignals !== undefined &&
+    topSignals.semantic <= SIGNAL_ABSENCE_MAXIMUM &&
+    topSignals.graph <= SIGNAL_ABSENCE_MAXIMUM &&
+    Math.max(topSignals.bm25, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM;
+  if (results.length === 0 || first < NO_ANSWER_SCORE_MINIMUM || weakLexicalOnly) {
+    return {
+      level: 'no_answer',
+      margin,
+      reason: 'No candidate passed the minimum combined relevance threshold.',
+      score: first,
+    };
+  }
+  if (
+    first >= HIGH_CONFIDENCE_SCORE_MINIMUM &&
+    (margin >= HIGH_CONFIDENCE_MARGIN_MINIMUM || corroboratingSignals >= HIGH_CONFIDENCE_SIGNAL_COUNT)
+  ) {
+    return {level: 'high', margin, reason: 'Strong top score with corroborating retrieval signals.', score: first};
+  }
+  if (first >= MEDIUM_CONFIDENCE_SCORE_MINIMUM && corroboratingSignals >= MEDIUM_CONFIDENCE_SIGNAL_COUNT) {
+    return {level: 'medium', margin, reason: 'Useful match, but ranking evidence is not decisive.', score: first};
+  }
+  return {level: 'low', margin, reason: 'Only weak or single-signal evidence supports the top result.', score: first};
+}
+
+export function recallDocumentTerms(candidate: RecallCandidate): readonly string[] {
+  return tokenize(
+    [
+      candidate.text,
+      candidate.fields?.title,
+      candidate.fields?.topic,
+      candidate.fields?.project,
+      ...(candidate.fields?.identifiers ?? []),
+    ]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' '),
+  );
+}
+
+export function buildRecallCorpusStatistics(candidates: readonly RecallCandidate[]): RecallCorpusStatistics {
+  const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
+  const frequencies: Record<string, number> = {};
+  for (const terms of corpus) {
+    for (const term of new Set(terms)) {
+      frequencies[term] = (frequencies[term] ?? 0) + 1;
+    }
+  }
+  const totalDocumentLength = corpus.reduce((sum, terms) => sum + terms.length, 0);
+  return {
+    averageDocumentLength: corpus.length === 0 ? 1 : totalDocumentLength / corpus.length,
+    documentCount: corpus.length,
+    documentFrequency: frequencies,
+    totalDocumentLength,
+  };
+}
+
+function tokenize(value: string | readonly string[]): readonly string[] {
+  const text = typeof value === 'string' ? value : value.join(' ');
+  return [...text.toLowerCase().matchAll(/[a-z0-9][a-z0-9_.-]{1,}/g)].map(match => match[0]);
+}
+
+function clamp(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function clampSigned(value: number): number {
+  return Math.max(-1, Math.min(1, value));
+}

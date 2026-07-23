@@ -22,7 +22,7 @@ async function makeConfig(): Promise<RuntimeConfig> {
     manifestPath: join(home, 'manifest.json'),
     openVikingVersion: '0.0.0',
     port: 1933,
-    user: 'denyskashkovskyi',
+    user: 'test-user',
   };
 }
 

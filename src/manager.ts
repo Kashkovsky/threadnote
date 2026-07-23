@@ -8,6 +8,7 @@ import {runCommandEffect} from './effect/command.js';
 import {captureConsole, capturePromiseConsole, consoleOutput} from './effect/console.js';
 import {fromPromiseError} from './effect/errors.js';
 import type {ApplicationServices} from './effect/runtime.js';
+import {runSharePublish} from './effect/share.js';
 import {uriSegment} from './manifest.js';
 import {
   runArchive,
@@ -30,7 +31,6 @@ import {
   removeMemoryUri,
   resolveTeam,
   runShareInit,
-  runSharePublish,
   runShareRemove,
   runShareRename,
   runShareSetUrl,
@@ -445,11 +445,13 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() =>
-          runSharePublish(context.config, requireString(body.uri, 'uri'), {
-            redact: body.redact === true,
-            team: optionalString(body.team),
-          }),
+        await runCaptured(
+          () =>
+            runSharePublish(context.config, requireString(body.uri, 'uri'), {
+              redact: body.redact === true,
+              team: optionalString(body.team),
+            }),
+          context.runEffect,
         ),
       );
       return;
@@ -776,7 +778,10 @@ async function moveMemory(
         }),
       runEffect,
     );
-    const published = await runCaptured(() => runSharePublish(config, personalTargetUri, {team: targetTeam}));
+    const published = await runCaptured(
+      () => runSharePublish(config, personalTargetUri, {team: targetTeam}),
+      runEffect,
+    );
     return {
       output: [saved.output, published.output].filter(Boolean).join('\n'),
       targetUri: sharedMemoryUriFor(config, targetTeam, metadata),
@@ -924,7 +929,8 @@ async function runBulk(
       } else if (action === 'forget') {
         output = (await runCaptured(() => runForget(config, uri, {}), runEffect)).output;
       } else if (action === 'publish') {
-        output = (await runCaptured(() => runSharePublish(config, uri, {team: optionalString(body.team)}))).output;
+        output = (await runCaptured(() => runSharePublish(config, uri, {team: optionalString(body.team)}), runEffect))
+          .output;
       } else {
         throw new Error(`Unsupported bulk action: ${action}`);
       }
