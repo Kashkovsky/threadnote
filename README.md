@@ -20,7 +20,7 @@ different agents**.
 **Walkthrough:** https://kashkovsky.github.io/threadnote/  
 **Wiki:** https://github.com/Kashkovsky/threadnote/wiki
 
-## The Value in One Screen
+## The Value
 
 ```text
 Alice + Codex ──publish curated memory──▶ team Git repo
