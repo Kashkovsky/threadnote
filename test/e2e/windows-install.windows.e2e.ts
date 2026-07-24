@@ -295,10 +295,11 @@ windowsIt('installs, operates, repairs, and uninstalls the packed package on nat
     expectSuccess(await runCli(cli, ['mcp-install', 'codex', '--apply'], env), 'Codex MCP install');
     expectSuccess(await runCli(cli, ['mcp-install', 'claude', '--apply'], env), 'Claude MCP install');
     const agentCalls = await readFile(agentLog, 'utf8');
-    expect(agentCalls).toContain('codex mcp remove threadnote');
-    expect(agentCalls).toContain('codex mcp add --env');
-    expect(agentCalls).toContain('claude mcp remove threadnote');
-    expect(agentCalls).toContain('claude mcp add --scope user');
+    const normalizedAgentCalls = agentCalls.replaceAll('"', '');
+    expect(normalizedAgentCalls).toContain('codex mcp remove threadnote');
+    expect(normalizedAgentCalls).toContain('codex mcp add --env');
+    expect(normalizedAgentCalls).toContain('claude mcp remove threadnote');
+    expect(normalizedAgentCalls).toContain('claude mcp add --scope user');
     expectSuccess(await runCli(cli, ['mcp-install', 'cursor', '--apply'], env), 'Cursor MCP install');
     expectSuccess(await runCli(cli, ['mcp-install', 'copilot', '--apply'], env), 'Copilot MCP install');
     for (const configPath of [join(home, '.cursor', 'mcp.json'), copilotConfig]) {
