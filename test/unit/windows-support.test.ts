@@ -6,7 +6,9 @@ import {isGitExecutable, resolveCommandInvocation, runCommandEffect} from '../..
 import {
   openVikingServerExecutableNames,
   pythonExecutableCandidates,
+  quoteWindowsProcessArgument,
   shouldManageCommandShim,
+  windowsProcessArgumentLine,
 } from '../../src/lifecycle.js';
 import {runtimeThreadnoteBinPath} from '../../src/update.js';
 import {
@@ -223,6 +225,17 @@ describe('Windows command execution', () => {
 });
 
 describe('Windows lifecycle defaults', () => {
+  it('quotes detached server arguments using Windows command-line rules', () => {
+    expect(quoteWindowsProcessArgument('')).toBe('""');
+    expect(quoteWindowsProcessArgument('--config')).toBe('--config');
+    expect(quoteWindowsProcessArgument('C:\\agent context\\ov.conf')).toBe('"C:\\agent context\\ov.conf"');
+    expect(quoteWindowsProcessArgument('ends with slash \\')).toBe('"ends with slash \\\\"');
+    expect(quoteWindowsProcessArgument('quote " value')).toBe('"quote \\" value"');
+    expect(windowsProcessArgumentLine(['--config', 'C:\\agent context\\ov.conf', '--name', 'quote " value'])).toBe(
+      '--config "C:\\agent context\\ov.conf" --name "quote \\" value"',
+    );
+  });
+
   it('uses native Python launcher candidates and preserves npm command wrappers', () => {
     expect(pythonExecutableCandidates('win32')).toEqual(['py', 'python', 'python3']);
     expect(shouldManageCommandShim('win32')).toBe(false);
