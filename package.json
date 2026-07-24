@@ -71,7 +71,7 @@
   "devDependencies": {
     "@effect/ai-openai-compat": "4.0.0-beta.99",
     "@effect/platform-node": "4.0.0-beta.99",
-    "@effect/vitest": "4.0.0-beta.99",
+    "@effect/vitest": "4.0.0-beta.101",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.1",
