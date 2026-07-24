@@ -18,6 +18,13 @@ $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   'https://registry.npmjs.org/'
 }
 
+function Format-InstallSourceForLog {
+  param([Parameter(Mandatory = $true)][string]$Value)
+
+  $redacted = $Value -replace '(?i)(https?://)[^/@\s]+@', '$1[REDACTED]@'
+  return $redacted -replace '(\?)[^#\s]+', '$1[REDACTED]'
+}
+
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npm) {
   $npm = Get-Command npm -ErrorAction SilentlyContinue
@@ -26,7 +33,9 @@ if (-not $npm) {
   throw 'npm was not found on PATH. Install Node.js 22.19 or newer, then rerun this installer.'
 }
 
-Write-Host "Installing $package with npm from $registry"
+$loggedPackage = Format-InstallSourceForLog $package
+$loggedRegistry = Format-InstallSourceForLog $registry
+Write-Host "Installing $loggedPackage with npm from $loggedRegistry"
 & $npm.Source install --global $package "--registry=$registry"
 if ($LASTEXITCODE -ne 0) {
   throw "npm install failed with exit code $LASTEXITCODE."

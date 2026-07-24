@@ -85,6 +85,13 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm test -- --run test/unit/windows-support.test.ts test/unit/update.test.ts test/unit/mcp.test.ts
+      - run: >-
+          npm test -- --run
+          test/unit/windows-support.test.ts
+          test/unit/effect-command.test.ts
+          test/unit/effect-system.test.ts
+          test/unit/lifecycle.install.test.ts
+          test/unit/update.test.ts
+          test/unit/mcp.test.ts
 
       - run: npm run test:e2e:windows

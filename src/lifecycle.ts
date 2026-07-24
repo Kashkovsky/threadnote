@@ -932,9 +932,9 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
     if (system.platform === 'win32') {
       const servingProcess = yield* findWindowsServingProcess(childPid, config, server, args);
       if (!servingProcess) {
-        const termination = yield* terminateWindowsProcessTree(childPid);
+        const termination = yield* terminateWindowsProcessTree(childPid, config);
         if (!termination.stopped) {
-          return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+          return yield* Effect.fail(windowsTerminationError(childPid, termination));
         }
         yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
         return yield* Effect.fail(
@@ -951,9 +951,9 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
     return;
   }
   if (system.platform === 'win32') {
-    const termination = yield* terminateWindowsProcessTree(childPid);
+    const termination = yield* terminateWindowsProcessTree(childPid, config);
     if (!termination.stopped) {
-      return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+      return yield* Effect.fail(windowsTerminationError(childPid, termination));
     }
     yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
   }
@@ -1041,9 +1041,9 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
       if (system.platform === 'win32') {
         const servingProcess = yield* findWindowsServingProcess(childPid, config, server, args);
         if (!servingProcess) {
-          const termination = yield* terminateWindowsProcessTree(childPid);
+          const termination = yield* terminateWindowsProcessTree(childPid, config);
           if (!termination.stopped) {
-            return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+            return yield* Effect.fail(windowsTerminationError(childPid, termination));
           }
           yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
           return yield* Effect.fail(
@@ -1060,9 +1060,9 @@ const restartDetachedOpenVikingServer = Effect.fn('restartDetachedOpenVikingServ
     yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
   }
   if (system.platform === 'win32') {
-    const termination = yield* terminateWindowsProcessTree(childPid);
+    const termination = yield* terminateWindowsProcessTree(childPid, config);
     if (!termination.stopped) {
-      return yield* Effect.fail(windowsTerminationError(childPid, termination.result));
+      return yield* Effect.fail(windowsTerminationError(childPid, termination));
     }
     yield* fs.remove(yield* pathJoin(config.agentContextHome, 'openviking-server.pid'), {force: true});
   } else {
@@ -1096,6 +1096,11 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
   if (!Number.isInteger(pid) || pid <= 0) {
     yield* Console.log(`Invalid pid file: ${pidPath}`);
     if (options.dryRun !== true) {
+      if (system.platform === 'win32' && (yield* isTcpPortOpen(config.host, config.port, 500))) {
+        return yield* Effect.fail(
+          new Error(`Refusing to remove invalid pid file while ${config.host}:${config.port} is still listening.`),
+        );
+      }
       yield* fs.remove(pidPath, {force: true});
     }
     return;
@@ -1105,6 +1110,11 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
     return;
   }
   if (!(yield* isProcessRunningEffect(pid))) {
+    if (system.platform === 'win32' && (yield* isTcpPortOpen(config.host, config.port, 500))) {
+      return yield* Effect.fail(
+        new Error(`Refusing to remove stale pid file while ${config.host}:${config.port} is still listening.`),
+      );
+    }
     yield* fs.remove(pidPath, {force: true});
     yield* Console.log(`Removed stale pid file for process ${pid}.`);
     return;
@@ -1145,9 +1155,9 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
   if (system.platform === 'win32') {
     const terminationPids = windowsTerminationPid === pid ? [pid] : [pid, windowsTerminationPid];
     for (const terminationPid of terminationPids) {
-      const termination = yield* terminateWindowsProcessTree(terminationPid);
+      const termination = yield* terminateWindowsProcessTree(terminationPid, config);
       if (!termination.stopped) {
-        return yield* Effect.fail(windowsTerminationError(terminationPid, termination.result));
+        return yield* Effect.fail(windowsTerminationError(terminationPid, termination));
       }
     }
     signaled = true;
@@ -1171,6 +1181,13 @@ export const runStop = Effect.fn('runStop')(function* (config: RuntimeConfig, op
       return yield* Effect.fail(new Error(`Process ${pid} did not stop within ${STOP_SERVER_TIMEOUT_MS / 1000}s.`));
     }
     yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+  }
+  if (system.platform === 'win32' && (yield* isTcpPortOpen(config.host, config.port, 500))) {
+    return yield* Effect.fail(
+      new Error(
+        `Process ${pid} stopped, but ${config.host}:${config.port} is still listening; preserving its pid file.`,
+      ),
+    );
   }
   yield* fs.remove(pidPath, {force: true});
   yield* Console.log(`Stopped process ${pid}`);
@@ -1327,16 +1344,32 @@ const matchesExpectedWindowsProcess = Effect.fn('lifecycle.matchesExpectedWindow
   return args.every(arg => commandLine.includes(arg.toLowerCase()));
 });
 
-const terminateWindowsProcessTree = Effect.fn('terminateWindowsProcessTree')(function* (pid: number) {
+const terminateWindowsProcessTree = Effect.fn('terminateWindowsProcessTree')(function* (
+  pid: number,
+  config: RuntimeConfig,
+) {
   const result = yield* runCommandEffect(yield* windowsTaskkillExecutable(), ['/pid', String(pid), '/t', '/f'], {
     allowFailure: true,
     timeoutMs: 5000,
   });
-  return {result, stopped: !(yield* isProcessRunningEffect(pid))};
+  const processStopped = !(yield* isProcessRunningEffect(pid));
+  const listenerStopped = !(yield* isTcpPortOpen(config.host, config.port, 500));
+  return {listenerStopped, processStopped, result, stopped: processStopped && listenerStopped};
 });
 
-function windowsTerminationError(pid: number, result: CommandResult): Error {
-  const detail = firstLine(result.stderr) || firstLine(result.stdout) || `taskkill exited with ${result.exitCode}`;
+function windowsTerminationError(
+  pid: number,
+  termination: {
+    readonly listenerStopped: boolean;
+    readonly processStopped: boolean;
+    readonly result: CommandResult;
+  },
+): Error {
+  const detail = !termination.processStopped
+    ? firstLine(termination.result.stderr) ||
+      firstLine(termination.result.stdout) ||
+      `taskkill exited with ${termination.result.exitCode}`
+    : 'the configured OpenViking listener remained active';
   return new Error(`Could not terminate Windows process tree ${pid}; preserving its pid record: ${detail}`);
 }
 

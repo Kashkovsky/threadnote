@@ -37,31 +37,54 @@ const ensureSupportedUvExecutable = () => runEffect(ensureSupportedUvExecutableE
 async function fakeUv(version: string, selfUpdateVersion?: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'threadnote-uv-test-'));
   temporaryDirectories.push(directory);
-  const executable = join(directory, 'uv');
+  const executable = join(directory, process.platform === 'win32' ? 'uv.CMD' : 'uv');
   const statePath = join(directory, 'version');
   await writeFile(statePath, `${version}\n`);
-  await writeFile(
-    executable,
-    [
-      '#!/bin/sh',
-      `state=${JSON.stringify(statePath)}`,
-      'if [ "$1" = "--version" ]; then',
-      '  /bin/cat "$state"',
-      '  exit 0',
-      'fi',
-      ...(selfUpdateVersion
-        ? [
-            'if [ "$1" = "self" ] && [ "$2" = "update" ]; then',
-            `  printf '%s\\n' ${JSON.stringify(selfUpdateVersion)} > "$state"`,
-            '  exit 0',
-            'fi',
-          ]
-        : []),
-      'exit 1',
-      '',
-    ].join('\n'),
-  );
-  await chmod(executable, 0o755);
+  if (process.platform === 'win32') {
+    await writeFile(
+      executable,
+      [
+        '@echo off',
+        'if /I "%~1"=="--version" (',
+        `  type "${statePath}"`,
+        '  exit /b 0',
+        ')',
+        ...(selfUpdateVersion
+          ? [
+              'if /I "%~1"=="self" if /I "%~2"=="update" (',
+              `  > "${statePath}" echo ${selfUpdateVersion}`,
+              '  exit /b 0',
+              ')',
+            ]
+          : []),
+        'exit /b 1',
+        '',
+      ].join('\r\n'),
+    );
+  } else {
+    await writeFile(
+      executable,
+      [
+        '#!/bin/sh',
+        `state=${JSON.stringify(statePath)}`,
+        'if [ "$1" = "--version" ]; then',
+        '  /bin/cat "$state"',
+        '  exit 0',
+        'fi',
+        ...(selfUpdateVersion
+          ? [
+              'if [ "$1" = "self" ] && [ "$2" = "update" ]; then',
+              `  printf '%s\\n' ${JSON.stringify(selfUpdateVersion)} > "$state"`,
+              '  exit 0',
+              'fi',
+            ]
+          : []),
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    await chmod(executable, 0o755);
+  }
   return executable;
 }
 
@@ -147,6 +170,7 @@ function launchdProcessTestLayer(processStart: string, commands: string | readon
         }
         return Effect.succeed({exitCode: 127, stderr: 'unexpected command', stdout: ''});
       },
+      executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
     }),
   );
   return Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, executor, SystemInfo.layer);
@@ -379,7 +403,7 @@ describe('getInstallCommands', () => {
 
   it('adds the wheel index to the pip --user fallback', async () => {
     const [command] = await runEffect(getInstallCommands(runtime(), 'pip', true));
-    expect(command.executable).toMatch(/python3$/);
+    expect(command.executable).toMatch(process.platform === 'win32' ? /(?:py|python3?)(?:\.exe)?$/i : /python3$/);
     expect(command.args).toEqual([
       '-m',
       'pip',
@@ -423,6 +447,7 @@ describe('findOpenVikingServerEffect', () => {
         CommandExecutor,
         CommandExecutor.of({
           execute: () => Effect.never,
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       ),
       SystemInfo.layer,

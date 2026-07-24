@@ -14,6 +14,7 @@ it.effect('retries busy OpenViking removals on an Effect schedule', () =>
       CommandExecutor,
       CommandExecutor.of({
         execute: () => Effect.succeed(++attempts === 3 ? success : busy),
+        executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
       }),
     );
     const fiber = yield* removeOpenVikingResourceEffect('ov', ['rm', 'viking://memory'], {
@@ -37,6 +38,7 @@ it.effect('returns undefined after the scheduled busy retries are exhausted', ()
           attempts += 1;
           return Effect.succeed(busy);
         },
+        executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
       }),
     );
     const fiber = yield* removeOpenVikingResourceEffect('ov', ['rm', 'viking://memory'], {
@@ -60,6 +62,7 @@ it.effect('does not retry non-transient removal failures', () =>
           attempts += 1;
           return Effect.succeed({exitCode: 2, stderr: 'permission denied', stdout: ''});
         },
+        executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
       }),
     );
     const exit = yield* removeOpenVikingResourceEffect('ov', ['rm', 'viking://memory'], {

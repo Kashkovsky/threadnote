@@ -1,4 +1,4 @@
-import {Effect, Path, Result} from 'effect';
+import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   commandEnvironment,
@@ -70,13 +70,39 @@ describe('Effect CommandExecutor', () => {
   });
 
   it('interrupts streaming commands through the command boundary', async () => {
-    await expect(
-      run(
-        runStreamingCommandEffect(process.execPath, ['-e', 'setInterval(() => undefined, 1000)']).pipe(
-          Effect.timeout(25),
-        ),
+    const childPid = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const pathService = yield* Path.Path;
+          const directory = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-streaming-command-'});
+          const pidPath = pathService.join(directory, 'child.pid');
+          const fiber = yield* runStreamingCommandEffect(process.execPath, [
+            '-e',
+            'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => undefined, 1000)',
+            pidPath,
+          ]).pipe(Effect.forkScoped);
+          const deadline = (yield* Clock.currentTimeMillis) + 5000;
+          let pid: number | undefined;
+          while ((yield* Clock.currentTimeMillis) < deadline) {
+            const content = yield* fs.readFileString(pidPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+            const candidate = Number(content);
+            if (Number.isInteger(candidate) && candidate > 0) {
+              pid = candidate;
+              break;
+            }
+            yield* Effect.sleep(10);
+          }
+          if (pid === undefined) {
+            return yield* Effect.fail(new Error('Streaming child did not report readiness.'));
+          }
+          yield* Fiber.interrupt(fiber);
+          return pid;
+        }),
       ),
-    ).rejects.toThrow();
+    );
+
+    expect(isProcessRunning(childPid)).toBe(false);
   });
 
   it('injects Threadnote config paths into OpenViking CLI commands', async () => {
@@ -130,3 +156,17 @@ describe('Effect CommandExecutor', () => {
     expect(isOpenVikingCliExecutable('/tools/openviking-server')).toBe(false);
   });
 });
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause: unknown) {
+    return !(
+      typeof cause === 'object' &&
+      cause !== null &&
+      'code' in cause &&
+      (cause as {readonly code?: unknown}).code === 'ESRCH'
+    );
+  }
+}

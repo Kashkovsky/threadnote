@@ -66,7 +66,7 @@ export class CommandExecutor extends Context.Service<
       args: readonly string[],
       options?: CommandOptions,
     ) => Effect.Effect<CommandResult, CommandExecutionError>;
-    readonly executeStreaming?: (
+    readonly executeStreaming: (
       executable: string,
       args: readonly string[],
       options?: StreamingCommandOptions,
@@ -110,11 +110,7 @@ export const runStreamingCommandEffect = Effect.fn('runStreamingCommandEffect')(
   options: StreamingCommandOptions = {},
 ) {
   const command = yield* CommandExecutor;
-  if (command.executeStreaming) {
-    return yield* command.executeStreaming(executable, args, options);
-  }
-  const system = yield* SystemInfo;
-  return yield* executeStreamingCommand(executable, args, options, system);
+  return yield* command.executeStreaming(executable, args, options);
 });
 
 export const maybeRunEffect = Effect.fn('maybeRunEffect')(function* (

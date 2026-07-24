@@ -21,16 +21,12 @@ export interface SystemInfoShape {
 
 export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/SystemInfo') {
   static readonly layer = Layer.sync(SystemInfo, () => {
-    const windowsHome =
-      process.env.USERPROFILE ??
-      (process.env.HOMEDRIVE && process.env.HOMEPATH
-        ? `${process.env.HOMEDRIVE}${process.env.HOMEPATH}`
-        : process.env.HOME);
+    const homeDirectory = resolveHomeDirectory(process.env, process.platform);
     return SystemInfo.of({
       currentDirectory: () => process.cwd(),
       environment: () => process.env,
       executablePath: process.execPath,
-      homeDirectory: (process.platform === 'win32' ? windowsHome : (process.env.HOME ?? windowsHome)) ?? process.cwd(),
+      homeDirectory,
       isProcessRunning: processId => {
         try {
           process.kill(processId, 0);
@@ -65,4 +61,21 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
       userName: process.env.USER ?? process.env.USERNAME ?? 'unknown',
     });
   });
+}
+
+export function resolveHomeDirectory(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  const home = nonEmptyEnvironmentValue(environment.HOME);
+  const userProfile = nonEmptyEnvironmentValue(environment.USERPROFILE);
+  const homeDrive = nonEmptyEnvironmentValue(environment.HOMEDRIVE);
+  const homePath = nonEmptyEnvironmentValue(environment.HOMEPATH);
+  const windowsHome = userProfile ?? (homeDrive && homePath ? `${homeDrive}${homePath}` : undefined);
+  const resolved = platform === 'win32' ? (windowsHome ?? home) : (home ?? windowsHome);
+  if (!resolved) {
+    throw new Error('Could not determine the current user home directory from the environment.');
+  }
+  return resolved;
+}
+
+function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
+  return value && value.trim().length > 0 ? value : undefined;
 }

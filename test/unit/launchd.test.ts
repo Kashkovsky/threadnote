@@ -119,6 +119,7 @@ describe('macOS LaunchAgent lifecycle', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
@@ -140,6 +141,7 @@ describe('macOS LaunchAgent lifecycle', () => {
               yield* TestClock.adjust(10);
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
@@ -163,6 +165,7 @@ describe('macOS LaunchAgent lifecycle', () => {
                 ? {exitCode: 0, stderr: '', stdout: 'state = running\npid = 123\n'}
                 : {exitCode: 0, stderr: '', stdout: ''},
             ),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
@@ -186,6 +189,7 @@ describe('macOS LaunchAgent lifecycle', () => {
             calls += 1;
             return Effect.succeed({exitCode: 113, stderr: 'Could not find service', stdout: ''});
           },
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
