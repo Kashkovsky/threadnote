@@ -463,4 +463,28 @@ describe('runPostUpdate', () => {
       expect.arrayContaining(['repair-semantic-queue']),
     );
   });
+
+  it('offers the pinned local recall model as an opt-in post-update action', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
+      if (executable === '/ov' && args[0] === '--version') {
+        return Effect.succeed(ok('openviking 0.4.7\n'));
+      }
+      return Effect.succeed(ok());
+    });
+    const executeStreaming = vi.fn(() => Effect.succeed(ok()));
+    const executor = CommandExecutor.of({
+      execute: () => Effect.succeed(ok()),
+      executeStreaming,
+    });
+
+    await runEffect(
+      runPostUpdate(config, {fromVersion: '3.0.0-beta.4', toVersion: '3.0.0-beta.5', yes: true}).pipe(
+        Effect.provideService(CommandExecutor, executor),
+      ),
+    );
+
+    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['local-ai', 'install'], {});
+  });
 });

@@ -66,6 +66,7 @@ interface RecallContent {
     readonly level: string;
     readonly score: number;
   };
+  readonly queryExpansions?: readonly string[];
   readonly rankerVersion: string;
   readonly results: readonly {
     readonly finalScore: number;
@@ -114,6 +115,12 @@ describe('published local bins', () => {
       ['start'],
       ['stop'],
       ['uninstall'],
+      ['local-ai'],
+      ['local-ai', 'install'],
+      ['local-ai', 'start'],
+      ['local-ai', 'stop'],
+      ['local-ai', 'status'],
+      ['local-ai', 'uninstall'],
       ['seed'],
       ['init-manifest'],
       ['seed-skills'],
@@ -370,6 +377,8 @@ describe('published local bins', () => {
       ['start', '--dry-run'],
       ['stop', '--dry-run'],
       ['uninstall', '--dry-run', '--mcp', 'none', '--preserve-memories'],
+      ['local-ai', 'install', '--dry-run', '--no-start'],
+      ['local-ai', 'status'],
       ['seed-skills', '--dry-run'],
       ['migrate-memories', '--dry-run'],
       ['migrate-lifecycle', '--dry-run'],
@@ -688,6 +697,111 @@ describe('published local bins', () => {
     } finally {
       manager.process.kill('SIGINT');
       await waitForExit(manager.process);
+      await ai.close();
+    }
+  });
+
+  it('expands medium and weak recall through the packaged MCP bin and an OpenAI-compatible endpoint', async () => {
+    const fixture = await makeFixture('effect-ai-recall');
+    const project = 'threadnote';
+    const uri = `viking://user/e2e/memories/durable/projects/${project}/release-channel-contract.md`;
+    const alternateUri = `viking://user/e2e/memories/durable/projects/${project}/preview-install-contract.md`;
+    const rewrites = [
+      'release-channel-contract npm beta dist-tag stable latest',
+      'preview-install-contract prerelease versus stable installations',
+    ];
+    const groundedRewrites = ['release-channel-contract', 'preview-install-contract'];
+    const ai = await makeOpenAiCompatibleServer({queries: rewrites});
+    fixture.env.THREADNOTE_EFFECT_AI = '1';
+    fixture.env.THREADNOTE_EFFECT_AI_API_KEY = 'e2e-key';
+    fixture.env.THREADNOTE_EFFECT_AI_API_URL = `${ai.baseUrl}/v1`;
+    fixture.env.THREADNOTE_EFFECT_AI_MODEL = 'e2e-model';
+    try {
+      await withMcpClient(fixture, LIVE_OV.mcpUrl, 'full', async client => {
+        expect(
+          await callToolText(
+            client,
+            'remember_context',
+            {
+              project,
+              text: 'Beta installs use the npm beta dist-tag; stable installs use the latest dist-tag.',
+              topic: 'release-channel-contract',
+            },
+            60_000,
+          ),
+        ).toContain(uri);
+        expect(
+          await callToolText(
+            client,
+            'remember_context',
+            {
+              project,
+              text: 'Preview packages and ordinary installations follow different update channels.',
+              topic: 'preview-install-contract',
+            },
+            60_000,
+          ),
+        ).toContain(alternateUri);
+        await waitForOpenVikingSearch(fixture, groundedRewrites[0]!, uri);
+        await waitForOpenVikingSearch(fixture, groundedRewrites[1]!, alternateUri);
+
+        const recall = await callToolResult(
+          client,
+          'recall_context',
+          {
+            callerCwd: REPO_ROOT,
+            nodeLimit: 5,
+            query: 'How does the canary lane diverge from the GA lane?',
+          },
+          60_000,
+        );
+        const recallText = textFromToolResult(recall);
+        const structured = structuredContentFromToolResult<RecallContent>(recall);
+
+        expect(ai.requests).toHaveLength(1);
+        expect(structured.queryExpansions, JSON.stringify(ai.requests[0]?.body)).toEqual(groundedRewrites);
+        expect(recallText).toContain('Recall query expansion: evaluated 2 model rewrite(s).');
+        expect(recallText).toContain(uri);
+        expect(structured.results.some(result => result.uri === uri)).toBe(true);
+
+        const strictRecall = structuredContentFromToolResult<RecallContent>(
+          await callToolResult(
+            client,
+            'recall_context',
+            {
+              callerCwd: REPO_ROOT,
+              nodeLimit: 5,
+              query: 'How does the canary lane diverge from the GA lane?',
+              threshold: 0.99,
+            },
+            60_000,
+          ),
+        );
+        expect(strictRecall.queryExpansions).toEqual(groundedRewrites);
+        expect(strictRecall.results.every(result => result.finalScore >= 0.99)).toBe(true);
+        expect(strictRecall.results.some(result => result.uri === uri)).toBe(false);
+
+        const mediumRecall = await callToolResult(
+          client,
+          'recall_context',
+          {
+            callerCwd: REPO_ROOT,
+            nodeLimit: 5,
+            query: 'dist-tag comparison',
+          },
+          60_000,
+        );
+        const mediumText = textFromToolResult(mediumRecall);
+        const mediumStructured = structuredContentFromToolResult<RecallContent>(mediumRecall);
+
+        expect(mediumText).toContain('Recall query expansion: evaluated 1 model rewrite(s).');
+        expect(mediumStructured.queryExpansions).toEqual([groundedRewrites[0]]);
+        expect(mediumStructured.results.some(result => result.uri === uri)).toBe(true);
+      });
+      expect(ai.requests).toHaveLength(2);
+      expect(ai.requests[0]?.url).toBe('/v1/chat/completions');
+      expect(ai.requests[0]?.authorization).toBe('Bearer e2e-key');
+    } finally {
       await ai.close();
     }
   });
@@ -1507,6 +1621,22 @@ async function runCli(fixture: TestFixture, args: readonly string[], input?: str
   });
 }
 
+async function waitForOpenVikingSearch(fixture: TestFixture, query: string, expectedUri: string): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  let last = '';
+  while (Date.now() < deadline) {
+    const result = await runProcess(
+      LIVE_OV.ov,
+      ['search', query, '--threshold', '0.5', '--level', '2', '--output', 'json'],
+      {env: fixture.env},
+    );
+    last = `${result.stdout}\n${result.stderr}`;
+    if (result.code === 0 && result.stdout.includes(expectedUri)) return;
+    await new Promise(resolveWait => setTimeout(resolveWait, 100));
+  }
+  throw new Error(`OpenViking did not index ${expectedUri} for ${JSON.stringify(query)}.\n${last}`);
+}
+
 async function expectCliFailure(fixture: TestFixture, args: readonly string[], message: string): Promise<void> {
   const result = await runCli(fixture, args);
   expect(result.code, result.stdout + result.stderr).toBe(1);
@@ -1638,12 +1768,21 @@ async function withMcpClient<T>(
   }
 }
 
-async function callToolText(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
-  return textFromToolResult(await callToolResult(client, name, args));
+async function callToolText(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  timeoutMs = 10_000,
+): Promise<string> {
+  return textFromToolResult(await callToolResult(client, name, args, timeoutMs));
 }
 
-async function callToolResult(client: Client, name: string, args: Record<string, unknown>) {
-  const result = await client.callTool({arguments: args, name}, undefined, {timeout: 10_000});
+async function callToolResult(client: Client, name: string, args: Record<string, unknown>, timeoutMs = 10_000) {
+  const result = await client
+    .callTool({arguments: args, name}, undefined, {timeout: timeoutMs})
+    .catch((cause: unknown) => {
+      throw new Error(`${name} failed within the ${timeoutMs}ms E2E client budget.`, {cause});
+    });
   expect(result.isError, `${name} failed: ${textFromToolResult(result)}`).not.toBe(true);
   return result;
 }
@@ -1670,7 +1809,9 @@ function textFromToolResult(result: unknown): string {
     : '';
 }
 
-async function makeOpenAiCompatibleServer(): Promise<{
+async function makeOpenAiCompatibleServer(
+  responseObject: Readonly<Record<string, unknown>> = {draft: 'Consolidated by Effect AI E2E'},
+): Promise<{
   readonly baseUrl: string;
   readonly close: () => Promise<void>;
   readonly requests: Array<{readonly authorization?: string; readonly body: unknown; readonly url?: string}>;
@@ -1695,7 +1836,7 @@ async function makeOpenAiCompatibleServer(): Promise<{
           {
             finish_reason: 'stop',
             index: 0,
-            message: {content: JSON.stringify({draft: 'Consolidated by Effect AI E2E'}), role: 'assistant'},
+            message: {content: JSON.stringify(responseObject), role: 'assistant'},
           },
         ],
         created: Math.floor(Date.now() / 1000),

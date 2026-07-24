@@ -47,11 +47,13 @@ interface UpdateCache {
 }
 
 interface PostUpdateMigration {
+  readonly appliesToPrereleases?: boolean;
   readonly commandArgs: readonly string[];
   readonly description: readonly string[];
   readonly id: string;
   readonly instructions: readonly string[];
   readonly introducedIn: string;
+  readonly markHandledWhenSkipped?: boolean;
   readonly requiresLegacyHandoffs?: boolean;
   readonly requiresProjectNameConsolidation?: boolean;
   readonly title: string;
@@ -239,7 +241,7 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
       return;
     }
     yield* Console.log('');
-    yield* Console.log('Repair found package post-update migrations.');
+    yield* Console.log('Repair found package post-update actions.');
     yield* Console.log(
       'This also covers updates launched by older Threadnote versions that only knew how to run repair.',
     );
@@ -570,12 +572,12 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
     toVersion: options.toVersion,
   });
   if (migrations.length === 0) {
-    yield* Console.log('No post-update memory migrations apply.');
+    yield* Console.log('No post-update actions apply.');
     return;
   }
 
   yield* Console.log('');
-  yield* Console.log('Post-update memory migrations are available.');
+  yield* Console.log('Post-update actions are available.');
   const threadnoteCommand =
     currentThreadnoteCommand(system) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
   const handledMigrationIds = new Set(state.handledMigrationIds);
@@ -588,6 +590,9 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
     if (!accepted) {
       yield* Console.log('Skipped. Run manually later:');
       yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
+      if (options.interactive && migration.markHandledWhenSkipped === true) {
+        handledMigrationIds.add(migration.id);
+      }
       continue;
     }
     yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
@@ -627,7 +632,7 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
     if (compareVersions(options.fromVersion, migration.introducedIn) >= 0) {
       continue;
     }
-    if (compareVersions(migration.introducedIn, options.toVersion) > 0) {
+    if (!postUpdateMigrationReached(migration, options.fromVersion, options.toVersion)) {
       continue;
     }
     if (migration.requiresLegacyHandoffs === true && !(yield* hasLegacyLifecycleHandoffCandidates(config))) {
@@ -670,15 +675,33 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     throw new Error(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
   }
   return {
+    appliesToPrereleases: value.appliesToPrereleases === true,
     commandArgs: stringArray(value, 'commandArgs'),
     description: stringArray(value, 'description'),
     id: value.id,
     instructions: stringArray(value, 'instructions'),
     introducedIn: value.introducedIn,
+    markHandledWhenSkipped: value.markHandledWhenSkipped === true,
     requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
     requiresProjectNameConsolidation: value.requiresProjectNameConsolidation === true,
     title: value.title,
   };
+}
+
+function postUpdateMigrationReached(migration: PostUpdateMigration, fromVersion: string, toVersion: string): boolean {
+  if (compareVersions(migration.introducedIn, toVersion) <= 0) {
+    return true;
+  }
+  return (
+    migration.appliesToPrereleases === true &&
+    compareVersions(fromVersion, toVersion) < 0 &&
+    stableVersionCore(migration.introducedIn) === stableVersionCore(toVersion) &&
+    toVersion.includes('-')
+  );
+}
+
+function stableVersionCore(version: string): string {
+  return version.trim().replace(/^v/, '').split(/[+-]/, 1)[0] ?? '';
 }
 
 function stringArray(value: JsonObject, key: string): readonly string[] {

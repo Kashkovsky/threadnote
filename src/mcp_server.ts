@@ -4,7 +4,7 @@ import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {Clock, Console, Effect, FileSystem, Path, pipe} from 'effect';
+import {Clock, Console, Effect, FileSystem, Path, Result, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -61,6 +61,14 @@ import {
 } from './utils.js';
 import {withIdentity} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
+import {
+  boundedRecallExpansionScopes,
+  expandWeakRecallQueryEffect,
+  localRecallAiEnabled,
+  recallMinimumScoreAfterExpansion,
+  shouldExpandRecall,
+} from './effect/ai-recall.js';
+import {resolveEffectAiConfiguration} from './effect/ai-consolidator.js';
 import {sha256Hex} from './effect/digest.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
@@ -102,7 +110,7 @@ import {
 } from './candidate_memory.js';
 import {recordRecallFeedback} from './recall/feedback.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
-import {prepareRecallSections} from './recall/runtime.js';
+import {loadRecallExpansionVocabulary, prepareRecallSections} from './recall/runtime.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -1670,11 +1678,13 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       threshold,
       params.includeArchived,
     );
+    const searchedScopes: Array<string | undefined> = [params.pinnedUri];
     const passes: Array<readonly RecallHit[]> = [base.hits];
     const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
     for (const scope of projectMemoryScopeUris(config, projectMemoryName, params.includeArchived)) {
       if (!scopedRecallUris.has(scope)) {
         scopedRecallUris.add(scope);
+        searchedScopes.push(scope);
         const projectMemoryPass = yield* recallSearchHits(
           config,
           ['search', query, '--uri', scope, ...limitArgs],
@@ -1686,6 +1696,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     }
     const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
     if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
+      searchedScopes.push(seededUri);
       const seeded = yield* recallSearchHits(
         config,
         ['search', params.query, '--uri', seededUri, ...limitArgs],
@@ -1710,6 +1721,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
         .filter(uri => !alreadyScoped.has(uri))
         .slice(0, MAX_WORKSET_PASSES);
       for (const scope of worksetScopes) {
+        searchedScopes.push(scope);
         const worksetPass = yield* recallSearchHits(
           config,
           ['search', query, '--uri', scope, ...limitArgs],
@@ -1721,20 +1733,69 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     }
 
     const exactMatches = yield* collectExactMemoryMatches(config, query, params.includeArchived, project);
-    const recallSections = yield* prepareRecallSections(config, {
-      allowExactRescue: params.threshold === undefined,
-      allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
-      exactMatches,
-      feedbackQuery: params.query,
-      includeInactive: params.includeArchived,
-      limit: params.nodeLimit ?? 12,
-      minimumScore: Number(threshold),
-      passes,
-      project: projectMemoryName ?? project?.name,
-      query,
-      readRecords: uris => readMemoryRecordsByUri(config, uris),
-      seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
-    });
+    const environment = (yield* SystemInfo).environment();
+    const effectAiResult = yield* resolveEffectAiConfiguration(config, environment).pipe(Effect.result);
+    const effectAi = Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
+    if (Result.isFailure(effectAiResult)) {
+      sections.push(
+        `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
+      );
+    }
+    let hybridMinimumScore: number | undefined = Number(threshold);
+    const expansionQueries: string[] = [];
+    const prepareSections = () =>
+      prepareRecallSections(config, {
+        allowExactRescue: params.threshold === undefined,
+        allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+        exactMatches,
+        feedbackQuery: params.query,
+        includeInactive: params.includeArchived,
+        limit: params.nodeLimit ?? 12,
+        minimumScore: hybridMinimumScore,
+        passes,
+        project: projectMemoryName ?? project?.name,
+        query,
+        queryVariants: expansionQueries,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
+      });
+    let recallSections = yield* prepareSections();
+    const expansionVocabulary =
+      localRecallAiEnabled(effectAi?.configuration) && shouldExpandRecall(recallSections.confidence)
+        ? yield* loadRecallExpansionVocabulary(config, {
+            allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+            includeInactive: params.includeArchived,
+            project: projectMemoryName ?? project?.name,
+            rankedCandidates: recallSections.expansionCandidates,
+          }).pipe(Effect.catch(() => Effect.succeed([])))
+        : [];
+    const proposedExpansionQueries = yield* expandWeakRecallQueryEffect(
+      {
+        confidence: recallSections.confidence,
+        project: projectMemoryName ?? project?.name,
+        query: params.query,
+        vocabulary: expansionVocabulary,
+      },
+      config,
+      effectAi,
+    );
+    for (const expansionQuery of proposedExpansionQueries) {
+      expansionQueries.push(expansionQuery);
+      for (const scope of boundedRecallExpansionScopes(searchedScopes)) {
+        const expansionPass = yield* recallSearchHits(
+          config,
+          ['search', expansionQuery, ...(scope ? ['--uri', scope] : []), ...limitArgs],
+          threshold,
+          params.includeArchived,
+        );
+        passes.push(expansionPass.hits);
+      }
+      hybridMinimumScore = recallMinimumScoreAfterExpansion(Number(threshold), params.threshold !== undefined);
+      recallSections = yield* prepareSections();
+    }
+    if (expansionQueries.length > 0) {
+      sections.push(`Recall query expansion: evaluated ${expansionQueries.length} model rewrite(s).`);
+    }
     const {semanticSection, exactTail} = recallSections;
     if (semanticSection) {
       sections.push(semanticSection);
@@ -1770,6 +1831,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       isError: onlyErrorNote || undefined,
       structuredContent: {
         confidence: recallSections.confidence,
+        queryExpansions: expansionQueries,
         rankerVersion: RECALL_RANKER_VERSION,
         results: recallSections.ranked.slice(0, params.nodeLimit ?? 12).map(hit => ({
           category: hit.category,

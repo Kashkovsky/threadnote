@@ -89,6 +89,8 @@ const SEED_FILE_MTIME_TOLERANCE_MILLISECONDS = 1;
 const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml']);
 const IDENTIFIER_PATTERN = /[a-z0-9][a-z0-9_.-]{2,}/gi;
 const decodedCacheByPath = new Map<string, RecallIndexCache>();
+const decodedCacheGenerationByPath = new Map<string, string | null>();
+let staleGenerationCounter = 0;
 
 interface LoadRecallIndexOptions {
   readonly allowedUriScopes?: readonly string[];
@@ -187,8 +189,11 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
     version: RECALL_INDEX_CACHE_VERSION,
   };
   if (cached) {
-    yield* fs.writeFileString(`${cachePath}.stale`, `${now}\n`, {mode: 0o600});
-    yield* Effect.sync(() => decodedCacheByPath.set(cachePath, cache));
+    const generation = yield* writeStaleGeneration(fs, cachePath);
+    yield* Effect.sync(() => {
+      decodedCacheByPath.set(cachePath, cache);
+      decodedCacheGenerationByPath.set(cachePath, generation);
+    });
   } else {
     yield* writeCacheAtomically(fs, cachePath, cache);
   }
@@ -203,23 +208,30 @@ export const loadRecallIndex = Effect.fn('recall.loadIndex')(function* (
 });
 
 export const clearRecallIndexMemoryCache = Effect.fn('recall.clearMemoryCache')(function* () {
-  yield* Effect.sync(() => decodedCacheByPath.clear());
+  yield* Effect.sync(() => {
+    decodedCacheByPath.clear();
+    decodedCacheGenerationByPath.clear();
+  });
 });
 
 export const expireRecallIndexValidation = Effect.fn('recall.expireValidation')(function* (
   agentContextHome: string,
   includeInactive: boolean,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const cachePath = pathService.join(
     agentContextHome,
     'cache',
     includeInactive ? INACTIVE_CACHE_FILENAME : ACTIVE_CACHE_FILENAME,
   );
+  yield* fs.makeDirectory(pathService.dirname(cachePath), {recursive: true});
+  const generation = yield* writeStaleGeneration(fs, cachePath);
   yield* Effect.sync(() => {
     const cached = decodedCacheByPath.get(cachePath);
     if (cached) {
       decodedCacheByPath.set(cachePath, {...cached, validatedAt: 0});
+      decodedCacheGenerationByPath.set(cachePath, generation);
     }
   });
 });
@@ -659,13 +671,14 @@ function readCache(
   bypassMemory: boolean,
 ): Effect.Effect<RecallIndexCache | undefined, unknown> {
   return Effect.gen(function* () {
+    const staleGeneration = yield* readStaleGeneration(fs, path);
     if (!bypassMemory) {
       const decoded = decodedCacheByPath.get(path);
-      if (decoded) {
+      if (decoded && decodedCacheGenerationByPath.get(path) === staleGeneration) {
         return decoded;
       }
     }
-    if (yield* fs.exists(`${path}.stale`)) {
+    if (staleGeneration !== null) {
       return undefined;
     }
     if (!(yield* fs.exists(path))) {
@@ -676,10 +689,38 @@ function readCache(
     const parsed = parseCache(value);
     if (parsed) {
       decodedCacheByPath.set(path, parsed);
+      decodedCacheGenerationByPath.set(path, null);
     }
     return parsed;
   });
 }
+
+function readStaleGeneration(fs: FileSystem.FileSystem, path: string): Effect.Effect<string | null, never> {
+  return Effect.gen(function* () {
+    const stalePath = `${path}.stale`;
+    if (!(yield* fs.exists(stalePath).pipe(Effect.catch(() => Effect.succeed(false))))) {
+      return null;
+    }
+    return yield* fs.readFileString(stalePath).pipe(
+      Effect.map(value => value.trim() || 'present'),
+      Effect.catch(() => Effect.succeed('present')),
+    );
+  });
+}
+
+const writeStaleGeneration = Effect.fn('recall.writeStaleGeneration')(function* (
+  fs: FileSystem.FileSystem,
+  path: string,
+) {
+  const system = yield* SystemInfo;
+  const counter = yield* Effect.sync(() => {
+    staleGenerationCounter += 1;
+    return staleGenerationCounter;
+  });
+  const generation = `${yield* Clock.currentTimeMillis}:${system.processId}:${counter}`;
+  yield* fs.writeFileString(`${path}.stale`, `${generation}\n`, {mode: 0o600});
+  return generation;
+});
 
 function loadCanonicalResourcePolicy(
   config: RecallIndexConfig,
@@ -922,6 +963,9 @@ function writeCacheAtomically(
       .rename(temporaryPath, path)
       .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
     yield* fs.remove(`${path}.stale`, {force: true});
-    yield* Effect.sync(() => decodedCacheByPath.set(path, cache));
+    yield* Effect.sync(() => {
+      decodedCacheByPath.set(path, cache);
+      decodedCacheGenerationByPath.set(path, null);
+    });
   });
 }

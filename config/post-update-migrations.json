@@ -39,6 +39,24 @@
         "If Threadnote reported any original files were still being processed, rerun the printed threadnote forget <uri> command later."
       ],
       "requiresProjectNameConsolidation": true
+    },
+    {
+      "id": "local-ai-recall-gemma-4-e4b-v1",
+      "introducedIn": "3.0.0",
+      "appliesToPrereleases": true,
+      "title": "Optional local AI recall with Gemma 4 E4B",
+      "description": [
+        "Threadnote can improve weak and medium-confidence recalls with a local instruction model while keeping deterministic retrieval and ranking in control.",
+        "This optional action downloads the official Gemma 4 E4B Q4_0 GGUF model (4.59 GB), verifies its pinned SHA-256, and stores its configuration under THREADNOTE_HOME.",
+        "The authenticated model service binds to 127.0.0.1 only and uses the llama.cpp runtime already installed with OpenViking.",
+        "High-confidence recalls never invoke the model; model failures fall back to the original deterministic result.",
+        "Gemma model use is subject to Google's Gemma Terms: https://ai.google.dev/gemma/terms"
+      ],
+      "commandArgs": ["local-ai", "install"],
+      "instructions": [
+        "Local AI recall is enabled. Run `threadnote local-ai status` to inspect it or `threadnote local-ai uninstall` to disable it while preserving the model."
+      ],
+      "markHandledWhenSkipped": true
     }
   ]
 }

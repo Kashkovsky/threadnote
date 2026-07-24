@@ -4,6 +4,15 @@ import {OPENVIKING_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from '../lifecycle.js';
 import {
+  ensureLocalAiStarted,
+  readLocalAiSettings,
+  runLocalAiInstall,
+  runLocalAiStart,
+  runLocalAiStatus,
+  runLocalAiStop,
+  runLocalAiUninstall,
+} from './local-ai.js';
+import {
   runArchive,
   runCompact,
   runExportPack,
@@ -39,7 +48,8 @@ import {
   runShareUnpublish,
 } from './share.js';
 import type {RuntimeConfig} from '../types.js';
-import {maybeNotifyUpdate, runPostUpdate, runUpdate} from '../update.js';
+import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate, runUpdate} from '../update.js';
+import {errorMessage} from '../utils.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
 import {applicationError} from './errors.js';
@@ -178,6 +188,7 @@ const install = Command.make(
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runInstall(config, options);
+        yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun});
         if (options.withHooks) {
           for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
             yield* Console.log(`\n--- ${agent} hooks ---`);
@@ -218,7 +229,7 @@ const update = Command.make(
     registry: optionalString('registry', 'npm registry URL'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
     runtime: defaultChoice('runtime', ['auto', 'npm', 'bun', 'deno'], 'auto, npm, bun, or deno', 'auto'),
-    yes: boolean('yes', 'Accept applicable post-update migrations without prompting'),
+    yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runUpdate(config, options)),
 ).pipe(Command.withDescription('Update the published Threadnote package, then repair local shims and MCP config'));
@@ -229,10 +240,10 @@ const postUpdate = Command.make(
     dryRun: boolean('dry-run', 'Print post-update actions without running them'),
     fromVersion: requiredString('from-version', 'Version before update'),
     toVersion: requiredString('to-version', 'Version after update'),
-    yes: boolean('yes', 'Accept applicable post-update migrations without prompting'),
+    yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runPostUpdate(config, options)),
-).pipe(Command.withDescription('Run packaged post-update migration prompts'), Command.withHidden);
+).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.withHidden);
 
 const repair = Command.make(
   'repair',
@@ -251,6 +262,15 @@ const repair = Command.make(
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runRepair(config, options);
+        if (options.start !== false && (yield* readLocalAiSettings(config))) {
+          if (options.dryRun) {
+            yield* runLocalAiStart(config, {dryRun: true});
+          } else {
+            yield* ensureLocalAiStarted(config).pipe(
+              Effect.catch(error => Console.warn(`WARN could not repair local AI health: ${errorMessage(error)}`)),
+            );
+          }
+        }
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
@@ -268,7 +288,14 @@ const start = Command.make(
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
+        const localAiConfigured = (yield* readLocalAiSettings(config)) !== undefined;
+        if (options.foreground && localAiConfigured) {
+          yield* runLocalAiStart(config, options);
+        }
         yield* runStart(config, options);
+        if (!options.foreground && localAiConfigured) {
+          yield* runLocalAiStart(config, options);
+        }
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
@@ -277,7 +304,15 @@ const start = Command.make(
 const stop = Command.make(
   'stop',
   {dryRun: boolean('dry-run', 'Print the stop actions without running them')},
-  options => withRuntimeEffect(config => runStop(config, options)),
+  options =>
+    withRuntimeEffect(config =>
+      Effect.gen(function* () {
+        if (yield* readLocalAiSettings(config)) {
+          yield* runLocalAiStop(config, options);
+        }
+        yield* runStop(config, options);
+      }),
+    ),
 ).pipe(Command.withDescription('Stop the local OpenViking server or LaunchAgent'));
 
 const uninstall = Command.make(
@@ -292,8 +327,57 @@ const uninstall = Command.make(
     ),
     preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)'),
   },
-  options => withRuntimeEffect(config => runUninstall(config, options)),
+  options =>
+    withRuntimeEffect(config =>
+      Effect.gen(function* () {
+        if (yield* readLocalAiSettings(config)) {
+          yield* runLocalAiStop(config, options);
+        }
+        yield* runUninstall(config, options);
+      }),
+    ),
 ).pipe(Command.withDescription('Remove Threadnote setup and optionally erase local memories'));
+
+const localAiInstall = Command.make(
+  'install',
+  {
+    dryRun: boolean('dry-run', 'Print local AI installation actions without making changes'),
+    force: boolean('force', 'Re-download and re-verify the managed model'),
+    modelPath: optionalString('model-path', 'Use an existing verified Gemma 4 E4B Q4_0 GGUF file'),
+    start: negatedBoolean('start', 'Install and configure without starting the local model service'),
+  },
+  options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
+).pipe(Command.withDescription('Install and enable the recommended local recall model'));
+
+const localAiStart = Command.make(
+  'start',
+  {dryRun: boolean('dry-run', 'Print the local AI start action without running it')},
+  options => withRuntimeEffect(config => runLocalAiStart(config, options)),
+).pipe(Command.withDescription('Start the configured loopback model service'));
+
+const localAiStop = Command.make(
+  'stop',
+  {dryRun: boolean('dry-run', 'Print the local AI stop action without running it')},
+  options => withRuntimeEffect(config => runLocalAiStop(config, options)),
+).pipe(Command.withDescription('Stop the configured loopback model service'));
+
+const localAiStatus = Command.make('status', {}, () => withRuntimeEffect(config => runLocalAiStatus(config))).pipe(
+  Command.withDescription('Show local model installation and health'),
+);
+
+const localAiUninstall = Command.make(
+  'uninstall',
+  {
+    dryRun: boolean('dry-run', 'Print local AI removal actions without making changes'),
+    eraseModel: boolean('erase-model', 'Also delete a model inside the Threadnote-managed model directory'),
+  },
+  options => withRuntimeEffect(config => runLocalAiUninstall(config, options)),
+).pipe(Command.withDescription('Disable local AI and optionally remove its managed model'));
+
+const localAi = Command.make('local-ai').pipe(
+  Command.withDescription('Manage opt-in local AI recall'),
+  Command.withSubcommands([localAiInstall, localAiStart, localAiStop, localAiStatus, localAiUninstall]),
+);
 
 const seed = Command.make(
   'seed',
@@ -739,6 +823,7 @@ export const threadnoteCommand = root.pipe(
     start,
     stop,
     uninstall,
+    localAi,
     seed,
     initManifest,
     seedSkills,

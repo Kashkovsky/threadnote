@@ -15,5 +15,10 @@ describe('recall evaluation contract v1', () => {
     expect(result.metrics.noAnswerRecall).toBe(1);
     expect(result.metrics.requiredReasonsPresent).toBe(true);
     expect(result.metrics.staleHitRate).toBe(0);
+
+    const paraphrases = result.queryResults.filter(query => query.id.startsWith('paraphrase-'));
+    expect(paraphrases).toHaveLength(4);
+    expect(paraphrases.every(query => query.expanded && query.initialConfidence !== 'high')).toBe(true);
+    expect(paraphrases.every(query => query.rankedUris.length > 0)).toBe(true);
   });
 });

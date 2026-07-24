@@ -777,7 +777,28 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     expect(sections.confidence?.level).not.toBe('no_answer');
     expect(sections.semanticSection).toContain('Recall confidence:');
     expect(sections.semanticSection).toContain('why:');
+    expect(sections.exactTail).toBeUndefined();
     expect(sections.ranked[0]?.rankReasons?.map(reason => reason.code)).toContain('field_match');
+  });
+
+  it('does not emit rejected exact pointers after hybrid ranking', () => {
+    const sections = buildRecallSections(
+      [],
+      [
+        {terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'},
+        {terms: ['beta-43'], uri: 'viking://resources/repos/threadnote/beta-43.md'},
+      ],
+      1,
+      {
+        allowExactRescue: true,
+        project: 'threadnote',
+        query: 'alpha-42 beta-43',
+      },
+    );
+
+    expect(sections.ranked.length).toBeGreaterThan(1);
+    expect(sections.exactTail).toBeUndefined();
+    expect(sections.semanticSection).not.toContain('Exact term matches');
   });
 
   it('suppresses weak keyword-only filler when hybrid confidence is no answer', () => {

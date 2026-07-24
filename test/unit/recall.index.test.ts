@@ -322,6 +322,19 @@ describe('local recall index', () => {
     expect(stable[0]?.uri).toBe('viking://resources/repos/threadnote/target.md');
   });
 
+  it('observes another process invalidating an already-warmed cache', async () => {
+    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    await mkdir(resourceRoot, {recursive: true});
+    await writeFile(join(resourceRoot, 'first.md'), '# First\n\nfirst-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false, query: 'first-anchor'}));
+
+    await writeFile(join(resourceRoot, 'second.md'), '# Second\n\nsecond-anchor', 'utf8');
+    await writeFile(join(directory, 'cache', 'recall-index-v5.json.stale'), 'external-generation\n', 'utf8');
+
+    const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'second-anchor'}));
+    expect(refreshed[0]?.uri).toBe('viking://resources/repos/threadnote/second.md');
+  });
+
   it('caps self-asserted authority and trust at the URI source boundary', async () => {
     const personalPath = join(
       directory,

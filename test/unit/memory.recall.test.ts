@@ -83,6 +83,32 @@ describe('runRecall index repair fallback', () => {
     expect(output).toContain('availability check');
   });
 
+  it('keeps deterministic recall available when the optional local AI config is malformed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-malformed-local-ai-'));
+    await mkdir(join(dir, 'threadnote'), {recursive: true});
+    await writeFile(join(dir, 'threadnote', 'local-ai.json'), '{invalid', 'utf8');
+    const runCommand = vi
+      .spyOn(utils, 'runCommand')
+      .mockReturnValue(Effect.succeed({exitCode: 0, stderr: '', stdout: '[]'}));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await run(
+        runRecall(
+          {...runtime, agentContextHome: dir, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
+          {inferScope: false, query: 'deterministic fallback'},
+        ),
+      );
+    } finally {
+      runCommand.mockRestore();
+      await rm(dir, {force: true, recursive: true});
+    }
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).toContain('Local AI recall unavailable: Invalid Threadnote local AI configuration');
+    expect(output).toContain('Deterministic recall continued.');
+  });
+
   it('adds remote-derived project memory scopes for current repo recall', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-remote-project-'));
     const repoRoot = join(dir, 'easy-to-type');

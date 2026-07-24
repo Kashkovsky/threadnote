@@ -1,7 +1,9 @@
-import {rankRecallCandidates, type RecallCandidate, type RecallConfidenceLevel} from './rank.js';
+import {rankRecallCandidates, shouldExpandRecall, type RecallCandidate, type RecallConfidenceLevel} from './rank.js';
 
 export interface RecallEvaluationQuery {
+  readonly expandedSemanticScores?: Readonly<Record<string, number>>;
   readonly expectedAnswerability: 'answerable' | 'no_answer';
+  readonly expectedExpansion?: boolean;
   readonly forbiddenUris?: readonly string[];
   readonly id: string;
   readonly now?: string;
@@ -35,7 +37,9 @@ export interface RecallEvaluationResult {
   readonly metrics: RecallEvaluationMetrics;
   readonly queryResults: readonly {
     readonly confidence: RecallConfidenceLevel;
+    readonly expanded: boolean;
     readonly id: string;
+    readonly initialConfidence: RecallConfidenceLevel;
     readonly rankedUris: readonly string[];
   }[];
   readonly version: 1;
@@ -59,26 +63,53 @@ export function evaluateRecallFixture(fixture: RecallEvaluationFixture): RecallE
   let requiredReasonsPresent = true;
   const queryResults: Array<{
     readonly confidence: RecallConfidenceLevel;
+    readonly expanded: boolean;
     readonly id: string;
+    readonly initialConfidence: RecallConfidenceLevel;
     readonly rankedUris: readonly string[];
   }> = [];
 
   for (const query of fixture.queries) {
-    const ranked = rankRecallCandidates(
-      query.query,
-      fixture.documents.map(document => ({
-        ...document,
-        semantic: query.semanticScores?.[document.uri] ?? 0,
-      })),
-      {
-        now: query.now ? new Date(query.now) : undefined,
-        project: query.project,
-        seedUris: query.seedUris,
-      },
-    );
+    const rankWithSemanticScores = (semanticScores: Readonly<Record<string, number>>) =>
+      rankRecallCandidates(
+        query.query,
+        fixture.documents.map(document => ({
+          ...document,
+          semantic: semanticScores[document.uri] ?? 0,
+        })),
+        {
+          now: query.now ? new Date(query.now) : undefined,
+          project: query.project,
+          seedUris: query.seedUris,
+        },
+      );
+    const initial = rankWithSemanticScores(query.semanticScores ?? {});
+    const expanded =
+      shouldExpandRecall(initial.confidence) &&
+      query.expandedSemanticScores !== undefined &&
+      Object.keys(query.expandedSemanticScores).length > 0;
+    const ranked = expanded
+      ? rankWithSemanticScores(
+          Object.fromEntries(
+            fixture.documents.map(document => [
+              document.uri,
+              Math.max(query.semanticScores?.[document.uri] ?? 0, query.expandedSemanticScores?.[document.uri] ?? 0),
+            ]),
+          ),
+        )
+      : initial;
     const top = ranked.results.slice(0, EVALUATION_CUTOFF);
     const rankedUris = top.map(result => result.candidate.uri);
-    queryResults.push({confidence: ranked.confidence.level, id: query.id, rankedUris});
+    queryResults.push({
+      confidence: ranked.confidence.level,
+      expanded,
+      id: query.id,
+      initialConfidence: initial.confidence.level,
+      rankedUris,
+    });
+    if (query.expectedExpansion !== undefined && expanded !== query.expectedExpansion) {
+      failures.push(`${query.id}: expected expansion ${query.expectedExpansion}, got ${expanded}`);
+    }
     const relevantUris = Object.entries(query.relevance)
       .filter(([, grade]) => grade > 0)
       .map(([uri]) => uri);

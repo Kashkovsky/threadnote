@@ -3,7 +3,7 @@ import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effec
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
-import {effectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
+import {ensureEffectAiReady, resolveEffectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
 import {runCommandEffect} from './effect/command.js';
 import {captureConsole} from './effect/console.js';
 import type {ApplicationServices} from './effect/runtime.js';
@@ -348,8 +348,10 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
   return {content: result.output, output: result.output};
 });
 
-export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* () {
-  const effectAi = effectAiConfiguration((yield* SystemInfo).environment());
+export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const effectAi = yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment());
   const [codex, claude, cursor, copilot] = yield* Effect.all([
     findExecutable(['codex']),
     findExecutable(['claude']),
@@ -363,7 +365,7 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
     {available: copilot !== undefined, command: copilot, id: 'copilot', label: 'Copilot'},
     {
       available: effectAi !== undefined,
-      command: effectAi?.model,
+      command: effectAi?.configuration.model,
       id: 'effect-ai',
       label: 'Effect AI (OpenAI-compatible)',
     },
@@ -384,7 +386,7 @@ function handleRequestEffect(
         return;
       }
       const system = yield* SystemInfo;
-      const [agents, version] = yield* Effect.all([detectConsolidationAgents(), currentPackageVersion()]);
+      const [agents, version] = yield* Effect.all([detectConsolidationAgents(context.config), currentPackageVersion()]);
       const latest = yield* Effect.succeed(updateRegistry(system.environment())).pipe(
         Effect.flatMap(registry => fetchLatestVersion(registry, selectUpdateChannel(version))),
         Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
@@ -1088,7 +1090,7 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
     context.jobs.set(job.id, job);
     yield* Effect.gen(function* () {
       const sources = yield* Effect.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri)));
-      job.draft = yield* runConsolidationAgent(input.agent, sources);
+      job.draft = yield* runConsolidationAgent(context.config, input.agent, sources);
       job.status = 'completed';
     }).pipe(
       Effect.catch(error =>
@@ -1146,21 +1148,23 @@ const applyConsolidation = Effect.fn('manager.applyConsolidation')(function* (
 });
 
 function runConsolidationAgent(
+  runtimeConfig: RuntimeConfig,
   agent: ConsolidationAgent,
   sources: readonly {readonly content: string; readonly node: ManagerTreeNode}[],
 ) {
   const prompt = consolidationPrompt(sources);
   if (agent === 'effect-ai') {
     return Effect.gen(function* () {
-      const config = effectAiConfiguration((yield* SystemInfo).environment());
-      if (!config) {
+      const resolved = yield* resolveEffectAiConfiguration(runtimeConfig, (yield* SystemInfo).environment());
+      if (!resolved) {
         return yield* Effect.fail(
           new Error(
-            'Effect AI is not configured. Set THREADNOTE_EFFECT_AI=1 and THREADNOTE_EFFECT_AI_MODEL; add API URL/key variables when required.',
+            'Effect AI is not configured. Run `threadnote local-ai install`, or set the THREADNOTE_EFFECT_AI provider variables.',
           ),
         );
       }
-      return yield* runEffectAiConsolidation(prompt, config);
+      yield* ensureEffectAiReady(runtimeConfig, resolved);
+      return yield* runEffectAiConsolidation(prompt, resolved.configuration);
     });
   }
   if (agent !== 'codex' && agent !== 'claude') {

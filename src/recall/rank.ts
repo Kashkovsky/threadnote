@@ -35,6 +35,7 @@ export interface RecallRankContext {
   readonly minimumScore?: number;
   readonly now?: Date;
   readonly project?: string;
+  readonly queryVariants?: readonly string[];
   readonly seedUris?: readonly string[];
 }
 
@@ -89,6 +90,10 @@ export interface RankedRecallSet {
   readonly confidence: RecallConfidence;
   readonly rankerVersion: typeof RECALL_RANKER_VERSION;
   readonly results: readonly RankedRecallCandidate[];
+}
+
+export function shouldExpandRecall(confidence: {readonly level: RecallConfidenceLevel} | undefined): boolean {
+  return confidence !== undefined && confidence.level !== 'high';
 }
 
 const SIGNAL_WEIGHTS = {
@@ -214,7 +219,10 @@ export function rankRecallCandidates(
   candidates: readonly RecallCandidate[],
   context: RecallRankContext = {},
 ): RankedRecallSet {
-  const queryTerms = tokenize(query);
+  const queryTermVariants = [
+    tokenize(query),
+    ...[...new Set(context.queryVariants?.map(variant => variant.trim()).filter(Boolean) ?? [])].map(tokenize),
+  ];
   const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
   const corpusStatistics = context.corpusStatistics ?? buildRecallCorpusStatistics(candidates);
   const semanticAnchors = candidates
@@ -228,7 +236,10 @@ export function rankRecallCandidates(
   const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
   const ranked = candidates
     .map((candidate, index) =>
-      scoreCandidate(candidate, queryTerms, corpus[index] ?? [], corpusStatistics, graphDistances, {...context, now}),
+      scoreCandidate(candidate, queryTermVariants, corpus[index] ?? [], corpusStatistics, graphDistances, {
+        ...context,
+        now,
+      }),
     )
     .filter(
       result =>
@@ -258,23 +269,33 @@ export function rankRecallCandidates(
 
 function scoreCandidate(
   candidate: RecallCandidate,
-  queryTerms: readonly string[],
+  queryTermVariants: readonly (readonly string[])[],
   documentTerms: readonly string[],
   corpusStatistics: RecallCorpusStatistics,
   graphDistances: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
   context: RecallRankContext & {readonly now: Date},
 ): RankedRecallCandidate {
+  const originalQueryTerms = queryTermVariants[0] ?? [];
+  const strongestVariant = (score: (queryTerms: readonly string[]) => number): number =>
+    Math.max(0, ...queryTermVariants.map(score));
   const semantic = clamp(candidate.semantic ?? 0);
-  const bm25 = normalizedBm25(queryTerms, documentTerms, corpusStatistics);
-  const topicalBm25 = normalizedBm25(queryTerms, recallTopicalDocumentTerms(candidate), corpusStatistics);
-  const field = fieldScore(queryTerms, candidate.fields, {includeProject: true});
-  const topicalField = fieldScore(queryTerms, candidate.fields, {includeProject: false});
+  const bm25 = strongestVariant(queryTerms => normalizedBm25(queryTerms, documentTerms, corpusStatistics));
+  const topicalDocumentTerms = recallTopicalDocumentTerms(candidate);
+  const topicalBm25 = strongestVariant(queryTerms =>
+    normalizedBm25(queryTerms, topicalDocumentTerms, corpusStatistics),
+  );
+  const field = strongestVariant(queryTerms => fieldScore(queryTerms, candidate.fields, {includeProject: true}));
+  const topicalField = strongestVariant(queryTerms =>
+    fieldScore(queryTerms, candidate.fields, {includeProject: false}),
+  );
   const graph = graphScore(candidate.uri, graphDistances);
   const scope = scopeScore(context.project, candidate.fields?.project);
-  const kindIntent = kindIntentScore(queryTerms, candidate.kind);
-  const exact = exactTermScore(queryTerms, qualifyingExactTerms(candidate), candidate.fields, corpusStatistics, {
-    kindIntent,
-  });
+  const kindIntent = kindIntentScore(originalQueryTerms, candidate.kind);
+  const exact = strongestVariant(queryTerms =>
+    exactTermScore(queryTerms, qualifyingExactTerms(candidate), candidate.fields, corpusStatistics, {
+      kindIntent,
+    }),
+  );
   const freshness = freshnessScore(candidate.timestamp, candidate.kind, context.now);
   const authority = authorityScore(candidate.authority, candidate.trust);
   const lifecycle = lifecycleScore(candidate.status);

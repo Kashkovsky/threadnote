@@ -1,10 +1,19 @@
 import yaml from 'js-yaml';
 import {Console, Crypto, Effect, FileSystem, Path, Result, pipe} from 'effect';
+import {
+  boundedRecallExpansionScopes,
+  expandWeakRecallQueryEffect,
+  localRecallAiEnabled,
+  recallMinimumScoreAfterExpansion,
+  shouldExpandRecall,
+} from './effect/ai-recall.js';
+import {resolveEffectAiConfiguration} from './effect/ai-consolidator.js';
 import {maybeRunEffect} from './effect/command.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
+import {SystemInfo} from './effect/system.js';
 import {
   inferProjectFromQuery,
   inferWorksetFromQuery,
@@ -27,7 +36,7 @@ import {
   type MemoryRecord,
 } from './memory_hygiene.js';
 import {formatMemoryDocument, inferMemoryMetadata, memoryHeaderValue, type MemoryMetadata} from './memory_document.js';
-import {prepareRecallSections} from './recall/runtime.js';
+import {loadRecallExpansionVocabulary, prepareRecallSections} from './recall/runtime.js';
 import {withIdentity} from './runtime.js';
 import type {
   ArchiveOptions,
@@ -953,9 +962,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     : undefined;
   const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset!) : undefined;
   const recallThreshold = options.threshold ?? (yield* recallScoreThreshold());
-  const searchArgs = (scopeUri: string | undefined): readonly string[] => [
+  const searchArgs = (searchQuery: string, scopeUri: string | undefined): readonly string[] => [
     'search',
-    query,
+    searchQuery,
     '--threshold',
     recallThreshold,
     '--level',
@@ -972,26 +981,30 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     yield* Console.log(`Recall scope: ${inferredUri}`);
   }
   const includeArchived = options.includeArchived === true;
+  const searchedScopes: Array<string | undefined> = [inferredUri];
   const passes: Array<readonly RecallHit[]> = [
-    yield* recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun, includeArchived}),
+    yield* recallSearchHits(config, ov, searchArgs(query, inferredUri), {dryRun, includeArchived}),
   ];
   const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
   if (options.project && project) {
     const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
     if (!scopedRecallUris.has(projectMemoryUri)) {
       scopedRecallUris.add(projectMemoryUri);
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived}));
+      searchedScopes.push(projectMemoryUri);
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, projectMemoryUri), {dryRun, includeArchived}));
     }
   }
   for (const scope of projectMemoryScopeUris(config, projectMemoryName, includeArchived)) {
     if (!scopedRecallUris.has(scope)) {
       scopedRecallUris.add(scope);
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
+      searchedScopes.push(scope);
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, scope), {dryRun, includeArchived}));
     }
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
-    passes.push(yield* recallSearchHits(config, ov, searchArgs(seededUri), {dryRun, includeArchived}));
+    searchedScopes.push(seededUri);
+    passes.push(yield* recallSearchHits(config, ov, searchArgs(query, seededUri), {dryRun, includeArchived}));
   }
 
   // Workset expansion: a named set of manifest projects recalled as one working
@@ -1012,7 +1025,8 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       .filter(uri => !alreadyScoped.has(uri))
       .slice(0, MAX_WORKSET_PASSES);
     for (const scope of worksetScopes) {
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
+      searchedScopes.push(scope);
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, scope), {dryRun, includeArchived}));
     }
   }
 
@@ -1021,20 +1035,75 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     includeArchived,
     project,
   });
-  const {semanticSection, exactTail} = yield* prepareRecallSections(config, {
-    allowExactRescue: options.threshold === undefined,
-    allowedUriScopes: options.uri ? [options.uri] : undefined,
-    exactMatches,
-    feedbackQuery: options.query,
-    includeInactive: includeArchived,
-    limit: nodeLimit ?? 12,
-    minimumScore: Number(recallThreshold),
-    passes,
-    project: projectMemoryName ?? project?.name,
-    query,
-    readRecords: uris => readMemoryRecordsByUri(config, uris),
-    seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
-  });
+  const environment = (yield* SystemInfo).environment();
+  let effectAiWarning: string | undefined;
+  const effectAi = dryRun
+    ? undefined
+    : yield* resolveEffectAiConfiguration(config, environment).pipe(
+        Effect.catch(cause => {
+          effectAiWarning = cause instanceof Error ? cause.message : String(cause);
+          return Effect.succeed(undefined);
+        }),
+      );
+  if (effectAiWarning) {
+    yield* Console.log(`Local AI recall unavailable: ${effectAiWarning}. Deterministic recall continued.`);
+  }
+  let hybridMinimumScore: number | undefined = Number(recallThreshold);
+  const expansionQueries: string[] = [];
+  const prepareSections = () =>
+    prepareRecallSections(config, {
+      allowExactRescue: options.threshold === undefined,
+      allowedUriScopes: options.uri ? [options.uri] : undefined,
+      exactMatches,
+      feedbackQuery: options.query,
+      includeInactive: includeArchived,
+      limit: nodeLimit ?? 12,
+      minimumScore: hybridMinimumScore,
+      passes,
+      project: projectMemoryName ?? project?.name,
+      query,
+      queryVariants: expansionQueries,
+      readRecords: uris => readMemoryRecordsByUri(config, uris),
+      seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+    });
+  let recallSections = yield* prepareSections();
+  const expansionVocabulary =
+    localRecallAiEnabled(effectAi?.configuration) && shouldExpandRecall(recallSections.confidence)
+      ? yield* loadRecallExpansionVocabulary(config, {
+          allowedUriScopes: options.uri ? [options.uri] : undefined,
+          includeInactive: includeArchived,
+          project: projectMemoryName ?? project?.name,
+          rankedCandidates: recallSections.expansionCandidates,
+        }).pipe(Effect.catch(() => Effect.succeed([])))
+      : [];
+  const proposedExpansionQueries = dryRun
+    ? []
+    : yield* expandWeakRecallQueryEffect(
+        {
+          confidence: recallSections.confidence,
+          project: projectMemoryName ?? project?.name,
+          query: options.query,
+          vocabulary: expansionVocabulary,
+        },
+        config,
+        effectAi,
+      );
+  for (const expansionQuery of proposedExpansionQueries) {
+    expansionQueries.push(expansionQuery);
+    for (const scope of boundedRecallExpansionScopes(searchedScopes)) {
+      const expandedHits = yield* recallSearchHits(config, ov, searchArgs(expansionQuery, scope), {
+        dryRun,
+        includeArchived,
+      });
+      passes.push(expandedHits);
+    }
+    hybridMinimumScore = recallMinimumScoreAfterExpansion(Number(recallThreshold), options.threshold !== undefined);
+    recallSections = yield* prepareSections();
+  }
+  if (expansionQueries.length > 0) {
+    yield* Console.log(`Recall query expansion: evaluated ${expansionQueries.length} model rewrite(s).`);
+  }
+  const {semanticSection, exactTail} = recallSections;
   if (semanticSection) {
     yield* Console.log(`\n${semanticSection}`);
   }
