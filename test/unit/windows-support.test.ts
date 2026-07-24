@@ -1,7 +1,10 @@
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
-import {describe, expect, it} from 'vitest';
+import {expect, it} from '@effect/vitest';
+import {Effect, Fiber} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe} from 'vitest';
 import {isGitExecutable, resolveCommandInvocation, runCommandEffect} from '../../src/effect/command.js';
 import {
   openVikingServerExecutableNames,
@@ -9,6 +12,7 @@ import {
   quoteWindowsProcessArgument,
   shouldManageCommandShim,
   shouldRepairOpenVikingCliConfig,
+  waitForWindowsProcessTreeTermination,
   windowsProcessArgumentLine,
 } from '../../src/lifecycle.js';
 import {runtimeThreadnoteBinPath} from '../../src/update.js';
@@ -286,6 +290,35 @@ describe('Windows lifecycle defaults', () => {
     expect(pythonExecutableCandidates('linux')).toEqual(['python3', 'python']);
     expect(shouldManageCommandShim('linux')).toBe(true);
   });
+
+  it.effect('waits for taskkill process and listener state to settle', () =>
+    Effect.gen(function* () {
+      let processChecks = 0;
+      let listenerChecks = 0;
+      const fiber = yield* waitForWindowsProcessTreeTermination(2000, {
+        isListenerOpen: () =>
+          Effect.sync(() => {
+            listenerChecks += 1;
+            return listenerChecks === 1;
+          }),
+        isProcessRunning: () =>
+          Effect.sync(() => {
+            processChecks += 1;
+            return processChecks < 3;
+          }),
+      }).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(1000);
+
+      expect(yield* Fiber.join(fiber)).toEqual({
+        listenerStopped: true,
+        processStopped: true,
+        stopped: true,
+      });
+      expect(processChecks).toBe(3);
+      expect(listenerChecks).toBe(3);
+    }),
+  );
 });
 
 describe('Windows update launcher paths', () => {

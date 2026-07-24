@@ -197,6 +197,17 @@ export interface LaunchAgentHealthEffects<R = never> {
   readonly readStatus: (timeoutMs: number) => Effect.Effect<LaunchAgentStatus, unknown, R>;
 }
 
+export interface WindowsProcessTreeTerminationEffects<R = never> {
+  readonly isListenerOpen: (timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+  readonly isProcessRunning: (timeoutMs: number) => Effect.Effect<boolean, unknown, R>;
+}
+
+export interface WindowsProcessTreeTerminationStatus {
+  readonly listenerStopped: boolean;
+  readonly processStopped: boolean;
+  readonly stopped: boolean;
+}
+
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
 const pathJoin = Effect.fn('lifecycle.pathJoin')(function* (...parts: readonly string[]) {
@@ -1352,10 +1363,36 @@ const terminateWindowsProcessTree = Effect.fn('terminateWindowsProcessTree')(fun
     allowFailure: true,
     timeoutMs: 5000,
   });
-  const processStopped = !(yield* isProcessRunningEffect(pid));
-  const listenerStopped = !(yield* isTcpPortOpen(config.host, config.port, 500));
-  return {listenerStopped, processStopped, result, stopped: processStopped && listenerStopped};
+  const status = yield* waitForWindowsProcessTreeTermination(STOP_SERVER_TIMEOUT_MS, {
+    isListenerOpen: timeoutMs => isTcpPortOpenEffect(config.host, config.port, timeoutMs),
+    isProcessRunning: timeoutMs => isProcessRunningEffect(pid, timeoutMs),
+  });
+  return {...status, result};
 });
+
+export function waitForWindowsProcessTreeTermination<R>(
+  timeoutMs: number,
+  effects: WindowsProcessTreeTerminationEffects<R>,
+): Effect.Effect<WindowsProcessTreeTerminationStatus, unknown, R> {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
+    while (true) {
+      const processTimeoutMs = Math.max(1, Math.min(5000, deadline - (yield* Clock.currentTimeMillis)));
+      const processStopped = !(yield* effects.isProcessRunning(processTimeoutMs));
+      const listenerTimeoutMs = Math.max(1, Math.min(500, deadline - (yield* Clock.currentTimeMillis)));
+      const listenerStopped = !(yield* effects.isListenerOpen(listenerTimeoutMs));
+      const status = {listenerStopped, processStopped, stopped: processStopped && listenerStopped};
+      if (status.stopped) {
+        return status;
+      }
+      const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+      if (remainingMs <= 0) {
+        return status;
+      }
+      yield* Effect.sleep(Math.min(START_HEALTH_POLL_INTERVAL_MS, remainingMs));
+    }
+  });
+}
 
 function windowsTerminationError(
   pid: number,
@@ -1599,16 +1636,16 @@ function parseShebangInterpreter(content: string): string | undefined {
   return interpreter && !/\s/.test(interpreter) ? interpreter : undefined;
 }
 
-const isProcessRunningEffect = Effect.fn('isProcessRunning')(function* (pid: number) {
+const isProcessRunningEffect = Effect.fn('isProcessRunning')(function* (pid: number, timeoutMs: number = 5000) {
   const system = yield* SystemInfo;
   if (system.platform === 'win32') {
     const result = yield* runCommandEffect('tasklist.exe', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
       allowFailure: true,
-      timeoutMs: 5000,
+      timeoutMs,
     });
     return result.exitCode === 0 && new RegExp(`"${pid}"(?:,|$)`).test(result.stdout);
   }
-  const result = yield* runCommandEffect('kill', ['-0', String(pid)], {allowFailure: true, timeoutMs: 5000});
+  const result = yield* runCommandEffect('kill', ['-0', String(pid)], {allowFailure: true, timeoutMs});
   return result.exitCode === 0;
 });
 
