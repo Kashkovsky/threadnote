@@ -62,21 +62,73 @@ The stdio integration tests connect with the official MCP client and protect:
 - runtime rejection of invalid inputs;
 - OpenViking forwarding and share behavior.
 
-## Optional Effect AI consolidation
+## Optional Effect AI
 
-The manager can use `@effect/ai-openai-compat` for structured consolidation drafts. It is intentionally opt-in and keeps
-the same preview-before-apply safety model as Codex and Claude consolidation.
+Threadnote can use `@effect/ai-openai-compat` for structured consolidation drafts and bounded recall query expansion.
+It is intentionally opt-in. After an applicable package update, Threadnote offers to install the recommended local
+model; declining dismisses that offer without enabling or downloading anything. The same setup is available directly:
+
+```bash
+threadnote local-ai install
+threadnote local-ai status
+```
+
+`local-ai install` downloads the pinned official Gemma 4 E4B Q4_0 GGUF file (4.59 GB), verifies its size and SHA-256,
+stores the model under `THREADNOTE_HOME/threadnote/models`, and writes a versioned
+`THREADNOTE_HOME/threadnote/local-ai.json`. Pass `--model-path <path>` to verify and reuse an existing copy instead.
+The service binds only to `127.0.0.1:1934`. Installation also creates a mode-0600 access token. Health checks use a
+challenge-response proof before Threadnote sends any prompt, and the OpenAI-compatible endpoints require that token.
+
+Effect owns the service lifecycle: configuration, download orchestration, the lifecycle lock, detached process and PID
+record, health checks, logging, lazy startup, and safe stop/uninstall behavior. The bundled Python file is only a thin
+OpenAI-compatible HTTP adapter around the `llama_cpp` package already installed with OpenViking; it does not decide
+when or how the process runs. Configured local AI follows `threadnote start`, `stop`, `repair`, and `uninstall`, and a
+weak recall can lazily start a stopped service. A bounded readiness wait fails open, so model startup cannot prevent the
+deterministic recall result from returning.
+
+Stop verifies the authenticated launch ID, PID, model, and model path immediately before signaling the process. If a
+stale record or unhealthy endpoint cannot prove ownership, Threadnote refuses to signal that PID and leaves manual
+inspection to the user.
+
+Use the dedicated commands for explicit control:
+
+```bash
+threadnote local-ai start
+threadnote local-ai stop
+threadnote local-ai status
+threadnote local-ai uninstall               # preserves the managed model
+threadnote local-ai uninstall --erase-model # also removes the managed model
+```
+
+For recall, deterministic retrieval and ranking always run first. High-confidence results never call the model.
+Medium-confidence results can evaluate one rewrite; low-confidence and no-answer results can evaluate at most two,
+one search scope at a time. Rewrites are schema-validated, deduplicated, cached by query/project/provider fingerprint,
+and limited to 512 characters. The model stage times out after five seconds and fails open to the deterministic result.
+Expanded candidates are merged with the original candidates and exact matches, then reranked by the same deterministic
+ranker. Remote endpoints receive only the original query and inferred project. Explicit loopback endpoints additionally
+receive a bounded, scrubbed shortlist of local topic/identifier names with six-term index excerpts; rewrites that do
+not contain an exact shortlist term are discarded. This grounding data never goes to a non-loopback endpoint.
+
+The local model does not extract additional memory candidates or mutate canonical memories and their metadata.
+Candidate extraction keeps its existing policy. Explicit manager consolidation may use the same provider to generate
+an Effect Schema-validated `{ "draft": string }` object, but generating a draft never deletes source memories; cleanup
+remains a separate user-approved operation.
+
+Environment variables remain an advanced override for Ollama, LM Studio, hosted APIs, or another
+OpenAI-compatible chat-completions endpoint:
 
 ```bash
 export THREADNOTE_EFFECT_AI=1
 export THREADNOTE_EFFECT_AI_MODEL=<openai-compatible-model>
 export THREADNOTE_EFFECT_AI_API_KEY=<key>       # optional when the endpoint does not require one
 export THREADNOTE_EFFECT_AI_API_URL=<base-url>  # optional for the default OpenAI endpoint
-threadnote manage
 ```
 
-The model returns an Effect Schema-validated `{ "draft": string }` object. Generating a draft never deletes source
-memories; cleanup remains a separate user-approved operation.
+An explicit environment provider takes precedence over persisted local AI. Set `THREADNOTE_EFFECT_AI=0` to disable the
+persisted provider for one process.
+
+Use an instruction-tuned model with at least a 2K context window. Small models can satisfy the JSON schema while still
+choosing superficial topic matches; the expander fails open, but recall quality depends on the local model.
 
 ## Upgrading Effect
 

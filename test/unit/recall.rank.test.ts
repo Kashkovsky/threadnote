@@ -34,6 +34,34 @@ describe('hybrid recall ranker', () => {
     );
   });
 
+  it('uses expanded query vocabulary without weakening original-query evidence', () => {
+    const candidates = [
+      {
+        fields: {project: 'threadnote', title: 'Beta update channel', topic: 'beta-update-channel'},
+        kind: 'durable' as const,
+        text: 'Prerelease packages use npm beta dist-tag; stable packages use latest.',
+        uri: 'viking://user/me/memories/beta-update-channel.md',
+      },
+      {
+        fields: {project: 'threadnote', title: 'Ordinary installation troubleshooting'},
+        semantic: 0.5,
+        text: 'Ordinary installation troubleshooting.',
+        uri: 'viking://user/me/memories/install-troubleshooting.md',
+      },
+    ];
+    const query = 'How do preview builds get upgraded compared with ordinary installs?';
+    const original = rankRecallCandidates(query, candidates, {project: 'threadnote'});
+    const expanded = rankRecallCandidates(query, candidates, {
+      project: 'threadnote',
+      queryVariants: ['beta prerelease channel npm dist-tag stable latest'],
+    });
+
+    expect(original.results[0]?.candidate.uri).toContain('install-troubleshooting.md');
+    expect(expanded.results[0]?.candidate.uri).toContain('beta-update-channel.md');
+    expect(expanded.results.some(result => result.candidate.uri.includes('install-troubleshooting.md'))).toBe(true);
+    expect(expanded.results[0]?.signals.bm25).toBeGreaterThan(original.results[0]?.signals.bm25 ?? 0);
+  });
+
   it('prefers an exact compound topic over a general body match', () => {
     const ranked = rankRecallCandidates(
       'threadnote user preference posting style for release notes',

@@ -80,6 +80,59 @@
         "topic": "candidate-memory",
         "project": "threadnote"
       }
+    },
+    {
+      "uri": "viking://user/me/memories/beta-update-policy.md",
+      "text": "Prerelease packages use the npm beta dist-tag; stable packages use latest.",
+      "authority": "user_approved",
+      "trust": "approved",
+      "kind": "durable",
+      "status": "active",
+      "timestamp": "2026-07-22T00:00:00.000Z",
+      "fields": {
+        "title": "Beta update policy",
+        "topic": "beta-update-policy",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/recall-ranker-signals.md",
+      "text": "Hybrid-v2 combines semantic similarity, BM25 lexical evidence, field matches, graph proximity, lifecycle, and feedback.",
+      "authority": "user_approved",
+      "trust": "approved",
+      "kind": "durable",
+      "status": "active",
+      "timestamp": "2026-07-22T00:00:00.000Z",
+      "fields": {
+        "title": "Recall ranker signals",
+        "topic": "recall-ranker-signals",
+        "project": "threadnote"
+      }
+    },
+    {
+      "uri": "viking://resources/repos/mobile-native/android-app-links.md",
+      "text": "Android App Links are declared in the AndroidManifest intent-filter and verified by assetlinks.json.",
+      "authority": "canonical_repo",
+      "trust": "approved",
+      "fields": {
+        "title": "Android App Links",
+        "topic": "android-app-links",
+        "project": "mobile-native"
+      }
+    },
+    {
+      "uri": "viking://user/me/memories/docs-reconnect-watchdog.md",
+      "text": "The Docs websocket reconnect watchdog restarts the live connection after transport loss.",
+      "authority": "user_approved",
+      "trust": "approved",
+      "kind": "durable",
+      "status": "active",
+      "timestamp": "2026-07-22T00:00:00.000Z",
+      "fields": {
+        "title": "Docs reconnect watchdog",
+        "topic": "docs-reconnect-watchdog",
+        "project": "docs"
+      }
     }
   ],
   "queries": [
@@ -136,6 +189,66 @@
       "expectedAnswerability": "no_answer",
       "relevance": {},
       "semanticScores": {}
+    },
+    {
+      "id": "paraphrase-beta-updates",
+      "query": "How do preview builds get upgraded compared with ordinary installs?",
+      "project": "threadnote",
+      "expectedAnswerability": "answerable",
+      "expectedExpansion": true,
+      "relevance": {
+        "viking://user/me/memories/beta-update-policy.md": 3
+      },
+      "requiredReasonCodes": ["semantic_similarity"],
+      "semanticScores": {},
+      "expandedSemanticScores": {
+        "viking://user/me/memories/beta-update-policy.md": 0.84
+      }
+    },
+    {
+      "id": "paraphrase-ranking-signals",
+      "query": "What evidence decides which saved note comes first?",
+      "project": "threadnote",
+      "expectedAnswerability": "answerable",
+      "expectedExpansion": true,
+      "relevance": {
+        "viking://user/me/memories/recall-ranker-signals.md": 3
+      },
+      "requiredReasonCodes": ["semantic_similarity"],
+      "semanticScores": {},
+      "expandedSemanticScores": {
+        "viking://user/me/memories/recall-ranker-signals.md": 0.86
+      }
+    },
+    {
+      "id": "paraphrase-android-app-links",
+      "query": "Where does the phone app claim website URLs on Android?",
+      "project": "mobile-native",
+      "expectedAnswerability": "answerable",
+      "expectedExpansion": true,
+      "relevance": {
+        "viking://resources/repos/mobile-native/android-app-links.md": 3
+      },
+      "requiredReasonCodes": ["semantic_similarity"],
+      "semanticScores": {},
+      "expandedSemanticScores": {
+        "viking://resources/repos/mobile-native/android-app-links.md": 0.88
+      }
+    },
+    {
+      "id": "paraphrase-docs-reconnect",
+      "query": "What brings Docs back after its live connection drops?",
+      "project": "docs",
+      "expectedAnswerability": "answerable",
+      "expectedExpansion": true,
+      "relevance": {
+        "viking://user/me/memories/docs-reconnect-watchdog.md": 3
+      },
+      "requiredReasonCodes": ["semantic_similarity"],
+      "semanticScores": {},
+      "expandedSemanticScores": {
+        "viking://user/me/memories/docs-reconnect-watchdog.md": 0.87
+      }
     }
   ]
 }

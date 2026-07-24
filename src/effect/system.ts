@@ -10,6 +10,7 @@ export interface SystemInfoShape {
   readonly platform: NodeJS.Platform;
   readonly processId: number;
   readonly processArguments: readonly string[];
+  readonly signalProcess: (processId: number, signal: NodeJS.Signals) => void;
   readonly setExitCode: (code: number) => void;
   readonly setEnvironmentVariable: (name: string, value: string) => void;
   readonly stdinIsTTY: boolean;
@@ -44,6 +45,9 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
       platform: process.platform,
       processId: process.pid,
       processArguments: process.argv,
+      signalProcess: (processId, signal) => {
+        process.kill(processId, signal);
+      },
       setExitCode: code => {
         process.exitCode = code;
       },

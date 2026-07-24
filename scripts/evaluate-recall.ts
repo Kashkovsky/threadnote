@@ -1,5 +1,6 @@
-import {NodeCrypto, NodeFileSystem, NodePath, NodeRuntime} from '@effect/platform-node';
-import {Clock, Console, Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {NodeRuntime} from '@effect/platform-node';
+import {Clock, Console, Effect, FileSystem, Option, Path} from 'effect';
+import {ApplicationLayer} from '../src/effect/runtime.js';
 import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
 import {clearRecallIndexMemoryCache, expireRecallIndexValidation, loadRecallIndex} from '../src/recall/index.js';
 import {prepareRecallSections} from '../src/recall/runtime.js';
@@ -241,9 +242,6 @@ function percentile(sorted: readonly number[], quantile: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
 }
 
-NodeRuntime.runMain(
-  program.pipe(Effect.provide(Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer))),
-  {
-    disableErrorReporting: false,
-  },
-);
+NodeRuntime.runMain(program.pipe(Effect.provide(ApplicationLayer)), {
+  disableErrorReporting: false,
+});

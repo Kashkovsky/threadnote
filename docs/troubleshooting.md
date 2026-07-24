@@ -167,6 +167,21 @@ threadnote stop
 threadnote start
 ```
 
+## Local AI Recall Is Stopped or Unhealthy
+
+Inspect the persisted model path and loopback service:
+
+```bash
+threadnote local-ai status
+threadnote local-ai start
+```
+
+Startup logs are written to `THREADNOTE_HOME/logs/local-ai.log`. If the model file is missing or fails verification,
+or the private access token is missing or has unsafe permissions, rerun `threadnote local-ai install --force`. A
+local-model failure does not block recall: Threadnote returns its deterministic result without query expansion. Stop
+also refuses to signal a recorded PID when the authenticated endpoint cannot prove the same launch identity; inspect
+that process manually instead of deleting the safety check.
+
 ## Claude MCP Fails While Health Is OK
 
 Threadnote uses its bundled stdio MCP adapter by default, even when the installed OpenViking server exposes native

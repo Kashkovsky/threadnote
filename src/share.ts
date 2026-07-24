@@ -3,6 +3,7 @@ import {CommandExecutor} from './effect/command.js';
 import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 import {canonicalMemoryDocumentContent} from './memory_document.js';
+import {expireRecallIndexValidation} from './recall/index.js';
 import {withIdentity} from './runtime.js';
 import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 import type {
@@ -4455,6 +4456,10 @@ export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
   yield* Effect.gen(function* () {
     yield* writeFile(tempPath, content, {encoding: 'utf8', mode: 0o600});
     yield* writeOvFileWithRetry(config, ov, uri, tempPath, initialMode, options);
+    yield* Effect.all([
+      expireRecallIndexValidation(config.agentContextHome, false),
+      expireRecallIndexValidation(config.agentContextHome, true),
+    ]);
     yield* refreshMemoryIndex(config, ov, uri, options);
   }).pipe(Effect.ensuring(rm(stagingDir, {force: true, recursive: true}).pipe(Effect.ignore)));
 });

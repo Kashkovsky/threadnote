@@ -2,6 +2,14 @@ import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
 import {OpenAiClient, OpenAiLanguageModel} from '@effect/ai-openai-compat';
 import {Context, Effect, Layer, pipe, Redacted, Schema} from 'effect';
 import {LanguageModel} from 'effect/unstable/ai';
+import type {RuntimeConfig} from '../types.js';
+import {
+  ensureLocalAiStarted,
+  localAiApiUrl,
+  readLocalAiAccessToken,
+  readLocalAiSettings,
+  type LocalAiSettings,
+} from './local-ai.js';
 
 export const EFFECT_AI_ENABLED_ENV = 'THREADNOTE_EFFECT_AI';
 export const EFFECT_AI_API_KEY_ENV = 'THREADNOTE_EFFECT_AI_API_KEY';
@@ -12,6 +20,11 @@ export interface EffectAiConfiguration {
   readonly apiKey?: string;
   readonly apiUrl?: string;
   readonly model: string;
+}
+
+export interface ResolvedEffectAiConfiguration {
+  readonly configuration: EffectAiConfiguration;
+  readonly localAi?: LocalAiSettings;
 }
 
 export class AiConsolidationFailed extends Schema.TaggedErrorClass<AiConsolidationFailed>()('AiConsolidationFailed', {
@@ -52,15 +65,40 @@ export function effectAiConfiguration(
   };
 }
 
+export const resolveEffectAiConfiguration = Effect.fn('EffectAi.resolveConfiguration')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  env: Readonly<Record<string, string | undefined>>,
+) {
+  const explicit = effectAiConfiguration(env);
+  if (explicit) return {configuration: explicit} satisfies ResolvedEffectAiConfiguration;
+  if (env[EFFECT_AI_ENABLED_ENV] !== undefined) return undefined;
+  const localAi = yield* readLocalAiSettings(config);
+  if (!localAi) return undefined;
+  const apiKey = yield* readLocalAiAccessToken(config);
+  if (!apiKey) {
+    return yield* Effect.fail(new Error('Local AI access token is missing. Run: threadnote local-ai install --force'));
+  }
+  return {
+    configuration: {
+      apiKey,
+      apiUrl: localAiApiUrl(localAi),
+      model: localAi.model,
+    },
+    localAi,
+  } satisfies ResolvedEffectAiConfiguration;
+});
+
+export const ensureEffectAiReady = Effect.fn('EffectAi.ensureReady')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  resolved: ResolvedEffectAiConfiguration,
+) {
+  if (resolved.localAi) {
+    yield* ensureLocalAiStarted(config);
+  }
+});
+
 export function aiConsolidatorLayer(config: EffectAiConfiguration): Layer.Layer<AiConsolidator> {
-  const clientLayer = OpenAiClient.layer({
-    apiKey: config.apiKey ? Redacted.make(config.apiKey) : undefined,
-    apiUrl: config.apiUrl,
-  }).pipe(Layer.provide(NodeHttpClient.layerFetch));
-  const languageModelLayer = OpenAiLanguageModel.layer({
-    config: {max_output_tokens: 4000, strictJsonSchema: true},
-    model: config.model,
-  }).pipe(Layer.provide(clientLayer));
+  const languageModelLayer = effectAiLanguageModelLayer(config, 4000);
 
   return Layer.effect(
     AiConsolidator,
@@ -93,6 +131,17 @@ export function aiConsolidatorLayer(config: EffectAiConfiguration): Layer.Layer<
       });
     }),
   ).pipe(Layer.provide(languageModelLayer));
+}
+
+export function effectAiLanguageModelLayer(config: EffectAiConfiguration, maxOutputTokens: number) {
+  const clientLayer = OpenAiClient.layer({
+    apiKey: config.apiKey ? Redacted.make(config.apiKey) : undefined,
+    apiUrl: config.apiUrl,
+  }).pipe(Layer.provide(NodeHttpClient.layerFetch));
+  return OpenAiLanguageModel.layer({
+    config: {max_output_tokens: maxOutputTokens, strictJsonSchema: true},
+    model: config.model,
+  }).pipe(Layer.provide(clientLayer));
 }
 
 export function runEffectAiConsolidation(prompt: string, config: EffectAiConfiguration) {

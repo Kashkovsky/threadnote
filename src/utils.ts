@@ -1456,7 +1456,7 @@ export interface RecallSections {
   readonly ranked: readonly RecallHit[];
   /** Rendered ranked list, capped at `limit`. Undefined when there are no hits. */
   readonly semanticSection: string | undefined;
-  /** Exact-match pointer list for matches not already shown in the ranked window. */
+  /** Legacy exact-match pointer list. Hybrid recall incorporates exact evidence into ranking and leaves this empty. */
   readonly exactTail: string | undefined;
 }
 
@@ -1480,6 +1480,7 @@ interface HybridRecallOptions {
   readonly now?: Date;
   readonly project?: string;
   readonly query: string;
+  readonly queryVariants?: readonly string[];
   readonly records?: readonly MemoryRecord[];
   readonly seedUris?: readonly string[];
 }
@@ -1547,10 +1548,9 @@ export function buildRecallSections(
   const shownUris = new Set(shown.map(hit => stripAnchor(hit.uri)));
   return {
     confidence: hybrid?.confidence,
-    exactTail:
-      hybrid?.confidence.level === 'no_answer'
-        ? undefined
-        : formatExactMatchPointers(scopedExactMatches.filter(match => !shownUris.has(stripAnchor(match.uri)))),
+    exactTail: hybrid
+      ? undefined
+      : formatExactMatchPointers(scopedExactMatches.filter(match => !shownUris.has(stripAnchor(match.uri)))),
     ranked,
     semanticSection: renderRecallHits(shown, ranked.length - shown.length, hybrid?.confidence),
   };
