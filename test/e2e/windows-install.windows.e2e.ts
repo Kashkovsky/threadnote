@@ -435,9 +435,9 @@ async function runBootstrapThroughInvokeExpressionWithMockUv(
     '  if ($Uri -ne \'https://astral.sh/uv/install.ps1\') { throw "Unexpected URI: $Uri" }',
     '  $env:THREADNOTE_E2E_UV_INSTALLER',
     '}',
-    '$previousPolicy = Get-ExecutionPolicy -Scope Process',
-    'Get-Content -Raw -LiteralPath $env:THREADNOTE_E2E_INSTALLER | Invoke-Expression',
-    "if ((Get-ExecutionPolicy -Scope Process) -ne $previousPolicy) { throw 'Process execution policy was not restored' }",
+    '$previousPolicy = $env:PSExecutionPolicyPreference',
+    '& ([scriptblock]::Create((Get-Content -Raw -LiteralPath $env:THREADNOTE_E2E_INSTALLER)))',
+    "if ($env:PSExecutionPolicyPreference -ne $previousPolicy) { throw 'Process execution policy was not restored' }",
   ].join('; ');
   return runProcess('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
     env: {
