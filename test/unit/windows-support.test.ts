@@ -237,6 +237,10 @@ describe('Windows lifecycle defaults', () => {
     expect(installer).not.toContain("else { 'threadnote@latest' }");
     expect(installer).not.toContain('[ValidateSet(');
     expect(installer).toContain("$PackageManager -notin @('uv', 'pipx', 'pip')");
+    expect(installer).toContain('Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force');
+    expect(installer).toContain(
+      'Set-ExecutionPolicy -ExecutionPolicy $previousProcessExecutionPolicy -Scope Process -Force',
+    );
   });
 
   it('quotes detached server arguments using Windows command-line rules', () => {

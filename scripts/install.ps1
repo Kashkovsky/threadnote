@@ -64,7 +64,13 @@ if ($needsUv -and -not (Get-Command uv.exe -ErrorAction SilentlyContinue) -and -
   if (Test-Path -LiteralPath $securityModule) {
     Import-Module $securityModule -Force -ErrorAction Stop
   }
-  Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+  $previousProcessExecutionPolicy = Get-ExecutionPolicy -Scope Process
+  try {
+    Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+  } finally {
+    Set-ExecutionPolicy -ExecutionPolicy $previousProcessExecutionPolicy -Scope Process -Force
+  }
   $uvBin = Join-Path $HOME '.local\bin'
   if (Test-Path -LiteralPath $uvBin) {
     $env:Path = "$uvBin;$env:Path"
