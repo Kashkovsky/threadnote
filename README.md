@@ -48,32 +48,6 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Built for engineering work.** Decisions, contracts, gotchas, release workflows, and current branch state have
   distinct lifecycles instead of becoming an undifferentiated chat summary.
 
-## Threadnote vs Native AI Memory
-
-Native memory is useful: ChatGPT, Gemini, and Claude can carry context across conversations. ChatGPT and Claude offer
-shared projects, while Gemini can share Gems and chats. Those features keep continuity **inside their own product**.
-Threadnote targets the boundary between products, machines, repositories, and users.
-
-|                          | Threadnote                                                                       | Native chat memory                                                 | Vendor collaboration spaces                                               |
-| ------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Primary job              | Share explicit engineering knowledge between users' coding agents                | Personalize future conversations from account history and settings | Keep a group's project, Gem, chats, files, or instructions in one product |
-| Where agents can use it  | Codex, Claude Code, Cursor, and Copilot through one MCP workflow                 | Inside that provider's product and account                         | Inside that provider's shared project, Gem, or chat                       |
-| Cross-vendor portability | Yes; teammates may use different supported agents                                | No common memory surface across vendors                            | No common memory surface across vendors                                   |
-| Storage and audit        | Local Markdown plus a team Git repo you control                                  | Provider-managed memory, chats, and controls                       | Provider-hosted content and permissions                                   |
-| Recall path              | Local semantic index returns scoped URI candidates; agents read selected records | Provider-managed retrieval from available context                  | Provider-managed search and context                                       |
-| Curation and lifecycle   | Explicit `durable`, `handoff`, and `archived` records with stable URIs           | Provider-managed synthesis or retrieval from prior context         | Collaboration model varies by provider                                    |
-| Privacy boundary         | Personal state local; only explicitly published durable knowledge travels        | Account/workspace controls                                         | Membership, links, and provider controls                                  |
-| Best fit                 | Teams using multiple coding agents in real repositories and terminals            | Personal continuity in one assistant                               | Teams that standardize collaboration inside one AI product                |
-| Tradeoff                 | Requires a local service, MCP setup, and a Git remote for team sharing           | Built in                                                           | Built in, often plan/workspace dependent                                  |
-
-The comparison is based on current product documentation for
-[ChatGPT memory](https://help.openai.com/en/articles/8590148-memory-in-chatgpt-faq),
-[ChatGPT shared projects](https://help.openai.com/en/articles/10169521-projects-in-chatgpt),
-[Gemini memory](https://support.google.com/gemini/answer/16598469?hl=en),
-[Gemini shared Gems](https://support.google.com/gemini/answer/16504957?hl=en),
-[Claude personalization](https://support.anthropic.com/en/articles/10185728-understanding-claude-s-personalization-features),
-and [Claude shared projects](https://support.anthropic.com/en/articles/9517075-what-are-projects). Availability varies
-by product, plan, account, and region.
 
 ## Quickstart
 
