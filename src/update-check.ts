@@ -1,9 +1,7 @@
-import {spawn} from 'node:child_process';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {dirname} from 'node:path';
-import {Effect} from 'effect';
+import {Effect, FileSystem, Path, Result} from 'effect';
+import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {getJsonEffect} from './effect/http.js';
-import {fromPromiseError} from './effect/errors.js';
+import {SystemInfo} from './effect/system.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {compareVersions, isJsonObject} from './utils.js';
 
@@ -42,21 +40,19 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
   }
   return Effect.gen(function* () {
     const channel = selectUpdateChannel(args.currentVersion);
-    const cached = yield* fromPromiseError(() => readUpdateCache(args.cachePath));
+    const cached = yield* readUpdateCache(args.cachePath);
     const channelCache = cached?.channel === channel ? cached : undefined;
     if (channelCache && isCacheFresh(channelCache)) {
       return toUpdateCheckResult(args.currentVersion, channelCache.latestVersion);
     }
     const fresh = yield* fetchLatestVersionEffect(channel);
     if (fresh) {
-      yield* fromPromiseError(() =>
-        writeUpdateCache(args.cachePath, {
-          channel,
-          checkedAt: new Date().toISOString(),
-          latestVersion: fresh,
-          version: 2,
-        }),
-      );
+      yield* writeUpdateCache(args.cachePath, {
+        channel,
+        checkedAt: new Date().toISOString(),
+        latestVersion: fresh,
+        version: 2 as const,
+      });
       return toUpdateCheckResult(args.currentVersion, fresh);
     }
     return channelCache ? toUpdateCheckResult(args.currentVersion, channelCache.latestVersion) : undefined;
@@ -72,21 +68,24 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
  * Best-effort: silently returns if the spawn fails (no node binary, permission
  * denied, etc.). The nag banner remains as the fallback signal.
  */
-export function spawnDetachedAutoUpdate(): void {
-  try {
-    const entry = process.argv[1];
-    if (typeof entry !== 'string' || entry.length === 0) {
-      return;
-    }
-    const child = spawn(process.execPath, [entry, 'update', '--yes'], {
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-  } catch {
-    // Best-effort.
+export const spawnDetachedAutoUpdate = Effect.fn('updateCheck.spawnDetachedAutoUpdate')(function* () {
+  const system = yield* SystemInfo;
+  const entry = system.processArguments[1];
+  if (typeof entry !== 'string' || entry.length === 0) {
+    return;
   }
-}
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const child = yield* ChildProcess.make(system.executablePath, [entry, 'update', '--yes'], {
+        detached: true,
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
+      yield* child.unref;
+    }),
+  ).pipe(Effect.ignore);
+});
 
 function toUpdateCheckResult(currentVersion: string, latestVersion: string): UpdateCheckResult {
   return {
@@ -101,10 +100,15 @@ function isCacheFresh(cache: UpdateCacheFile): boolean {
   return Number.isFinite(checkedAt) && Date.now() - checkedAt < CACHE_TTL_MS;
 }
 
-async function readUpdateCache(cachePath: string): Promise<UpdateCacheFile | undefined> {
-  try {
-    const raw = await readFile(cachePath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<UpdateCacheFile>;
+const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const raw = yield* fs.readFileString(cachePath);
+    const parsedResult = Result.try(() => JSON.parse(raw) as Partial<UpdateCacheFile>);
+    if (Result.isFailure(parsedResult)) {
+      return undefined;
+    }
+    const parsed = parsedResult.success;
     if (
       parsed.version !== 2 ||
       (parsed.channel !== 'beta' && parsed.channel !== 'latest') ||
@@ -117,21 +121,19 @@ async function readUpdateCache(cachePath: string): Promise<UpdateCacheFile | und
       channel: parsed.channel,
       checkedAt: parsed.checkedAt,
       latestVersion: parsed.latestVersion,
-      version: 2,
+      version: 2 as const,
     };
-  } catch {
-    return undefined;
-  }
-}
+  }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+);
 
-async function writeUpdateCache(cachePath: string, contents: UpdateCacheFile): Promise<void> {
-  try {
-    await mkdir(dirname(cachePath), {recursive: true});
-    await writeFile(cachePath, `${JSON.stringify(contents)}\n`, {encoding: 'utf8', mode: 0o600});
-  } catch {
-    // Best-effort: a missing cache just means the next call refetches.
-  }
-}
+const writeUpdateCache = Effect.fn('updateCheck.writeCache')((cachePath: string, contents: UpdateCacheFile) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(path.dirname(cachePath), {recursive: true});
+    yield* fs.writeFileString(cachePath, `${JSON.stringify(contents)}\n`, {mode: 0o600});
+  }).pipe(Effect.ignore),
+);
 
 const fetchLatestVersionEffect = Effect.fn('fetchLatestHookVersion')((channel: UpdateChannel) =>
   getJsonEffect(`${NPM_REGISTRY_URL}${channel}`, {

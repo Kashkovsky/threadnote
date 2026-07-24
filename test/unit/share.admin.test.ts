@@ -1,8 +1,7 @@
 import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Layer} from 'effect';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {publishShareGitChange} from '../../src/share.js';
 import {
@@ -12,23 +11,20 @@ import {
 } from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
-const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
-const runShareRemove = (...args: Parameters<typeof runShareRemoveEffect>) =>
-  Effect.runPromise(runShareRemoveEffect(...args).pipe(Effect.provide(TestLayer)));
-const runShareRename = (...args: Parameters<typeof runShareRenameEffect>) =>
-  Effect.runPromise(runShareRenameEffect(...args).pipe(Effect.provide(TestLayer)));
-const runShareSetUrl = (...args: Parameters<typeof runShareSetUrlEffect>) =>
-  Effect.runPromise(runShareSetUrlEffect(...args).pipe(Effect.provide(TestLayer)));
+const runShareRemove = (...args: Parameters<typeof runShareRemoveEffect>) => runEffect(runShareRemoveEffect(...args));
+const runShareRename = (...args: Parameters<typeof runShareRenameEffect>) => runEffect(runShareRenameEffect(...args));
+const runShareSetUrl = (...args: Parameters<typeof runShareSetUrlEffect>) => runEffect(runShareSetUrlEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
-    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
-    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
+    requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
-    sleep: vi.fn().mockResolvedValue(undefined),
+    sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
@@ -76,9 +72,9 @@ describe('share administration', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
-    vi.mocked(utils.openVikingCliForMode).mockResolvedValue('/ov');
-    vi.mocked(utils.requiredExecutable).mockResolvedValue('git');
-    vi.mocked(utils.runCommand).mockImplementation(async () => ok());
+    vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
+    vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
+    vi.mocked(utils.runCommand).mockImplementation(() => Effect.succeed(ok()));
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
@@ -137,10 +133,12 @@ describe('share administration', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
 
-    await publishShareGitChange(join(config.agentContextHome, 'share-worktree'), '-dash.md', 'remove dash', {
-      push: false,
-      verb: 'rm',
-    });
+    await runEffect(
+      publishShareGitChange(join(config.agentContextHome, 'share-worktree'), '-dash.md', 'remove dash', {
+        push: false,
+        verb: 'rm',
+      }),
+    );
 
     expect(vi.mocked(utils.runCommand)).toHaveBeenCalledWith(
       'git',

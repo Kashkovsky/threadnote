@@ -1,7 +1,6 @@
 import {access, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeFileSystem} from '@effect/platform-node';
 import {expect, it} from '@effect/vitest';
 import {Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -16,6 +15,7 @@ import {
   type LaunchAgentHealthEffects,
 } from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 function runtime(): RuntimeConfig {
   return {
@@ -339,9 +339,7 @@ describe('stageLaunchAgentPlist', () => {
     const stagePath = `${plistPath}.threadnote-stage-${process.pid}`;
     await writeFile(plistPath, 'previous');
     try {
-      const transaction = await Effect.runPromise(
-        stageLaunchAgentPlist(plistPath, 'replacement').pipe(Effect.provide(NodeFileSystem.layer)),
-      );
+      const transaction = await runEffect(stageLaunchAgentPlist(plistPath, 'replacement'));
       expect((await stat(stagePath)).mode & 0o777).toBe(0o600);
       await Effect.runPromise(transaction.commit);
       expect(await readFile(plistPath, 'utf8')).toBe('replacement');
@@ -359,9 +357,7 @@ describe('stageLaunchAgentPlist', () => {
     const plistPath = join(directory, 'agent.plist');
     await writeFile(plistPath, 'previous');
     try {
-      const transaction = await Effect.runPromise(
-        stageLaunchAgentPlist(plistPath, 'replacement').pipe(Effect.provide(NodeFileSystem.layer)),
-      );
+      const transaction = await runEffect(stageLaunchAgentPlist(plistPath, 'replacement'));
       await writeFile(plistPath, 'external edit');
 
       await expect(Effect.runPromise(transaction.commit)).rejects.toThrow('changed while activation was staged');

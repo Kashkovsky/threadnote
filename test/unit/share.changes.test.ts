@@ -4,7 +4,10 @@ import {dirname, join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {isResourceBusyFailure, isTransientOvFailure, listChangedFiles, mergeChanges} from '../../src/share.js';
 import type {ChangedFile} from '../../src/share.js';
-import {runCommand} from '../../src/utils.js';
+import {runCommand as runCommandEffect} from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
 
 const GIT_ENV_KEYS = [
   'GIT_DIR',
@@ -123,7 +126,7 @@ describe('listChangedFiles', () => {
       await git(['commit', '-m', 'add symlink memory'], repo);
       const afterRev = await gitOutput(['rev-parse', 'HEAD'], repo);
 
-      const changes = await listChangedFiles(repo, beforeRev, afterRev);
+      const changes = await runEffect(listChangedFiles(repo, beforeRev, afterRev));
 
       expect(changes).not.toContainEqual(
         expect.objectContaining({relativePath: 'durable/projects/threadnote/leak.md'}),

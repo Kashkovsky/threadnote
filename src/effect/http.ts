@@ -1,4 +1,4 @@
-import {NodeHttpClient} from '@effect/platform-node';
+import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
 import {Context, Effect, Layer, Schema} from 'effect';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';

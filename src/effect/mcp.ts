@@ -1,7 +1,6 @@
-import {NodeStdio} from '@effect/platform-node';
-import {Console, Context, Effect, Layer, Logger, Schema, Sink, Stdio} from 'effect';
+import * as NodeStdio from '@effect/platform-node/NodeStdio';
+import {Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
-import {runWithConsole} from './console.js';
 import {fromPromiseError} from './errors.js';
 import type {ApplicationServices} from './runtime.js';
 
@@ -79,27 +78,27 @@ export class EffectMcpServerAdapter {
               name: registration.name,
             }),
             handle: payload => {
-              let parsed: Schema.Struct.Type<ToolFields>;
-              try {
-                parsed = Schema.decodeUnknownSync(input, {errors: 'all'})(payload);
-              } catch (cause) {
-                return Effect.succeed(
-                  new McpSchema.CallToolResult({
-                    content: [{type: 'text', text: cause instanceof Error ? cause.message : String(cause)}],
-                    isError: true,
-                  }),
-                );
-              }
-              const effect = toolHandlerEffect(() => registration.handle(parsed), applicationServices);
-              return effect.pipe(
-                Effect.match({
-                  onFailure: error =>
+              return Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
+                Effect.flatMap(parsed =>
+                  toolHandlerEffect(() => registration.handle(parsed), applicationServices).pipe(
+                    Effect.match({
+                      onFailure: error =>
+                        new McpSchema.CallToolResult({
+                          content: [{type: 'text', text: error instanceof Error ? error.message : String(error)}],
+                          isError: true,
+                        }),
+                      onSuccess: result => new McpSchema.CallToolResult(result as McpSchema.CallToolResult),
+                    }),
+                  ),
+                ),
+                Effect.catch(cause =>
+                  Effect.succeed(
                     new McpSchema.CallToolResult({
-                      content: [{type: 'text', text: error instanceof Error ? error.message : String(error)}],
+                      content: [{type: 'text', text: cause instanceof Error ? cause.message : String(cause)}],
                       isError: true,
                     }),
-                  onSuccess: result => new McpSchema.CallToolResult(result as McpSchema.CallToolResult),
-                }),
+                  ),
+                ),
               );
             },
           });
@@ -155,14 +154,8 @@ function toolHandlerEffect(
   evaluate: () => ToolHandlerResult,
   applicationServices: Context.Context<ApplicationServices>,
 ): Effect.Effect<ToolResult, unknown> {
-  return Console.consoleWith(output =>
-    Effect.suspend(() => {
-      let handled: ToolHandlerResult;
-      try {
-        handled = runWithConsole(output, evaluate);
-      } catch (cause: unknown) {
-        return Effect.fail(normalizeError(cause));
-      }
+  return Effect.try({try: evaluate, catch: normalizeError}).pipe(
+    Effect.flatMap(handled => {
       if (Effect.isEffect(handled)) {
         return handled.pipe(Effect.provideContext(applicationServices));
       }
@@ -235,20 +228,21 @@ const stdioWithInstructionsLayer = (instructions: string): Layer.Layer<Stdio.Std
 
 function addInitializeInstructions(input: string | Uint8Array, instructions: string): string | Uint8Array {
   const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
-  try {
-    const parsed = JSON.parse(text) as {
-      readonly result?: {
-        readonly capabilities?: unknown;
-        readonly protocolVersion?: unknown;
-        readonly serverInfo?: unknown;
-      };
-    };
-    if (parsed.result?.protocolVersion === undefined || parsed.result.serverInfo === undefined) {
-      return input;
-    }
-    const encoded = `${JSON.stringify({...parsed, result: {...parsed.result, instructions}})}\n`;
-    return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
-  } catch {
+  const parsed = Option.getOrUndefined(
+    Option.liftThrowable(
+      (content: string) =>
+        JSON.parse(content) as {
+          readonly result?: {
+            readonly capabilities?: unknown;
+            readonly protocolVersion?: unknown;
+            readonly serverInfo?: unknown;
+          };
+        },
+    )(text),
+  );
+  if (!parsed || parsed.result?.protocolVersion === undefined || parsed.result.serverInfo === undefined) {
     return input;
   }
+  const encoded = `${JSON.stringify({...parsed, result: {...parsed.result, instructions}})}\n`;
+  return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
 }

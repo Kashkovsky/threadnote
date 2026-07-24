@@ -1,5 +1,4 @@
-import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Fiber, Layer} from 'effect';
+import {Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
@@ -53,8 +52,7 @@ import {
   syncSharedReposBeforeAgentRead,
 } from '../../src/effect/share.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
-
-const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
+import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('Effect share transaction', () => {
   const homes: string[] = [];
@@ -69,27 +67,31 @@ describe('Effect share transaction', () => {
     homes.push(agentContextHome);
     let simulatedDefault = 'alpha';
     let publishedTeam: string | undefined;
-    shareMocks.resolveTeam.mockImplementation(async () => {
-      simulatedDefault = 'beta';
-      return {
-        config: {
-          addedAt: '2026-07-23T00:00:00.000Z',
-          gitdir: '/test/alpha.git',
+    shareMocks.resolveTeam.mockImplementation(() =>
+      Effect.sync(() => {
+        simulatedDefault = 'beta';
+        return {
+          config: {
+            addedAt: '2026-07-23T00:00:00.000Z',
+            gitdir: '/test/alpha.git',
+            name: 'alpha',
+            remote: 'git@example.com:test/alpha.git',
+            worktree: '/test/alpha',
+          },
           name: 'alpha',
-          remote: 'git@example.com:test/alpha.git',
-          worktree: '/test/alpha',
-        },
-        name: 'alpha',
-      };
-    });
+        };
+      }),
+    );
     shareMocks.sharedUriFor.mockReturnValue(
       'viking://user/test-user/memories/shared/alpha/durable/projects/threadnote/recall.md',
     );
-    shareMocks.runSharePublish.mockImplementation(async (_config, _sourceUri, options) => {
-      publishedTeam = options.team ?? simulatedDefault;
-    });
+    shareMocks.runSharePublish.mockImplementation((_config, _sourceUri, options) =>
+      Effect.sync(() => {
+        publishedTeam = options.team ?? simulatedDefault;
+      }),
+    );
 
-    await Effect.runPromise(
+    await runEffect(
       runSharePublish(
         {
           account: 'local',
@@ -99,7 +101,7 @@ describe('Effect share transaction', () => {
         },
         'viking://user/test-user/memories/durable/projects/threadnote/recall.md',
         {},
-      ).pipe(Effect.provide(TestLayer)),
+      ),
     );
 
     expect(publishedTeam).toBe('alpha');
@@ -129,18 +131,22 @@ describe('Effect share transaction', () => {
       user: 'test-user',
     };
 
-    await Effect.runPromise(
+    await runEffect(
       Effect.gen(function* () {
-        shareMocks.syncSharedReposBeforeAgentRead.mockImplementationOnce(async () => {
-          events.push('first:start');
-          markFirstStarted?.();
-          await firstBlocked;
-          events.push('first:end');
-          return {syncedTeams: [], warnings: []};
-        });
-        shareMocks.runShareSync.mockImplementationOnce(async () => {
-          events.push('second:start');
-        });
+        shareMocks.syncSharedReposBeforeAgentRead.mockImplementationOnce(() =>
+          Effect.gen(function* () {
+            events.push('first:start');
+            markFirstStarted?.();
+            yield* Effect.promise(() => firstBlocked);
+            events.push('first:end');
+            return {syncedTeams: [], warnings: []};
+          }),
+        );
+        shareMocks.runShareSync.mockImplementationOnce(() =>
+          Effect.sync(() => {
+            events.push('second:start');
+          }),
+        );
 
         const first = yield* Effect.forkChild(syncSharedReposBeforeAgentRead(config));
         yield* Effect.promise(() => firstStarted);
@@ -152,7 +158,7 @@ describe('Effect share transaction', () => {
         yield* Effect.sync(() => releaseFirst?.());
         yield* Fiber.join(interruption);
         yield* Fiber.join(second);
-      }).pipe(Effect.provide(TestLayer)),
+      }),
     );
 
     expect(events).toEqual(['first:start', 'first:end', 'second:start']);
@@ -176,18 +182,22 @@ describe('Effect share transaction', () => {
       agentId: 'threadnote',
       user: 'test-user',
     };
-    shareMocks.runShareConflicts.mockImplementationOnce(async () => {
-      events.push('inspection:start');
-      markInspectionStarted?.();
-      await inspectionBlocked;
-      events.push('inspection:end');
-      return [];
-    });
-    shareMocks.runShareSync.mockImplementationOnce(async () => {
-      events.push('sync:start');
-    });
+    shareMocks.runShareConflicts.mockImplementationOnce(() =>
+      Effect.gen(function* () {
+        events.push('inspection:start');
+        markInspectionStarted?.();
+        yield* Effect.promise(() => inspectionBlocked);
+        events.push('inspection:end');
+        return [];
+      }),
+    );
+    shareMocks.runShareSync.mockImplementationOnce(() =>
+      Effect.sync(() => {
+        events.push('sync:start');
+      }),
+    );
 
-    await Effect.runPromise(
+    await runEffect(
       Effect.gen(function* () {
         const inspection = yield* Effect.forkChild(runShareConflicts(config, {}));
         yield* Effect.promise(() => inspectionStarted);
@@ -197,7 +207,7 @@ describe('Effect share transaction', () => {
         yield* Effect.sync(() => releaseInspection?.());
         yield* Fiber.join(inspection);
         yield* Fiber.join(sync);
-      }).pipe(Effect.provide(TestLayer)),
+      }),
     );
 
     expect(events).toEqual(['inspection:start', 'inspection:end', 'sync:start']);

@@ -1,9 +1,12 @@
-import {Effect, Result} from 'effect';
+import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
-
-const run = <A, E>(effect: Effect.Effect<A, E, CommandExecutor>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(CommandExecutor.layer)));
+import {
+  commandEnvironment,
+  isOpenVikingCliExecutable,
+  runCommandEffect,
+  runStreamingCommandEffect,
+} from '../../src/effect/command.js';
+import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
   it('returns captured output for successful commands', async () => {
@@ -65,4 +68,105 @@ describe('Effect CommandExecutor', () => {
 
     expect(result).toEqual({exitCode: 3, stderr: 'bad', stdout: ''});
   });
+
+  it('interrupts streaming commands through the command boundary', async () => {
+    const childPid = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const pathService = yield* Path.Path;
+          const directory = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-streaming-command-'});
+          const pidPath = pathService.join(directory, 'child.pid');
+          const fiber = yield* runStreamingCommandEffect(process.execPath, [
+            '-e',
+            'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => undefined, 1000)',
+            pidPath,
+          ]).pipe(Effect.forkScoped);
+          const deadline = (yield* Clock.currentTimeMillis) + 5000;
+          let pid: number | undefined;
+          while ((yield* Clock.currentTimeMillis) < deadline) {
+            const content = yield* fs.readFileString(pidPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+            const candidate = Number(content);
+            if (Number.isInteger(candidate) && candidate > 0) {
+              pid = candidate;
+              break;
+            }
+            yield* Effect.sleep(10);
+          }
+          if (pid === undefined) {
+            return yield* Effect.fail(new Error('Streaming child did not report readiness.'));
+          }
+          yield* Fiber.interrupt(fiber);
+          return pid;
+        }),
+      ),
+    );
+
+    expect(isProcessRunning(childPid)).toBe(false);
+  });
+
+  it('injects Threadnote config paths into OpenViking CLI commands', async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const pathService = yield* Path.Path;
+        const threadnoteHome = pathService.join('workspace', 'threadnote home');
+        return {
+          environment: commandEnvironment(
+            pathService.join('tools', 'ov.exe'),
+            undefined,
+            {PATH: 'tools', THREADNOTE_HOME: threadnoteHome},
+            pathService,
+          ),
+          expectedCliConfig: pathService.join(threadnoteHome, 'ovcli.conf'),
+          expectedServerConfig: pathService.join(threadnoteHome, 'ov.conf'),
+        };
+      }),
+    );
+
+    expect(result.environment).toMatchObject({
+      OPENVIKING_CLI_CONFIG_FILE: result.expectedCliConfig,
+      OPENVIKING_CONFIG_FILE: result.expectedServerConfig,
+      PATH: 'tools',
+    });
+  });
+
+  it('preserves explicit OpenViking config overrides', async () => {
+    const environment = await run(
+      Effect.gen(function* () {
+        const pathService = yield* Path.Path;
+        return commandEnvironment(
+          'openviking',
+          {
+            OPENVIKING_CLI_CONFIG_FILE: 'custom-cli.json',
+            OPENVIKING_CONFIG_FILE: 'custom-server.json',
+            THREADNOTE_HOME: 'threadnote-home',
+          },
+          {},
+          pathService,
+        );
+      }),
+    );
+
+    expect(environment).toMatchObject({
+      OPENVIKING_CLI_CONFIG_FILE: 'custom-cli.json',
+      OPENVIKING_CONFIG_FILE: 'custom-server.json',
+    });
+    expect(isOpenVikingCliExecutable('C:\\tools\\ov.EXE')).toBe(true);
+    expect(isOpenVikingCliExecutable('/tools/openviking')).toBe(true);
+    expect(isOpenVikingCliExecutable('/tools/openviking-server')).toBe(false);
+  });
 });
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause: unknown) {
+    return !(
+      typeof cause === 'object' &&
+      cause !== null &&
+      'code' in cause &&
+      (cause as {readonly code?: unknown}).code === 'ESRCH'
+    );
+  }
+}

@@ -2,11 +2,11 @@ import {spawn, type ChildProcess} from 'node:child_process';
 import {access, chmod, mkdir, mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
-import {NodeFileSystem} from '@effect/platform-node';
+import {NodeFileSystem, NodePath} from '@effect/platform-node';
 import {Effect, Layer} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
-  ensureSupportedUvExecutable as ensureSupportedUvExecutablePromise,
+  ensureSupportedUvExecutable as ensureSupportedUvExecutableEffect,
   findOpenVikingServerEffect,
   findSupportedUvExecutable,
   getInstallCommands,
@@ -18,10 +18,11 @@ import {
   resolveOpenVikingInstallCommand,
   stopDetachedOpenVikingServerForLaunchd,
 } from '../../src/lifecycle.js';
-import {fromPromise} from '../../src/effect/errors.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 const WHEEL_INDEX_ENV = 'THREADNOTE_LLAMA_WHEEL_INDEX';
 const TOOL_PYTHON_ENV = 'THREADNOTE_OPENVIKING_PYTHON';
@@ -31,37 +32,59 @@ const posixIt = process.platform === 'win32' ? it.skip : it;
 const originalPath = process.env.PATH;
 const childProcesses: ChildProcess[] = [];
 const temporaryDirectories: string[] = [];
-const ensureSupportedUvExecutable = () =>
-  Effect.runPromise(fromPromise('ensure supported uv executable', ensureSupportedUvExecutablePromise));
+const ensureSupportedUvExecutable = () => runEffect(ensureSupportedUvExecutableEffect());
 
 async function fakeUv(version: string, selfUpdateVersion?: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'threadnote-uv-test-'));
   temporaryDirectories.push(directory);
-  const executable = join(directory, 'uv');
+  const executable = join(directory, process.platform === 'win32' ? 'uv.CMD' : 'uv');
   const statePath = join(directory, 'version');
   await writeFile(statePath, `${version}\n`);
-  await writeFile(
-    executable,
-    [
-      '#!/bin/sh',
-      `state=${JSON.stringify(statePath)}`,
-      'if [ "$1" = "--version" ]; then',
-      '  /bin/cat "$state"',
-      '  exit 0',
-      'fi',
-      ...(selfUpdateVersion
-        ? [
-            'if [ "$1" = "self" ] && [ "$2" = "update" ]; then',
-            `  printf '%s\\n' ${JSON.stringify(selfUpdateVersion)} > "$state"`,
-            '  exit 0',
-            'fi',
-          ]
-        : []),
-      'exit 1',
-      '',
-    ].join('\n'),
-  );
-  await chmod(executable, 0o755);
+  if (process.platform === 'win32') {
+    await writeFile(
+      executable,
+      [
+        '@echo off',
+        'if /I "%~1"=="--version" (',
+        `  type "${statePath}"`,
+        '  exit /b 0',
+        ')',
+        ...(selfUpdateVersion
+          ? [
+              'if /I "%~1"=="self" if /I "%~2"=="update" (',
+              `  > "${statePath}" echo ${selfUpdateVersion}`,
+              '  exit /b 0',
+              ')',
+            ]
+          : []),
+        'exit /b 1',
+        '',
+      ].join('\r\n'),
+    );
+  } else {
+    await writeFile(
+      executable,
+      [
+        '#!/bin/sh',
+        `state=${JSON.stringify(statePath)}`,
+        'if [ "$1" = "--version" ]; then',
+        '  /bin/cat "$state"',
+        '  exit 0',
+        'fi',
+        ...(selfUpdateVersion
+          ? [
+              'if [ "$1" = "self" ] && [ "$2" = "update" ]; then',
+              `  printf '%s\\n' ${JSON.stringify(selfUpdateVersion)} > "$state"`,
+              '  exit 0',
+              'fi',
+            ]
+          : []),
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    await chmod(executable, 0o755);
+  }
   return executable;
 }
 
@@ -121,10 +144,11 @@ function formatPsStart(date: Date): string {
 
 function launchdProcessTestLayer(processStart: string, commands: string | readonly string[], pid: number) {
   let psCalls = 0;
+  let terminated = false;
   const executor = Layer.succeed(
     CommandExecutor,
     CommandExecutor.of({
-      execute: executable => {
+      execute: (executable, args) => {
         if (executable === '/bin/ps') {
           const command = typeof commands === 'string' ? commands : (commands[psCalls] ?? commands.at(-1) ?? '');
           psCalls += 1;
@@ -133,11 +157,23 @@ function launchdProcessTestLayer(processStart: string, commands: string | readon
         if (executable === '/usr/sbin/lsof') {
           return Effect.succeed({exitCode: 0, stderr: '', stdout: `p${pid}\n`});
         }
+        if (executable === 'kill') {
+          const signal = args[0];
+          if (signal === '-0') {
+            return Effect.succeed({exitCode: terminated ? 1 : 0, stderr: '', stdout: ''});
+          }
+          return Effect.sync(() => {
+            terminated = true;
+            process.kill(pid, signal === '-TERM' ? 'SIGTERM' : 'SIGKILL');
+            return {exitCode: 0, stderr: '', stdout: ''};
+          });
+        }
         return Effect.succeed({exitCode: 127, stderr: 'unexpected command', stdout: ''});
       },
+      executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
     }),
   );
-  return Layer.merge(NodeFileSystem.layer, executor);
+  return Layer.mergeAll(NodeFileSystem.layer, NodePath.layer, executor, SystemInfo.layer);
 }
 
 function runtime(): RuntimeConfig {
@@ -176,8 +212,11 @@ describe('uv compatibility', () => {
     const currentUv = await fakeUv('uv 0.11.0');
     process.env.PATH = [join(oldUv, '..'), join(currentUv, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-    expect(await findSupportedUvExecutable()).toBe(currentUv);
-    expect(await resolveOpenVikingInstallCommand(UV_COMMAND)).toEqual({...UV_COMMAND, executable: currentUv});
+    expect(await runEffect(findSupportedUvExecutable())).toBe(currentUv);
+    expect(await runEffect(resolveOpenVikingInstallCommand(UV_COMMAND))).toEqual({
+      ...UV_COMMAND,
+      executable: currentUv,
+    });
   });
 
   it('self-updates an old standalone uv before using --system-certs', async () => {
@@ -185,7 +224,7 @@ describe('uv compatibility', () => {
     process.env.PATH = [join(uv, '..'), '/usr/bin', '/bin'].join(delimiter);
 
     expect(await ensureSupportedUvExecutable()).toBe(uv);
-    expect(await findSupportedUvExecutable()).toBe(uv);
+    expect(await runEffect(findSupportedUvExecutable())).toBe(uv);
   });
 
   it('reports an actionable error when an old uv cannot be upgraded', async () => {
@@ -202,19 +241,19 @@ describe('localEmbedWheelIndexUrl', () => {
   const original = process.env[WHEEL_INDEX_ENV];
   afterEach(() => restoreEnv(WHEEL_INDEX_ENV, original));
 
-  it('defaults to the abetlen wheel index', () => {
+  it('defaults to the abetlen wheel index', async () => {
     delete process.env[WHEEL_INDEX_ENV];
-    expect(localEmbedWheelIndexUrl()).toContain('abetlen.github.io/llama-cpp-python/whl/');
+    expect(await runEffect(localEmbedWheelIndexUrl())).toContain('abetlen.github.io/llama-cpp-python/whl/');
   });
 
-  it('honors an override', () => {
+  it('honors an override', async () => {
     process.env[WHEEL_INDEX_ENV] = TEST_INDEX;
-    expect(localEmbedWheelIndexUrl()).toBe(TEST_INDEX);
+    expect(await runEffect(localEmbedWheelIndexUrl())).toBe(TEST_INDEX);
   });
 
-  it('treats an empty override as disabled', () => {
+  it('treats an empty override as disabled', async () => {
     process.env[WHEEL_INDEX_ENV] = '   ';
-    expect(localEmbedWheelIndexUrl()).toBeUndefined();
+    expect(await runEffect(localEmbedWheelIndexUrl())).toBeUndefined();
   });
 });
 
@@ -222,19 +261,19 @@ describe('openVikingToolPython', () => {
   const original = process.env[TOOL_PYTHON_ENV];
   afterEach(() => restoreEnv(TOOL_PYTHON_ENV, original));
 
-  it('defaults to the pinned tool Python', () => {
+  it('defaults to the pinned tool Python', async () => {
     delete process.env[TOOL_PYTHON_ENV];
-    expect(openVikingToolPython()).toBe('3.12');
+    expect(await runEffect(openVikingToolPython())).toBe('3.12');
   });
 
-  it('honors an override', () => {
+  it('honors an override', async () => {
     process.env[TOOL_PYTHON_ENV] = '3.11';
-    expect(openVikingToolPython()).toBe('3.11');
+    expect(await runEffect(openVikingToolPython())).toBe('3.11');
   });
 
-  it('treats an empty override as no pin', () => {
+  it('treats an empty override as no pin', async () => {
     process.env[TOOL_PYTHON_ENV] = '';
-    expect(openVikingToolPython()).toBeUndefined();
+    expect(await runEffect(openVikingToolPython())).toBeUndefined();
   });
 });
 
@@ -300,7 +339,7 @@ describe('getInstallCommands', () => {
   });
 
   it('pins uv to a wheel-supported Python and adds the wheel index', async () => {
-    const [command, ...rest] = await getInstallCommands(runtime(), 'uv', false);
+    const [command, ...rest] = await runEffect(getInstallCommands(runtime(), 'uv', false));
     expect(rest).toHaveLength(0);
     expect(command.executable).toBe('uv');
     expect(command.args).toEqual([
@@ -318,14 +357,14 @@ describe('getInstallCommands', () => {
   });
 
   it('appends --force for a uv forced reinstall', async () => {
-    const [command] = await getInstallCommands(runtime(), 'uv', true);
+    const [command] = await runEffect(getInstallCommands(runtime(), 'uv', true));
     expect(command.args).toContain('--force');
     expect(command.args.indexOf('--force')).toBe(command.args.indexOf(SPEC) - 1);
   });
 
   it('omits the wheel index for uv when disabled', async () => {
     process.env[WHEEL_INDEX_ENV] = '';
-    const [command] = await getInstallCommands(runtime(), 'uv', false);
+    const [command] = await runEffect(getInstallCommands(runtime(), 'uv', false));
     expect(command.args).not.toContain('--extra-index-url');
     expect(command.args).toEqual([
       'tool',
@@ -341,7 +380,7 @@ describe('getInstallCommands', () => {
 
   it('drops the uv --python pin when disabled', async () => {
     process.env[TOOL_PYTHON_ENV] = '';
-    const [command] = await getInstallCommands(runtime(), 'uv', false);
+    const [command] = await runEffect(getInstallCommands(runtime(), 'uv', false));
     expect(command.args).not.toContain('--python');
     expect(command.args).toEqual([
       'tool',
@@ -356,15 +395,15 @@ describe('getInstallCommands', () => {
   });
 
   it('passes the wheel index to pipx via --pip-args', async () => {
-    const [install, inject] = await getInstallCommands(runtime(), 'pipx', false);
+    const [install, inject] = await runEffect(getInstallCommands(runtime(), 'pipx', false));
     expect(install.executable).toBe('pipx');
     expect(install.args).toEqual(['install', '--pip-args', `--extra-index-url ${TEST_INDEX}`, SPEC]);
     expect(inject.args).toEqual(['inject', 'openviking', 'pip-system-certs']);
   });
 
   it('adds the wheel index to the pip --user fallback', async () => {
-    const [command] = await getInstallCommands(runtime(), 'pip', true);
-    expect(command.executable).toBe('python3');
+    const [command] = await runEffect(getInstallCommands(runtime(), 'pip', true));
+    expect(command.executable).toMatch(process.platform === 'win32' ? /(?:py|python3?)(?:\.exe)?$/i : /python3$/);
     expect(command.args).toEqual([
       '-m',
       'pip',
@@ -378,6 +417,19 @@ describe('getInstallCommands', () => {
       SPEC,
     ]);
   });
+
+  posixIt('uses a working python fallback when python3 is unavailable', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'threadnote-python-fallback-'));
+    temporaryDirectories.push(directory);
+    const python = join(directory, 'python');
+    await writeFile(python, '#!/bin/sh\nexit 0\n');
+    await chmod(python, 0o755);
+    process.env.PATH = directory;
+
+    const [command] = await runEffect(getInstallCommands(runtime(), 'pip', false));
+
+    expect(command.executable).toBe(python);
+  });
 });
 
 describe('findOpenVikingServerEffect', () => {
@@ -388,14 +440,17 @@ describe('findOpenVikingServerEffect', () => {
     await writeFile(uv, '#!/bin/sh\n');
     await chmod(uv, 0o755);
     process.env.PATH = home;
-    const layer = Layer.merge(
+    const layer = Layer.mergeAll(
       NodeFileSystem.layer,
+      NodePath.layer,
       Layer.succeed(
         CommandExecutor,
         CommandExecutor.of({
           execute: () => Effect.never,
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       ),
+      SystemInfo.layer,
     );
 
     await expect(Effect.runPromise(findOpenVikingServerEffect(20).pipe(Effect.provide(layer)))).rejects.toThrow(
@@ -436,6 +491,7 @@ describe('stopDetachedOpenVikingServerForLaunchd', () => {
       ),
     );
 
+    await expect(waitForChildExit(child, 1000)).resolves.toBe(true);
     expect(child.signalCode).toBe('SIGTERM');
     await expect(access(pidPath)).rejects.toThrow();
   });

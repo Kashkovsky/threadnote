@@ -1,7 +1,6 @@
-import {stat} from 'node:fs/promises';
-import {Console, Effect} from 'effect';
-
-const output = Effect.runSync(Console.Console);
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
+import * as NodeServices from '@effect/platform-node/NodeServices';
+import {Console, Effect, FileSystem} from 'effect';
 
 const budgets = [
   {bytes: 1_750_000, path: 'dist/threadnote.js'},
@@ -9,14 +8,18 @@ const budgets = [
   {bytes: 450_000, path: 'manager/app.js'},
 ];
 
-let exceeded = false;
-for (const budget of budgets) {
-  const {size} = await stat(budget.path);
-  const status = size <= budget.bytes ? 'OK' : 'OVER';
-  output.log(`${status} ${budget.path}: ${size.toLocaleString()} / ${budget.bytes.toLocaleString()} bytes`);
-  exceeded ||= size > budget.bytes;
-}
+const checkBundleSizes = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  let exceeded = false;
+  for (const budget of budgets) {
+    const {size} = yield* fs.stat(budget.path);
+    const status = size <= budget.bytes ? 'OK' : 'OVER';
+    yield* Console.log(`${status} ${budget.path}: ${size.toLocaleString()} / ${budget.bytes.toLocaleString()} bytes`);
+    exceeded ||= size > budget.bytes;
+  }
+  if (exceeded) {
+    return yield* Effect.fail(new Error('Bundle size budget exceeded.'));
+  }
+});
 
-if (exceeded) {
-  process.exitCode = 1;
-}
+NodeRuntime.runMain(checkBundleSizes.pipe(Effect.provide(NodeServices.layer)));

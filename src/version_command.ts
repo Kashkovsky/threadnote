@@ -1,17 +1,19 @@
 import {Console, Effect, Result} from 'effect';
 import {heading, info, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
-import {applicationError, fromPromise} from './effect/errors.js';
+import {applicationError} from './effect/errors.js';
 import type {RuntimeConfig, VersionOptions} from './types.js';
 import {currentPackageVersion, fetchLatestVersion, resolveUpdateRegistry} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
+import {SystemInfo} from './effect/system.js';
 
 export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConfig, options: VersionOptions) {
-  const currentVersion = yield* fromPromise('read current package version', currentPackageVersion);
+  const currentVersion = yield* currentPackageVersion();
   const channel = selectUpdateChannel(currentVersion);
+  const system = yield* SystemInfo;
   const registry = yield* Effect.try({
-    try: () => resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry),
+    try: () => resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry, system.environment()),
     catch: cause => applicationError('resolve update registry', cause),
   });
   const latest = yield* withSpinnerEffect(

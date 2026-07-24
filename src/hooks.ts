@@ -1,6 +1,4 @@
-import {readFile} from 'node:fs/promises';
-import {dirname, join} from 'node:path';
-import {Console, Effect, FileSystem} from 'effect';
+import {Console, Effect, FileSystem, Path, Result, Stdio, Stream} from 'effect';
 import {
   CLAUDE_SETTINGS_PATH,
   HOOK_AUTO_PRECOMPACT_TOPIC,
@@ -10,7 +8,7 @@ import {
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
 import {parseAgentClient} from './mcp.js';
-import {fromPromiseError} from './effect/errors.js';
+import {SystemInfo} from './effect/system.js';
 import {runHandoff, runRecall} from './memory.js';
 import {applyScrubber} from './share.js';
 import {distillTrace} from './trace.js';
@@ -66,7 +64,8 @@ export function runHooksInstall(config: RuntimeConfig, agent: AgentClient, optio
 function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remove: boolean}) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const path = expandPath(CLAUDE_SETTINGS_PATH);
+    const pathService = yield* Path.Path;
+    const path = yield* expandPath(CLAUDE_SETTINGS_PATH);
     const existingRaw = (yield* fs.exists(path)) ? yield* fs.readFileString(path) : '{}';
     const parsed = parseJsonConfigObject(existingRaw) ?? {};
     const next = options.remove ? withoutThreadnoteHooks(parsed) : withThreadnoteHooks(parsed);
@@ -87,7 +86,7 @@ function runClaudeHooksInstall(options: {readonly apply: boolean; readonly remov
       return;
     }
 
-    yield* fs.makeDirectory(dirname(path), {recursive: true});
+    yield* fs.makeDirectory(pathService.dirname(path), {recursive: true});
     const serialized = `${JSON.stringify(next, undefined, 2)}\n`;
     yield* fs.writeFileString(path, serialized, {mode: 0o600});
     yield* fs.chmod(path, 0o600);
@@ -170,12 +169,13 @@ function printNoHooksSupported(agent: AgentClient, remove: boolean) {
   );
 }
 
-export async function hasManagedClaudeHooks(): Promise<boolean> {
-  const path = expandPath(CLAUDE_SETTINGS_PATH);
-  if (!(await exists(path))) {
+export const hasManagedClaudeHooks = Effect.fn('hooks.hasManagedClaudeHooks')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* expandPath(CLAUDE_SETTINGS_PATH);
+  if (!(yield* exists(path))) {
     return false;
   }
-  const raw = await readFile(path, 'utf8');
+  const raw = yield* fs.readFileString(path);
   const parsed = parseJsonConfigObject(raw);
   if (!parsed || !isJsonObject(parsed.hooks)) {
     return false;
@@ -189,14 +189,14 @@ export async function hasManagedClaudeHooks(): Promise<boolean> {
     }
   }
   return false;
-}
+});
 
 export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOptions = {}) {
   // Hooks must never block compaction. Anything that throws here gets swallowed
   // and the process still exits 0 — the worst-case is a missed snapshot.
   return Effect.gen(function* () {
-    const project = (yield* fromPromiseError(() => resolveRepoName())) ?? 'general';
-    const {sessionId, trace} = yield* fromPromiseError(() => captureTraceContext());
+    const project = (yield* resolveRepoName()) ?? 'general';
+    const {sessionId, trace} = yield* captureTraceContext();
     yield* runHandoff(config, {
       blockers: '- none recorded',
       dryRun: options.dryRun === true,
@@ -212,11 +212,9 @@ export function runPreCompactHook(config: RuntimeConfig, options: HookRunnerOpti
     });
   }).pipe(
     Effect.catch(error =>
-      Effect.sync(() => {
-        process.stderr.write(
-          `threadnote pre-compact-hook: snapshot skipped (${error instanceof Error ? error.message : String(error)})\n`,
-        );
-      }),
+      Console.error(
+        `threadnote pre-compact-hook: snapshot skipped (${error instanceof Error ? error.message : String(error)})`,
+      ),
     ),
   );
 }
@@ -225,12 +223,12 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
   // Hooks must never block session start. Failures fall through quietly so the
   // user just gets a normal session without injected context.
   return Effect.gen(function* () {
-    const project = yield* fromPromiseError(() => resolveRepoName());
+    const project = yield* resolveRepoName();
     if (!project) {
       return;
     }
     yield* emitUpdateBannerIfOutdated(config);
-    yield* Effect.sync(() => process.stdout.write(`## Threadnote — latest context for ${project}\n\n`));
+    yield* Console.log(`## Threadnote — latest context for ${project}\n`);
     yield* runRecall(config, {
       dryRun: options.dryRun === true,
       inferScope: true,
@@ -240,11 +238,9 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
     });
   }).pipe(
     Effect.catch(error =>
-      Effect.sync(() => {
-        process.stderr.write(
-          `threadnote session-start-hook: recall skipped (${error instanceof Error ? error.message : String(error)})\n`,
-        );
-      }),
+      Console.error(
+        `threadnote session-start-hook: recall skipped (${error instanceof Error ? error.message : String(error)})`,
+      ),
     ),
   );
 }
@@ -254,11 +250,6 @@ interface TraceContext {
   readonly trace?: string;
 }
 
-interface HookPayload {
-  readonly sessionId?: string;
-  readonly transcriptPath?: string;
-}
-
 /**
  * Reads Claude's PreCompact stdin payload and distills the referenced
  * transcript into a short, scrubbed trace. Entirely best-effort: any failure
@@ -266,18 +257,16 @@ interface HookPayload {
  * empty context so the pre-compact snapshot still writes its state-only
  * handoff. Never throws.
  */
-async function captureTraceContext(): Promise<TraceContext> {
-  try {
-    const payload = await readHookPayload();
+const captureTraceContext = Effect.fn('hooks.captureTraceContext')(() =>
+  Effect.gen(function* () {
+    const payload = yield* readHookPayload();
     if (!payload) {
       return {};
     }
-    const rawTrace = payload.transcriptPath ? await distillTrace(payload.transcriptPath) : undefined;
+    const rawTrace = payload.transcriptPath ? yield* distillTrace(payload.transcriptPath) : undefined;
     return {sessionId: payload.sessionId, trace: rawTrace ? scrubTrace(rawTrace) : undefined};
-  } catch {
-    return {};
-  }
-}
+  }).pipe(Effect.catch(() => Effect.succeed({} as TraceContext))),
+);
 
 /** Redacts soft leaks; drops the trace on a hard credential blocker. */
 function scrubTrace(trace: string): string | undefined {
@@ -285,20 +274,20 @@ function scrubTrace(trace: string): string | undefined {
   return result.blocker ? undefined : result.cleaned;
 }
 
-async function readHookPayload(): Promise<HookPayload | undefined> {
-  if (process.stdin.isTTY) {
+const readHookPayload = Effect.fn('hooks.readPayload')(function* () {
+  const system = yield* SystemInfo;
+  if (system.stdinIsTTY) {
     return undefined;
   }
-  const raw = await readStdinWithTimeout(1500, 512 * 1024);
+  const raw = yield* readStdinWithTimeout(1500, 512 * 1024);
   if (!raw.trim()) {
     return undefined;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  const parsedResult = Result.try((): unknown => JSON.parse(raw));
+  if (Result.isFailure(parsedResult)) {
     return undefined;
   }
+  const parsed = parsedResult.success;
   if (!isJsonObject(parsed)) {
     return undefined;
   }
@@ -306,40 +295,20 @@ async function readHookPayload(): Promise<HookPayload | undefined> {
     sessionId: typeof parsed.session_id === 'string' ? parsed.session_id : undefined,
     transcriptPath: typeof parsed.transcript_path === 'string' ? parsed.transcript_path : undefined,
   };
-}
+});
 
-function readStdinWithTimeout(timeoutMs: number, maxBytes: number): Promise<string> {
-  return new Promise(resolve => {
-    const stdin = process.stdin;
-    let data = '';
-    let settled = false;
-    const finish = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      stdin.off('data', onData);
-      stdin.off('end', finish);
-      stdin.off('error', finish);
-      clearTimeout(timer);
-      stdin.pause();
-      resolve(data);
-    };
-    const onData = (chunk: string): void => {
-      data += chunk;
-      if (data.length >= maxBytes) {
-        data = data.slice(0, maxBytes);
-        finish();
-      }
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    stdin.setEncoding('utf8');
-    stdin.on('data', onData);
-    stdin.on('end', finish);
-    stdin.on('error', finish);
-    stdin.resume();
-  });
-}
+const readStdinWithTimeout = Effect.fn('hooks.readStdin')(function* (timeoutMs: number, maxBytes: number) {
+  const stdio = yield* Stdio.Stdio;
+  return yield* stdio.stdin.pipe(
+    Stream.decodeText,
+    Stream.runFold(
+      () => '',
+      (output, chunk) => `${output}${chunk}`.slice(0, maxBytes),
+    ),
+    Effect.timeoutOrElse({duration: timeoutMs, orElse: () => Effect.succeed('')}),
+    Effect.catch(() => Effect.succeed('')),
+  );
+});
 
 function emitUpdateBannerIfOutdated(config: RuntimeConfig) {
   // Cheap, daily-cached check that nags users to upgrade. Failures are folded
@@ -348,26 +317,24 @@ function emitUpdateBannerIfOutdated(config: RuntimeConfig) {
   // spawns `threadnote update --yes` as a detached background process and
   // tells the user the new version will be active next session.
   return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
     const result = yield* checkForThreadnoteUpdate({
-      cachePath: join(config.agentContextHome, '.update-state.json'),
-      currentVersion: getThreadnoteVersion(),
+      cachePath: path.join(config.agentContextHome, '.update-state.json'),
+      currentVersion: yield* getThreadnoteVersion(),
     });
     if (!result || !result.outdated) {
       return;
     }
-    if (process.env.THREADNOTE_AUTO_UPDATE === '1') {
-      yield* Effect.sync(() => {
-        process.stdout.write(
-          `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n\n`,
-        );
-        spawnDetachedAutoUpdate();
-      });
+    if (system.environment().THREADNOTE_AUTO_UPDATE === '1') {
+      yield* Console.log(
+        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n`,
+      );
+      yield* spawnDetachedAutoUpdate();
       return;
     }
-    yield* Effect.sync(() =>
-      process.stdout.write(
-        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n\n`,
-      ),
+    yield* Console.log(
+      `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Run: threadnote update\n`,
     );
   }).pipe(Effect.catch(() => Effect.void));
 }

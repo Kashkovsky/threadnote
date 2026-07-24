@@ -24,7 +24,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
-    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
+    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
   };
 });
 
@@ -41,12 +41,14 @@ const runtime: RuntimeConfig = {
 
 beforeEach(() => {
   vi.mocked(indexRepair.repairStaleRecallIndex).mockReset();
-  vi.mocked(indexRepair.repairStaleRecallIndex).mockResolvedValue({
-    repairedUris: [],
-    skippedRecentUris: [],
-    warnings: [],
-  });
-  vi.mocked(utils.openVikingCliForMode).mockResolvedValue('/ov');
+  vi.mocked(indexRepair.repairStaleRecallIndex).mockReturnValue(
+    Effect.succeed({
+      repairedUris: [],
+      skippedRecentUris: [],
+      warnings: [],
+    }),
+  );
+  vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
 });
 
 afterEach(() => {
@@ -70,7 +72,7 @@ describe('recall skill catalog intent inference', () => {
 
 describe('runRecall index repair fallback', () => {
   it('continues to search when automatic index repair fails', async () => {
-    vi.mocked(indexRepair.repairStaleRecallIndex).mockRejectedValue(new Error('repair failed'));
+    vi.mocked(indexRepair.repairStaleRecallIndex).mockReturnValue(Effect.fail(new Error('repair failed')));
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await run(runRecall(runtime, {dryRun: true, query: 'availability check'}));
@@ -94,10 +96,12 @@ describe('runRecall index repair fallback', () => {
 
     try {
       await mkdir(repoRoot);
-      await utils.runCommand('git', ['init'], {cwd: repoRoot});
-      await utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
-        cwd: repoRoot,
-      });
+      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
+      await run(
+        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+          cwd: repoRoot,
+        }),
+      );
       process.env.THREADNOTE_CALLER_CWD = repoRoot;
 
       await run(
@@ -145,10 +149,12 @@ describe('runRecall index repair fallback', () => {
 
     try {
       await mkdir(repoRoot);
-      await utils.runCommand('git', ['init'], {cwd: repoRoot});
-      await utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
-        cwd: repoRoot,
-      });
+      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
+      await run(
+        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+          cwd: repoRoot,
+        }),
+      );
       await writeFile(
         manifestPath,
         [

@@ -1,12 +1,10 @@
 #! /usr/bin/env node
 
-import {NodeRuntime} from '@effect/platform-node';
+import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {readdir, readFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {Clock, Effect, FileSystem, pipe} from 'effect';
+import {Clock, Console, Effect, FileSystem, Path, pipe} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, DEFAULT_HOST, DEFAULT_PORT} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
@@ -42,7 +40,6 @@ import {
 import {
   collectExactMatches,
   currentPackageVersion,
-  type ExactMatch,
   errorMessage,
   formatStaleVersionNotice,
   enrichRecallQueryWithWorkspaceContext,
@@ -55,7 +52,7 @@ import {
   parsePort,
   parseRecallHits,
   type RecallHit,
-  RECALL_SCORE_THRESHOLD,
+  recallScoreThreshold,
   resolveWorkspaceRepoName,
   runCommand,
   safeTimestamp,
@@ -65,10 +62,10 @@ import {
 import {withIdentity} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/mcp.js';
 import {sha256Hex} from './effect/digest.js';
-import {fromPromiseError as attemptPromise} from './effect/errors.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ApplicationLayer} from './effect/runtime.js';
+import {SystemInfo} from './effect/system.js';
 import {
   installSharedAgentArtifacts,
   listShareConflicts,
@@ -165,64 +162,62 @@ let mcpStartupVersion: string | undefined;
 let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
 const STALE_NOTICE_TTL_MS = 60_000;
 
-async function staleVersionNotice(): Promise<string | undefined> {
+const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
   if (mcpStartupVersion === undefined) {
     return undefined;
   }
-  const nowMs = Date.now();
+  const nowMs = yield* Clock.currentTimeMillis;
   if (staleNoticeCache && nowMs - staleNoticeCache.checkedAtMs < STALE_NOTICE_TTL_MS) {
     return staleNoticeCache.notice;
   }
-  let notice: string | undefined;
-  try {
-    notice = formatStaleVersionNotice(mcpStartupVersion, await currentPackageVersion());
-  } catch {
-    notice = undefined;
-  }
+  const notice = yield* currentPackageVersion().pipe(
+    Effect.map(version => formatStaleVersionNotice(mcpStartupVersion as string, version)),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   staleNoticeCache = {checkedAtMs: nowMs, notice};
   return notice;
-}
+});
 
-async function withStaleVersionNotice(result: CallToolResult): Promise<CallToolResult> {
-  const notice = await staleVersionNotice();
+const withStaleVersionNotice = Effect.fn('mcpServer.withStaleVersionNotice')(function* (result: CallToolResult) {
+  const notice = yield* staleVersionNotice();
   if (notice === undefined) {
     return result;
   }
   return {...result, content: [...(result.content ?? []), {type: 'text', text: `⚠ ${notice}`}]};
-}
+});
 
 const mainEffect = Effect.gen(function* () {
-  const config = yield* Effect.try({
-    try: getRuntimeConfig,
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-  });
+  const system = yield* SystemInfo;
+  const config = yield* getRuntimeConfig();
   const toolset = yield* Effect.try({
-    try: () => parseMcpToolset(process.env[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
+    try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
     catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
   });
-  mcpStartupVersion = yield* attemptPromise(currentPackageVersion).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
     'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `viking://` results. At task closeout call `review_session_context`, show recommendations, then call `apply_memory_candidates` only after explicit user approval/edit/defer/reject. Store approved facts as durable and progress as handoff with stable project/topic; replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
   yield* Effect.forkScoped(monitorSharedRepositories(config));
-  yield* Effect.sync(() => process.stderr.write('Threadnote local MCP adapter running\n'));
+  yield* Console.error('Threadnote local MCP adapter running');
   return yield* server.run();
 });
 
-function getRuntimeConfig(): RuntimeConfig {
-  const host = process.env.THREADNOTE_HOST ?? DEFAULT_HOST;
-  const port = parsePort(process.env.THREADNOTE_PORT ?? String(DEFAULT_PORT));
+const getRuntimeConfig = Effect.fn('mcpServer.getRuntimeConfig')(function* () {
+  const system = yield* SystemInfo;
+  const environment = system.environment();
+  const host = environment.THREADNOTE_HOST ?? DEFAULT_HOST;
+  const port = parsePort(environment.THREADNOTE_PORT ?? String(DEFAULT_PORT));
   return {
-    account: process.env.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
-    agentContextHome: expandPath(process.env.THREADNOTE_HOME ?? '~/.openviking'),
-    agentId: process.env.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
-    manifestPath: expandPath(process.env.THREADNOTE_MANIFEST ?? '~/.openviking/seed-manifest.yaml'),
-    openVikingMcpUrl: process.env.THREADNOTE_OPENVIKING_MCP_URL ?? `http://${host}:${port}/mcp`,
-    user: process.env.THREADNOTE_USER ?? process.env.USER ?? 'unknown',
+    account: environment.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
+    agentContextHome: yield* expandPath(environment.THREADNOTE_HOME ?? '~/.openviking'),
+    agentId: environment.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
+    manifestPath: yield* expandPath(environment.THREADNOTE_MANIFEST ?? '~/.openviking/seed-manifest.yaml'),
+    openVikingMcpUrl: environment.THREADNOTE_OPENVIKING_MCP_URL ?? `http://${host}:${port}/mcp`,
+    user: environment.THREADNOTE_USER ?? system.userName,
   };
-}
+});
 
 function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, toolset: McpToolset): void {
   registerSearchTool(
@@ -287,7 +282,9 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         'Return a state-aware Threadnote capability tour. Call when the user asks what Threadnote can do or how to start; present it conversationally and offer one step at a time.',
       inputSchema: {},
     },
-    async () => runThreadnoteGuideTool(config, toolset),
+    Effect.fn('mcp_server.callback')(function* () {
+      return yield* runThreadnoteGuideTool(config, toolset);
+    }),
   );
 
   server.registerTool(
@@ -363,15 +360,16 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         watch_interval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
       },
     },
-    async args =>
-      runOpenVikingAddResourceTool(config, 'add_resource', {
+    Effect.fn('mcp_server.callback')(function* (args) {
+      return yield* runOpenVikingAddResourceTool(config, 'add_resource', {
         description: args.description,
         path: args.sourcePath ?? args.path ?? args.source_path,
         tempFileId: args.tempFileId ?? args.temp_file_id,
         to: args.to,
         wait: args.wait,
         watchInterval: args.watchInterval ?? args.watch_interval,
-      }),
+      });
+    }),
   );
 
   server.registerTool(
@@ -389,7 +387,14 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         uri: McpInput.string('Optional viking:// subtree (defaults to your memories root)'),
       },
     },
-    async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({
+      caseInsensitive,
+      case_insensitive,
+      nodeLimit,
+      node_limit,
+      pattern,
+      uri,
+    }) {
       const checkedPattern = requiredText(pattern, 'grep', 'pattern', {pattern: 'unity-ui-ccc'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -402,13 +407,13 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'grep', {
+      return yield* runOpenVikingMcpTool(config, 'grep', {
         case_insensitive: caseInsensitive ?? case_insensitive,
         node_limit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
         uri: checkedUri.value ?? `viking://user/${uriSegment(config.user)}/memories`,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -423,7 +428,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         uri: McpInput.string('Optional viking:// subtree'),
       },
     },
-    async ({nodeLimit, node_limit, pattern, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({nodeLimit, node_limit, pattern, uri}) {
       const checkedPattern = requiredText(pattern, 'glob', 'pattern', {pattern: '**/AGENTS.md'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -436,12 +441,12 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'glob', {
+      return yield* runOpenVikingMcpTool(config, 'glob', {
         node_limit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -451,7 +456,9 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       description: 'Check OpenViking server health through the CLI.',
       inputSchema: {},
     },
-    async () => withStaleVersionNotice(await runOpenVikingMcpTool(config, 'health', {})),
+    Effect.fn('mcp_server.callback')(function* () {
+      return yield* withStaleVersionNotice(yield* runOpenVikingMcpTool(config, 'health', {}));
+    }),
   );
 
   registerOpenVikingParityTools(server, config);
@@ -697,7 +704,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
         return checkedOutcome.error;
       }
       return Effect.gen(function* () {
-        const candidatePolicy = yield* Effect.sync(() => parseCandidatePolicy(process.env.THREADNOTE_CANDIDATE_POLICY));
+        const candidatePolicy = parseCandidatePolicy((yield* SystemInfo).environment().THREADNOTE_CANDIDATE_POLICY);
         if (candidatePolicy === 'off') {
           return {
             content: [
@@ -711,9 +718,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
         }
         const inferredProject =
           normalizeOptionalMetadata(project) ??
-          (callerCwd
-            ? yield* attemptPromise(() => resolveWorkspaceRepoName({cwd: callerCwd, includeProcessCwd: false}))
-            : undefined);
+          (callerCwd ? yield* resolveWorkspaceRepoName({cwd: callerCwd, includeProcessCwd: false}) : undefined);
         if (!inferredProject) {
           return argumentError(
             'review_session_context requires project or an absolute callerCwd from which the repo can be inferred.',
@@ -844,9 +849,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
             );
           }
           if (candidate.state === 'applying' && candidate.applyTargetUri) {
-            const [appliedRecord] = yield* attemptPromise(() =>
-              readMemoryRecordsByUri(config, [candidate?.applyTargetUri as string]),
-            );
+            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri as string]);
             if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
               if (
                 !candidate.applyContentHash ||
@@ -1072,7 +1075,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
             operation: approvedOperation,
             replaceUri: targetUri,
           };
-          const preparedWrite = preparePersonalMemoryWrite(config, writeParams);
+          const preparedWrite = yield* preparePersonalMemoryWrite(config, writeParams);
           const intendedMemoryUri = preparedWrite.memoryUri;
           const approvedContentHash = yield* sha256Hex(canonicalMemoryDocumentContent(preparedWrite.memory));
           if (candidate.applyContentHash && candidate.applyContentHash !== approvedContentHash) {
@@ -1111,7 +1114,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
                 `${resultText} The approval is recorded as a conflict; start a new review against the current target.`,
               );
             }
-            const [possiblyWritten] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [intendedMemoryUri]));
+            const [possiblyWritten] = yield* readMemoryRecordsByUri(config, [intendedMemoryUri]);
             const destinationCanConflict = approvedOperation === 'create' || intendedMemoryUri !== targetUri;
             if (
               (destinationCanConflict &&
@@ -1190,7 +1193,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Compatibility alias for target_uri'),
       },
     },
-    async ({
+    Effect.fn('mcp_server.callback')(function* ({
       contextType,
       context_type,
       limit,
@@ -1202,7 +1205,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       targetUri,
       target_uri,
       uri,
-    }) => {
+    }) {
       const checkedQuery = requiredText(query, 'ov_search', 'query', {query: 'current repo release notes'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -1212,7 +1215,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         return checkedUri.error;
       }
       const normalizedSessionId = (sessionId ?? session_id)?.trim();
-      return runOpenVikingMcpTool(config, 'search', {
+      return yield* runOpenVikingMcpTool(config, 'search', {
         context_type: contextType ?? context_type,
         limit,
         min_score: minScore ?? min_score,
@@ -1220,7 +1223,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         session_id: normalizedSessionId || undefined,
         target_uri: checkedUri.value,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -1234,7 +1237,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uris: McpInput.stringOrStrings('Single viking:// URI or array of URIs'),
       },
     },
-    async ({uri, uris}) => {
+    Effect.fn('mcp_server.callback')(function* ({uri, uris}) {
       const checkedUris = requiredVikingUriList(
         uris ?? uri,
         'ov_read',
@@ -1243,8 +1246,8 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUris.ok) {
         return checkedUris.error;
       }
-      return runOpenVikingReadTool(config, checkedUris.value);
-    },
+      return yield* runOpenVikingReadTool(config, checkedUris.value);
+    }),
   );
 
   server.registerTool(
@@ -1294,15 +1297,16 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         watch_interval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
       },
     },
-    async args =>
-      runOpenVikingAddResourceTool(config, 'ov_add_resource', {
+    Effect.fn('mcp_server.callback')(function* (args) {
+      return yield* runOpenVikingAddResourceTool(config, 'ov_add_resource', {
         description: args.description,
         path: args.path ?? args.sourcePath ?? args.source_path,
         tempFileId: args.tempFileId ?? args.temp_file_id,
         to: args.to,
         wait: args.wait,
         watchInterval: args.watchInterval ?? args.watch_interval,
-      }),
+      });
+    }),
   );
 
   server.registerTool(
@@ -1315,8 +1319,9 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         active_only: McpInput.boolean('Only show active watch tasks'),
       },
     },
-    async ({activeOnly, active_only}) =>
-      runOpenVikingMcpTool(config, 'list_watches', {active_only: activeOnly ?? active_only}),
+    Effect.fn('mcp_server.callback')(function* ({activeOnly, active_only}) {
+      return yield* runOpenVikingMcpTool(config, 'list_watches', {active_only: activeOnly ?? active_only});
+    }),
   );
 
   server.registerTool(
@@ -1330,7 +1335,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Compatibility alias for to_uri'),
       },
     },
-    async ({toUri, to_uri, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({toUri, to_uri, uri}) {
       const checkedUri = requiredVikingUri(
         toUri ?? to_uri ?? uri,
         'ov_cancel_watch',
@@ -1339,8 +1344,8 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'cancel_watch', {to_uri: checkedUri.value});
-    },
+      return yield* runOpenVikingMcpTool(config, 'cancel_watch', {to_uri: checkedUri.value});
+    }),
   );
 
   server.registerTool(
@@ -1357,7 +1362,14 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Optional viking:// subtree'),
       },
     },
-    async ({caseInsensitive, case_insensitive, nodeLimit, node_limit, pattern, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({
+      caseInsensitive,
+      case_insensitive,
+      nodeLimit,
+      node_limit,
+      pattern,
+      uri,
+    }) {
       const checkedPattern = requiredText(pattern, 'ov_grep', 'pattern', {pattern: 'threadnote'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -1370,13 +1382,13 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'grep', {
+      return yield* runOpenVikingMcpTool(config, 'grep', {
         case_insensitive: caseInsensitive ?? case_insensitive,
         node_limit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -1391,7 +1403,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Optional viking:// subtree'),
       },
     },
-    async ({nodeLimit, node_limit, pattern, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({nodeLimit, node_limit, pattern, uri}) {
       const checkedPattern = requiredText(pattern, 'ov_glob', 'pattern', {pattern: '**/AGENTS.md'});
       if (!checkedPattern.ok) {
         return checkedPattern.error;
@@ -1404,12 +1416,12 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'glob', {
+      return yield* runOpenVikingMcpTool(config, 'glob', {
         node_limit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
         uri: checkedUri.value,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -1440,7 +1452,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Required viking:// file URI'),
       },
     },
-    async ({uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({uri}) {
       const checkedUri = requiredVikingUri(
         uri,
         'ov_code_outline',
@@ -1449,8 +1461,8 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'code_outline', {uri: checkedUri.value});
-    },
+      return yield* runOpenVikingMcpTool(config, 'code_outline', {uri: checkedUri.value});
+    }),
   );
 
   server.registerTool(
@@ -1463,7 +1475,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Required viking:// directory URI'),
       },
     },
-    async ({query, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({query, uri}) {
       const checkedQuery = requiredText(query, 'ov_code_search', 'query', {query: 'registerTools'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -1472,11 +1484,11 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'code_search', {
+      return yield* runOpenVikingMcpTool(config, 'code_search', {
         query: checkedQuery.value,
         uri: checkedUri.value,
       });
-    },
+    }),
   );
 
   server.registerTool(
@@ -1489,7 +1501,7 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
         uri: McpInput.string('Required viking:// file URI'),
       },
     },
-    async ({symbol, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({symbol, uri}) {
       const checkedUri = requiredVikingUri(
         uri,
         'ov_code_expand',
@@ -1502,8 +1514,11 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       if (!checkedSymbol.ok) {
         return checkedSymbol.error;
       }
-      return runOpenVikingMcpTool(config, 'code_expand', {symbol: checkedSymbol.value, uri: checkedUri.value});
-    },
+      return yield* runOpenVikingMcpTool(config, 'code_expand', {
+        symbol: checkedSymbol.value,
+        uri: checkedUri.value,
+      });
+    }),
   );
 
   server.registerTool(
@@ -1513,7 +1528,9 @@ function registerOpenVikingParityTools(server: EffectMcpServerAdapter, config: R
       description: 'Raw OpenViking MCP health parity.',
       inputSchema: {},
     },
-    async () => runOpenVikingMcpTool(config, 'health', {}),
+    Effect.fn('mcp_server.callback')(function* () {
+      return yield* runOpenVikingMcpTool(config, 'health', {});
+    }),
   );
 }
 
@@ -1533,18 +1550,18 @@ function registerOpenVikingStoreTool(
         text: McpInput.string('Compatibility shortcut for a single user message'),
       },
     },
-    async ({content, messages, text}) => {
+    Effect.fn('mcp_server.callback')(function* ({content, messages, text}) {
       if (messages && messages.length > 0) {
-        return runOpenVikingMcpTool(config, 'remember', {messages});
+        return yield* runOpenVikingMcpTool(config, 'remember', {messages});
       }
       const checkedContent = requiredText(content ?? text, name, 'content', {content: 'Remember this note'});
       if (!checkedContent.ok) {
         return checkedContent.error;
       }
-      return runOpenVikingMcpTool(config, 'remember', {
+      return yield* runOpenVikingMcpTool(config, 'remember', {
         messages: [{content: checkedContent.value, role: 'user'}],
       });
-    },
+    }),
   );
 }
 
@@ -1594,7 +1611,7 @@ function registerSearchTool(
         threshold: threshold === undefined ? undefined : String(threshold),
         workset: workset?.trim() || undefined,
       }).pipe(
-        Effect.flatMap(result => attemptPromise(() => withStaleVersionNotice(result))),
+        Effect.flatMap(withStaleVersionNotice),
         Effect.catch(error =>
           Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
         ),
@@ -1626,58 +1643,54 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
         return Effect.succeed([] as readonly string[]);
       }),
     );
-    const query = yield* attemptPromise(() =>
-      enrichRecallQueryWithWorkspaceContext(params.query, {
-        cwd: params.callerCwd,
-        includeProcessCwd: false,
-      }),
-    );
-    const projectQuery = yield* attemptPromise(() =>
-      enrichRecallQueryWithWorkspaceProjectContext(params.query, {
-        cwd: params.callerCwd,
-        includeProcessCwd: false,
-      }),
-    );
+    const query = yield* enrichRecallQueryWithWorkspaceContext(params.query, {
+      cwd: params.callerCwd,
+      includeProcessCwd: false,
+    });
+    const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(params.query, {
+      cwd: params.callerCwd,
+      includeProcessCwd: false,
+    });
     const indexRepairMessages = yield* Effect.gen(function* () {
-      const ov = yield* attemptPromise(requiredOpenVikingCli);
-      const indexRepair = yield* attemptPromise(() => repairStaleRecallIndex(config, ov, {query: projectQuery}));
+      const ov = yield* requiredOpenVikingCli();
+      const indexRepair = yield* repairStaleRecallIndex(config, ov, {query: projectQuery});
       return formatRecallIndexRepairMessages(indexRepair);
     }).pipe(Effect.catch(error => Effect.succeed([`Auto-index repair warning: ${errorMessage(error)}`])));
-    const project = params.pinnedUri
-      ? undefined
-      : yield* attemptPromise(() => inferProjectFromQuery(config.manifestPath, projectQuery));
+    const project = params.pinnedUri ? undefined : yield* inferProjectFromQuery(config.manifestPath, projectQuery);
     const projectMemoryName = params.pinnedUri
       ? undefined
-      : yield* attemptPromise(() => resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false}));
+      : yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false});
     const limitArgs = params.nodeLimit ? ['--node-limit', String(params.nodeLimit)] : [];
-    const threshold = params.threshold ?? RECALL_SCORE_THRESHOLD;
-    const explicitWorkset = params.workset
-      ? yield* attemptPromise(() => requireWorkset(config.manifestPath, params.workset as string))
-      : undefined;
+    const threshold = params.threshold ?? (yield* recallScoreThreshold());
+    const explicitWorkset = params.workset ? yield* requireWorkset(config.manifestPath, params.workset) : undefined;
     const pinnedArgs = params.pinnedUri ? ['--uri', params.pinnedUri] : [];
-    const base = yield* attemptPromise(() =>
-      recallSearchHits(config, ['search', query, ...pinnedArgs, ...limitArgs], threshold, params.includeArchived),
+    const base = yield* recallSearchHits(
+      config,
+      ['search', query, ...pinnedArgs, ...limitArgs],
+      threshold,
+      params.includeArchived,
     );
     const passes: Array<readonly RecallHit[]> = [base.hits];
     const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
     for (const scope of projectMemoryScopeUris(config, projectMemoryName, params.includeArchived)) {
       if (!scopedRecallUris.has(scope)) {
         scopedRecallUris.add(scope);
-        const projectMemoryPass = yield* attemptPromise(() =>
-          recallSearchHits(config, ['search', query, '--uri', scope, ...limitArgs], threshold, params.includeArchived),
+        const projectMemoryPass = yield* recallSearchHits(
+          config,
+          ['search', query, '--uri', scope, ...limitArgs],
+          threshold,
+          params.includeArchived,
         );
         passes.push(projectMemoryPass.hits);
       }
     }
     const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
     if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
-      const seeded = yield* attemptPromise(() =>
-        recallSearchHits(
-          config,
-          ['search', params.query, '--uri', seededUri, ...limitArgs],
-          threshold,
-          params.includeArchived,
-        ),
+      const seeded = yield* recallSearchHits(
+        config,
+        ['search', params.query, '--uri', seededUri, ...limitArgs],
+        threshold,
+        params.includeArchived,
       );
       passes.push(seeded.hits);
     }
@@ -1687,7 +1700,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       ? undefined
       : explicitWorkset
         ? explicitWorkset
-        : yield* attemptPromise(() => inferWorksetFromQuery(config.manifestPath, projectQuery));
+        : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
     if (workset && workset.projects.length > 0) {
       sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
       const alreadyScoped = new Set(
@@ -1697,16 +1710,17 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
         .filter(uri => !alreadyScoped.has(uri))
         .slice(0, MAX_WORKSET_PASSES);
       for (const scope of worksetScopes) {
-        const worksetPass = yield* attemptPromise(() =>
-          recallSearchHits(config, ['search', query, '--uri', scope, ...limitArgs], threshold, params.includeArchived),
+        const worksetPass = yield* recallSearchHits(
+          config,
+          ['search', query, '--uri', scope, ...limitArgs],
+          threshold,
+          params.includeArchived,
         );
         passes.push(worksetPass.hits);
       }
     }
 
-    const exactMatches = yield* attemptPromise(() =>
-      collectExactMemoryMatches(config, query, params.includeArchived, project),
-    );
+    const exactMatches = yield* collectExactMemoryMatches(config, query, params.includeArchived, project);
     const recallSections = yield* prepareRecallSections(config, {
       allowExactRescue: params.threshold === undefined,
       allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
@@ -1718,7 +1732,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       passes,
       project: projectMemoryName ?? project?.name,
       query,
-      readRecords: uris => attemptPromise(() => readMemoryRecordsByUri(config, uris)),
+      readRecords: uris => readMemoryRecordsByUri(config, uris),
       seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
     });
     const {semanticSection, exactTail} = recallSections;
@@ -1733,11 +1747,11 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     if (exactTail) {
       sections.push(exactTail);
     }
-    const referencedContext = yield* attemptPromise(() => referencedContextSection(config, semanticSection ?? ''));
+    const referencedContext = yield* referencedContextSection(config, semanticSection ?? '');
     if (referencedContext) {
       sections.push(referencedContext);
     }
-    const hygieneHints = yield* attemptPromise(() => recallHygieneHintsSection(config, semanticSection ?? ''));
+    const hygieneHints = yield* recallHygieneHintsSection(config, semanticSection ?? '');
     if (hygieneHints) {
       sections.push(hygieneHints);
     }
@@ -1775,13 +1789,13 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
  * parsed hits, falling back to a plain search (no --threshold/--level) on a
  * non-zero exit so an older ov does not fail the recall.
  */
-async function recallSearchHits(
+const recallSearchHits = Effect.fn('mcp_server.recallSearchHits')(function* (
   config: RuntimeConfig,
   searchArgs: readonly string[],
   threshold: string,
   includeArchived: boolean,
-): Promise<{readonly errorText: string; readonly hits: readonly RecallHit[]; readonly ok: boolean}> {
-  let result = await runOpenVikingTool(config, [
+) {
+  let result = yield* runOpenVikingTool(config, [
     ...searchArgs,
     '--threshold',
     threshold,
@@ -1791,7 +1805,7 @@ async function recallSearchHits(
     'json',
   ]);
   if (result.isError === true) {
-    result = await runOpenVikingTool(config, [...searchArgs, '--output', 'json']);
+    result = yield* runOpenVikingTool(config, [...searchArgs, '--output', 'json']);
   }
   const firstContent = result.content[0];
   const text = firstContent?.type === 'text' ? firstContent.text : '';
@@ -1799,17 +1813,20 @@ async function recallSearchHits(
     return {errorText: text.trim(), hits: [], ok: false};
   }
   return {errorText: '', hits: parseRecallHits(text, {includeArchived}), ok: true};
-}
+});
 
-async function recallHygieneHintsSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
+const recallHygieneHintsSection = Effect.fn('mcpServer.recallHygieneHints')(function* (
+  config: RuntimeConfig,
+  recallText: string,
+) {
   const uris = activePersonalMemoryUrisFromText(recallText, config.user);
   if (uris.length === 0) {
     return undefined;
   }
-  const records = await readMemoryRecordsByUri(config, uris);
+  const records = yield* readMemoryRecordsByUri(config, uris);
   const nudges = recallHygieneNudges(recallText, {records, user: config.user});
   return nudges.length > 0 ? ['Memory hygiene hints:', ...nudges.map(nudge => `- ${nudge}`)].join('\n') : undefined;
-}
+});
 
 const MAX_REFERENCED_CONTEXT = 5;
 const REFERENCED_EXCERPT_LINES = 12;
@@ -1820,18 +1837,21 @@ const REFERENCED_EXCERPT_LINES = 12;
  * appending a short excerpt. Bounded to one hop and a small cap; missing
  * references degrade to a labeled line and never fail recall.
  */
-async function referencedContextSection(config: RuntimeConfig, recallText: string): Promise<string | undefined> {
+const referencedContextSection = Effect.fn('mcpServer.referencedContext')(function* (
+  config: RuntimeConfig,
+  recallText: string,
+) {
   const surfacedUris = activePersonalMemoryUrisFromText(recallText, config.user);
   if (surfacedUris.length === 0) {
     return undefined;
   }
-  const surfaced = await readMemoryRecordsByUri(config, surfacedUris);
+  const surfaced = yield* readMemoryRecordsByUri(config, surfacedUris);
   const referenced = referencedUrisFromRecords(surfaced, recallText);
   if (referenced.length === 0) {
     return undefined;
   }
   const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
-  const records = await readMemoryRecordsByUri(config, capped);
+  const records = yield* readMemoryRecordsByUri(config, capped);
   const byUri = new Map(records.map(record => [record.uri, record]));
   const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
   for (const uri of capped) {
@@ -1847,29 +1867,33 @@ async function referencedContextSection(config: RuntimeConfig, recallText: strin
     lines.push(`- … ${omitted} more referenced ${omitted === 1 ? 'memory' : 'memories'} omitted`);
   }
   return lines.join('\n');
-}
+});
 
-async function collectExactMemoryMatches(
+const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatches')(function* (
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
   project: ProjectManifest | undefined,
-): Promise<readonly ExactMatch[]> {
+) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return [];
   }
-  const ov = await requiredOpenVikingCli();
+  const ov = yield* requiredOpenVikingCli();
   const scopes = exactMemoryScopes(config, includeArchived, query, project);
-  return collectExactMatches(terms, scopes, async (term, scope) => {
-    const result = await runCommand(
-      ov,
-      withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']),
-      {allowFailure: true},
-    );
-    return result.exitCode === 0 ? result.stdout : undefined;
-  });
-}
+  return yield* collectExactMatches(
+    terms,
+    scopes,
+    Effect.fn('mcp_server.callback')(function* (term, scope) {
+      const result = yield* runCommand(
+        ov,
+        withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']),
+        {allowFailure: true},
+      );
+      return result.exitCode === 0 ? result.stdout : undefined;
+    }),
+  );
+});
 
 function registerReadTool(
   server: EffectMcpServerAdapter,
@@ -1904,7 +1928,7 @@ function registerReadTool(
             return Effect.succeed([] as readonly string[]);
           }),
         );
-        const result = yield* attemptPromise(() => runOpenVikingReadTool(config, checkedUris.value));
+        const result = yield* runOpenVikingReadTool(config, checkedUris.value);
         if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
           return result;
         }
@@ -1941,16 +1965,16 @@ function registerListTool(
         node_limit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
       },
     },
-    async ({recursive, uri}) => {
+    Effect.fn('mcp_server.callback')(function* ({recursive, uri}) {
       const checkedUri = optionalVikingUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runOpenVikingMcpTool(config, 'list', {
+      return yield* runOpenVikingMcpTool(config, 'list', {
         recursive,
         uri: checkedUri.value ?? 'viking://',
       });
-    },
+    }),
   );
 }
 
@@ -2010,7 +2034,7 @@ function registerStoreTool(
         metadata,
         replaceUri: checkedReplaceUri.value,
       }).pipe(
-        Effect.flatMap(result => attemptPromise(() => withStaleVersionNotice(result))),
+        Effect.flatMap(withStaleVersionNotice),
         Effect.catch(error =>
           Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
         ),
@@ -2182,7 +2206,7 @@ function reviewedCandidateTargetIsCurrent(config: RuntimeConfig, candidate: Memo
       config.agentContextHome,
       [candidate.targetUri],
       Effect.gen(function* () {
-        const [target] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [candidate.targetUri as string]));
+        const [target] = yield* readMemoryRecordsByUri(config, [candidate.targetUri as string]);
         return (
           target !== undefined &&
           (yield* sha256Hex(canonicalMemoryDocumentContent(target.content))) === candidate.targetContentHash
@@ -2230,9 +2254,7 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
       config.agentContextHome,
       [candidate.applyReplaceUri, candidate.applyTargetUri],
       Effect.gen(function* () {
-        const [currentTarget] = yield* attemptPromise(() =>
-          readMemoryRecordsByUri(config, [candidate.applyReplaceUri as string]),
-        );
+        const [currentTarget] = yield* readMemoryRecordsByUri(config, [candidate.applyReplaceUri as string]);
         if (!currentTarget) {
           return 'complete' as const;
         }
@@ -2242,14 +2264,12 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
         ) {
           return 'conflict' as const;
         }
-        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        const ov = yield* requiredOpenVikingCli();
         const removed = yield* removeVikingResourceWithRetry(ov, config, candidate.applyReplaceUri as string);
         if (!removed) {
           return 'pending' as const;
         }
-        const stillExists = yield* attemptPromise(() =>
-          vikingResourceExists(ov, config, candidate.applyReplaceUri as string),
-        );
+        const stillExists = yield* vikingResourceExists(ov, config, candidate.applyReplaceUri as string);
         return stillExists ? ('pending' as const) : ('complete' as const);
       }),
     );
@@ -2342,12 +2362,12 @@ function registerArchiveTool(
         return checkedUri.error;
       }
       return Effect.gen(function* () {
-        const [sourceRecord] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [checkedUri.value]));
+        const [sourceRecord] = yield* readMemoryRecordsByUri(config, [checkedUri.value]);
         if (!sourceRecord) {
           return argumentError(`Could not resolve local memory content for ${checkedUri.value} before archiving.`);
         }
         const sourceContent = sourceRecord.content;
-        const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [checkedUri.value]));
+        const readResult = yield* runOpenVikingReadTool(config, [checkedUri.value]);
         const original = textFromCallToolResult(readResult);
         if (!original) {
           return {
@@ -2421,12 +2441,10 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
         };
       }
       return Effect.gen(function* () {
-        const records = yield* attemptPromise(() =>
-          scopedCompactRecords(config, {
-            kind: kind as CompactableMemoryKind | undefined,
-            project: checkedProject.value,
-          }),
-        );
+        const records = yield* scopedCompactRecords(config, {
+          kind: kind as CompactableMemoryKind | undefined,
+          project: checkedProject.value,
+        });
         const plan = buildCompactPlan(records, {
           kind: kind as CompactableMemoryKind | undefined,
           project: checkedProject.value,
@@ -2438,7 +2456,7 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
           return {content: [{type: 'text', text: planText}]};
         }
 
-        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        const ov = yield* requiredOpenVikingCli();
         const appliedMessages: string[] = [];
         for (const action of plan.keepUpdates) {
           const keepResult = yield* writeMemoryContentWithExpectedHash(
@@ -2490,7 +2508,7 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
 
 function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
   return Effect.gen(function* () {
-    const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [action.uri]));
+    const readResult = yield* runOpenVikingReadTool(config, [action.uri]);
     const original = textFromCallToolResult(readResult);
     if (!original) {
       return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
@@ -2527,49 +2545,54 @@ function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
   });
 }
 
-async function scopedCompactRecords(
+const scopedCompactRecords = Effect.fn('mcpServer.scopedCompactRecords')(function* (
   config: RuntimeConfig,
   options: {readonly kind?: CompactableMemoryKind; readonly project: string},
-): Promise<readonly MemoryRecord[]> {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
   const records: MemoryRecord[] = [];
   for (const kind of kinds) {
-    const directory = localMemoryDirectoryForCompact(config, kind, options.project);
+    const directory = yield* localMemoryDirectoryForCompact(config, kind, options.project);
     const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
-    let entries;
-    try {
-      entries = await readdir(directory, {withFileTypes: true});
-    } catch (_err: unknown) {
+    const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+    if (entries._tag === 'None') {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+    for (const entry of entries.value) {
+      if (entry.startsWith('.') || !entry.endsWith('.md')) {
         continue;
       }
-      const content = await readTextIfExists(join(directory, entry.name));
+      const entryPath = path.join(directory, entry);
+      const info = yield* fs.stat(entryPath).pipe(Effect.option);
+      if (info._tag === 'None' || info.value.type !== 'File') {
+        continue;
+      }
+      const content = yield* readTextIfExists(entryPath);
       if (!content) {
         continue;
       }
-      const record = parseMemoryDocument(`${uriDirectory}/${entry.name}`, content);
+      const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
       if (record) {
         records.push(record);
       }
     }
   }
   return records;
-}
+});
 
-async function readMemoryRecordsByUri(
+const readMemoryRecordsByUri = Effect.fn('mcpServer.readMemoryRecordsByUri')(function* (
   config: RuntimeConfig,
   uris: readonly string[],
-): Promise<readonly MemoryRecord[]> {
+) {
   const records: MemoryRecord[] = [];
   for (const uri of uris) {
-    const localPath = localMemoryPathForUri(config, uri);
+    const localPath = yield* localMemoryPathForUri(config, uri);
     if (!localPath) {
       continue;
     }
-    const content = await readTextIfExists(localPath);
+    const content = yield* readTextIfExists(localPath);
     if (!content) {
       continue;
     }
@@ -2579,20 +2602,25 @@ async function readMemoryRecordsByUri(
     }
   }
   return records;
-}
+});
 
-function localMemoryDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
-  const root = localUserMemoriesRoot(config);
+const localMemoryDirectoryForCompact = Effect.fn('mcpServer.localMemoryDirectoryForCompact')(function* (
+  config: RuntimeConfig,
+  kind: CompactableMemoryKind,
+  project: string,
+) {
+  const path = yield* Path.Path;
+  const root = yield* localUserMemoriesRoot(config);
   const projectSegment = uriSegment(project);
   switch (kind) {
     case 'durable':
-      return join(root, 'durable', 'projects', projectSegment);
+      return path.join(root, 'durable', 'projects', projectSegment);
     case 'handoff':
-      return join(root, 'handoffs', 'active', projectSegment);
+      return path.join(root, 'handoffs', 'active', projectSegment);
     case 'incident':
-      return join(root, 'incidents', 'active', projectSegment);
+      return path.join(root, 'incidents', 'active', projectSegment);
   }
-}
+});
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
   const base = `viking://user/${uriSegment(config.user)}/memories`;
@@ -2607,7 +2635,10 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
   }
 }
 
-function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
+const localMemoryPathForUri = Effect.fn('mcpServer.localMemoryPathForUri')(function* (
+  config: RuntimeConfig,
+  uri: string,
+) {
   const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
   if (!uri.startsWith(prefix)) {
     return undefined;
@@ -2616,20 +2647,27 @@ function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | und
   if (relative.includes('..') || relative.startsWith('/')) {
     return undefined;
   }
-  return join(localUserMemoriesRoot(config), ...relative.split('/'));
-}
+  const path = yield* Path.Path;
+  return path.join(yield* localUserMemoriesRoot(config), ...relative.split('/'));
+});
 
-function localUserMemoriesRoot(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking', config.account, 'user', uriSegment(config.user), 'memories');
-}
+const localUserMemoriesRoot = Effect.fn('mcpServer.localUserMemoriesRoot')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  return path.join(
+    config.agentContextHome,
+    'data',
+    'viking',
+    config.account,
+    'user',
+    uriSegment(config.user),
+    'memories',
+  );
+});
 
-async function readTextIfExists(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (_err: unknown) {
-    return undefined;
-  }
-}
+const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+});
 
 interface WriteDurableMemoryParams {
   readonly bodyText: string;
@@ -2650,21 +2688,19 @@ interface PreparedPersonalMemoryWrite {
 
 function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
   const write = Effect.gen(function* () {
-    const prepared = params.prepared ?? preparePersonalMemoryWrite(config, params);
+    const prepared = params.prepared ?? (yield* preparePersonalMemoryWrite(config, params));
     const fs = yield* FileSystem.FileSystem;
     return yield* withMemoryUriLocks(
       fs,
       config.agentContextHome,
       [params.replaceUri, prepared.memoryUri, ...(params.expectedSourceContent ?? []).map(source => source.uri)],
       Effect.gen(function* () {
-        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        const ov = yield* requiredOpenVikingCli();
         if (params.operation === 'replace' && !params.replaceUri) {
           return argumentError('A replace write requires replaceUri.');
         }
         if (params.replaceUri && params.expectedReplaceContentHash) {
-          const [currentTarget] = yield* attemptPromise(() =>
-            readMemoryRecordsByUri(config, [params.replaceUri as string]),
-          );
+          const [currentTarget] = yield* readMemoryRecordsByUri(config, [params.replaceUri as string]);
           if (
             !currentTarget ||
             (yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))) !==
@@ -2676,7 +2712,7 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
           }
         }
         for (const source of params.expectedSourceContent ?? []) {
-          const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [source.uri]));
+          const [currentSource] = yield* readMemoryRecordsByUri(config, [source.uri]);
           if (!currentSource || currentSource.content !== source.content) {
             return argumentError(
               `Memory ${source.uri} changed after this mutation was planned. Re-run the operation before writing.`,
@@ -2684,20 +2720,18 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
           }
         }
         if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
-          return yield* attemptPromise(() =>
-            writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string),
-          );
+          return yield* writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string);
         }
         const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
-        const destinationExists = yield* attemptPromise(() => vikingResourceExists(ov, config, memoryUri));
+        const destinationExists = yield* vikingResourceExists(ov, config, memoryUri);
         if (params.operation === 'replace' && destinationExists && params.replaceUri !== memoryUri) {
-          const [destinationRecord] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [memoryUri]));
+          const [destinationRecord] = yield* readMemoryRecordsByUri(config, [memoryUri]);
           if (destinationRecord?.metadata.candidateId !== params.metadata.candidateId) {
             return argumentError(`Replacement destination already contains another memory: ${memoryUri}.`);
           }
         }
         const directoryUri = memoryDirectoryUri(config, finalMetadata);
-        yield* attemptPromise(() => ensureMemoryDirectory(ov, config, directoryUri));
+        yield* ensureMemoryDirectory(ov, config, directoryUri);
         const writeMode =
           params.operation === 'create'
             ? 'create'
@@ -2705,8 +2739,8 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
               ? destinationExists
                 ? 'replace'
                 : 'create'
-              : yield* attemptPromise(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
-        yield* attemptPromise(() => writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true}));
+              : yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
+        yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
         const messages = [`Stored memory: ${memoryUri}`];
         let replacementCleanupPending = false;
         if (params.replaceUri && !isInPlaceUpdate) {
@@ -2735,6 +2769,7 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
     Effect.catch(error =>
       Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
     ),
+    Effect.map(result => result as CallToolResult),
   );
 }
 
@@ -2743,30 +2778,30 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
  * candidate enters its recoverable `applying` state. The writer consumes this
  * same prepared value so recovery and the actual write cannot disagree.
  */
-function preparePersonalMemoryWrite(
+const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMemoryWrite')(function* (
   config: RuntimeConfig,
   params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
-): PreparedPersonalMemoryWrite {
+) {
   // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
   // Drops the supersedes line when replaceUri points at the URI we're about
   // to write to (in-place update).
   const candidateMetadata: MemoryMetadata = {...params.metadata, supersedes: params.replaceUri};
   const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
-  const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
+  const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
   const finalMetadata: MemoryMetadata = isInPlaceUpdate
     ? {...params.metadata, supersedes: undefined}
     : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
-  return {finalMetadata, isInPlaceUpdate, memory, memoryUri};
-}
+  return {finalMetadata, isInPlaceUpdate, memory, memoryUri} satisfies PreparedPersonalMemoryWrite;
+});
 
-async function writeSharedMemoryReplacement(
+const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryReplacement')(function* (
   config: RuntimeConfig,
   ov: string,
   params: WriteDurableMemoryParams,
   targetUri: string,
-): Promise<CallToolResult> {
+) {
   if (params.metadata.kind !== 'durable') {
     return argumentError('Shared memory replacement only supports durable memories.');
   }
@@ -2774,7 +2809,7 @@ async function writeSharedMemoryReplacement(
   if (!teamName) {
     return argumentError(`Memory ${targetUri} is not in the shared namespace.`);
   }
-  const resolved = await resolveTeam(config, teamName);
+  const resolved = yield* resolveTeam(config, teamName);
   const inferred = sharedMemoryUriParts(config, targetUri);
   const metadata: MemoryMetadata = {
     ...params.metadata,
@@ -2789,8 +2824,8 @@ async function writeSharedMemoryReplacement(
     );
   }
 
-  await ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
-  await writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
+  yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
+  yield* writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
 
   const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
   const messages = [`Updated shared memory: ${targetUri}`];
@@ -2798,15 +2833,19 @@ async function writeSharedMemoryReplacement(
     messages.push(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
   }
   messages.push(
-    ...(await publishShareGitChange(resolved.config.worktree, relativePath, `share: update ${relativePath}`)),
+    ...(yield* publishShareGitChange(resolved.config.worktree, relativePath, `share: update ${relativePath}`)),
   );
   return {content: [{type: 'text', text: messages.join('\n')}]};
-}
+});
 
-async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
-  const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+const vikingResourceExists = Effect.fn('mcp_server.vikingResourceExists')(function* (
+  ov: string,
+  config: RuntimeConfig,
+  uri: string,
+) {
+  const stat = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
   return stat.exitCode === 0;
-}
+});
 
 function removeVikingResourceWithRetry(ov: string, config: RuntimeConfig, uri: string, recursive = false) {
   const args = withIdentity(config, ['rm', uri, ...(recursive ? ['--recursive'] : [])]);
@@ -2840,25 +2879,33 @@ function isResourceBusy(stderr: string, stdout: string): boolean {
   return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
-async function ensureMemoryDirectory(ov: string, config: RuntimeConfig, directoryUri: string): Promise<void> {
+const ensureMemoryDirectory = Effect.fn('mcp_server.ensureMemoryDirectory')(function* (
+  ov: string,
+  config: RuntimeConfig,
+  directoryUri: string,
+) {
   for (const uri of vikingDirectoryChain(directoryUri)) {
-    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
     if (statResult.exitCode === 0) {
       continue;
     }
-    await runCommand(
+    yield* runCommand(
       ov,
       withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
     );
   }
-}
+});
 
-function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {
+const memoryUriFor = Effect.fn('mcpServer.memoryUriFor')(function* (
+  config: RuntimeConfig,
+  memory: string,
+  metadata: MemoryMetadata,
+) {
   const filename = shouldUseStableMemoryUri(metadata)
     ? `${uriSegment(metadata.topic ?? 'current')}.md`
-    : `threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+    : `threadnote-${safeTimestamp()}-${(yield* sha256(memory)).slice(0, 12)}.md`;
   return `${memoryDirectoryUri(config, metadata)}/${filename}`;
-}
+});
 
 function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
   const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
@@ -2885,17 +2932,17 @@ function shouldUseStableMemoryUri(metadata: MemoryMetadata): boolean {
   return metadata.status === 'active' && metadata.topic !== undefined && metadata.kind !== 'smoke';
 }
 
-async function memoryWriteMode(
+const memoryWriteMode = Effect.fn('mcp_server.memoryWriteMode')(function* (
   ov: string,
   config: RuntimeConfig,
   memoryUri: string,
   metadata: MemoryMetadata,
-): Promise<'create' | 'replace'> {
+) {
   if (!shouldUseStableMemoryUri(metadata)) {
     return 'create';
   }
-  return (await vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
-}
+  return (yield* vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+});
 
 function vikingDirectoryChain(directoryUri: string): readonly string[] {
   const prefix = 'viking://';
@@ -3107,11 +3154,11 @@ interface OpenVikingAddResourceParams {
   readonly watchInterval?: number;
 }
 
-async function runOpenVikingAddResourceTool(
+const runOpenVikingAddResourceTool = Effect.fn('mcp_server.runOpenVikingAddResourceTool')(function* (
   config: RuntimeConfig,
   toolName: string,
   params: OpenVikingAddResourceParams,
-): Promise<CallToolResult> {
+) {
   const tempFileId = params.tempFileId?.trim();
   const source = params.path?.trim();
   if (!source && !tempFileId) {
@@ -3134,7 +3181,7 @@ async function runOpenVikingAddResourceTool(
     if (!checkedTo.ok) {
       return checkedTo.error;
     }
-    return runOpenVikingMcpTool(config, 'add_resource', {
+    return yield* runOpenVikingMcpTool(config, 'add_resource', {
       description: params.description,
       temp_file_id: tempFileId,
       to: checkedTo.value,
@@ -3146,38 +3193,41 @@ async function runOpenVikingAddResourceTool(
     return checkedTo.error;
   }
   const description = params.description?.trim();
-  return runOpenVikingMcpTool(config, 'add_resource', {
+  return yield* runOpenVikingMcpTool(config, 'add_resource', {
     description,
     path: source,
     to: checkedTo.value,
     watch_interval: params.watchInterval,
   });
-}
+});
 
-async function runOpenVikingReadTool(config: RuntimeConfig, uris: readonly string[]): Promise<CallToolResult> {
-  const result = await runOpenVikingMcpTool(config, 'read', {uris});
+const runOpenVikingReadTool = Effect.fn('mcp_server.runOpenVikingReadTool')(function* (
+  config: RuntimeConfig,
+  uris: readonly string[],
+) {
+  const result = yield* runOpenVikingMcpTool(config, 'read', {uris});
   if (result.isError !== true && !nativeReadMissedAnyUri(result, uris)) {
     return result;
   }
-  return runOpenVikingReadToolWithCliFallback(config, uris);
-}
+  return yield* runOpenVikingReadToolWithCliFallback(config, uris);
+});
 
 function nativeReadMissedAnyUri(result: CallToolResult, uris: readonly string[]): boolean {
   const text = textFromCallToolResult(result);
   return uris.some(uri => text.includes(`(nothing found at ${uri})`));
 }
 
-async function runOpenVikingReadToolWithCliFallback(
+const runOpenVikingReadToolWithCliFallback = Effect.fn('mcp_server.runOpenVikingReadToolWithCliFallback')(function* (
   config: RuntimeConfig,
   uris: readonly string[],
-): Promise<CallToolResult> {
+) {
   const outputs: string[] = [];
   for (const uri of uris) {
-    const nativeResult = await runOpenVikingMcpTool(config, 'read', {uris: [uri]});
+    const nativeResult = yield* runOpenVikingMcpTool(config, 'read', {uris: [uri]});
     const nativeText = textFromCallToolResult(nativeResult);
     let text = nativeText;
     if (nativeResult.isError === true || nativeText.includes(`(nothing found at ${uri})`)) {
-      const cliResult = await runOpenVikingCliReadTool(config, uri);
+      const cliResult = yield* runOpenVikingCliReadTool(config, uri);
       if (cliResult.isError === true) {
         return cliResult;
       }
@@ -3185,19 +3235,28 @@ async function runOpenVikingReadToolWithCliFallback(
     }
     outputs.push(uris.length === 1 ? text : `=== ${uri} ===\n${text}`);
   }
-  return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n\n') || 'OK'}]};
-}
+  return {content: [{type: 'text', text: outputs.filter(Boolean).join('\n\n') || 'OK'}]} satisfies CallToolResult;
+});
 
-async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Promise<CallToolResult> {
-  try {
-    const ov = await requiredOpenVikingCli();
-    const result = await runCommand(ov, withIdentity(config, ['read', uri]));
+const runOpenVikingCliReadTool = Effect.fn('mcp_server.runOpenVikingCliReadTool')(function* (
+  config: RuntimeConfig,
+  uri: string,
+) {
+  return yield* Effect.gen(function* () {
+    const ov = yield* requiredOpenVikingCli();
+    const result = yield* runCommand(ov, withIdentity(config, ['read', uri]));
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: text || 'OK'}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
-}
+    return {content: [{type: 'text', text: text || 'OK'}]} satisfies CallToolResult;
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        content: [{type: 'text', text: errorMessage(error)}],
+        isError: true,
+      } satisfies CallToolResult),
+    ),
+    Effect.map(result => result as CallToolResult),
+  );
+});
 
 /**
  * Run an `ov` CLI subcommand and wrap its output as a CallToolResult. Used by
@@ -3206,53 +3265,85 @@ async function runOpenVikingCliReadTool(config: RuntimeConfig, uri: string): Pro
  * `/mcp` search, which returns full Level-2 bodies and bloats recall ~15x.
  * Goes through `runCommand` (no-shell `execFile`), so it stays injection-safe.
  */
-async function runOpenVikingTool(config: RuntimeConfig, args: readonly string[]): Promise<CallToolResult> {
-  try {
-    const ov = await requiredOpenVikingCli();
-    const result = await runCommand(ov, withIdentity(config, args));
+const runOpenVikingTool = Effect.fn('mcp_server.runOpenVikingTool')(function* (
+  config: RuntimeConfig,
+  args: readonly string[],
+) {
+  return yield* Effect.gen(function* () {
+    const ov = yield* requiredOpenVikingCli();
+    const result = yield* runCommand(ov, withIdentity(config, args));
     const text = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
-    return {content: [{type: 'text', text: text || 'OK'}]};
-  } catch (err: unknown) {
-    return {content: [{type: 'text', text: errorMessage(err)}], isError: true};
-  }
-}
+    return {content: [{type: 'text', text: text || 'OK'}]} satisfies CallToolResult;
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        content: [{type: 'text', text: errorMessage(error)}],
+        isError: true,
+      } satisfies CallToolResult),
+    ),
+    Effect.map(result => result as CallToolResult),
+  );
+});
 
-async function runOpenVikingMcpTool(
+const runOpenVikingMcpTool = Effect.fn('mcp_server.runOpenVikingMcpTool')(function* (
   config: RuntimeConfig,
   toolName: string,
   args: Record<string, unknown>,
-): Promise<CallToolResult> {
-  const client = new Client({name: 'threadnote-openviking-proxy', version: '1.1.0'});
-  try {
-    const transport = new StreamableHTTPClientTransport(new URL(config.openVikingMcpUrl), {
-      requestInit: {
-        headers: {
-          // OpenViking 0.4.x dropped agent_id as an identity input; only
-          // account + user are honored (mirrors withIdentity in runtime.ts).
-          'X-OpenViking-Account': config.account,
-          'X-OpenViking-User': config.user,
-        },
-      },
+) {
+  const invocation = Effect.gen(function* () {
+    const client = new Client({name: 'threadnote-openviking-proxy', version: '1.1.0'});
+    const transport = yield* Effect.try({
+      try: () =>
+        new StreamableHTTPClientTransport(new URL(config.openVikingMcpUrl), {
+          requestInit: {
+            headers: {
+              // OpenViking 0.4.x dropped agent_id as an identity input; only
+              // account + user are honored (mirrors withIdentity in runtime.ts).
+              'X-OpenViking-Account': config.account,
+              'X-OpenViking-User': config.user,
+            },
+          },
+        }),
+      catch: error => error,
     });
-    await client.connect(transport);
-    const result = await client.callTool({arguments: stripUndefinedValues(args), name: toolName}, undefined, {
-      timeout: 30_000,
-    });
-    return normalizeCallToolResult(result);
-  } catch (err: unknown) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `OpenViking native MCP tool "${toolName}" failed at ${config.openVikingMcpUrl}: ${errorMessage(err)}`,
+    return yield* Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: async () => {
+          await client.connect(transport);
+          return client;
         },
-      ],
-      isError: true,
-    };
-  } finally {
-    await client.close().catch(() => undefined);
-  }
-}
+        catch: error => error,
+      }),
+      connectedClient =>
+        Effect.tryPromise({
+          try: () =>
+            connectedClient.callTool({arguments: stripUndefinedValues(args), name: toolName}, undefined, {
+              timeout: 30_000,
+            }),
+          catch: error => error,
+        }).pipe(Effect.map(normalizeCallToolResult)),
+      connectedClient =>
+        Effect.tryPromise({
+          try: () => connectedClient.close(),
+          catch: error => error,
+        }).pipe(Effect.ignore),
+    );
+  });
+  return yield* invocation.pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        content: [
+          {
+            type: 'text',
+            text: `OpenViking native MCP tool "${toolName}" failed at ${config.openVikingMcpUrl}: ${errorMessage(error)}`,
+          },
+        ],
+        isError: true,
+      } satisfies CallToolResult),
+    ),
+    Effect.map(result => result as CallToolResult),
+  );
+});
 
 function stripUndefinedValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -3292,11 +3383,11 @@ function writeMemoryContentWithExpectedHash(
       config.agentContextHome,
       [uri],
       Effect.gen(function* () {
-        const [current] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [uri]));
+        const [current] = yield* readMemoryRecordsByUri(config, [uri]);
         if (!current || current.content !== expectedContent) {
           return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
         }
-        yield* attemptPromise(() => writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true}));
+        yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
         return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
       }),
     );
@@ -3317,14 +3408,14 @@ function forgetVikingResourceWithRetry(
       [uri],
       Effect.gen(function* () {
         if (expectedContent) {
-          const [current] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [uri]));
+          const [current] = yield* readMemoryRecordsByUri(config, [uri]);
           if (!current || current.content !== expectedContent) {
             return yield* Effect.fail(
               new Error(`Memory ${uri} changed after this removal was planned. Re-run the operation.`),
             );
           }
         }
-        const ov = yield* attemptPromise(requiredOpenVikingCli);
+        const ov = yield* requiredOpenVikingCli();
         return yield* removeVikingResourceWithRetry(ov, config, uri, recursive);
       }),
     );
@@ -3473,8 +3564,8 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
     if (isInSharedNamespace(config, sourceUri)) {
       return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
     }
-    const ov = yield* attemptPromise(requiredOpenVikingCli);
-    const readResult = yield* attemptPromise(() => runOpenVikingReadTool(config, [sourceUri]));
+    const ov = yield* requiredOpenVikingCli();
+    const readResult = yield* runOpenVikingReadTool(config, [sourceUri]);
     const sourceText = textFromCallToolResult(readResult);
     if (readResult.isError === true || !sourceText) {
       return {
@@ -3491,7 +3582,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
 
     if (options.preview === true) {
-      const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
+      const resolved = yield* resolveTeam(config, options.team);
       const targetUri = sharedUriFor(config, sourceUri, resolved.name);
       const previewLines = [`PREVIEW source: ${sourceUri}`, `PREVIEW destination: ${targetUri}`];
       if (scrub.blocker) {
@@ -3517,7 +3608,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
     const {publication, targetUri} = yield* withSharedRepositoryLock(
       config,
       Effect.gen(function* () {
-        const resolved = yield* attemptPromise(() => resolveTeam(config, options.team));
+        const resolved = yield* resolveTeam(config, options.team);
         const targetUri = sharedUriFor(config, sourceUri, resolved.name);
         const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
         const commitMessage = options.message ?? `share: publish ${relativePath}`;
@@ -3527,7 +3618,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
           config.agentContextHome,
           [sourceUri, targetUri],
           Effect.gen(function* () {
-            const [currentSource] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+            const [currentSource] = yield* readMemoryRecordsByUri(config, [sourceUri]);
             if (!currentSource) {
               return {kind: 'source_missing' as const};
             }
@@ -3542,14 +3633,12 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
             }
             // Refuse to silently overwrite an existing shared memory (e.g., a
             // teammate already published the same project/topic).
-            if (yield* attemptPromise(() => sharedVikingResourceExists(ov, config, targetUri))) {
+            if (yield* sharedVikingResourceExists(ov, config, targetUri)) {
               return {kind: 'target_conflict' as const};
             }
-            yield* attemptPromise(() => ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true}));
-            yield* attemptPromise(() =>
-              writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true}),
-            );
-            const [storedTarget] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [targetUri]));
+            yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
+            yield* writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true});
+            const [storedTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
             if (
               !storedTarget ||
               canonicalMemoryDocumentContent(storedTarget.content) !==
@@ -3557,10 +3646,10 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
             ) {
               return {kind: 'target_verification_failed' as const};
             }
-            const gitMessages = yield* attemptPromise(() =>
-              publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {push: options.push}),
-            );
-            const [sourceBeforeRemoval] = yield* attemptPromise(() => readMemoryRecordsByUri(config, [sourceUri]));
+            const gitMessages = yield* publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
+              push: options.push,
+            });
+            const [sourceBeforeRemoval] = yield* readMemoryRecordsByUri(config, [sourceUri]);
             if (!sourceBeforeRemoval || sourceBeforeRemoval.content !== currentSource.content) {
               return {
                 gitMessages,
@@ -3677,21 +3766,22 @@ function runShareBundleTool(config: RuntimeConfig, manifestPath: string, options
   );
 }
 
-async function runThreadnoteGuideTool(config: RuntimeConfig, toolset: McpToolset): Promise<CallToolResult> {
-  const serverUp = await probeServerUp(config);
-  const context = await gatherOnboardingContext(config);
+const runThreadnoteGuideTool = Effect.fn('mcp_server.runThreadnoteGuideTool')(function* (
+  config: RuntimeConfig,
+  toolset: McpToolset,
+) {
+  const serverUp = yield* probeServerUp(config);
+  const context = yield* gatherOnboardingContext(config);
   const text = buildOnboardingGuide({...context, serverUp, toolset});
   return {content: [{type: 'text', text}], isError: false};
-}
+});
 
-async function probeServerUp(config: RuntimeConfig): Promise<boolean | undefined> {
-  try {
-    const result = await runOpenVikingMcpTool(config, 'health', {});
-    return result.isError !== true;
-  } catch (_err: unknown) {
-    return false;
-  }
-}
+const probeServerUp = Effect.fn('mcp_server.probeServerUp')(function* (config: RuntimeConfig) {
+  return yield* runOpenVikingMcpTool(config, 'health', {}).pipe(
+    Effect.map(result => result.isError !== true),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+});
 
 function runListSharedSkillsTool(config: RuntimeConfig, options: SharedSkillFilterOptions) {
   return listSharedAgentArtifacts(config, options).pipe(
@@ -3752,12 +3842,12 @@ function shareArtifactToolHeader(team: string, syncedTeams: readonly string[], w
   return lines;
 }
 
-async function requiredOpenVikingCli(): Promise<string> {
-  const command = await findOpenVikingCli();
+const requiredOpenVikingCli = Effect.fn('mcp_server.requiredOpenVikingCli')(function* () {
+  const command = yield* findOpenVikingCli();
   if (!command) {
     throw new Error('Neither ov nor openviking was found. Run threadnote install first.');
   }
   return command;
-}
+});
 
 NodeRuntime.runMain(Effect.scoped(mainEffect).pipe(Effect.provide(ApplicationLayer)), {disableErrorReporting: false});

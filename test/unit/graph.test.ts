@@ -1,13 +1,9 @@
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeFileSystem} from '@effect/platform-node';
-import {Effect, FileSystem} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {buildGraphDocument, extractDependencyFacts, resolveGraphEdges} from '../../src/graph.js';
-
-const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer)));
+import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('extractDependencyFacts', () => {
   let dir: string;

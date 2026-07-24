@@ -1,8 +1,7 @@
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeCrypto, NodeFileSystem, NodePath} from '@effect/platform-node';
-import {Effect, Layer} from 'effect';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {shareAgentArtifact, shareBundlePack} from '../../src/share.js';
 import {
@@ -12,24 +11,24 @@ import {
 } from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
-const TestLayer = Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer);
 const runShareInstallArtifacts = (...args: Parameters<typeof runShareInstallArtifactsEffect>) =>
-  Effect.runPromise(runShareInstallArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
+  runEffect(runShareInstallArtifactsEffect(...args));
 const listSharedAgentArtifacts = (...args: Parameters<typeof listSharedAgentArtifactsEffect>) =>
-  Effect.runPromise(listSharedAgentArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
+  runEffect(listSharedAgentArtifactsEffect(...args));
 const installSharedAgentArtifacts = (...args: Parameters<typeof installSharedAgentArtifactsEffect>) =>
-  Effect.runPromise(installSharedAgentArtifactsEffect(...args).pipe(Effect.provide(TestLayer)));
+  runEffect(installSharedAgentArtifactsEffect(...args));
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockResolvedValue('/ov'),
-    requiredExecutable: vi.fn().mockResolvedValue('git'),
+    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
+    requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
-    sleep: vi.fn().mockResolvedValue(undefined),
+    sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
@@ -71,20 +70,20 @@ async function makeRuntime(): Promise<ShareRuntime> {
 }
 
 function mockPublishCommands(): void {
-  vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+  vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
     if (executable === '/ov' && args[0] === 'stat') {
-      return fail();
+      return Effect.succeed(fail());
     }
     if (executable === '/ov' && (args[0] === 'mkdir' || args[0] === 'write')) {
-      return ok('ok');
+      return Effect.succeed(ok('ok'));
     }
     if (executable === 'git' && (args.includes('add') || args.includes('commit') || args.includes('push'))) {
-      return ok('ok');
+      return Effect.succeed(ok('ok'));
     }
-    return ok();
+    return Effect.succeed(ok());
   });
-  vi.mocked(utils.maybeRun).mockImplementation(async (dryRun, executable, args, options) =>
-    dryRun ? undefined : vi.mocked(utils.runCommand)(executable, args, options),
+  vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
+    dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
   );
 }
 
@@ -115,7 +114,7 @@ describe('shared agent artifacts', () => {
     await writeFile(sourcePath, '# Reviewer\n\nReview local diffs.\n');
     mockPublishCommands();
 
-    const result = await shareAgentArtifact(config, sourcePath, {});
+    const result = await runEffect(shareAgentArtifact(config, sourcePath, {}));
 
     expect(result.targetUri).toBe(
       'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
@@ -156,7 +155,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(sharedPath, 'review.md'), 'old command\n');
     mockPublishCommands();
 
-    await expect(shareAgentArtifact(config, sourcePath, {})).rejects.toThrow(/already exists with different content/);
+    await expect(runEffect(shareAgentArtifact(config, sourcePath, {}))).rejects.toThrow(
+      /already exists with different content/,
+    );
     await expect(readFile(join(sharedPath, 'review.md'), 'utf8')).resolves.toBe('old command\n');
   });
 
@@ -166,20 +167,20 @@ describe('shared agent artifacts', () => {
     const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
     await mkdir(join(sourcePath, '..'), {recursive: true});
     await writeFile(sourcePath, '# Reviewer\n');
-    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
-        return fail();
+        return Effect.succeed(fail());
       }
       if (executable === '/ov' && args[0] === 'mkdir') {
-        return ok('ok');
+        return Effect.succeed(ok('ok'));
       }
       if (executable === '/ov' && args[0] === 'write') {
-        return fail('write failed');
+        return Effect.succeed(fail('write failed'));
       }
-      return ok();
+      return Effect.succeed(ok());
     });
 
-    await expect(shareAgentArtifact(config, sourcePath, {})).rejects.toThrow(/write failed/);
+    await expect(runEffect(shareAgentArtifact(config, sourcePath, {}))).rejects.toThrow(/write failed/);
 
     await expect(
       readFile(
@@ -423,7 +424,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(skillDir, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
     mockPublishCommands();
 
-    const result = await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {});
+    const result = await runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}));
 
     expect(result.targetUri).toBe(
       'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
@@ -462,7 +463,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(skillDir, 'repos', 'coda', 'CLAUDE.md'), '# nope\n');
     mockPublishCommands();
 
-    await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {});
+    await runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}));
 
     const sharedRoot = join(
       config.agentContextHome,
@@ -489,9 +490,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(skillDir, 'assets', 'logo.png'), png);
     mockPublishCommands();
 
-    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/binary file/);
+    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(/binary file/);
 
-    await shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true});
+    await runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true}));
     const sharedRoot = join(
       config.agentContextHome,
       'shared',
@@ -514,9 +515,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(skillDir, 'helper.bin'), secretBlob);
     mockPublishCommands();
 
-    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true})).rejects.toThrow(
-      /embedded in binary file/,
-    );
+    await expect(
+      runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {allowBinary: true})),
+    ).rejects.toThrow(/embedded in binary file/);
   });
 
   it('scrubs companion files and blocks a leaked credential in a script', async () => {
@@ -528,7 +529,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(skillDir, 'scripts', 'run.ts'), `const token = "ghp_${'b'.repeat(36)}";\n`);
     mockPublishCommands();
 
-    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/scripts\/run\.ts/);
+    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(
+      /scripts\/run\.ts/,
+    );
   });
 
   it('does not materialize bundle companions when the SKILL.md OpenViking write fails', async () => {
@@ -538,20 +541,20 @@ describe('shared agent artifacts', () => {
     await mkdir(join(skillDir, 'scripts'), {recursive: true});
     await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
     await writeFile(join(skillDir, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
-    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
-        return fail();
+        return Effect.succeed(fail());
       }
       if (executable === '/ov' && args[0] === 'mkdir') {
-        return ok('ok');
+        return Effect.succeed(ok('ok'));
       }
       if (executable === '/ov' && args[0] === 'write') {
-        return fail('write failed');
+        return Effect.succeed(fail('write failed'));
       }
-      return ok();
+      return Effect.succeed(ok());
     });
 
-    await expect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {})).rejects.toThrow(/write failed/);
+    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(/write failed/);
     const sharedRoot = join(
       config.agentContextHome,
       'shared',
@@ -693,7 +696,7 @@ describe('shared agent artifacts', () => {
     const repo = await makeReviewerManifestRepo();
     mockPublishCommands();
 
-    const result = await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    const result = await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
 
     expect(result.targetUri).toBe(
       'viking://user/test-user/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.md',
@@ -726,7 +729,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'leak.ts'), 'const home = "/Users/someone/secret/notes";\n');
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
       /scripts\/leak\.ts/,
     );
   });
@@ -918,7 +921,7 @@ describe('shared agent artifacts', () => {
     );
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
       /absolute repo-root path/,
     );
   });
@@ -930,7 +933,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'tok.ts'), 'const x = "${THREADNOTE_PACK_ROOT}/y";\n');
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(/reserved/);
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
+      /reserved/,
+    );
   });
 
   it('rejects a pack manifest include entry that escapes the pack root', async () => {
@@ -949,7 +954,7 @@ describe('shared agent artifacts', () => {
     );
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
       /within the pack root/,
     );
   });
@@ -1051,7 +1056,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'deploy.ts'), 'const key = "/home/deploy/.ssh/id_rsa";\n');
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
       /scripts\/deploy\.ts/,
     );
   });
@@ -1063,9 +1068,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'leak.ts'), 'const home = "/Users/someone/secret/x";\n');
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {redact: true})).rejects.toThrow(
-      /scripts\/leak\.ts/,
-    );
+    await expect(
+      runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {redact: true})),
+    ).rejects.toThrow(/scripts\/leak\.ts/);
   });
 
   it('flags a locally-edited member removed upstream as a conflict, not a silent update', async () => {
@@ -1118,20 +1123,22 @@ describe('shared agent artifacts', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
-    vi.mocked(utils.runCommand).mockImplementation(async (executable, args) => {
+    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
-        return fail();
+        return Effect.succeed(fail());
       }
       if (executable === '/ov' && args[0] === 'mkdir') {
-        return ok('ok');
+        return Effect.succeed(ok('ok'));
       }
       if (executable === '/ov' && args[0] === 'write') {
-        return fail('write failed');
+        return Effect.succeed(fail('write failed'));
       }
-      return ok();
+      return Effect.succeed(ok());
     });
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(/write failed/);
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
+      /write failed/,
+    );
     const packRoot = join(
       config.agentContextHome,
       'shared',
@@ -1163,7 +1170,7 @@ describe('shared agent artifacts', () => {
     );
     mockPublishCommands();
 
-    await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
 
     const packRoot = join(
       config.agentContextHome,
@@ -1228,7 +1235,9 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'log.ts'), `const dir = "${repo}-logs/run";\n`);
     mockPublishCommands();
 
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(/scripts\/log\.ts/);
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
+      /scripts\/log\.ts/,
+    );
   });
 
   it('accepts a skill entry given as a path to SKILL.md', async () => {
@@ -1248,7 +1257,7 @@ describe('shared agent artifacts', () => {
     );
     mockPublishCommands();
 
-    const result = await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    const result = await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
     expect(result.targetUri).toContain('packs/claude/reviewer/reviewer.pack.md');
   });
 
@@ -1296,7 +1305,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'deploy.ts'), 'const dir = "/opt/work/secrets/run";\n');
     mockPublishCommands();
 
-    const result = await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    const result = await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
     expect(result.messages.join('\n')).toContain('/opt/work/secrets/run');
     expect(result.messages.join('\n')).toMatch(/machine-local/);
   });
@@ -1306,17 +1315,17 @@ describe('shared agent artifacts', () => {
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
     mockPublishCommands();
-    await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
 
     await writeFile(
       join(repo, 'scripts', 'vcs.ts'),
       `const v = 2;\nconst here = "${repo}/scripts";\nimport '../lib/types';\n`,
     );
     // Differing content must be refused without --force, then replace cleanly with it.
-    await expect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {})).rejects.toThrow(
+    await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
       /already exists with different content/,
     );
-    await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {force: true});
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {force: true}));
 
     const packRoot = join(
       config.agentContextHome,
@@ -1387,7 +1396,7 @@ describe('shared agent artifacts', () => {
     await writeFile(join(repo, 'scripts', 'opt.ts'), 'const d = "/opt/acme/reviewer";\n');
     mockPublishCommands();
 
-    await shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {});
+    await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
 
     const packRoot = join(
       config.agentContextHome,

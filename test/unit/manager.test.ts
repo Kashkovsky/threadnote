@@ -1,7 +1,9 @@
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Console, Effect} from 'effect';
+import {NodeHttpServer} from '@effect/platform-node';
+import {Console, Effect, Fiber} from 'effect';
+import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   consolidationAgentScript,
@@ -17,6 +19,7 @@ import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
@@ -95,23 +98,33 @@ async function startServer(
   config: RuntimeConfig,
   token: string,
 ): Promise<{readonly close: () => Promise<void>; readonly url: string}> {
-  const server = createManagerServer({config, jobs: new Map(), token}, effect =>
-    Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer))),
-  );
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
+  let resolveAddress: ((value: string) => void) | undefined;
+  let rejectAddress: ((reason: unknown) => void) | undefined;
+  const address = new Promise<string>((resolve, reject) => {
+    resolveAddress = resolve;
+    rejectAddress = reject;
   });
-  const address = server.address();
-  if (typeof address !== 'object' || !address) {
-    throw new Error('server did not bind');
-  }
+  const fiber = Effect.runFork(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* HttpServer.HttpServer;
+        yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
+        const serverAddress = server.address;
+        if (serverAddress._tag !== 'TcpAddress') {
+          return yield* Effect.fail(new Error('manager test server did not bind to TCP'));
+        }
+        yield* Effect.sync(() => resolveAddress?.(`http://127.0.0.1:${serverAddress.port}`));
+        return yield* Effect.never;
+      }),
+    ).pipe(
+      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provide(ApplicationLayer),
+      Effect.tapError(error => Effect.sync(() => rejectAddress?.(error))),
+    ),
+  );
   return {
-    close: () => new Promise((resolve, reject) => server.close(err => (err ? reject(err) : resolve()))),
-    url: `http://127.0.0.1:${address.port}`,
+    close: () => Effect.runPromise(Fiber.interrupt(fiber)).then(() => undefined),
+    url: await address,
   };
 }
 
@@ -131,7 +144,7 @@ describe('manager catalog', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
 
-    const tree = await memoryTree(config);
+    const tree = await runEffect(memoryTree(config));
     const project = tree.children?.find(child => child.name === 'durable')?.children?.[0]?.children?.[0];
     const leaf = project?.children?.find(child => child.name === 'manager-ui.md');
 
@@ -147,7 +160,7 @@ describe('manager catalog', () => {
     await mkdir(join(root, 'agent-skills', 'codex-global'), {recursive: true});
     await writeFile(join(root, 'agent-skills', 'codex-global', 'threadnote-abc123.md'), 'Skill body');
 
-    const tree = await resourcesTree(config);
+    const tree = await runEffect(resourcesTree(config));
     const skill = tree.children
       ?.find(child => child.name === 'agent-skills')
       ?.children?.find(child => child.name === 'codex-global')
@@ -163,9 +176,8 @@ describe('manager catalog', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
 
-    const result = await readManagedMemory(
-      config,
-      'viking://user/denys/memories/durable/projects/threadnote/manager-ui.md',
+    const result = await runEffect(
+      readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/manager-ui.md'),
     );
 
     expect(result.content).toContain('Manager UI feature notes.');
@@ -182,12 +194,12 @@ describe('manager catalog', () => {
     await writeFile(secretPath, 'do not expose through manager\n', 'utf8');
     await symlink(secretPath, linkPath);
 
-    const tree = await memoryTree(config);
+    const tree = await runEffect(memoryTree(config));
     const project = tree.children?.find(child => child.name === 'durable')?.children?.[0]?.children?.[0];
 
     expect(project?.children?.map(child => child.name)).not.toContain('leak.md');
     await expect(
-      readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/leak.md'),
+      runEffect(readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/leak.md')),
     ).rejects.toThrow(/regular memory files/);
   });
 });

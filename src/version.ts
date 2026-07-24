@@ -1,9 +1,6 @@
-import {readFileSync} from 'node:fs';
-import {dirname, join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {Effect, FileSystem, Path} from 'effect';
 
 let cachedVersion: string | undefined;
-const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Returns the threadnote package version baked into this build. The bundled
@@ -15,16 +12,25 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
  * install). Callers should treat `'unknown'` as a signal to skip whatever they
  * were about to do — there's no actionable comparison to make.
  */
-export function getThreadnoteVersion(): string {
+export const getThreadnoteVersion = Effect.fn('version.getThreadnoteVersion')(function* () {
   if (cachedVersion !== undefined) {
     return cachedVersion;
   }
-  try {
-    const packageJsonPath = join(moduleDirectory, '..', 'package.json');
-    const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {readonly version?: unknown};
-    cachedVersion = typeof parsed.version === 'string' && parsed.version.length > 0 ? parsed.version : 'unknown';
-  } catch {
-    cachedVersion = 'unknown';
-  }
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const modulePath = yield* pathService.fromFileUrl(new URL(import.meta.url));
+  const packageJsonPath = pathService.join(pathService.dirname(modulePath), '..', 'package.json');
+  cachedVersion = yield* fs.readFileString(packageJsonPath).pipe(
+    Effect.flatMap(content =>
+      Effect.try({
+        try: () => JSON.parse(content) as {readonly version?: unknown},
+        catch: () => undefined,
+      }),
+    ),
+    Effect.map(parsed =>
+      parsed && typeof parsed.version === 'string' && parsed.version.length > 0 ? parsed.version : 'unknown',
+    ),
+    Effect.catch(() => Effect.succeed('unknown')),
+  );
   return cachedVersion;
-}
+});

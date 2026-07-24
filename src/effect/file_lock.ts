@@ -1,5 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
 import {sha256Hex} from './digest.js';
+import {SystemInfo} from './system.js';
 
 export interface ExclusiveFileLockOptions {
   readonly heartbeatIntervalMilliseconds?: number;
@@ -23,7 +24,8 @@ export function withExclusiveFileLock<A, E, R>(
     const pathService = yield* Path.Path;
     yield* fs.makeDirectory(pathService.dirname(lockPath), {recursive: true});
     const crypto = yield* Crypto.Crypto;
-    const token = `${process.pid}:${yield* crypto.randomUUIDv4}`;
+    const system = yield* SystemInfo;
+    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
     const startedAt = yield* Clock.currentTimeMillis;
     while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
       const now = yield* Clock.currentTimeMillis;
@@ -49,7 +51,7 @@ function tryAcquireFileLock(
   lockPath: string,
   token: string,
   staleAfterMilliseconds: number,
-): Effect.Effect<boolean, unknown, Crypto.Crypto> {
+): Effect.Effect<boolean, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
     yield* recoverStaleFileLock(fs, lockPath, staleAfterMilliseconds);
     if (!(yield* tryWriteLockToken(fs, lockPath, token))) {
@@ -67,7 +69,7 @@ function recoverStaleFileLock(
   fs: FileSystem.FileSystem,
   lockPath: string,
   staleAfterMilliseconds: number,
-): Effect.Effect<void, unknown, Crypto.Crypto> {
+): Effect.Effect<void, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
     const guardPath = recoveryGuardPath(lockPath);
     const lockNeedsRecovery = yield* staleDeadLockToken(fs, lockPath, staleAfterMilliseconds);
@@ -92,10 +94,11 @@ function acquireRecoveryGuard(
   lockPath: string,
   guardPath: string,
   staleAfterMilliseconds: number,
-): Effect.Effect<string | undefined, unknown, Crypto.Crypto> {
+): Effect.Effect<string | undefined, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
-    const token = `${process.pid}:${yield* crypto.randomUUIDv4}`;
+    const system = yield* SystemInfo;
+    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
     if (yield* tryWriteLockToken(fs, guardPath, token)) {
       return token;
     }
@@ -123,8 +126,9 @@ function staleDeadLockToken(
   fs: FileSystem.FileSystem,
   path: string,
   staleAfterMilliseconds: number,
-): Effect.Effect<string | undefined, unknown> {
+): Effect.Effect<string | undefined, unknown, SystemInfo> {
   return Effect.gen(function* () {
+    const system = yield* SystemInfo;
     if (!(yield* fs.exists(path))) {
       return undefined;
     }
@@ -136,7 +140,7 @@ function staleDeadLockToken(
     }
     const token = (yield* fs.readFileString(path)).trim();
     const ownerPid = fileLockOwnerPid(token);
-    return ownerPid === undefined || !(yield* Effect.sync(() => processIsAlive(ownerPid))) ? token : undefined;
+    return ownerPid === undefined || !system.isProcessRunning(ownerPid) ? token : undefined;
   });
 }
 
@@ -180,20 +184,6 @@ function refreshFileLockLease(
 function fileLockOwnerPid(token: string): number | undefined {
   const value = Number.parseInt(token.split(':', 1)[0] ?? '', 10);
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (cause: unknown) {
-    return !(
-      typeof cause === 'object' &&
-      cause !== null &&
-      'code' in cause &&
-      (cause as {readonly code?: unknown}).code === 'ESRCH'
-    );
-  }
 }
 
 function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: string): Effect.Effect<void, never> {

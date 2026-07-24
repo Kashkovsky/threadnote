@@ -1,10 +1,6 @@
-import {chmod, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises';
-import {basename, dirname, join, sep} from 'node:path';
 import yaml from 'js-yaml';
-import {Console, Effect, FileSystem, pipe} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Path, Result, pipe} from 'effect';
 import {maybeRunEffect} from './effect/command.js';
-import {consoleOutput, syncWithConsole} from './effect/console.js';
-import {fromPromiseError as attempt} from './effect/errors.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
@@ -58,7 +54,6 @@ import {
   enrichRecallQueryWithWorkspaceProjectContext,
   ensureDirectory,
   expandPath,
-  type ExactMatch,
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
@@ -68,14 +63,13 @@ import {
   getInvocationCwd,
   gitValue,
   isJsonObject,
-  maybeRun,
   openVikingCliForMode,
   parentVikingUri,
   parsePositiveInteger,
   parseRecallHits,
   readFileIfExists,
   type RecallHit,
-  RECALL_SCORE_THRESHOLD,
+  recallScoreThreshold,
   resolveGitRemoteRepoName,
   resolveRepoFolderName,
   resolveRepoName,
@@ -178,7 +172,7 @@ const requireValue = <A>(value: A | undefined, message: string): Effect.Effect<A
   value === undefined ? Effect.fail(new Error(message)) : Effect.succeed(value);
 
 export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeConfig, options: RememberOptions) {
-  const text = yield* attempt(() => getInputText(options.text, options.stdin === true));
+  const text = yield* getInputText(options.text, options.stdin === true);
   if (!text.trim()) {
     yield* Effect.fail(new Error('Provide memory text with --text or --stdin.'));
   }
@@ -204,26 +198,27 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
   options: MigrateMemoriesOptions,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const dryRun = options.dryRun === true;
   const limit = options.limit
     ? yield* attemptSync(() => parsePositiveInteger(options.limit!, 'migration limit'))
     : undefined;
-  const sourceAccounts = yield* attempt(() => legacySourceAccounts(config, options));
+  const sourceAccounts = yield* legacySourceAccounts(config, options);
   if (sourceAccounts.length === 0) {
-    yield* syncWithConsole(() => consoleOutput.log('No local OpenViking accounts found to scan.'));
+    yield* Console.log('No local OpenViking accounts found to scan.');
     return;
   }
 
-  const candidates = yield* attempt(() => legacyMemoryCandidates(config, sourceAccounts));
-  const existingHashes = yield* attempt(() => existingDurableMemoryHashes(config));
-  const ov = yield* attempt(() => openVikingCliForMode(dryRun));
-  const migrationPath = join(config.agentContextHome, 'legacy-memory-migration.txt');
+  const candidates = yield* legacyMemoryCandidates(config, sourceAccounts);
+  const existingHashes = yield* existingDurableMemoryHashes(config);
+  const ov = yield* openVikingCliForMode(dryRun);
+  const migrationPath = path.join(config.agentContextHome, 'legacy-memory-migration.txt');
 
   let duplicateCount = 0;
   let migratedCount = 0;
   let sensitiveCount = 0;
   if (!dryRun && candidates.length > 0) {
-    yield* attempt(() => ensureDurableMemoryDirectory(ov, config));
+    yield* ensureDurableMemoryDirectory(ov, config);
   }
 
   const migrate = Effect.gen(function* () {
@@ -239,10 +234,8 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
       const sensitiveReason = sensitiveMemoryReason(candidate.text);
       if (sensitiveReason) {
         sensitiveCount += 1;
-        yield* syncWithConsole(() =>
-          consoleOutput.log(
-            `SKIP ${legacySourceLabel(candidate)}: possible ${sensitiveReason}; inspect the source archive manually if needed.`,
-          ),
+        yield* Console.log(
+          `SKIP ${legacySourceLabel(candidate)}: possible ${sensitiveReason}; inspect the source archive manually if needed.`,
         );
         continue;
       }
@@ -251,19 +244,17 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
       }
 
       const memoryUri = migratedDurableMemoryUri(config, candidate.hash);
-      if (!dryRun && (yield* attempt(() => vikingResourceExists(ov, config, memoryUri)))) {
+      if (!dryRun && (yield* vikingResourceExists(ov, config, memoryUri))) {
         duplicateCount += 1;
         existingHashes.add(candidate.hash);
         continue;
       }
 
-      yield* syncWithConsole(() =>
-        consoleOutput.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${legacySourceLabel(candidate)} -> ${memoryUri}`),
-      );
+      yield* Console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${legacySourceLabel(candidate)} -> ${memoryUri}`);
       if (!dryRun) {
         yield* fs.writeFileString(migrationPath, candidate.text, {mode: 0o600});
         yield* fs.chmod(migrationPath, 0o600);
-        yield* attempt(() => writeDurableMemoryFile(ov, config, memoryUri, migrationPath, 'create'));
+        yield* writeDurableMemoryFile(ov, config, memoryUri, migrationPath, 'create');
         existingHashes.add(candidate.hash);
       }
       migratedCount += 1;
@@ -271,16 +262,14 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
   }).pipe(Effect.ensuring(dryRun ? Effect.void : Effect.ignore(fs.remove(migrationPath, {force: true}))));
 
   yield* migrate;
-  yield* syncWithConsole(() =>
-    consoleOutput.log(
-      [
-        `Migration summary: ${migratedCount} ${dryRun ? 'would be migrated' : 'migrated'}`,
-        `${duplicateCount} duplicate(s) skipped`,
-        `${sensitiveCount} sensitive-looking item(s) skipped`,
-        `${candidates.length} legacy Threadnote item(s) scanned`,
-        `source account(s): ${sourceAccounts.join(', ')}`,
-      ].join('; '),
-    ),
+  yield* Console.log(
+    [
+      `Migration summary: ${migratedCount} ${dryRun ? 'would be migrated' : 'migrated'}`,
+      `${duplicateCount} duplicate(s) skipped`,
+      `${sensitiveCount} sensitive-looking item(s) skipped`,
+      `${candidates.length} legacy Threadnote item(s) scanned`,
+      `source account(s): ${sourceAccounts.join(', ')}`,
+    ].join('; '),
   );
 });
 
@@ -289,10 +278,12 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
   options: MigrateLifecycleOptions,
 ) {
   const dryRun = options.dryRun === true || options.apply !== true;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'lifecycle migration limit') : undefined;
-  const ov = yield* attempt(() => openVikingCliForMode(dryRun));
-  const candidates = yield* attempt(() => legacyLifecycleHandoffCandidates(config));
-  const migrationPath = join(config.agentContextHome, 'lifecycle-memory-migration.txt');
+  const ov = yield* openVikingCliForMode(dryRun);
+  const candidates = yield* legacyLifecycleHandoffCandidates(config);
+  const migrationPath = path.join(config.agentContextHome, 'lifecycle-memory-migration.txt');
   let existingCount = 0;
   let migratedCount = 0;
   let skippedCount = 0;
@@ -302,7 +293,11 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
       if (limit !== undefined && migratedCount >= limit) {
         break;
       }
-      const destinationUri = lifecycleMigrationUri(config, candidate.metadata, sha256(candidate.original.trim()));
+      const destinationUri = lifecycleMigrationUri(
+        config,
+        candidate.metadata,
+        yield* sha256(candidate.original.trim()),
+      );
       const migratedMemory = formatMemoryDocument(
         'HANDOFF',
         candidate.metadata,
@@ -311,14 +306,14 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
 
       yield* Console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${candidate.sourceUri} -> ${destinationUri}`);
       if (!dryRun) {
-        if (yield* attempt(() => vikingResourceExists(ov, config, destinationUri))) {
+        if (yield* vikingResourceExists(ov, config, destinationUri)) {
           existingCount += 1;
           yield* Console.log(`Archived copy already exists; cleaning up legacy source: ${candidate.sourceUri}`);
         } else {
-          yield* attempt(() => writeFile(migrationPath, migratedMemory, {encoding: 'utf8', mode: 0o600}));
-          yield* attempt(() => chmod(migrationPath, 0o600));
-          yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata)));
-          yield* attempt(() => writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create'));
+          yield* fs.writeFileString(migrationPath, migratedMemory, {mode: 0o600});
+          yield* fs.chmod(migrationPath, 0o600);
+          yield* ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata));
+          yield* writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create');
         }
         const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.original,
@@ -332,11 +327,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
       }
       migratedCount += 1;
     }
-  }).pipe(
-    Effect.ensuring(
-      dryRun ? Effect.void : attempt(() => rm(migrationPath, {force: true})).pipe(Effect.catch(() => Effect.void)),
-    ),
-  );
+  }).pipe(Effect.ensuring(dryRun ? Effect.void : fs.remove(migrationPath, {force: true}).pipe(Effect.ignore)));
 
   yield* Console.log(
     [
@@ -357,7 +348,7 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
 ) {
   const dryRun = options.dryRun === true || options.apply !== true;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'project-name migration limit') : undefined;
-  const contexts = yield* attempt(() => projectNameMigrationContexts(config));
+  const contexts = yield* projectNameMigrationContexts(config);
   if (contexts.length === 0) {
     yield* Console.log('No git remote project-name changes apply across configured projects.');
     return;
@@ -369,28 +360,25 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
   }> = [];
   let remaining = limit;
   for (const context of contexts) {
-    const candidates =
-      remaining === 0 ? [] : yield* attempt(() => projectNameMigrationCandidates(config, context, remaining));
+    const candidates = remaining === 0 ? [] : yield* projectNameMigrationCandidates(config, context, remaining);
     plans.push({candidates, context});
     if (remaining !== undefined) {
       remaining = Math.max(0, remaining - candidates.length);
     }
   }
-  const seedManifestMigration = yield* attempt(() => seedManifestProjectNameMigration(config, contexts));
+  const seedManifestMigration = yield* seedManifestProjectNameMigration(config, contexts);
   if (!plans.some(plan => plan.candidates.length > 0) && !seedManifestMigration) {
     yield* Console.log('No project-name migration candidates found across configured projects.');
     return;
   }
 
-  const seedManifestUpdated = yield* attempt(() =>
-    migrateSeedManifestProjectNames(config, seedManifestMigration, dryRun),
-  );
+  const seedManifestUpdated = yield* migrateSeedManifestProjectNames(config, seedManifestMigration, dryRun);
   let existingCount = 0;
   let migratedCount = 0;
   let skippedCount = 0;
   const candidates = plans.flatMap(plan => [...plan.candidates]);
   if (candidates.length > 0) {
-    const ov = yield* attempt(() => openVikingCliForMode(dryRun));
+    const ov = yield* openVikingCliForMode(dryRun);
     for (const candidate of candidates) {
       const action = candidate.destinationExistsWithSameContent
         ? dryRun
@@ -404,10 +392,8 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
         if (candidate.destinationExistsWithSameContent) {
           existingCount += 1;
         } else {
-          yield* attempt(() => ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri)));
-          yield* attempt(() =>
-            writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false),
-          );
+          yield* ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri));
+          yield* writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false);
         }
         const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.sourceContent,
@@ -441,90 +427,96 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
   );
 });
 
-export async function hasProjectNameMigrationCandidates(config: RuntimeConfig): Promise<boolean> {
-  const contexts = await projectNameMigrationContexts(config);
+export const hasProjectNameMigrationCandidates = Effect.fn('memory.hasProjectNameMigrationCandidates')(function* (
+  config: RuntimeConfig,
+) {
+  const contexts = yield* projectNameMigrationContexts(config);
   if (contexts.length === 0) {
     return false;
   }
   for (const context of contexts) {
-    if ((await projectNameMigrationCandidates(config, context, 1)).length > 0) {
+    if ((yield* projectNameMigrationCandidates(config, context, 1)).length > 0) {
       return true;
     }
   }
-  return (await seedManifestProjectNameMigration(config, contexts)) !== undefined;
-}
+  return (yield* seedManifestProjectNameMigration(config, contexts)) !== undefined;
+});
 
-async function projectNameMigrationContexts(config: RuntimeConfig): Promise<readonly ProjectNameMigrationContext[]> {
-  const evidence = await projectNameMigrationMemoryEvidence(config);
+const projectNameMigrationContexts = Effect.fn('memory.projectNameMigrationContexts')(function* (
+  config: RuntimeConfig,
+) {
+  const evidence = yield* projectNameMigrationMemoryEvidence(config);
   const contexts: ProjectNameMigrationContext[] = [];
-  let manifest;
-  try {
-    manifest = await readSeedManifest(config.manifestPath);
-  } catch (_err: unknown) {
-    manifest = undefined;
-  }
-  if (manifest) {
-    for (const project of manifest.projects) {
+  const manifest = yield* readSeedManifest(config.manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'Some') {
+    for (const project of manifest.value.projects) {
       const projectEvidence = evidence.get(uriSegment(project.name));
       if (projectEvidence) {
-        projectEvidence.repoPaths.add(expandPath(project.path));
+        projectEvidence.repoPaths.add(yield* expandPath(project.path));
       }
     }
   }
   for (const projectEvidence of evidence.values()) {
     for (const repoPath of projectEvidence.repoPaths) {
-      const context = await projectNameMigrationContextForRepoPath(projectEvidence.oldProject, repoPath);
+      const context = yield* projectNameMigrationContextForRepoPath(projectEvidence.oldProject, repoPath);
       if (context) {
         contexts.push(context);
       }
     }
   }
-  const currentContext = await currentWorkspaceProjectNameMigrationContext(evidence);
+  const currentContext = yield* currentWorkspaceProjectNameMigrationContext(evidence);
   if (currentContext) {
     contexts.push(currentContext);
   }
   return dedupeProjectNameMigrationContexts(contexts);
-}
+});
 
-async function projectNameMigrationMemoryEvidence(
+const projectNameMigrationMemoryEvidence = Effect.fn('memory.projectNameMigrationMemoryEvidence')(function* (
   config: RuntimeConfig,
-): Promise<Map<string, ProjectNameMigrationProjectEvidence>> {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const evidence = new Map<string, ProjectNameMigrationProjectEvidence>();
   for (const location of projectMemoryLocations()) {
-    const locationRoot = join(localUserMemoriesRoot(config), ...location.relativePath);
-    let projectEntries;
-    try {
-      projectEntries = await readdir(locationRoot, {withFileTypes: true});
-    } catch (_err: unknown) {
+    const locationRoot = path.join(yield* localUserMemoriesRoot(config), ...location.relativePath);
+    const projectEntries = yield* fs.readDirectory(locationRoot).pipe(Effect.option);
+    if (projectEntries._tag === 'None') {
       continue;
     }
-    for (const projectEntry of projectEntries) {
-      if (!projectEntry.isDirectory() || projectEntry.name.startsWith('.')) {
+    for (const projectEntry of projectEntries.value) {
+      if (projectEntry.startsWith('.')) {
         continue;
       }
-      const oldSegment = projectEntry.name;
+      const projectDirectory = path.join(locationRoot, projectEntry);
+      const projectInfo = yield* fs.stat(projectDirectory).pipe(Effect.option);
+      if (projectInfo._tag === 'None' || projectInfo.value.type !== 'Directory') {
+        continue;
+      }
+      const oldSegment = projectEntry;
       const projectEvidence = ensureProjectNameMigrationEvidence(evidence, oldSegment);
-      const projectDirectory = join(locationRoot, projectEntry.name);
-      let memoryEntries;
-      try {
-        memoryEntries = await readdir(projectDirectory, {withFileTypes: true});
-      } catch (_err: unknown) {
+      const memoryEntries = yield* fs.readDirectory(projectDirectory).pipe(Effect.option);
+      if (memoryEntries._tag === 'None') {
         continue;
       }
-      for (const memoryEntry of memoryEntries) {
-        if (!memoryEntry.isFile() || memoryEntry.name.startsWith('.') || !memoryEntry.name.endsWith('.md')) {
+      for (const memoryEntry of memoryEntries.value) {
+        if (memoryEntry.startsWith('.') || !memoryEntry.endsWith('.md')) {
           continue;
         }
-        const content = await readTextIfExists(join(projectDirectory, memoryEntry.name));
+        const memoryPath = path.join(projectDirectory, memoryEntry);
+        const memoryInfo = yield* fs.stat(memoryPath).pipe(Effect.option);
+        if (memoryInfo._tag === 'None' || memoryInfo.value.type !== 'File') {
+          continue;
+        }
+        const content = yield* readTextIfExists(memoryPath);
         if (!content) {
           continue;
         }
-        const sourceUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry.name}`;
+        const sourceUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry}`;
         const record = parseMemoryDocument(sourceUri, content);
         if (record?.metadata.project && uriSegment(record.metadata.project) === oldSegment) {
           projectEvidence.oldProject = record.metadata.project;
         }
-        const repoPath = repoPathEvidenceFromMemory(content);
+        const repoPath = yield* repoPathEvidenceFromMemory(content);
         if (repoPath) {
           projectEvidence.repoPaths.add(repoPath);
         }
@@ -532,7 +524,7 @@ async function projectNameMigrationMemoryEvidence(
     }
   }
   return evidence;
-}
+});
 
 function ensureProjectNameMigrationEvidence(
   evidence: Map<string, ProjectNameMigrationProjectEvidence>,
@@ -547,7 +539,7 @@ function ensureProjectNameMigrationEvidence(
   return created;
 }
 
-function repoPathEvidenceFromMemory(content: string): string | undefined {
+const repoPathEvidenceFromMemory = Effect.fn('memory.repoPathEvidenceFromMemory')(function* (content: string) {
   const match = /^repo_path:\s*(.+)$/m.exec(content);
   if (!match?.[1]) {
     return undefined;
@@ -559,18 +551,18 @@ function repoPathEvidenceFromMemory(content: string): string | undefined {
   if (!cleaned.startsWith('/') && !cleaned.startsWith('~/')) {
     return undefined;
   }
-  return expandPath(cleaned);
-}
+  return yield* expandPath(cleaned);
+});
 
-async function projectNameMigrationContextForRepoPath(
+const projectNameMigrationContextForRepoPath = Effect.fn('memory.projectNameMigrationContextForRepoPath')(function* (
   oldProject: string,
   repoPath: string,
-): Promise<ProjectNameMigrationContext | undefined> {
-  const repoRoot = await gitValue(['rev-parse', '--show-toplevel'], repoPath);
+) {
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], repoPath);
   if (!repoRoot) {
     return undefined;
   }
-  const newProject = await resolveGitRemoteRepoName(repoRoot);
+  const newProject = yield* resolveGitRemoteRepoName(repoRoot);
   if (!newProject) {
     return undefined;
   }
@@ -579,26 +571,26 @@ async function projectNameMigrationContextForRepoPath(
     oldProject,
     repoRoot,
   });
-}
+});
 
-async function currentWorkspaceProjectNameMigrationContext(
-  evidence: Map<string, ProjectNameMigrationProjectEvidence>,
-): Promise<ProjectNameMigrationContext | undefined> {
-  const repoRoot = await gitValue(['rev-parse', '--show-toplevel']);
-  if (!repoRoot) {
-    return undefined;
-  }
-  const newProject = await resolveGitRemoteRepoName(repoRoot);
-  const oldProject = await resolveRepoFolderName(repoRoot);
-  if (!newProject || !oldProject) {
-    return undefined;
-  }
-  const oldSegment = uriSegment(oldProject);
-  if (!evidence.has(oldSegment)) {
-    return undefined;
-  }
-  return projectNameMigrationContextFromParts({newProject, oldProject, repoRoot});
-}
+const currentWorkspaceProjectNameMigrationContext = Effect.fn('memory.currentWorkspaceProjectNameMigrationContext')(
+  function* (evidence: Map<string, ProjectNameMigrationProjectEvidence>) {
+    const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel']);
+    if (!repoRoot) {
+      return undefined;
+    }
+    const newProject = yield* resolveGitRemoteRepoName(repoRoot);
+    const oldProject = yield* resolveRepoFolderName(repoRoot);
+    if (!newProject || !oldProject) {
+      return undefined;
+    }
+    const oldSegment = uriSegment(oldProject);
+    if (!evidence.has(oldSegment)) {
+      return undefined;
+    }
+    return projectNameMigrationContextFromParts({newProject, oldProject, repoRoot});
+  },
+);
 
 function projectNameMigrationContextFromParts(params: {
   readonly newProject: string;
@@ -635,27 +627,36 @@ function dedupeProjectNameMigrationContexts(
   return out;
 }
 
-async function projectNameMigrationCandidates(
+const projectNameMigrationCandidates = Effect.fn('memory.projectNameMigrationCandidates')(function* (
   config: RuntimeConfig,
   context: ProjectNameMigrationContext,
   limit?: number,
-): Promise<readonly ProjectNameMigrationCandidate[]> {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const candidates: ProjectNameMigrationCandidate[] = [];
   for (const location of projectMemoryLocations()) {
-    const sourceDirectory = join(localUserMemoriesRoot(config), ...location.relativePath, context.oldSegment);
+    const sourceDirectory = path.join(
+      yield* localUserMemoriesRoot(config),
+      ...location.relativePath,
+      context.oldSegment,
+    );
     const sourceDirectoryUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
-    let entries;
-    try {
-      entries = await readdir(sourceDirectory, {withFileTypes: true});
-    } catch (_err: unknown) {
+    const entries = yield* fs.readDirectory(sourceDirectory).pipe(Effect.option);
+    if (entries._tag === 'None') {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+    for (const entry of entries.value) {
+      if (entry.startsWith('.') || !entry.endsWith('.md')) {
         continue;
       }
-      const sourceUri = `${sourceDirectoryUri}/${entry.name}`;
-      const content = await readTextIfExists(join(sourceDirectory, entry.name));
+      const sourcePath = path.join(sourceDirectory, entry);
+      const sourceInfo = yield* fs.stat(sourcePath).pipe(Effect.option);
+      if (sourceInfo._tag === 'None' || sourceInfo.value.type !== 'File') {
+        continue;
+      }
+      const sourceUri = `${sourceDirectoryUri}/${entry}`;
+      const content = yield* readTextIfExists(sourcePath);
       if (!content) {
         continue;
       }
@@ -665,14 +666,14 @@ async function projectNameMigrationCandidates(
       }
       const metadata = {...record.metadata, project: context.newProject};
       const destinationDirectoryUri = memoryDirectoryUri(config, metadata);
-      const destinationDirectory = localMemoryPathForUri(config, destinationDirectoryUri);
+      const destinationDirectory = yield* localMemoryPathForUri(config, destinationDirectoryUri);
       if (!destinationDirectory) {
         continue;
       }
       const destinationContent = formatMemoryDocument(record.headerTitle, metadata, record.body);
-      const destination = await projectNameMigrationDestination(
+      const destination = yield* projectNameMigrationDestination(
         destinationDirectory,
-        entry.name,
+        entry,
         destinationContent,
         context.oldSegment,
       );
@@ -689,7 +690,7 @@ async function projectNameMigrationCandidates(
     }
   }
   return candidates;
-}
+});
 
 function projectNameMigrationActiveContexts(
   plans: readonly {
@@ -725,7 +726,7 @@ function projectNameMigrationSummary(
   return `Project-name migration summary: ${migratedCount} ${memoryWord} ${verb} across ${contexts.length} project rename(s)${renameSummary ? `: ${renameSummary}` : ''}`;
 }
 
-async function migrateSeedManifestProjectNames(
+const migrateSeedManifestProjectNames = Effect.fn('memory.migrateSeedManifestProjectNames')(function* (
   config: RuntimeConfig,
   migration:
     | {
@@ -735,49 +736,42 @@ async function migrateSeedManifestProjectNames(
       }
     | undefined,
   dryRun: boolean,
-): Promise<boolean> {
+) {
   if (!migration) {
     return false;
   }
   if (dryRun) {
-    consoleOutput.log(`Would update seed manifest: ${config.manifestPath}`);
-    consoleOutput.log(migration.output.trimEnd());
+    yield* Console.log(`Would update seed manifest: ${config.manifestPath}`);
+    yield* Console.log(migration.output.trimEnd());
     return true;
   }
-  await ensureDirectory(dirname(config.manifestPath), false);
-  const currentContent = await readFileIfExists(config.manifestPath);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* ensureDirectory(path.dirname(config.manifestPath), false);
+  const currentContent = yield* readFileIfExists(config.manifestPath);
   if (currentContent !== undefined) {
     const backupPath = `${config.manifestPath}.project-name-${safeTimestamp()}`;
-    await writeFile(backupPath, currentContent, {encoding: 'utf8', mode: 0o600});
-    await chmod(backupPath, 0o600);
-    consoleOutput.log(`Backup: ${backupPath}`);
+    yield* fs.writeFileString(backupPath, currentContent, {mode: 0o600});
+    yield* fs.chmod(backupPath, 0o600);
+    yield* Console.log(`Backup: ${backupPath}`);
   }
-  await writeFile(config.manifestPath, migration.output, {encoding: 'utf8', mode: 0o600});
-  await chmod(config.manifestPath, 0o600);
-  consoleOutput.log(`Updated seed manifest: ${config.manifestPath}`);
+  yield* fs.writeFileString(config.manifestPath, migration.output, {mode: 0o600});
+  yield* fs.chmod(config.manifestPath, 0o600);
+  yield* Console.log(`Updated seed manifest: ${config.manifestPath}`);
   return true;
-}
+});
 
-async function seedManifestProjectNameMigration(
+const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNameMigration')(function* (
   config: RuntimeConfig,
   contexts: readonly ProjectNameMigrationContext[],
-): Promise<
-  | {
-      readonly contexts: readonly ProjectNameMigrationContext[];
-      readonly newProjects: readonly string[];
-      readonly output: string;
-    }
-  | undefined
-> {
-  let manifest;
-  try {
-    manifest = await readSeedManifest(config.manifestPath);
-  } catch (_err: unknown) {
+) {
+  const manifest = yield* readSeedManifest(config.manifestPath).pipe(Effect.option);
+  if (manifest._tag === 'None') {
     return undefined;
   }
   const renamed = new Map<string, ProjectNameMigrationContext>();
   let changed = false;
-  const projects = manifest.projects.map(project => {
+  const projects = manifest.value.projects.map(project => {
     const context = contexts.find(candidate =>
       isSeedManifestProjectNameCandidate(
         project,
@@ -789,7 +783,7 @@ async function seedManifestProjectNameMigration(
     if (!context) {
       return project;
     }
-    const newNameExists = manifest.projects.some(
+    const newNameExists = manifest.value.projects.some(
       other => other !== project && uriSegment(other.name) === context.newSegment,
     );
     if (newNameExists || [...renamed.values()].some(existing => existing.newSegment === context.newSegment)) {
@@ -808,7 +802,7 @@ async function seedManifestProjectNameMigration(
   });
   const worksets =
     renamed.size > 0
-      ? manifest.worksets?.map(workset => {
+      ? manifest.value.worksets?.map(workset => {
           const members = workset.projects.map(projectName => {
             const context = renamed.get(uriSegment(projectName));
             if (!context) {
@@ -819,7 +813,7 @@ async function seedManifestProjectNameMigration(
           });
           return {...workset, projects: members};
         })
-      : manifest.worksets;
+      : manifest.value.worksets;
   if (!changed) {
     return undefined;
   }
@@ -828,7 +822,7 @@ async function seedManifestProjectNameMigration(
     newProjects: [...new Set([...renamed.values()].map(context => context.newProject))],
     output: `${yaml.dump(
       {
-        version: manifest.version,
+        version: manifest.value.version,
         projects: projects.map(project => ({
           name: project.name,
           path: project.path,
@@ -844,11 +838,11 @@ async function seedManifestProjectNameMigration(
               })),
             }
           : {}),
-        ...(manifest.futureMonorepo
+        ...(manifest.value.futureMonorepo
           ? {
               future_monorepo: {
-                path_candidates: [...manifest.futureMonorepo.pathCandidates],
-                uri: manifest.futureMonorepo.uri,
+                path_candidates: [...manifest.value.futureMonorepo.pathCandidates],
+                uri: manifest.value.futureMonorepo.uri,
               },
             }
           : {}),
@@ -856,7 +850,7 @@ async function seedManifestProjectNameMigration(
       {lineWidth: 120, noRefs: true},
     )}`,
   };
-}
+});
 
 function isSeedManifestProjectNameCandidate(
   project: ProjectManifest,
@@ -866,7 +860,7 @@ function isSeedManifestProjectNameCandidate(
 ): boolean {
   const nameSegment = uriSegment(project.name);
   const uriMatchesOld = trimTrailingSlash(project.uri) === oldDefaultUri;
-  const pathMatchesRepo = expandPath(project.path) === context.repoRoot;
+  const pathMatchesRepo = project.path === context.repoRoot || project.path === `~/${context.repoRoot}`;
   if (nameSegment === context.newSegment && !uriMatchesOld) {
     return false;
   }
@@ -881,36 +875,37 @@ function canMigrateProjectName(record: MemoryRecord, context: ProjectNameMigrati
   return projectSegment === context.oldSegment || projectSegment === context.newSegment;
 }
 
-async function projectNameMigrationDestination(
+const projectNameMigrationDestination = Effect.fn('memory.projectNameMigrationDestination')(function* (
   destinationDirectory: string,
   filename: string,
   content: string,
   oldProjectSegment: string,
-): Promise<{readonly existsWithSameContent: boolean; readonly filename: string}> {
-  const direct = await projectNameMigrationDestinationState(destinationDirectory, filename, content);
+) {
+  const direct = yield* projectNameMigrationDestinationState(destinationDirectory, filename, content);
   if (!direct.exists || direct.sameContent) {
     return {existsWithSameContent: direct.sameContent, filename};
   }
   const stem = filename.replace(/\.md$/i, '');
   const fromOldProject = `${stem}-from-${oldProjectSegment}.md`;
-  const renamed = await projectNameMigrationDestinationState(destinationDirectory, fromOldProject, content);
+  const renamed = yield* projectNameMigrationDestinationState(destinationDirectory, fromOldProject, content);
   if (!renamed.exists || renamed.sameContent) {
     return {existsWithSameContent: renamed.sameContent, filename: fromOldProject};
   }
   return {
     existsWithSameContent: false,
-    filename: `${stem}-from-${oldProjectSegment}-${sha256(content).slice(0, 12)}.md`,
+    filename: `${stem}-from-${oldProjectSegment}-${(yield* sha256(content)).slice(0, 12)}.md`,
   };
-}
+});
 
-async function projectNameMigrationDestinationState(
+const projectNameMigrationDestinationState = Effect.fn('memory.projectNameMigrationDestinationState')(function* (
   destinationDirectory: string,
   filename: string,
   content: string,
-): Promise<{readonly exists: boolean; readonly sameContent: boolean}> {
-  const existing = await readTextIfExists(join(destinationDirectory, filename));
+) {
+  const path = yield* Path.Path;
+  const existing = yield* readTextIfExists(path.join(destinationDirectory, filename));
   return {exists: existing !== undefined, sameContent: existing?.trim() === content.trim()};
-}
+});
 
 function projectMemoryLocations(): readonly ProjectMemoryLocation[] {
   return [
@@ -930,45 +925,39 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
   }
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
     : {includeProcessCwd: true};
-  const query = yield* attempt(() => enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions));
-  const projectQuery = yield* attempt(() =>
-    enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions),
-  );
-  const indexRepairMessages = yield* attempt(() =>
-    repairStaleRecallIndex(config, ov, {
-      dryRun: options.dryRun === true,
-      query: projectQuery,
-    }),
-  ).pipe(
+  const query = yield* enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions);
+  const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
+  const indexRepairMessages = yield* repairStaleRecallIndex(config, ov, {
+    dryRun: options.dryRun === true,
+    query: projectQuery,
+  }).pipe(
     Effect.map(indexRepair => formatRecallIndexRepairMessages(indexRepair, {dryRun: options.dryRun === true})),
-    Effect.catch(error => Effect.succeed([`Auto-index repair warning: ${error.message}`])),
+    Effect.catch(error =>
+      Effect.succeed([`Auto-index repair warning: ${error instanceof Error ? error.message : String(error)}`]),
+    ),
   );
-  yield* syncWithConsole(() => {
-    for (const message of indexRepairMessages) {
-      consoleOutput.log(message);
-    }
-  });
+  for (const message of indexRepairMessages) {
+    yield* Console.log(message);
+  }
   const dryRun = options.dryRun === true;
   const inferredUri =
-    options.uri ??
-    (options.inferScope === false ? undefined : yield* attempt(() => inferRecallUri(config, projectQuery)));
-  const project = yield* attempt(() => inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery));
-  const projectMemoryName = yield* attempt(() => recallProjectMemoryName(options.project, workspaceOptions));
+    options.uri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
+  const project = yield* inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
+  const projectMemoryName = yield* recallProjectMemoryName(options.project, workspaceOptions);
   const nodeLimit = options.nodeLimit
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
-  const explicitWorkset = options.workset
-    ? yield* attempt(() => requireWorkset(config.manifestPath, options.workset!))
-    : undefined;
+  const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset!) : undefined;
+  const recallThreshold = options.threshold ?? (yield* recallScoreThreshold());
   const searchArgs = (scopeUri: string | undefined): readonly string[] => [
     'search',
     query,
     '--threshold',
-    options.threshold ?? RECALL_SCORE_THRESHOLD,
+    recallThreshold,
     '--level',
     '2',
     ...(scopeUri ? ['--uri', scopeUri] : []),
@@ -980,31 +969,29 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   // repeated by the scoped passes (and multiple chunks of one document collapse
   // to a single entry).
   if (inferredUri) {
-    yield* syncWithConsole(() => consoleOutput.log(`Recall scope: ${inferredUri}`));
+    yield* Console.log(`Recall scope: ${inferredUri}`);
   }
   const includeArchived = options.includeArchived === true;
   const passes: Array<readonly RecallHit[]> = [
-    yield* attempt(() => recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun, includeArchived})),
+    yield* recallSearchHits(config, ov, searchArgs(inferredUri), {dryRun, includeArchived}),
   ];
   const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
   if (options.project && project) {
     const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
     if (!scopedRecallUris.has(projectMemoryUri)) {
       scopedRecallUris.add(projectMemoryUri);
-      passes.push(
-        yield* attempt(() => recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived})),
-      );
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(projectMemoryUri), {dryRun, includeArchived}));
     }
   }
   for (const scope of projectMemoryScopeUris(config, projectMemoryName, includeArchived)) {
     if (!scopedRecallUris.has(scope)) {
       scopedRecallUris.add(scope);
-      passes.push(yield* attempt(() => recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived})));
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
     }
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
   if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
-    passes.push(yield* attempt(() => recallSearchHits(config, ov, searchArgs(seededUri), {dryRun, includeArchived})));
+    passes.push(yield* recallSearchHits(config, ov, searchArgs(seededUri), {dryRun, includeArchived}));
   }
 
   // Workset expansion: a named set of manifest projects recalled as one working
@@ -1014,12 +1001,10 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     !options.uri && explicitWorkset
       ? explicitWorkset
       : !options.uri && options.inferScope !== false
-        ? yield* attempt(() => inferWorksetFromQuery(config.manifestPath, projectQuery))
+        ? yield* inferWorksetFromQuery(config.manifestPath, projectQuery)
         : undefined;
   if (workset && workset.projects.length > 0) {
-    yield* syncWithConsole(() =>
-      consoleOutput.log(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`),
-    );
+    yield* Console.log(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
     const alreadyScoped = new Set(
       [inferredUri, seededUri, ...scopedRecallUris].filter((uri): uri is string => uri !== undefined),
     );
@@ -1027,13 +1012,15 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       .filter(uri => !alreadyScoped.has(uri))
       .slice(0, MAX_WORKSET_PASSES);
     for (const scope of worksetScopes) {
-      passes.push(yield* attempt(() => recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived})));
+      passes.push(yield* recallSearchHits(config, ov, searchArgs(scope), {dryRun, includeArchived}));
     }
   }
 
-  const exactMatches = yield* attempt(() =>
-    collectExactMemoryMatches(config, ov, query, {dryRun, includeArchived, project}),
-  );
+  const exactMatches = yield* collectExactMemoryMatches(config, ov, query, {
+    dryRun,
+    includeArchived,
+    project,
+  });
   const {semanticSection, exactTail} = yield* prepareRecallSections(config, {
     allowExactRescue: options.threshold === undefined,
     allowedUriScopes: options.uri ? [options.uri] : undefined,
@@ -1041,24 +1028,24 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     feedbackQuery: options.query,
     includeInactive: includeArchived,
     limit: nodeLimit ?? 12,
-    minimumScore: Number(options.threshold ?? RECALL_SCORE_THRESHOLD),
+    minimumScore: Number(recallThreshold),
     passes,
     project: projectMemoryName ?? project?.name,
     query,
-    readRecords: uris => attempt(() => readMemoryRecordsByUri(config, uris)),
+    readRecords: uris => readMemoryRecordsByUri(config, uris),
     seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
   });
   if (semanticSection) {
-    yield* syncWithConsole(() => consoleOutput.log(`\n${semanticSection}`));
+    yield* Console.log(`\n${semanticSection}`);
   }
   if (exactTail) {
-    yield* syncWithConsole(() => consoleOutput.log(`\n${exactTail}`));
+    yield* Console.log(`\n${exactTail}`);
   }
-  const referencedSection = yield* attempt(() => referencedContextSection(config, semanticSection ?? ''));
+  const referencedSection = yield* referencedContextSection(config, semanticSection ?? '');
   if (referencedSection) {
-    yield* syncWithConsole(() => consoleOutput.log(`\n${referencedSection}`));
+    yield* Console.log(`\n${referencedSection}`);
   }
-  yield* attempt(() => printRecallHygieneNudges(config, semanticSection ?? ''));
+  yield* printRecallHygieneNudges(config, semanticSection ?? '');
 });
 
 const MAX_REFERENCED_CONTEXT = 5;
@@ -1070,18 +1057,21 @@ const REFERENCED_EXCERPT_LINES = 12;
  * store and appending a short excerpt. Bounded to one hop and a small cap;
  * missing references degrade to a labeled line and never fail recall.
  */
-async function referencedContextSection(config: RuntimeConfig, recallOutput: string): Promise<string | undefined> {
+const referencedContextSection = Effect.fn('memory.referencedContextSection')(function* (
+  config: RuntimeConfig,
+  recallOutput: string,
+) {
   const surfacedUris = activePersonalMemoryUrisFromText(recallOutput, config.user);
   if (surfacedUris.length === 0) {
     return undefined;
   }
-  const surfaced = await readMemoryRecordsByUri(config, surfacedUris);
+  const surfaced = yield* readMemoryRecordsByUri(config, surfacedUris);
   const referenced = referencedUrisFromRecords(surfaced, recallOutput);
   if (referenced.length === 0) {
     return undefined;
   }
   const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
-  const records = await readMemoryRecordsByUri(config, capped);
+  const records = yield* readMemoryRecordsByUri(config, capped);
   const byUri = new Map(records.map(record => [record.uri, record]));
   const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
   for (const uri of capped) {
@@ -1098,7 +1088,7 @@ async function referencedContextSection(config: RuntimeConfig, recallOutput: str
     );
   }
   return lines.join('\n');
-}
+});
 
 /**
  * Run one recall search pass with `--output json` and return parsed hits.
@@ -1107,31 +1097,31 @@ async function referencedContextSection(config: RuntimeConfig, recallOutput: str
  * dedupes hits across passes, so scoped passes only contribute what the base
  * pass missed.
  */
-async function recallSearchHits(
+const recallSearchHits = Effect.fn('memory.recallSearchHits')(function* (
   config: RuntimeConfig,
   ov: string,
   args: readonly string[],
   options: {readonly dryRun: boolean; readonly includeArchived: boolean},
-): Promise<readonly RecallHit[]> {
+) {
   const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
   if (options.dryRun) {
-    consoleOutput.log(`Would run: ${formatShellCommand(ov, jsonArgs)}`);
+    yield* Console.log(`Would run: ${formatShellCommand(ov, jsonArgs)}`);
     return [];
   }
-  let result = await runCommand(ov, jsonArgs, {allowFailure: true});
+  let result = yield* runCommand(ov, jsonArgs, {allowFailure: true});
   if (result.exitCode !== 0) {
-    result = await runCommand(ov, withIdentity(config, [...stripAdvancedSearchFlags(args), '--output', 'json']), {
+    result = yield* runCommand(ov, withIdentity(config, [...stripAdvancedSearchFlags(args), '--output', 'json']), {
       allowFailure: true,
     });
   }
   if (result.exitCode !== 0) {
-    consoleOutput.log(
+    yield* Console.log(
       `WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`,
     );
     return [];
   }
   return parseRecallHits(result.stdout, {includeArchived: options.includeArchived});
-}
+});
 
 export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
   const stripped: string[] = [];
@@ -1150,7 +1140,7 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
   }
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
   const result = yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
   if (
     result &&
@@ -1158,12 +1148,10 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
     (uri.endsWith('/.overview.md') || uri.endsWith('/.abstract.md'))
   ) {
     const parentUri = parentVikingUri(uri);
-    yield* syncWithConsole(() => {
-      consoleOutput.log(
-        '\nThis is a generated summary placeholder. To read the underlying content, inspect leaf nodes:',
-      );
-      consoleOutput.log(`  threadnote list ${parentUri} --all --recursive`);
-    });
+    yield* Console.log(
+      '\nThis is a generated summary placeholder. To read the underlying content, inspect leaf nodes:',
+    );
+    yield* Console.log(`  threadnote list ${parentUri} --all --recursive`);
   }
 });
 
@@ -1171,37 +1159,38 @@ const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function
   const syncResult = yield* syncSharedReposBeforeAgentRead(config).pipe(
     Effect.catch(error => {
       const message = error instanceof Error ? error.message : String(error);
-      return syncWithConsole(() => consoleOutput.error(`Auto-sync warning: ${message}`)).pipe(Effect.as(undefined));
+      return Console.error(`Auto-sync warning: ${message}`).pipe(Effect.as(undefined));
     }),
   );
   if (!syncResult) {
     return;
   }
-  yield* syncWithConsole(() => {
-    if (syncResult.syncedTeams.length > 0) {
-      consoleOutput.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
-    }
-    for (const warning of syncResult.warnings) {
-      consoleOutput.error(`Auto-sync warning: ${warning}`);
-    }
-  });
+  if (syncResult.syncedTeams.length > 0) {
+    yield* Console.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
+  }
+  for (const warning of syncResult.warnings) {
+    yield* Console.error(`Auto-sync warning: ${warning}`);
+  }
 });
 
-async function printRecallHygieneNudges(config: RuntimeConfig, recallOutput: string): Promise<void> {
+const printRecallHygieneNudges = Effect.fn('memory.printRecallHygieneNudges')(function* (
+  config: RuntimeConfig,
+  recallOutput: string,
+) {
   const uris = activePersonalMemoryUrisFromText(recallOutput, config.user);
   if (uris.length === 0) {
     return;
   }
-  const records = await readMemoryRecordsByUri(config, uris);
+  const records = yield* readMemoryRecordsByUri(config, uris);
   const nudges = recallHygieneNudges(recallOutput, {records, user: config.user});
   if (nudges.length === 0) {
     return;
   }
-  consoleOutput.log('\nMemory hygiene hints:');
+  yield* Console.log('\nMemory hygiene hints:');
   for (const nudge of nudges) {
-    consoleOutput.log(`- ${nudge}`);
+    yield* Console.log(`- ${nudge}`);
   }
-}
+});
 
 export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConfig, options: CompactOptions) {
   const project = yield* requireValue(
@@ -1212,12 +1201,10 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     yield* Effect.fail(new Error('Cannot combine --apply with --dry-run.'));
   }
   const apply = options.apply === true;
-  const records = yield* attempt(() =>
-    scopedCompactRecords(config, {
-      kind: options.kind,
-      project,
-    }),
-  );
+  const records = yield* scopedCompactRecords(config, {
+    kind: options.kind,
+    project,
+  });
   const plan = buildCompactPlan(records, {
     kind: options.kind,
     project,
@@ -1228,15 +1215,17 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     return;
   }
 
-  const ov = yield* attempt(() => openVikingCliForMode(false));
-  const updatePath = join(config.agentContextHome, 'compact-memory-update.txt');
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const ov = yield* openVikingCliForMode(false);
+  const updatePath = path.join(config.agentContextHome, 'compact-memory-update.txt');
   yield* Effect.gen(function* () {
     for (const action of plan.keepUpdates) {
-      yield* attempt(() => writeFile(updatePath, action.content, {encoding: 'utf8', mode: 0o600}));
-      yield* attempt(() => chmod(updatePath, 0o600));
-      yield* attempt(() => writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace'));
+      yield* fs.writeFileString(updatePath, action.content, {mode: 0o600});
+      yield* fs.chmod(updatePath, 0o600);
+      yield* writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace');
     }
-  }).pipe(Effect.ensuring(attempt(() => rm(updatePath, {force: true})).pipe(Effect.catch(() => Effect.void))));
+  }).pipe(Effect.ensuring(fs.remove(updatePath, {force: true}).pipe(Effect.ignore)));
 
   for (const action of plan.archives) {
     yield* runArchive(config, action.uri, {
@@ -1251,13 +1240,16 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
   }
 });
 
-export async function runCompactDiagnostics(config: RuntimeConfig, options: CompactOptions): Promise<void> {
+export const runCompactDiagnostics = Effect.fn('memory.runCompactDiagnostics')(function* (
+  config: RuntimeConfig,
+  options: CompactOptions,
+) {
   const project = normalizeOptionalMetadata(options.project);
   if (!project) {
-    throw new Error('Provide --project for scoped memory hygiene.');
+    return yield* Effect.fail(new Error('Provide --project for scoped memory hygiene.'));
   }
   const topic = normalizeOptionalMetadata(options.topic);
-  const records = await scopedCompactRecords(config, {
+  const records = yield* scopedCompactRecords(config, {
     kind: options.kind,
     project,
   });
@@ -1270,7 +1262,7 @@ export async function runCompactDiagnostics(config: RuntimeConfig, options: Comp
       counts.set(kind, (counts.get(kind) ?? 0) + 1);
     }
   }
-  consoleOutput.log(
+  yield* Console.log(
     [
       'Scope summary:',
       `- project: ${project}`,
@@ -1284,55 +1276,60 @@ export async function runCompactDiagnostics(config: RuntimeConfig, options: Comp
       '',
     ].join('\n'),
   );
-}
+});
 
-async function scopedCompactRecords(
+const scopedCompactRecords = Effect.fn('memory.scopedCompactRecords')(function* (
   config: RuntimeConfig,
   options: {readonly kind?: CompactableMemoryKind; readonly project: string},
-): Promise<readonly MemoryRecord[]> {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
   const records: MemoryRecord[] = [];
   for (const kind of kinds) {
-    const directory = localMemoryDirectoryForCompact(config, kind, options.project);
+    const directory = yield* localMemoryDirectoryForCompact(config, kind, options.project);
     const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
-    let entries;
-    try {
-      entries = await readdir(directory, {withFileTypes: true});
-    } catch (_err: unknown) {
+    const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+    if (entries._tag === 'None') {
       continue;
     }
-    for (const entry of entries) {
-      if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+    for (const entry of entries.value) {
+      if (entry.startsWith('.') || !entry.endsWith('.md')) {
         continue;
       }
-      const content = await readTextIfExists(join(directory, entry.name));
+      const entryPath = path.join(directory, entry);
+      const info = yield* fs.stat(entryPath).pipe(Effect.option);
+      if (info._tag === 'None' || info.value.type !== 'File') {
+        continue;
+      }
+      const content = yield* readTextIfExists(entryPath);
       if (!content) {
         continue;
       }
-      const record = parseMemoryDocument(`${uriDirectory}/${entry.name}`, content);
+      const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
       if (record) {
         records.push(record);
       }
     }
   }
   return records;
-}
+});
 
 function formatKindCounts(counts: ReadonlyMap<CompactableMemoryKind, number>): string {
   return (['handoff', 'durable', 'incident'] as const).map(kind => `${kind} ${counts.get(kind) ?? 0}`).join(', ');
 }
 
-async function readMemoryRecordsByUri(
+const readMemoryRecordsByUri = Effect.fn('memory.readMemoryRecordsByUri')(function* (
   config: RuntimeConfig,
   uris: readonly string[],
-): Promise<readonly MemoryRecord[]> {
+) {
   const records: MemoryRecord[] = [];
   for (const uri of uris) {
-    const localPath = localMemoryPathForUri(config, uri);
+    const localPath = yield* localMemoryPathForUri(config, uri);
     if (!localPath) {
       continue;
     }
-    const content = await readTextIfExists(localPath);
+    const content = yield* readTextIfExists(localPath);
     if (!content) {
       continue;
     }
@@ -1342,20 +1339,25 @@ async function readMemoryRecordsByUri(
     }
   }
   return records;
-}
+});
 
-function localMemoryDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
-  const root = localUserMemoriesRoot(config);
+const localMemoryDirectoryForCompact = Effect.fn('memory.localMemoryDirectoryForCompact')(function* (
+  config: RuntimeConfig,
+  kind: CompactableMemoryKind,
+  project: string,
+) {
+  const path = yield* Path.Path;
+  const root = yield* localUserMemoriesRoot(config);
   const projectSegment = uriSegment(project);
   switch (kind) {
     case 'durable':
-      return join(root, 'durable', 'projects', projectSegment);
+      return path.join(root, 'durable', 'projects', projectSegment);
     case 'handoff':
-      return join(root, 'handoffs', 'active', projectSegment);
+      return path.join(root, 'handoffs', 'active', projectSegment);
     case 'incident':
-      return join(root, 'incidents', 'active', projectSegment);
+      return path.join(root, 'incidents', 'active', projectSegment);
   }
-}
+});
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
   const base = `viking://user/${uriSegment(config.user)}/memories`;
@@ -1370,7 +1372,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
   }
 }
 
-function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | undefined {
+const localMemoryPathForUri = Effect.fn('memory.localMemoryPathForUri')(function* (config: RuntimeConfig, uri: string) {
   const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
   if (!uri.startsWith(prefix)) {
     return undefined;
@@ -1379,12 +1381,13 @@ function localMemoryPathForUri(config: RuntimeConfig, uri: string): string | und
   if (relative.includes('..') || relative.startsWith('/')) {
     return undefined;
   }
-  return join(localUserMemoriesRoot(config), ...relative.split('/'));
-}
+  const path = yield* Path.Path;
+  return path.join(yield* localUserMemoriesRoot(config), ...relative.split('/'));
+});
 
 export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, uri: string, options: ListOptions) {
   yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
   const args = ['ls', uri];
   if (options.all === true) {
     args.push('--all');
@@ -1403,7 +1406,7 @@ export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, ur
 });
 
 export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConfig, options: HandoffOptions) {
-  const {bodyText, metadata} = yield* attempt(() => buildHandoff(options));
+  const {bodyText, metadata} = yield* buildHandoff(options);
   yield* storeMemory(config, {
     bodyText,
     dryRun: options.dryRun === true,
@@ -1419,8 +1422,8 @@ export const runArchive = Effect.fn('runArchive')(function* (
   options: ArchiveOptions,
 ) {
   yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
-  const readResult = yield* attempt(() => maybeRun(options.dryRun === true, ov, withIdentity(config, ['read', uri])));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
+  const readResult = yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
   const original = readResult?.stdout.trim();
   if (options.dryRun === true) {
     const fallbackMetadata: MemoryMetadata = {
@@ -1442,10 +1445,8 @@ export const runArchive = Effect.fn('runArchive')(function* (
     return;
   }
   const originalMemory = yield* requireValue(original, `Could not read ${uri} before archiving.`);
-  const originalLocalPath = localMemoryPathForUri(config, uri);
-  const originalLocalContent = originalLocalPath
-    ? yield* attempt(() => readFileIfExists(originalLocalPath))
-    : undefined;
+  const originalLocalPath = yield* localMemoryPathForUri(config, uri);
+  const originalLocalContent = originalLocalPath ? yield* readFileIfExists(originalLocalPath) : undefined;
 
   const inferredMetadata = inferMemoryMetadata(originalMemory);
   const metadata: MemoryMetadata = {
@@ -1477,9 +1478,9 @@ export const runArchive = Effect.fn('runArchive')(function* (
 
 export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
   yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
   if (options.dryRun === true) {
-    yield* attempt(() => maybeRun(true, ov, withIdentity(config, ['rm', uri])));
+    yield* maybeRunEffect(true, ov, withIdentity(config, ['rm', uri]));
     return;
   }
   const removed = yield* removeVikingResourceWithRetry(ov, config, uri);
@@ -1489,9 +1490,10 @@ export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig
 });
 
 export const runExportPack = Effect.fn('runExportPack')(function* (config: RuntimeConfig, options: PackOptions) {
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
-  const defaultPath = join(config.agentContextHome, `threadnote-${safeTimestamp()}.ovpack`);
-  const outputPath = expandPath(options.path ?? defaultPath);
+  const path = yield* Path.Path;
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
+  const defaultPath = path.join(config.agentContextHome, `threadnote-${safeTimestamp()}.ovpack`);
+  const outputPath = yield* expandPath(options.path ?? defaultPath);
   const sourceUri = options.uri ?? `viking://user/${uriSegment(config.user)}/memories`;
   yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['export', sourceUri, outputPath]));
 });
@@ -1500,16 +1502,16 @@ export const runImportPack = Effect.fn('runImportPack')(function* (config: Runti
   if (!options.path) {
     yield* Effect.fail(new Error('Provide --path for import-pack.'));
   }
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun === true));
+  const ov = yield* openVikingCliForMode(options.dryRun === true);
   const targetUri = options.targetUri ?? `viking://user/${uriSegment(config.user)}`;
   yield* maybeRunEffect(
     options.dryRun === true,
     ov,
-    withIdentity(config, ['import', expandPath(options.path!), targetUri]),
+    withIdentity(config, ['import', yield* expandPath(options.path!), targetUri]),
   );
 });
 
-async function inferRecallUri(config: RuntimeConfig, query: string): Promise<string | undefined> {
+const inferRecallUri = Effect.fn('memory.inferRecallUri')(function* (config: RuntimeConfig, query: string) {
   // Only scope the base search when the query has an explicit "skills" intent —
   // that narrowing matches user expectation ("find me a skill for X"). For
   // general project-name matches we no longer scope the base search, because
@@ -1520,11 +1522,11 @@ async function inferRecallUri(config: RuntimeConfig, query: string): Promise<str
   if (!hasAgentSkillCatalogIntent(query)) {
     return undefined;
   }
-  const project = await inferProjectFromQuery(config.manifestPath, query);
+  const project = yield* inferProjectFromQuery(config.manifestPath, query);
   return project
     ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
     : 'viking://resources/agent-skills';
-}
+});
 
 export function hasAgentSkillCatalogIntent(query: string): boolean {
   const normalized = query.toLowerCase();
@@ -1543,12 +1545,12 @@ export function hasAgentSkillCatalogIntent(query: string): boolean {
   );
 }
 
-async function collectExactMemoryMatches(
+const collectExactMemoryMatches = Effect.fn('memory.collectExactMemoryMatches')(function* (
   config: RuntimeConfig,
   ov: string,
   query: string,
   options: {readonly dryRun: boolean; readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
-): Promise<readonly ExactMatch[]> {
+) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return [];
@@ -1558,24 +1560,26 @@ async function collectExactMemoryMatches(
     withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']);
   if (options.dryRun) {
     const planned = terms.flatMap(term => scopes.map(scope => formatShellCommand(ov, grepArgs(term, scope))));
-    consoleOutput.log('\nExact memory/resource matches:');
-    consoleOutput.log(planned.join('\n'));
+    yield* Console.log('\nExact memory/resource matches:');
+    yield* Console.log(planned.join('\n'));
     return [];
   }
-  return collectExactMatches(terms, scopes, async (term, scope) => {
-    const result = await runCommand(ov, grepArgs(term, scope), {allowFailure: true});
-    return result.exitCode === 0 ? result.stdout : undefined;
-  });
-}
+  return yield* collectExactMatches(terms, scopes, (term, scope) =>
+    runCommand(ov, grepArgs(term, scope), {allowFailure: true}).pipe(
+      Effect.map(result => (result.exitCode === 0 ? result.stdout : undefined)),
+    ),
+  );
+});
 
 const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
   if (options.replaceUri) {
     yield* attemptSync(() => assertVikingUri(options.replaceUri as string));
   }
-  const ov = yield* attempt(() => openVikingCliForMode(options.dryRun));
+  const path = yield* Path.Path;
+  const ov = yield* openVikingCliForMode(options.dryRun);
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
     if (options.dryRun) {
-      yield* attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string));
+      yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string);
       return;
     }
     const fs = yield* FileSystem.FileSystem;
@@ -1585,12 +1589,12 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
         fs,
         config.agentContextHome,
         [options.replaceUri],
-        attempt(() => storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+        storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string),
       ),
     );
     return;
   }
-  const memoryPath = join(config.agentContextHome, 'last-memory.txt');
+  const memoryPath = path.join(config.agentContextHome, 'last-memory.txt');
 
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
   // compute the destination URI, then drop the supersedes line if it points
@@ -1599,7 +1603,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   // also leaks to teammates when the memory is later published.
   const candidateMetadata: MemoryMetadata = {...options.metadata, supersedes: options.replaceUri};
   const candidateMemory = formatMemoryDocument(options.title, candidateMetadata, options.bodyText);
-  const memoryUri = memoryUriFor(config, candidateMemory, candidateMetadata);
+  const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = options.replaceUri !== undefined && options.replaceUri === memoryUri;
   const finalMetadata: MemoryMetadata = isInPlaceUpdate
     ? {...options.metadata, supersedes: undefined}
@@ -1608,7 +1612,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
     ? formatMemoryDocument(options.title, finalMetadata, options.bodyText)
     : candidateMemory;
   if (options.dryRun) {
-    const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
+    const writeMode = yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
     yield* Console.log(memory);
     yield* Console.log('\nWould run:');
     yield* Console.log(
@@ -1638,11 +1642,11 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
     config.agentContextHome,
     [LAST_MEMORY_STAGING_LOCK_URI, options.replaceUri, memoryUri],
     Effect.gen(function* () {
-      const writeMode = yield* attempt(() => memoryWriteMode(ov, config, memoryUri, finalMetadata));
-      yield* attempt(() => writeFile(memoryPath, memory, {encoding: 'utf8', mode: 0o600}));
-      yield* attempt(() => chmod(memoryPath, 0o600));
-      yield* attempt(() => ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata)));
-      yield* attempt(() => writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode));
+      const writeMode = yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
+      yield* fs.writeFileString(memoryPath, memory, {mode: 0o600});
+      yield* fs.chmod(memoryPath, 0o600);
+      yield* ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata));
+      yield* writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode);
       yield* Console.log(`Stored memory: ${memoryUri}`);
       if (options.replaceUri && !isInPlaceUpdate) {
         const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri, {
@@ -1671,29 +1675,32 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
  * consistency-checked field and the path-derived topic can be a raw multi-segment
  * value (`a/b`) that must not be slugged into or persisted from here.
  */
-function warnOnSharedProjectDrift(metadata: MemoryMetadata, inferred: {readonly project?: string} | undefined): void {
+const warnOnSharedProjectDrift = Effect.fn('memory.warnOnSharedProjectDrift')(function* (
+  metadata: MemoryMetadata,
+  inferred: {readonly project?: string} | undefined,
+) {
   if (inferred?.project && metadata.project && uriSegment(metadata.project) !== inferred.project) {
-    consoleOutput.log(
+    yield* Console.log(
       `WARN keeping shared memory project "${inferred.project}" from its storage path; ignoring requested "${metadata.project}". ` +
         `To change a shared memory's project, forget it and store a new one under the new project.`,
     );
   }
-}
+});
 
-async function storeSharedMemoryReplacement(
+const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacement')(function* (
   config: RuntimeConfig,
   ov: string,
   options: StoreMemoryOptions,
   targetUri: string,
-): Promise<void> {
+) {
   if (options.metadata.kind !== 'durable') {
-    throw new Error('Shared memory replacement only supports durable memories.');
+    return yield* Effect.fail(new Error('Shared memory replacement only supports durable memories.'));
   }
   const teamName = sharedTeamNameForUri(config, targetUri);
   if (!teamName) {
-    throw new Error(`Memory ${targetUri} is not in the shared namespace.`);
+    return yield* Effect.fail(new Error(`Memory ${targetUri} is not in the shared namespace.`));
   }
-  const team = await resolveTeam(config, teamName);
+  const team = yield* resolveTeam(config, teamName);
   const inferred = sharedMemoryUriParts(config, targetUri);
   // The file is updated in place at targetUri, so its frontmatter project must
   // match the path it lives under; otherwise recall's project scoping and the
@@ -1701,7 +1708,7 @@ async function storeSharedMemoryReplacement(
   // path's project over a differing caller value and warn — changing a shared
   // memory's project means relocating it (forget + store anew), not editing the
   // frontmatter of the file at the old path. Topic keeps caller-wins semantics.
-  warnOnSharedProjectDrift(options.metadata, inferred);
+  yield* warnOnSharedProjectDrift(options.metadata, inferred);
   const metadata: MemoryMetadata = {
     ...options.metadata,
     project: inferred?.project ?? options.metadata.project,
@@ -1710,43 +1717,51 @@ async function storeSharedMemoryReplacement(
   const rawMemory = formatMemoryDocument(options.title, metadata, options.bodyText);
   const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
   if (scrub.blocker) {
-    throw new Error(
-      `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+    return yield* Effect.fail(
+      new Error(
+        `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+      ),
     );
   }
   const memory = scrub.cleaned;
   const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
 
   if (options.dryRun) {
-    consoleOutput.log(memory);
-    consoleOutput.log('\nWould run:');
+    yield* Console.log(memory);
+    yield* Console.log('\nWould run:');
   }
-  await ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
-  await writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
+  yield* ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
+  yield* writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
 
-  const gitMessages = await publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`, {
-    dryRun: options.dryRun,
-  });
+  const gitMessages = yield* publishShareGitChange(
+    team.config.worktree,
+    relativePath,
+    `share: update ${relativePath}`,
+    {
+      dryRun: options.dryRun,
+    },
+  );
   for (const message of gitMessages) {
-    consoleOutput.log(message);
+    yield* Console.log(message);
   }
 
   for (const redaction of scrub.redactions) {
-    consoleOutput.log(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
+    yield* Console.log(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
   }
-  consoleOutput.log(`Updated shared memory: ${targetUri}`);
-}
+  yield* Console.log(`Updated shared memory: ${targetUri}`);
+});
 
-async function writeDurableMemoryFile(
+const writeDurableMemoryFile = Effect.fn('memory.writeDurableMemoryFile')(function* (
   ov: string,
   config: RuntimeConfig,
   memoryUri: string,
   memoryPath: string,
   writeMode: 'create' | 'replace',
-): Promise<void> {
-  const content = await readFile(memoryPath, 'utf8');
-  await writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
-}
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const content = yield* fs.readFileString(memoryPath);
+  yield* writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
+});
 
 function removeVikingResourceWithRetry(
   ov: string,
@@ -1780,8 +1795,8 @@ function removeVikingResourceWithRetry(
       [uri],
       Effect.gen(function* () {
         if (options.expectedContent !== undefined) {
-          const localPath = localMemoryPathForUri(config, uri);
-          const currentContent = localPath ? yield* attempt(() => readFileIfExists(localPath)) : undefined;
+          const localPath = yield* localMemoryPathForUri(config, uri);
+          const currentContent = localPath ? yield* readFileIfExists(localPath) : undefined;
           if (currentContent === undefined || currentContent.trim() !== options.expectedContent.trim()) {
             return yield* Effect.fail(
               new Error(`Memory changed before removal; review the current content and retry: ${uri}`),
@@ -1794,28 +1809,36 @@ function removeVikingResourceWithRetry(
   });
 }
 
-async function vikingResourceExists(ov: string, config: RuntimeConfig, uri: string): Promise<boolean> {
-  const stat = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+const vikingResourceExists = Effect.fn('memory.vikingResourceExists')(function* (
+  ov: string,
+  config: RuntimeConfig,
+  uri: string,
+) {
+  const stat = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
   return stat.exitCode === 0;
-}
+});
 
-async function ensureDurableMemoryDirectory(ov: string, config: RuntimeConfig): Promise<void> {
-  await ensureMemoryDirectory(ov, config, durableMemoryDirectoryUri(config));
-}
+const ensureDurableMemoryDirectory = Effect.fn('memory.ensureDurableMemoryDirectory')(
+  (ov: string, config: RuntimeConfig) => ensureMemoryDirectory(ov, config, durableMemoryDirectoryUri(config)),
+);
 
-async function ensureMemoryDirectory(ov: string, config: RuntimeConfig, directoryUri: string): Promise<void> {
+const ensureMemoryDirectory = Effect.fn('memory.ensureMemoryDirectory')(function* (
+  ov: string,
+  config: RuntimeConfig,
+  directoryUri: string,
+) {
   for (const uri of vikingDirectoryChain(directoryUri)) {
-    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
     if (statResult.exitCode === 0) {
       continue;
     }
-    await maybeRun(
+    yield* maybeRunEffect(
       false,
       ov,
       withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
     );
   }
-}
+});
 
 function durableMemoryDirectoryUri(config: RuntimeConfig): string {
   return `viking://user/${uriSegment(config.user)}/memories/events`;
@@ -1825,33 +1848,39 @@ function migratedDurableMemoryUri(config: RuntimeConfig, hash: string): string {
   return `${durableMemoryDirectoryUri(config)}/threadnote-migrated-${hash.slice(0, 16)}.md`;
 }
 
-export async function hasLegacyLifecycleHandoffCandidates(config: RuntimeConfig): Promise<boolean> {
-  return (await legacyLifecycleHandoffCandidates(config, 1)).length > 0;
-}
+export const hasLegacyLifecycleHandoffCandidates = Effect.fn('memory.hasLegacyLifecycleHandoffCandidates')(function* (
+  config: RuntimeConfig,
+) {
+  return (yield* legacyLifecycleHandoffCandidates(config, 1)).length > 0;
+});
 
-async function legacyLifecycleHandoffCandidates(
+const legacyLifecycleHandoffCandidates = Effect.fn('memory.legacyLifecycleHandoffCandidates')(function* (
   config: RuntimeConfig,
   limit?: number,
-): Promise<readonly LifecycleHandoffCandidate[]> {
-  const eventsRoot = join(localUserMemoriesRoot(config), 'events');
-  let entries;
-  try {
-    entries = await readdir(eventsRoot, {withFileTypes: true});
-  } catch (_err: unknown) {
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const eventsRoot = path.join(yield* localUserMemoriesRoot(config), 'events');
+  const entries = yield* fs.readDirectory(eventsRoot).pipe(Effect.option);
+  if (entries._tag === 'None') {
     return [];
   }
 
   const candidates: LifecycleHandoffCandidate[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md')) {
+  for (const entry of entries.value) {
+    if (entry.startsWith('.') || !entry.endsWith('.md')) {
       continue;
     }
-    const sourcePath = join(eventsRoot, entry.name);
-    const original = await readTextIfExists(sourcePath);
+    const sourcePath = path.join(eventsRoot, entry);
+    const info = yield* fs.stat(sourcePath).pipe(Effect.option);
+    if (info._tag === 'None' || info.value.type !== 'File') {
+      continue;
+    }
+    const original = yield* readTextIfExists(sourcePath);
     if (!original || !isClearLegacyHandoffMemory(original) || sensitiveMemoryReason(original)) {
       continue;
     }
-    const sourceUri = `${durableMemoryDirectoryUri(config)}/${entry.name}`;
+    const sourceUri = `${durableMemoryDirectoryUri(config)}/${entry}`;
     candidates.push({
       metadata: {
         archivedFrom: sourceUri,
@@ -1869,7 +1898,7 @@ async function legacyLifecycleHandoffCandidates(
     }
   }
   return candidates;
-}
+});
 
 function lifecycleMigrationUri(config: RuntimeConfig, metadata: MemoryMetadata, hash: string): string {
   return `${memoryDirectoryUri(config, metadata)}/legacy-${hash.slice(0, 16)}.md`;
@@ -1894,12 +1923,12 @@ function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): read
   return [...new Set(scopes)];
 }
 
-async function recallProjectMemoryName(
+const recallProjectMemoryName = Effect.fn('memory.recallProjectMemoryName')(function* (
   explicitProject: string | undefined,
   options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
-): Promise<string | undefined> {
-  return normalizeOptionalMetadata(explicitProject) ?? (await resolveWorkspaceRepoName(options));
-}
+) {
+  return normalizeOptionalMetadata(explicitProject) ?? (yield* resolveWorkspaceRepoName(options));
+});
 
 function projectMemoryScopeUris(
   config: RuntimeConfig,
@@ -1942,12 +1971,16 @@ function exactMemoryScopes(
   });
 }
 
-function memoryUriFor(config: RuntimeConfig, memory: string, metadata: MemoryMetadata): string {
+const memoryUriFor = Effect.fn('memory.memoryUriFor')(function* (
+  config: RuntimeConfig,
+  memory: string,
+  metadata: MemoryMetadata,
+) {
   const filename = shouldUseStableMemoryUri(metadata)
     ? `${uriSegment(metadata.topic ?? 'current')}.md`
-    : `threadnote-${safeTimestamp()}-${sha256(memory).slice(0, 12)}.md`;
+    : `threadnote-${safeTimestamp()}-${(yield* sha256(memory)).slice(0, 12)}.md`;
   return `${memoryDirectoryUri(config, metadata)}/${filename}`;
-}
+});
 
 function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
   const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
@@ -1974,17 +2007,17 @@ function shouldUseStableMemoryUri(metadata: MemoryMetadata): boolean {
   return metadata.status === 'active' && metadata.topic !== undefined && metadata.kind !== 'smoke';
 }
 
-async function memoryWriteMode(
+const memoryWriteMode = Effect.fn('memory.memoryWriteMode')(function* (
   ov: string,
   config: RuntimeConfig,
   memoryUri: string,
   metadata: MemoryMetadata,
-): Promise<'create' | 'replace'> {
+) {
   if (!shouldUseStableMemoryUri(metadata)) {
     return 'create';
   }
-  return (await vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
-}
+  return (yield* vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+});
 
 function vikingDirectoryChain(directoryUri: string): readonly string[] {
   const prefix = 'viking://';
@@ -2029,7 +2062,7 @@ function inferLegacyProject(memory: string): string {
     return 'general';
   }
   const trimmed = explicit.trim().replace(/[`.,;]+$/g, '');
-  return trimmed.includes('/') ? basename(trimmed) : trimmed;
+  return trimmed.includes('/') ? (trimmed.split('/').at(-1) ?? trimmed) : trimmed;
 }
 
 function normalizeOptionalMetadata(value: string | undefined): string | undefined {
@@ -2037,39 +2070,41 @@ function normalizeOptionalMetadata(value: string | undefined): string | undefine
   return trimmed ? trimmed : undefined;
 }
 
-async function legacySourceAccounts(
+const legacySourceAccounts = Effect.fn('memory.legacySourceAccounts')(function* (
   config: RuntimeConfig,
   options: MigrateMemoriesOptions,
-): Promise<readonly string[]> {
+) {
   const explicitAccounts = options.sourceAccount?.filter(account => account.trim().length > 0) ?? [];
   if (explicitAccounts.length > 0) {
     return uniqueStrings(explicitAccounts);
   }
   if (options.allAccounts === true) {
-    const accounts = await childDirectoryNames(localVikingDataRoot(config));
+    const accounts = yield* childDirectoryNames(yield* localVikingDataRoot(config));
     return accounts.filter(account => !account.startsWith('_'));
   }
   return [config.account];
-}
+});
 
-async function legacyMemoryCandidates(
+const legacyMemoryCandidates = Effect.fn('memory.legacyMemoryCandidates')(function* (
   config: RuntimeConfig,
   sourceAccounts: readonly string[],
-): Promise<readonly LegacyMemoryCandidate[]> {
+) {
+  const path = yield* Path.Path;
+  const dataRoot = yield* localVikingDataRoot(config);
   const candidates: LegacyMemoryCandidate[] = [];
   for (const sourceAccount of sourceAccounts) {
-    const sessionRoot = join(localVikingDataRoot(config), sourceAccount, 'session');
-    for (const sourceSession of await childDirectoryNames(sessionRoot)) {
-      const historyRoot = join(sessionRoot, sourceSession, 'history');
-      for (const sourceArchive of await childDirectoryNames(historyRoot)) {
+    const sessionRoot = path.join(dataRoot, sourceAccount, 'session');
+    for (const sourceSession of yield* childDirectoryNames(sessionRoot)) {
+      const historyRoot = path.join(sessionRoot, sourceSession, 'history');
+      for (const sourceArchive of yield* childDirectoryNames(historyRoot)) {
         if (!sourceArchive.startsWith('archive_')) {
           continue;
         }
-        const sourcePath = join(historyRoot, sourceArchive, 'messages.jsonl');
-        for (const text of await legacyMemoryTexts(sourcePath)) {
+        const sourcePath = path.join(historyRoot, sourceArchive, 'messages.jsonl');
+        for (const text of yield* legacyMemoryTexts(sourcePath)) {
           candidates.push({
-            comparableHash: sha256(comparableMemoryText(text)),
-            hash: sha256(text),
+            comparableHash: yield* sha256(comparableMemoryText(text)),
+            hash: yield* sha256(text),
             sourceAccount,
             sourceArchive,
             sourceSession,
@@ -2080,10 +2115,10 @@ async function legacyMemoryCandidates(
     }
   }
   return candidates.sort((left, right) => legacySourceLabel(left).localeCompare(legacySourceLabel(right)));
-}
+});
 
-async function legacyMemoryTexts(sourcePath: string): Promise<readonly string[]> {
-  const raw = await readTextIfExists(sourcePath);
+const legacyMemoryTexts = Effect.fn('memory.legacyMemoryTexts')(function* (sourcePath: string) {
+  const raw = yield* readTextIfExists(sourcePath);
   if (!raw) {
     return [];
   }
@@ -2093,18 +2128,17 @@ async function legacyMemoryTexts(sourcePath: string): Promise<readonly string[]>
     if (!trimmedLine) {
       continue;
     }
-    try {
-      const parsed: unknown = JSON.parse(trimmedLine);
-      const text = legacyMessageText(parsed)?.trim();
-      if (text && isLegacyThreadnoteMemory(text)) {
-        memories.push(text);
-      }
-    } catch (_err: unknown) {
+    const parsed = Result.try((): unknown => JSON.parse(trimmedLine));
+    if (Result.isFailure(parsed)) {
       continue;
+    }
+    const text = legacyMessageText(parsed.success)?.trim();
+    if (text && isLegacyThreadnoteMemory(text)) {
+      memories.push(text);
     }
   }
   return memories;
-}
+});
 
 function legacyMessageText(value: unknown): string | undefined {
   if (!isJsonObject(value)) {
@@ -2126,65 +2160,80 @@ function isLegacyThreadnoteMemory(text: string): boolean {
   return text.startsWith('MEMORY\n') || text.startsWith('HANDOFF\n');
 }
 
-async function existingDurableMemoryHashes(config: RuntimeConfig): Promise<Set<string>> {
+const existingDurableMemoryHashes = Effect.fn('memory.existingDurableMemoryHashes')(function* (config: RuntimeConfig) {
   const hashes = new Set<string>();
-  await collectDurableMemoryHashes(localVikingDataRoot(config), hashes);
+  yield* collectDurableMemoryHashes(yield* localVikingDataRoot(config), hashes);
   return hashes;
-}
+});
 
-async function collectDurableMemoryHashes(root: string, hashes: Set<string>): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(root, {withFileTypes: true});
-  } catch (_err: unknown) {
+const collectDurableMemoryHashes: (
+  root: string,
+  hashes: Set<string>,
+) => Effect.Effect<void, unknown, Crypto.Crypto | FileSystem.FileSystem | Path.Path> = Effect.fn(
+  'memory.collectDurableMemoryHashes',
+)(function* (root: string, hashes: Set<string>) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entries = yield* fs.readDirectory(root).pipe(Effect.option);
+  if (entries._tag === 'None') {
     return;
   }
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      await collectDurableMemoryHashes(path, hashes);
+  for (const entry of entries.value) {
+    const entryPath = path.join(root, entry);
+    const info = yield* fs.stat(entryPath).pipe(Effect.option);
+    if (info._tag === 'None') {
       continue;
     }
-    if (!entry.isFile() || entry.name.startsWith('.') || !entry.name.endsWith('.md') || !isDurableMemoryPath(path)) {
+    if (info.value.type === 'Directory') {
+      yield* collectDurableMemoryHashes(entryPath, hashes);
       continue;
     }
-    const content = await readTextIfExists(path);
+    if (
+      info.value.type !== 'File' ||
+      entry.startsWith('.') ||
+      !entry.endsWith('.md') ||
+      !isDurableMemoryPath(entryPath)
+    ) {
+      continue;
+    }
+    const content = yield* readTextIfExists(entryPath);
     if (content) {
       const trimmedContent = content.trim();
-      hashes.add(sha256(trimmedContent));
-      hashes.add(sha256(comparableMemoryText(trimmedContent)));
+      hashes.add(yield* sha256(trimmedContent));
+      hashes.add(yield* sha256(comparableMemoryText(trimmedContent)));
     }
   }
-}
+});
 
 function isDurableMemoryPath(path: string): boolean {
-  return path.split(sep).includes('memories');
+  return path.replaceAll('\\', '/').split('/').includes('memories');
 }
 
-async function childDirectoryNames(path: string): Promise<readonly string[]> {
-  let entries;
-  try {
-    entries = await readdir(path, {withFileTypes: true});
-  } catch (_err: unknown) {
+const childDirectoryNames = Effect.fn('memory.childDirectoryNames')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const entries = yield* fs.readDirectory(path).pipe(Effect.option);
+  if (entries._tag === 'None') {
     return [];
   }
-  return entries
-    .filter(entry => entry.isDirectory())
-    .map(entry => entry.name)
-    .sort();
-}
-
-async function readTextIfExists(path: string): Promise<string | undefined> {
-  try {
-    const pathStat = await stat(path);
-    if (!pathStat.isFile()) {
-      return undefined;
+  const directories: string[] = [];
+  for (const entry of entries.value) {
+    const info = yield* fs.stat(pathService.join(path, entry)).pipe(Effect.option);
+    if (info._tag === 'Some' && info.value.type === 'Directory') {
+      directories.push(entry);
     }
-    return await readFile(path, 'utf8');
-  } catch (_err: unknown) {
+  }
+  return directories.sort();
+});
+
+const readTextIfExists = Effect.fn('memory.readTextIfExists')(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(path).pipe(Effect.option);
+  if (info._tag === 'None' || info.value.type !== 'File') {
     return undefined;
   }
-}
+  return yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+});
 
 function sensitiveMemoryReason(text: string): string | undefined {
   const patterns: readonly {readonly name: string; readonly regex: RegExp}[] = [
@@ -2210,13 +2259,15 @@ function legacySourceLabel(candidate: LegacyMemoryCandidate): string {
   return `${candidate.sourceAccount}/${candidate.sourceSession}/${candidate.sourceArchive}`;
 }
 
-function localVikingDataRoot(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking');
-}
+const localVikingDataRoot = Effect.fn('memory.localVikingDataRoot')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  return path.join(config.agentContextHome, 'data', 'viking');
+});
 
-function localUserMemoriesRoot(config: RuntimeConfig): string {
-  return join(localVikingDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
-}
+const localUserMemoriesRoot = Effect.fn('memory.localUserMemoriesRoot')(function* (config: RuntimeConfig) {
+  const path = yield* Path.Path;
+  return path.join(yield* localVikingDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
+});
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort();
@@ -2249,16 +2300,15 @@ function normalizeReferenceUris(references: readonly string[] | undefined): read
   return seen.size > 0 ? [...seen] : undefined;
 }
 
-async function buildHandoff(
-  options: HandoffOptions,
-): Promise<{readonly bodyText: string; readonly metadata: MemoryMetadata}> {
-  const repoRoot = (await gitValue(['rev-parse', '--show-toplevel'])) ?? getInvocationCwd();
-  const branch = (await gitValue(['branch', '--show-current'], repoRoot)) ?? 'unknown';
-  const commit = (await gitValue(['rev-parse', 'HEAD'], repoRoot)) ?? 'unknown';
-  const status = (await gitValue(['status', '--short'], repoRoot)) ?? '';
-  const diffStat = (await gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
-  const touchedFiles = await gitTouchedFiles(repoRoot);
-  const repoName = (await resolveRepoName(repoRoot)) ?? basename(repoRoot);
+const buildHandoff = Effect.fn('memory.buildHandoff')(function* (options: HandoffOptions) {
+  const path = yield* Path.Path;
+  const repoRoot = (yield* gitValue(['rev-parse', '--show-toplevel'])) ?? (yield* getInvocationCwd());
+  const branch = (yield* gitValue(['branch', '--show-current'], repoRoot)) ?? 'unknown';
+  const commit = (yield* gitValue(['rev-parse', 'HEAD'], repoRoot)) ?? 'unknown';
+  const status = (yield* gitValue(['status', '--short'], repoRoot)) ?? '';
+  const diffStat = (yield* gitValue(['diff', '--stat', 'HEAD'], repoRoot)) ?? '';
+  const touchedFiles = yield* gitTouchedFiles(repoRoot);
+  const repoName = (yield* resolveRepoName(repoRoot)) ?? path.basename(repoRoot);
   const topicBranch = branch && branch !== 'unknown' ? branch : 'current';
   const metadata: MemoryMetadata = {
     kind: 'handoff',
@@ -2306,11 +2356,11 @@ async function buildHandoff(
     ...(options.trace ? ['', 'trace (auto-captured, heuristic):', options.trace] : []),
   ].join('\n');
   return {bodyText, metadata};
-}
+});
 
-async function gitTouchedFiles(cwd: string): Promise<string> {
-  const changedFiles = await gitValue(['diff', '--name-only', 'HEAD'], cwd);
-  const untrackedFiles = await gitValue(['ls-files', '--others', '--exclude-standard'], cwd);
+const gitTouchedFiles = Effect.fn('memory.gitTouchedFiles')(function* (cwd: string) {
+  const changedFiles = yield* gitValue(['diff', '--name-only', 'HEAD'], cwd);
+  const untrackedFiles = yield* gitValue(['ls-files', '--others', '--exclude-standard'], cwd);
   const files = new Set<string>();
   for (const value of [changedFiles, untrackedFiles]) {
     for (const line of (value ?? '').split('\n')) {
@@ -2321,7 +2371,7 @@ async function gitTouchedFiles(cwd: string): Promise<string> {
     }
   }
   return [...files].sort().join('\n');
-}
+});
 
 function formatBlock(value: string, emptyValue: string): string {
   const trimmed = value.trim();

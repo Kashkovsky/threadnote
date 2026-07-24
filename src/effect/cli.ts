@@ -42,7 +42,7 @@ import type {RuntimeConfig} from '../types.js';
 import {maybeNotifyUpdate, runPostUpdate, runUpdate} from '../update.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
-import {ApplicationError, applicationError} from './errors.js';
+import {applicationError} from './errors.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -112,11 +112,12 @@ const optionalArgument = (name: string, description: string, fallback: string): 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
     home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
-    host: defaultString('host', 'OpenViking host', '127.0.0.1'),
+    host: optionalString('host', 'Override THREADNOTE_HOST for this invocation'),
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
-    port: describeFlag(integerFlag('port'), 'OpenViking port').pipe(
-      Flag.withSchema(Config.Port),
-      Flag.withDefault(1933),
+    port: optional(
+      describeFlag(integerFlag('port'), 'Override THREADNOTE_PORT for this invocation').pipe(
+        Flag.withSchema(Config.Port),
+      ),
     ),
   }),
 );
@@ -124,12 +125,12 @@ const root = Command.make('threadnote').pipe(
 const withRuntimeEffect = <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
   manifestOverride?: string,
-): Effect.Effect<void, E | ApplicationError, R | Command.CommandContext<'threadnote'>> =>
+) =>
   Effect.flatMap(root, options =>
-    Effect.try({
-      try: () => getRuntimeConfig(options, manifestOverride),
-      catch: cause => applicationError('load runtime configuration', cause),
-    }).pipe(Effect.flatMap(effect)),
+    getRuntimeConfig(options, manifestOverride).pipe(
+      Effect.mapError(cause => applicationError('load runtime configuration', cause)),
+      Effect.flatMap(effect),
+    ),
   );
 
 const manage = Command.make(

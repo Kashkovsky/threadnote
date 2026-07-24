@@ -1,3 +1,4 @@
+import {Effect} from 'effect';
 import {readSeedManifest} from './manifest.js';
 import type {McpToolset} from './mcp_toolset.js';
 import {readTeamsFile} from './share.js';
@@ -26,27 +27,24 @@ export interface OnboardingState {
 // Reads the local, cheap pieces of onboarding state (configured share teams and
 // seeded projects). Server health is probed separately by the caller, since that
 // requires the OpenViking adapter the MCP server owns.
-export async function gatherOnboardingContext(
-  config: OnboardingConfig,
-): Promise<Pick<OnboardingState, 'seededProjects' | 'teams'>> {
-  return {seededProjects: await safeSeededProjects(config), teams: await safeTeams(config)};
-}
+export const gatherOnboardingContext = Effect.fn('onboarding.gatherContext')(function* (config: OnboardingConfig) {
+  const [seededProjects, teams] = yield* Effect.all([safeSeededProjects(config), safeTeams(config)]);
+  return {seededProjects, teams};
+});
 
-async function safeTeams(config: OnboardingConfig): Promise<readonly string[]> {
-  try {
-    return Object.keys((await readTeamsFile(config)).teams ?? {}).sort();
-  } catch (_err: unknown) {
-    return [];
-  }
-}
+const safeTeams = Effect.fn('onboarding.safeTeams')((config: OnboardingConfig) =>
+  readTeamsFile(config).pipe(
+    Effect.map(file => Object.keys(file.teams ?? {}).sort()),
+    Effect.catch(() => Effect.succeed([])),
+  ),
+);
 
-async function safeSeededProjects(config: OnboardingConfig): Promise<readonly string[]> {
-  try {
-    return (await readSeedManifest(config.manifestPath)).projects.map(project => project.name);
-  } catch (_err: unknown) {
-    return [];
-  }
-}
+const safeSeededProjects = Effect.fn('onboarding.safeSeededProjects')((config: OnboardingConfig) =>
+  readSeedManifest(config.manifestPath).pipe(
+    Effect.map(manifest => manifest.projects.map(project => project.name)),
+    Effect.catch(() => Effect.succeed([])),
+  ),
+);
 
 // Builds the agent-facing onboarding walkthrough. Pure and deterministic so it is
 // unit-testable without the MCP/OpenViking plumbing. The text is instructions FOR

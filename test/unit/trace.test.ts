@@ -3,6 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {distillTrace} from '../../src/trace.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('distillTrace', () => {
   let dir: string;
@@ -34,7 +35,7 @@ describe('distillTrace', () => {
       JSON.stringify({type: 'user', message: {role: 'user', content: [{type: 'text', text: 'now run the tests'}]}}),
     ].join('\n');
     await writeFile(path, lines, 'utf8');
-    const summary = await distillTrace(path);
+    const summary = await runEffect(distillTrace(path));
     expect(summary).toContain('4 transcript events');
     expect(summary).toContain('tools used: Edit, Bash');
     expect(summary).toContain('recent intents:');
@@ -43,13 +44,13 @@ describe('distillTrace', () => {
   });
 
   it('returns undefined for a missing transcript', async () => {
-    expect(await distillTrace(join(dir, 'missing.jsonl'))).toBeUndefined();
+    expect(await runEffect(distillTrace(join(dir, 'missing.jsonl')))).toBeUndefined();
   });
 
   it('returns undefined when no line parses as an event', async () => {
     const path = join(dir, 'garbage.jsonl');
     await writeFile(path, 'garbage\nmore garbage\n', 'utf8');
-    expect(await distillTrace(path)).toBeUndefined();
+    expect(await runEffect(distillTrace(path))).toBeUndefined();
   });
 
   it('summarizes large transcripts from the capped tail', async () => {
@@ -63,7 +64,7 @@ describe('distillTrace', () => {
       'utf8',
     );
 
-    const summary = await distillTrace(path);
+    const summary = await runEffect(distillTrace(path));
     expect(summary).toContain('tail intent');
     expect(summary).not.toContain('old intent');
   });
@@ -79,6 +80,6 @@ describe('distillTrace', () => {
       'utf8',
     );
 
-    expect(await distillTrace(path)).toBeUndefined();
+    expect(await runEffect(distillTrace(path))).toBeUndefined();
   });
 });

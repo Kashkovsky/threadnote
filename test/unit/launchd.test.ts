@@ -14,6 +14,8 @@ import {
   parseLaunchAgentStatus,
 } from '../../src/launchd.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 const originalPath = process.env.PATH;
 const temporaryDirectories: string[] = [];
@@ -66,8 +68,8 @@ describe('macOS LaunchAgent lifecycle', () => {
     const {logPath} = await fakeLaunchctl();
     const plistPath = '/Users/test/Library/LaunchAgents/io.threadnote.openviking.plist';
 
-    await Effect.runPromise(bootoutLaunchAgent(false, 502).pipe(Effect.provide(CommandExecutor.layer)));
-    await Effect.runPromise(bootstrapLaunchAgent(plistPath, false, 502).pipe(Effect.provide(CommandExecutor.layer)));
+    await runEffect(bootoutLaunchAgent(false, 502));
+    await runEffect(bootstrapLaunchAgent(plistPath, false, 502));
 
     expect((await readFile(logPath, 'utf8')).trim().split('\n')).toEqual([
       'print gui/502/io.threadnote.openviking',
@@ -81,7 +83,7 @@ describe('macOS LaunchAgent lifecycle', () => {
   it('requires launchctl to report a running process', async () => {
     await fakeLaunchctl();
 
-    expect(await Effect.runPromise(isLaunchAgentRunning(502).pipe(Effect.provide(CommandExecutor.layer)))).toBe(true);
+    expect(await runEffect(isLaunchAgentRunning(502))).toBe(true);
   });
 
   it('does not treat a loaded job without a running pid as ready', () => {
@@ -117,10 +119,11 @@ describe('macOS LaunchAgent lifecycle', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
-      yield* bootoutLaunchAgent(false, 502, 1000).pipe(Effect.provide(executor));
+      yield* bootoutLaunchAgent(false, 502, 1000).pipe(Effect.provide(executor), Effect.provide(SystemInfo.layer));
 
       effectExpect(timeouts).toEqual([1000, 990, 980]);
     }),
@@ -138,10 +141,14 @@ describe('macOS LaunchAgent lifecycle', () => {
               yield* TestClock.adjust(10);
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
-      yield* bootstrapLaunchAgent('/tmp/agent.plist', false, 502, 1000).pipe(Effect.provide(executor));
+      yield* bootstrapLaunchAgent('/tmp/agent.plist', false, 502, 1000).pipe(
+        Effect.provide(executor),
+        Effect.provide(SystemInfo.layer),
+      );
 
       effectExpect(timeouts).toEqual([1000, 990]);
     }),
@@ -158,10 +165,15 @@ describe('macOS LaunchAgent lifecycle', () => {
                 ? {exitCode: 0, stderr: '', stdout: 'state = running\npid = 123\n'}
                 : {exitCode: 0, stderr: '', stdout: ''},
             ),
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
-      const error = yield* bootoutLaunchAgent(false, 502, 1000).pipe(Effect.provide(executor), Effect.flip);
+      const error = yield* bootoutLaunchAgent(false, 502, 1000).pipe(
+        Effect.provide(executor),
+        Effect.provide(SystemInfo.layer),
+        Effect.flip,
+      );
 
       effectExpect(String(error)).toContain('did not unload');
     }),
@@ -177,10 +189,11 @@ describe('macOS LaunchAgent lifecycle', () => {
             calls += 1;
             return Effect.succeed({exitCode: 113, stderr: 'Could not find service', stdout: ''});
           },
+          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
         }),
       );
 
-      yield* bootoutLaunchAgent(false, 502, 1000).pipe(Effect.provide(executor));
+      yield* bootoutLaunchAgent(false, 502, 1000).pipe(Effect.provide(executor), Effect.provide(SystemInfo.layer));
 
       effectExpect(calls).toBe(1);
     }),

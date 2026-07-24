@@ -1,61 +1,64 @@
 import {Console, Effect, FileSystem} from 'effect';
-import {fromPromise, fromSync} from './errors.js';
 import {withMemoryUriLocks} from './memory_lock.js';
 import {withSharedRepositoryLock} from './share_lock.js';
 import {
-  installSharedAgentArtifacts as installSharedAgentArtifactsPromise,
-  listSharedAgentArtifacts as listSharedAgentArtifactsPromise,
-  listShareConflicts as listShareConflictsPromise,
-  removeMemoryUri as removeMemoryUriPromise,
-  refreshSharedReposInBackground as refreshSharedReposInBackgroundPromise,
-  resolveShareConflict as resolveShareConflictPromise,
-  runShareConflictResolve as runShareConflictResolvePromise,
-  runShareConflicts as runShareConflictsPromise,
-  runShareConflictShow as runShareConflictShowPromise,
-  runShareInit as runShareInitPromise,
-  runShareInstallArtifacts as runShareInstallArtifactsPromise,
-  runShareList as runShareListPromise,
-  runSharePublish as runSharePublishPromise,
-  runSharePublishArtifact as runSharePublishArtifactPromise,
-  runSharePublishBundle as runSharePublishBundlePromise,
-  runShareRemove as runShareRemovePromise,
-  runShareRename as runShareRenamePromise,
-  runShareSetUrl as runShareSetUrlPromise,
-  runShareStatus as runShareStatusPromise,
-  runShareSync as runShareSyncPromise,
-  runShareUnpublish as runShareUnpublishPromise,
-  resolveTeam,
-  shareAgentArtifact as shareAgentArtifactPromise,
-  shareBundlePack as shareBundlePackPromise,
-  showShareConflict as showShareConflictPromise,
+  installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
+  listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
+  listShareConflicts as listShareConflictsEffect,
+  removeMemoryUri as removeMemoryUriEffect,
+  refreshSharedReposInBackground as refreshSharedReposInBackgroundEffect,
+  resolveShareConflict as resolveShareConflictEffect,
+  resolveTeam as resolveTeamEffect,
+  runShareConflictResolve as runShareConflictResolveEffect,
+  runShareConflicts as runShareConflictsEffect,
+  runShareConflictShow as runShareConflictShowEffect,
+  runShareInit as runShareInitEffect,
+  runShareInstallArtifacts as runShareInstallArtifactsEffect,
+  runShareList as runShareListEffect,
+  runSharePublish as runSharePublishEffect,
+  runSharePublishArtifact as runSharePublishArtifactEffect,
+  runSharePublishBundle as runSharePublishBundleEffect,
+  runShareRemove as runShareRemoveEffect,
+  runShareRename as runShareRenameEffect,
+  runShareSetUrl as runShareSetUrlEffect,
+  runShareStatus as runShareStatusEffect,
+  runShareSync as runShareSyncEffect,
+  runShareUnpublish as runShareUnpublishEffect,
+  shareAgentArtifact as shareAgentArtifactEffect,
+  shareBundlePack as shareBundlePackEffect,
+  showShareConflict as showShareConflictEffect,
   SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS,
   sharedUriFor,
-  syncSharedReposBeforeAgentRead as syncSharedReposBeforeAgentReadPromise,
+  syncSharedReposBeforeAgentRead as syncSharedReposBeforeAgentReadEffect,
 } from '../share.js';
-import type {SharePublishOptions, ShareRuntime} from '../types.js';
+import type {
+  ShareConflictOptions,
+  ShareConflictResolveOptions,
+  ShareConflictShowOptions,
+  ShareInitOptions,
+  ShareInstallArtifactsOptions,
+  ShareListArtifactsOptions,
+  ShareListOptions,
+  SharePublishArtifactOptions,
+  SharePublishOptions,
+  ShareRemoveOptions,
+  ShareRenameOptions,
+  ShareSetUrlOptions,
+  ShareStatusOptions,
+  ShareSyncOptions,
+  ShareUnpublishOptions,
+  ShareRuntime,
+} from '../types.js';
 
-const effectify =
-  <Args extends readonly unknown[], A>(operation: string, evaluate: (...args: Args) => Promise<A>) =>
-  (...args: Args) =>
-    fromPromise(operation, () => evaluate(...args));
-
-const effectifyLocked =
-  <Args extends readonly unknown[], A>(
-    operation: string,
-    evaluate: (config: ShareRuntime, ...args: Args) => Promise<A>,
-  ) =>
-  (config: ShareRuntime, ...args: Args) =>
-    withSharedRepositoryLock(
-      config,
-      fromPromise(operation, () => evaluate(config, ...args)),
-    );
-
-export const runShareInit = effectifyLocked('initialize shared memory repository', runShareInitPromise);
-export const runShareStatus = effectifyLocked('read shared memory status', runShareStatusPromise);
-export const runShareSync = effectifyLocked('synchronize shared memory repository', runShareSyncPromise);
+export const runShareInit = (config: ShareRuntime, remoteUrl: string, options: ShareInitOptions) =>
+  withSharedRepositoryLock(config, runShareInitEffect(config, remoteUrl, options));
+export const runShareStatus = (config: ShareRuntime, options: ShareStatusOptions) =>
+  withSharedRepositoryLock(config, runShareStatusEffect(config, options));
+export const runShareSync = (config: ShareRuntime, options: ShareSyncOptions) =>
+  withSharedRepositoryLock(config, runShareSyncEffect(config, options));
 export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(function* (config: ShareRuntime) {
   const refresh = (force: boolean) =>
-    effectifyLocked('refresh shared memory repositories', refreshSharedReposInBackgroundPromise)(config, force).pipe(
+    withSharedRepositoryLock(config, refreshSharedReposInBackgroundEffect(config, force)).pipe(
       Effect.catch(error =>
         Console.error(`share auto-fetch failed: ${error instanceof Error ? error.message : String(error)}`),
       ),
@@ -67,57 +70,70 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
   }
 });
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
-  return yield* withSharedRepositoryLock(
-    config,
-    fromPromise('synchronize shared memories before agent read', () => syncSharedReposBeforeAgentReadPromise(config)),
-  );
+  return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config));
 });
-export const runShareConflicts = effectifyLocked('list shared memory conflicts', runShareConflictsPromise);
-export const runShareConflictShow = effectifyLocked('show shared memory conflict', runShareConflictShowPromise);
-export const listShareConflicts = effectifyLocked('list shared memory conflicts', listShareConflictsPromise);
-export const showShareConflict = effectifyLocked('show shared memory conflict', showShareConflictPromise);
-export const runShareConflictResolve = effectifyLocked(
-  'resolve shared memory conflict',
-  runShareConflictResolvePromise,
-);
+export const runShareConflicts = (config: ShareRuntime, options: ShareConflictOptions) =>
+  withSharedRepositoryLock(config, runShareConflictsEffect(config, options));
+export const runShareConflictShow = (config: ShareRuntime, reference: string, options: ShareConflictShowOptions) =>
+  withSharedRepositoryLock(config, runShareConflictShowEffect(config, reference, options));
+export const listShareConflicts = (config: ShareRuntime, options: ShareConflictOptions) =>
+  withSharedRepositoryLock(config, listShareConflictsEffect(config, options));
+export const showShareConflict = (config: ShareRuntime, reference: string, options: ShareConflictShowOptions) =>
+  withSharedRepositoryLock(config, showShareConflictEffect(config, reference, options));
+export const runShareConflictResolve = (
+  config: ShareRuntime,
+  reference: string,
+  options: ShareConflictResolveOptions,
+) => withSharedRepositoryLock(config, runShareConflictResolveEffect(config, reference, options));
 export const runSharePublish = Effect.fn('share.publish')(function* (
   config: ShareRuntime,
   sourceUri: string,
   options: SharePublishOptions,
 ) {
-  const publish = fromPromise('publish shared memory', () => runSharePublishPromise(config, sourceUri, options));
+  const publish = runSharePublishEffect(config, sourceUri, options);
   if (options.dryRun === true || options.preview === true) {
     return yield* publish;
   }
   return yield* withSharedRepositoryLock(
     config,
     Effect.gen(function* () {
-      const team = yield* fromPromise('resolve shared memory team', () => resolveTeam(config, options.team));
-      const targetUri = yield* fromSync('resolve shared memory target', () =>
-        sharedUriFor(config, sourceUri, team.name),
-      );
+      const team = yield* resolveTeamEffect(config, options.team);
+      const targetUri = sharedUriFor(config, sourceUri, team.name);
       const fs = yield* FileSystem.FileSystem;
-      const resolvedPublish = fromPromise('publish shared memory', () =>
-        runSharePublishPromise(config, sourceUri, {...options, team: team.name}),
-      );
+      const resolvedPublish = runSharePublishEffect(config, sourceUri, {...options, team: team.name});
       return yield* withMemoryUriLocks(fs, config.agentContextHome, [sourceUri, targetUri], resolvedPublish);
     }),
   );
 });
-export const runSharePublishArtifact = effectifyLocked('publish shared artifact', runSharePublishArtifactPromise);
-export const runSharePublishBundle = effectifyLocked('publish shared artifact bundle', runSharePublishBundlePromise);
-export const shareAgentArtifact = effectifyLocked('publish shared artifact', shareAgentArtifactPromise);
-export const shareBundlePack = effectifyLocked('publish shared artifact bundle', shareBundlePackPromise);
-export const runShareInstallArtifacts = effectifyLocked('install shared artifacts', runShareInstallArtifactsPromise);
-export const runShareUnpublish = effectifyLocked('unpublish shared memory', runShareUnpublishPromise);
-export const runShareList = effectify('list shared memory teams', runShareListPromise);
-export const runShareRename = effectifyLocked('rename shared memory team', runShareRenamePromise);
-export const runShareSetUrl = effectifyLocked('set shared memory remote URL', runShareSetUrlPromise);
-export const runShareRemove = effectifyLocked('remove shared memory team', runShareRemovePromise);
-export const resolveShareConflict = effectifyLocked('resolve shared memory conflict', resolveShareConflictPromise);
-export const listSharedAgentArtifacts = effectifyLocked('list shared agent artifacts', listSharedAgentArtifactsPromise);
-export const installSharedAgentArtifacts = effectifyLocked(
-  'install shared agent artifacts',
-  installSharedAgentArtifactsPromise,
-);
-export const removeMemoryUri = effectify('remove shared memory', removeMemoryUriPromise);
+export const runSharePublishArtifact = (
+  config: ShareRuntime,
+  sourcePath: string,
+  options: SharePublishArtifactOptions,
+) => withSharedRepositoryLock(config, runSharePublishArtifactEffect(config, sourcePath, options));
+export const runSharePublishBundle = (
+  config: ShareRuntime,
+  manifestPath: string,
+  options: SharePublishArtifactOptions,
+) => withSharedRepositoryLock(config, runSharePublishBundleEffect(config, manifestPath, options));
+export const shareAgentArtifact = (config: ShareRuntime, sourcePath: string, options: SharePublishArtifactOptions) =>
+  withSharedRepositoryLock(config, shareAgentArtifactEffect(config, sourcePath, options));
+export const shareBundlePack = (config: ShareRuntime, manifestPath: string, options: SharePublishArtifactOptions) =>
+  withSharedRepositoryLock(config, shareBundlePackEffect(config, manifestPath, options));
+export const runShareInstallArtifacts = (config: ShareRuntime, options: ShareInstallArtifactsOptions) =>
+  withSharedRepositoryLock(config, runShareInstallArtifactsEffect(config, options));
+export const runShareUnpublish = (config: ShareRuntime, sourceUri: string, options: ShareUnpublishOptions) =>
+  withSharedRepositoryLock(config, runShareUnpublishEffect(config, sourceUri, options));
+export const runShareList = (config: ShareRuntime, options: ShareListOptions) => runShareListEffect(config, options);
+export const runShareRename = (config: ShareRuntime, options: ShareRenameOptions) =>
+  withSharedRepositoryLock(config, runShareRenameEffect(config, options));
+export const runShareSetUrl = (config: ShareRuntime, remoteUrl: string, options: ShareSetUrlOptions) =>
+  withSharedRepositoryLock(config, runShareSetUrlEffect(config, remoteUrl, options));
+export const runShareRemove = (config: ShareRuntime, options: ShareRemoveOptions) =>
+  withSharedRepositoryLock(config, runShareRemoveEffect(config, options));
+export const resolveShareConflict = (config: ShareRuntime, reference: string, options: ShareConflictResolveOptions) =>
+  withSharedRepositoryLock(config, resolveShareConflictEffect(config, reference, options));
+export const listSharedAgentArtifacts = (config: ShareRuntime, options: ShareListArtifactsOptions) =>
+  withSharedRepositoryLock(config, listSharedAgentArtifactsEffect(config, options));
+export const installSharedAgentArtifacts = (config: ShareRuntime, options: ShareInstallArtifactsOptions) =>
+  withSharedRepositoryLock(config, installSharedAgentArtifactsEffect(config, options));
+export const removeMemoryUri = removeMemoryUriEffect;

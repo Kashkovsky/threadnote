@@ -1,14 +1,14 @@
-import {createServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
-import {randomBytes, randomUUID} from 'node:crypto';
-import {lstat, readFile, readdir, rm} from 'node:fs/promises';
-import {join, relative, sep} from 'node:path';
-import {Console, Effect, FiberSet, FileSystem, Result} from 'effect';
+import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer';
+import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effect';
+import * as HttpServer from 'effect/unstable/http/HttpServer';
+import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
+import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import {effectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
 import {runCommandEffect} from './effect/command.js';
-import {captureConsole, capturePromiseConsole, consoleOutput} from './effect/console.js';
-import {fromPromiseError} from './effect/errors.js';
+import {captureConsole} from './effect/console.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
+import {SystemInfo} from './effect/system.js';
 import {
   runShareInit,
   runSharePublish,
@@ -55,7 +55,6 @@ import type {
   MemoryKind,
   MemoryStatus,
   RuntimeConfig,
-  ShareTeamConfig,
 } from './types.js';
 import {
   assertVikingUri,
@@ -69,6 +68,74 @@ import {
   toolRoot,
 } from './utils.js';
 import {openVikingLogPath, withIdentity} from './runtime.js';
+
+interface ManagerDirectoryEntry {
+  readonly name: string;
+  readonly isDirectory: () => boolean;
+  readonly isFile: () => boolean;
+}
+
+const pathJoin = Effect.fn('manager.pathJoin')(function* (...parts: readonly string[]) {
+  const path = yield* Path.Path;
+  return path.join(...parts);
+});
+
+const pathRelative = Effect.fn('manager.pathRelative')(function* (from: string, to: string) {
+  const path = yield* Path.Path;
+  return path.relative(from, to);
+});
+
+const pathSeparator = Effect.map(Path.Path, path => path.sep);
+
+const lstat = Effect.fn('manager.lstat')(function* (target: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const link = yield* fs.readLink(target).pipe(Effect.option);
+  const info = yield* fs.stat(target);
+  return {
+    isDirectory: () => link._tag === 'None' && info.type === 'Directory',
+    isFile: () => link._tag === 'None' && info.type === 'File',
+    mtime: info.mtime._tag === 'Some' ? info.mtime.value : new Date(0),
+    name: path.basename(target),
+    size: Number(info.size),
+  };
+});
+
+function readFile(target: string): Effect.Effect<Uint8Array, unknown, FileSystem.FileSystem>;
+function readFile(target: string, encoding: 'utf8'): Effect.Effect<string, unknown, FileSystem.FileSystem>;
+function readFile(
+  target: string,
+  encoding?: 'utf8',
+): Effect.Effect<string | Uint8Array, unknown, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return encoding ? yield* fs.readFileString(target, encoding) : yield* fs.readFile(target);
+  });
+}
+
+function readdir(
+  target: string,
+  _options: {readonly withFileTypes: true},
+): Effect.Effect<ManagerDirectoryEntry[], unknown, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const names = yield* fs.readDirectory(target);
+    return yield* Effect.forEach(names, name =>
+      lstat(path.join(target, name)).pipe(
+        Effect.map(info => ({name, isDirectory: info.isDirectory, isFile: info.isFile})),
+      ),
+    );
+  });
+}
+
+const rm = Effect.fn('manager.rm')(function* (
+  target: string,
+  options?: {readonly force?: boolean; readonly recursive?: boolean},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.remove(target, options);
+});
 
 interface ManagerTreeNode {
   readonly children?: readonly ManagerTreeNode[];
@@ -96,8 +163,19 @@ interface ApiContext {
   readonly token: string;
 }
 
+interface ManagerRequest {
+  readonly body: Effect.Effect<Record<string, unknown>, unknown>;
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  readonly method: string;
+  readonly url: string;
+}
+
+interface ManagerResponseSink {
+  response?: HttpServerResponse.HttpServerResponse;
+}
+
 type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
-type ManagerEffectPromise = <A>(effect: ManagerOperation<A>) => Promise<A>;
+type ManagerEffectPromise = undefined;
 
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
@@ -146,19 +224,11 @@ const STATIC_FILES: Readonly<
 export function runManage(config: RuntimeConfig, options: ManageOptions) {
   return Effect.scoped(
     Effect.gen(function* () {
-      const token = randomBytes(24).toString('base64url');
-      const runEffect = yield* FiberSet.makeRuntimePromise<ApplicationServices>();
-      const server = createManagerServer({config, jobs: new Map(), token}, runEffect);
-      const port = options.uiPort ?? 0;
-      yield* Effect.acquireRelease(
-        fromPromiseError(async () => {
-          await listen(server, port);
-          return server;
-        }),
-        closeManagerServer,
-      );
-      const address = server.address();
-      const actualPort = typeof address === 'object' && address ? address.port : port;
+      const crypto = yield* Crypto.Crypto;
+      const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
+      const server = yield* HttpServer.HttpServer;
+      yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
+      const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
       const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
       yield* Console.log(`Threadnote manager: ${url}`);
       yield* Console.log('Press Ctrl-C to stop the manager.');
@@ -167,87 +237,90 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       }
       return yield* Effect.never;
     }),
-  );
-}
-
-function closeManagerServer(server: Server): Effect.Effect<void> {
-  return Effect.callback<void>(resume => {
-    server.close(() => resume(Effect.void));
-  });
+  ).pipe(Effect.provide(NodeHttpServer.layerTest));
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
 
-export function createManagerServer(context: ApiContext, runEffect: ManagerEffectPromise): Server {
-  const requestContext: ApiContext = {...context, runEffect};
-  return createServer((request, response) => {
-    void runEffect(handleRequestEffect(requestContext, request, response)).catch(error => {
-      if (!response.headersSent) {
-        writeJson(response, 500, {error: errorMessage(error)});
-      } else {
-        response.destroy(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
+export function createManagerServer(
+  context: ApiContext,
+): Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  never,
+  ApplicationServices | HttpServerRequest.HttpServerRequest
+> {
+  return Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const response: ManagerResponseSink = {};
+    const managerRequest: ManagerRequest = {
+      body: request.json.pipe(
+        Effect.flatMap(parsed =>
+          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+            ? Effect.succeed(parsed as Record<string, unknown>)
+            : Effect.fail(new Error('Expected a JSON object body.')),
+        ),
+      ),
+      headers: request.headers,
+      method: request.method,
+      url: request.url,
+    };
+    yield* handleRequestEffect(context, managerRequest, response);
+    return response.response ?? HttpServerResponse.empty({status: 204});
   });
 }
 
-export async function memoryTree(config: RuntimeConfig): Promise<ManagerTreeNode> {
-  const root = localMemoriesRoot(config);
-  return readTree(config, root, `viking://user/${uriSegment(config.user)}/memories`, '');
-}
+export const memoryTree = Effect.fn('manager.memoryTree')(function* (config: RuntimeConfig) {
+  const root = yield* localMemoriesRoot(config);
+  return yield* readTree(config, root, `viking://user/${uriSegment(config.user)}/memories`, '');
+});
 
-export async function resourcesTree(config: RuntimeConfig): Promise<ManagerTreeNode> {
-  const root = localResourcesRoot(config);
-  try {
-    return await readTree(config, root, 'viking://resources', '', {
-      parseMemoryDocuments: false,
-      rootName: 'resources',
-    });
-  } catch (err) {
-    if (isMissingPathError(err)) {
-      return {
+export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (config: RuntimeConfig) {
+  const root = yield* localResourcesRoot(config);
+  return yield* readTree(config, root, 'viking://resources', '', {
+    parseMemoryDocuments: false,
+    rootName: 'resources',
+  }).pipe(
+    Effect.catch(error => {
+      if (!isMissingPathError(error)) {
+        return Effect.fail(error);
+      }
+      return Effect.succeed({
         children: [],
-        isDir: true,
+        isDir: true as const,
         isShared: false,
         isSystem: false,
         name: 'resources',
         relativePath: '',
         uri: 'viking://resources',
-      };
-    }
-    throw err;
-  }
-}
+      });
+    }),
+  );
+});
 
-export async function readManagedMemory(
-  config: RuntimeConfig,
-  uri: string,
-): Promise<{
-  readonly content: string;
-  readonly node: ManagerTreeNode;
-  readonly record?: MemoryRecord;
-}> {
+export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function* (config: RuntimeConfig, uri: string) {
   assertVikingUri(uri);
-  const path = localPathForMemoryUri(config, uri);
+  const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
-    throw new Error(`Manager can only read current-user memory URIs: ${uri}`);
+    return yield* Effect.fail(new Error(`Manager can only read current-user memory URIs: ${uri}`));
   }
-  const pathStat = await lstat(path);
+  const pathStat = yield* lstat(path);
   if (!pathStat.isFile()) {
-    throw new Error(`Manager can only read regular memory files: ${uri}`);
+    return yield* Effect.fail(new Error(`Manager can only read regular memory files: ${uri}`));
   }
-  const content = await readFile(path, 'utf8');
-  const relativePath = relative(localMemoriesRoot(config), path).split(sep).join('/');
+  const content = yield* readFile(path, 'utf8');
+  const relativePath = (yield* pathRelative(yield* localMemoriesRoot(config), path))
+    .split(yield* pathSeparator)
+    .join('/');
   const record = parseMemoryDocument(uri, content);
   return {
     content,
     node: {
       isDir: false,
       isShared: isInSharedNamespace(config, uri),
-      isSystem: isSystemMemoryName(path.split(sep).at(-1) ?? ''),
+      isSystem: isSystemMemoryName(path.split(yield* pathSeparator).at(-1) ?? ''),
       metadata: record?.metadata,
       modTime: pathStat.mtime.toISOString(),
-      name: path.split(sep).at(-1) ?? uri,
+      name: path.split(yield* pathSeparator).at(-1) ?? uri,
       relativePath,
       sharedTeam: sharedTeamNameForUri(config, uri),
       size: pathStat.size,
@@ -255,37 +328,29 @@ export async function readManagedMemory(
     },
     record,
   };
-}
+});
 
-export async function readContextUri(
+export const readContextUri = Effect.fn('manager.readContextUri')(function* (
   config: RuntimeConfig,
   uri: string,
   runEffect?: ManagerEffectPromise,
-): Promise<{
-  readonly content: string;
-  readonly localMemory?: Awaited<ReturnType<typeof readManagedMemory>>;
-  readonly output: string;
-}> {
+) {
   assertVikingUri(uri);
-  try {
-    const localMemory = await readManagedMemory(config, uri);
-    return {content: localMemory.content, localMemory, output: localMemory.content};
-  } catch {
-    const result = await runCaptured(() => runRead(config, uri, {}), runEffect);
-    return {content: result.output, output: result.output};
+  const localMemory = yield* Effect.result(readManagedMemory(config, uri));
+  if (Result.isSuccess(localMemory)) {
+    return {
+      content: localMemory.success.content,
+      localMemory: localMemory.success,
+      output: localMemory.success.content,
+    };
   }
-}
+  const result = yield* runCaptured(() => runRead(config, uri, {}), runEffect);
+  return {content: result.output, output: result.output};
+});
 
-export async function detectConsolidationAgents(): Promise<
-  readonly {
-    readonly available: boolean;
-    readonly command?: string;
-    readonly id: ConsolidationAgent;
-    readonly label: string;
-  }[]
-> {
-  const effectAi = effectAiConfiguration();
-  const [codex, claude, cursor, copilot] = await Promise.all([
+export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* () {
+  const effectAi = effectAiConfiguration((yield* SystemInfo).environment());
+  const [codex, claude, cursor, copilot] = yield* Effect.all([
     findExecutable(['codex']),
     findExecutable(['claude']),
     findExecutable(['cursor-agent']),
@@ -303,12 +368,12 @@ export async function detectConsolidationAgents(): Promise<
       label: 'Effect AI (OpenAI-compatible)',
     },
   ];
-}
+});
 
 function handleRequestEffect(
   context: ApiContext,
-  request: IncomingMessage,
-  response: ServerResponse,
+  request: ManagerRequest,
+  response: ManagerResponseSink,
 ): ManagerRequestEffect {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   let requestEffect: Effect.Effect<void, unknown, ApplicationServices>;
@@ -318,13 +383,9 @@ function handleRequestEffect(
         writeJson(response, 401, {error: 'Unauthorized'});
         return;
       }
-      const [agents, version] = yield* fromPromiseError(() =>
-        Promise.all([detectConsolidationAgents(), currentPackageVersion()]),
-      );
-      const latest = yield* Effect.try({
-        try: updateRegistry,
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-      }).pipe(
+      const system = yield* SystemInfo;
+      const [agents, version] = yield* Effect.all([detectConsolidationAgents(), currentPackageVersion()]);
+      const latest = yield* Effect.succeed(updateRegistry(system.environment())).pipe(
         Effect.flatMap(registry => fetchLatestVersion(registry, selectUpdateChannel(version))),
         Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
       );
@@ -332,7 +393,7 @@ function handleRequestEffect(
         agents,
         config: publicConfig(context.config),
         latestVersion: Result.isSuccess(latest) ? latest.success : undefined,
-        openVikingLogPath: openVikingLogPath(context.config),
+        openVikingLogPath: yield* openVikingLogPath(context.config),
         version,
       });
     });
@@ -342,12 +403,12 @@ function handleRequestEffect(
         writeJson(response, 401, {error: 'Unauthorized'});
         return;
       }
-      const body = yield* fromPromiseError(() => readJsonBody(request));
+      const body = yield* readJsonBody(request);
       const job = yield* createConsolidation(context, body);
       writeJson(response, 200, {job});
     });
   } else {
-    requestEffect = fromPromiseError(() => handleRequestLegacy(context, request, response));
+    requestEffect = handleRequestLegacy(context, request, response);
   }
 
   return requestEffect.pipe(
@@ -359,19 +420,18 @@ function handleRequestEffect(
   );
 }
 
-async function handleRequestLegacy(
+const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   context: ApiContext,
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
+  request: ManagerRequest,
+  response: ManagerResponseSink,
+) {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   if (request.method === 'GET' && STATIC_FILES[url.pathname]) {
-    await serveStatic(context, url, response);
+    yield* serveStatic(context, url, response);
     return;
   }
   if (request.method === 'GET' && url.pathname === '/favicon.ico') {
-    response.writeHead(204, {'cache-control': 'no-store'});
-    response.end();
+    response.response = HttpServerResponse.empty({status: 204, headers: {'cache-control': 'no-store'}});
     return;
   }
   if (!isAuthorized(context, request)) {
@@ -380,26 +440,26 @@ async function handleRequestLegacy(
   }
 
   if (request.method === 'GET' && url.pathname === '/api/tree') {
-    const [tree, resourceTree] = await Promise.all([memoryTree(context.config), resourcesTree(context.config)]);
+    const [tree, resourceTree] = yield* Effect.all([memoryTree(context.config), resourcesTree(context.config)]);
     writeJson(response, 200, {resourcesTree: resourceTree, tree});
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/memory') {
-    writeJson(response, 200, await readManagedMemory(context.config, requiredQuery(url, 'uri')));
+    writeJson(response, 200, yield* readManagedMemory(context.config, requiredQuery(url, 'uri')));
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/read') {
-    writeJson(response, 200, await readContextUri(context.config, requiredQuery(url, 'uri'), context.runEffect));
+    writeJson(response, 200, yield* readContextUri(context.config, requiredQuery(url, 'uri'), context.runEffect));
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/shares') {
-    writeJson(response, 200, {shares: await shareSummaries(context.config)});
+    writeJson(response, 200, {shares: yield* shareSummaries(context.config)});
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/doctor') {
     writeJson(response, 200, {
-      checks: await collectManagerDoctorChecks(context.config),
-      shares: await shareSummaries(context.config),
+      checks: yield* collectManagerDoctorChecks(context.config),
+      shares: yield* shareSummaries(context.config),
     });
     return;
   }
@@ -414,14 +474,14 @@ async function handleRequestLegacy(
     return;
   }
 
-  const body = await readJsonBody(request);
+  const body = yield* readJsonBody(request);
   switch (url.pathname) {
     case '/api/memory/archive':
       requireConfirm(body);
       writeJson(
         response,
         200,
-        await runCaptured(() => runArchive(context.config, requireString(body.uri, 'uri'), body), context.runEffect),
+        yield* runCaptured(() => runArchive(context.config, requireString(body.uri, 'uri'), body), context.runEffect),
       );
       return;
     case '/api/memory/forget':
@@ -429,18 +489,18 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() => runForget(context.config, requireString(body.uri, 'uri'), {}), context.runEffect),
+        yield* runCaptured(() => runForget(context.config, requireString(body.uri, 'uri'), {}), context.runEffect),
       );
       return;
     case '/api/memory/save':
-      writeJson(response, 200, await saveMemory(context.config, body, context.runEffect));
+      writeJson(response, 200, yield* saveMemory(context.config, body, context.runEffect));
       return;
     case '/api/memory/move':
       requireConfirm(body);
       writeJson(
         response,
         200,
-        await moveMemory(context.config, requireString(body.uri, 'uri'), targetFromBody(body), context.runEffect),
+        yield* moveMemory(context.config, requireString(body.uri, 'uri'), targetFromBody(body), context.runEffect),
       );
       return;
     case '/api/memory/publish':
@@ -448,7 +508,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runSharePublish(context.config, requireString(body.uri, 'uri'), {
               redact: body.redact === true,
@@ -463,7 +523,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () => runShareUnpublish(context.config, requireString(body.uri, 'uri'), {team: optionalString(body.team)}),
           context.runEffect,
         ),
@@ -474,12 +534,15 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() => removeManagedFolder(context.config, requireString(body.uri, 'uri'), context.runEffect)),
+        yield* runCaptured(
+          () => removeManagedFolder(context.config, requireString(body.uri, 'uri')),
+          context.runEffect,
+        ),
       );
       return;
     case '/api/bulk':
       requireConfirm(body);
-      writeJson(response, 200, await runBulk(context.config, body, context.runEffect));
+      writeJson(response, 200, yield* runBulk(context.config, body, context.runEffect));
       return;
     case '/api/compact':
       if (body.apply === true) {
@@ -488,10 +551,10 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             Effect.gen(function* () {
-              yield* fromPromiseError(() => runCompactDiagnostics(context.config, body));
+              yield* runCompactDiagnostics(context.config, body);
               yield* runCompact(context.config, body);
             }),
           context.runEffect,
@@ -502,7 +565,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runRecall(context.config, {
               query: requireString(body.query, 'query'),
@@ -514,14 +577,18 @@ async function handleRequestLegacy(
       );
       return;
     case '/api/read':
-      writeJson(response, 200, await readContextUri(context.config, requireString(body.uri, 'uri'), context.runEffect));
+      writeJson(
+        response,
+        200,
+        yield* readContextUri(context.config, requireString(body.uri, 'uri'), context.runEffect),
+      );
       return;
     case '/api/shares/init':
       requireConfirm(body);
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runShareInit(context.config, requireString(body.remoteUrl, 'remoteUrl'), {
               team: optionalString(body.team),
@@ -535,7 +602,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runShareRename(context.config, {
               team: requireString(body.team, 'team'),
@@ -550,7 +617,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runShareSetUrl(context.config, requireString(body.remoteUrl, 'remoteUrl'), {
               team: optionalString(body.team),
@@ -564,7 +631,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             runShareRemove(context.config, {
               keepFiles: body.keepFiles === true,
@@ -579,25 +646,25 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(() => runShareSync(context.config, {team: optionalString(body.team)}), context.runEffect),
+        yield* runCaptured(() => runShareSync(context.config, {team: optionalString(body.team)}), context.runEffect),
       );
       return;
     case '/api/doctor/start':
-      writeJson(response, 200, await runCaptured(() => runStart(context.config, {}), context.runEffect));
+      writeJson(response, 200, yield* runCaptured(() => runStart(context.config, {}), context.runEffect));
       return;
     case '/api/doctor/repair-dry-run':
-      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: true}), context.runEffect));
+      writeJson(response, 200, yield* runCaptured(() => runRepair(context.config, {dryRun: true}), context.runEffect));
       return;
     case '/api/doctor/repair':
       requireConfirm(body);
-      writeJson(response, 200, await runCaptured(() => runRepair(context.config, {dryRun: false}), context.runEffect));
+      writeJson(response, 200, yield* runCaptured(() => runRepair(context.config, {dryRun: false}), context.runEffect));
       return;
     case '/api/import-pack':
       requireConfirm(body);
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () => runImportPack(context.config, {path: requireString(body.path, 'path')}),
           context.runEffect,
         ),
@@ -607,7 +674,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () => runExportPack(context.config, {path: optionalString(body.path), uri: optionalString(body.uri)}),
           context.runEffect,
         ),
@@ -618,7 +685,7 @@ async function handleRequestLegacy(
       writeJson(
         response,
         200,
-        await runCaptured(
+        yield* runCaptured(
           () =>
             body.skills === true
               ? runSeedSkills(context.config, {dryRun: body.dryRun === true})
@@ -631,47 +698,85 @@ async function handleRequestLegacy(
       if (url.pathname.startsWith('/api/consolidations/') && url.pathname.endsWith('/apply')) {
         requireConfirm(body);
         const id = url.pathname.split('/').at(-2) ?? '';
-        writeJson(response, 200, await applyConsolidation(context.config, context.jobs, id, body, context.runEffect));
+        writeJson(response, 200, yield* applyConsolidation(context.config, context.jobs, id, body, context.runEffect));
         return;
       }
       writeJson(response, 404, {error: 'Not found'});
   }
-}
+});
 
-async function serveStatic(context: ApiContext, url: URL, response: ServerResponse): Promise<void> {
+const serveStatic = Effect.fn('manager.serveStatic')(function* (
+  context: ApiContext,
+  url: URL,
+  response: ManagerResponseSink,
+) {
   const file = STATIC_FILES[url.pathname] ?? STATIC_FILES['/'];
-  const content = await readFile(join(toolRoot(), file.root ?? 'manager', file.path));
+  const content = yield* readFile(yield* pathJoin(yield* toolRoot(), file.root ?? 'manager', file.path));
   const headers: Record<string, string> = {'content-type': file.contentType};
   if (file.root !== 'docs') {
     headers['cache-control'] = 'no-store';
   }
-  response.writeHead(200, headers);
-  response.end(content);
-}
+  response.response = HttpServerResponse.uint8Array(content, {status: 200, headers});
+});
 
-async function readTree(
+const readTree: (
   config: RuntimeConfig,
   path: string,
   uri: string,
   relativePath: string,
-  options: ReadTreeOptions = {},
-): Promise<ManagerTreeNode> {
-  const pathStat = await lstat(path);
-  const name = relativePath ? (relativePath.split('/').at(-1) ?? relativePath) : (options.rootName ?? 'memories');
-  const isDir = pathStat.isDirectory();
-  if (!isDir) {
-    if (!pathStat.isFile()) {
-      throw new Error(`Manager can only read regular files or directories: ${uri}`);
+  options?: ReadTreeOptions,
+) => Effect.Effect<ManagerTreeNode, unknown, FileSystem.FileSystem | Path.Path> = Effect.fn('manager.readTree')(
+  function* (config: RuntimeConfig, path: string, uri: string, relativePath: string, options: ReadTreeOptions = {}) {
+    const pathStat = yield* lstat(path);
+    const name = relativePath ? (relativePath.split('/').at(-1) ?? relativePath) : (options.rootName ?? 'memories');
+    const isDir = pathStat.isDirectory();
+    if (!isDir) {
+      if (!pathStat.isFile()) {
+        throw new Error(`Manager can only read regular files or directories: ${uri}`);
+      }
+      const record =
+        options.parseMemoryDocuments === false
+          ? undefined
+          : parseMemoryDocument(uri, yield* readFile(path, 'utf8').pipe(Effect.catch(() => Effect.succeed(''))));
+      return {
+        isDir: false,
+        isShared: isInSharedNamespace(config, uri),
+        isSystem: isSystemMemoryName(name),
+        metadata: record?.metadata,
+        modTime: pathStat.mtime.toISOString(),
+        name,
+        relativePath,
+        sharedTeam: sharedTeamNameForUri(config, uri),
+        size: pathStat.size,
+        uri,
+      };
     }
-    const record =
-      options.parseMemoryDocuments === false
-        ? undefined
-        : parseMemoryDocument(uri, await readFile(path, 'utf8').catch(() => ''));
+    const entries = yield* readdir(path, {withFileTypes: true});
+    const children = yield* Effect.all(
+      entries
+        .filter(entry => entry.isDirectory() || entry.isFile())
+        .sort(
+          (left, right) =>
+            Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name),
+        )
+        .map(
+          Effect.fn('manager.readTreeChild')(function* (entry) {
+            const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+            return yield* readTree(
+              config,
+              yield* pathJoin(path, entry.name),
+              `${uri}/${entry.name}`,
+              childRelative,
+              options,
+            );
+          }),
+        ),
+    );
     return {
-      isDir: false,
+      children,
+      isDir: true,
       isShared: isInSharedNamespace(config, uri),
       isSystem: isSystemMemoryName(name),
-      metadata: record?.metadata,
       modTime: pathStat.mtime.toISOString(),
       name,
       relativePath,
@@ -679,44 +784,19 @@ async function readTree(
       size: pathStat.size,
       uri,
     };
-  }
-  const entries = await readdir(path, {withFileTypes: true});
-  const children = await Promise.all(
-    entries
-      .filter(entry => entry.isDirectory() || entry.isFile())
-      .sort(
-        (left, right) =>
-          Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name),
-      )
-      .map(entry => {
-        const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-        return readTree(config, join(path, entry.name), `${uri}/${entry.name}`, childRelative, options);
-      }),
-  );
-  return {
-    children,
-    isDir: true,
-    isShared: isInSharedNamespace(config, uri),
-    isSystem: isSystemMemoryName(name),
-    modTime: pathStat.mtime.toISOString(),
-    name,
-    relativePath,
-    sharedTeam: sharedTeamNameForUri(config, uri),
-    size: pathStat.size,
-    uri,
-  };
-}
+  },
+);
 
-async function saveMemory(
+const saveMemory = Effect.fn('manager.saveMemory')(function (
   config: RuntimeConfig,
   body: Record<string, unknown>,
   runEffect: ManagerEffectPromise | undefined,
-): Promise<{readonly output: string}> {
+) {
   const text = requireString(body.text, 'text');
   const replaceUri = optionalString(body.replaceUri);
   if (replaceUri && isRawMemoryDocument(text)) {
     return runCaptured(() => {
-      const write = fromPromiseError(() => writeRawMemory(config, replaceUri, text));
+      const write = writeRawMemory(config, replaceUri, text);
       return isInSharedNamespace(config, replaceUri) ? withSharedRepositoryLock(config, write) : write;
     }, runEffect);
   }
@@ -733,35 +813,39 @@ async function saveMemory(
       }),
     runEffect,
   );
-}
+});
 
-async function writeRawMemory(config: RuntimeConfig, uri: string, content: string): Promise<void> {
+const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
+  config: RuntimeConfig,
+  uri: string,
+  content: string,
+) {
   assertVikingUri(uri);
-  const ov = await openVikingCliForMode(false);
+  const ov = yield* openVikingCliForMode(false);
   if (isInSharedNamespace(config, uri)) {
     const teamName = sharedTeamNameForUri(config, uri);
     if (!teamName) {
       throw new Error(`${uri} is not in a configured shared namespace.`);
     }
-    const team = await resolveTeam(config, teamName);
-    await ensureSharedDirectoryChain(config, ov, uri, false);
-    await writeMemoryFile(config, ov, uri, content, 'replace', false);
+    const team = yield* resolveTeam(config, teamName);
+    yield* ensureSharedDirectoryChain(config, ov, uri, false);
+    yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
     const relativePath = vikingUriToWorktreeRelative(config, uri, team.name);
-    await publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
+    yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
     return;
   }
-  await ensurePersonalDirectoryChain(config, ov, parentUri(uri));
-  await writeMemoryFile(config, ov, uri, content, 'replace', false);
-}
+  yield* ensurePersonalDirectoryChain(config, ov, parentUri(uri));
+  yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
+});
 
-async function moveMemory(
+const moveMemory = Effect.fn('manager.moveMemory')(function* (
   config: RuntimeConfig,
   sourceUri: string,
   target: TargetMemoryInput,
   runEffect: ManagerEffectPromise | undefined,
-): Promise<{readonly output: string; readonly targetUri: string}> {
+) {
   assertVikingUri(sourceUri);
-  const source = await readManagedMemory(config, sourceUri);
+  const source = yield* readManagedMemory(config, sourceUri);
   const sourceRecord = source.record;
   const text = sourceRecord?.body ?? source.content;
   const metadata = {
@@ -771,7 +855,7 @@ async function moveMemory(
     status: target.status ?? sourceRecord?.metadata.status ?? 'active',
     topic: target.topic ?? sourceRecord?.metadata.topic ?? 'current',
   };
-  const personalTargetUri = memoryUriFor(config, metadata);
+  const personalTargetUri = yield* memoryUriFor(config, metadata);
   if (target.team) {
     const targetTeam = target.team;
     if (isInSharedNamespace(config, sourceUri)) {
@@ -782,19 +866,17 @@ async function moveMemory(
         );
       }
       const sharedTargetUri = sharedMemoryUriFor(config, targetTeam, metadata);
-      const output = await runCaptured(
+      const output = yield* runCaptured(
         () =>
           withSharedRepositoryLock(
             config,
-            fromPromiseError(() =>
-              moveSharedWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
-            ),
+            moveSharedWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
           ),
         runEffect,
       );
       return {...output, targetUri: sharedTargetUri};
     }
-    const saved = await runCaptured(
+    const saved = yield* runCaptured(
       () =>
         runRemember(config, {
           kind: metadata.kind,
@@ -807,7 +889,7 @@ async function moveMemory(
         }),
       runEffect,
     );
-    const published = await runCaptured(
+    const published = yield* runCaptured(
       () => runSharePublish(config, personalTargetUri, {team: targetTeam}),
       runEffect,
     );
@@ -817,7 +899,7 @@ async function moveMemory(
     };
   }
   if (isInSharedNamespace(config, sourceUri)) {
-    const saved = await runCaptured(
+    const saved = yield* runCaptured(
       () =>
         runRemember(config, {
           kind: metadata.kind,
@@ -829,17 +911,13 @@ async function moveMemory(
         }),
       runEffect,
     );
-    const removed = await runCaptured(
-      () =>
-        withSharedRepositoryLock(
-          config,
-          fromPromiseError(() => removeSharedSource(config, sourceUri)),
-        ),
+    const removed = yield* runCaptured(
+      () => withSharedRepositoryLock(config, removeSharedSource(config, sourceUri)),
       runEffect,
     );
     return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
   }
-  const output = await runCaptured(
+  const output = yield* runCaptured(
     () =>
       runRemember(config, {
         kind: metadata.kind,
@@ -853,25 +931,25 @@ async function moveMemory(
     runEffect,
   );
   return {...output, targetUri: personalTargetUri};
-}
+});
 
-async function moveSharedWithinTeam(
+const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function* (
   config: RuntimeConfig,
   sourceUri: string,
   targetUri: string,
   content: string,
   teamName: string,
-): Promise<void> {
-  const team = await resolveTeam(config, teamName);
-  const ov = await openVikingCliForMode(false);
-  await ensureSharedDirectoryChain(config, ov, targetUri, false);
-  await writeMemoryFile(config, ov, targetUri, content, 'create', false);
-  await publishShareGitChange(
+) {
+  const team = yield* resolveTeam(config, teamName);
+  const ov = yield* openVikingCliForMode(false);
+  yield* ensureSharedDirectoryChain(config, ov, targetUri, false);
+  yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
+  yield* publishShareGitChange(
     team.config.worktree,
     vikingUriToWorktreeRelative(config, targetUri, team.name),
     `share: move ${vikingUriToWorktreeRelative(config, sourceUri, team.name)} to ${vikingUriToWorktreeRelative(config, targetUri, team.name)}`,
   );
-  await publishShareGitChange(
+  yield* publishShareGitChange(
     team.config.worktree,
     vikingUriToWorktreeRelative(config, sourceUri, team.name),
     `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
@@ -879,17 +957,20 @@ async function moveSharedWithinTeam(
       verb: 'rm',
     },
   );
-  await removeMemoryUri(config, ov, sourceUri, false);
-}
+  yield* removeMemoryUri(config, ov, sourceUri, false);
+});
 
-async function removeSharedSource(config: RuntimeConfig, sourceUri: string): Promise<void> {
+const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
+  config: RuntimeConfig,
+  sourceUri: string,
+) {
   const teamName = sharedTeamNameForUri(config, sourceUri);
   if (!teamName) {
     throw new Error(`${sourceUri} is not a shared memory.`);
   }
-  const team = await resolveTeam(config, teamName);
-  const ov = await openVikingCliForMode(false);
-  await publishShareGitChange(
+  const team = yield* resolveTeam(config, teamName);
+  const ov = yield* openVikingCliForMode(false);
+  yield* publishShareGitChange(
     team.config.worktree,
     vikingUriToWorktreeRelative(config, sourceUri, team.name),
     `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
@@ -897,14 +978,10 @@ async function removeSharedSource(config: RuntimeConfig, sourceUri: string): Pro
       verb: 'rm',
     },
   );
-  await removeMemoryUri(config, ov, sourceUri, false);
-}
+  yield* removeMemoryUri(config, ov, sourceUri, false);
+});
 
-async function removeManagedFolder(
-  config: RuntimeConfig,
-  uri: string,
-  runEffect: ManagerEffectPromise | undefined,
-): Promise<void> {
+const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (config: RuntimeConfig, uri: string) {
   assertVikingUri(uri);
   const rootUri = `viking://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
@@ -913,73 +990,85 @@ async function removeManagedFolder(
   if (isInSharedNamespace(config, uri)) {
     throw new Error('Shared folders are managed from Sharing. Remove the share or unpublish selected memories.');
   }
-  const path = localPathForMemoryUri(config, uri);
+  const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
     throw new Error(`Manager can only remove current-user memory folders: ${uri}`);
   }
-  const pathStat = await lstat(path);
+  const pathStat = yield* lstat(path);
   if (!pathStat.isDirectory()) {
     throw new Error(`Not a folder: ${uri}`);
   }
-  const relativePath = relative(localMemoriesRoot(config), path);
-  if (!relativePath || relativePath.startsWith('..') || relativePath.split(sep).includes('..')) {
+  const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
+  if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
     throw new Error('Refusing to remove a folder outside the memories tree.');
   }
-  const fileUris = await fileUrisUnderFolder(config, path);
+  const fileUris = yield* fileUrisUnderFolder(config, path);
   for (const fileUri of fileUris) {
-    if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
-    await runEffect(runForget(config, fileUri, {}));
+    yield* runForget(config, fileUri, {});
   }
-  await rm(path, {force: true, recursive: true});
-  consoleOutput.log(`Removed folder: ${uri}`);
-  consoleOutput.log(`Forgot ${fileUris.length} file${fileUris.length === 1 ? '' : 's'}.`);
-}
+  yield* rm(path, {force: true, recursive: true});
+  yield* Console.log(`Removed folder: ${uri}`);
+  yield* Console.log(`Forgot ${fileUris.length} file${fileUris.length === 1 ? '' : 's'}.`);
+});
 
-async function fileUrisUnderFolder(config: RuntimeConfig, folderPath: string): Promise<readonly string[]> {
-  const entries = await readdir(folderPath, {withFileTypes: true});
+const fileUrisUnderFolder: (
+  config: RuntimeConfig,
+  folderPath: string,
+) => Effect.Effect<readonly string[], unknown, FileSystem.FileSystem | Path.Path> = Effect.fn(
+  'manager.fileUrisUnderFolder',
+)(function* (config: RuntimeConfig, folderPath: string) {
+  const entries = yield* readdir(folderPath, {withFileTypes: true});
   const uris: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const path = join(folderPath, entry.name);
+    const path = yield* pathJoin(folderPath, entry.name);
     if (entry.isDirectory()) {
-      uris.push(...(await fileUrisUnderFolder(config, path)));
+      uris.push(...(yield* fileUrisUnderFolder(config, path)));
     } else if (entry.isFile()) {
-      uris.push(localPathToMemoryUri(config, path));
+      uris.push(yield* localPathToMemoryUri(config, path));
     }
   }
   return uris;
-}
+});
 
-async function runBulk(
+const runBulk = Effect.fn('manager.runBulk')(function* (
   config: RuntimeConfig,
   body: Record<string, unknown>,
   runEffect: ManagerEffectPromise | undefined,
-): Promise<{readonly results: readonly BulkItemResult[]}> {
+) {
   const action = requireString(body.action, 'action');
   const uris = requireStringArray(body.uris, 'uris');
   const results: BulkItemResult[] = [];
   for (const uri of uris) {
-    try {
-      let output: string;
-      if (action === 'archive') {
-        output = (await runCaptured(() => runArchive(config, uri, {}), runEffect)).output;
-      } else if (action === 'forget') {
-        output = (await runCaptured(() => runForget(config, uri, {}), runEffect)).output;
-      } else if (action === 'publish') {
-        output = (await runCaptured(() => runSharePublish(config, uri, {team: optionalString(body.team)}), runEffect))
-          .output;
-      } else {
-        throw new Error(`Unsupported bulk action: ${action}`);
-      }
-      results.push({ok: true, output, uri});
-    } catch (err: unknown) {
-      results.push({error: errorMessage(err), ok: false, uri});
+    const outcome = yield* Effect.result(
+      Effect.gen(function* () {
+        let output: string;
+        if (action === 'archive') {
+          output = (yield* runCaptured(() => runArchive(config, uri, {}), runEffect)).output;
+        } else if (action === 'forget') {
+          output = (yield* runCaptured(() => runForget(config, uri, {}), runEffect)).output;
+        } else if (action === 'publish') {
+          output = (yield* runCaptured(
+            () => runSharePublish(config, uri, {team: optionalString(body.team)}),
+            runEffect,
+          )).output;
+        } else {
+          return yield* Effect.fail(new Error(`Unsupported bulk action: ${action}`));
+        }
+        return output;
+      }),
+    );
+    if (Result.isSuccess(outcome)) {
+      results.push({ok: true, output: outcome.success, uri});
+    } else {
+      results.push({error: errorMessage(outcome.failure), ok: false, uri});
     }
   }
   return {results};
-}
+});
 
 function createConsolidation(context: ApiContext, body: Record<string, unknown>) {
   return Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
     const input = yield* Effect.try({
       try: () => ({
         agent: consolidationAgent(requireString(body.agent, 'agent')),
@@ -991,16 +1080,14 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
     const job: ConsolidationJob = {
       agent: input.agent,
       createdAt: new Date().toISOString(),
-      id: randomUUID(),
+      id: yield* crypto.randomUUIDv4,
       sourceUris: input.sourceUris,
       status: 'running',
       target: input.target,
     };
     context.jobs.set(job.id, job);
     yield* Effect.gen(function* () {
-      const sources = yield* fromPromiseError(() =>
-        Promise.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri))),
-      );
+      const sources = yield* Effect.all(input.sourceUris.map(uri => readManagedMemory(context.config, uri)));
       job.draft = yield* runConsolidationAgent(input.agent, sources);
       job.status = 'completed';
     }).pipe(
@@ -1015,13 +1102,13 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
   });
 }
 
-async function applyConsolidation(
+const applyConsolidation = Effect.fn('manager.applyConsolidation')(function* (
   config: RuntimeConfig,
   jobs: Map<string, ConsolidationJob>,
   id: string,
   body: Record<string, unknown>,
   runEffect: ManagerEffectPromise | undefined,
-): Promise<{readonly output: string}> {
+) {
   const job = jobs.get(id);
   if (!job) {
     throw new Error('Consolidation job not found.');
@@ -1031,7 +1118,7 @@ async function applyConsolidation(
   }
   const draft = optionalString(body.draft) ?? job.draft;
   const target = targetFromBody({...job.target, ...body});
-  const saved = await runCaptured(
+  const saved = yield* runCaptured(
     () =>
       runRemember(config, {
         kind: target.kind ?? 'durable',
@@ -1052,11 +1139,11 @@ async function applyConsolidation(
         continue;
       }
       const action = cleanup === 'forget' ? () => runForget(config, uri, {}) : () => runArchive(config, uri, {});
-      cleanupOutputs.push((await runCaptured(action, runEffect)).output);
+      cleanupOutputs.push((yield* runCaptured(action, runEffect)).output);
     }
   }
   return {output: [saved.output, ...cleanupOutputs].filter(Boolean).join('\n')};
-}
+});
 
 function runConsolidationAgent(
   agent: ConsolidationAgent,
@@ -1064,21 +1151,23 @@ function runConsolidationAgent(
 ) {
   const prompt = consolidationPrompt(sources);
   if (agent === 'effect-ai') {
-    const config = effectAiConfiguration();
-    if (!config) {
-      return Effect.fail(
-        new Error(
-          'Effect AI is not configured. Set THREADNOTE_EFFECT_AI=1 and THREADNOTE_EFFECT_AI_MODEL; add API URL/key variables when required.',
-        ),
-      );
-    }
-    return runEffectAiConsolidation(prompt, config);
+    return Effect.gen(function* () {
+      const config = effectAiConfiguration((yield* SystemInfo).environment());
+      if (!config) {
+        return yield* Effect.fail(
+          new Error(
+            'Effect AI is not configured. Set THREADNOTE_EFFECT_AI=1 and THREADNOTE_EFFECT_AI_MODEL; add API URL/key variables when required.',
+          ),
+        );
+      }
+      return yield* runEffectAiConsolidation(prompt, config);
+    });
   }
   if (agent !== 'codex' && agent !== 'claude') {
     return Effect.fail(new Error(`${agent} does not expose a supported non-interactive consolidation mode.`));
   }
   return Effect.gen(function* () {
-    const executable = yield* fromPromiseError(() => findExecutable([agent]));
+    const executable = yield* findExecutable([agent]);
     if (!executable) {
       return yield* Effect.fail(new Error(`${agent} executable was not found.`));
     }
@@ -1086,7 +1175,7 @@ function runConsolidationAgent(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const stagingDir = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-consolidate-'});
-        const promptPath = join(stagingDir, 'prompt.txt');
+        const promptPath = yield* pathJoin(stagingDir, 'prompt.txt');
         yield* fs.writeFileString(promptPath, prompt, {mode: 0o600});
         const script = consolidationAgentScript(agent, executable);
         const result = yield* runCommandEffect('sh', ['-lc', script, 'threadnote-consolidate', promptPath], {
@@ -1129,48 +1218,41 @@ function consolidationPrompt(sources: readonly {readonly content: string; readon
   ].join('\n');
 }
 
-async function shareSummaries(config: RuntimeConfig): Promise<
-  readonly (ShareTeamConfig & {
-    readonly ahead?: number;
-    readonly behind?: number;
-    readonly default: boolean;
-    readonly dirty?: boolean;
-    readonly status?: string;
-    readonly warning?: string;
-  })[]
-> {
-  const teamsFile = await readTeamsFile(config);
-  const git = await findExecutable(['git']);
-  const entries = await Promise.all(
-    Object.values(teamsFile.teams).map(async team => {
-      if (!git) {
-        return {...team, default: teamsFile.defaultTeam === team.name, warning: 'git not found'};
-      }
-      const status = await runCommand(git, ['-C', team.worktree, 'status', '--short', '--branch'], {
-        allowFailure: true,
-      });
-      const ahead = await gitCount(git, team.worktree, '@{u}..HEAD');
-      const behind = await gitCount(git, team.worktree, 'HEAD..@{u}');
-      return {
-        ...team,
-        ahead,
-        behind,
-        default: teamsFile.defaultTeam === team.name,
-        dirty: status.stdout.split('\n').some(line => line.trim().length > 0 && !line.startsWith('##')),
-        status: status.stdout.trim(),
-        warning: status.exitCode === 0 ? undefined : status.stderr.trim() || status.stdout.trim(),
-      };
-    }),
+const shareSummaries = Effect.fn('manager.shareSummaries')(function* (config: RuntimeConfig) {
+  const teamsFile = yield* readTeamsFile(config);
+  const git = yield* findExecutable(['git']);
+  const entries = yield* Effect.all(
+    Object.values(teamsFile.teams).map(
+      Effect.fn('manager.callback')(function* (team) {
+        if (!git) {
+          return {...team, default: teamsFile.defaultTeam === team.name, warning: 'git not found'};
+        }
+        const status = yield* runCommand(git, ['-C', team.worktree, 'status', '--short', '--branch'], {
+          allowFailure: true,
+        });
+        const ahead = yield* gitCount(git, team.worktree, '@{u}..HEAD');
+        const behind = yield* gitCount(git, team.worktree, 'HEAD..@{u}');
+        return {
+          ...team,
+          ahead,
+          behind,
+          default: teamsFile.defaultTeam === team.name,
+          dirty: status.stdout.split('\n').some(line => line.trim().length > 0 && !line.startsWith('##')),
+          status: status.stdout.trim(),
+          warning: status.exitCode === 0 ? undefined : status.stderr.trim() || status.stdout.trim(),
+        };
+      }),
+    ),
   );
   return entries.sort((left, right) => left.name.localeCompare(right.name));
-}
+});
 
-async function collectManagerDoctorChecks(config: RuntimeConfig): Promise<readonly DoctorCheck[]> {
-  const threadnote = await findExecutable(['threadnote']);
+const collectManagerDoctorChecks = Effect.fn('manager.collectManagerDoctorChecks')(function* (config: RuntimeConfig) {
+  const threadnote = yield* findExecutable(['threadnote']);
   if (!threadnote) {
     return collectDoctorChecks(config, {});
   }
-  const result = await runCommand(
+  const result = yield* runCommand(
     threadnote,
     [
       '--home',
@@ -1187,7 +1269,7 @@ async function collectManagerDoctorChecks(config: RuntimeConfig): Promise<readon
   );
   const checks = parseDoctorChecksFromOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
   return checks.length > 0 ? checks : collectDoctorChecks(config, {});
-}
+});
 
 export function parseDoctorChecksFromOutput(output: string): readonly DoctorCheck[] {
   const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
@@ -1203,13 +1285,13 @@ export function parseDoctorChecksFromOutput(output: string): readonly DoctorChec
     }));
 }
 
-async function gitCount(git: string, worktree: string, range: string): Promise<number | undefined> {
-  const result = await runCommand(git, ['-C', worktree, 'rev-list', '--count', range], {allowFailure: true});
+const gitCount = Effect.fn('manager.gitCount')(function* (git: string, worktree: string, range: string) {
+  const result = yield* runCommand(git, ['-C', worktree, 'rev-list', '--count', range], {allowFailure: true});
   if (result.exitCode !== 0) {
     return undefined;
   }
   return Number.parseInt(result.stdout.trim(), 10) || 0;
-}
+});
 
 function doctorStatus(value: string): DoctorCheck['status'] {
   if (value === 'OK') {
@@ -1221,25 +1303,15 @@ function doctorStatus(value: string): DoctorCheck['status'] {
   return 'warn';
 }
 
-async function runCaptured(
-  action: () => Promise<void> | ManagerOperation<void>,
-  runEffect?: ManagerEffectPromise,
-): Promise<{readonly output: string}> {
-  const captured = await capturePromiseConsole(async () => {
-    const operation = action();
-    if (!Effect.isEffect(operation)) {
-      await operation;
-      return undefined;
-    }
-    if (!runEffect) throw new Error('Manager Effect runtime is unavailable.');
-    return runEffect(captureConsole(operation));
-  });
-  return {
-    output: [captured.output, captured.value?.output].filter(Boolean).join('\n'),
-  };
-}
+const runCaptured = Effect.fn('manager.runCaptured')(function* (
+  action: () => ManagerOperation<void>,
+  _runEffect?: ManagerEffectPromise,
+) {
+  const captured = yield* captureConsole(action());
+  return {output: captured.output};
+});
 
-function memoryUriFor(
+const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,
   metadata: {
     readonly kind: MemoryKind;
@@ -1247,14 +1319,14 @@ function memoryUriFor(
     readonly status: MemoryStatus;
     readonly topic: string;
   },
-): string {
+) {
   const project = uriSegment(metadata.project);
   const filename =
     metadata.status === 'active' && metadata.kind !== 'smoke'
       ? `${uriSegment(metadata.topic)}.md`
-      : `threadnote-${safeTimestamp()}-${sha256(JSON.stringify(metadata)).slice(0, 12)}.md`;
+      : `threadnote-${safeTimestamp()}-${(yield* sha256(JSON.stringify(metadata))).slice(0, 12)}.md`;
   return `${memoryDirectoryUri(config, metadata.kind, metadata.status, project)}/${filename}`;
-}
+});
 
 function sharedMemoryUriFor(
   config: RuntimeConfig,
@@ -1294,15 +1366,26 @@ function memoryDirectoryUri(
   }
 }
 
-function localMemoriesRoot(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking', config.account, 'user', uriSegment(config.user), 'memories');
-}
+const localMemoriesRoot = Effect.fn('manager.localMemoriesRoot')(function* (config: RuntimeConfig) {
+  return yield* pathJoin(
+    config.agentContextHome,
+    'data',
+    'viking',
+    config.account,
+    'user',
+    uriSegment(config.user),
+    'memories',
+  );
+});
 
-function localResourcesRoot(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking', config.account, 'resources');
-}
+const localResourcesRoot = Effect.fn('manager.localResourcesRoot')(function* (config: RuntimeConfig) {
+  return yield* pathJoin(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+});
 
-function localPathForMemoryUri(config: RuntimeConfig, uri: string): string | undefined {
+const localPathForMemoryUri = Effect.fn('manager.localPathForMemoryUri')(function* (
+  config: RuntimeConfig,
+  uri: string,
+) {
   const prefix = `viking://user/${uriSegment(config.user)}/memories`;
   if (uri !== prefix && !uri.startsWith(`${prefix}/`)) {
     return undefined;
@@ -1312,36 +1395,49 @@ function localPathForMemoryUri(config: RuntimeConfig, uri: string): string | und
   if (segments.some(segment => segment === '.' || segment === '..')) {
     return undefined;
   }
-  return join(localMemoriesRoot(config), ...segments);
-}
+  return yield* pathJoin(yield* localMemoriesRoot(config), ...segments);
+});
 
 function isMissingPathError(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') ||
+      ('reason' in err &&
+        typeof err.reason === 'object' &&
+        err.reason !== null &&
+        '_tag' in err.reason &&
+        err.reason._tag === 'NotFound'))
+  );
 }
 
-function localPathToMemoryUri(config: RuntimeConfig, path: string): string {
-  const relativePath = relative(localMemoriesRoot(config), path);
-  if (!relativePath || relativePath.startsWith('..') || relativePath.split(sep).includes('..')) {
+const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function* (config: RuntimeConfig, path: string) {
+  const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
+  if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
     throw new Error(`Path is outside the memories tree: ${path}`);
   }
-  return `viking://user/${uriSegment(config.user)}/memories/${relativePath.split(sep).join('/')}`;
-}
+  return `viking://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
+});
 
-async function ensurePersonalDirectoryChain(config: RuntimeConfig, ov: string, directoryUri: string): Promise<void> {
+const ensurePersonalDirectoryChain = Effect.fn('manager.ensurePersonalDirectoryChain')(function* (
+  config: RuntimeConfig,
+  ov: string,
+  directoryUri: string,
+) {
   const prefix = 'viking://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {
     const uri = `${prefix}${parts.slice(0, index).join('/')}`;
-    const statResult = await runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
+    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
     if (statResult.exitCode !== 0) {
-      await runCommand(
+      yield* runCommand(
         ov,
         withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
       );
     }
   }
-}
+});
 
 function publicConfig(config: RuntimeConfig): Record<string, unknown> {
   return {
@@ -1355,7 +1451,7 @@ function publicConfig(config: RuntimeConfig): Record<string, unknown> {
   };
 }
 
-function isAuthorized(context: ApiContext, request: IncomingMessage): boolean {
+function isAuthorized(context: ApiContext, request: ManagerRequest): boolean {
   const auth = request.headers.authorization;
   return auth === `Bearer ${context.token}` || request.headers['x-threadnote-token'] === context.token;
 }
@@ -1364,35 +1460,15 @@ function isSystemMemoryName(name: string): boolean {
   return name === '.abstract.md' || name === '.overview.md' || name === '.git' || name === '.gitignore';
 }
 
-async function listen(server: Server, port: number): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
+const readJsonBody = Effect.fn('manager.readJsonBody')(function* (request: ManagerRequest) {
+  return yield* request.body;
+});
+
+function writeJson(response: ManagerResponseSink, statusCode: number, body: unknown): void {
+  response.response = HttpServerResponse.jsonUnsafe(body, {
+    status: statusCode,
+    headers: {'cache-control': 'no-store'},
   });
-}
-
-async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-  }
-  if (chunks.length === 0) {
-    return {};
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  const parsed = JSON.parse(raw) as unknown;
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Expected a JSON object body.');
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, {'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store'});
-  response.end(`${JSON.stringify(body)}\n`);
 }
 
 function requiredQuery(url: URL, name: string): string {

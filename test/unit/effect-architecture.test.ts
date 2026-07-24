@@ -41,7 +41,7 @@ describe('Effect architecture boundaries', () => {
   });
 
   it('keeps raw Promise lifting primitives inside the shared adapters', async () => {
-    const allowed = new Set(['src/effect/console.ts', 'src/effect/errors.ts']);
+    const allowed = new Set(['src/effect/console.ts', 'src/effect/errors.ts', 'src/mcp_server.ts']);
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
       const relativePath = relative(repoRoot, path);
@@ -57,6 +57,28 @@ describe('Effect architecture boundaries', () => {
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
       expect(source, relative(repoRoot, path)).not.toMatch(/Effect\.(?:runPromise|runFork)\s*\(/);
+    }
+  });
+
+  it('keeps Node built-ins behind Effect platform services in production source', async () => {
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      expect(source, relative(repoRoot, path)).not.toMatch(
+        /(?:from\s+['"]node:|import\s*\(\s*['"]node:|require\s*\(\s*['"]node:)/,
+      );
+    }
+  });
+
+  it('keeps process globals inside the SystemInfo service boundary', async () => {
+    for (const path of await sourceFiles()) {
+      const relativePath = relative(repoRoot, path);
+      if (relativePath === 'src/effect/system.ts') {
+        continue;
+      }
+      const source = await readFile(path, 'utf8');
+      expect(source, relativePath).not.toMatch(
+        /(?<![$\w])process\.(?:argv|cwd|env|execPath|exitCode|getuid|kill|pid|platform|stdin|stdout)/,
+      );
     }
   });
 

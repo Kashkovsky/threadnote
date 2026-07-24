@@ -1,4 +1,4 @@
-import {NodeHttpClient} from '@effect/platform-node';
+import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
 import {OpenAiClient, OpenAiLanguageModel} from '@effect/ai-openai-compat';
 import {Context, Effect, Layer, pipe, Redacted, Schema} from 'effect';
 import {LanguageModel} from 'effect/unstable/ai';
@@ -34,7 +34,7 @@ export const consolidateWithAiEffect = Effect.fn('AiConsolidator.consolidate')(f
 });
 
 export function effectAiConfiguration(
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  env: Readonly<Record<string, string | undefined>>,
 ): EffectAiConfiguration | undefined {
   if (!['1', 'true', 'yes'].includes(env[EFFECT_AI_ENABLED_ENV]?.trim().toLowerCase() ?? '')) {
     return undefined;
