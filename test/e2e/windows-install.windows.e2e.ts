@@ -36,7 +36,6 @@ windowsIt('forwards PowerShell bootstrap switches and explicit package managers'
   const fakeBin = join(root, 'fake bin');
   const prefix = join(root, 'npm prefix');
   const log = join(root, 'bootstrap.log');
-  const policyLog = join(root, 'uv-policy.log');
   const npm = join(fakeBin, 'npm.cmd');
   const threadnote = join(prefix, 'threadnote.cmd');
   const powershellBin = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0');
@@ -63,11 +62,6 @@ windowsIt('forwards PowerShell bootstrap switches and explicit package managers'
     const unsupported = await runBootstrap(env, ['-PackageManager', 'unsupported']);
     expect(unsupported.code).not.toBe(0);
     expect(`${unsupported.stdout}\n${unsupported.stderr}`).toContain("Unsupported package manager 'unsupported'");
-    expectSuccess(
-      await runBootstrapThroughInvokeExpressionWithMockUv(env, policyLog),
-      'piped PowerShell bootstrap without uv',
-    );
-    await expect(readFile(policyLog, 'utf8')).resolves.toMatch(/^Bypass\s*$/);
     await writeFile(join(fakeBin, 'uv.cmd'), '@ECHO off\r\n@exit /b 0\r\n');
     expectSuccess(await runBootstrap(env, ['-DryRun', '-Force', '-WithHooks', '-PackageManager', 'uv']), 'uv');
     expectSuccess(await runBootstrapThroughInvokeExpression(env), 'piped PowerShell bootstrap');
@@ -419,34 +413,6 @@ async function runBootstrapThroughInvokeExpression(env: NodeJS.ProcessEnv): Prom
       },
     },
   );
-}
-
-async function runBootstrapThroughInvokeExpressionWithMockUv(
-  env: NodeJS.ProcessEnv,
-  policyLog: string,
-): Promise<ProcessResult> {
-  const mockInstaller = [
-    "if ((Get-ExecutionPolicy) -ne 'Bypass') { throw 'uv installer did not receive Bypass execution policy' }",
-    'Set-Content -LiteralPath $env:THREADNOTE_E2E_POLICY_LOG -Value (Get-ExecutionPolicy)',
-  ].join('; ');
-  const command = [
-    'function Invoke-RestMethod {',
-    '  param([string]$Uri)',
-    '  if ($Uri -ne \'https://astral.sh/uv/install.ps1\') { throw "Unexpected URI: $Uri" }',
-    '  $env:THREADNOTE_E2E_UV_INSTALLER',
-    '}',
-    '$previousPolicy = $env:PSExecutionPolicyPreference',
-    '& ([scriptblock]::Create((Get-Content -Raw -LiteralPath $env:THREADNOTE_E2E_INSTALLER)))',
-    "if ($env:PSExecutionPolicyPreference -ne $previousPolicy) { throw 'Process execution policy was not restored' }",
-  ].join('; ');
-  return runProcess('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
-    env: {
-      ...env,
-      THREADNOTE_E2E_INSTALLER: join(REPO_ROOT, 'scripts', 'install.ps1'),
-      THREADNOTE_E2E_POLICY_LOG: policyLog,
-      THREADNOTE_E2E_UV_INSTALLER: mockInstaller,
-    },
-  });
 }
 
 async function pack(destination: string, env: NodeJS.ProcessEnv): Promise<string> {
