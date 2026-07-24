@@ -1,6 +1,11 @@
-import {Effect, Result} from 'effect';
+import {Effect, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
+import {
+  commandEnvironment,
+  isOpenVikingCliExecutable,
+  runCommandEffect,
+  runStreamingCommandEffect,
+} from '../../src/effect/command.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
@@ -72,5 +77,56 @@ describe('Effect CommandExecutor', () => {
         ),
       ),
     ).rejects.toThrow();
+  });
+
+  it('injects Threadnote config paths into OpenViking CLI commands', async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const pathService = yield* Path.Path;
+        const threadnoteHome = pathService.join('workspace', 'threadnote home');
+        return {
+          environment: commandEnvironment(
+            pathService.join('tools', 'ov.exe'),
+            undefined,
+            {PATH: 'tools', THREADNOTE_HOME: threadnoteHome},
+            pathService,
+          ),
+          expectedCliConfig: pathService.join(threadnoteHome, 'ovcli.conf'),
+          expectedServerConfig: pathService.join(threadnoteHome, 'ov.conf'),
+        };
+      }),
+    );
+
+    expect(result.environment).toMatchObject({
+      OPENVIKING_CLI_CONFIG_FILE: result.expectedCliConfig,
+      OPENVIKING_CONFIG_FILE: result.expectedServerConfig,
+      PATH: 'tools',
+    });
+  });
+
+  it('preserves explicit OpenViking config overrides', async () => {
+    const environment = await run(
+      Effect.gen(function* () {
+        const pathService = yield* Path.Path;
+        return commandEnvironment(
+          'openviking',
+          {
+            OPENVIKING_CLI_CONFIG_FILE: 'custom-cli.json',
+            OPENVIKING_CONFIG_FILE: 'custom-server.json',
+            THREADNOTE_HOME: 'threadnote-home',
+          },
+          {},
+          pathService,
+        );
+      }),
+    );
+
+    expect(environment).toMatchObject({
+      OPENVIKING_CLI_CONFIG_FILE: 'custom-cli.json',
+      OPENVIKING_CONFIG_FILE: 'custom-server.json',
+    });
+    expect(isOpenVikingCliExecutable('C:\\tools\\ov.EXE')).toBe(true);
+    expect(isOpenVikingCliExecutable('/tools/openviking')).toBe(true);
+    expect(isOpenVikingCliExecutable('/tools/openviking-server')).toBe(false);
   });
 });
