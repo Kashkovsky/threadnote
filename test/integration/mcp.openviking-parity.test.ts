@@ -221,7 +221,12 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('viking://');
         expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
+        expect(instructions).toContain('directly');
+        expect(instructions).toContain('additional candidates');
         expect(instructions).toContain('Do not store');
+        const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
+        expect(reviewTool?.description).toContain('After routine durable and handoff writes');
+        expect(reviewTool?.description).toContain('additional reviewable');
       },
       {toolset: 'core'},
     );
@@ -301,6 +306,7 @@ describe('Threadnote MCP toolsets', () => {
         });
         const reviewId = /Review (review-[a-f0-9]+)/.exec(review)?.[1];
         const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(review)?.[1];
+        expect(review).toContain('Do not write these additional candidates until the user decides');
         expect(reviewId).toBeDefined();
         expect(candidateId).toBeDefined();
 

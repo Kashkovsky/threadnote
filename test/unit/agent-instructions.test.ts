@@ -32,4 +32,12 @@ describe('agent instructions', () => {
       expect(instructions).toContain(requiredText);
     }
   });
+
+  it('stores routine durable knowledge and handoffs without candidate approval', async () => {
+    const instructions = (await agentInstructions()).replace(/\s+/g, ' ');
+    expect(instructions).toContain('store normal durable feature knowledge and handoffs directly without asking');
+    expect(instructions).toContain('only for additional session-extracted candidates');
+    expect(instructions).not.toContain('include a concise handoff candidate');
+    expect(instructions).not.toContain('Store it only after approval');
+  });
 });

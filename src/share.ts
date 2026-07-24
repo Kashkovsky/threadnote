@@ -311,6 +311,7 @@ export interface ResolvedTeam {
 export interface ChangedFile {
   readonly path: string;
   readonly previousContent?: string;
+  readonly previousRevision?: string;
   readonly relativePath: string;
   readonly status: 'added' | 'removed' | 'modified';
 }
@@ -552,10 +553,8 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBe
       for (const team of syncTeams) {
         const syncResult = yield* Effect.result(runShareSyncQuiet(config, state, {team}));
         if (Result.isSuccess(syncResult)) {
-          const warning = syncResult.success;
-          if (warning) {
-            warnings.push(warning);
-          } else {
+          warnings.push(...syncResult.success.warnings);
+          if (syncResult.success.synced) {
             remainingBehind.delete(team);
             syncedTeams.push(team);
           }
@@ -620,6 +619,7 @@ const loadPendingReindexes = Effect.fn('share.loadPendingReindexes')(function* (
         changes.push({
           path: entry.path,
           previousContent: typeof entry.previousContent === 'string' ? entry.previousContent : undefined,
+          previousRevision: typeof entry.previousRevision === 'string' ? entry.previousRevision : undefined,
           relativePath: entry.relativePath,
           status: entry.status,
         });
@@ -828,15 +828,9 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
   if (dryRun) {
     yield* Console.log(`Would run: ${formatShellCommand(git, ['-C', worktree, 'rebase', '@{u}'])}`);
   } else if (pullResult && pullResult.exitCode !== 0) {
-    // Detect mid-rebase state via filesystem markers rather than parsing git's
-    // output — both because git's English phrasing varies by version and
-    // because non-English LC_MESSAGES rewrites the human-readable strings.
-    // share teams clone with --separate-git-dir so <worktree>/.git is a gitfile,
-    // not a directory; the rebase markers live in the real gitdir.
-    if (
-      (yield* exists(yield* pathJoin(team.config.gitdir, 'rebase-merge'))) ||
-      (yield* exists(yield* pathJoin(team.config.gitdir, 'rebase-apply')))
-    ) {
+    // Detect mid-rebase state via Git-resolved filesystem markers rather than
+    // parsing localized human-readable output.
+    if (yield* isShareGitOperationInProgress(git, worktree)) {
       throw new Error(
         `git pull --rebase reported conflicts in ${worktree}. The worktree is in a rebase-in-progress state.\nResolve the conflicts in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then re-run \`threadnote share sync\`.`,
       );
@@ -1067,33 +1061,60 @@ const runShareSyncQuiet = Effect.fn('share.runShareSyncQuiet')(function* (
   const git = yield* requiredExecutable('git');
   const worktree = team.config.worktree;
 
-  const pendingChanges = state.pendingReindexes.get(team.name);
-  if (pendingChanges && pendingChanges.length > 0) {
-    const result = yield* applyAndPersistChanges(config, team.config, state, pendingChanges, {quiet: true});
-    if (result.failed.length > 0) {
-      return `Shared team "${team.name}" has ${result.failed.length} pending shared memory conflict(s). Run \`threadnote share conflicts --team ${team.name}\` to inspect, then \`threadnote share conflict resolve <id> --take shared|local\` or \`--from-file <path>\`.`;
-    }
-  }
+  const pendingChanges = state.pendingReindexes.get(team.name) ?? [];
 
-  if (yield* hasUncommittedChanges(worktree)) {
-    return `Shared team "${team.name}" has uncommitted changes; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or resolve them.`;
+  if (yield* isShareGitOperationInProgress(git, worktree)) {
+    return {
+      synced: false,
+      warnings: [
+        ...pendingMemoryIngestWarnings(state, team.name),
+        `Shared team "${team.name}" has a Git operation already in progress; automatic sync left its index and worktree untouched. Finish or abort the operation, then rerun recall/read.`,
+      ],
+    };
   }
 
   const ahead = yield* gitOutput(worktree, ['rev-list', '--count', '@{u}..HEAD'], false);
   if (ahead === undefined) {
-    return `Shared team "${team.name}" upstream status is unknown; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to inspect and resolve it.`;
+    return {
+      synced: false,
+      warnings: [
+        ...pendingMemoryIngestWarnings(state, team.name),
+        `Shared team "${team.name}" upstream status is unknown; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to inspect and resolve it.`,
+      ],
+    };
   }
   if ((Number.parseInt(ahead, 10) || 0) > 0) {
-    return `Shared team "${team.name}" has local commits ahead of upstream; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or reconcile them.`;
+    return {
+      synced: false,
+      warnings: [
+        ...pendingMemoryIngestWarnings(state, team.name),
+        `Shared team "${team.name}" has local commits ahead of upstream; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or reconcile them.`,
+      ],
+    };
+  }
+
+  const restoredPaths = yield* restoreTrackedSharedChanges(git, worktree);
+  const restoreWarnings =
+    restoredPaths.length > 0
+      ? [
+          `Shared team "${team.name}" restored ${restoredPaths.length} tracked shared file change(s) from git before automatic sync because the remote is authoritative.`,
+        ]
+      : [];
+  if (yield* hasUncommittedChanges(worktree)) {
+    return {
+      synced: false,
+      warnings: [
+        ...pendingMemoryIngestWarnings(state, team.name),
+        ...restoreWarnings,
+        `Shared team "${team.name}" still has untracked or unmanaged changes; Threadnote left them untouched and skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to inspect and resolve them.`,
+      ],
+    };
   }
 
   const beforeRev = yield* gitOutput(worktree, ['rev-parse', 'HEAD'], false);
   const pullResult = yield* runCommand(git, ['-C', worktree, 'rebase', '@{u}'], {allowFailure: true});
   if (pullResult.exitCode !== 0) {
-    if (
-      (yield* exists(yield* pathJoin(team.config.gitdir, 'rebase-merge'))) ||
-      (yield* exists(yield* pathJoin(team.config.gitdir, 'rebase-apply')))
-    ) {
+    if (yield* isShareGitOperationInProgress(git, worktree)) {
       throw new Error(
         `Automatic share sync hit git conflicts in ${worktree}. Resolve them in-place, run \`git -C ${worktree} rebase --continue\` (or --abort), then rerun recall/read.`,
       );
@@ -1103,21 +1124,33 @@ const runShareSyncQuiet = Effect.fn('share.runShareSyncQuiet')(function* (
     );
   }
   const afterRev = yield* gitOutput(worktree, ['rev-parse', 'HEAD'], false);
+  let pulledChanges: readonly ChangedFile[] = [];
   if (beforeRev && afterRev && beforeRev !== afterRev) {
-    const changes = yield* listChangedFiles(worktree, beforeRev, afterRev);
-    if (changes.length > 0) {
-      // Merge with anything still pending from the drain above so a failed
-      // drain item doesn't get clobbered when we persist the new changes.
-      const stillPending = state.pendingReindexes.get(team.name) ?? [];
-      const combined = mergeChanges(stillPending, changes);
-      const result = yield* applyAndPersistChanges(config, team.config, state, combined, {quiet: true});
-      if (result.failed.length > 0) {
-        return `Shared team "${team.name}" has ${result.failed.length} pending shared memory conflict(s). Run \`threadnote share conflicts --team ${team.name}\` to inspect, then \`threadnote share conflict resolve <id> --take shared|local\` or \`--from-file <path>\`.`;
-      }
-    }
+    pulledChanges = yield* listChangedFiles(worktree, beforeRev, afterRev);
   }
-  return undefined;
+  const combined = mergeChanges(pendingChanges, pulledChanges);
+  if (combined.length > 0) {
+    yield* applyAndPersistChanges(config, team.config, state, combined, {quiet: true});
+  }
+  return {
+    synced: true,
+    warnings: [...restoreWarnings, ...pendingMemoryIngestWarnings(state, team.name, true)],
+  };
 });
+
+function pendingMemoryIngestWarnings(
+  state: AutoShareState,
+  teamName: string,
+  continuedForOtherChanges = false,
+): readonly string[] {
+  const count = state.pendingReindexes.get(teamName)?.length ?? 0;
+  if (count === 0) {
+    return [];
+  }
+  return [
+    `Shared team "${teamName}" has ${count} pending shared memory ingest failure(s).${continuedForOtherChanges ? ' Automatic sync continued for other remote changes.' : ''} Run \`threadnote share conflicts --team ${teamName}\` to inspect them.`,
+  ];
+}
 
 const teamsForShareQuery = Effect.fn('share.teamsForShareQuery')(function* (
   config: ShareRuntime,
@@ -1240,18 +1273,15 @@ const inspectShareConflict = Effect.fn('share.inspectShareConflict')(function* (
   const uri = yield* workfileToVikingUri(config, team.config, change.path);
   const localContent = yield* readOptionalMemoryContent(config, ov, uri);
   const shared = yield* readOptionalSharedConflictContent(uri, change);
-  const previousContent =
-    change.previousContent === undefined
-      ? undefined
-      : yield* prepareSharedInboundContentEffect(uri, change.previousContent);
+  const previous = yield* readOptionalPreviousConflictContent(team.config.worktree, uri, change);
   return {
     hasLocalContent: localContent !== undefined,
-    hasPreviousContent: previousContent !== undefined,
+    hasPreviousContent: previous.content !== undefined,
     hasSharedContent: shared.content !== undefined,
     id: conflictId(team.name, change.relativePath),
     localContent,
-    previousContent,
-    reason: shareConflictReason(change, localContent, shared.content, previousContent, shared.error),
+    previousContent: previous.content,
+    reason: shareConflictReason(change, localContent, shared.content, previous.content, shared.error, previous.error),
     relativePath: change.relativePath,
     sharedContent: shared.content,
     status: change.status,
@@ -1279,12 +1309,33 @@ const readOptionalSharedConflictContent = Effect.fn('share.readOptionalSharedCon
   return {content: undefined, error: err instanceof Error ? err.message : String(err)};
 });
 
+const readOptionalPreviousConflictContent = Effect.fn('share.readOptionalPreviousConflictContent')(function* (
+  worktree: string,
+  uri: string,
+  change: ChangedFile,
+) {
+  const rawContent =
+    change.previousContent ??
+    (change.previousRevision
+      ? yield* gitFileContent(worktree, change.previousRevision, change.relativePath)
+      : undefined);
+  if (rawContent === undefined) {
+    return {content: undefined, error: undefined};
+  }
+  const result = yield* Effect.result(prepareSharedInboundContentEffect(uri, rawContent));
+  if (Result.isSuccess(result)) {
+    return {content: result.success, error: undefined};
+  }
+  const err = result.failure;
+  return {content: undefined, error: err instanceof Error ? err.message : String(err)};
+});
+
 const readOptionalMemoryContent = Effect.fn('share.readOptionalMemoryContent')(function* (
   config: ShareRuntime,
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExists(ov, config, uri))) {
+  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
@@ -1296,9 +1347,13 @@ function shareConflictReason(
   sharedContent: string | undefined,
   previousContent: string | undefined,
   sharedError: string | undefined,
+  previousError: string | undefined,
 ): string {
   if (sharedError) {
     return `shared file is not readable: ${sharedError}`;
+  }
+  if (previousError && change.status !== 'added') {
+    return `previous shared content is not readable: ${previousError}`;
   }
   if (change.status === 'added') {
     if (localContent === undefined) {
@@ -4620,7 +4675,7 @@ const prepareSharedInboundContentEffect = Effect.fn('share.prepareSharedInboundC
 });
 
 function prepareSharedInboundContent(uri: string, rawContent: string): string {
-  const stripped = stripPersonalProvenance(rawContent);
+  const stripped = stripPersonalProvenance(canonicalMemoryDocumentContent(rawContent));
   const scrub = applyScrubber(stripped, {redact: false});
   if (scrub.blocker) {
     throw new Error(`Refusing to ingest ${uri}: possible ${scrub.blocker}. Strip the sensitive value upstream first.`);
@@ -4679,6 +4734,78 @@ const hasUncommittedChanges = Effect.fn('share.hasUncommittedChanges')(function*
   return result.stdout.trim().length > 0;
 });
 
+const restoreTrackedSharedChanges = Effect.fn('share.restoreTrackedSharedChanges')(function* (
+  git: string,
+  worktree: string,
+) {
+  const pathspecs = yield* existingShareablePathspecs(git, worktree);
+  if (pathspecs.length === 0) {
+    return [];
+  }
+  const changed = yield* runCommand(
+    git,
+    ['-C', worktree, 'diff', '--name-only', '--no-renames', '-z', 'HEAD', '--', ...pathspecs],
+    {allowFailure: true},
+  );
+  if (changed.exitCode !== 0) {
+    throw new Error(
+      `Could not inspect tracked shared changes in ${worktree}: ${changed.stderr.trim() || changed.stdout.trim() || 'unknown git diff error'}`,
+    );
+  }
+  const relativePaths = [...new Set(changed.stdout.split('\0').filter(Boolean))];
+  if (relativePaths.length === 0) {
+    return [];
+  }
+  const restored = yield* runCommand(
+    git,
+    ['-C', worktree, 'restore', '--source=HEAD', '--staged', '--worktree', '--', ...pathspecs],
+    {allowFailure: true},
+  );
+  if (restored.exitCode !== 0) {
+    throw new Error(
+      `Could not restore tracked shared changes in ${worktree}: ${restored.stderr.trim() || restored.stdout.trim() || 'unknown git restore error'}`,
+    );
+  }
+  return relativePaths;
+});
+
+const SHARE_GIT_OPERATION_MARKERS = [
+  'rebase-merge',
+  'rebase-apply',
+  'MERGE_HEAD',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'sequencer',
+] as const;
+
+const isShareGitOperationInProgress = Effect.fn('share.isShareGitOperationInProgress')(function* (
+  git: string,
+  worktree: string,
+) {
+  const args = ['-C', worktree, 'rev-parse', ...SHARE_GIT_OPERATION_MARKERS.flatMap(marker => ['--git-path', marker])];
+  const result = yield* runCommand(git, args, {allowFailure: true});
+  if (result.exitCode !== 0) {
+    return yield* Effect.fail(
+      new Error(
+        `Could not inspect Git operation state in ${worktree}: ${result.stderr.trim() || result.stdout.trim() || 'unknown git rev-parse error'}`,
+      ),
+    );
+  }
+  const markerPaths = result.stdout.split(/\r?\n/).filter(Boolean);
+  if (markerPaths.length !== SHARE_GIT_OPERATION_MARKERS.length) {
+    return yield* Effect.fail(
+      new Error(`Could not inspect Git operation state in ${worktree}: git returned incomplete marker paths.`),
+    );
+  }
+  for (const markerPath of markerPaths) {
+    const absolutePath = (yield* pathIsAbsolute(markerPath)) ? markerPath : yield* pathJoin(worktree, markerPath);
+    if (yield* exists(absolutePath)) {
+      return true;
+    }
+  }
+  return false;
+});
+
 /** Returns the trimmed stdout of `git -C <worktree> <args>` on success, or `undefined` on dry-run / non-zero exit. */
 const gitOutput = Effect.fn('share.gitOutput')(function* (worktree: string, args: readonly string[], dryRun: boolean) {
   if (dryRun) {
@@ -4721,8 +4848,7 @@ export const listChangedFiles = Effect.fn('share.listChangedFiles')(function* (
       if (oldRel) {
         changes.push({
           path: yield* pathJoin(worktree, oldRel),
-          previousContent:
-            oldMode === GIT_MODE_SYMLINK ? undefined : yield* gitFileContent(worktree, beforeRev, oldRel),
+          previousRevision: oldMode === GIT_MODE_SYMLINK ? undefined : beforeRev,
           relativePath: oldRel,
           status: 'removed',
         });
@@ -4738,7 +4864,7 @@ export const listChangedFiles = Effect.fn('share.listChangedFiles')(function* (
       if (head === 'D') {
         changes.push({
           path: yield* pathJoin(worktree, rel),
-          previousContent: oldMode === GIT_MODE_SYMLINK ? undefined : yield* gitFileContent(worktree, beforeRev, rel),
+          previousRevision: oldMode === GIT_MODE_SYMLINK ? undefined : beforeRev,
           relativePath: rel,
           status: 'removed',
         });
@@ -4746,7 +4872,7 @@ export const listChangedFiles = Effect.fn('share.listChangedFiles')(function* (
         if (oldMode !== GIT_MODE_ABSENT) {
           changes.push({
             path: yield* pathJoin(worktree, rel),
-            previousContent: oldMode === GIT_MODE_SYMLINK ? undefined : yield* gitFileContent(worktree, beforeRev, rel),
+            previousRevision: oldMode === GIT_MODE_SYMLINK ? undefined : beforeRev,
             relativePath: rel,
             status: 'removed',
           });
@@ -4755,10 +4881,7 @@ export const listChangedFiles = Effect.fn('share.listChangedFiles')(function* (
         const status = head === 'A' ? 'added' : 'modified';
         changes.push({
           path: yield* pathJoin(worktree, rel),
-          previousContent:
-            oldMode === GIT_MODE_ABSENT || oldMode === GIT_MODE_SYMLINK
-              ? undefined
-              : yield* gitFileContent(worktree, beforeRev, rel),
+          previousRevision: oldMode === GIT_MODE_ABSENT || oldMode === GIT_MODE_SYMLINK ? undefined : beforeRev,
           relativePath: rel,
           status,
         });
@@ -4811,10 +4934,6 @@ const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(fun
           if (currentContent === undefined) {
             return;
           }
-          yield* Effect.try({
-            catch: error => error,
-            try: () => assertInboundPreviousContentMatches(change, uri, currentContent),
-          });
           yield* removeMemoryUri(config, ov, uri, false, options);
           return;
         }
@@ -4832,26 +4951,14 @@ const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(fun
         const content = yield* readSharedInboundFileContent(uri, change.path);
         const currentContent = yield* readExistingMemoryContent(config, ov, uri);
         if (currentContent !== undefined) {
-          if (change.status === 'added') {
-            if (sharedMemoryContentsEquivalent(currentContent, content)) {
-              return;
-            }
-            return yield* Effect.fail(
-              new Error(
-                `Refusing to ingest newly added shared file over existing local OpenViking resource ${uri}; inspect and resolve the local edit first.`,
-              ),
-            );
+          if (
+            sharedMemoryContentsEquivalent(currentContent, content) &&
+            countManagedMemoryFieldsTrailers(currentContent) <= 1
+          ) {
+            return;
           }
-          yield* Effect.try({
-            catch: error => error,
-            try: () => assertInboundPreviousContentMatches(change, uri, currentContent),
-          });
-          const reason =
-            change.status === 'modified'
-              ? 'updating from upstream after verifying local content matches the previous shared version'
-              : 'aligning OV to upstream (resource pre-existed in OV, likely from an earlier local publish or sync)';
           if (options.quiet !== true) {
-            yield* Console.warn(`share sync: ${uri}: ${reason}.`);
+            yield* Console.warn(`share sync: ${uri}: replacing local shared cache content with the remote version.`);
           }
         }
         yield* ensureSharedDirectoryChain(config, ov, uri, false, options);
@@ -4876,32 +4983,45 @@ const readExistingMemoryContent = Effect.fn('share.readExistingMemoryContent')(f
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExists(ov, config, uri))) {
+  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
 });
 
-function assertInboundPreviousContentMatches(change: ChangedFile, uri: string, currentContent: string): void {
-  if (change.previousContent === undefined) {
-    throw new Error(
-      `Refusing to apply inbound shared change for ${uri}: previous shared content is unavailable, so local edits cannot be distinguished from upstream edits.`,
-    );
+const vikingResourceExistsStrict = Effect.fn('share.vikingResourceExistsStrict')(function* (
+  ov: string,
+  config: ShareRuntime,
+  uri: string,
+) {
+  const args = withIdentity(config, ['stat', uri]);
+  const result = yield* runCommand(ov, args, {allowFailure: true});
+  if (result.exitCode === 0) {
+    return true;
   }
-  const expectedContent = prepareSharedInboundContent(uri, change.previousContent);
-  if (!sharedMemoryContentsEquivalent(currentContent, expectedContent)) {
-    throw new Error(
-      `Refusing to apply inbound shared change for ${uri}: local OpenViking content differs from the previous shared version. Inspect and resolve the local edit first.`,
-    );
+  const detail = `${result.stderr}\n${result.stdout}`.trim();
+  if (
+    result.exitCode === 1 &&
+    (/\[NOT_FOUND\]/i.test(detail) ||
+      /\bresource (?:was )?(?:not[ _-]?found|does not exist)\b|no such resource/i.test(detail))
+  ) {
+    return false;
   }
-}
+  return yield* Effect.fail(
+    new Error(`${formatShellCommand(ov, args)} failed: ${detail || `exit code ${result.exitCode}`}`),
+  );
+});
 
 function sharedMemoryContentsEquivalent(left: string, right: string): boolean {
   return normalizeSharedMemoryComparisonContent(left) === normalizeSharedMemoryComparisonContent(right);
 }
 
 function normalizeSharedMemoryComparisonContent(content: string): string {
-  return content.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+  return canonicalMemoryDocumentContent(content.replace(/\r\n?/g, '\n'));
+}
+
+function countManagedMemoryFieldsTrailers(content: string): number {
+  return content.match(/<!-- MEMORY_FIELDS\r?\n/g)?.length ?? 0;
 }
 
 export function mergeChanges(...lists: ReadonlyArray<readonly ChangedFile[]>): readonly ChangedFile[] {
@@ -4929,10 +5049,23 @@ const applyAndPersistChanges = Effect.fn('share.applyAndPersistChanges')(functio
   yield* writePendingReindexes(config, state);
   const result = yield* applyChangesToOpenViking(config, team, changes, options);
   if (result.failed.length > 0) {
-    state.pendingReindexes.set(team.name, result.failed);
+    const failed = yield* Effect.forEach(result.failed, change =>
+      materializePreviousContentForPendingConflict(team.worktree, change),
+    );
+    state.pendingReindexes.set(team.name, failed);
   } else {
     state.pendingReindexes.delete(team.name);
   }
   yield* writePendingReindexes(config, state);
   return result;
 });
+
+const materializePreviousContentForPendingConflict = Effect.fn('share.materializePreviousContentForPendingConflict')(
+  function* (worktree: string, change: ChangedFile) {
+    if (change.previousContent !== undefined || change.previousRevision === undefined) {
+      return change;
+    }
+    const previousContent = yield* gitFileContent(worktree, change.previousRevision, change.relativePath);
+    return previousContent === undefined ? change : {...change, previousContent, previousRevision: undefined};
+  },
+);

@@ -287,6 +287,20 @@ pulled markdown files into OpenViking, and then returns the requested
 recall/read result. Sync errors degrade to warnings so memory access still
 works with the best local data available.
 
+For automatic recall/read sync, the configured remote is the source of truth
+for shared memories. Managed OpenViking metadata is ignored when comparing
+memory content, and remote additions, updates, and deletions replace the local
+OpenViking shared cache. If tracked Threadnote-managed files are dirty and
+there are no unpublished commits, Threadnote restores them from Git before
+rebasing and reports the repair. Unpublished commits are never discarded.
+Untracked or unmanaged files are left untouched and block the automatic rebase
+with an explicit warning.
+
+An individual memory that still cannot be ingested, for example because the
+scrubber rejects it or OpenViking is unavailable, remains queued for retry but
+does not prevent later remote commits or other memories from syncing. The
+warning names the pending count while successful Git sync still completes.
+
 Manual sync remains useful when you want to publish local edits, clear a dirty
 shared worktree, resolve git conflicts, or force a sync immediately:
 
@@ -305,7 +319,9 @@ are root guidance/metadata files (`README.md`, `AGENTS.md`, `CLAUDE.md`,
 files remain after staging those paths, sync stops before rebase so you can
 commit, remove, or ignore them. Pass `--no-auto-commit` to refuse syncing when
 the worktree is dirty. Automatic recall/read sync never commits a dirty shared
-worktree; it warns and leaves that case for explicit `threadnote share sync`.
+worktree: it repairs tracked shared-cache drift from Git, but preserves
+unpublished commits and untracked or unmanaged files for explicit
+`threadnote share sync`.
 
 ### Take a memory back
 
@@ -400,11 +416,12 @@ collide; coordinate ownership per-topic, or use distinct topics.
 
 ### Resolve pending shared memory conflicts
 
-If `share sync` cannot safely reindex a shared memory into OpenViking, it keeps
-that file in the pending reindex queue and prints resolver commands. This is
-different from a git rebase conflict: the shared git worktree is clean, but the
-local OpenViking resource differs from the shared file or from the previous
-shared version.
+If `share sync` cannot reindex a shared memory into OpenViking, it keeps that
+file in the pending reindex queue and prints resolver commands. This is
+different from a git rebase conflict. Ordinary local shared-cache divergence is
+resolved automatically from the remote file; pending entries are reserved for
+real ingest failures such as scrubber rejection, an unreadable file, or an
+OpenViking error. Pending entries do not block unrelated remote updates.
 
 Inspect pending conflicts:
 

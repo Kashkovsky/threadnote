@@ -487,6 +487,98 @@ describe('published local bins', () => {
     expect(finalList.stdout).not.toContain('renamed-team');
   });
 
+  it('keeps real OpenViking auto-sync remote-authoritative across managed metadata drift', async () => {
+    const fixture = await makeFixture('share-auto-sync');
+    const remote = await makeBareRemote(fixture);
+    const seed = join(fixture.root, 'shared-seed');
+    const team = 'auto-sync-e2e';
+    const initialized = await runCli(fixture, ['share', 'init', remote, '--team', team, '--set-default']);
+    expectSuccess(initialized, 'share init for auto-sync');
+
+    try {
+      expectSuccess(
+        await runProcess('git', ['pull', '--rebase', 'origin', 'main'], {cwd: seed, env: fixture.env}),
+        'seed pull after share init',
+      );
+      const trailer = ['<!-- MEMORY_FIELDS', '{', '  "version": 1', '}', '-->'].join('\n');
+      const firstRelativePath = 'durable/projects/e2e/auto-sync-first.md';
+      const firstUri = `viking://user/e2e/memories/shared/${team}/${firstRelativePath}`;
+      const firstBody = 'Remote-authoritative zebra helix memory.';
+      await mkdir(dirname(join(seed, firstRelativePath)), {recursive: true});
+      await writeFile(
+        join(seed, firstRelativePath),
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: e2e',
+          'topic: auto-sync-first',
+          'source_agent_client: e2e',
+          'timestamp: 2026-07-24T09:00:00.000Z',
+          '',
+          firstBody,
+          '',
+          trailer,
+        ].join('\n'),
+        'utf8',
+      );
+      for (const args of [
+        ['add', firstRelativePath],
+        ['commit', '-m', 'add first auto-sync memory'],
+        ['push', 'origin', 'main'],
+      ] as const) {
+        expectSuccess(await runProcess('git', args, {cwd: seed, env: fixture.env}), `git ${args.join(' ')}`);
+      }
+
+      const firstRecall = await runCli(fixture, ['recall', '--query', firstBody, '--node-limit', '5']);
+      expectSuccess(firstRecall, 'first shared auto-sync recall');
+      expect(firstRecall.stdout).toContain(firstUri);
+
+      const worktree = join(fixture.home, 'data', 'viking', 'local', 'user', 'e2e', 'memories', 'shared', team);
+      const firstWorktreePath = join(worktree, firstRelativePath);
+      const firstStored = await readFile(firstWorktreePath, 'utf8');
+      expect(firstStored.match(/<!-- MEMORY_FIELDS/g)).toHaveLength(1);
+
+      await writeFile(firstWorktreePath, `${firstStored.trim()}\n\n${trailer}\n`, 'utf8');
+      const secondRelativePath = 'durable/projects/e2e/auto-sync-second.md';
+      const secondUri = `viking://user/e2e/memories/shared/${team}/${secondRelativePath}`;
+      const secondBody = 'Later remote kestrel lattice memory.';
+      await writeFile(
+        join(seed, secondRelativePath),
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: e2e',
+          'topic: auto-sync-second',
+          'source_agent_client: e2e',
+          'timestamp: 2026-07-24T09:01:00.000Z',
+          '',
+          secondBody,
+          '',
+          trailer,
+        ].join('\n'),
+        'utf8',
+      );
+      for (const args of [
+        ['add', secondRelativePath],
+        ['commit', '-m', 'add second auto-sync memory'],
+        ['push', 'origin', 'main'],
+      ] as const) {
+        expectSuccess(await runProcess('git', args, {cwd: seed, env: fixture.env}), `git ${args.join(' ')}`);
+      }
+
+      const secondRecall = await runCli(fixture, ['recall', '--query', secondBody, '--node-limit', '5']);
+      expectSuccess(secondRecall, 'second shared auto-sync recall');
+      expect(secondRecall.stdout).toContain(secondUri);
+      expect(`${secondRecall.stdout}\n${secondRecall.stderr}`).toContain('restored 1 tracked shared file');
+      expect((await readFile(firstWorktreePath, 'utf8')).match(/<!-- MEMORY_FIELDS/g)).toHaveLength(1);
+      expect((await runCli(fixture, ['read', secondUri])).stdout).toContain(secondBody);
+    } finally {
+      await runCli(fixture, ['share', 'remove', '--team', team]);
+    }
+  });
+
   it('runs the manager UI and authenticated read/write APIs, then finalizes on SIGINT', async () => {
     const fixture = await makeFixture('manager');
     expectSuccess(
@@ -692,7 +784,9 @@ describe('published local bins', () => {
     await withMcpClient(fixture, LIVE_OV.mcpUrl, 'core', async client => {
       const reviewResult = await callToolResult(client, 'review_session_context', closeoutInput);
       const review = structuredContentFromToolResult<CandidateReviewContent>(reviewResult);
-      expect(textFromToolResult(reviewResult)).toContain('Do not write memory until the user decides');
+      expect(textFromToolResult(reviewResult)).toContain(
+        'Do not write these additional candidates until the user decides',
+      );
       expect(review).toMatchObject({noAction: false, revision: 1});
       expect(review.candidates).toHaveLength(3);
       expect(review.candidates.map(candidate => candidate.recommendation)).toEqual(['create', 'create', 'create']);
