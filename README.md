@@ -39,8 +39,8 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   agents load selected `viking://` records instead of replaying the entire memory history.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, currentness, authority, and bounded
   feedback produce a confidence level and inspectable ranking reasons.
-- **Useful memory is suggested, not silently assumed.** At meaningful task closeout, the agent proposes up to three
-  deduplicated updates in the current conversation and writes only what the user approves.
+- **Routine continuity is automatic.** At meaningful task closeout, the agent writes normal durable feature knowledge
+  and handoffs directly. It proposes only additional extracted candidates and writes those after user approval.
 - **Durable and addressable.** Stable pointers let agents update one current `project/topic` instead of accumulating
   stale notes.
 - **Built for engineering work.** Decisions, contracts, gotchas, release workflows, and current branch state have
@@ -154,8 +154,8 @@ memory and continues without asking the user to reconstruct it."
 - **Switch agents:** "Save where we are" -> agent stores a handoff the next MCP-enabled agent can read.
 - **Survive compaction:** Claude Code's hook can snapshot a handoff before compaction; other agents can recall it later.
 - **Remember a repo fact:** "This repo cuts release notes from CI" -> agent stores a durable workflow memory.
-- **Review what this task taught the next agent:** the agent proposes decisions, invariants, preferences, and handoff
-  state after delivering the result; approve, edit, defer, or reject in the same conversation.
+- **Review additional context from a task:** after storing the normal durable memory and handoff, the agent proposes up
+  to three extra candidates; approve, edit, defer, or reject them in the same conversation.
 - **Share with teammates:** publish a curated durable memory or reusable skill to a team git repo.
 - **Clean up overlap:** run `threadnote compact --project <repo> --topic <issue> --dry-run` before archiving stale
   handoffs or forgetting exact duplicates.

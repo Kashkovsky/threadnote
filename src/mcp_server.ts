@@ -195,7 +195,7 @@ const mainEffect = Effect.gen(function* () {
   });
   mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
-    'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `viking://` results. At task closeout call `review_session_context`, show recommendations, then call `apply_memory_candidates` only after explicit user approval/edit/defer/reject. Store approved facts as durable and progress as handoff with stable project/topic; replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
+    'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `viking://` results. At closeout store durable feature knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
@@ -659,7 +659,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'At meaningful task closeout, form up to three reviewable decision, invariant, preference, and handoff candidates. Compares active project/topic memories and persists only a pending review plus audit event; it never creates durable memory.',
+        'After routine durable and handoff writes, form up to three additional reviewable decision, invariant, preference, or handoff candidates. Compares active project/topic memories and persists only a pending review plus audit event; it never creates active memory.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute caller workspace path, used to infer project when project is omitted'),
         decisions: McpInput.stringOrStrings('Decisions worth carrying into later agent sessions'),
@@ -2130,12 +2130,12 @@ function candidateReviewResult(review: CandidateReview): CallToolResult {
   const actionable = review.candidates.filter(candidate => candidate.recommendation !== 'no_action');
   const lines =
     review.candidates.length === 0
-      ? ['No memory candidates found in this task closeout. No durable memory was written.']
+      ? ['No additional memory candidates found in this task closeout. No candidate memory was written.']
       : actionable.length === 0
         ? ['No memory update is recommended; every candidate duplicates active memory.']
         : [
             `Review ${review.reviewId} · revision ${review.revision}`,
-            'Present these recommendations in the current conversation. Do not write memory until the user decides:',
+            'Present these additional recommendations in the current conversation. Do not write these additional candidates until the user decides:',
             ...review.candidates.map(
               (candidate, index) =>
                 `${index + 1}. [${candidate.recommendation}] ${candidate.kind}/${candidate.topic} · ${candidate.reason}\n` +

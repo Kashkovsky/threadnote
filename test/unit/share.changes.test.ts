@@ -134,11 +134,12 @@ describe('listChangedFiles', () => {
       expect(changes).toContainEqual(
         expect.objectContaining({
           path: join(repo, 'durable/projects/threadnote/replace.md'),
-          previousContent: 'original\n',
+          previousRevision: beforeRev,
           relativePath: 'durable/projects/threadnote/replace.md',
           status: 'removed',
         }),
       );
+      expect(changes[0]?.previousContent).toBeUndefined();
     } finally {
       if (secretPath) {
         await rm(secretPath, {force: true});

@@ -47,9 +47,8 @@ Create a handoff for the next agent before you stop.
 
 For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
 to user-level Codex, Claude, Cursor, and Copilot instruction files. That guidance tells agents to recall context at task
-start and, after meaningful work, review candidate decisions, invariants, preferences, and handoff state in the current
-conversation. Active memory is written only after the user approves; direct `remember_context` requests remain
-available.
+start and, after meaningful work, directly store normal durable feature knowledge and handoff state. Only additional
+session-extracted candidates require the user to approve, edit, defer, or reject them.
 
 ## Migration Steps
 

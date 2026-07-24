@@ -23,6 +23,10 @@ describe('buildOnboardingGuide', () => {
     // It instructs the agent to present + offer, not to paste verbatim.
     expect(guide).toMatch(/OFFER to run it/);
     expect(guide).toMatch(/Do NOT paste this list verbatim/);
+    expect(guide).toContain('Store routine durable feature knowledge and handoffs directly');
+    expect(guide).toContain('Review only additional session-extracted candidates');
+    expect(guide).toContain('"decisions":["Additional decision..."]');
+    expect(guide).toContain('"sourceSessionId":"<session-id>"');
   });
 
   it('includes runnable advanced MCP calls for the full toolset', () => {
