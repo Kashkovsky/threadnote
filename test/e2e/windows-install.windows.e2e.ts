@@ -59,13 +59,19 @@ windowsIt('forwards PowerShell bootstrap switches and explicit package managers'
     for (const manager of ['pip', 'pipx']) {
       expectSuccess(await runBootstrap(env, ['-DryRun', '-NoStart', '-PackageManager', manager]), manager);
     }
+    const unsupported = await runBootstrap(env, ['-PackageManager', 'unsupported']);
+    expect(unsupported.code).not.toBe(0);
+    expect(`${unsupported.stdout}\n${unsupported.stderr}`).toContain("Unsupported package manager 'unsupported'");
     await writeFile(join(fakeBin, 'uv.cmd'), '@ECHO off\r\n@exit /b 0\r\n');
     expectSuccess(await runBootstrap(env, ['-DryRun', '-Force', '-WithHooks', '-PackageManager', 'uv']), 'uv');
+    expectSuccess(await runBootstrapThroughInvokeExpression(env), 'piped PowerShell bootstrap');
 
     const calls = (await readFile(log, 'utf8')).replaceAll('"', '');
+    expect(calls).toContain('npm install --global threadnote@beta --registry=https://registry.npmjs.org/');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pip');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pipx');
     expect(calls).toContain('threadnote install --dry-run --force --with-hooks --package-manager uv');
+    expect(calls).toMatch(/threadnote install\s*$/m);
   } finally {
     await rm(root, {force: true, recursive: true});
   }
@@ -387,6 +393,25 @@ async function runBootstrap(env: NodeJS.ProcessEnv, args: readonly string[]): Pr
       ...args,
     ],
     {env},
+  );
+}
+
+async function runBootstrapThroughInvokeExpression(env: NodeJS.ProcessEnv): Promise<ProcessResult> {
+  return runProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-Content -Raw -LiteralPath $env:THREADNOTE_E2E_INSTALLER | Invoke-Expression',
+    ],
+    {
+      env: {
+        ...env,
+        THREADNOTE_E2E_INSTALLER: join(REPO_ROOT, 'scripts', 'install.ps1'),
+      },
+    },
   );
 }
 

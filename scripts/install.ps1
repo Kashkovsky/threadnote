@@ -4,13 +4,15 @@ param(
   [switch]$Force,
   [switch]$NoStart,
   [switch]$WithHooks,
-  [ValidateSet('uv', 'pipx', 'pip')]
   [string]$PackageManager,
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$ThreadnoteArgs
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PackageManager -and $PackageManager -notin @('uv', 'pipx', 'pip')) {
+  throw "Unsupported package manager '$PackageManager'. Expected uv, pipx, or pip."
+}
 $package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@beta' }
 $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   $env:THREADNOTE_NPM_REGISTRY

@@ -235,6 +235,8 @@ describe('Windows lifecycle defaults', () => {
 
     expect(installer).toContain("else { 'threadnote@beta' }");
     expect(installer).not.toContain("else { 'threadnote@latest' }");
+    expect(installer).not.toContain('[ValidateSet(');
+    expect(installer).toContain("$PackageManager -notin @('uv', 'pipx', 'pip')");
   });
 
   it('quotes detached server arguments using Windows command-line rules', () => {
