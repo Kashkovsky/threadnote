@@ -11,7 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@latest' }
+$package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@beta' }
 $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   $env:THREADNOTE_NPM_REGISTRY
 } else {

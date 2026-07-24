@@ -226,6 +226,13 @@ describe('Windows command execution', () => {
 });
 
 describe('Windows lifecycle defaults', () => {
+  it('installs the beta package while native Windows support is experimental', async () => {
+    const installer = await readFile(new URL('../../scripts/install.ps1', import.meta.url), 'utf8');
+
+    expect(installer).toContain("else { 'threadnote@beta' }");
+    expect(installer).not.toContain("else { 'threadnote@latest' }");
+  });
+
   it('quotes detached server arguments using Windows command-line rules', () => {
     expect(quoteWindowsProcessArgument('')).toBe('""');
     expect(quoteWindowsProcessArgument('--config')).toBe('--config');

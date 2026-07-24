@@ -83,7 +83,7 @@ threadnote mcp-install claude --apply   # or codex / cursor / copilot
 threadnote doctor --dry-run
 ```
 
-Native Windows PowerShell:
+Native Windows PowerShell (experimental):
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
@@ -91,9 +91,10 @@ threadnote mcp-install codex --apply    # or claude / cursor / copilot
 threadnote doctor --dry-run
 ```
 
-The Windows installer uses npm's native `threadnote.cmd` launcher and installs OpenViking through `uv`; it does not
+Native Windows support is experimental, and the PowerShell installer currently installs Threadnote from npm's `beta`
+channel by default. It uses npm's native `threadnote.cmd` launcher and installs OpenViking through `uv`; it does not
 require WSL, Git Bash, or a POSIX shim. Node.js 22.19 or newer is required on every platform. The manual native flow is
-`npm install --global threadnote` followed by `threadnote install`.
+`npm install --global threadnote@beta` followed by `threadnote install`.
 
 The CLI remains Threadnote's complete execution surface. The default stdio adapter is a compact interoperability layer
 with eight core tools: `recall_context`, `read_context`, `list_context`, `remember_context`,
