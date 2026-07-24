@@ -385,7 +385,8 @@ export const runInstall = Effect.fn('runInstall')(function* (config: RuntimeConf
     destinationPath: yield* pathJoin(config.agentContextHome, 'ovcli.conf'),
     dryRun,
     shouldRepair: content =>
-      shouldRepairLegacyOvCliConfig(content) || (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
+      shouldRepairOpenVikingCliConfig(content, config) ||
+      (repairInvalidConfigs && parseJsonConfigObject(content) === undefined),
     templatePath: yield* pathJoin(root, 'config', 'ovcli.conf.template.json'),
   });
   yield* configureOpenVikingCliLanguage(config, dryRun);
@@ -888,6 +889,9 @@ export const runStart = Effect.fn('runStart')(function* (config: RuntimeConfig, 
   if (options.dryRun === true) {
     yield* Console.log(formatShellCommand(server, args));
     return;
+  }
+  if (!system.environment().OPENVIKING_CLI_CONFIG_FILE) {
+    yield* ensureOpenVikingCliRuntimeConfig(config);
   }
 
   const existingHealth = yield* readOpenVikingHealthIfAvailable(config, 500);
@@ -2666,6 +2670,19 @@ const writeTemplateIfMissing = Effect.fn('lifecycle.writeTemplateIfMissing')(fun
   yield* Console.log(`Wrote ${options.destinationPath}`);
 });
 
+const ensureOpenVikingCliRuntimeConfig = Effect.fn('lifecycle.ensureOpenVikingCliRuntimeConfig')(function* (
+  config: RuntimeConfig,
+) {
+  const root = yield* toolRoot();
+  yield* writeTemplateIfMissing({
+    config,
+    destinationPath: yield* pathJoin(config.agentContextHome, 'ovcli.conf'),
+    dryRun: false,
+    shouldRepair: content => shouldRepairOpenVikingCliConfig(content, config),
+    templatePath: yield* pathJoin(root, 'config', 'ovcli.conf.template.json'),
+  });
+});
+
 const installCommandShim = Effect.fn('lifecycle.installCommandShim')(function* (dryRun: boolean) {
   const system = yield* SystemInfo;
   if (!shouldManageCommandShim(system.platform)) {
@@ -3337,12 +3354,27 @@ const isGeneratedLocalPilotConfig = Effect.fn('lifecycle.isGeneratedLocalPilotCo
   );
 });
 
-function shouldRepairLegacyOvCliConfig(content: string): boolean {
+export function shouldRepairOpenVikingCliConfig(content: string, config: RuntimeConfig): boolean {
   const parsed = parseJsonConfigObject(content);
   if (!parsed) {
     return false;
   }
-  return typeof parsed.server_url === 'string' && isJsonObject(parsed.identity);
+  if (typeof parsed.server_url === 'string' && isJsonObject(parsed.identity)) {
+    return true;
+  }
+  const allowedKeys = new Set(['account', 'agent_id', 'timeout', 'url', 'user']);
+  if (
+    Object.keys(parsed).some(key => !allowedKeys.has(key)) ||
+    parsed.account !== config.account ||
+    parsed.agent_id !== config.agentId ||
+    parsed.timeout !== 60 ||
+    parsed.user !== config.user ||
+    typeof parsed.url !== 'string' ||
+    !/^http:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\]):\d+\/?$/i.test(parsed.url)
+  ) {
+    return false;
+  }
+  return parsed.url.replace(/\/$/, '') !== `http://${config.host}:${config.port}`;
 }
 
 export function parsePackageManager(value: string): PackageManager {

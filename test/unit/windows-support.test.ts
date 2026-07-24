@@ -8,6 +8,7 @@ import {
   pythonExecutableCandidates,
   quoteWindowsProcessArgument,
   shouldManageCommandShim,
+  shouldRepairOpenVikingCliConfig,
   windowsProcessArgumentLine,
 } from '../../src/lifecycle.js';
 import {runtimeThreadnoteBinPath} from '../../src/update.js';
@@ -239,6 +240,39 @@ describe('Windows lifecycle defaults', () => {
   it('uses native Python launcher candidates and preserves npm command wrappers', () => {
     expect(pythonExecutableCandidates('win32')).toEqual(['py', 'python', 'python3']);
     expect(shouldManageCommandShim('win32')).toBe(false);
+  });
+
+  it('refreshes only managed local OpenViking CLI configs when runtime overrides change', () => {
+    const config = {
+      account: 'local',
+      agentContextHome: 'C:\\agent context',
+      agentId: 'threadnote',
+      host: '127.0.0.1',
+      manifestPath: 'C:\\agent context\\seed-manifest.yaml',
+      openVikingVersion: '0.4.10',
+      port: 43127,
+      user: 'windows-e2e',
+    };
+    const managed = JSON.stringify({
+      account: 'local',
+      agent_id: 'threadnote',
+      timeout: 60,
+      url: 'http://127.0.0.1:1933',
+      user: 'windows-e2e',
+    });
+    const current = managed.replace(':1933', ':43127');
+    const custom = JSON.stringify({
+      account: 'local',
+      agent_id: 'threadnote',
+      api_key: 'managed-elsewhere',
+      timeout: 60,
+      url: 'https://openviking.example.com',
+      user: 'windows-e2e',
+    });
+
+    expect(shouldRepairOpenVikingCliConfig(managed, config)).toBe(true);
+    expect(shouldRepairOpenVikingCliConfig(current, config)).toBe(false);
+    expect(shouldRepairOpenVikingCliConfig(custom, config)).toBe(false);
   });
 
   it('keeps existing POSIX defaults', () => {
