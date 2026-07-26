@@ -1,4 +1,5 @@
 import {spawn, type ChildProcess} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {createServer, type Server} from 'node:http';
 import {createServer as createNetServer, type AddressInfo} from 'node:net';
@@ -133,6 +134,7 @@ describe('published local bins', () => {
       ['migrate-lifecycle'],
       ['migrate-projects'],
       ['migrate-project-names'],
+      ['enrich-memories'],
       ['recall'],
       ['workset'],
       ['workset', 'list'],
@@ -384,6 +386,7 @@ describe('published local bins', () => {
       ['migrate-lifecycle', '--dry-run'],
       ['migrate-projects', '--dry-run'],
       ['migrate-project-names', '--dry-run'],
+      ['enrich-memories', '--dry-run'],
       ['post-update', '--dry-run', '--from-version', '1.9.0', '--to-version', '1.9.0'],
       ['pre-compact-hook', '--dry-run'],
       ['session-start-hook', '--dry-run'],
@@ -701,6 +704,104 @@ describe('published local bins', () => {
     }
   });
 
+  it('streams local-model memory enrichment and improves deterministic recall through the packaged CLI', async () => {
+    const fixture = await makeFixture('memory-enrichment');
+    const project = 'aaa-memory-enrichment-e2e';
+    const topic = 'lease-renewal';
+    const uri = `viking://user/e2e/memories/durable/projects/${project}/${topic}.md`;
+    const token = 'e'.repeat(43);
+    const ai = await makeOpenAiCompatibleServer(
+      {
+        searchPhrases: [
+          'resume jobs after stalled heartbeat',
+          'stuck worker lease renewal',
+          'automatic task rescheduling',
+        ],
+      },
+      {token},
+    );
+    const localAiDirectory = join(fixture.home, 'threadnote');
+    const configPath = join(localAiDirectory, 'local-ai.json');
+    const tokenPath = join(localAiDirectory, 'local-ai-token');
+    await mkdir(localAiDirectory, {recursive: true});
+    await writeFile(
+      configPath,
+      `${JSON.stringify(
+        {
+          enabled: true,
+          host: '127.0.0.1',
+          model: 'e2e-model',
+          modelPath: join(fixture.root, 'unused-model.gguf'),
+          port: Number(new URL(ai.baseUrl).port),
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      {encoding: 'utf8', mode: 0o600},
+    );
+    await writeFile(tokenPath, `${token}\n`, {encoding: 'utf8', mode: 0o600});
+
+    try {
+      fixture.env.THREADNOTE_EFFECT_AI = '0';
+      expectSuccess(
+        await runCli(fixture, [
+          'remember',
+          '--project',
+          project,
+          '--topic',
+          topic,
+          '--text',
+          'The coordinator schedules replacement work after a heartbeat expires.',
+        ]),
+        'store pre-enrichment memory',
+      );
+      delete fixture.env.THREADNOTE_EFFECT_AI;
+
+      const enriched = await runCli(fixture, ['enrich-memories', '--apply', '--limit', '1']);
+      expectSuccess(enriched, 'enrich memory');
+      expect(enriched.stdout).toContain('[1/1] Enriching');
+      expect(enriched.stdout).toContain('Stored 3 keyword(s)');
+      expect(enriched.stdout).toContain('Memory enrichment summary: 1 enriched');
+
+      const read = await runCli(fixture, ['read', uri]);
+      expectSuccess(read, 'read enriched memory');
+      expect(read.stdout).toContain('keywords: resume jobs after stalled heartbeat');
+      expect(read.stdout).toContain('keywords: stuck worker lease renewal');
+
+      fixture.env.THREADNOTE_EFFECT_AI = '0';
+      const recalled = await runCli(fixture, [
+        'recall',
+        '--project',
+        project,
+        '--query',
+        'resume jobs after a stalled heartbeat',
+      ]);
+      expectSuccess(recalled, 'deterministic enriched recall');
+      expect(recalled.stdout).toContain(uri);
+      delete fixture.env.THREADNOTE_EFFECT_AI;
+
+      await withMcpClient(fixture, LIVE_OV.mcpUrl, 'core', async client => {
+        const automaticUri = `viking://user/e2e/memories/durable/projects/${project}/automatic-enrichment.md`;
+        expect(
+          await callToolText(client, 'remember_context', {
+            project,
+            text: 'A bounded coordinator reschedules tasks after a worker lease expires.',
+            topic: 'automatic-enrichment',
+          }),
+        ).toContain(automaticUri);
+        expect(await callToolText(client, 'read_context', {uri: automaticUri})).toContain(
+          'keywords: resume jobs after stalled heartbeat',
+        );
+      });
+      expect(ai.requests).toHaveLength(2);
+    } finally {
+      delete fixture.env.THREADNOTE_EFFECT_AI;
+      await Promise.all([rm(configPath, {force: true}), rm(tokenPath, {force: true})]);
+      await ai.close();
+    }
+  });
+
   it('expands medium and weak recall through the packaged MCP bin and an OpenAI-compatible endpoint', async () => {
     const fixture = await makeFixture('effect-ai-recall');
     const project = 'threadnote';
@@ -711,40 +812,53 @@ describe('published local bins', () => {
       'preview-install-contract prerelease versus stable installations',
     ];
     const groundedRewrites = ['release-channel-contract', 'preview-install-contract'];
-    const ai = await makeOpenAiCompatibleServer({queries: rewrites});
+    const ai = await makeOpenAiCompatibleServer(({body}) => {
+      const payload = JSON.stringify(body);
+      if (!payload.includes('threadnote_recall_candidate_selection')) {
+        return {queries: rewrites};
+      }
+      const candidateIds = groundedRewrites.flatMap(topic => {
+        const topicIndex = payload.indexOf(`topic=${topic}`);
+        if (topicIndex === -1) return [];
+        const candidate = payload.slice(0, topicIndex).split('[').at(-1);
+        const id = candidate ? /^(c\d+)\]/.exec(candidate)?.[1] : undefined;
+        return id ? [id] : [];
+      });
+      return {candidateIds, relevant: candidateIds.length > 0};
+    });
+    fixture.env.THREADNOTE_EFFECT_AI = '0';
+    expectSuccess(
+      await runCli(fixture, [
+        'remember',
+        '--project',
+        project,
+        '--topic',
+        'release-channel-contract',
+        '--text',
+        'Beta installs use the npm beta dist-tag; stable installs use the latest dist-tag.',
+      ]),
+      'store release channel fixture',
+    );
+    expectSuccess(
+      await runCli(fixture, [
+        'remember',
+        '--project',
+        project,
+        '--topic',
+        'preview-install-contract',
+        '--text',
+        'Preview packages and ordinary installations follow different update channels.',
+      ]),
+      'store preview install fixture',
+    );
+    await waitForOpenVikingSearch(fixture, groundedRewrites[0]!, uri);
+    await waitForOpenVikingSearch(fixture, groundedRewrites[1]!, alternateUri);
     fixture.env.THREADNOTE_EFFECT_AI = '1';
     fixture.env.THREADNOTE_EFFECT_AI_API_KEY = 'e2e-key';
     fixture.env.THREADNOTE_EFFECT_AI_API_URL = `${ai.baseUrl}/v1`;
     fixture.env.THREADNOTE_EFFECT_AI_MODEL = 'e2e-model';
     try {
       await withMcpClient(fixture, LIVE_OV.mcpUrl, 'full', async client => {
-        expect(
-          await callToolText(
-            client,
-            'remember_context',
-            {
-              project,
-              text: 'Beta installs use the npm beta dist-tag; stable installs use the latest dist-tag.',
-              topic: 'release-channel-contract',
-            },
-            60_000,
-          ),
-        ).toContain(uri);
-        expect(
-          await callToolText(
-            client,
-            'remember_context',
-            {
-              project,
-              text: 'Preview packages and ordinary installations follow different update channels.',
-              topic: 'preview-install-contract',
-            },
-            60_000,
-          ),
-        ).toContain(alternateUri);
-        await waitForOpenVikingSearch(fixture, groundedRewrites[0]!, uri);
-        await waitForOpenVikingSearch(fixture, groundedRewrites[1]!, alternateUri);
-
         const recall = await callToolResult(
           client,
           'recall_context',
@@ -758,9 +872,10 @@ describe('published local bins', () => {
         const recallText = textFromToolResult(recall);
         const structured = structuredContentFromToolResult<RecallContent>(recall);
 
-        expect(ai.requests).toHaveLength(1);
+        expect(ai.requests.length).toBeGreaterThanOrEqual(2);
         expect(structured.queryExpansions, JSON.stringify(ai.requests[0]?.body)).toEqual(groundedRewrites);
         expect(recallText).toContain('Recall query expansion: evaluated 2 model rewrite(s).');
+        expect(recallText).toContain('Recall local AI post-filter:');
         expect(recallText).toContain(uri);
         expect(structured.results.some(result => result.uri === uri)).toBe(true);
 
@@ -798,9 +913,12 @@ describe('published local bins', () => {
         expect(mediumStructured.queryExpansions).toEqual([groundedRewrites[0]]);
         expect(mediumStructured.results.some(result => result.uri === uri)).toBe(true);
       });
-      expect(ai.requests).toHaveLength(2);
-      expect(ai.requests[0]?.url).toBe('/v1/chat/completions');
-      expect(ai.requests[0]?.authorization).toBe('Bearer e2e-key');
+      expect(ai.requests.length).toBeGreaterThanOrEqual(2);
+      expect(ai.requests.every(request => request.url === '/v1/chat/completions')).toBe(true);
+      expect(ai.requests.every(request => request.authorization === 'Bearer e2e-key')).toBe(true);
+      expect(
+        ai.requests.every(request => !JSON.stringify(request.body).includes('threadnote_memory_search_phrases')),
+      ).toBe(true);
     } finally {
       await ai.close();
     }
@@ -1810,7 +1928,12 @@ function textFromToolResult(result: unknown): string {
 }
 
 async function makeOpenAiCompatibleServer(
-  responseObject: Readonly<Record<string, unknown>> = {draft: 'Consolidated by Effect AI E2E'},
+  responseProvider:
+    | Readonly<Record<string, unknown>>
+    | ((request: {readonly body: unknown; readonly index: number}) => Readonly<Record<string, unknown>>) = {
+    draft: 'Consolidated by Effect AI E2E',
+  },
+  localAi?: {readonly token: string},
 ): Promise<{
   readonly baseUrl: string;
   readonly close: () => Promise<void>;
@@ -1818,18 +1941,35 @@ async function makeOpenAiCompatibleServer(
 }> {
   const requests: Array<{readonly authorization?: string; readonly body: unknown; readonly url?: string}> = [];
   const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (localAi && request.method === 'GET' && requestUrl.pathname === '/health') {
+      const challenge = requestUrl.searchParams.get('challenge') ?? '';
+      const launchId = 'threadnote-local-ai-e2e';
+      const pid = process.pid;
+      const proof = createHash('sha256')
+        .update([challenge, 'threadnote-local-ai', 'e2e-model', String(pid), launchId, localAi.token].join('\0'))
+        .digest('hex');
+      response
+        .writeHead(200, {'content-type': 'application/json'})
+        .end(JSON.stringify({launchId, model: 'e2e-model', pid, proof, service: 'threadnote-local-ai', status: 'ok'}));
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const bodyText = Buffer.concat(chunks).toString('utf8');
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    const requestIndex = requests.length;
     requests.push({
       authorization: typeof request.headers.authorization === 'string' ? request.headers.authorization : undefined,
-      body: bodyText ? JSON.parse(bodyText) : undefined,
+      body,
       url: request.url,
     });
     if (request.url !== '/v1/chat/completions') {
       response.writeHead(404, {'content-type': 'application/json'}).end(JSON.stringify({error: 'not found'}));
       return;
     }
+    const responseObject =
+      typeof responseProvider === 'function' ? responseProvider({body, index: requestIndex}) : responseProvider;
     response.writeHead(200, {'content-type': 'application/json'}).end(
       JSON.stringify({
         choices: [

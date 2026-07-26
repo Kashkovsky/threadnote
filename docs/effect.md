@@ -71,6 +71,8 @@ model; declining dismisses that offer without enabling or downloading anything. 
 ```bash
 threadnote local-ai install
 threadnote local-ai status
+threadnote enrich-memories                         # preview the personal-memory backfill
+threadnote enrich-memories --apply --install-local-ai
 ```
 
 `local-ai install` downloads the pinned official Gemma 4 E4B Q4_0 GGUF file (4.59 GB), verifies its size and SHA-256,
@@ -78,6 +80,19 @@ stores the model under `THREADNOTE_HOME/threadnote/models`, and writes a version
 `THREADNOTE_HOME/threadnote/local-ai.json`. Pass `--model-path <path>` to verify and reuse an existing copy instead.
 The service binds only to `127.0.0.1:1934`. Installation also creates a mode-0600 access token. Health checks use a
 challenge-response proof before Threadnote sends any prompt, and the OpenAI-compatible endpoints require that token.
+
+The full enrichment command processes each eligible personal memory locally and stores up to eight compact
+`keywords:` headers without changing its URI, body, timestamp, or lifecycle metadata. It prioritizes active memories,
+then continues through the historical personal corpus; smoke records and shared team repositories are excluded.
+Already-enriched memories are skipped, so an interrupted run can be resumed. Use `--force` to regenerate keywords and
+`--limit <count>` for a bounded beta test. A large corpus can take a long time; the command prints `[n/N]` progress,
+generated keywords, failures, and a final summary instead of working silently.
+
+The opt-in post-update action is introduced for `3.0.0` and is also advertised during its prerelease cycle. If the
+model is absent, accepting the enrichment action installs it first. New active personal memories written through the
+CLI or Threadnote MCP are enriched automatically when the configured provider is loopback-local; storage still
+succeeds unchanged if enrichment is unavailable or fails. Emergency pre-compact snapshots are never delayed for
+enrichment.
 
 Effect owns the service lifecycle: configuration, download orchestration, the lifecycle lock, detached process and PID
 record, health checks, logging, lazy startup, and safe stop/uninstall behavior. The bundled Python file is only a thin
@@ -101,18 +116,29 @@ threadnote local-ai uninstall --erase-model # also removes the managed model
 ```
 
 For recall, deterministic retrieval and ranking always run first. High-confidence results never call the model.
-Medium-confidence results can evaluate one rewrite; low-confidence and no-answer results can evaluate at most two,
-one search scope at a time. Rewrites are schema-validated, deduplicated, cached by query/project/provider fingerprint,
-and limited to 512 characters. The model stage times out after five seconds and fails open to the deterministic result.
+For weaker results, an explicit loopback model first reranks at most 24 query-ranked local index candidates using
+bounded, scrubbed topic, title, and index excerpts. Selected topics become grounded rewrites: medium-confidence results
+evaluate one and low-confidence or no-answer results evaluate at most two, one search scope at a time. Mandatory
+OpenViking hits remain in deterministic ranking but do not crowd this grounded candidate window. Rewrites are
+schema-validated, deduplicated, cached by query/project/provider fingerprint, and limited to 512 characters.
+
 Expanded candidates are merged with the original candidates and exact matches, then reranked by the same deterministic
-ranker. Remote endpoints receive only the original query and inferred project. Explicit loopback endpoints additionally
+ranker. The loopback model receives at most 24 final candidate IDs and may keep at most 8 directly relevant IDs; it
+cannot add candidates or change their deterministic order. Threadnote retains the first two non-lexical deterministic
+anchors so a small model cannot suppress the strongest ranked evidence. An empty confident selection produces no
+answer, while a timeout, malformed response, or unknown-ID-only response preserves the deterministic result. Each model
+stage uses deterministic sampling, times out after five seconds, and fails open. Remote endpoints never receive
+candidate summaries or run either filtering stage.
+
+Remote query expanders receive only the original query and inferred project. Explicit loopback endpoints additionally
 receive a bounded, scrubbed shortlist of local topic/identifier names with six-term index excerpts; rewrites that do
 not contain an exact shortlist term are discarded. This grounding data never goes to a non-loopback endpoint.
 
-The local model does not extract additional memory candidates or mutate canonical memories and their metadata.
-Candidate extraction keeps its existing policy. Explicit manager consolidation may use the same provider to generate
-an Effect Schema-validated `{ "draft": string }` object, but generating a draft never deletes source memories; cleanup
-remains a separate user-approved operation.
+The local model does not extract additional memory candidates or mutate canonical or shared memories. Candidate
+extraction keeps its existing policy. Personal enrichment only adds retrieval keywords; older Threadnote versions
+ignore those unknown repeated headers and continue reading the document body. Explicit manager consolidation may use
+the same provider to generate an Effect Schema-validated `{ "draft": string }` object, but generating a draft never
+deletes source memories; cleanup remains a separate user-approved operation.
 
 Environment variables remain an advanced override for Ollama, LM Studio, hosted APIs, or another
 OpenAI-compatible chat-completions endpoint:

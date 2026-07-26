@@ -885,8 +885,12 @@ export function exactRecallTerms(query: string): readonly string[] {
   ]);
   const seen = new Set<string>();
   const terms: string[] = [];
-  for (const match of query.matchAll(/[A-Za-z0-9_.-]{4,}/g)) {
+  for (const match of query.matchAll(/[A-Za-z0-9_.-]{3,}/g)) {
     const term = match[0];
+    const shortDistinctive = term.length === 3 && ((term.match(/[A-Z]/g) ?? []).length >= 2 || /[0-9]/.test(term));
+    if (term.length < 4 && !shortDistinctive) {
+      continue;
+    }
     const normalized = term.toLowerCase();
     if (stopWords.has(normalized) || seen.has(normalized)) {
       continue;
@@ -1472,6 +1476,7 @@ const RECALL_INDEX_PRESELECTION_MINIMUM = 100;
 interface HybridRecallOptions {
   readonly allowExactRescue?: boolean;
   readonly allowedUriScopes?: readonly string[];
+  readonly candidateUris?: readonly string[];
   readonly corpusStatistics?: RecallCorpusStatistics;
   readonly feedbackByUri?: ReadonlyMap<string, number>;
   readonly includeInactive?: boolean;
@@ -1562,7 +1567,9 @@ function hybridRankRecallHits(
   context: HybridRecallOptions,
   resultLimit: number,
 ): {readonly confidence: RecallConfidence; readonly ranked: readonly RecallHit[]} {
-  const byUri = new Map(hits.map(hit => [stripAnchor(hit.uri), hit]));
+  const candidateUris = context.candidateUris ? new Set(context.candidateUris.map(uri => stripAnchor(uri))) : undefined;
+  const eligibleHits = candidateUris ? hits.filter(hit => candidateUris.has(stripAnchor(hit.uri))) : hits;
+  const byUri = new Map(eligibleHits.map(hit => [stripAnchor(hit.uri), hit]));
   const recordsByUri = new Map(
     (context.records ?? [])
       .filter(record => uriMatchesRecallScopes(record.uri, context.allowedUriScopes))
@@ -1572,9 +1579,9 @@ function hybridRankRecallHits(
     context.indexedCandidates ?? [],
     context.allowedUriScopes,
     resultLimit,
-  );
+  ).filter(candidate => candidateUris === undefined || candidateUris.has(stripAnchor(candidate.uri)));
   const indexedByUri = new Map(scopedIndexedCandidates.map(candidate => [stripAnchor(candidate.uri), candidate]));
-  const hitCandidates = hits.map(hit => {
+  const hitCandidates = eligibleHits.map(hit => {
     const uri = stripAnchor(hit.uri);
     const record = recordsByUri.get(uri);
     const indexed = indexedByUri.get(uri);
@@ -1585,6 +1592,7 @@ function hybridRankRecallHits(
       feedback: context.feedbackByUri?.get(uri),
       fields: {
         identifiers: indexed?.fields?.identifiers,
+        keywords: record?.metadata.keywords ?? indexed?.fields?.keywords,
         project:
           record?.metadata.project ??
           indexed?.fields?.project ??

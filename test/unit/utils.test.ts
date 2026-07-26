@@ -378,6 +378,10 @@ describe('exactRecallTerms', () => {
     ]);
   });
 
+  it('keeps short distinctive acronyms without admitting generic three-letter words', () => {
+    expect(exactRecallTerms('QX7 worker lease for the app')).toEqual(['QX7', 'worker', 'lease']);
+  });
+
   it('drops expanded generic function words so they cannot re-flood recall', () => {
     // A sentence built only from stop words yields no exact grep terms.
     expect(exactRecallTerms('what have they which does that when were')).toEqual([]);
@@ -988,6 +992,29 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
 
     expect(sections.ranked).toEqual([]);
     expect(sections.confidence?.level).toBe('no_answer');
+  });
+
+  it('filters hybrid results to a local-AI-selected URI allowlist', () => {
+    const selectedUri = 'viking://user/me/memories/durable/projects/orion-worker/lease.md';
+    const sections = buildRecallSections([], [], 12, {
+      candidateUris: [selectedUri],
+      indexedCandidates: [
+        {
+          fields: {project: 'orion-worker', title: 'Worker lease', topic: 'worker-lease'},
+          text: 'worker lease renewal failures',
+          uri: selectedUri,
+        },
+        {
+          fields: {project: 'orion-worker', title: 'Worker metrics', topic: 'worker-metrics'},
+          text: 'worker lease telemetry setting',
+          uri: 'viking://user/me/memories/durable/projects/orion-worker/metrics.md',
+        },
+      ],
+      project: 'orion-worker',
+      query: 'worker lease renewal',
+    });
+
+    expect(sections.ranked.map(hit => hit.uri)).toEqual([selectedUri]);
   });
 
   it('bounds full hybrid ranking of lexical index matches before graph and BM25 work', () => {

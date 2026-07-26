@@ -133,13 +133,17 @@ export function aiConsolidatorLayer(config: EffectAiConfiguration): Layer.Layer<
   ).pipe(Layer.provide(languageModelLayer));
 }
 
-export function effectAiLanguageModelLayer(config: EffectAiConfiguration, maxOutputTokens: number) {
+export function effectAiLanguageModelLayer(
+  config: EffectAiConfiguration,
+  maxOutputTokens: number,
+  generationConfig: {readonly seed?: number; readonly temperature?: number} = {},
+) {
   const clientLayer = OpenAiClient.layer({
     apiKey: config.apiKey ? Redacted.make(config.apiKey) : undefined,
     apiUrl: config.apiUrl,
   }).pipe(Layer.provide(NodeHttpClient.layerFetch));
   return OpenAiLanguageModel.layer({
-    config: {max_output_tokens: maxOutputTokens, strictJsonSchema: true},
+    config: {max_output_tokens: maxOutputTokens, strictJsonSchema: true, ...generationConfig},
     model: config.model,
   }).pipe(Layer.provide(clientLayer));
 }

@@ -218,6 +218,14 @@ export interface MigrateProjectNamesOptions {
   readonly limit?: string;
 }
 
+export interface EnrichMemoriesOptions {
+  readonly apply?: boolean;
+  readonly dryRun?: boolean;
+  readonly force?: boolean;
+  readonly installLocalAi?: boolean;
+  readonly limit?: string;
+}
+
 export interface RecallOptions {
   readonly callerCwd?: string;
   readonly dryRun?: boolean;

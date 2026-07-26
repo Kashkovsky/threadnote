@@ -5,6 +5,7 @@ export const RECALL_RANKER_VERSION = 'hybrid-v2';
 
 export interface RecallFields {
   readonly identifiers?: readonly string[];
+  readonly keywords?: readonly string[];
   readonly project?: string;
   readonly title?: string;
   readonly topic?: string;
@@ -113,6 +114,7 @@ const SIGNAL_WEIGHTS = {
 
 const FIELD_WEIGHTS = {
   identifiers: 0.15,
+  keywords: 0.2,
   project: 0.2,
   title: 0.35,
   topic: 0.3,
@@ -134,6 +136,7 @@ const EXACT_IDENTIFIER_SCORE = 0.9;
 const EXACT_MULTI_TERM_MINIMUM = 2;
 const NO_ANSWER_SCORE_MINIMUM = 0.2;
 const LEXICAL_ONLY_ANSWER_MINIMUM = 0.5;
+const LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM = 0.08;
 const SIGNAL_ABSENCE_MAXIMUM = 0.05;
 const TEMPORALLY_INVALID_SCORE_MULTIPLIER = 0.25;
 const UNKNOWN_FRESHNESS_SCORE = 0.5;
@@ -148,6 +151,10 @@ const MEMORY_KIND_INTENT_TERMS: Readonly<Record<MemoryKind, ReadonlySet<string>>
   preference: intentTerms('preference style tone'),
   smoke: intentTerms('smoke'),
 };
+const META_TOPIC_TERMS = intentTerms('audit backlog benchmark eval evaluation fixture');
+const META_QUERY_INTENT_TERMS = intentTerms(
+  'accuracy audit backlog benchmark eval evaluation fixture latency performance quality test testing trial',
+);
 
 const FRESHNESS_HALF_LIFE_DAYS: Readonly<Record<MemoryKind, number>> = {
   durable: 180,
@@ -291,8 +298,9 @@ function scoreCandidate(
   const graph = graphScore(candidate.uri, graphDistances);
   const scope = scopeScore(context.project, candidate.fields?.project);
   const kindIntent = kindIntentScore(originalQueryTerms, candidate.kind);
+  const exactTerms = qualifyingExactTerms(candidate);
   const exact = strongestVariant(queryTerms =>
-    exactTermScore(queryTerms, qualifyingExactTerms(candidate), candidate.fields, corpusStatistics, {
+    exactTermScore(queryTerms, exactTerms, candidate.fields, corpusStatistics, {
       kindIntent,
     }),
   );
@@ -315,7 +323,12 @@ function scoreCandidate(
     semantic,
     temporal,
   };
-  const passedRelevanceGate = Math.max(semantic, topicalBm25, exact, topicalField) >= RELEVANCE_GATE_MINIMUM;
+  const focusedLexicalEvidence =
+    topicalField >= LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM || exactTerms.some(term => /[0-9_.-]/.test(term));
+  const passedRelevanceGate =
+    Math.max(semantic, topicalBm25, exact, topicalField) >= RELEVANCE_GATE_MINIMUM &&
+    (semantic > SIGNAL_ABSENCE_MAXIMUM || graph > SIGNAL_ABSENCE_MAXIMUM || focusedLexicalEvidence) &&
+    !metaTopicMismatch(originalQueryTerms, candidate.fields);
   const temporalMultiplier = temporal === 0 ? TEMPORALLY_INVALID_SCORE_MULTIPLIER : 1;
   const lifecycleMultiplier = LIFECYCLE_SCORE_MULTIPLIERS[candidate.status ?? 'active'];
   const relevanceScore = passedRelevanceGate ? clamp(weightedScore(signals) * temporalMultiplier) : 0;
@@ -407,11 +420,19 @@ function focusedFieldContainsTerm(fields: RecallFields | undefined, term: string
     return false;
   }
   const focusedTerms = new Set(
-    [fields.title, fields.topic, ...(fields.identifiers ?? [])]
+    [fields.title, fields.topic, ...(fields.keywords ?? []), ...(fields.identifiers ?? [])]
       .filter((value): value is string => typeof value === 'string')
       .flatMap(tokenize),
   );
   return tokenize(term).some(token => focusedTerms.has(token));
+}
+
+function metaTopicMismatch(queryTerms: readonly string[], fields: RecallFields | undefined): boolean {
+  if (!fields || queryTerms.some(term => META_QUERY_INTENT_TERMS.has(term))) {
+    return false;
+  }
+  const topicTerms = tokenize([fields.title ?? '', fields.topic ?? '']);
+  return topicTerms.some(term => META_TOPIC_TERMS.has(term));
 }
 
 function normalizedBm25(
@@ -480,10 +501,15 @@ function fieldScore(
       queryCoverage * FIELD_QUERY_COVERAGE_WEIGHT + valuePrecision * FIELD_VALUE_PRECISION_WEIGHT + exactSubsetBonus,
     );
   };
+  const keywordCoverage = Math.max(
+    0,
+    ...(fields.keywords ?? []).map(keyword => coverage(keyword, {rewardExactSubset: true})),
+  );
   return clamp(
     coverage(fields.title, {rewardExactSubset: true}) * FIELD_WEIGHTS.title +
       coverage(fields.topic, {rewardExactSubset: true}) * FIELD_WEIGHTS.topic +
       (options.includeProject ? coverage(fields.project, {rewardExactSubset: false}) * FIELD_WEIGHTS.project : 0) +
+      keywordCoverage * FIELD_WEIGHTS.keywords +
       coverage(fields.identifiers, {rewardExactSubset: true}) * FIELD_WEIGHTS.identifiers,
   );
 }
@@ -728,6 +754,7 @@ export function recallDocumentTerms(candidate: RecallCandidate): readonly string
       candidate.fields?.title,
       candidate.fields?.topic,
       candidate.fields?.project,
+      ...(candidate.fields?.keywords ?? []),
       ...(candidate.fields?.identifiers ?? []),
     ]
       .filter((value): value is string => typeof value === 'string')
@@ -737,7 +764,13 @@ export function recallDocumentTerms(candidate: RecallCandidate): readonly string
 
 function recallTopicalDocumentTerms(candidate: RecallCandidate): readonly string[] {
   return tokenize(
-    [candidate.text, candidate.fields?.title, candidate.fields?.topic, ...(candidate.fields?.identifiers ?? [])]
+    [
+      candidate.text,
+      candidate.fields?.title,
+      candidate.fields?.topic,
+      ...(candidate.fields?.keywords ?? []),
+      ...(candidate.fields?.identifiers ?? []),
+    ]
       .filter((value): value is string => typeof value === 'string')
       .join(' '),
   );

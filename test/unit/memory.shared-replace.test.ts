@@ -3,7 +3,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import * as aiEnrichment from '../../src/effect/ai-enrichment.js';
 import {runRemember} from '../../src/memory.js';
+import type {MemoryMetadata} from '../../src/memory_document.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -19,6 +21,16 @@ vi.mock('../../src/utils.js', async importOriginal => {
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
+  };
+});
+
+vi.mock('../../src/effect/ai-enrichment.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/effect/ai-enrichment.js')>();
+  return {
+    ...actual,
+    enrichMemoryMetadataWithConfiguredLocalAi: vi.fn((_config: RuntimeConfig, metadata: MemoryMetadata) =>
+      Effect.succeed({...metadata, keywords: ['generated retrieval alias']}),
+    ),
   };
 });
 
@@ -72,6 +84,7 @@ describe('remember shared replacement', () => {
     vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockReset();
+    vi.mocked(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).mockClear();
   });
 
   afterEach(async () => {
@@ -87,27 +100,27 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
         kind: 'durable',
         replace: sharedUri,
         sourceAgentClient: 'codex',
-        text: 'Updated shared auth memory.',
+        text: 'Updated shared lease memory.',
       }).pipe(Effect.provide(ApplicationLayer)),
     );
 
     const output = logs.join('\n');
     expect(output).toContain(sharedUri);
-    expect(output).toContain('project: mobile-native');
-    expect(output).toContain('topic: auth');
+    expect(output).toContain('project: orion-worker');
+    expect(output).toContain('topic: lease');
     expect(output).toContain('--mode replace');
-    expect(output).toContain('share: update durable/projects/mobile-native/auth.md');
+    expect(output).toContain('share: update durable/projects/orion-worker/lease.md');
     expect(output).toContain('Updated shared memory:');
     expect(output).not.toContain('supersedes:');
     expect(output).not.toContain(` rm ${sharedUri}`);
-    expect(output).not.toContain('memories/durable/projects/mobile-native/auth.md --from-file');
+    expect(output).not.toContain('memories/durable/projects/orion-worker/lease.md --from-file');
   });
 
   it('keeps the project from the storage path when the caller requests a different one', async () => {
@@ -118,24 +131,24 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
         kind: 'durable',
-        project: 'coda', // differs from the path project (mobile-native)
+        project: 'atlas-cache', // differs from the path project (orion-worker)
         replace: sharedUri,
         sourceAgentClient: 'codex',
-        text: 'Updated shared auth memory.',
+        text: 'Updated shared lease memory.',
       }).pipe(Effect.provide(ApplicationLayer)),
     );
 
     const output = logs.join('\n');
     // Frontmatter tracks the path, not the differing request — no divergence.
-    expect(output).toContain('project: mobile-native');
-    expect(output).not.toContain('project: coda');
-    expect(output).toContain('keeping shared memory project "mobile-native"');
-    expect(output).toContain('ignoring requested "coda"');
+    expect(output).toContain('project: orion-worker');
+    expect(output).not.toContain('project: atlas-cache');
+    expect(output).toContain('keeping shared memory project "orion-worker"');
+    expect(output).toContain('ignoring requested "atlas-cache"');
   });
 
   it('does not warn when the caller project matches the storage path', async () => {
@@ -146,20 +159,20 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
         kind: 'durable',
-        project: 'mobile-native', // matches the path project → no drift
+        project: 'orion-worker', // matches the path project → no drift
         replace: sharedUri,
         sourceAgentClient: 'codex',
-        text: 'Updated shared auth memory.',
+        text: 'Updated shared lease memory.',
       }).pipe(Effect.provide(ApplicationLayer)),
     );
 
     const output = logs.join('\n');
-    expect(output).toContain('project: mobile-native');
+    expect(output).toContain('project: orion-worker');
     expect(output).not.toContain('keeping shared memory project');
   });
 
@@ -178,10 +191,26 @@ describe('remember shared replacement', () => {
     ).rejects.toThrow(/only supports durable/);
   });
 
+  it('never sends a shared replacement through automatic enrichment', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok()));
+
+    await runTestEffect(
+      runRemember(config, {
+        kind: 'durable',
+        replace: 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
+        text: 'Updated shared lease memory.',
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).not.toHaveBeenCalled();
+  });
+
   it('surfaces git push failures instead of reporting a successful shared update', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/mobile-native/auth.md';
+    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
         return Effect.succeed(ok());
@@ -207,7 +236,7 @@ describe('remember shared replacement', () => {
           kind: 'durable',
           replace: sharedUri,
           sourceAgentClient: 'codex',
-          text: 'Updated shared auth memory.',
+          text: 'Updated shared lease memory.',
         }).pipe(Effect.provide(ApplicationLayer)),
       ),
     ).rejects.toThrow(/git push failed/);

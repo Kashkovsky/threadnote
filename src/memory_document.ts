@@ -17,6 +17,7 @@ export interface MemoryMetadata {
   readonly candidateId?: string;
   readonly evidence?: readonly string[];
   readonly kind: MemoryKind;
+  readonly keywords?: readonly string[];
   readonly lastReviewed?: string;
   readonly project?: string;
   readonly references?: readonly string[];
@@ -90,6 +91,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       candidateId: memoryHeaderValue(header, 'candidate_id'),
       evidence: memoryHeaderValues(header, 'evidence'),
       kind,
+      keywords: memoryHeaderValues(header, 'keywords'),
       lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
       references: memoryHeaderValues(header, 'references'),
@@ -135,8 +137,19 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     ...(metadata.references ?? []).map(reference => memoryHeaderLine('references', reference)),
     ...(metadata.evidence ?? []).map(evidence => memoryHeaderLine('evidence', evidence)),
     ...(metadata.relations ?? []).map(relation => memoryHeaderLine('relation', `${relation.type} ${relation.uri}`)),
+    ...(metadata.keywords ?? []).map(keyword => memoryHeaderLine('keywords', keyword)),
   ].filter((line): line is string => line !== undefined);
   return [...header, '', body.trim()].join('\n');
+}
+
+export function formatMemoryDocumentWithKeywords(content: string, keywords: readonly string[]): string {
+  const canonical = canonicalMemoryDocumentContent(content);
+  const separatorIndex = canonical.indexOf('\n\n');
+  const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
+  const body = separatorIndex === -1 ? '' : canonical.slice(separatorIndex + 2);
+  const headerLines = header.split('\n').filter(line => !line.startsWith('keywords:'));
+  const keywordLines = keywords.map(keyword => memoryHeaderLine('keywords', keyword) as string);
+  return [...headerLines, ...keywordLines, '', body].join('\n');
 }
 
 /**
@@ -201,6 +214,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     candidateId: memoryHeaderValue(header, 'candidate_id'),
     evidence: memoryHeaderValues(header, 'evidence'),
     kind: parseMemoryKind(memoryHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined),
+    keywords: memoryHeaderValues(header, 'keywords'),
     lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
     project: normalizeOptionalMetadata(
       memoryHeaderValue(header, 'project') ??

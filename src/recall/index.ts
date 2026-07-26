@@ -68,7 +68,7 @@ export interface RecallIndexData {
   readonly corpusStatistics: RecallCorpusStatistics;
 }
 
-const RECALL_INDEX_CACHE_VERSION = 5;
+const RECALL_INDEX_CACHE_VERSION = 6;
 const ACTIVE_CACHE_FILENAME = `recall-index-v${RECALL_INDEX_CACHE_VERSION}.json`;
 const INACTIVE_CACHE_FILENAME = `recall-index-v${RECALL_INDEX_CACHE_VERSION}-with-inactive.json`;
 const CACHE_VALIDATION_INTERVAL_MILLISECONDS = 30_000;
@@ -80,6 +80,7 @@ const MAX_QUERY_TERMS = 32;
 const POSTING_IDENTIFIER_WEIGHT = 4;
 const POSTING_TITLE_WEIGHT = 3;
 const POSTING_TOPIC_WEIGHT = 2;
+const POSTING_KEYWORD_WEIGHT = 2;
 const POSTING_PROJECT_WEIGHT = 1;
 const POSTING_BODY_WEIGHT = 1;
 const POSTING_BM25_SATURATION = 1.2;
@@ -429,6 +430,7 @@ function candidatePostings(candidate: RecallCandidate): ReadonlyMap<string, Reca
   add(candidate.text, POSTING_BODY_WEIGHT);
   add(candidate.fields?.project, POSTING_PROJECT_WEIGHT);
   add(candidate.fields?.topic, POSTING_TOPIC_WEIGHT);
+  add(candidate.fields?.keywords, POSTING_KEYWORD_WEIGHT);
   add(candidate.fields?.title, POSTING_TITLE_WEIGHT);
   add(candidate.fields?.identifiers, POSTING_IDENTIFIER_WEIGHT);
   const documentTerms = recallDocumentTerms(candidate);
@@ -570,6 +572,7 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
   const text = redactSensitiveText(memory?.body ?? content);
   const fields = {
     identifiers: identifiers(text),
+    keywords: memory?.metadata.keywords,
     project: memory?.metadata.project ?? resourceProject(uri),
     title: firstHeading(text) ?? uriBasename(uri),
     topic: memory?.metadata.topic ?? uriTopic(uri),

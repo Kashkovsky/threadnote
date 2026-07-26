@@ -161,6 +161,69 @@ describe('runRecall index repair fallback', () => {
     expect(output).not.toContain('easy-to-type');
   });
 
+  it('prefers a project named by the query over the current workspace project', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-query-project-'));
+    const repoRoot = join(dir, 'easy-to-type');
+    const manifestPath = join(dir, 'seed-manifest.yaml');
+    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+    for (const key of gitEnvKeys) {
+      delete process.env[key];
+    }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await mkdir(repoRoot);
+      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
+      await run(
+        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+          cwd: repoRoot,
+        }),
+      );
+      await writeFile(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: threadnote',
+          `    path: ${repoRoot}`,
+          '    uri: viking://resources/repos/threadnote',
+          '    seed: []',
+          '  - name: orion-worker',
+          `    path: ${dir}/orion-worker`,
+          '    uri: viking://resources/repos/orion-worker',
+          '    seed: []',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      process.env.THREADNOTE_CALLER_CWD = repoRoot;
+
+      await run(runRecall({...runtime, manifestPath}, {dryRun: true, query: 'worker lease renewal'}));
+    } finally {
+      if (previousCallerCwd === undefined) {
+        delete process.env.THREADNOTE_CALLER_CWD;
+      } else {
+        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+      }
+      for (const key of gitEnvKeys) {
+        const value = previousGitEnv.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+      await rm(dir, {force: true, recursive: true});
+    }
+
+    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/orion-worker');
+    expect(output).toContain('--uri viking://resources/repos/orion-worker');
+    expect(output).not.toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
+  });
+
   it('does not duplicate current project durable scope through workset expansion', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-workset-dedupe-'));
     const repoRoot = join(dir, 'easy-to-type');

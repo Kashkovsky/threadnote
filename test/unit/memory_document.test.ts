@@ -4,6 +4,7 @@ import {
   boundedMemoryTrust,
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
+  formatMemoryDocumentWithKeywords,
   inferMemoryMetadata,
   parseMemoryDocument,
   type MemoryMetadata,
@@ -46,6 +47,7 @@ describe('memory document contract', () => {
       candidateId: 'candidate-1',
       evidence: ['session:turn-12', 'commit:abc123'],
       kind: 'durable',
+      keywords: ['stalled worker recovery', 'lease renewal'],
       lastReviewed: '2026-07-23T10:10:00.000Z',
       project: 'threadnote',
       relations: [
@@ -70,6 +72,72 @@ describe('memory document contract', () => {
 
     expect(parsed?.metadata).toEqual(metadata);
     expect(parsed?.body).toBe('Effect workflows compose upward.');
+  });
+
+  it('keeps enriched documents readable through the legacy header contract', () => {
+    const document = formatMemoryDocument(
+      'MEMORY',
+      {
+        kind: 'durable',
+        keywords: ['stalled worker recovery', 'automatic task rescheduling'],
+        project: 'orion-worker',
+        sourceAgentClient: 'codex',
+        status: 'active',
+        timestamp: '2026-07-23T10:00:00.000Z',
+        topic: 'lease-renewal',
+      },
+      'The coordinator renews worker leases after a stalled heartbeat.',
+    );
+    const legacyKnownHeaders = Object.fromEntries(
+      document
+        .slice(0, document.indexOf('\n\n'))
+        .split('\n')
+        .slice(1)
+        .filter(line => !line.startsWith('keywords:'))
+        .map(line => {
+          const separator = line.indexOf(':');
+          return [line.slice(0, separator), line.slice(separator + 1).trim()];
+        }),
+    );
+
+    expect(legacyKnownHeaders).toMatchObject({
+      kind: 'durable',
+      project: 'orion-worker',
+      source_agent_client: 'codex',
+      status: 'active',
+      topic: 'lease-renewal',
+    });
+    expect(document.split('\n\n')[1]).toBe('The coordinator renews worker leases after a stalled heartbeat.');
+  });
+
+  it('adds enrichment without dropping unknown headers or rewriting the body', () => {
+    const original = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'future_writer_field: preserve-me',
+      'keywords: old alias',
+      'source_agent_client: codex',
+      'timestamp: 2026-07-23T10:00:00.000Z',
+      '',
+      'Body spacing stays intact.',
+      '',
+      'Second paragraph.',
+      '',
+      '<!-- MEMORY_FIELDS',
+      '{"version":1}',
+      '-->',
+    ].join('\n');
+
+    const enriched = formatMemoryDocumentWithKeywords(original, ['new paraphrase', 'another alias']);
+
+    expect(enriched).toContain('future_writer_field: preserve-me');
+    expect(enriched).not.toContain('keywords: old alias');
+    expect(enriched).toContain('keywords: new paraphrase\nkeywords: another alias');
+    expect(enriched.split('\n\n').slice(1).join('\n\n')).toBe(
+      ['Body spacing stays intact.', '', 'Second paragraph.'].join('\n'),
+    );
+    expect(enriched).not.toContain('MEMORY_FIELDS');
   });
 
   it('excludes the managed OpenViking memory-fields trailer from the parsed body', () => {

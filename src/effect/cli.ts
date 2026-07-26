@@ -15,6 +15,7 @@ import {
 import {
   runArchive,
   runCompact,
+  runEnrichMemories,
   runExportPack,
   runForget,
   runHandoff,
@@ -508,6 +509,18 @@ const migrateProjectNamesCompatibility = Command.make('migrate-project-names', m
   withRuntimeEffect(config => runMigrateProjectNames(config, options)),
 ).pipe(Command.withDescription('Compatibility name for migrate-projects'), Command.withHidden);
 
+const enrichMemories = Command.make(
+  'enrich-memories',
+  {
+    apply: boolean('apply', 'Generate and store local-model search keywords; without this, prints a dry run'),
+    dryRun: boolean('dry-run', 'Print eligible memories without changing them'),
+    force: boolean('force', 'Regenerate keywords for memories that are already enriched'),
+    installLocalAi: boolean('install-local-ai', 'Install the pinned local model first when it is not installed'),
+    limit: optionalString('limit', 'Maximum number of memories to enrich'),
+  },
+  options => withRuntimeEffect(config => runEnrichMemories(config, options)),
+).pipe(Command.withDescription('Enrich personal memories with local-model retrieval keywords'));
+
 const recall = Command.make(
   'recall',
   {
@@ -836,6 +849,7 @@ export const threadnoteCommand = root.pipe(
     migrateLifecycle,
     migrateProjectNames,
     migrateProjectNamesCompatibility,
+    enrichMemories,
     recall,
     workset,
     compact,

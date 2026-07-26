@@ -7,7 +7,7 @@ import {
   memoryContentWithHygieneSources,
   parseMemoryDocument,
   recallHygieneNudges,
-  referencedContextExcerpt,
+  formatReferencedContextPointers,
   referencedUrisFromRecords,
 } from '../../src/memory_hygiene.js';
 
@@ -308,8 +308,21 @@ describe('references relation', () => {
     ]);
   });
 
-  it('renders a bounded, indented excerpt', () => {
-    const excerpt = referencedContextExcerpt(['line one', '', 'line two', 'line three'].join('\n'), 2);
-    expect(excerpt).toBe('  line one\n  line two');
+  it('renders bounded URI-only pointers without referenced memory bodies', () => {
+    expect(
+      formatReferencedContextPointers(
+        [
+          'viking://user/me/memories/durable/projects/threadnote/first.md',
+          'viking://user/me/memories/durable/projects/threadnote/second.md',
+        ],
+        1,
+      ),
+    ).toBe(
+      [
+        'Referenced read-only context (one-way pointers from surfaced memories):',
+        '- viking://user/me/memories/durable/projects/threadnote/first.md',
+        '- … 1 more referenced memory omitted',
+      ].join('\n'),
+    );
   });
 });
