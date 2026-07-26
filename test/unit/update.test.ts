@@ -464,7 +464,7 @@ describe('runPostUpdate', () => {
     );
   });
 
-  it('offers the pinned local recall model as an opt-in post-update action', async () => {
+  it('offers local recall and full memory enrichment during the 3.0.0 beta cycle', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
@@ -486,5 +486,10 @@ describe('runPostUpdate', () => {
     );
 
     expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['local-ai', 'install'], {});
+    expect(executeStreaming).toHaveBeenCalledWith(
+      '/threadnote',
+      ['enrich-memories', '--apply', '--install-local-ai'],
+      {},
+    );
   });
 });

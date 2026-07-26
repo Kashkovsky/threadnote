@@ -318,14 +318,21 @@ export function referencedUrisFromRecords(records: readonly MemoryRecord[], reca
   return result;
 }
 
-/** Renders a short, indented excerpt of a referenced memory body for recall. */
-export function referencedContextExcerpt(body: string, maxLines: number): string {
-  const lines = body
-    .split('\n')
-    .map(line => line.trimEnd())
-    .filter(line => line.trim().length > 0)
-    .slice(0, maxLines);
-  return lines.map(line => `  ${line}`).join('\n');
+/** Renders bounded one-way reference pointers without inlining another memory. */
+export function formatReferencedContextPointers(uris: readonly string[], maxUris: number): string | undefined {
+  if (uris.length === 0) {
+    return undefined;
+  }
+  const capped = uris.slice(0, maxUris);
+  const lines = [
+    'Referenced read-only context (one-way pointers from surfaced memories):',
+    ...capped.map(uri => `- ${uri}`),
+  ];
+  if (uris.length > capped.length) {
+    const omitted = uris.length - capped.length;
+    lines.push(`- … ${omitted} more referenced ${omitted === 1 ? 'memory' : 'memories'} omitted`);
+  }
+  return lines.join('\n');
 }
 
 export function activePersonalMemoryUrisFromText(text: string, user: string): readonly string[] {

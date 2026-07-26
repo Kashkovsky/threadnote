@@ -1,6 +1,7 @@
 import {Clock, Effect} from 'effect';
+import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai-recall.js';
 import type {MemoryRecord} from '../memory_document.js';
-import {buildRecallSections, type ExactMatch, type RecallHit} from '../utils.js';
+import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
 import {loadRecallFeedback} from './feedback.js';
 import {loadRecallIndexData} from './index.js';
 import type {RecallCandidate} from './rank.js';
@@ -15,6 +16,7 @@ interface RecallRuntimeConfig {
 interface PrepareRecallSectionsInput<R> {
   readonly allowExactRescue: boolean;
   readonly allowedUriScopes?: readonly string[];
+  readonly candidateUris?: readonly string[];
   readonly exactMatches: readonly ExactMatch[];
   readonly feedbackQuery: string;
   readonly includeInactive: boolean;
@@ -35,6 +37,35 @@ const EXPANSION_VOCABULARY_RANKED_RESERVE = 25;
 const EXPANSION_DESCRIPTION_TERM_LIMIT = 6;
 const EXPANSION_DESCRIPTION_LENGTH_LIMIT = 80;
 const EXPANSION_DESCRIPTION_SEPARATOR = ' :: ';
+const MAX_DETERMINISTIC_QUERY_VARIANTS = 3;
+const MINIMUM_QUERY_VARIANT_TERMS = 2;
+
+export function deterministicRecallQueryVariants(query: string): readonly string[] {
+  const clauses = query
+    .split(/\s+(?:and|or)\s+|[,;]+/i)
+    .map(clause => clause.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (
+    clauses.length < 2 ||
+    clauses.some(clause => (clause.match(/[a-z0-9][a-z0-9_.-]{2,}/gi)?.length ?? 0) < MINIMUM_QUERY_VARIANT_TERMS)
+  ) {
+    return [];
+  }
+  return clauses.slice(0, MAX_DETERMINISTIC_QUERY_VARIANTS);
+}
+
+function recallQueryVariants(query: string, supplied: readonly string[] | undefined): readonly string[] {
+  const seen = new Set([query.trim().toLowerCase()]);
+  const variants: string[] = [];
+  for (const variant of [...deterministicRecallQueryVariants(query), ...(supplied ?? [])]) {
+    const normalized = variant.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    variants.push(normalized);
+  }
+  return variants;
+}
 
 /**
  * Shared Effect orchestration for CLI and MCP recall. The entry points remain
@@ -53,7 +84,8 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   ];
   const records = yield* input.readRecords(rankingUris);
   const now = new Date(yield* Clock.currentTimeMillis);
-  const indexQueries = [input.query, ...(input.queryVariants ?? [])];
+  const queryVariants = recallQueryVariants(input.query, input.queryVariants);
+  const indexQueries = [input.query, ...queryVariants];
   const [feedbackByUri, recallIndexes] = yield* Effect.all(
     [
       loadRecallFeedback(config.agentContextHome, {
@@ -77,10 +109,13 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     {concurrency: 2},
   );
   const recallIndex = recallIndexes.find(index => index !== undefined);
-  const indexedCandidates = mergeRecallIndexCandidates(recallIndexes.map(index => index?.candidates ?? []));
+  const recallIndexCandidateSets = recallIndexes.map(index => index?.candidates ?? []);
+  const indexedCandidates = mergeRecallIndexCandidates(recallIndexCandidateSets);
+  const expansionCandidates = mergeRecallExpansionCandidates(recallIndexCandidateSets, rankingUris);
   const sections = buildRecallSections(input.passes, input.exactMatches, input.limit, {
     allowExactRescue: input.allowExactRescue,
     allowedUriScopes: input.allowedUriScopes,
+    candidateUris: input.candidateUris,
     corpusStatistics: recallIndex?.corpusStatistics,
     feedbackByUri,
     includeInactive: input.includeInactive,
@@ -89,12 +124,164 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     now,
     project: input.project,
     query: input.query,
-    queryVariants: input.queryVariants,
+    queryVariants,
     records,
     seedUris: input.seedUris,
   });
-  return {...sections, expansionCandidates: indexedCandidates};
+  return {...sections, expansionCandidates};
 });
+
+export function buildRecallSelectionCandidates(
+  ranked: readonly RecallHit[],
+  indexedCandidates: readonly RecallCandidate[],
+  limit: number,
+): readonly RecallSelectionCandidate[] {
+  const indexedByUri = new Map(indexedCandidates.map(candidate => [candidate.uri.replace(/#.*$/, ''), candidate]));
+  return ranked.slice(0, Math.min(limit, MAX_RECALL_SELECTION_CANDIDATES)).map((hit, index) => {
+    const uri = hit.uri.replace(/#.*$/, '');
+    const indexed = indexedByUri.get(uri);
+    const uriTopic = uri.slice(uri.lastIndexOf('/') + 1).replace(/\.[a-z0-9]+$/i, '');
+    const project =
+      indexed?.fields?.project ??
+      memoryUriProjectSegment(uri) ??
+      /^viking:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
+    const fields = [
+      `category=${hit.category}`,
+      project ? `project=${project}` : undefined,
+      `topic=${indexed?.fields?.topic ?? uriTopic}`,
+      indexed?.fields?.title ? `title=${indexed.fields.title}` : undefined,
+      indexed?.fields?.keywords?.length ? `keywords=${indexed.fields.keywords.join(', ')}` : undefined,
+    ].filter((field): field is string => field !== undefined);
+    const excerpt = recallSelectionExcerpt(indexed?.text || hit.snippet || '');
+    return {
+      id: `c${index + 1}`,
+      summary: [...fields, excerpt ? `excerpt=${excerpt}` : undefined]
+        .filter((part): part is string => part !== undefined)
+        .join(' | '),
+      uri,
+    };
+  });
+}
+
+export function buildRecallIndexSelectionCandidates(
+  indexedCandidates: readonly RecallCandidate[],
+  project: string | undefined,
+  limit: number,
+): readonly RecallSelectionCandidate[] {
+  const normalizedProject = project?.trim().toLowerCase();
+  const candidates = normalizedProject
+    ? indexedCandidates.filter(candidate => candidate.fields?.project?.trim().toLowerCase() === normalizedProject)
+    : indexedCandidates;
+  return candidates.slice(0, Math.min(limit, MAX_RECALL_SELECTION_CANDIDATES)).map((candidate, index) => {
+    const uri = candidate.uri.replace(/#.*$/, '');
+    const uriTopic = uri.slice(uri.lastIndexOf('/') + 1).replace(/\.[a-z0-9]+$/i, '');
+    const fields = [
+      candidate.kind ? `kind=${candidate.kind}` : 'category=resource',
+      candidate.fields?.project ? `project=${candidate.fields.project}` : undefined,
+      `topic=${candidate.fields?.topic ?? uriTopic}`,
+      candidate.fields?.title ? `title=${candidate.fields.title}` : undefined,
+      candidate.fields?.keywords?.length ? `keywords=${candidate.fields.keywords.join(', ')}` : undefined,
+    ].filter((field): field is string => field !== undefined);
+    const excerpt = recallSelectionExcerpt(candidate.text);
+    return {
+      id: `c${index + 1}`,
+      summary: [...fields, excerpt ? `excerpt=${excerpt}` : undefined]
+        .filter((part): part is string => part !== undefined)
+        .join(' | '),
+      uri,
+    };
+  });
+}
+
+export function recallSelectionQueries(
+  candidates: readonly RecallSelectionCandidate[],
+  indexedCandidates: readonly RecallCandidate[],
+  selectedIds: readonly string[],
+  originalQuery: string,
+  limit: number,
+): readonly string[] {
+  const selectedUris = new Set(
+    candidates.filter(candidate => selectedIds.includes(candidate.id)).map(candidate => candidate.uri),
+  );
+  const queryTerms = new Map(
+    (originalQuery.match(/[A-Za-z0-9]{3,}/g) ?? []).map(term => [
+      term.toLowerCase(),
+      /^[A-Z][A-Z0-9_.-]{2,}$/.test(term) ? 4 : 1,
+    ]),
+  );
+  const selectedCandidates = indexedCandidates
+    .map((candidate, index) => {
+      const fieldTerms = new Set(
+        [candidate.fields?.topic, candidate.fields?.title, ...(candidate.fields?.keywords ?? [])]
+          .filter((value): value is string => value !== undefined)
+          .join(' ')
+          .toLowerCase()
+          .match(/[a-z0-9]{3,}/g) ?? [],
+      );
+      const bodyTerms = new Set(candidate.text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
+      return {
+        candidate,
+        index,
+        overlap: [...queryTerms].reduce(
+          (score, [term, weight]) =>
+            score + (fieldTerms.has(term) ? weight * 2 : 0) + (bodyTerms.has(term) ? weight : 0),
+          0,
+        ),
+      };
+    })
+    .filter(({candidate}) => selectedUris.has(candidate.uri.replace(/#.*$/, '')))
+    .sort((left, right) => right.overlap - left.overlap || left.index - right.index);
+  const seen = new Set<string>();
+  const queries: string[] = [];
+  for (const {candidate} of selectedCandidates) {
+    const query = candidate.fields?.topic?.trim() || candidate.fields?.title?.trim();
+    const key = query?.toLowerCase();
+    if (!query || !key || seen.has(key)) continue;
+    seen.add(key);
+    queries.push(query);
+    if (queries.length === limit) break;
+  }
+  return queries;
+}
+
+function recallSelectionExcerpt(value: string): string {
+  const terms: string[] = [];
+  let previous = '';
+  for (const term of value.replace(/\s+/g, ' ').trim().split(' ')) {
+    const key = term.toLowerCase();
+    if (!term || key === previous) continue;
+    terms.push(term);
+    previous = key;
+  }
+  return terms.join(' ').slice(0, 240).trim();
+}
+
+export function recallSelectionAnchorIds(
+  candidates: readonly RecallSelectionCandidate[],
+  ranked: readonly RecallHit[],
+): readonly string[] {
+  const idByUri = new Map(candidates.map(candidate => [candidate.uri, candidate.id]));
+  return ranked
+    .slice(0, 2)
+    .filter(hit => !hit.rankWarnings?.some(warning => warning.includes('lexical-only')))
+    .map(hit => idByUri.get(hit.uri.replace(/#.*$/, '')))
+    .filter((id): id is string => id !== undefined);
+}
+
+export function selectedRecallCandidateUris(
+  candidates: readonly RecallSelectionCandidate[],
+  selectedIds: readonly string[],
+  anchorIds: readonly string[] = [],
+): readonly string[] {
+  if (selectedIds.length === 0) {
+    return [];
+  }
+  const selected = new Set([...anchorIds, ...selectedIds]);
+  return candidates
+    .filter(candidate => selected.has(candidate.id))
+    .slice(0, 8)
+    .map(candidate => candidate.uri);
+}
 
 export const loadRecallExpansionVocabulary = Effect.fn('recall.loadExpansionVocabulary')(function* (
   config: RecallRuntimeConfig,
@@ -131,6 +318,19 @@ export function mergeRecallIndexCandidates(
     }
   }
   return merged;
+}
+
+export function mergeRecallExpansionCandidates(
+  candidateSets: readonly (readonly RecallCandidate[])[],
+  requiredUris: readonly string[],
+): readonly RecallCandidate[] {
+  const required = new Set(requiredUris.map(uri => uri.replace(/#.*$/, '')));
+  return mergeRecallIndexCandidates(
+    candidateSets.map(candidates => [
+      ...candidates.filter(candidate => !required.has(candidate.uri.replace(/#.*$/, ''))),
+      ...candidates.filter(candidate => required.has(candidate.uri.replace(/#.*$/, ''))),
+    ]),
+  );
 }
 
 export function recallExpansionVocabulary(

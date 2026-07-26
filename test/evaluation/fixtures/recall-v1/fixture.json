@@ -110,28 +110,28 @@
       }
     },
     {
-      "uri": "viking://resources/repos/mobile-native/android-app-links.md",
-      "text": "Android App Links are declared in the AndroidManifest intent-filter and verified by assetlinks.json.",
+      "uri": "viking://resources/repos/orion-worker/lease-renewal.md",
+      "text": "The lease coordinator reschedules a job after a stalled heartbeat.",
       "authority": "canonical_repo",
       "trust": "approved",
       "fields": {
-        "title": "Android App Links",
-        "topic": "android-app-links",
-        "project": "mobile-native"
+        "title": "Worker lease renewal",
+        "topic": "worker-lease-renewal",
+        "project": "orion-worker"
       }
     },
     {
-      "uri": "viking://user/me/memories/docs-reconnect-watchdog.md",
-      "text": "The Docs websocket reconnect watchdog restarts the live connection after transport loss.",
+      "uri": "viking://user/me/memories/artifact-cache-eviction.md",
+      "text": "The artifact cache sweeper removes stale bundles when storage reaches its capacity threshold.",
       "authority": "user_approved",
       "trust": "approved",
       "kind": "durable",
       "status": "active",
       "timestamp": "2026-07-22T00:00:00.000Z",
       "fields": {
-        "title": "Docs reconnect watchdog",
-        "topic": "docs-reconnect-watchdog",
-        "project": "docs"
+        "title": "Artifact cache eviction",
+        "topic": "artifact-cache-eviction",
+        "project": "atlas-cache"
       }
     }
   ],
@@ -221,33 +221,33 @@
       }
     },
     {
-      "id": "paraphrase-android-app-links",
-      "query": "Where does the phone app claim website URLs on Android?",
-      "project": "mobile-native",
+      "id": "paraphrase-worker-lease",
+      "query": "What resumes a job when its worker heartbeat stalls?",
+      "project": "orion-worker",
       "expectedAnswerability": "answerable",
       "expectedExpansion": true,
       "relevance": {
-        "viking://resources/repos/mobile-native/android-app-links.md": 3
+        "viking://resources/repos/orion-worker/lease-renewal.md": 3
       },
       "requiredReasonCodes": ["semantic_similarity"],
       "semanticScores": {},
       "expandedSemanticScores": {
-        "viking://resources/repos/mobile-native/android-app-links.md": 0.88
+        "viking://resources/repos/orion-worker/lease-renewal.md": 0.88
       }
     },
     {
-      "id": "paraphrase-docs-reconnect",
-      "query": "What brings Docs back after its live connection drops?",
-      "project": "docs",
+      "id": "paraphrase-cache-eviction",
+      "query": "How is storage freed when build artifacts fill the cache?",
+      "project": "atlas-cache",
       "expectedAnswerability": "answerable",
       "expectedExpansion": true,
       "relevance": {
-        "viking://user/me/memories/docs-reconnect-watchdog.md": 3
+        "viking://user/me/memories/artifact-cache-eviction.md": 3
       },
       "requiredReasonCodes": ["semantic_similarity"],
       "semanticScores": {},
       "expandedSemanticScores": {
-        "viking://user/me/memories/docs-reconnect-watchdog.md": 0.87
+        "viking://user/me/memories/artifact-cache-eviction.md": 0.87
       }
     }
   ]

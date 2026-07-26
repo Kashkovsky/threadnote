@@ -6,9 +6,13 @@ import {
   expandRecallQueryEffect,
   isLoopbackAiEndpoint,
   limitRecallRewritesForConfidence,
+  mergeRecallRewritesForConfidence,
+  normalizeRecallCandidateSelection,
   normalizeRecallRewrites,
-  recallMinimumScoreAfterExpansion,
+  RecallCandidateSelector,
+  recallHybridMinimumScore,
   RecallQueryExpander,
+  selectRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../src/effect/ai-recall.js';
 
@@ -23,15 +27,15 @@ describe('Effect AI recall expansion', () => {
 
   it('keeps at most two unique, bounded rewrites and drops the original query', () => {
     expect(
-      normalizeRecallRewrites('where is the Android link handled', [
-        ' Android app link intent filter ',
-        'where is the Android link handled',
-        'android app link intent filter',
-        'asset links manifest configuration',
+      normalizeRecallRewrites('where is the QX7 lease handled', [
+        ' QX7 worker lease coordinator ',
+        'where is the QX7 lease handled',
+        'qx7 worker lease coordinator',
+        'heartbeat renewal configuration',
         'ignored third rewrite',
         'x'.repeat(700),
       ]),
-    ).toEqual(['Android app link intent filter', 'asset links manifest configuration']);
+    ).toEqual(['QX7 worker lease coordinator', 'heartbeat renewal configuration']);
   });
 
   it('drops locally grounded rewrites that ignore the supplied project vocabulary', () => {
@@ -59,7 +63,7 @@ describe('Effect AI recall expansion', () => {
         'viking://user/me/memories/durable/projects/threadnote',
         undefined,
         'viking://resources/repos/threadnote',
-        'viking://resources/repos/mobile',
+        'viking://resources/repos/atlas-cache',
       ]),
     ).toEqual([undefined]);
   });
@@ -69,11 +73,15 @@ describe('Effect AI recall expansion', () => {
     expect(limitRecallRewritesForConfidence({level: 'medium'}, rewrites)).toEqual(['first']);
     expect(limitRecallRewritesForConfidence({level: 'low'}, rewrites)).toEqual(rewrites);
     expect(limitRecallRewritesForConfidence({level: 'no_answer'}, rewrites)).toEqual(rewrites);
+    expect(mergeRecallRewritesForConfidence({level: 'low'}, ['grounded'], [' Grounded ', 'fallback'])).toEqual([
+      'grounded',
+      'fallback',
+    ]);
   });
 
-  it('relaxes only the default threshold after expansion', () => {
-    expect(recallMinimumScoreAfterExpansion(0.4, false)).toBeUndefined();
-    expect(recallMinimumScoreAfterExpansion(0.9, true)).toBe(0.9);
+  it('uses the hybrid score scale by default and preserves explicit thresholds', () => {
+    expect(recallHybridMinimumScore(0.45, false)).toBe(0.3);
+    expect(recallHybridMinimumScore(0.9, true)).toBe(0.9);
   });
 
   it('only treats explicit loopback Effect AI endpoints as local', () => {
@@ -81,6 +89,31 @@ describe('Effect AI recall expansion', () => {
     expect(isLoopbackAiEndpoint('http://localhost:11434/v1')).toBe(true);
     expect(isLoopbackAiEndpoint('https://models.example.com/v1')).toBe(false);
     expect(isLoopbackAiEndpoint(undefined)).toBe(false);
+  });
+
+  it('keeps only known, unique candidate IDs and supports a confident empty selection', () => {
+    const candidates = [
+      {id: 'c1', summary: 'first', uri: 'viking://first'},
+      {id: 'c2', summary: 'second', uri: 'viking://second'},
+    ];
+    expect(
+      normalizeRecallCandidateSelection({candidateIds: ['c2', 'unknown', 'c2'], relevant: true}, candidates),
+    ).toEqual(['c2']);
+    expect(normalizeRecallCandidateSelection({candidateIds: [], relevant: false}, candidates)).toEqual([]);
+    expect(() => normalizeRecallCandidateSelection({candidateIds: ['unknown'], relevant: true}, candidates)).toThrow(
+      'no known candidate IDs',
+    );
+    const manyCandidates = Array.from({length: 12}, (_unused, index) => ({
+      id: `c${index + 1}`,
+      summary: `candidate ${index + 1}`,
+      uri: `viking://candidate-${index + 1}`,
+    }));
+    expect(
+      normalizeRecallCandidateSelection(
+        {candidateIds: manyCandidates.map(candidate => candidate.id), relevant: true},
+        manyCandidates,
+      ),
+    ).toHaveLength(8);
   });
 
   it.effect('keeps application code provider-independent', () =>
@@ -91,6 +124,20 @@ describe('Effect AI recall expansion', () => {
         }),
       ),
       Effect.tap(rewrites => Effect.sync(() => expect(rewrites).toEqual(['rewrite:how do beta updates differ']))),
+    ),
+  );
+
+  it.effect('keeps candidate selection provider-independent', () =>
+    selectRecallCandidatesEffect({
+      candidates: [{id: 'c1', summary: 'release channel', uri: 'viking://release'}],
+      query: 'preview release updates',
+    }).pipe(
+      Effect.provide(
+        Layer.succeed(RecallCandidateSelector, {
+          select: () => Effect.succeed(['c1']),
+        }),
+      ),
+      Effect.tap(selected => Effect.sync(() => expect(selected).toEqual(['c1']))),
     ),
   );
 });

@@ -88,7 +88,7 @@ describe('local recall index', () => {
       'viking://user/me/memories/durable/projects/threadnote/recall.md',
     ]);
     expect(candidates[0]?.text).toMatch(/alpha-42|recall/);
-    const cachePath = join(directory, 'cache', 'recall-index-v5.json');
+    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
     const cache = await readFile(cachePath, 'utf8');
     expect(cache).not.toContain('# Alpha-42');
@@ -104,7 +104,7 @@ describe('local recall index', () => {
     expect(withArchived.map(candidate => candidate.uri)).toContain(
       'viking://user/me/memories/durable/archived/threadnote/old.md',
     );
-    await expect(stat(join(directory, 'cache', 'recall-index-v5-with-inactive.json'))).resolves.toMatchObject({
+    await expect(stat(join(directory, 'cache', 'recall-index-v6-with-inactive.json'))).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
@@ -121,7 +121,7 @@ describe('local recall index', () => {
       'beta-9000',
     );
 
-    await writeFile(join(directory, 'cache', 'recall-index-v5.json'), '{invalid', 'utf8');
+    await writeFile(join(directory, 'cache', 'recall-index-v6.json'), '{invalid', 'utf8');
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
   });
 
@@ -155,7 +155,7 @@ describe('local recall index', () => {
     const candidates = await run(loadRecallIndex(config(), {includeInactive: false}));
 
     expect(candidates[0]?.text).toContain('managed-field-safe');
-    await expect(stat(join(cacheDirectory, 'recall-index-v5.json'))).resolves.toMatchObject({
+    await expect(stat(join(cacheDirectory, 'recall-index-v6.json'))).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
     await expect(stat(join(cacheDirectory, 'recall-index-v1.json'))).resolves.toMatchObject({
@@ -201,10 +201,56 @@ describe('local recall index', () => {
       'viking://resources/repos/threadnote/000.md',
       'viking://resources/repos/threadnote/139.md',
     ]);
-    const cache = JSON.parse(await readFile(join(directory, 'cache', 'recall-index-v5.json'), 'utf8')) as {
+    const cache = JSON.parse(await readFile(join(directory, 'cache', 'recall-index-v6.json'), 'utf8')) as {
       readonly postings?: unknown;
     };
     expect(cache.postings).toBeDefined();
+  });
+
+  it('uses enriched keywords to retrieve paraphrases absent from the memory body', async () => {
+    const memoryPath = join(
+      directory,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'me',
+      'memories',
+      'durable',
+      'projects',
+      'orion-worker',
+      'lease-renewal.md',
+    );
+    await mkdir(join(memoryPath, '..'), {recursive: true});
+    await writeFile(
+      memoryPath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: orion-worker',
+        'topic: lease-renewal',
+        'source_agent_client: codex',
+        'timestamp: 2026-07-23T00:00:00.000Z',
+        'keywords: resume jobs after stalled heartbeat',
+        'keywords: worker lease renewal',
+        '',
+        'The coordinator reschedules work after a stalled heartbeat.',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const candidates = await run(
+      loadRecallIndex(config(), {
+        includeInactive: false,
+        query: 'resume jobs after a stalled heartbeat',
+      }),
+    );
+
+    expect(candidates.map(candidate => candidate.uri)).toContain(
+      'viking://user/me/memories/durable/projects/orion-worker/lease-renewal.md',
+    );
+    expect(candidates[0]?.fields?.keywords).toEqual(['resume jobs after stalled heartbeat', 'worker lease renewal']);
   });
 
   it('unions per-term lexical pools so a late rare identifier survives an early common term', async () => {
@@ -329,7 +375,7 @@ describe('local recall index', () => {
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'first-anchor'}));
 
     await writeFile(join(resourceRoot, 'second.md'), '# Second\n\nsecond-anchor', 'utf8');
-    await writeFile(join(directory, 'cache', 'recall-index-v5.json.stale'), 'external-generation\n', 'utf8');
+    await writeFile(join(directory, 'cache', 'recall-index-v6.json.stale'), 'external-generation\n', 'utf8');
 
     const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'second-anchor'}));
     expect(refreshed[0]?.uri).toBe('viking://resources/repos/threadnote/second.md');
@@ -536,7 +582,7 @@ describe('local recall index', () => {
 
   it('keeps validation and incremental updates in the decoded generation without rewriting the corpus cache', async () => {
     const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    const cachePath = join(directory, 'cache', 'recall-index-v5.json');
+    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));

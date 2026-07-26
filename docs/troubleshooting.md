@@ -178,9 +178,20 @@ threadnote local-ai start
 
 Startup logs are written to `THREADNOTE_HOME/logs/local-ai.log`. If the model file is missing or fails verification,
 or the private access token is missing or has unsafe permissions, rerun `threadnote local-ai install --force`. A
-local-model failure does not block recall: Threadnote returns its deterministic result without query expansion. Stop
+local-model failure does not block recall: Threadnote returns its deterministic result without query expansion or
+candidate post-filtering. Stop
 also refuses to signal a recorded PID when the authenticated endpoint cannot prove the same launch identity; inspect
 that process manually instead of deleting the safety check.
+
+For an interrupted personal-memory backfill, rerun:
+
+```bash
+threadnote enrich-memories --apply
+```
+
+Memories that already contain generated `keywords:` headers are skipped. The command continues past individual model
+or write failures, reports them in its summary, and exits unsuccessfully so a post-update action is not silently marked
+complete.
 
 ## Claude MCP Fails While Health Is OK
 

@@ -3,14 +3,21 @@ import {Console, Crypto, Effect, FileSystem, Path, Result, pipe} from 'effect';
 import {
   boundedRecallExpansionScopes,
   expandWeakRecallQueryEffect,
+  limitRecallRewritesForConfidence,
   localRecallAiEnabled,
-  recallMinimumScoreAfterExpansion,
+  mergeRecallRewritesForConfidence,
+  recallHybridMinimumScore,
+  recallRewriteLimitForConfidence,
+  selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from './effect/ai-recall.js';
 import {resolveEffectAiConfiguration} from './effect/ai-consolidator.js';
+import {enrichMemoryMetadataWithConfiguredLocalAi, enrichMemoryWithInstalledLocalAi} from './effect/ai-enrichment.js';
 import {maybeRunEffect} from './effect/command.js';
+import {readLocalAiSettings, runLocalAiInstall} from './effect/local-ai.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
+import {scanFilesWithinBoundary} from './effect/safe_scan.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {SystemInfo} from './effect/system.js';
@@ -27,20 +34,36 @@ import {
   buildCompactPlan,
   type CompactableMemoryKind,
   formatCompactPlan,
+  formatReferencedContextPointers,
   handoffTopicForBranch,
   parseMemoryDocument,
   recallHygieneNudges,
-  referencedContextExcerpt,
   referencedUrisFromRecords,
   topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
-import {formatMemoryDocument, inferMemoryMetadata, memoryHeaderValue, type MemoryMetadata} from './memory_document.js';
-import {loadRecallExpansionVocabulary, prepareRecallSections} from './recall/runtime.js';
+import {
+  canonicalMemoryDocumentContent,
+  formatMemoryDocument,
+  formatMemoryDocumentWithKeywords,
+  inferMemoryMetadata,
+  memoryHeaderValue,
+  type MemoryMetadata,
+} from './memory_document.js';
+import {
+  buildRecallIndexSelectionCandidates,
+  buildRecallSelectionCandidates,
+  loadRecallExpansionVocabulary,
+  prepareRecallSections,
+  recallSelectionQueries,
+  recallSelectionAnchorIds,
+  selectedRecallCandidateUris,
+} from './recall/runtime.js';
 import {withIdentity} from './runtime.js';
 import type {
   ArchiveOptions,
   CompactOptions,
+  EnrichMemoriesOptions,
   ForgetOptions,
   HandoffOptions,
   ListOptions,
@@ -153,6 +176,20 @@ interface ProjectMemoryLocation {
   readonly uriPath: string;
 }
 
+interface MemoryEnrichmentCandidate {
+  readonly path: string;
+  readonly priority: number;
+  readonly uri: string;
+}
+
+interface MemoryEnrichmentPlan {
+  readonly alreadyEnriched: number;
+  readonly candidates: readonly MemoryEnrichmentCandidate[];
+  readonly invalid: number;
+  readonly scanned: number;
+  readonly skippedKinds: number;
+}
+
 export function parseMemoryKind(value: string): MemoryKind {
   if (['durable', 'handoff', 'incident', 'preference', 'smoke'].includes(value)) {
     return value as MemoryKind;
@@ -185,7 +222,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   if (!text.trim()) {
     yield* Effect.fail(new Error('Provide memory text with --text or --stdin.'));
   }
-  const metadata: MemoryMetadata = {
+  const baseMetadata: MemoryMetadata = {
     kind: options.kind ?? 'durable',
     project: normalizeOptionalMetadata(options.project),
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
@@ -193,6 +230,16 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     timestamp: new Date().toISOString(),
     topic: normalizeOptionalMetadata(options.topic),
   };
+  const metadata =
+    options.dryRun === true || (options.replace !== undefined && isInSharedNamespace(config, options.replace))
+      ? baseMetadata
+      : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, baseMetadata, text.trim()).pipe(
+          Effect.catch(error =>
+            Console.log(
+              `Local AI memory enrichment skipped: ${error instanceof Error ? error.message : String(error)}`,
+            ).pipe(Effect.as(baseMetadata)),
+          ),
+        );
   yield* storeMemory(config, {
     bodyText: text.trim(),
     dryRun: options.dryRun === true,
@@ -281,6 +328,207 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
     ].join('; '),
   );
 });
+
+export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
+  config: RuntimeConfig,
+  options: EnrichMemoriesOptions,
+) {
+  const dryRun = options.dryRun === true || options.apply !== true;
+  const limit = options.limit ? parsePositiveInteger(options.limit, 'memory enrichment limit') : undefined;
+  yield* Console.log('Scanning personal memories for enrichment eligibility...');
+  const plan = yield* personalMemoryEnrichmentPlan(config, options.force === true);
+  const candidates = limit === undefined ? plan.candidates : plan.candidates.slice(0, limit);
+  yield* Console.log(
+    [
+      `Personal memory enrichment: ${candidates.length} ${dryRun ? 'would be processed' : 'to process'}`,
+      `${plan.alreadyEnriched} already enriched`,
+      `${plan.skippedKinds} smoke record(s) skipped`,
+      `${plan.invalid} non-memory file(s) skipped`,
+      `${plan.scanned} personal markdown file(s) scanned`,
+      'shared team memories are excluded',
+    ].join('; '),
+  );
+  if (candidates.length === 0) {
+    return;
+  }
+  if (dryRun) {
+    for (const [index, candidate] of candidates.entries()) {
+      const prefix = `[${index + 1}/${candidates.length}]`;
+      yield* Console.log(`${prefix} Would enrich ${candidate.uri}`);
+    }
+    yield* Console.log('Run with --apply to generate and store local-model search keywords.');
+    return;
+  }
+
+  if (!(yield* readLocalAiSettings(config))) {
+    if (options.installLocalAi !== true) {
+      return yield* Effect.fail(
+        new Error('Local AI is not installed. Run `threadnote local-ai install`, or rerun with `--install-local-ai`.'),
+      );
+    }
+    yield* Console.log(
+      'Local AI is not installed. Installing the pinned model before enrichment; the one-time download is 4.59 GB.',
+    );
+    yield* runLocalAiInstall(config, {});
+  }
+  yield* Console.log(
+    'Generating retrieval keywords locally. This can take a long time for a large corpus; progress will stream below.',
+  );
+
+  const ov = yield* openVikingCliForMode(false);
+  const fs = yield* FileSystem.FileSystem;
+  let enriched = 0;
+  let failed = 0;
+  let noKeywords = 0;
+  for (const [index, candidate] of candidates.entries()) {
+    const prefix = `[${index + 1}/${candidates.length}]`;
+    yield* Console.log(`${prefix} Enriching ${candidate.uri}`);
+    const loaded = yield* Effect.result(fs.readFileString(candidate.path));
+    if (Result.isFailure(loaded)) {
+      failed += 1;
+      yield* Console.error(
+        `${prefix} Failed to read ${candidate.uri}: ${
+          loaded.failure instanceof Error ? loaded.failure.message : String(loaded.failure)
+        }`,
+      );
+      continue;
+    }
+    const record = parseMemoryDocument(candidate.uri, loaded.success);
+    if (!record) {
+      failed += 1;
+      yield* Console.error(`${prefix} Failed ${candidate.uri}: file is no longer a valid memory document.`);
+      continue;
+    }
+    if (record.metadata.kind === 'smoke') {
+      noKeywords += 1;
+      yield* Console.log(`${prefix} Became ineligible since the scan; left unchanged.`);
+      continue;
+    }
+    if (!options.force && record.metadata.keywords !== undefined) {
+      noKeywords += 1;
+      yield* Console.log(`${prefix} Already enriched since the scan; left unchanged.`);
+      continue;
+    }
+    const generated = yield* Effect.result(
+      enrichMemoryWithInstalledLocalAi(config, {
+        body: record.body,
+        kind: record.metadata.kind,
+        project: record.metadata.project,
+        topic: record.metadata.topic,
+      }),
+    );
+    if (Result.isFailure(generated)) {
+      failed += 1;
+      yield* Console.error(
+        `${prefix} Failed ${candidate.uri}: ${
+          generated.failure instanceof Error ? generated.failure.message : String(generated.failure)
+        }`,
+      );
+      continue;
+    }
+    const keywords = generated.success;
+    if (!keywords || keywords.length === 0) {
+      noKeywords += 1;
+      yield* Console.log(`${prefix} No useful keywords generated; left unchanged.`);
+      continue;
+    }
+    const written = yield* Effect.result(
+      withMemoryUriLocks(
+        fs,
+        config.agentContextHome,
+        [candidate.uri],
+        Effect.gen(function* () {
+          const currentContent = yield* fs.readFileString(candidate.path);
+          if (canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(record.content)) {
+            return yield* Effect.fail(
+              new Error(`Memory changed during enrichment; left untouched so the migration can be retried.`),
+            );
+          }
+          const content = formatMemoryDocumentWithKeywords(currentContent, keywords);
+          yield* writeMemoryFile(config, ov, candidate.uri, content, 'replace', false, {quiet: true});
+        }),
+      ),
+    );
+    if (Result.isFailure(written)) {
+      failed += 1;
+      yield* Console.error(
+        `${prefix} Failed to store ${candidate.uri}: ${
+          written.failure instanceof Error ? written.failure.message : String(written.failure)
+        }`,
+      );
+      continue;
+    }
+    enriched += 1;
+    yield* Console.log(`${prefix} Stored ${keywords.length} keyword(s): ${keywords.join(', ')}`);
+  }
+  yield* Console.log(
+    `Memory enrichment summary: ${enriched} enriched; ${noKeywords} unchanged; ${failed} failed; ${candidates.length} attempted.`,
+  );
+  if (failed > 0) {
+    return yield* Effect.fail(
+      new Error(`${failed} memory enrichment operation(s) failed. Rerun the command to resume remaining memories.`),
+    );
+  }
+});
+
+const personalMemoryEnrichmentPlan = Effect.fn('memory.personalMemoryEnrichmentPlan')(function* (
+  config: RuntimeConfig,
+  force: boolean,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* localUserMemoriesRoot(config);
+  const files = yield* scanFilesWithinBoundary(fs, root, root, {
+    includeDirectory: directory => {
+      const relative = path.relative(root, directory).split(path.sep);
+      return relative[0] !== 'shared' && !relative.some(segment => segment.startsWith('.'));
+    },
+    includeFile: (_filePath, name) => name.endsWith('.md') && !name.startsWith('.'),
+  });
+  const candidates: MemoryEnrichmentCandidate[] = [];
+  let alreadyEnriched = 0;
+  let invalid = 0;
+  let skippedKinds = 0;
+  for (const file of files) {
+    const relative = path.relative(root, file.path).split(path.sep).join('/');
+    const uri = `viking://user/${uriSegment(config.user)}/memories/${relative}`;
+    const content = yield* fs.readFileString(file.path);
+    const record = parseMemoryDocument(uri, content);
+    if (!record) {
+      invalid += 1;
+      continue;
+    }
+    if (record.metadata.kind === 'smoke') {
+      skippedKinds += 1;
+      continue;
+    }
+    if (!force && record.metadata.keywords !== undefined) {
+      alreadyEnriched += 1;
+      continue;
+    }
+    candidates.push({path: file.path, priority: memoryEnrichmentPriority(record), uri});
+  }
+  candidates.sort((left, right) => left.priority - right.priority || left.uri.localeCompare(right.uri));
+  return {
+    alreadyEnriched,
+    candidates,
+    invalid,
+    scanned: files.length,
+    skippedKinds,
+  } satisfies MemoryEnrichmentPlan;
+});
+
+function memoryEnrichmentPriority(record: MemoryRecord): number {
+  const statusPriority = record.metadata.status === 'active' ? 0 : record.metadata.status === 'archived' ? 10 : 20;
+  const kindPriority = {
+    durable: 0,
+    handoff: 1,
+    incident: 2,
+    preference: 3,
+    smoke: 4,
+  }[record.metadata.kind];
+  return statusPriority + kindPriority;
+}
 
 export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
   config: RuntimeConfig,
@@ -955,8 +1203,10 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const dryRun = options.dryRun === true;
   const inferredUri =
     options.uri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
-  const project = yield* inferProjectFromQuery(config.manifestPath, options.project ?? projectQuery);
+  const queryProject = yield* inferProjectFromQuery(config.manifestPath, options.project ?? options.query);
+  const project = queryProject ?? (yield* inferProjectFromQuery(config.manifestPath, projectQuery));
   const projectMemoryName = yield* recallProjectMemoryName(options.project, workspaceOptions);
+  const recallProjectName = project?.name ?? projectMemoryName;
   const nodeLimit = options.nodeLimit
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
@@ -994,7 +1244,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       passes.push(yield* recallSearchHits(config, ov, searchArgs(query, projectMemoryUri), {dryRun, includeArchived}));
     }
   }
-  for (const scope of projectMemoryScopeUris(config, projectMemoryName, includeArchived)) {
+  for (const scope of projectMemoryScopeUris(config, recallProjectName, includeArchived)) {
     if (!scopedRecallUris.has(scope)) {
       scopedRecallUris.add(scope);
       searchedScopes.push(scope);
@@ -1048,46 +1298,84 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   if (effectAiWarning) {
     yield* Console.log(`Local AI recall unavailable: ${effectAiWarning}. Deterministic recall continued.`);
   }
-  let hybridMinimumScore: number | undefined = Number(recallThreshold);
+  let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
   const expansionQueries: string[] = [];
-  const prepareSections = () =>
+  const prepareSections = (candidateUris?: readonly string[]) =>
     prepareRecallSections(config, {
       allowExactRescue: options.threshold === undefined,
       allowedUriScopes: options.uri ? [options.uri] : undefined,
+      candidateUris,
       exactMatches,
       feedbackQuery: options.query,
       includeInactive: includeArchived,
       limit: nodeLimit ?? 12,
       minimumScore: hybridMinimumScore,
       passes,
-      project: projectMemoryName ?? project?.name,
+      project: recallProjectName,
       query,
       queryVariants: expansionQueries,
       readRecords: uris => readMemoryRecordsByUri(config, uris),
       seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
     });
   let recallSections = yield* prepareSections();
+  const shouldAttemptAiExpansion =
+    !dryRun && localRecallAiEnabled(effectAi?.configuration) && shouldExpandRecall(recallSections.confidence);
+  const indexSelectionCandidates = shouldAttemptAiExpansion
+    ? buildRecallIndexSelectionCandidates(recallSections.expansionCandidates, recallProjectName, 24)
+    : [];
+  const indexSelectionIds =
+    indexSelectionCandidates.length > 0
+      ? yield* selectExpandedRecallCandidatesEffect(
+          {candidates: indexSelectionCandidates, query: options.query},
+          config,
+          effectAi,
+        )
+      : undefined;
+  const groundedExpansionQueries =
+    indexSelectionIds && indexSelectionIds.length > 0
+      ? limitRecallRewritesForConfidence(
+          recallSections.confidence,
+          recallSelectionQueries(
+            indexSelectionCandidates,
+            recallSections.expansionCandidates,
+            indexSelectionIds,
+            options.query,
+            2,
+          ),
+        )
+      : [];
+  const needsFallbackExpansion =
+    shouldExpandRecall(recallSections.confidence) &&
+    groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
   const expansionVocabulary =
-    localRecallAiEnabled(effectAi?.configuration) && shouldExpandRecall(recallSections.confidence)
+    needsFallbackExpansion &&
+    localRecallAiEnabled(effectAi?.configuration) &&
+    shouldExpandRecall(recallSections.confidence)
       ? yield* loadRecallExpansionVocabulary(config, {
           allowedUriScopes: options.uri ? [options.uri] : undefined,
           includeInactive: includeArchived,
-          project: projectMemoryName ?? project?.name,
+          project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
         }).pipe(Effect.catch(() => Effect.succeed([])))
       : [];
-  const proposedExpansionQueries = dryRun
-    ? []
-    : yield* expandWeakRecallQueryEffect(
-        {
-          confidence: recallSections.confidence,
-          project: projectMemoryName ?? project?.name,
-          query: options.query,
-          vocabulary: expansionVocabulary,
-        },
-        config,
-        effectAi,
-      );
+  const fallbackExpansionQueries =
+    dryRun || !needsFallbackExpansion
+      ? []
+      : yield* expandWeakRecallQueryEffect(
+          {
+            confidence: recallSections.confidence,
+            project: recallProjectName,
+            query: options.query,
+            vocabulary: expansionVocabulary,
+          },
+          config,
+          effectAi,
+        );
+  const proposedExpansionQueries = mergeRecallRewritesForConfidence(
+    recallSections.confidence,
+    groundedExpansionQueries,
+    fallbackExpansionQueries,
+  );
   for (const expansionQuery of proposedExpansionQueries) {
     expansionQueries.push(expansionQuery);
     for (const scope of boundedRecallExpansionScopes(searchedScopes)) {
@@ -1097,11 +1385,32 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       });
       passes.push(expandedHits);
     }
-    hybridMinimumScore = recallMinimumScoreAfterExpansion(Number(recallThreshold), options.threshold !== undefined);
+    hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
     recallSections = yield* prepareSections();
   }
   if (expansionQueries.length > 0) {
     yield* Console.log(`Recall query expansion: evaluated ${expansionQueries.length} model rewrite(s).`);
+    const selectionCandidates = buildRecallSelectionCandidates(
+      recallSections.ranked,
+      recallSections.expansionCandidates,
+      Math.max(nodeLimit ?? 12, 12) * 2,
+    );
+    const selectedIds = yield* selectExpandedRecallCandidatesEffect(
+      {candidates: selectionCandidates, query: options.query},
+      config,
+      effectAi,
+    );
+    if (selectedIds !== undefined) {
+      const selectedUris = selectedRecallCandidateUris(
+        selectionCandidates,
+        selectedIds,
+        recallSelectionAnchorIds(selectionCandidates, recallSections.ranked),
+      );
+      recallSections = yield* prepareSections(selectedUris);
+      yield* Console.log(
+        `Recall local AI post-filter: kept ${selectedUris.length} of ${selectionCandidates.length} candidate(s).`,
+      );
+    }
   }
   const {semanticSection, exactTail} = recallSections;
   if (semanticSection) {
@@ -1118,13 +1427,11 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
 });
 
 const MAX_REFERENCED_CONTEXT = 5;
-const REFERENCED_EXCERPT_LINES = 12;
 
 /**
  * Resolves the one-way `references:` pointers carried by the personal memories
- * recall just surfaced, reading each referenced memory read-only from the local
- * store and appending a short excerpt. Bounded to one hop and a small cap;
- * missing references degrade to a labeled line and never fail recall.
+ * recall just surfaced and appends bounded URI-only pointers. The caller can
+ * explicitly read a relevant pointer without recall inlining unrelated text.
  */
 const referencedContextSection = Effect.fn('memory.referencedContextSection')(function* (
   config: RuntimeConfig,
@@ -1139,24 +1446,7 @@ const referencedContextSection = Effect.fn('memory.referencedContextSection')(fu
   if (referenced.length === 0) {
     return undefined;
   }
-  const capped = referenced.slice(0, MAX_REFERENCED_CONTEXT);
-  const records = yield* readMemoryRecordsByUri(config, capped);
-  const byUri = new Map(records.map(record => [record.uri, record]));
-  const lines = ['Referenced read-only context (one-way pointers from surfaced memories):'];
-  for (const uri of capped) {
-    const record = byUri.get(uri);
-    if (record) {
-      lines.push(`- ${uri}`, referencedContextExcerpt(record.body, REFERENCED_EXCERPT_LINES));
-    } else {
-      lines.push(`- ${uri} [reference unavailable locally]`);
-    }
-  }
-  if (referenced.length > capped.length) {
-    lines.push(
-      `- … ${referenced.length - capped.length} more referenced ${referenced.length - capped.length === 1 ? 'memory' : 'memories'} omitted`,
-    );
-  }
-  return lines.join('\n');
+  return formatReferencedContextPointers(referenced, MAX_REFERENCED_CONTEXT);
 });
 
 /**
@@ -1475,7 +1765,17 @@ export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, ur
 });
 
 export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConfig, options: HandoffOptions) {
-  const {bodyText, metadata} = yield* buildHandoff(options);
+  const {bodyText, metadata: baseMetadata} = yield* buildHandoff(options);
+  const metadata =
+    options.dryRun === true || (options.replace !== undefined && isInSharedNamespace(config, options.replace))
+      ? baseMetadata
+      : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, baseMetadata, bodyText).pipe(
+          Effect.catch(error =>
+            Console.log(
+              `Local AI memory enrichment skipped: ${error instanceof Error ? error.message : String(error)}`,
+            ).pipe(Effect.as(baseMetadata)),
+          ),
+        );
   yield* storeMemory(config, {
     bodyText,
     dryRun: options.dryRun === true,

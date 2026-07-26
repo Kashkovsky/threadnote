@@ -2,6 +2,60 @@ import {describe, expect, it} from 'vitest';
 import {buildRecallCorpusStatistics, rankRecallCandidates, RECALL_RANKER_VERSION} from '../../src/recall/rank.js';
 
 describe('hybrid recall ranker', () => {
+  it('treats enriched keywords as focused topical evidence', () => {
+    const candidate = {
+      fields: {
+        keywords: ['resume jobs after stalled heartbeat', 'worker lease renewal'],
+        project: 'orion-worker',
+        title: 'Lease coordinator',
+        topic: 'lease-renewal',
+      },
+      kind: 'durable' as const,
+      text: 'Reschedules work after a stalled heartbeat.',
+      uri: 'viking://user/me/memories/lease-renewal.md',
+    };
+    const ranked = rankRecallCandidates('resume jobs after a stalled heartbeat', [candidate], {
+      project: 'orion-worker',
+    });
+    const withoutKeywords = rankRecallCandidates(
+      'resume jobs after a stalled heartbeat',
+      [{...candidate, fields: {...candidate.fields, keywords: undefined}}],
+      {project: 'orion-worker'},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('lease-renewal.md');
+    expect(ranked.results[0]?.signals.field).toBeGreaterThan(withoutKeywords.results[0]?.signals.field ?? 0);
+  });
+
+  it('scores each enriched keyword phrase independently so other aliases do not dilute a strong match', () => {
+    const ranked = rankRecallCandidates(
+      'why does queued work remain stalled after a heartbeat timeout',
+      [
+        {
+          fields: {
+            keywords: [
+              'queued work stalled recovery',
+              'heartbeat lease renewal failure',
+              'automatic task rescheduling',
+              'worker heartbeat timeout',
+              'stalled job recovery',
+              'lease renewal dead end',
+            ],
+            project: 'orion-worker',
+            topic: 'lease-renewal',
+          },
+          kind: 'durable',
+          text: 'A bounded coordinator reschedules stalled work.',
+          uri: 'viking://user/me/memories/lease-renewal.md',
+        },
+      ],
+      {project: 'orion-worker'},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toContain('lease-renewal.md');
+    expect(ranked.results[0]?.signals.field).toBeGreaterThan(0.08);
+  });
+
   it('combines semantic, BM25/IDF, and field-aware identifier evidence', () => {
     const ranked = rankRecallCandidates(
       'alpha-42 retry policy',
@@ -284,6 +338,62 @@ describe('hybrid recall ranker', () => {
 
     expect(ranked.results).toEqual([]);
     expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('rejects body-only lexical overlap without focused field or semantic evidence', () => {
+    const ranked = rankRecallCandidates(
+      'kubernetes helm chart canary rollout istio service mesh',
+      [
+        {
+          exactTerms: ['kubernetes', 'canary', 'rollout', 'service'],
+          fields: {project: 'threadnote', title: 'Recall quality backlog', topic: 'recall-quality-backlog'},
+          kind: 'durable',
+          text: 'A negative-control query once used kubernetes canary rollout service mesh as its example.',
+          uri: 'viking://user/me/memories/durable/projects/threadnote/recall-quality-backlog.md',
+        },
+      ],
+      {allowExactRescue: true, project: 'threadnote'},
+    );
+
+    expect(ranked.results).toEqual([]);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('keeps lexical-only matches whose topic directly names the query', () => {
+    const ranked = rankRecallCandidates(
+      'QX7 worker lease',
+      [
+        {
+          exactTerms: ['QX7', 'lease'],
+          fields: {project: 'orion-worker', title: 'QX7 lease flow', topic: 'qx7-lease-flow'},
+          kind: 'durable',
+          text: 'The QX7 worker renews its execution lease.',
+          uri: 'viking://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
+        },
+      ],
+      {allowExactRescue: true, project: 'orion-worker'},
+    );
+
+    expect(ranked.results.map(result => result.candidate.uri)).toEqual([
+      'viking://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
+    ]);
+  });
+
+  it('keeps evaluation and backlog topics out of feature recall unless the query asks for them', () => {
+    const candidate = {
+      fields: {
+        project: 'threadnote',
+        title: 'Recall paraphrase evaluation',
+        topic: 'recall-quality-live-paraphrase-evaluation',
+      },
+      kind: 'durable' as const,
+      semantic: 0.8,
+      text: 'The evaluation records which ranking-signal paraphrases passed.',
+      uri: 'viking://user/me/memories/durable/projects/threadnote/recall-quality-evaluation.md',
+    };
+
+    expect(rankRecallCandidates('what controls memory ranking signals', [candidate]).results).toEqual([]);
+    expect(rankRecallCandidates('what did the recall quality evaluation find', [candidate]).results).toHaveLength(1);
   });
 
   it('uses typed graph proximity without allowing authority to bypass topical relevance', () => {

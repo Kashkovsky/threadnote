@@ -3,12 +3,15 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
+  inferProjectFromQuery as inferProjectFromQueryEffect,
   inferWorksetFromQuery as inferWorksetFromQueryEffect,
   readSeedManifest as readSeedManifestEffect,
   resolveWorkset as resolveWorksetEffect,
 } from '../../src/manifest.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
+const inferProjectFromQuery = (...args: Parameters<typeof inferProjectFromQueryEffect>) =>
+  runEffect(inferProjectFromQueryEffect(...args));
 const inferWorksetFromQuery = (...args: Parameters<typeof inferWorksetFromQueryEffect>) =>
   runEffect(inferWorksetFromQueryEffect(...args));
 const readSeedManifest = (...args: Parameters<typeof readSeedManifestEffect>) =>
@@ -91,6 +94,82 @@ worksets:
 
     expect(await inferWorksetFromQuery(apiManifestPath, 'recap the current mapping')).toBeUndefined();
     expect((await inferWorksetFromQuery(apiManifestPath, 'review the api changes'))?.name).toBe('api');
+  });
+
+  it('infers a uniquely identifying project-name segment from a natural query', async () => {
+    const manifestPath = join(dir, 'worker.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: threadnote',
+        '    path: ~/src/threadnote',
+        '    uri: viking://resources/repos/threadnote',
+        '    seed: []',
+        '  - name: orion-worker',
+        '    path: ~/src/orion-worker',
+        '    uri: viking://resources/repos/orion-worker',
+        '    seed: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    expect((await inferProjectFromQuery(manifestPath, 'worker lease renewal'))?.name).toBe('orion-worker');
+    expect(await inferProjectFromQuery(manifestPath, 'native rendering')).toBeUndefined();
+  });
+
+  it('does not infer an ambiguous project-name segment', async () => {
+    const manifestPath = join(dir, 'ambiguous-worker.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: orion-worker',
+        '    path: ~/src/orion-worker',
+        '    uri: viking://resources/repos/orion-worker',
+        '    seed: []',
+        '  - name: atlas-worker',
+        '    path: ~/src/atlas-worker',
+        '    uri: viking://resources/repos/atlas-worker',
+        '    seed: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    expect(await inferProjectFromQuery(manifestPath, 'worker lease renewal')).toBeUndefined();
+  });
+
+  it('prefers a complete overlapping project name and rejects distinct exact project mentions', async () => {
+    const manifestPath = join(dir, 'exact-projects.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: orion',
+        '    path: ~/src/orion',
+        '    uri: viking://resources/repos/orion',
+        '    seed: []',
+        '  - name: orion-worker',
+        '    path: ~/src/orion-worker',
+        '    uri: viking://resources/repos/orion-worker',
+        '    seed: []',
+        '  - name: atlas-cache',
+        '    path: ~/src/atlas-cache',
+        '    uri: viking://resources/repos/atlas-cache',
+        '    seed: []',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    expect((await inferProjectFromQuery(manifestPath, 'orion-worker lease renewal'))?.name).toBe('orion-worker');
+    expect(await inferProjectFromQuery(manifestPath, 'compare orion with orion-worker')).toBeUndefined();
+    expect(await inferProjectFromQuery(manifestPath, 'compare orion with atlas-cache')).toBeUndefined();
   });
 
   it('throws on a malformed worksets block', async () => {
