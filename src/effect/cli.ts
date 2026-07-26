@@ -541,7 +541,7 @@ const enrichMemories = Command.make(
     limit: optionalString('limit', 'Maximum number of memories to enrich'),
   },
   options => withRuntimeEffect(config => runEnrichMemories(config, options)),
-).pipe(Command.withDescription('Enrich personal memories with local-model retrieval keywords'));
+).pipe(Command.withDescription('Enrich personal and shared memories with local-model retrieval keywords'));
 
 const recall = Command.make(
   'recall',

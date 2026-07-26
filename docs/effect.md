@@ -71,7 +71,7 @@ model; declining dismisses that offer without enabling or downloading anything. 
 ```bash
 threadnote local-ai install
 threadnote local-ai status
-threadnote enrich-memories                         # preview the personal-memory backfill
+threadnote enrich-memories                         # preview personal and shared-memory backfill
 threadnote enrich-memories --apply --install-local-ai
 ```
 
@@ -81,14 +81,16 @@ stores the model under `THREADNOTE_HOME/threadnote/models`, and writes a version
 The service binds only to `127.0.0.1:1934`. Installation also creates a mode-0600 access token. Health checks use a
 challenge-response proof before Threadnote sends any prompt, and the OpenAI-compatible endpoints require that token.
 
-The full enrichment command processes each eligible personal memory locally and stores up to eight compact
-`keywords:` headers without changing its URI, body, timestamp, or lifecycle metadata. It prioritizes active memories,
-then continues through the historical personal corpus; smoke records and shared team repositories are excluded.
-Already-enriched memories are skipped, so an interrupted run can be resumed. Use `--force` to regenerate keywords and
-`--limit <count>` for a bounded trial. A large corpus can take a long time; the command prints `[n/N]` progress,
-generated keywords, failures, and a final summary instead of working silently. A model response that cannot produce
-usable structured keywords leaves that memory unchanged and does not fail the backfill; provider availability,
-timeouts, filesystem, parsing, concurrent-edit, and storage failures remain retryable errors.
+The full enrichment command processes each eligible personal memory and configured shared durable memory locally, then
+stores up to eight compact `keywords:` headers without changing its URI, body, timestamp, or lifecycle metadata. It
+prioritizes active memories before historical personal records. Shared skills, repository guidance, and other
+non-memory files are excluded. Already-enriched memories are skipped, so an interrupted run can be resumed. Use
+`--force` to regenerate keywords and `--limit <count>` for a bounded trial. A large corpus can take a long time; the
+command prints `[n/N]` progress, generated keywords, failures, and a final summary instead of working silently. Shared
+updates use the repository and memory locks but stay as local Git changes until the user runs the printed
+`threadnote share sync --team <team>` command. A model response that cannot produce usable structured keywords leaves
+that memory unchanged and does not fail the backfill; provider availability, timeouts, filesystem, parsing,
+concurrent-edit, and storage failures remain retryable errors.
 
 The opt-in post-update action is introduced for `3.0.0` and is also advertised during its prerelease cycle. If the
 model is absent, accepting the enrichment action installs it first. New active personal memories written through the
@@ -141,11 +143,12 @@ Remote query expanders receive only the original query and inferred project. Exp
 receive a bounded, scrubbed shortlist of local topic/identifier names with six-term index excerpts; rewrites that do
 not contain an exact shortlist term are discarded. This grounding data never goes to a non-loopback endpoint.
 
-The local model does not extract additional memory candidates or mutate canonical or shared memories. Candidate
-extraction keeps its existing policy. Personal enrichment only adds retrieval keywords; older Threadnote versions
-ignore those unknown repeated headers and continue reading the document body. Explicit manager consolidation may use
-the same provider to generate an Effect Schema-validated `{ "draft": string }` object, but generating a draft never
-deletes source memories; cleanup remains a separate user-approved operation.
+During recall, the local model does not extract additional memory candidates or mutate canonical memories. Candidate
+extraction keeps its existing policy. Explicit enrichment only adds retrieval keywords to personal and configured
+shared durable memories; older Threadnote versions ignore those unknown repeated headers and continue reading the
+document body. Explicit manager consolidation may use the same provider to generate an Effect Schema-validated
+`{ "draft": string }` object, but generating a draft never deletes source memories; cleanup remains a separate
+user-approved operation.
 
 Environment variables remain an advanced override for Ollama, LM Studio, hosted APIs, or another
 OpenAI-compatible chat-completions endpoint:

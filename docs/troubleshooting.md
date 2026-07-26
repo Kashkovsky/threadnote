@@ -184,7 +184,7 @@ candidate post-filtering. Stop
 also refuses to signal a recorded PID when the authenticated endpoint cannot prove the same launch identity; inspect
 that process manually instead of deleting the safety check.
 
-For an interrupted personal-memory backfill, rerun:
+For an interrupted memory backfill, rerun:
 
 ```bash
 threadnote enrich-memories --apply
@@ -192,7 +192,8 @@ threadnote enrich-memories --apply
 
 Memories that already contain generated `keywords:` headers are skipped. The command continues past individual model
 or write failures, reports them in its summary, and exits unsuccessfully so a post-update action is not silently marked
-complete.
+complete. After reviewing enriched shared memories, run each printed `threadnote share sync --team <team>` command to
+commit and publish those team changes.
 
 ## Claude MCP Fails While Health Is OK
 

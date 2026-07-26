@@ -49,7 +49,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {...actual, openVikingCliForMode: vi.fn(() => Effect.succeed('/ov'))};
 });
 
-describe('personal memory enrichment migration', () => {
+describe('memory enrichment migration', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
@@ -109,7 +109,7 @@ describe('personal memory enrichment migration', () => {
     return {config, memory, memoryPath};
   };
 
-  it('streams a dry-run plan, skips enriched records, and excludes shared memories', async () => {
+  it('includes configured shared durable memories and leaves publication to share sync', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-memory-enrichment-'));
     homes.push(home);
     const config: RuntimeConfig = {
@@ -126,7 +126,31 @@ describe('personal memory enrichment migration', () => {
     const active = join(root, 'durable', 'projects', 'threadnote', 'recall.md');
     const enriched = join(root, 'handoffs', 'active', 'threadnote', 'current.md');
     const shared = join(root, 'shared', 'team', 'durable', 'projects', 'threadnote', 'shared.md');
+    const sharedArtifact = join(root, 'shared', 'team', 'agent-artifacts', 'codex', 'skill', 'reviewer', 'SKILL.md');
     await Promise.all([active, enriched, shared].map(path => mkdir(join(path, '..'), {recursive: true})));
+    await mkdir(join(sharedArtifact, '..'), {recursive: true});
+    await mkdir(join(home, 'share'), {recursive: true});
+    await writeFile(
+      join(home, 'share', 'teams.json'),
+      `${JSON.stringify(
+        {
+          defaultTeam: 'team',
+          teams: {
+            team: {
+              addedAt: '2026-07-23T00:00:00.000Z',
+              gitdir: join(home, 'share', 'teams', 'team.gitdir'),
+              name: 'team',
+              remote: 'git@example.com:team/memories.git',
+              worktree: join(root, 'shared', 'team'),
+            },
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
     const document = (extraHeader: readonly string[], body: string) =>
       [
         'MEMORY',
@@ -142,15 +166,43 @@ describe('personal memory enrichment migration', () => {
       ].join('\n');
     await writeFile(active, document([], 'Deterministic recall uses a local index.'), 'utf8');
     await writeFile(enriched, document(['keywords: paraphrase recall'], 'Already enriched.'), 'utf8');
-    await writeFile(shared, document([], 'Shared memory must not be rewritten.'), 'utf8');
+    await writeFile(shared, document([], 'Shared memory should gain retrieval keywords.'), 'utf8');
+    await writeFile(sharedArtifact, '# Shared skill that is not a memory\n', 'utf8');
 
     const {output} = await runEffect(captureConsole(runEnrichMemories(config, {})));
 
-    expect(output).toContain('1 would be processed');
+    expect(output).toContain('2 would be processed');
     expect(output).toContain('1 already enriched');
-    expect(output).toContain('shared team memories are excluded');
+    expect(output).toContain('2 personal markdown file(s) scanned');
+    expect(output).toContain('1 shared team memory file(s) scanned');
     expect(output).toContain('Would enrich viking://user/me/memories/durable/projects/threadnote/recall.md');
-    expect(output).not.toContain('shared.md');
+    expect(output).toContain(
+      'Would enrich viking://user/me/memories/shared/team/durable/projects/threadnote/shared.md',
+    );
+    expect(output).not.toContain('SKILL.md');
+
+    vi.mocked(share.writeMemoryFile).mockClear();
+    const applied = await runEffect(captureConsole(runEnrichMemories(config, {apply: true})));
+    const sharedUri = 'viking://user/me/memories/shared/team/durable/projects/threadnote/shared.md';
+    expect(share.writeMemoryFile).toHaveBeenCalledWith(
+      config,
+      '/ov',
+      sharedUri,
+      expect.stringContaining('keywords: resume jobs after stalled heartbeat'),
+      'replace',
+      false,
+      {quiet: true},
+    );
+    expect(applied.output).toContain('Run `threadnote share sync --team team` to publish 1 enriched shared memory.');
+
+    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReturnValue(
+      Effect.succeed(['sk-abcdefghijklmnopqr1234']),
+    );
+    vi.mocked(share.writeMemoryFile).mockClear();
+    await expect(runEffect(runEnrichMemories(config, {apply: true}))).rejects.toThrow(
+      '1 memory enrichment operation(s) failed',
+    );
+    expect(vi.mocked(share.writeMemoryFile).mock.calls.some(call => call[2] === sharedUri)).toBe(false);
   });
 
   it('leaves a memory untouched when it changes during model generation', async () => {

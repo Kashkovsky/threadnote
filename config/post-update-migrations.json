@@ -64,15 +64,16 @@
       "appliesToPrereleases": true,
       "title": "Optional full local-AI memory enrichment",
       "description": [
-        "Threadnote can add compact retrieval keywords to existing personal memories so deterministic recall finds stronger paraphrase matches before AI post-processing.",
-        "The migration reads and updates eligible personal memory documents in place. Shared team memories are excluded and are never rewritten automatically.",
+        "Threadnote can add compact retrieval keywords to existing personal and configured shared durable memories so deterministic recall finds stronger paraphrase matches before AI post-processing.",
+        "The migration updates eligible memory documents in place. Shared team changes remain local and reviewable until you run the printed threadnote share sync command.",
         "If local AI is not installed, accepting this action downloads and verifies the pinned Gemma 4 E4B model first (4.59 GB).",
         "A full corpus can take a long time because every memory is processed locally. Progress and generated keywords stream to the console.",
         "The added repeated keywords headers are ignored by older Threadnote parsers, so existing shared-memory readers remain compatible."
       ],
       "commandArgs": ["enrich-memories", "--apply", "--install-local-ai"],
       "instructions": [
-        "Personal memory enrichment finished. Future active personal memories are enriched automatically when local AI is available.",
+        "Memory enrichment finished. Future active personal memories are enriched automatically when local AI is available.",
+        "Run the printed `threadnote share sync --team <team>` command after reviewing enriched shared memories.",
         "Rerun `threadnote enrich-memories --apply` to resume remaining memories, or add `--force` to regenerate existing keywords."
       ],
       "markHandledWhenSkipped": true

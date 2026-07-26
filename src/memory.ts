@@ -120,6 +120,7 @@ import {
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   publishShareGitChange,
+  readTeamsFile,
   resolveTeam,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
@@ -190,7 +191,8 @@ interface MemoryEnrichmentPlan {
   readonly alreadyEnriched: number;
   readonly candidates: readonly MemoryEnrichmentCandidate[];
   readonly invalid: number;
-  readonly scanned: number;
+  readonly personalScanned: number;
+  readonly sharedScanned: number;
   readonly skippedKinds: number;
 }
 
@@ -339,17 +341,17 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
 ) {
   const dryRun = options.dryRun === true || options.apply !== true;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'memory enrichment limit') : undefined;
-  yield* Console.log('Scanning personal memories for enrichment eligibility...');
-  const plan = yield* personalMemoryEnrichmentPlan(config, options.force === true);
+  yield* Console.log('Scanning personal and shared memories for enrichment eligibility...');
+  const plan = yield* withSharedRepositoryLock(config, memoryEnrichmentPlan(config, options.force === true));
   const candidates = limit === undefined ? plan.candidates : plan.candidates.slice(0, limit);
   yield* Console.log(
     [
-      `Personal memory enrichment: ${candidates.length} ${dryRun ? 'would be processed' : 'to process'}`,
+      `Memory enrichment: ${candidates.length} ${dryRun ? 'would be processed' : 'to process'}`,
       `${plan.alreadyEnriched} already enriched`,
       `${plan.skippedKinds} smoke record(s) skipped`,
       `${plan.invalid} non-memory file(s) skipped`,
-      `${plan.scanned} personal markdown file(s) scanned`,
-      'shared team memories are excluded',
+      `${plan.personalScanned} personal markdown file(s) scanned`,
+      `${plan.sharedScanned} shared team memory file(s) scanned`,
     ].join('; '),
   );
   if (candidates.length === 0) {
@@ -395,6 +397,7 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
   let enriched = 0;
   let failed = 0;
   let noKeywords = 0;
+  const enrichedSharedTeams = new Map<string, number>();
   for (const [index, candidate] of candidates.entries()) {
     const prefix = `[${index + 1}/${candidates.length}]`;
     yield* Console.log(`${prefix} Enriching ${candidate.uri}`);
@@ -452,23 +455,31 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       yield* Console.log(`${prefix} No useful keywords generated; left unchanged.`);
       continue;
     }
-    const written = yield* Effect.result(
-      withMemoryUriLocks(
-        fs,
-        config.agentContextHome,
-        [candidate.uri],
-        Effect.gen(function* () {
-          const currentContent = yield* fs.readFileString(candidate.path);
-          if (canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(record.content)) {
+    const sharedTeam = sharedTeamNameForUri(config, candidate.uri);
+    const store = withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [candidate.uri],
+      Effect.gen(function* () {
+        const currentContent = yield* fs.readFileString(candidate.path);
+        if (canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(record.content)) {
+          return yield* Effect.fail(
+            new Error(`Memory changed during enrichment; left untouched so the migration can be retried.`),
+          );
+        }
+        const content = formatMemoryDocumentWithKeywords(currentContent, keywords);
+        if (sharedTeam) {
+          const scrub = applyScrubber(content, {redact: false});
+          if (scrub.blocker) {
             return yield* Effect.fail(
-              new Error(`Memory changed during enrichment; left untouched so the migration can be retried.`),
+              new Error(`Refusing to enrich shared memory ${candidate.uri}: possible ${scrub.blocker}.`),
             );
           }
-          const content = formatMemoryDocumentWithKeywords(currentContent, keywords);
-          yield* writeMemoryFile(config, ov, candidate.uri, content, 'replace', false, {quiet: true});
-        }),
-      ),
+        }
+        yield* writeMemoryFile(config, ov, candidate.uri, content, 'replace', false, {quiet: true});
+      }),
     );
+    const written = yield* Effect.result(sharedTeam ? withSharedRepositoryLock(config, store) : store);
     if (Result.isFailure(written)) {
       failed += 1;
       yield* Console.error(
@@ -479,11 +490,21 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       continue;
     }
     enriched += 1;
+    if (sharedTeam) {
+      enrichedSharedTeams.set(sharedTeam, (enrichedSharedTeams.get(sharedTeam) ?? 0) + 1);
+    }
     yield* Console.log(`${prefix} Stored ${keywords.length} keyword(s): ${keywords.join(', ')}`);
   }
   yield* Console.log(
     `Memory enrichment summary: ${enriched} enriched; ${noKeywords} unchanged; ${failed} failed; ${candidates.length} attempted.`,
   );
+  for (const [team, count] of [...enrichedSharedTeams].sort(([left], [right]) => left.localeCompare(right))) {
+    yield* Console.log(
+      `Run \`threadnote share sync --team ${team}\` to publish ${count} enriched shared ${
+        count === 1 ? 'memory' : 'memories'
+      }.`,
+    );
+  }
   if (failed > 0) {
     return yield* Effect.fail(
       new Error(`${failed} memory enrichment operation(s) failed. Rerun the command to resume remaining memories.`),
@@ -491,29 +512,58 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
   }
 });
 
-const personalMemoryEnrichmentPlan = Effect.fn('memory.personalMemoryEnrichmentPlan')(function* (
+const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* (
   config: RuntimeConfig,
   force: boolean,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* localUserMemoriesRoot(config);
-  const files = yield* scanFilesWithinBoundary(fs, root, root, {
+  const personalFiles = yield* scanFilesWithinBoundary(fs, root, root, {
     includeDirectory: directory => {
       const relative = path.relative(root, directory).split(path.sep);
       return relative[0] !== 'shared' && !relative.some(segment => segment.startsWith('.'));
     },
     includeFile: (_filePath, name) => name.endsWith('.md') && !name.startsWith('.'),
   });
+  const personal = personalFiles.map(file => {
+    const relative = path.relative(root, file.path).split(path.sep).join('/');
+    return {
+      path: file.path,
+      uri: `viking://user/${uriSegment(config.user)}/memories/${relative}`,
+    };
+  });
+  const teams = yield* readTeamsFile(config);
+  const sharedByTeam = yield* Effect.forEach(
+    Object.entries(teams.teams).sort(([left], [right]) => left.localeCompare(right)),
+    ([team, settings]) =>
+      Effect.gen(function* () {
+        const files = yield* scanFilesWithinBoundary(fs, path.join(settings.worktree, 'durable'), settings.worktree, {
+          includeDirectory: directory =>
+            !path
+              .relative(settings.worktree, directory)
+              .split(path.sep)
+              .some(segment => segment.startsWith('.')),
+          includeFile: (_filePath, name) => name.endsWith('.md') && !name.startsWith('.'),
+        });
+        return files.map(file => {
+          const relative = path.relative(settings.worktree, file.path).split(path.sep).join('/');
+          return {
+            path: file.path,
+            uri: `viking://user/${uriSegment(config.user)}/memories/shared/${team}/${relative}`,
+          };
+        });
+      }),
+  );
+  const shared = sharedByTeam.flat();
+  const files = [...personal, ...shared];
   const candidates: MemoryEnrichmentCandidate[] = [];
   let alreadyEnriched = 0;
   let invalid = 0;
   let skippedKinds = 0;
   for (const file of files) {
-    const relative = path.relative(root, file.path).split(path.sep).join('/');
-    const uri = `viking://user/${uriSegment(config.user)}/memories/${relative}`;
     const content = yield* fs.readFileString(file.path);
-    const record = parseMemoryDocument(uri, content);
+    const record = parseMemoryDocument(file.uri, content);
     if (!record) {
       invalid += 1;
       continue;
@@ -526,14 +576,15 @@ const personalMemoryEnrichmentPlan = Effect.fn('memory.personalMemoryEnrichmentP
       alreadyEnriched += 1;
       continue;
     }
-    candidates.push({path: file.path, priority: memoryEnrichmentPriority(record), uri});
+    candidates.push({path: file.path, priority: memoryEnrichmentPriority(record), uri: file.uri});
   }
   candidates.sort((left, right) => left.priority - right.priority || left.uri.localeCompare(right.uri));
   return {
     alreadyEnriched,
     candidates,
     invalid,
-    scanned: files.length,
+    personalScanned: personal.length,
+    sharedScanned: shared.length,
     skippedKinds,
   } satisfies MemoryEnrichmentPlan;
 });
