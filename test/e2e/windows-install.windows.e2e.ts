@@ -67,7 +67,7 @@ windowsIt('forwards PowerShell bootstrap switches and explicit package managers'
     expectSuccess(await runBootstrapThroughInvokeExpression(env), 'piped PowerShell bootstrap');
 
     const calls = (await readFile(log, 'utf8')).replaceAll('"', '');
-    expect(calls).toContain('npm install --global threadnote@beta --registry=https://registry.npmjs.org/');
+    expect(calls).toContain('npm install --global threadnote@latest --registry=https://registry.npmjs.org/');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pip');
     expect(calls).toContain('threadnote install --dry-run --no-start --package-manager pipx');
     expect(calls).toContain('threadnote install --dry-run --force --with-hooks --package-manager uv');

@@ -1,5 +1,5 @@
 import {Context, Effect, Layer, Schema} from 'effect';
-import {LanguageModel} from 'effect/unstable/ai';
+import {AiError, LanguageModel} from 'effect/unstable/ai';
 import type {MemoryKind} from '../types.js';
 import type {RuntimeConfig} from '../types.js';
 import type {MemoryMetadata} from '../memory_document.js';
@@ -33,6 +33,13 @@ export class AiMemoryEnrichmentFailed extends Schema.TaggedErrorClass<AiMemoryEn
     message: Schema.String,
   },
 ) {}
+
+export function isUnusableMemoryEnrichmentOutput(error: unknown): boolean {
+  if (!(error instanceof AiMemoryEnrichmentFailed) || !AiError.isAiError(error.cause)) {
+    return false;
+  }
+  return error.cause.reason._tag === 'InvalidOutputError' || error.cause.reason._tag === 'StructuredOutputError';
+}
 
 const MemoryEnrichmentDraft = Schema.Struct({
   searchPhrases: Schema.Array(Schema.String).check(Schema.isMaxLength(12)),

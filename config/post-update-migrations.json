@@ -54,7 +54,7 @@
       ],
       "commandArgs": ["local-ai", "install"],
       "instructions": [
-        "Local AI recall is enabled. Run `threadnote local-ai status` to inspect it or `threadnote local-ai uninstall` to disable it while preserving the model."
+        "Local AI recall is enabled. Run `threadnote local-ai status` to inspect it or `threadnote local-ai disable` to turn it off while preserving the installation."
       ],
       "markHandledWhenSkipped": true
     },

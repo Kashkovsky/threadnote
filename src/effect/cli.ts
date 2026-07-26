@@ -6,6 +6,8 @@ import {runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from 
 import {
   ensureLocalAiStarted,
   readLocalAiSettings,
+  runLocalAiDisable,
+  runLocalAiEnable,
   runLocalAiInstall,
   runLocalAiStart,
   runLocalAiStatus,
@@ -263,7 +265,7 @@ const repair = Command.make(
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runRepair(config, options);
-        if (options.start !== false && (yield* readLocalAiSettings(config))) {
+        if (options.start !== false && (yield* readLocalAiSettings(config))?.enabled === true) {
           if (options.dryRun) {
             yield* runLocalAiStart(config, {dryRun: true});
           } else {
@@ -289,7 +291,7 @@ const start = Command.make(
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
-        const localAiConfigured = (yield* readLocalAiSettings(config)) !== undefined;
+        const localAiConfigured = (yield* readLocalAiSettings(config))?.enabled === true;
         if (options.foreground && localAiConfigured) {
           yield* runLocalAiStart(config, options);
         }
@@ -350,6 +352,18 @@ const localAiInstall = Command.make(
   options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
 ).pipe(Command.withDescription('Install and enable the recommended local recall model'));
 
+const localAiEnable = Command.make(
+  'enable',
+  {dryRun: boolean('dry-run', 'Print the local AI enable action without changing configuration')},
+  options => withRuntimeEffect(config => runLocalAiEnable(config, options)),
+).pipe(Command.withDescription('Enable an installed local recall model'));
+
+const localAiDisable = Command.make(
+  'disable',
+  {dryRun: boolean('dry-run', 'Print the local AI disable action without changing configuration')},
+  options => withRuntimeEffect(config => runLocalAiDisable(config, options)),
+).pipe(Command.withDescription('Disable local AI recall without removing its model'));
+
 const localAiStart = Command.make(
   'start',
   {dryRun: boolean('dry-run', 'Print the local AI start action without running it')},
@@ -373,11 +387,19 @@ const localAiUninstall = Command.make(
     eraseModel: boolean('erase-model', 'Also delete a model inside the Threadnote-managed model directory'),
   },
   options => withRuntimeEffect(config => runLocalAiUninstall(config, options)),
-).pipe(Command.withDescription('Disable local AI and optionally remove its managed model'));
+).pipe(Command.withDescription('Remove local AI configuration and optionally its managed model'));
 
 const localAi = Command.make('local-ai').pipe(
   Command.withDescription('Manage opt-in local AI recall'),
-  Command.withSubcommands([localAiInstall, localAiStart, localAiStop, localAiStatus, localAiUninstall]),
+  Command.withSubcommands([
+    localAiInstall,
+    localAiEnable,
+    localAiDisable,
+    localAiStart,
+    localAiStop,
+    localAiStatus,
+    localAiUninstall,
+  ]),
 );
 
 const seed = Command.make(

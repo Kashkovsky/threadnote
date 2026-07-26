@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
@@ -16,6 +16,8 @@ import {
   localAiApiUrl,
   localAiProcessOwnershipMatches,
   parseLocalAiSettings,
+  runLocalAiDisable,
+  runLocalAiEnable,
   runLocalAiInstall,
 } from '../../src/effect/local-ai.js';
 import {captureConsole} from '../../src/effect/console.js';
@@ -122,6 +124,35 @@ describe('local AI configuration', () => {
     expect(result.output).toContain('Would verify SHA-256');
     expect(result.output).toContain('Would start the loopback model service at http://127.0.0.1:1934/v1');
   });
+
+  it('disables and re-enables an installed model without removing it', async () => {
+    const home = await makeHome();
+    await writeSettings(home);
+    const config = runtime(home);
+
+    const disabled = await runEffect(
+      captureConsole(runLocalAiDisable(config, {})).pipe(Effect.provide(ApplicationLayer)),
+    );
+    expect(disabled.output).toContain('Disabled Threadnote local AI recall.');
+    expect(await readSettings(home)).toMatchObject({enabled: false, model: LOCAL_AI_MODEL_ID});
+    expect(
+      await runEffect(
+        resolveEffectAiConfiguration({agentContextHome: home}, {}).pipe(Effect.provide(ApplicationLayer)),
+      ),
+    ).toBeUndefined();
+    expect(await readFile(join(home, 'threadnote', 'local-ai-token'), 'utf8')).toBe(`${ACCESS_TOKEN}\n`);
+
+    const enabled = await runEffect(
+      captureConsole(runLocalAiEnable(config, {})).pipe(Effect.provide(ApplicationLayer)),
+    );
+    expect(enabled.output).toContain('Enabled Threadnote local AI recall.');
+    expect(await readSettings(home)).toMatchObject({enabled: true, model: LOCAL_AI_MODEL_ID});
+    expect(
+      await runEffect(
+        resolveEffectAiConfiguration({agentContextHome: home}, {}).pipe(Effect.provide(ApplicationLayer)),
+      ),
+    ).toMatchObject({localAi: {enabled: true, model: LOCAL_AI_MODEL_ID}});
+  });
 });
 
 async function makeHome(): Promise<string> {
@@ -145,6 +176,10 @@ async function writeSettings(home: string): Promise<void> {
     })}\n`,
   );
   await writeFile(join(directory, 'local-ai-token'), `${ACCESS_TOKEN}\n`, {mode: 0o600});
+}
+
+async function readSettings(home: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(join(home, 'threadnote', 'local-ai.json'), 'utf8')) as Record<string, unknown>;
 }
 
 function runtime(agentContextHome: string): RuntimeConfig {

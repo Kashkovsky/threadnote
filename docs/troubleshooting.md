@@ -173,6 +173,7 @@ Inspect the persisted model path and loopback service:
 
 ```bash
 threadnote local-ai status
+threadnote local-ai enable
 threadnote local-ai start
 ```
 

@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 if ($PackageManager -and $PackageManager -notin @('uv', 'pipx', 'pip')) {
   throw "Unsupported package manager '$PackageManager'. Expected uv, pipx, or pip."
 }
-$package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@beta' }
+$package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@latest' }
 $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   $env:THREADNOTE_NPM_REGISTRY
 } else {

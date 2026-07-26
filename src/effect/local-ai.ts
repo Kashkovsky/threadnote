@@ -41,7 +41,7 @@ const LOCAL_AI_LOCK_WAIT_MILLISECONDS = 75_000;
 type LocalAiRuntimeConfig = Pick<RuntimeConfig, 'agentContextHome'>;
 
 export interface LocalAiSettings {
-  readonly enabled: true;
+  readonly enabled: boolean;
   readonly host: '127.0.0.1';
   readonly model: string;
   readonly modelPath: string;
@@ -147,8 +147,58 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
   yield* Console.log(`Enabled local AI recall with ${LOCAL_AI_MODEL_ID}.`);
   yield* Console.log(`Configuration: ${configPath}`);
   if (options.start !== false) {
-    yield* startLocalAiServer(config, settings, {announce: true});
+    yield* startLocalAiServer(config, {announce: true});
   }
+});
+
+export const runLocalAiEnable = Effect.fn('localAi.enable')(function* (
+  config: RuntimeConfig,
+  options: LocalAiLifecycleOptions,
+) {
+  yield* withLocalAiLifecycleLock(
+    config,
+    Effect.gen(function* () {
+      const settings = yield* readLocalAiSettings(config);
+      if (!settings) {
+        return yield* Effect.fail(new Error('Local AI is not installed. Run: threadnote local-ai install'));
+      }
+      if (settings.enabled) {
+        yield* Console.log('Threadnote local AI recall is already enabled.');
+        return;
+      }
+      if (options.dryRun === true) {
+        yield* Console.log('Would enable Threadnote local AI recall.');
+        return;
+      }
+      yield* requireLocalAiAccessToken(config);
+      yield* writeLocalAiSettings(config, {...settings, enabled: true});
+      yield* Console.log('Enabled Threadnote local AI recall.');
+    }),
+  );
+});
+
+export const runLocalAiDisable = Effect.fn('localAi.disable')(function* (
+  config: RuntimeConfig,
+  options: LocalAiLifecycleOptions,
+) {
+  yield* withLocalAiLifecycleLock(
+    config,
+    Effect.gen(function* () {
+      const settings = yield* readLocalAiSettings(config);
+      if (!settings) {
+        yield* Console.log('Local AI recall is not installed.');
+        return;
+      }
+      if (options.dryRun === true) {
+        yield* stopRecordedLocalAi(config, options);
+        yield* Console.log('Would disable Threadnote local AI recall without removing its model.');
+        return;
+      }
+      yield* writeLocalAiSettings(config, {...settings, enabled: false});
+      yield* stopRecordedLocalAi(config, options);
+      yield* Console.log('Disabled Threadnote local AI recall.');
+    }),
+  );
 });
 
 export const runLocalAiStart = Effect.fn('localAi.start')(function* (
@@ -160,37 +210,40 @@ export const runLocalAiStart = Effect.fn('localAi.start')(function* (
     yield* Console.log(`Would start ${settings.model} at ${localAiApiUrl(settings)}.`);
     return;
   }
-  yield* startLocalAiServer(config, settings, {announce: true});
+  if (!(yield* startLocalAiServer(config, {announce: true}))) {
+    return yield* Effect.fail(new Error('Local AI recall is disabled. Run: threadnote local-ai enable'));
+  }
 });
 
 export const ensureLocalAiStarted = Effect.fn('localAi.ensureStarted')(function* (config: LocalAiRuntimeConfig) {
   const settings = yield* readLocalAiSettings(config);
-  if (!settings) return false;
-  yield* startLocalAiServer(config, settings, {announce: false});
-  return true;
+  if (!settings?.enabled) return false;
+  return yield* startLocalAiServer(config, {announce: false});
 });
 
 export const runLocalAiStop = Effect.fn('localAi.stop')(function* (
   config: RuntimeConfig,
   options: LocalAiLifecycleOptions,
 ) {
-  yield* withLocalAiLifecycleLock(
-    config,
-    Effect.gen(function* () {
-      const record = yield* readLocalAiProcessRecord(config);
-      if (!record) {
-        if (options.dryRun !== true) {
-          yield* Console.log('No Threadnote local AI process is recorded.');
-        }
-        return;
-      }
-      if (options.dryRun === true) {
-        yield* Console.log(`Would stop Threadnote local AI process ${record.pid}.`);
-        return;
-      }
-      yield* stopLocalAiProcess(config, record);
-    }),
-  );
+  yield* withLocalAiLifecycleLock(config, stopRecordedLocalAi(config, options));
+});
+
+const stopRecordedLocalAi = Effect.fn('localAi.stopRecorded')(function* (
+  config: RuntimeConfig,
+  options: LocalAiLifecycleOptions,
+) {
+  const record = yield* readLocalAiProcessRecord(config);
+  if (!record) {
+    if (options.dryRun !== true) {
+      yield* Console.log('No Threadnote local AI process is recorded.');
+    }
+    return;
+  }
+  if (options.dryRun === true) {
+    yield* Console.log(`Would stop Threadnote local AI process ${record.pid}.`);
+    return;
+  }
+  yield* stopLocalAiProcess(config, record);
 });
 
 export const runLocalAiStatus = Effect.fn('localAi.status')(function* (config: RuntimeConfig) {
@@ -202,15 +255,22 @@ export const runLocalAiStatus = Effect.fn('localAi.status')(function* (config: R
   }
   const fs = yield* FileSystem.FileSystem;
   const modelInfo = yield* fs.stat(settings.modelPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  const token = yield* requireLocalAiAccessToken(config);
-  const health = yield* readLocalAiHealth(settings, token);
-  yield* Console.log(`Local AI recall: enabled`);
+  yield* Console.log(`Local AI recall: ${settings.enabled ? 'enabled' : 'disabled'}`);
   yield* Console.log(`Model: ${settings.model}`);
   yield* Console.log(`Model file: ${settings.modelPath}`);
   yield* Console.log(
     `Model present: ${modelInfo?.type === 'File' && Number(modelInfo.size) === LOCAL_AI_MODEL_SIZE ? 'yes' : 'no'}`,
   );
   yield* Console.log(`Endpoint: ${localAiApiUrl(settings)}`);
+  if (!settings.enabled) {
+    const token = yield* readLocalAiAccessToken(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const health = token ? yield* readLocalAiHealth(settings, token) : undefined;
+    yield* Console.log(health ? `Service: healthy but disabled (pid ${health.pid})` : 'Service: stopped or unhealthy');
+    yield* Console.log('Enable it with: threadnote local-ai enable');
+    return;
+  }
+  const token = yield* requireLocalAiAccessToken(config);
+  const health = yield* readLocalAiHealth(settings, token);
   yield* Console.log(health ? `Service: healthy (pid ${health.pid})` : 'Service: stopped or unhealthy');
 });
 
@@ -243,7 +303,7 @@ export const runLocalAiUninstall = Effect.fn('localAi.uninstall')(function* (
       yield* Console.log(`Preserved external model path: ${settings.modelPath}`);
     }
   }
-  yield* Console.log('Disabled Threadnote local AI recall.');
+  yield* Console.log('Removed Threadnote local AI configuration.');
 });
 
 export const readLocalAiSettings = Effect.fn('localAi.readSettings')(function* (config: LocalAiRuntimeConfig) {
@@ -259,7 +319,7 @@ export function parseLocalAiSettings(value: unknown): LocalAiSettings {
   if (
     !isJsonObject(value) ||
     value.version !== LOCAL_AI_CONFIG_VERSION ||
-    value.enabled !== true ||
+    typeof value.enabled !== 'boolean' ||
     value.host !== '127.0.0.1' ||
     typeof value.model !== 'string' ||
     value.model.trim().length === 0 ||
@@ -272,7 +332,7 @@ export function parseLocalAiSettings(value: unknown): LocalAiSettings {
     throw new Error(`${LOCAL_AI_CONFIG_FILE} has an unsupported shape.`);
   }
   return {
-    enabled: true,
+    enabled: value.enabled,
     host: '127.0.0.1',
     model: value.model,
     modelPath: value.modelPath,
@@ -287,11 +347,18 @@ export function localAiApiUrl(settings: Pick<LocalAiSettings, 'host' | 'port'>):
 
 const startLocalAiServer = Effect.fn('localAi.startServer')(function* (
   config: LocalAiRuntimeConfig,
-  settings: LocalAiSettings,
   options: {readonly announce: boolean},
 ) {
-  const token = yield* requireLocalAiAccessToken(config);
-  yield* withLocalAiLifecycleLock(config, startLocalAiServerUnlocked(config, settings, token, options));
+  return yield* withLocalAiLifecycleLock(
+    config,
+    Effect.gen(function* () {
+      const settings = yield* readLocalAiSettings(config);
+      if (!settings?.enabled) return false;
+      const token = yield* requireLocalAiAccessToken(config);
+      yield* startLocalAiServerUnlocked(config, settings, token, options);
+      return true;
+    }),
+  );
 });
 
 const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(function* (
@@ -765,6 +832,9 @@ const requireLocalAiSettings = Effect.fn('localAi.requireSettings')(function* (c
   const settings = yield* readLocalAiSettings(config);
   if (!settings) {
     return yield* Effect.fail(new Error('Local AI is not installed. Run: threadnote local-ai install'));
+  }
+  if (!settings.enabled) {
+    return yield* Effect.fail(new Error('Local AI recall is disabled. Run: threadnote local-ai enable'));
   }
   return settings;
 });

@@ -40,7 +40,8 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Optional local recall refinement.** `threadnote local-ai install` can add a pinned, verified Gemma model that helps
   expand weak and medium-confidence paraphrases and filters their bounded result set while deterministic ordering
   remains in control. When available, it also adds compact retrieval aliases to new personal memories;
-  `threadnote enrich-memories --apply` can backfill the existing personal corpus with streamed progress.
+  `threadnote enrich-memories --apply` can backfill the existing personal corpus with streamed progress. Toggle the
+  installed model without removing it with `threadnote local-ai disable` and `threadnote local-ai enable`.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, currentness, authority, and bounded
   feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, the agent writes normal durable feature knowledge
@@ -68,10 +69,9 @@ threadnote mcp-install codex --apply    # or claude / cursor / copilot
 threadnote doctor --dry-run
 ```
 
-Native Windows support is experimental, and the PowerShell installer currently installs Threadnote from npm's `beta`
-channel by default. It uses npm's native `threadnote.cmd` launcher and installs OpenViking through `uv`; it does not
-require WSL, Git Bash, or a POSIX shim. Node.js 22.19 or newer is required on every platform. The manual native flow is
-`npm install --global threadnote@beta` followed by `threadnote install`.
+Native Windows support is experimental. The PowerShell installer uses npm's native `threadnote.cmd` launcher and
+installs OpenViking through `uv`; it does not require WSL, Git Bash, or a POSIX shim. Node.js 22.19 or newer is required
+on every platform. The manual native flow is `npm install --global threadnote` followed by `threadnote install`.
 
 The CLI remains Threadnote's complete execution surface. The default stdio adapter is a compact interoperability layer
 with eight core tools: `recall_context`, `read_context`, `list_context`, `remember_context`,

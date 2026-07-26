@@ -85,8 +85,10 @@ The full enrichment command processes each eligible personal memory locally and 
 `keywords:` headers without changing its URI, body, timestamp, or lifecycle metadata. It prioritizes active memories,
 then continues through the historical personal corpus; smoke records and shared team repositories are excluded.
 Already-enriched memories are skipped, so an interrupted run can be resumed. Use `--force` to regenerate keywords and
-`--limit <count>` for a bounded beta test. A large corpus can take a long time; the command prints `[n/N]` progress,
-generated keywords, failures, and a final summary instead of working silently.
+`--limit <count>` for a bounded trial. A large corpus can take a long time; the command prints `[n/N]` progress,
+generated keywords, failures, and a final summary instead of working silently. A model response that cannot produce
+usable structured keywords leaves that memory unchanged and does not fail the backfill; provider availability,
+timeouts, filesystem, parsing, concurrent-edit, and storage failures remain retryable errors.
 
 The opt-in post-update action is introduced for `3.0.0` and is also advertised during its prerelease cycle. If the
 model is absent, accepting the enrichment action installs it first. New active personal memories written through the
@@ -108,12 +110,17 @@ inspection to the user.
 Use the dedicated commands for explicit control:
 
 ```bash
+threadnote local-ai disable                 # stops and disables local AI; preserves its model and configuration
+threadnote local-ai enable                  # enables the installed model; the next weak recall can start it lazily
 threadnote local-ai start
 threadnote local-ai stop
 threadnote local-ai status
 threadnote local-ai uninstall               # preserves the managed model
 threadnote local-ai uninstall --erase-model # also removes the managed model
 ```
+
+`start` and `stop` control only the current service process. `enable` and `disable` persist whether Threadnote may use
+the installed provider for recall, enrichment, and consolidation.
 
 For recall, deterministic retrieval and ranking always run first. High-confidence results never call the model.
 For weaker results, an explicit loopback model first reranks at most 24 query-ranked local index candidates using

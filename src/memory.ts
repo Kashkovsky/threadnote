@@ -12,9 +12,13 @@ import {
   shouldExpandRecall,
 } from './effect/ai-recall.js';
 import {resolveEffectAiConfiguration} from './effect/ai-consolidator.js';
-import {enrichMemoryMetadataWithConfiguredLocalAi, enrichMemoryWithInstalledLocalAi} from './effect/ai-enrichment.js';
+import {
+  enrichMemoryMetadataWithConfiguredLocalAi,
+  enrichMemoryWithInstalledLocalAi,
+  isUnusableMemoryEnrichmentOutput,
+} from './effect/ai-enrichment.js';
 import {maybeRunEffect} from './effect/command.js';
-import {readLocalAiSettings, runLocalAiInstall} from './effect/local-ai.js';
+import {readLocalAiSettings, runLocalAiEnable, runLocalAiInstall} from './effect/local-ai.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {removeOpenVikingResourceEffect} from './effect/openviking.js';
 import {scanFilesWithinBoundary} from './effect/safe_scan.js';
@@ -360,7 +364,8 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
     return;
   }
 
-  if (!(yield* readLocalAiSettings(config))) {
+  const localAiSettings = yield* readLocalAiSettings(config);
+  if (!localAiSettings) {
     if (options.installLocalAi !== true) {
       return yield* Effect.fail(
         new Error('Local AI is not installed. Run `threadnote local-ai install`, or rerun with `--install-local-ai`.'),
@@ -370,6 +375,16 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       'Local AI is not installed. Installing the pinned model before enrichment; the one-time download is 4.59 GB.',
     );
     yield* runLocalAiInstall(config, {});
+  } else if (!localAiSettings.enabled) {
+    if (options.installLocalAi !== true) {
+      return yield* Effect.fail(
+        new Error(
+          'Local AI is disabled. Run `threadnote local-ai enable`, or rerun with `--install-local-ai` to enable it.',
+        ),
+      );
+    }
+    yield* Console.log('Local AI is disabled. Enabling the existing installation before enrichment.');
+    yield* runLocalAiEnable(config, {});
   }
   yield* Console.log(
     'Generating retrieval keywords locally. This can take a long time for a large corpus; progress will stream below.',
@@ -418,12 +433,17 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       }),
     );
     if (Result.isFailure(generated)) {
-      failed += 1;
-      yield* Console.error(
-        `${prefix} Failed ${candidate.uri}: ${
-          generated.failure instanceof Error ? generated.failure.message : String(generated.failure)
-        }`,
-      );
+      if (isUnusableMemoryEnrichmentOutput(generated.failure)) {
+        noKeywords += 1;
+        yield* Console.log(`${prefix} No useful keywords generated; left unchanged.`);
+      } else {
+        failed += 1;
+        yield* Console.error(
+          `${prefix} Failed ${candidate.uri}: ${
+            generated.failure instanceof Error ? generated.failure.message : String(generated.failure)
+          }`,
+        );
+      }
       continue;
     }
     const keywords = generated.success;

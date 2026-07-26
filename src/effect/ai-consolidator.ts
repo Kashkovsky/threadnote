@@ -73,7 +73,7 @@ export const resolveEffectAiConfiguration = Effect.fn('EffectAi.resolveConfigura
   if (explicit) return {configuration: explicit} satisfies ResolvedEffectAiConfiguration;
   if (env[EFFECT_AI_ENABLED_ENV] !== undefined) return undefined;
   const localAi = yield* readLocalAiSettings(config);
-  if (!localAi) return undefined;
+  if (!localAi?.enabled) return undefined;
   const apiKey = yield* readLocalAiAccessToken(config);
   if (!apiKey) {
     return yield* Effect.fail(new Error('Local AI access token is missing. Run: threadnote local-ai install --force'));

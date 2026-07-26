@@ -118,6 +118,8 @@ describe('published local bins', () => {
       ['uninstall'],
       ['local-ai'],
       ['local-ai', 'install'],
+      ['local-ai', 'enable'],
+      ['local-ai', 'disable'],
       ['local-ai', 'start'],
       ['local-ai', 'stop'],
       ['local-ai', 'status'],
@@ -743,6 +745,19 @@ describe('published local bins', () => {
     await writeFile(tokenPath, `${token}\n`, {encoding: 'utf8', mode: 0o600});
 
     try {
+      const disabled = await runCli(fixture, ['local-ai', 'disable']);
+      expectSuccess(disabled, 'disable local AI');
+      expect(disabled.stdout).toContain('Disabled Threadnote local AI recall.');
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({enabled: false});
+      const disabledStatus = await runCli(fixture, ['local-ai', 'status']);
+      expectSuccess(disabledStatus, 'show disabled local AI');
+      expect(disabledStatus.stdout).toContain('Local AI recall: disabled');
+
+      const enabled = await runCli(fixture, ['local-ai', 'enable']);
+      expectSuccess(enabled, 'enable local AI');
+      expect(enabled.stdout).toContain('Enabled Threadnote local AI recall.');
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toMatchObject({enabled: true});
+
       fixture.env.THREADNOTE_EFFECT_AI = '0';
       expectSuccess(
         await runCli(fixture, [

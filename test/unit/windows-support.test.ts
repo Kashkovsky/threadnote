@@ -230,11 +230,11 @@ describe('Windows command execution', () => {
 });
 
 describe('Windows lifecycle defaults', () => {
-  it('installs the beta package while native Windows support is experimental', async () => {
+  it('installs the stable package by default', async () => {
     const installer = await readFile(new URL('../../scripts/install.ps1', import.meta.url), 'utf8');
 
-    expect(installer).toContain("else { 'threadnote@beta' }");
-    expect(installer).not.toContain("else { 'threadnote@latest' }");
+    expect(installer).toContain("else { 'threadnote@latest' }");
+    expect(installer).not.toContain("else { 'threadnote@beta' }");
     expect(installer).not.toContain('[ValidateSet(');
     expect(installer).toContain("$PackageManager -notin @('uv', 'pipx', 'pip')");
     expect(installer).toContain('Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force');
