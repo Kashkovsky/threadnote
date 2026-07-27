@@ -81,20 +81,22 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('viking://user/');
   });
 
-  it('validates ports with the Effect Config schema', async () => {
+  it('rejects retired daemon port flags', async () => {
     await expect(runCli(['--port', '70000', 'doctor', '--dry-run'])).rejects.toMatchObject({
       code: 1,
-      stderr: expect.stringContaining('between 1 and 65535'),
+      stderr: expect.stringContaining('Unrecognized flag: --port'),
     });
   });
 
-  it('honors runtime host and port environment variables when flags are omitted', async () => {
+  it('does not revive daemon networking through legacy environment variables', async () => {
     const result = await runCli(['start', '--dry-run'], {
       THREADNOTE_HOST: '127.0.0.2',
       THREADNOTE_PORT: '24567',
     });
 
-    expect(result.stdout).toContain('--host 127.0.0.2 --port 24567');
+    expect(result.stdout).toContain('no daemon would be started');
+    expect(result.stdout).not.toContain('127.0.0.2');
+    expect(result.stdout).not.toContain('24567');
   });
 
   it('preserves dash-prefixed and equals-containing string values', async () => {

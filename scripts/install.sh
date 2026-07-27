@@ -92,17 +92,17 @@ install_package() {
   runtime="$1"
   case "$runtime" in
     npm)
-      npm install --global "$PACKAGE" --registry="$REGISTRY"
+      NODE_LLAMA_CPP_POSTINSTALL=skip npm install --global "$PACKAGE" --registry="$REGISTRY"
       ;;
     bun)
-      bun install --global "$PACKAGE" --registry="$REGISTRY"
+      NODE_LLAMA_CPP_POSTINSTALL=skip bun install --global "$PACKAGE" --registry="$REGISTRY"
       ;;
     deno)
       case "$PACKAGE" in
         npm:*) deno_package="$PACKAGE" ;;
         *) deno_package="npm:$PACKAGE" ;;
       esac
-      NPM_CONFIG_REGISTRY="$REGISTRY" deno install --global --name threadnote \
+      NODE_LLAMA_CPP_POSTINSTALL=skip NPM_CONFIG_REGISTRY="$REGISTRY" deno install --global --name threadnote \
         --allow-read --allow-write --allow-run --allow-env --allow-net \
         "$deno_package"
       ;;

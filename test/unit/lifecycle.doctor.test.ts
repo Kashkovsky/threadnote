@@ -19,10 +19,7 @@ async function makeConfig(): Promise<RuntimeConfig> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(home, 'manifest.json'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'test-user',
   };
 }

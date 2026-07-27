@@ -14,7 +14,7 @@ import {
   RecallQueryExpander,
   selectRecallCandidatesEffect,
   shouldExpandRecall,
-} from '../../src/effect/ai-recall.js';
+} from '../../src/effect/ai/recall.js';
 
 describe('Effect AI recall expansion', () => {
   it('only expands weak deterministic recalls', () => {

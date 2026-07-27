@@ -1,3 +1,4 @@
+import {existsSync} from 'node:fs';
 import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -16,7 +17,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
@@ -32,6 +32,21 @@ async function makeRuntime(): Promise<ShareRuntime> {
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(join(home, 'share'), {recursive: true});
   await mkdir(worktree, {recursive: true});
+  const sourcePath = join(
+    home,
+    'data',
+    'viking',
+    'local',
+    'user',
+    'test-user',
+    'memories',
+    'durable',
+    'projects',
+    'foo',
+    'bar.md',
+  );
+  await mkdir(join(sourcePath, '..'), {recursive: true});
+  await writeFile(sourcePath, 'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n');
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(
@@ -60,21 +75,8 @@ async function makeRuntime(): Promise<ShareRuntime> {
   };
 }
 
-function mockPublishCommands(sourceUri: string, targetUri: string, pushResult: CommandResult): void {
+function mockPublishCommands(sourcePath: string, pushResult: CommandResult, sourcePresentAtPush: boolean[]): void {
   vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-    const command = args[0];
-    if (executable === '/ov' && command === 'read') {
-      return Effect.succeed(ok('MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n'));
-    }
-    if (executable === '/ov' && command === 'stat') {
-      return Effect.succeed(args[1] === targetUri ? fail('[NOT_FOUND]') : ok());
-    }
-    if (executable === '/ov' && command === 'write') {
-      return Effect.succeed(ok('written'));
-    }
-    if (executable === '/ov' && command === 'rm' && args[1] === sourceUri) {
-      return Effect.succeed(ok('removed'));
-    }
     if (executable === 'git' && args.includes('add')) {
       return Effect.succeed(ok());
     }
@@ -82,7 +84,10 @@ function mockPublishCommands(sourceUri: string, targetUri: string, pushResult: C
       return Effect.succeed(ok('[main abc123] share'));
     }
     if (executable === 'git' && args.includes('push')) {
-      return Effect.succeed(pushResult);
+      return Effect.sync(() => {
+        sourcePresentAtPush.push(existsSync(sourcePath));
+        return pushResult;
+      });
     }
     return Effect.succeed(ok());
   });
@@ -108,33 +113,65 @@ describe('runSharePublish transaction ordering', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
-    const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
-    mockPublishCommands(sourceUri, targetUri, ok('pushed'));
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const targetPath = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const sourcePresentAtPush: boolean[] = [];
+    mockPublishCommands(sourcePath, ok('pushed'), sourcePresentAtPush);
 
     await runSharePublish(config, sourceUri, {});
 
-    const calls = vi.mocked(utils.runCommand).mock.calls;
-    const pushIndex = calls.findIndex(([executable, args]) => executable === 'git' && args.includes('push'));
-    const removeIndex = calls.findIndex(
-      ([executable, args]) => executable === '/ov' && args[0] === 'rm' && args[1] === sourceUri,
-    );
-    expect(pushIndex).toBeGreaterThanOrEqual(0);
-    expect(removeIndex).toBeGreaterThanOrEqual(0);
-    expect(pushIndex).toBeLessThan(removeIndex);
+    expect(sourcePresentAtPush).toEqual([true]);
+    expect(existsSync(sourcePath)).toBe(false);
+    expect(existsSync(targetPath)).toBe(true);
   });
 
   it('does not remove the personal source when git push fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
-    const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
-    mockPublishCommands(sourceUri, targetUri, fail('permission denied'));
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    mockPublishCommands(sourcePath, fail('permission denied'), []);
 
     await expect(runSharePublish(config, sourceUri, {})).rejects.toThrow(/git push failed/);
 
-    const removedSource = vi
-      .mocked(utils.runCommand)
-      .mock.calls.some(([executable, args]) => executable === '/ov' && args[0] === 'rm' && args[1] === sourceUri);
-    expect(removedSource).toBe(false);
+    expect(existsSync(sourcePath)).toBe(true);
   });
 });

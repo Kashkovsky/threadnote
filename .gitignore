@@ -4,6 +4,8 @@ dist/
 build/
 out/
 coverage/
+artifacts/
+.artifacts/
 graphify-out/
 *.log
 manager/app.js

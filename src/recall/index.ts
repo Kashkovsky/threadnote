@@ -91,6 +91,7 @@ const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml'
 const IDENTIFIER_PATTERN = /[a-z0-9][a-z0-9_.-]{2,}/gi;
 const decodedCacheByPath = new Map<string, RecallIndexCache>();
 const decodedCacheGenerationByPath = new Map<string, string | null>();
+const dirtyCachePaths = new Set<string>();
 let staleGenerationCounter = 0;
 
 interface LoadRecallIndexOptions {
@@ -102,9 +103,15 @@ interface LoadRecallIndexOptions {
   readonly requiredUris?: readonly string[];
 }
 
-export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
+interface LoadRecallIndexBatchOptions {
+  readonly forceRefresh?: boolean;
+  readonly includeInactive: boolean;
+  readonly selections: readonly Omit<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>[];
+}
+
+const loadRecallIndexCache = Effect.fn('recall.loadIndexCache')(function* (
   config: RecallIndexConfig,
-  options: LoadRecallIndexOptions,
+  options: Pick<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -120,12 +127,15 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
     cached?.includeInactive === options.includeInactive &&
     now - cached.validatedAt < CACHE_VALIDATION_INTERVAL_MILLISECONDS
   ) {
-    return selectRecallIndexData(cached, options);
+    return cached;
   }
   const canonicalResourcePolicy = yield* loadCanonicalResourcePolicy(config);
   const roots = recallIndexRoots(config, pathService);
   const sources: RecallIndexSource[] = [];
   for (const root of roots) {
+    if (!(yield* fs.exists(root.path))) {
+      continue;
+    }
     const files = yield* scanFilesWithinBoundary(fs, root.path, root.path, {
       includeDirectory: path => !excludedDirectory(path, options.includeInactive),
       includeFile: path => !excludedFile(path),
@@ -143,13 +153,14 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
   }
   sources.sort((left, right) => left.uri.localeCompare(right.uri));
   if (
+    options.forceRefresh !== true &&
     cached?.includeInactive === options.includeInactive &&
     sameStringRecord(cached.authorityPolicyByUri, canonicalResourcePolicy.entryKeyByUri) &&
     sameSources(cached.sources, sources)
   ) {
     const validatedCache = {...cached, validatedAt: now};
     yield* Effect.sync(() => decodedCacheByPath.set(cachePath, validatedCache));
-    return selectRecallIndexData(validatedCache, options);
+    return validatedCache;
   }
 
   const cachedSourceByUri = new Map(cached?.sources.map(source => [source.uri, source]));
@@ -161,7 +172,13 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
     const cachedCandidate = cachedCandidateIndex === undefined ? undefined : cached?.candidates[cachedCandidateIndex];
     const authorityPolicyChanged =
       cached?.authorityPolicyByUri[source.uri] !== canonicalResourcePolicy.entryKeyByUri.get(source.uri);
-    if (!authorityPolicyChanged && cachedSource && cachedCandidate && sameSource(cachedSource, source)) {
+    if (
+      options.forceRefresh !== true &&
+      !authorityPolicyChanged &&
+      cachedSource &&
+      cachedCandidate &&
+      sameSource(cachedSource, source)
+    ) {
       candidates.push(cachedCandidate);
     } else {
       const content = yield* fs.readFileString(source.path);
@@ -198,7 +215,28 @@ export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
   } else {
     yield* writeCacheAtomically(fs, cachePath, cache);
   }
+  return cache;
+});
+
+export const loadRecallIndexData = Effect.fn('recall.loadIndexData')(function* (
+  config: RecallIndexConfig,
+  options: LoadRecallIndexOptions,
+) {
+  const cache = yield* loadRecallIndexCache(config, options);
   return selectRecallIndexData(cache, options);
+});
+
+export const loadRecallIndexDataBatch = Effect.fn('recall.loadIndexDataBatch')(function* (
+  config: RecallIndexConfig,
+  options: LoadRecallIndexBatchOptions,
+) {
+  const cache = yield* loadRecallIndexCache(config, options);
+  return options.selections.map(selection =>
+    selectRecallIndexData(cache, {
+      ...selection,
+      includeInactive: options.includeInactive,
+    }),
+  );
 });
 
 export const loadRecallIndex = Effect.fn('recall.loadIndex')(function* (
@@ -226,15 +264,13 @@ export const expireRecallIndexValidation = Effect.fn('recall.expireValidation')(
     'cache',
     includeInactive ? INACTIVE_CACHE_FILENAME : ACTIVE_CACHE_FILENAME,
   );
-  yield* fs.makeDirectory(pathService.dirname(cachePath), {recursive: true});
-  const generation = yield* writeStaleGeneration(fs, cachePath);
   yield* Effect.sync(() => {
-    const cached = decodedCacheByPath.get(cachePath);
-    if (cached) {
-      decodedCacheByPath.set(cachePath, {...cached, validatedAt: 0});
-      decodedCacheGenerationByPath.set(cachePath, generation);
-    }
+    dirtyCachePaths.add(cachePath);
+    decodedCacheByPath.delete(cachePath);
+    decodedCacheGenerationByPath.delete(cachePath);
   });
+  yield* fs.makeDirectory(pathService.dirname(cachePath), {recursive: true});
+  yield* writeStaleGeneration(fs, cachePath);
 });
 
 function selectRecallIndexData(cache: RecallIndexCache, options: LoadRecallIndexOptions): RecallIndexData {
@@ -261,32 +297,34 @@ function selectRecallIndexData(cache: RecallIndexCache, options: LoadRecallIndex
   const queryTerms = selectQueryTerms(indexTerms(options.query), cache, options.allowedUriScopes);
   for (const term of queryTerms) {
     const termPostings = cache.postings[term];
-    const termCandidates = (termPostings ?? [])
-      .map(posting => ({
-        candidateIndex: cache.uriLookup[posting.uri],
-        posting,
-        score: postingLexicalScore(posting, term, cache.corpusStatistics),
-      }))
-      .filter(
-        (
-          item,
-        ): item is {
-          readonly candidateIndex: number;
-          readonly posting: RecallIndexPosting;
-          readonly score: number;
-        } => item.candidateIndex !== undefined,
-      )
-      .filter(item => {
-        const candidate = cache.candidates[item.candidateIndex];
-        return candidate !== undefined && uriMatchesScopes(candidate.uri, options.allowedUriScopes);
-      })
-      .sort(
-        (left, right) =>
-          right.score - left.score ||
-          right.posting.fieldWeight - left.posting.fieldWeight ||
-          left.posting.uri.localeCompare(right.posting.uri),
-      )
-      .slice(0, postingPoolLimit);
+    type TermCandidate = {
+      readonly candidateIndex: number;
+      readonly posting: RecallIndexPosting;
+      readonly score: number;
+    };
+    const compareTermCandidates = (left: TermCandidate, right: TermCandidate): number =>
+      right.score - left.score ||
+      right.posting.fieldWeight - left.posting.fieldWeight ||
+      left.posting.uri.localeCompare(right.posting.uri);
+    const termCandidates: TermCandidate[] = [];
+    for (const posting of termPostings ?? []) {
+      const candidateIndex = cache.uriLookup[posting.uri];
+      const candidate = candidateIndex === undefined ? undefined : cache.candidates[candidateIndex];
+      if (!candidate || !uriMatchesScopes(candidate.uri, options.allowedUriScopes)) {
+        continue;
+      }
+      offerBoundedBest(
+        termCandidates,
+        {
+          candidateIndex,
+          posting,
+          score: postingLexicalScore(posting, term, cache.corpusStatistics),
+        },
+        postingPoolLimit,
+        compareTermCandidates,
+      );
+    }
+    termCandidates.sort(compareTermCandidates);
     for (const {candidateIndex, score} of termCandidates) {
       const candidate = cache.candidates[candidateIndex];
       if (!candidate) {
@@ -674,6 +712,9 @@ function readCache(
   bypassMemory: boolean,
 ): Effect.Effect<RecallIndexCache | undefined, unknown> {
   return Effect.gen(function* () {
+    if (dirtyCachePaths.has(path)) {
+      return undefined;
+    }
     const staleGeneration = yield* readStaleGeneration(fs, path);
     if (!bypassMemory) {
       const decoded = decodedCacheByPath.get(path);
@@ -905,50 +946,215 @@ function verifyCanonicalResource(
 
 function parseCache(value: unknown): RecallIndexCache | undefined {
   if (
-    typeof value !== 'object' ||
-    value === null ||
+    !isPlainRecord(value) ||
     !('version' in value) ||
     value.version !== RECALL_INDEX_CACHE_VERSION ||
     !('sources' in value) ||
     !Array.isArray(value.sources) ||
+    !value.sources.every(recallIndexSourceIsValid) ||
     !('includeInactive' in value) ||
     typeof value.includeInactive !== 'boolean' ||
     !('validatedAt' in value) ||
-    typeof value.validatedAt !== 'number' ||
+    !isFiniteNumber(value.validatedAt) ||
     !('candidates' in value) ||
     !Array.isArray(value.candidates) ||
+    !value.candidates.every(recallCandidateIsValid) ||
     !('authorityPolicyByUri' in value) ||
-    typeof value.authorityPolicyByUri !== 'object' ||
-    value.authorityPolicyByUri === null ||
+    !isPlainRecord(value.authorityPolicyByUri) ||
     !Object.values(value.authorityPolicyByUri).every(entry => typeof entry === 'string') ||
     !('corpusStatistics' in value) ||
     !recallCorpusStatisticsIsValid(value.corpusStatistics) ||
-    !('postings' in value) ||
-    typeof value.postings !== 'object' ||
-    value.postings === null ||
     !('uriLookup' in value) ||
-    typeof value.uriLookup !== 'object' ||
-    value.uriLookup === null
+    !recallUriLookupIsValid(value.uriLookup, value.candidates) ||
+    !('postings' in value) ||
+    !recallPostingsAreValid(value.postings, value.candidates, value.uriLookup)
   ) {
     return undefined;
   }
-  return value as RecallIndexCache;
+  const sourceUris = new Set(value.sources.map(source => source.uri));
+  if (
+    value.corpusStatistics.documentCount !== value.candidates.length ||
+    value.sources.length !== value.candidates.length ||
+    sourceUris.size !== value.sources.length ||
+    !value.candidates.every(candidate => sourceUris.has(stripRecallAnchor(candidate.uri)))
+  ) {
+    return undefined;
+  }
+  return value as unknown as RecallIndexCache;
 }
 
 function recallCorpusStatisticsIsValid(value: unknown): value is RecallCorpusStatistics {
   return (
-    typeof value === 'object' &&
-    value !== null &&
+    isPlainRecord(value) &&
     'averageDocumentLength' in value &&
-    typeof value.averageDocumentLength === 'number' &&
+    isFiniteNumber(value.averageDocumentLength) &&
+    value.averageDocumentLength > 0 &&
     'documentCount' in value &&
-    typeof value.documentCount === 'number' &&
+    isNonNegativeInteger(value.documentCount) &&
     'documentFrequency' in value &&
-    typeof value.documentFrequency === 'object' &&
-    value.documentFrequency !== null &&
+    isPlainRecord(value.documentFrequency) &&
+    Object.values(value.documentFrequency).every(isNonNegativeInteger) &&
     'totalDocumentLength' in value &&
-    typeof value.totalDocumentLength === 'number'
+    isFiniteNumber(value.totalDocumentLength) &&
+    value.totalDocumentLength >= 0
   );
+}
+
+function recallIndexSourceIsValid(value: unknown): value is RecallIndexSource {
+  return (
+    isPlainRecord(value) &&
+    typeof value.path === 'string' &&
+    typeof value.uri === 'string' &&
+    isFiniteNumber(value.size) &&
+    value.size >= 0 &&
+    (value.modifiedAt === undefined || typeof value.modifiedAt === 'string')
+  );
+}
+
+function recallCandidateIsValid(value: unknown): value is RecallCandidate {
+  if (!isPlainRecord(value) || typeof value.uri !== 'string' || typeof value.text !== 'string') {
+    return false;
+  }
+  const stringValues = ['authority', 'kind', 'status', 'timestamp', 'trust', 'validFrom', 'validTo'] as const;
+  if (stringValues.some(key => value[key] !== undefined && typeof value[key] !== 'string')) {
+    return false;
+  }
+  const numberValues = ['feedback', 'reranker', 'semantic'] as const;
+  if (numberValues.some(key => value[key] !== undefined && !isFiniteNumber(value[key]))) {
+    return false;
+  }
+  if (value.exactTerms !== undefined && !isStringArray(value.exactTerms)) {
+    return false;
+  }
+  if (value.fields !== undefined) {
+    if (!isPlainRecord(value.fields)) return false;
+    const fields = value.fields;
+    if (
+      !['project', 'title', 'topic'].every(key => fields[key] === undefined || typeof fields[key] === 'string') ||
+      !['identifiers', 'keywords'].every(key => fields[key] === undefined || isStringArray(fields[key]))
+    ) {
+      return false;
+    }
+  }
+  return (
+    value.relations === undefined ||
+    (Array.isArray(value.relations) &&
+      value.relations.every(
+        relation => isPlainRecord(relation) && typeof relation.type === 'string' && typeof relation.uri === 'string',
+      ))
+  );
+}
+
+function recallPostingsAreValid(
+  value: unknown,
+  candidates: readonly RecallCandidate[],
+  uriLookup: Readonly<Record<string, number>>,
+): value is Readonly<Record<string, readonly RecallIndexPosting[]>> {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  const coveredUris = new Set<string>();
+  for (const postings of Object.values(value)) {
+    if (!Array.isArray(postings)) {
+      return false;
+    }
+    for (const posting of postings) {
+      if (
+        !isPlainRecord(posting) ||
+        typeof posting.uri !== 'string' ||
+        !isFiniteNumber(posting.documentLength) ||
+        posting.documentLength < 0 ||
+        !isFiniteNumber(posting.fieldWeight) ||
+        posting.fieldWeight < 0 ||
+        !isFiniteNumber(posting.termFrequency) ||
+        posting.termFrequency < 0
+      ) {
+        return false;
+      }
+      const candidateIndex = uriLookup[posting.uri];
+      if (candidateIndex === undefined || stripRecallAnchor(candidates[candidateIndex]?.uri ?? '') !== posting.uri) {
+        return false;
+      }
+      coveredUris.add(posting.uri);
+    }
+  }
+  return candidates.every(candidate => coveredUris.has(stripRecallAnchor(candidate.uri)));
+}
+
+function recallUriLookupIsValid(
+  value: unknown,
+  candidates: readonly RecallCandidate[],
+): value is Readonly<Record<string, number>> {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  const expected = new Map<string, number>();
+  for (const [candidateIndex, candidate] of candidates.entries()) {
+    const uri = stripRecallAnchor(candidate.uri);
+    if (expected.has(uri)) {
+      return false;
+    }
+    expected.set(uri, candidateIndex);
+  }
+  const entries = Object.entries(value);
+  return (
+    entries.length === expected.size && entries.every(([uri, candidateIndex]) => expected.get(uri) === candidateIndex)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(entry => typeof entry === 'string');
+}
+
+/**
+ * Keep a max-heap whose root is the worst retained item. `compareBestFirst`
+ * follows Array.sort semantics: negative means the left item is better.
+ */
+function offerBoundedBest<T>(heap: T[], item: T, limit: number, compareBestFirst: (left: T, right: T) => number): void {
+  if (limit <= 0) return;
+  if (heap.length < limit) {
+    heap.push(item);
+    bubbleWorstUp(heap, heap.length - 1, compareBestFirst);
+    return;
+  }
+  if (compareBestFirst(item, heap[0]!) >= 0) return;
+  heap[0] = item;
+  sinkWorstDown(heap, 0, compareBestFirst);
+}
+
+function bubbleWorstUp<T>(heap: T[], start: number, compareBestFirst: (left: T, right: T) => number): void {
+  let index = start;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (compareBestFirst(heap[index]!, heap[parent]!) <= 0) break;
+    [heap[index], heap[parent]] = [heap[parent]!, heap[index]!];
+    index = parent;
+  }
+}
+
+function sinkWorstDown<T>(heap: T[], start: number, compareBestFirst: (left: T, right: T) => number): void {
+  let index = start;
+  for (;;) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) return;
+    const right = left + 1;
+    const worse = right < heap.length && compareBestFirst(heap[right]!, heap[left]!) > 0 ? right : left;
+    if (compareBestFirst(heap[worse]!, heap[index]!) <= 0) return;
+    [heap[index], heap[worse]] = [heap[worse]!, heap[index]!];
+    index = worse;
+  }
 }
 
 function writeCacheAtomically(
@@ -969,6 +1175,7 @@ function writeCacheAtomically(
     yield* Effect.sync(() => {
       decodedCacheByPath.set(path, cache);
       decodedCacheGenerationByPath.set(path, null);
+      dirtyCachePaths.delete(path);
     });
   });
 }

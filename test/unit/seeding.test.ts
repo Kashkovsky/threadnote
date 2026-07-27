@@ -1,16 +1,9 @@
-import {chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
-import {
-  parseSeedWatchIntervalMinutes,
-  runInitManifest,
-  runSeed,
-  runSeedSkills,
-  seedDependencyGraphs,
-  seedWatchArgs,
-} from '../../src/seeding.js';
+import {runInitManifest, runSeed, runSeedSkills, seedDependencyGraphs} from '../../src/seeding.js';
 import {readSeedManifest} from '../../src/manifest.js';
 import {captureConsole as captureEffectConsole} from '../../src/effect/console.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
@@ -26,40 +19,6 @@ async function captureConsole<E>(effect: Effect.Effect<void, E, ApplicationServi
   return (await run(captureEffectConsole(effect))).output;
 }
 
-describe('parseSeedWatchIntervalMinutes', () => {
-  it('returns undefined when unset or not a positive integer', () => {
-    expect(parseSeedWatchIntervalMinutes(undefined)).toBeUndefined();
-    expect(parseSeedWatchIntervalMinutes('')).toBeUndefined();
-    expect(parseSeedWatchIntervalMinutes('0')).toBeUndefined();
-    expect(parseSeedWatchIntervalMinutes('-5')).toBeUndefined();
-    expect(parseSeedWatchIntervalMinutes('abc')).toBeUndefined();
-  });
-
-  it('parses a positive integer cadence', () => {
-    expect(parseSeedWatchIntervalMinutes('60')).toBe(60);
-    expect(parseSeedWatchIntervalMinutes(' 1440 ')).toBe(1440);
-  });
-});
-
-describe('seedWatchArgs', () => {
-  it('attaches a watch only on the original, non-redaction-prone file when opted in', () => {
-    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: true, redactionProne: false})).toEqual([
-      '--watch-interval',
-      '60',
-    ]);
-  });
-
-  it('never watches when the cadence is unset', () => {
-    expect(seedWatchArgs({watchIntervalMinutes: undefined, importedOriginal: true, redactionProne: false})).toEqual([]);
-  });
-
-  it('never watches a redacted temp copy or a redaction-prone path', () => {
-    // Bypassing Threadnote's per-import secret scan would be unsafe here.
-    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: false, redactionProne: false})).toEqual([]);
-    expect(seedWatchArgs({watchIntervalMinutes: 60, importedOriginal: true, redactionProne: true})).toEqual([]);
-  });
-});
-
 describe('runSeed', () => {
   const homes: string[] = [];
 
@@ -67,7 +26,7 @@ describe('runSeed', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('does not pass a reason to resource imports', async () => {
+  it('previews native resource imports without external runtime arguments', async () => {
     const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
     const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
     homes.push(contextHome, repo);
@@ -90,18 +49,15 @@ describe('runSeed', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath,
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
-    expect(output).toContain('add-resource');
+    expect(output).toContain('Would seed resource:');
     expect(output).toContain('viking://resources/repos/sample-repo/README.md');
-    expect(output).toContain('--wait');
+    expect(output).not.toContain('--wait');
     expect(output).not.toContain('--reason');
     expect(output).not.toContain('Project guidance for');
   });
@@ -148,17 +104,14 @@ describe('runSeed', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath,
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
-    expect(output).toContain('add-resource');
-    expect(output).toContain('Seed complete: 1 candidate(s), 0 unchanged, 0 skipped for safety.');
+    expect(output).toContain('Would seed resource:');
+    expect(output).toContain('Seed complete: 1 candidate(s), 0 unchanged, 0 stale removed, 0 skipped for safety.');
   });
 
   it('uses the publish scrubber patterns when skipping seed files', async () => {
@@ -184,17 +137,146 @@ describe('runSeed', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath,
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('SKIP sample-repo/README.md: possible secret (database URI)');
-    expect(output).toContain('Seed complete: 0 candidate(s), 0 unchanged, 1 skipped for safety.');
+    expect(output).toContain('Seed complete: 0 candidate(s), 0 unchanged, 0 stale removed, 1 skipped for safety.');
+  });
+
+  it('removes stale canonical resources when a seeded file is deleted or renamed', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    const source = join(repo, 'README.md');
+    const renamed = join(repo, 'GUIDE.md');
+    await writeFile(source, '# Sample\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: viking://resources/repos/sample-repo',
+        '    seed:',
+        '      - "*.md"',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+
+    await captureConsole(runSeed(config, {}));
+    await rename(source, renamed);
+    const output = await captureConsole(runSeed(config, {}));
+
+    await expect(
+      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'sample-repo', 'README.md')),
+    ).rejects.toThrow();
+    await expect(
+      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'sample-repo', 'GUIDE.md'), 'utf8'),
+    ).resolves.toContain('Sample');
+    expect(output).toContain('1 stale removed');
+  });
+
+  it('transfers seed-state ownership when a manifest project is renamed', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    const source = join(repo, 'README.md');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    const writeManifest = (name: string) =>
+      writeFile(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          `  - name: ${name}`,
+          `    path: ${repo}`,
+          '    uri: viking://resources/repos/stable-uri',
+          '    seed: [README.md]',
+          '',
+        ].join('\n'),
+      );
+    await writeFile(source, '# Project\n\nrename ownership anchor');
+    await writeManifest('old-project-name');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+    await captureConsole(runSeed(config, {}));
+
+    await writeManifest('new-project-name');
+    await rm(source);
+    const output = await captureConsole(runSeed(config, {}));
+
+    await expect(
+      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'stable-uri', 'README.md')),
+    ).rejects.toThrow();
+    const state = JSON.parse(await readFile(join(contextHome, 'seed-state.json'), 'utf8')) as {
+      readonly files: Record<string, unknown>;
+    };
+    expect(state.files['viking://resources/repos/stable-uri/README.md']).toBeUndefined();
+    expect(output).toContain('1 stale removed');
+  });
+
+  it('keeps child-project resources when seed URI roots are nested', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const parentRepo = await mkdtemp(join(tmpdir(), 'threadnote-seed-parent-'));
+    const childRepo = await mkdtemp(join(tmpdir(), 'threadnote-seed-child-'));
+    homes.push(contextHome, parentRepo, childRepo);
+    await writeFile(join(parentRepo, 'parent.md'), '# Parent\n', 'utf8');
+    await writeFile(join(childRepo, 'child.md'), '# Child\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: child',
+        `    path: ${childRepo}`,
+        '    uri: viking://resources/repos/platform/service',
+        '    seed: ["*.md"]',
+        '  - name: parent',
+        `    path: ${parentRepo}`,
+        '    uri: viking://resources/repos/platform',
+        '    seed: ["*.md"]',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+
+    await captureConsole(runSeed(config, {}));
+
+    await expect(
+      readFile(
+        join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'platform', 'service', 'child.md'),
+        'utf8',
+      ),
+    ).resolves.toContain('Child');
+    const state = JSON.parse(await readFile(join(contextHome, 'seed-state.json'), 'utf8')) as {
+      readonly files: Record<string, {readonly project?: string}>;
+    };
+    expect(state.files['viking://resources/repos/platform/service/child.md']?.project).toBe('child');
   });
 });
 
@@ -240,10 +322,7 @@ describe('seed-skills', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath,
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
@@ -297,10 +376,7 @@ describe('init-manifest', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath,
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
@@ -338,10 +414,7 @@ describe('init-manifest', () => {
         account: 'local',
         agentContextHome: contextHome,
         agentId: 'threadnote',
-        host: '127.0.0.1',
         manifestPath,
-        openVikingVersion: '0.0.0',
-        port: 1933,
         user: 'denys',
       };
 
@@ -370,19 +443,11 @@ describe('seedDependencyGraphs', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('uses a safe cache filename for manifest project names', async () => {
+  it('writes dependency facts directly to the native resource store', async () => {
     const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-graph-context-'));
     const repo = await mkdtemp(join(tmpdir(), 'threadnote-graph-repo-'));
     homes.push(contextHome, repo);
     await writeFile(join(repo, 'package.json'), JSON.stringify({name: '@acme/pkg'}), 'utf8');
-    const ov = join(contextHome, 'ov');
-    const ovArgsLog = join(contextHome, 'ov-args.log');
-    await writeFile(
-      ov,
-      `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done >> ${JSON.stringify(ovArgsLog)}\nexit 0\n`,
-      'utf8',
-    );
-    await chmod(ov, 0o700);
     const manifest: SeedManifest = {
       projects: [
         {
@@ -398,23 +463,15 @@ describe('seedDependencyGraphs', () => {
       account: 'local',
       agentContextHome: contextHome,
       agentId: 'threadnote',
-      host: '127.0.0.1',
       manifestPath: join(contextHome, 'seed-manifest.yaml'),
-      openVikingVersion: '0.0.0',
-      port: 1933,
       user: 'denys',
     };
 
-    await captureConsole(seedDependencyGraphs(config, ov, manifest, manifest.projects, false));
+    await captureConsole(seedDependencyGraphs(config, 'threadnote-native', manifest, manifest.projects, false));
 
-    const graphFiles = await readdir(join(contextHome, 'graph'));
-    expect(graphFiles).toHaveLength(1);
-    expect(graphFiles[0]).not.toContain('/');
-    expect(await readFile(join(contextHome, 'graph', graphFiles[0]), 'utf8')).toContain('# ../bad — dependency facts');
-    const ovArgs = (await readFile(ovArgsLog, 'utf8')).trim().split('\n');
-    expect(ovArgs).toContain('add-resource');
-    expect(ovArgs).toContain('--wait');
-    expect(ovArgs).not.toContain('--reason');
+    expect(
+      await readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'bad', '.graph.md'), 'utf8'),
+    ).toContain('# ../bad — dependency facts');
     await expect(readFile(join(contextHome, 'bad.graph.md'), 'utf8')).rejects.toThrow();
   });
 });

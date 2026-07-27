@@ -1,6 +1,6 @@
-import {Config, Console, Effect, Option, Schema} from 'effect';
+import {Console, Effect, Option, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
-import {OPENVIKING_MCP_NAME} from '../constants.js';
+import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from '../lifecycle.js';
 import {
@@ -57,6 +57,16 @@ import {errorMessage} from '../utils.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
 import {applicationError} from './errors.js';
+import {runHomeMigration} from '../migration/home.js';
+import {
+  runModelInstall,
+  runModelList,
+  runModelRemove,
+  runModelRuntimeStatus,
+  runModelSelect,
+  runModelVerify,
+} from '../models/commands.js';
+import {runIndexPurge, runIndexRebuild, runIndexStatus, runIndexVerify} from '../search/commands.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -126,13 +136,7 @@ const optionalArgument = (name: string, description: string, fallback: string): 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
     home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
-    host: optionalString('host', 'Override THREADNOTE_HOST for this invocation'),
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
-    port: optional(
-      describeFlag(integerFlag('port'), 'Override THREADNOTE_PORT for this invocation').pipe(
-        Flag.withSchema(Config.Port),
-      ),
-    ),
   }),
 );
 
@@ -180,9 +184,8 @@ const install = Command.make(
   'install',
   {
     dryRun: boolean('dry-run', 'Print the actions without making changes'),
-    force: boolean('force', 'Reinstall OpenViking at the pinned version even if a working install is already present'),
-    packageManager: optionalChoice('package-manager', ['uv', 'pipx', 'pip'], 'uv, pipx, or pip'),
-    start: negatedBoolean('start', 'Do not start OpenViking or check server health after installing'),
+    force: boolean('force', 'Re-assert the Threadnote-owned layout and configuration'),
+    start: negatedBoolean('start', 'Skip the in-process runtime readiness message'),
     withHooks: boolean(
       'with-hooks',
       'Also install agent-side hooks for deterministic handoff snapshots and context preload',
@@ -202,9 +205,7 @@ const install = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(
-  Command.withDescription('Install OpenViking, local config files, command shim, and user-level agent instructions'),
-);
+).pipe(Command.withDescription('Initialize the self-contained Threadnote home and user-level integrations'));
 
 const version = Command.make(
   'version',
@@ -259,15 +260,13 @@ const repair = Command.make(
       'MCP clients: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     ),
-    packageManager: optionalChoice('package-manager', ['uv', 'pipx', 'pip'], 'uv, pipx, or pip'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts after repair'),
-    start: negatedBoolean('start', 'Do not start OpenViking if health is failing'),
   },
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runRepair(config, options);
-        if (options.start !== false && (yield* readLocalAiSettings(config))?.enabled === true) {
+        if ((yield* readLocalAiSettings(config))?.enabled === true) {
           if (options.dryRun) {
             yield* runLocalAiStart(config, {dryRun: true});
           } else {
@@ -279,16 +278,14 @@ const repair = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(
-  Command.withDescription('Repair local OpenViking install, config, server health, shim, manifest, and MCP config'),
-);
+).pipe(Command.withDescription('Repair Threadnote storage, derived indexes, hooks, and MCP configuration'));
 
 const start = Command.make(
   'start',
   {
     dryRun: boolean('dry-run', 'Print the start command without running it'),
-    foreground: boolean('foreground', 'Run in the foreground instead of detaching'),
-    launchd: boolean('launchd', 'Install and start a macOS LaunchAgent'),
+    foreground: boolean('foreground', 'Deprecated compatibility flag; Threadnote runs in the invoking process'),
+    launchd: boolean('launchd', 'Deprecated compatibility flag; Threadnote has no LaunchAgent'),
   },
   options =>
     withRuntimeEffect(config =>
@@ -304,7 +301,7 @@ const start = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(Command.withDescription('Start the local OpenViking server'));
+).pipe(Command.withDescription('Verify runtime readiness (no daemon is required)'));
 
 const stop = Command.make(
   'stop',
@@ -318,19 +315,19 @@ const stop = Command.make(
         yield* runStop(config, options);
       }),
     ),
-).pipe(Command.withDescription('Stop the local OpenViking server or LaunchAgent'));
+).pipe(Command.withDescription('Compatibility command; Threadnote owns no daemon'));
 
 const uninstall = Command.make(
   'uninstall',
   {
     dryRun: boolean('dry-run', 'Print uninstall actions without making changes'),
-    eraseMemories: boolean('erase-memories', 'Delete THREADNOTE_HOME, including all OpenViking memories'),
+    eraseMemories: boolean('erase-memories', 'Delete THREADNOTE_HOME, including all Threadnote memories and models'),
     mcp: defaultString(
       'mcp',
       'MCP clients to remove: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     ),
-    preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)'),
+    preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and Threadnote memories (default)'),
   },
   options =>
     withRuntimeEffect(config =>
@@ -349,11 +346,11 @@ const localAiInstall = Command.make(
     dryRun: boolean('dry-run', 'Print local AI installation actions without making changes'),
     force: boolean('force', 'Re-download and re-verify the managed model'),
     model: optionalString('model', 'Verified model to install: gemma-4-E4B-it-Q4_0'),
-    modelPath: optionalString('model-path', 'Use an existing verified GGUF file for the selected model'),
-    start: negatedBoolean('start', 'Install and configure without starting the local model service'),
+    modelPath: optionalString('model-path', 'Deprecated; unmanaged GGUF paths are rejected'),
+    start: negatedBoolean('start', 'Deprecated compatibility flag; inference is in-process'),
   },
   options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
-).pipe(Command.withDescription('Install and enable a local recall model (Gemma by default)'));
+).pipe(Command.withDescription('Deprecated alias for models install/select generation'));
 
 const localAiEnable = Command.make(
   'enable',
@@ -371,13 +368,13 @@ const localAiStart = Command.make(
   'start',
   {dryRun: boolean('dry-run', 'Print the local AI start action without running it')},
   options => withRuntimeEffect(config => runLocalAiStart(config, options)),
-).pipe(Command.withDescription('Start the configured loopback model service'));
+).pipe(Command.withDescription('Verify the selected in-process generation model'));
 
 const localAiStop = Command.make(
   'stop',
   {dryRun: boolean('dry-run', 'Print the local AI stop action without running it')},
   options => withRuntimeEffect(config => runLocalAiStop(config, options)),
-).pipe(Command.withDescription('Stop the configured loopback model service'));
+).pipe(Command.withDescription('Explain in-process model resource lifetime'));
 
 const localAiStatus = Command.make('status', {}, () => withRuntimeEffect(config => runLocalAiStatus(config))).pipe(
   Command.withDescription('Show local model installation and health'),
@@ -407,7 +404,7 @@ const localAiUninstall = Command.make(
 ).pipe(Command.withDescription('Remove local AI configuration and optionally its managed model'));
 
 const localAi = Command.make('local-ai').pipe(
-  Command.withDescription('Manage opt-in local AI recall'),
+  Command.withDescription('Deprecated compatibility aliases for in-process model management'),
   Command.withSubcommands([
     localAiInstall,
     localAiEnable,
@@ -420,10 +417,87 @@ const localAi = Command.make('local-ai').pipe(
   ]),
 );
 
+const modelsList = Command.make('list', {}, () => withRuntimeEffect(config => runModelList(config))).pipe(
+  Command.withDescription('List pinned local model candidates and installation state'),
+);
+
+const modelsInstall = Command.make(
+  'install',
+  {
+    dryRun: boolean('dry-run', 'Show the pinned download and checksum without changing files'),
+    modelId: argument('model-id', 'Pinned model ID from threadnote models list'),
+  },
+  ({modelId, ...options}) => withRuntimeEffect(config => runModelInstall(config, modelId, options)),
+).pipe(Command.withDescription('Resumably download and verify a pinned GGUF model'));
+
+const modelsVerify = Command.make('verify', {modelId: argument('model-id', 'Installed model ID')}, ({modelId}) =>
+  withRuntimeEffect(config => runModelVerify(config, modelId)),
+).pipe(Command.withDescription('Verify an installed model size and SHA-256'));
+
+const modelsRemove = Command.make(
+  'remove',
+  {
+    dryRun: boolean('dry-run', 'Show the exact managed model path without removing it'),
+    modelId: argument('model-id', 'Installed model ID'),
+  },
+  ({modelId, ...options}) => withRuntimeEffect(config => runModelRemove(config, modelId, options)),
+).pipe(Command.withDescription('Remove one Threadnote-managed model'));
+
+const modelsSelect = Command.make(
+  'select',
+  {
+    dryRun: boolean('dry-run', 'Show the role selection without changing it'),
+    modelId: argument('model-id', 'Installed model ID'),
+    role: Argument.choice('role', ['embedding', 'reranker', 'generation']).pipe(
+      Argument.withDescription('embedding, reranker, or generation'),
+    ),
+  },
+  ({modelId, role, ...options}) => withRuntimeEffect(config => runModelSelect(config, role, modelId, options)),
+).pipe(Command.withDescription('Select a verified installed model for one runtime role'));
+
+const modelsRuntime = Command.make('runtime', {}, () => withRuntimeEffect(() => runModelRuntimeStatus())).pipe(
+  Command.withDescription('Verify the prebuilt-only node-llama-cpp runtime and show its backend'),
+);
+
+const models = Command.make('models').pipe(
+  Command.withDescription('Manage pinned local GGUF models'),
+  Command.withSubcommands([modelsList, modelsInstall, modelsVerify, modelsRemove, modelsSelect, modelsRuntime]),
+);
+
+const indexRebuild = Command.make(
+  'rebuild',
+  {model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model')},
+  options => withRuntimeEffect(config => runIndexRebuild(config, options)),
+).pipe(Command.withDescription('Build and atomically activate a complete vector-index generation'));
+
+const indexStatus = Command.make('status', {}, () => withRuntimeEffect(config => runIndexStatus(config))).pipe(
+  Command.withDescription('Show vector-index generation and compatibility state'),
+);
+
+const indexVerify = Command.make(
+  'verify',
+  {model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model')},
+  options => withRuntimeEffect(config => runIndexVerify(config, options)),
+).pipe(Command.withDescription('Verify the selected vector sidecar and generation pointer'));
+
+const indexPurge = Command.make(
+  'purge',
+  {
+    dryRun: boolean('dry-run', 'Show which derived index would be removed'),
+    model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model'),
+  },
+  options => withRuntimeEffect(config => runIndexPurge(config, options)),
+).pipe(Command.withDescription('Remove disposable vector data without touching canonical resources'));
+
+const indexCommand = Command.make('index').pipe(
+  Command.withDescription('Inspect and rebuild derived recall indexes'),
+  Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
+);
+
 const seed = Command.make(
   'seed',
   {
-    dryRun: boolean('dry-run', 'Print files and ov commands without importing'),
+    dryRun: boolean('dry-run', 'Print files and native store operations without importing'),
     force: boolean('force', 'Re-upload every candidate even if recorded state matches'),
     graph: boolean('graph', 'Also seed per-project dependency facts with cross-repo edges'),
     only: repeatedString('only', 'Restrict seeding to one or more manifest projects; repeat for multiple'),
@@ -445,8 +519,7 @@ const initManifest = Command.make(
 const seedSkills = Command.make(
   'seed-skills',
   {
-    dryRun: boolean('dry-run', 'Print skill files and ov commands without importing'),
-    native: boolean('native', 'Use native OpenViking skill ingestion; requires a working VLM config'),
+    dryRun: boolean('dry-run', 'Print skill files without importing'),
   },
   options => withRuntimeEffect(config => runSeedSkills(config, options)),
 ).pipe(Command.withDescription('Seed Codex/Claude skills and Claude command markdown files as a searchable catalog'));
@@ -458,15 +531,12 @@ const mcpInstall = Command.make(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
-    bearerTokenEnvVar: optionalString('bearer-token-env-var', 'Environment variable containing the local API key'),
-    name: defaultString('name', 'MCP server name', OPENVIKING_MCP_NAME),
-    nativeHttp: boolean('native-http', 'Install OpenViking native HTTP MCP instead of the local stdio adapter'),
+    name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
-    url: optionalString('url', 'OpenViking native HTTP MCP URL'),
   },
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
-).pipe(Command.withDescription('Install OpenViking MCP config for a supported agent'));
+).pipe(Command.withDescription('Install the Threadnote stdio MCP config for a supported agent'));
 
 const installHooks = Command.make(
   'install-hooks',
@@ -489,14 +559,14 @@ const preCompactHook = Command.make(
 
 const sessionStartHook = Command.make(
   'session-start-hook',
-  {dryRun: boolean('dry-run', 'Print the planned ov command without running it')},
+  {dryRun: boolean('dry-run', 'Print the planned native operation without running it')},
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
 ).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.withHidden);
 
 const remember = Command.make(
   'remember',
   {
-    dryRun: boolean('dry-run', 'Print memory and ov command without storing'),
+    dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
       'kind',
       ['durable', 'handoff', 'incident', 'preference', 'smoke'],
@@ -512,18 +582,35 @@ const remember = Command.make(
     topic: optionalString('topic', 'Stable topic name for an active project/topic memory'),
   },
   options => withRuntimeEffect(config => runRemember(config, options)),
-).pipe(Command.withDescription('Store a durable engineering memory in OpenViking'));
+).pipe(Command.withDescription('Store a durable engineering memory in the native Threadnote store'));
 
 const migrateMemories = Command.make(
   'migrate-memories',
   {
-    allAccounts: boolean('all-accounts', 'Scan all local OpenViking accounts under THREADNOTE_HOME'),
+    allAccounts: boolean('all-accounts', 'Scan all local canonical accounts under THREADNOTE_HOME'),
     dryRun: boolean('dry-run', 'Print migration actions without writing memories'),
     limit: optionalString('limit', 'Maximum number of memories to migrate'),
-    sourceAccount: repeatedString('source-account', 'Source OpenViking account; repeat for multiple accounts'),
+    sourceAccount: repeatedString('source-account', 'Source canonical account; repeat for multiple accounts'),
   },
   options => withRuntimeEffect(config => runMigrateMemories(config, options)),
 ).pipe(Command.withDescription('Migrate legacy session-only memories into durable memory files'));
+
+const migrateHome = Command.make(
+  'migrate',
+  {
+    apply: boolean('apply', 'Stage, validate, and atomically promote ~/.threadnote'),
+    dryRun: boolean('dry-run', 'Inspect the legacy home without changing files'),
+    legacyHome: optionalString('legacy-home', 'Legacy OpenViking home; defaults to ~/.openviking'),
+  },
+  options =>
+    withRuntimeEffect(config =>
+      runHomeMigration({
+        apply: options.apply && !options.dryRun,
+        legacyHome: options.legacyHome,
+        targetHome: config.agentContextHome,
+      }),
+    ),
+).pipe(Command.withDescription('Migrate a legacy ~/.openviking home into the self-contained ~/.threadnote home'));
 
 const migrateLifecycle = Command.make(
   'migrate-lifecycle',
@@ -565,7 +652,7 @@ const recall = Command.make(
   'recall',
   {
     callerCwd: optionalString('caller-cwd', 'Absolute caller workspace path for current repo/branch resolution'),
-    dryRun: boolean('dry-run', 'Print ov command without searching'),
+    dryRun: boolean('dry-run', 'Print the native query without searching'),
     includeArchived: boolean('include-archived', 'Include archived memories in recall results'),
     inferScope: negatedBoolean('infer-scope', 'Disable query-based scope inference'),
     nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of search results'), 'n', 'string'),
@@ -576,7 +663,7 @@ const recall = Command.make(
     workset: optionalString('workset', 'Recall across a named seed-manifest workset'),
   },
   options => withRuntimeEffect(config => runRecall(config, options)),
-).pipe(Command.withDescription('Search shared OpenViking context'));
+).pipe(Command.withDescription('Search shared Threadnote context'));
 
 const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
   Command.withDescription('List worksets defined in the seed manifest'),
@@ -605,7 +692,10 @@ const compact = Command.make(
 
 const read = Command.make(
   'read',
-  {dryRun: boolean('dry-run', 'Print ov command without reading'), uri: argument('uri', 'viking:// URI to read')},
+  {
+    dryRun: boolean('dry-run', 'Print the native read without running it'),
+    uri: argument('uri', 'viking:// URI to read'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
 ).pipe(Command.withDescription('Read a viking:// URI returned by recall or list'));
 
@@ -613,7 +703,7 @@ const list = Command.make(
   'list',
   {
     all: boolean('all', 'Show hidden files such as .abstract.md and .overview.md').pipe(Flag.withAlias('a')),
-    dryRun: boolean('dry-run', 'Print ov command without listing'),
+    dryRun: boolean('dry-run', 'Print the native listing operation without running it'),
     nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of nodes to list'), 'n', 'string'),
     recursive: boolean('recursive', 'List subdirectories recursively').pipe(Flag.withAlias('r')),
     simple: boolean('simple', 'Print only paths').pipe(Flag.withAlias('s')),
@@ -657,9 +747,12 @@ const archive = Command.make(
 
 const forget = Command.make(
   'forget',
-  {dryRun: boolean('dry-run', 'Print ov command without deleting'), uri: argument('uri', 'viking:// URI to remove')},
+  {
+    dryRun: boolean('dry-run', 'Print the native delete without running it'),
+    uri: argument('uri', 'viking:// URI to remove'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
-).pipe(Command.withDescription('Remove a viking:// URI from local OpenViking context'));
+).pipe(Command.withDescription('Remove a viking:// URI from local Threadnote context'));
 
 const shareInit = Command.make(
   'init',
@@ -846,22 +939,22 @@ const share = Command.make('share').pipe(
 const exportPack = Command.make(
   'export-pack',
   {
-    dryRun: boolean('dry-run', 'Print ov command without exporting'),
+    dryRun: boolean('dry-run', 'Print the native export without running it'),
     path: optionalString('path', 'Output .ovpack path'),
     uri: optionalString('uri', 'Source viking:// URI; defaults to the current user memories'),
   },
   options => withRuntimeEffect(config => runExportPack(config, options)),
-).pipe(Command.withDescription('Export local OpenViking context to an .ovpack'));
+).pipe(Command.withDescription('Export local Threadnote context to an .ovpack archive'));
 
 const importPack = Command.make(
   'import-pack',
   {
-    dryRun: boolean('dry-run', 'Print ov command without importing'),
+    dryRun: boolean('dry-run', 'Print the native import without running it'),
     path: requiredString('path', 'Input .ovpack path'),
     targetUri: optionalString('target-uri', 'Target parent viking:// URI; defaults to the current user'),
   },
   options => withRuntimeEffect(config => runImportPack(config, options)),
-).pipe(Command.withDescription('Import an .ovpack into local OpenViking context'));
+).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));
 
 export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
@@ -876,6 +969,8 @@ export const threadnoteCommand = root.pipe(
     start,
     stop,
     uninstall,
+    models,
+    indexCommand,
     localAi,
     seed,
     initManifest,
@@ -885,6 +980,7 @@ export const threadnoteCommand = root.pipe(
     preCompactHook,
     sessionStartHook,
     remember,
+    migrateHome,
     migrateMemories,
     migrateLifecycle,
     migrateProjectNames,

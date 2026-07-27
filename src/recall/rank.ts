@@ -18,6 +18,7 @@ export interface RecallCandidate {
   readonly fields?: RecallFields;
   readonly kind?: MemoryKind;
   readonly relations?: readonly MemoryRelation[];
+  readonly reranker?: number;
   readonly semantic?: number;
   readonly status?: MemoryStatus;
   readonly text: string;
@@ -57,6 +58,7 @@ export interface RecallSignals {
   readonly graph: number;
   readonly kindIntent: number;
   readonly lifecycle: number;
+  readonly reranker: number;
   readonly scope: number;
   readonly semantic: number;
   readonly temporal: number;
@@ -107,6 +109,7 @@ const SIGNAL_WEIGHTS = {
   graph: 0.07,
   kindIntent: 0.04,
   lifecycle: 0.05,
+  reranker: 0.1,
   scope: 0.03,
   semantic: 0.16,
   temporal: 0.02,
@@ -264,6 +267,7 @@ export function rankRecallCandidates(
     .sort(
       (left, right) =>
         right.finalScore - left.finalScore ||
+        right.signals.reranker - left.signals.reranker ||
         right.signals.semantic - left.signals.semantic ||
         left.candidate.uri.localeCompare(right.candidate.uri),
     );
@@ -286,6 +290,7 @@ function scoreCandidate(
   const strongestVariant = (score: (queryTerms: readonly string[]) => number): number =>
     Math.max(0, ...queryTermVariants.map(score));
   const semantic = clamp(candidate.semantic ?? 0);
+  const reranker = clamp(candidate.reranker ?? 0);
   const bm25 = strongestVariant(queryTerms => normalizedBm25(queryTerms, documentTerms, corpusStatistics));
   const topicalDocumentTerms = recallTopicalDocumentTerms(candidate);
   const topicalBm25 = strongestVariant(queryTerms =>
@@ -319,6 +324,7 @@ function scoreCandidate(
     graph,
     kindIntent,
     lifecycle,
+    reranker,
     scope,
     semantic,
     temporal,
@@ -326,8 +332,11 @@ function scoreCandidate(
   const focusedLexicalEvidence =
     topicalField >= LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM || exactTerms.some(term => /[0-9_.-]/.test(term));
   const passedRelevanceGate =
-    Math.max(semantic, topicalBm25, exact, topicalField) >= RELEVANCE_GATE_MINIMUM &&
-    (semantic > SIGNAL_ABSENCE_MAXIMUM || graph > SIGNAL_ABSENCE_MAXIMUM || focusedLexicalEvidence) &&
+    Math.max(semantic, reranker, topicalBm25, exact, topicalField) >= RELEVANCE_GATE_MINIMUM &&
+    (semantic > SIGNAL_ABSENCE_MAXIMUM ||
+      reranker > SIGNAL_ABSENCE_MAXIMUM ||
+      graph > SIGNAL_ABSENCE_MAXIMUM ||
+      focusedLexicalEvidence) &&
     !metaTopicMismatch(originalQueryTerms, candidate.fields);
   const temporalMultiplier = temporal === 0 ? TEMPORALLY_INVALID_SCORE_MULTIPLIER : 1;
   const lifecycleMultiplier = LIFECYCLE_SCORE_MULTIPLIERS[candidate.status ?? 'active'];
@@ -336,6 +345,7 @@ function scoreCandidate(
   const reasons = explainSignals(signals, candidate, context);
   const lexicalOnly =
     semantic <= SIGNAL_ABSENCE_MAXIMUM &&
+    reranker <= SIGNAL_ABSENCE_MAXIMUM &&
     graph <= SIGNAL_ABSENCE_MAXIMUM &&
     Math.max(bm25, exact, field) >= RELEVANCE_GATE_MINIMUM;
   const warnings = [
@@ -355,6 +365,7 @@ function weightedScore(signals: RecallSignals): number {
     signals.field * SIGNAL_WEIGHTS.field +
     signals.graph * SIGNAL_WEIGHTS.graph +
     signals.kindIntent * SIGNAL_WEIGHTS.kindIntent +
+    signals.reranker * SIGNAL_WEIGHTS.reranker +
     signals.scope * SIGNAL_WEIGHTS.scope +
     signals.freshness * SIGNAL_WEIGHTS.freshness +
     signals.authority * SIGNAL_WEIGHTS.authority +
@@ -646,6 +657,11 @@ function explainSignals(
   context: RecallRankContext,
 ): readonly RecallReason[] {
   const reasons: RecallReason[] = [
+    reason(
+      'native_reranker',
+      signals.reranker * SIGNAL_WEIGHTS.reranker,
+      `native reranker score ${signals.reranker.toFixed(2)}`,
+    ),
     reason(
       'semantic_similarity',
       signals.semantic * SIGNAL_WEIGHTS.semantic,

@@ -91,61 +91,7 @@ async function makeFakeBin(root: string, options: {readonly mutateSourceOnCommit
     'foo',
     'bar.md',
   );
-  const removeMarkerPath = join(root, 'source-remove-invoked');
-  const targetPath = join(
-    root,
-    'home',
-    'data',
-    'viking',
-    'local',
-    'user',
-    'test-user',
-    'memories',
-    'shared',
-    'default',
-    'durable',
-    'projects',
-    'foo',
-    'bar.md',
-  );
-  const targetDirectory = join(targetPath, '..');
   await mkdir(bin, {recursive: true});
-  await writeExecutable(
-    join(bin, 'ov'),
-    `#! /usr/bin/env node
-const args = process.argv.slice(2);
-const command = args[0];
-const sourceUri = ${JSON.stringify(sourceUri)};
-const targetUri = ${JSON.stringify(targetUri)};
-if (command === 'read' && args[1] === sourceUri) {
-  process.stdout.write('MEMORY\\nkind: durable\\nstatus: active\\nproject: foo\\ntopic: bar\\n\\nBody\\n');
-  process.exit(0);
-}
-if (command === 'stat') {
-  process.exit(args[1] === targetUri ? 1 : 0);
-}
-if (command === 'write' && args[1] === targetUri) {
-  const fs = require('node:fs');
-  const sourceFile = args[args.indexOf('--from-file') + 1];
-  fs.mkdirSync(${JSON.stringify(targetDirectory)}, {recursive: true});
-  fs.copyFileSync(sourceFile, ${JSON.stringify(targetPath)});
-  process.stdout.write('fake ov write progress that must not reach MCP stdout\\n');
-  process.exit(0);
-}
-if (command === 'rm' && args[1] === sourceUri) {
-  const fs = require('node:fs');
-  fs.writeFileSync(${JSON.stringify(removeMarkerPath)}, 'invoked\\n');
-  fs.rmSync(${JSON.stringify(sourcePath)}, {force: true});
-  process.stdout.write('fake ov rm progress that must not reach MCP stdout\\n');
-  process.exit(0);
-}
-if (command === 'mkdir') {
-  process.exit(0);
-}
-process.stderr.write('unexpected ov command: ' + args.join(' ') + '\\n');
-process.exit(1);
-`,
-  );
   await writeExecutable(
     join(bin, 'git'),
     `#! /usr/bin/env node
@@ -194,7 +140,6 @@ describe('Threadnote MCP share_publish', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: home,
         THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-        THREADNOTE_OPENVIKING_MCP_URL: 'not-a-url',
         THREADNOTE_USER: 'test-user',
       },
       stderr: 'pipe',
@@ -256,7 +201,6 @@ describe('Threadnote MCP share_publish', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: home,
         THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-        THREADNOTE_OPENVIKING_MCP_URL: 'not-a-url',
         THREADNOTE_USER: 'test-user',
       },
       stderr: 'pipe',

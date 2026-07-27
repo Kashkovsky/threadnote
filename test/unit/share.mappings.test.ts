@@ -12,7 +12,7 @@ import type {ShareRuntime} from '../../src/types.js';
 
 const runtime: ShareRuntime = {
   account: 'local',
-  agentContextHome: '/tmp/.openviking',
+  agentContextHome: '/tmp/.threadnote',
   agentId: 'threadnote',
   user: 'test-user',
 };

@@ -34,6 +34,8 @@ jobs:
 
       - run: npm run check:bundle-size
 
+      - run: npm run check:self-contained
+
       - run: npm run test:coverage
 
       - name: Upload coverage
@@ -44,8 +46,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  local-bins-e2e:
-    name: E2E tests · ubuntu · node 22
+  recall-quality:
+    name: Recall quality and non-inferiority
     runs-on: ubuntu-latest
 
     steps:
@@ -56,16 +58,20 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - uses: astral-sh/setup-uv@v7
-
       - run: npm ci
 
-      - run: npm run test:e2e:install-openviking
+      - name: Frozen v1 quality and indexed-recall smoke
+        run: npm run eval:recall
 
-      - run: npm run test:e2e:local-bins
+      - name: Recall-v2 category and safety gate
+        run: >-
+          npm run eval:recall:v2 --
+          --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
+          --fail-on-regression
+          --max-failures 10
 
-  windows-e2e:
-    name: E2E tests · windows · node 22
+  windows-smoke:
+    name: No-Python unit smoke · windows · node 22
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -77,10 +83,6 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-
       - run: npm ci
 
       - run: npm run typecheck
@@ -90,9 +92,37 @@ jobs:
           test/unit/windows-support.test.ts
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
-          test/unit/lifecycle.install.test.ts
           test/unit/local-ai.test.ts
           test/unit/update.test.ts
           test/unit/mcp.test.ts
 
-      - run: npm run test:e2e:windows
+  self-contained-distribution:
+    name: Self-contained package · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run check:self-contained
+
+      - run: npm run test:smoke:self-contained
+
+      - name: Installed package E2E
+        if: runner.os != 'Windows'
+        run: npm run test:e2e:local-bins
+
+      - name: PowerShell installer E2E
+        if: runner.os == 'Windows'
+        run: npm run test:e2e:windows

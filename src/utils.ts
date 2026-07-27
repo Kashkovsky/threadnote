@@ -115,154 +115,6 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export const requiredOpenVikingCli = Effect.fn('utils.requiredOpenVikingCli')(function* () {
-  const command = yield* findOpenVikingCli();
-  if (!command) {
-    return yield* Effect.fail(
-      new Error(
-        'Neither ov nor openviking was found in PATH, uv tool bin dir, $UV_TOOL_BIN_DIR, or ~/.local/bin. ' +
-          'Run threadnote install first.',
-      ),
-    );
-  }
-  return command;
-});
-
-export const openVikingCliForMode = Effect.fn('utils.openVikingCliForMode')(function* (dryRun: boolean) {
-  if (dryRun) {
-    return (yield* findOpenVikingCli()) ?? 'ov';
-  }
-  return yield* requiredOpenVikingCli();
-});
-
-export const findOpenVikingCli = Effect.fn('utils.findOpenVikingCli')(function* () {
-  const system = yield* SystemInfo;
-  const pathService = yield* Path.Path;
-  const override = system.environment().THREADNOTE_OV?.trim();
-  if (override) {
-    return override;
-  }
-  const onPath = yield* findExecutable(['ov', 'openviking']);
-  if (onPath) {
-    return onPath;
-  }
-  for (const candidateDir of yield* openVikingToolCandidateDirs()) {
-    for (const command of ['ov', 'openviking']) {
-      for (const name of executableNames(command, system.platform, system.environment().PATHEXT)) {
-        const candidate = pathService.join(candidateDir, name);
-        if (yield* isExecutable(candidate)) {
-          return candidate;
-        }
-      }
-    }
-  }
-  return undefined;
-});
-
-export function virtualEnvironmentPythonPathSegments(currentPlatform: NodeJS.Platform): readonly [string, string] {
-  return currentPlatform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'];
-}
-
-export const findUvToolPython = Effect.fn('utils.findUvToolPython')(function* (toolName: string) {
-  const uv = yield* findExecutable(['uv']);
-  if (!uv) {
-    return undefined;
-  }
-  const result = yield* runCommandEffect(uv, ['tool', 'dir'], {
-    allowFailure: true,
-    timeoutMs: 5000,
-  });
-  const toolDirectory = result.exitCode === 0 ? result.stdout.trim() : '';
-  if (!toolDirectory) {
-    return undefined;
-  }
-  const system = yield* SystemInfo;
-  const pathService = yield* Path.Path;
-  const candidate = pathService.join(toolDirectory, toolName, ...virtualEnvironmentPythonPathSegments(system.platform));
-  return (yield* isExecutable(candidate)) ? candidate : undefined;
-});
-
-export const pythonRuntimeForToolExecutable = Effect.fn('utils.pythonRuntimeForToolExecutable')(function* (
-  executablePath: string,
-  uvToolName?: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
-  const system = yield* SystemInfo;
-  const resolvedPath = yield* fs.realPath(executablePath).pipe(Effect.catch(() => Effect.succeed(executablePath)));
-  const siblingNames = system.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
-  for (const name of siblingNames) {
-    const candidate = pathService.join(pathService.dirname(resolvedPath), name);
-    if (yield* isExecutable(candidate)) {
-      return candidate;
-    }
-  }
-  if (system.platform !== 'win32') {
-    const raw = yield* fs.readFileString(resolvedPath).pipe(Effect.catch(() => Effect.succeed('')));
-    const firstLine = raw.split(/\r?\n/, 1)[0] ?? '';
-    const shebang = firstLine.startsWith('#!') ? firstLine.slice(2).trim() : undefined;
-    if (shebang) {
-      const parts = shebang.split(/\s+/);
-      const command = parts[0]?.endsWith('/env') ? parts[1] : parts[0];
-      if (command) {
-        const resolved = yield* findExecutable([command]);
-        if (resolved) {
-          return resolved;
-        }
-      }
-    }
-  }
-  return uvToolName ? yield* findUvToolPython(uvToolName) : undefined;
-});
-
-const openVikingToolCandidateDirs = Effect.fn('utils.openVikingToolCandidateDirs')(function* () {
-  const system = yield* SystemInfo;
-  const pathService = yield* Path.Path;
-  const dirs: string[] = [];
-  const uv = yield* findExecutable(['uv']);
-  if (uv) {
-    const result = yield* runCommandEffect(uv, ['tool', 'dir', '--bin'], {allowFailure: true});
-    if (result.exitCode === 0) {
-      const dir = result.stdout.trim();
-      if (dir) {
-        dirs.push(dir);
-      }
-    }
-  }
-  const environment = system.environment();
-  if (environment.UV_TOOL_BIN_DIR) {
-    dirs.push(environment.UV_TOOL_BIN_DIR);
-  }
-  dirs.push(...(yield* pythonUserScriptsCandidateDirs()));
-  dirs.push(pathService.join(system.homeDirectory, '.local', 'bin'));
-  return Array.from(new Set(dirs));
-});
-
-export const pythonUserScriptsCandidateDirs = Effect.fn('utils.pythonUserScriptsCandidateDirs')(function* (
-  currentPlatform?: NodeJS.Platform,
-) {
-  const system = yield* SystemInfo;
-  const pathService = yield* Path.Path;
-  const platform = currentPlatform ?? system.platform;
-  const commands = platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
-  const directories: string[] = [];
-  for (const command of commands) {
-    const executable = yield* findExecutable([command]);
-    if (!executable) {
-      continue;
-    }
-    const result = yield* runCommandEffect(executable, ['-c', 'import site; print(site.getuserbase())'], {
-      allowFailure: true,
-      timeoutMs: 5000,
-    });
-    const userBase = result.exitCode === 0 ? result.stdout.trim() : '';
-    if (userBase) {
-      directories.push(pathService.join(userBase, platform === 'win32' ? 'Scripts' : 'bin'));
-    }
-  }
-  return Array.from(new Set(directories));
-});
-
 export const requiredExecutable = Effect.fn('utils.requiredExecutable')(function* (command: string) {
   const executable = yield* findExecutable([command]);
   if (!executable) {
@@ -1007,7 +859,7 @@ export function exactRecallScopeIntents(query: string): ReadonlySet<ExactScopeIn
 
 /**
  * A `.overview.md` (Level 1) or `.abstract.md` (Level 0) summary sidecar. With
- * OpenViking summary auto-generation off (Threadnote's default) these are
+ * Legacy summary auto-generation off (Threadnote's default) these are
  * permanent "[Directory ... not ready]" placeholders, so they are noise in
  * recall and must never surface as results or pointers.
  */
@@ -1278,7 +1130,7 @@ function dedupeByContent(hits: readonly RecallHit[]): readonly RecallHit[] {
 /**
  * Infer a recall category for a document URI, used to place exact-match-only
  * documents (promoted into the ranked list without a semantic hit) into the
- * right group. Mirrors how OpenViking buckets search results: personal/shared
+ * right group. Keeps search results grouped by personal/shared
  * memories under `.../memories/...`, the global skill catalog under
  * `resources/agent-skills/`, everything else (including repo-embedded skills) as
  * a resource.

@@ -1,0 +1,106 @@
+{
+  "createdAt": "2026-07-27T15:20:58.424Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "43773b70c2c1bc01b68917365523a0a5257d00fc",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "fixtureHash": "dbc8258af5e0e10b99e34eb55f8e5b0b2b992e7f647d5726ace7ae2e12deab74",
+    "memoryBytes": 68719476736,
+    "node": "v22.22.0",
+    "operatingSystem": "darwin 27.0.0",
+    "packageManager": "npm/10.9.4",
+    "runner": "threadnote-recall-e2e",
+    "runnerVersion": "1"
+  },
+  "measurements": [
+    {
+      "maximum": 69.12774999999988,
+      "mean": 48.124694919999996,
+      "minimum": 46.418333000000075,
+      "name": "hybrid-rank-one-query",
+      "p50": 47.27229199999988,
+      "p95": 48.13895900000011,
+      "p99": 69.12774999999988,
+      "samples": 25,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 21.54321224762635,
+      "mean": 20.898174994895285,
+      "minimum": 14.465970612380726,
+      "name": "hybrid-rank-throughput",
+      "p50": 21.15404093374619,
+      "p95": 21.471111221043202,
+      "p99": 21.54321224762635,
+      "samples": 25,
+      "unit": "operations_per_second"
+    },
+    {
+      "maximum": 237092864,
+      "mean": 226140487.68,
+      "minimum": 196362240,
+      "name": "process-rss",
+      "p50": 235208704,
+      "p95": 237092864,
+      "p99": 237092864,
+      "samples": 25,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 5563657,
+      "mean": 4761203.88,
+      "minimum": 3924652,
+      "name": "process-external-memory",
+      "p50": 5432541,
+      "p95": 5563657,
+      "p99": 5563657,
+      "samples": 25,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 102888584,
+      "mean": 68202197.76,
+      "minimum": 37634280,
+      "name": "process-heap-used",
+      "p50": 66635168,
+      "p95": 92951112,
+      "p99": 102888584,
+      "samples": 25,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 52.4154,
+      "mean": 52.4154,
+      "minimum": 52.4154,
+      "name": "process-cpu-time-per-query",
+      "p50": 52.4154,
+      "p95": 52.4154,
+      "p99": 52.4154,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 48.234495,
+      "mean": 48.234495,
+      "minimum": 48.234495,
+      "name": "event-loop-delay-p95",
+      "p50": 48.234495,
+      "p95": 48.234495,
+      "p99": 48.234495,
+      "samples": 1,
+      "unit": "milliseconds"
+    }
+  ],
+  "metadata": {
+    "documents": 1000,
+    "homeRedacted": true,
+    "queries": 250,
+    "sampleProfile": "standard",
+    "seed": 262144,
+    "sourceVersion": "threadnote-3.0.3"
+  },
+  "suite": "recall-v2",
+  "version": 1,
+  "warmups": 5
+}

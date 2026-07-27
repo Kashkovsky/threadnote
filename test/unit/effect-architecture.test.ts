@@ -41,7 +41,12 @@ describe('Effect architecture boundaries', () => {
   });
 
   it('keeps raw Promise lifting primitives inside the shared adapters', async () => {
-    const allowed = new Set(['src/effect/console.ts', 'src/effect/errors.ts', 'src/mcp_server.ts']);
+    const allowed = new Set([
+      'src/effect/console.ts',
+      'src/effect/errors.ts',
+      'src/effect/system.ts',
+      'src/mcp_server.ts',
+    ]);
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
       const relativePath = relative(repoRoot, path);
@@ -61,7 +66,11 @@ describe('Effect architecture boundaries', () => {
   });
 
   it('keeps Node built-ins behind Effect platform services in production source', async () => {
+    const allowed = new Set(['src/effect/digest.ts', 'src/effect/system.ts']);
     for (const path of await sourceFiles()) {
+      if (allowed.has(relative(repoRoot, path))) {
+        continue;
+      }
       const source = await readFile(path, 'utf8');
       expect(source, relative(repoRoot, path)).not.toMatch(
         /(?:from\s+['"]node:|import\s*\(\s*['"]node:|require\s*\(\s*['"]node:)/,
@@ -88,6 +97,27 @@ describe('Effect architecture boundaries', () => {
         const source = await readFile(path, 'utf8');
         expect(source, relative(repoRoot, path)).not.toMatch(/\bconsole\.(?:debug|error|info|log|warn)\s*\(/);
       }
+    }
+  });
+
+  it('isolates unstable Effect AI imports inside the AI adapter directory', async () => {
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      if (!source.includes('effect/unstable/ai')) {
+        continue;
+      }
+      expect(relative(repoRoot, path)).toMatch(/^src\/effect\/ai\//);
+    }
+  });
+
+  it('isolates node-llama-cpp access inside its native adapter', async () => {
+    const allowed = 'src/effect/ai/node-llama-cpp.ts';
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      if (!/(?:from\s+['"]node-llama-cpp['"]|import\s*\(\s*['"]node-llama-cpp['"]\s*\))/.test(source)) {
+        continue;
+      }
+      expect(relative(repoRoot, path)).toBe(allowed);
     }
   });
 });

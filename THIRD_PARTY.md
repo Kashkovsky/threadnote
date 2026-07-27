@@ -1,37 +1,24 @@
 # Third-party software
 
-Threadnote orchestrates third-party software that it does not bundle or redistribute. This file records that software
-and its licensing for attribution and clarity.
+Threadnote 4 is a self-contained Node.js application. It does not install or invoke a Python runtime, OpenViking, or a
+separate memory server.
 
-## OpenViking
+## Runtime and bundled npm software
 
-- **Homepage:** https://openviking.ai/
-- **Distribution:** PyPI — `openviking` (installed via `uv tool install openviking[local-embed]`, with `pipx` / `pip --user` fallbacks)
-- **License:** GNU Affero General Public License v3.0 (AGPL-3.0)
+Direct runtime software and packages bundled into the published JavaScript retain their own licenses:
 
-Threadnote is a thin workflow layer over OpenViking. At runtime it:
-
-- installs OpenViking onto the user's machine from PyPI;
-- invokes the `ov` / `openviking` command-line program as a separate process; and
-- communicates with `openviking-server` over MCP / local HTTP.
-
-Threadnote does **not** incorporate OpenViking's source code, does **not** modify OpenViking, and does **not** ship
-OpenViking binaries or source inside its npm package. OpenViking is obtained directly by the user from PyPI under its own
-AGPL-3.0 license, and its source and license notices are distributed with that package independently of Threadnote.
-
-Because OpenViking is used as a separate program at arm's length (subprocess + inter-process communication) rather than
-linked or incorporated, Threadnote is not a derivative work of OpenViking. Threadnote's own license (AGPL-3.0-or-later,
-see [`LICENSE`](./LICENSE)) applies only to Threadnote's own code.
-
-This acknowledgment is provided as good-faith attribution to the OpenViking project; it is not legal advice.
-
-## npm dependencies
-
-Runtime npm dependencies and build-time packages bundled into the published JavaScript retain their own licenses. As of
-this writing the direct bundled dependencies are:
-
-- `effect`, `@effect/platform-node`, and `@effect/ai-openai-compat` (MIT)
-- `react-markdown` (MIT)
+- `node-llama-cpp` (MIT), used in-process with prebuilt `llama.cpp` binaries for optional local GGUF inference
+- `effect`, `@effect/platform-node`, `@effect/ai-openai-compat`, and `@effect/vitest` (MIT)
+- `@modelcontextprotocol/sdk` (MIT)
+- `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)
+- `js-yaml` (MIT)
 
-Each is installed from npm under its respective license; consult the package's own metadata for the authoritative terms.
+Consult each installed package's metadata and license files for the authoritative terms. Model files are installed only
+after an explicit `threadnote models install` action; their catalog entries identify the model source and license.
+
+## Historical migration compatibility
+
+Threadnote 4 can read a legacy `~/.openviking` directory during the explicit, non-destructive home migration. That
+compatibility path copies user-owned data into `~/.threadnote`, excludes old runtime artifacts, and never executes or
+bundles OpenViking code. OpenViking is not a Threadnote 4 runtime dependency.

@@ -1,0 +1,90 @@
+{
+  "createdAt": "2026-07-27T00:00:00.000Z",
+  "fixture": {
+    "hash": "6edf99aa0e7b271e78e10c57659cc5b1fcd9dfe31cc906ff2a225a6015adbaf4",
+    "path": "test/evaluation/fixtures/recall-v1/fixture.json",
+    "version": 1
+  },
+  "result": {
+    "failures": [],
+    "metrics": {
+      "averageContextTokens": 23.25,
+      "meanNdcgAt5": 1,
+      "meanReciprocalRank": 1,
+      "noAnswerPrecision": 1,
+      "noAnswerRecall": 1,
+      "recallAt5": 1,
+      "requiredReasonsPresent": true,
+      "staleHitRate": 0
+    },
+    "queryResults": [
+      {
+        "confidence": "medium",
+        "expanded": false,
+        "id": "rare-identifier",
+        "initialConfidence": "medium",
+        "rankedUris": [
+          "viking://resources/repos/threadnote/alpha-42.md",
+          "viking://user/me/memories/common-retry.md",
+          "viking://user/me/memories/beta-update-policy.md"
+        ]
+      },
+      {
+        "confidence": "medium",
+        "expanded": false,
+        "id": "active-over-superseded",
+        "initialConfidence": "medium",
+        "rankedUris": ["viking://user/me/memories/active-channel.md", "viking://user/me/memories/current-handoff.md"]
+      },
+      {
+        "confidence": "medium",
+        "expanded": false,
+        "id": "current-handoff",
+        "initialConfidence": "medium",
+        "rankedUris": ["viking://user/me/memories/current-handoff.md"]
+      },
+      {
+        "confidence": "no_answer",
+        "expanded": false,
+        "id": "no-answer-service-mesh",
+        "initialConfidence": "no_answer",
+        "rankedUris": []
+      },
+      {
+        "confidence": "low",
+        "expanded": true,
+        "id": "paraphrase-beta-updates",
+        "initialConfidence": "no_answer",
+        "rankedUris": ["viking://user/me/memories/beta-update-policy.md"]
+      },
+      {
+        "confidence": "low",
+        "expanded": true,
+        "id": "paraphrase-ranking-signals",
+        "initialConfidence": "no_answer",
+        "rankedUris": ["viking://user/me/memories/recall-ranker-signals.md"]
+      },
+      {
+        "confidence": "medium",
+        "expanded": true,
+        "id": "paraphrase-worker-lease",
+        "initialConfidence": "no_answer",
+        "rankedUris": ["viking://resources/repos/orion-worker/lease-renewal.md"]
+      },
+      {
+        "confidence": "medium",
+        "expanded": true,
+        "id": "paraphrase-cache-eviction",
+        "initialConfidence": "no_answer",
+        "rankedUris": ["viking://user/me/memories/artifact-cache-eviction.md"]
+      }
+    ],
+    "version": 1
+  },
+  "source": {
+    "openVikingVersion": "0.4.10",
+    "rankerVersion": "hybrid-v2",
+    "threadnoteVersion": "3.0.3"
+  },
+  "version": 1
+}

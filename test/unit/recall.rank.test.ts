@@ -88,6 +88,31 @@ describe('hybrid recall ranker', () => {
     );
   });
 
+  it('uses native reranker evidence as a bounded, explained ranking signal', () => {
+    const ranked = rankRecallCandidates(
+      'worker lease timeout recovery',
+      [
+        {
+          reranker: 0.12,
+          semantic: 0.72,
+          text: 'Worker lease timeout recovery.',
+          uri: 'viking://low-reranker',
+        },
+        {
+          reranker: 0.94,
+          semantic: 0.72,
+          text: 'Worker lease timeout recovery.',
+          uri: 'viking://high-reranker',
+        },
+      ],
+      {},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toBe('viking://high-reranker');
+    expect(ranked.results[0]?.signals.reranker).toBe(0.94);
+    expect(ranked.results[0]?.reasons.map(reason => reason.code)).toContain('native_reranker');
+  });
+
   it('uses expanded query vocabulary without weakening original-query evidence', () => {
     const candidates = [
       {
@@ -171,7 +196,7 @@ describe('hybrid recall ranker', () => {
           },
           kind: 'durable',
           semantic: 0.68,
-          text: 'Native Windows installation is unsupported until the package, OpenViking, and lifecycle gates pass.',
+          text: 'Native Windows installation is unsupported until the package, model, and lifecycle gates pass.',
           trust: 'approved',
           uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
         },

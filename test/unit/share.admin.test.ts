@@ -21,7 +21,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
   return {
     ...actual,
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
@@ -32,7 +31,7 @@ const ok = (stdout = ''): CommandResult => ({exitCode: 0, stderr: '', stdout});
 
 async function makeRuntime(): Promise<ShareRuntime> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-share-admin-'));
-  const worktree = join(home, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'default');
+  const worktree = join(home, 'share', 'worktrees', 'default');
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(join(worktree, 'durable', 'projects', 'threadnote'), {recursive: true});
   await mkdir(gitdir, {recursive: true});
@@ -72,7 +71,6 @@ describe('share administration', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
-    vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockImplementation(() => Effect.succeed(ok()));
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -92,7 +90,9 @@ describe('share administration', () => {
     const teams = await readTeams(config);
     expect(teams.defaultTeam).toBe('friends');
     expect(teams.teams.friends?.name).toBe('friends');
+    expect(teams.teams.friends?.worktree).toBe(join(config.agentContextHome, 'share', 'worktrees', 'friends'));
     expect(teams.teams.default).toBeUndefined();
+    await expect(access(join(config.agentContextHome, 'share', 'worktrees', 'friends'))).resolves.toBeUndefined();
     await expect(
       access(
         join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'friends'),
@@ -155,16 +155,24 @@ describe('share administration', () => {
 
     const teams = await readTeams(config);
     expect(teams.teams.default).toBeUndefined();
-    expect(
-      vi
-        .mocked(utils.runCommand)
-        .mock.calls.some(
-          ([executable, args]) =>
-            executable === '/ov' &&
-            args[0] === 'write' &&
-            args[1] === 'viking://user/denys/memories/durable/projects/threadnote/manager.md',
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'denys',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'manager.md',
         ),
-    ).toBe(true);
+        'utf8',
+      ),
+    ).resolves.toContain('Body');
     await expect(
       access(
         join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'default'),

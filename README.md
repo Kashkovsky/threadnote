@@ -1,169 +1,94 @@
-<p align="center">
-  <img src="./docs/threadnote-logo.svg" alt="Threadnote logo" width="200">
-</p>
-
 # Threadnote
 
-[![npm version](https://img.shields.io/npm/v/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![license](https://img.shields.io/npm/l/threadnote.svg)](./LICENSE) ![node version](https://img.shields.io/node/v/threadnote.svg)
+Threadnote gives development agents durable local memory, branch handoffs, curated repo guidance, and opt-in team
+sharing. Version 4 is self-contained: canonical content, indexes, model files, locks, logs, migration receipts, and
+share metadata are owned under `~/.threadnote`.
 
-> One engineer teaches it once. Every teammate's coding agent can use it.
+The installed product requires Node.js 22.19 or newer. It does not require Python, a second memory platform, or a
+background daemon.
 
-Threadnote is a shared, Git-backed memory layer for the coding agents your team already uses. Alice's Codex can publish
-a hard-won architecture decision; Bob's Claude Code, Cursor, or Copilot can auto-sync and recall it during the next
-task. No copy-pasted handoff, vendor lock-in, or shared chat window required.
+## Install
 
-Personal working state stays local. Only curated durable knowledge or reusable artifacts that you explicitly publish
-enter the team's memory repo, with a preview, secret scrubber, and Git history. Persistence across sessions still
-matters, but it is the foundation: the differentiator is useful context moving safely between **different users and
-different agents**.
-
-**Walkthrough:** https://kashkovsky.github.io/threadnote/  
-**Wiki:** https://github.com/Kashkovsky/threadnote/wiki
-
-## The Value
-
-```text
-Alice + Codex ──publish curated memory──▶ team Git repo
-                                              │
-                                      auto-sync on recall
-                                              ▼
-                              Bob + Claude Code / Cursor / Copilot
+```sh
+npm install --global threadnote
+threadnote install
+threadnote doctor
+threadnote mcp-install codex --apply
 ```
 
-- **Cross-user and cross-agent.** Teammates can use one shared knowledge layer without standardizing on one AI vendor.
-- **Explicit, reviewable sharing.** Publish one durable memory or reusable skill; preview and scrub it before it lands
-  in Git.
-- **Private by default.** Personal handoffs, preferences, incidents, and unpublished memories stay on the local
-  machine.
-- **Targeted local recall.** OpenViking runs a local GGUF embedding model through `llama.cpp` to rank semantic matches;
-  agents load selected `viking://` records instead of replaying the entire memory history.
-- **Optional local recall refinement.** `threadnote local-ai install` adds the recommended pinned, verified Gemma
-  model. It helps expand weak and medium-confidence paraphrases and filters their bounded result set while deterministic
-  ordering remains in control. When available, it also adds compact retrieval aliases to new personal memories;
-  `threadnote enrich-memories --apply` can backfill personal and configured shared durable memories with streamed
-  progress. Shared changes remain local until `threadnote share sync`. Toggle the installed model without removing it
-  with `threadnote local-ai disable` and `threadnote local-ai enable`; the generic
-  `threadnote local-ai model switch` command is retained for future verified models.
-- **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, currentness, authority, and bounded
-  feedback produce a confidence level and inspectable ranking reasons.
-- **Routine continuity is automatic.** At meaningful task closeout, the agent writes normal durable feature knowledge
-  and handoffs directly. It proposes only additional extracted candidates and writes those after user approval.
-- **Durable and addressable.** Stable pointers let agents update one current `project/topic` instead of accumulating
-  stale notes.
-- **Built for engineering work.** Decisions, contracts, gotchas, release workflows, and current branch state have
-  distinct lifecycles instead of becoming an undifferentiated chat summary.
+Use `claude`, `cursor`, or `copilot` instead of `codex` for another supported client. MCP is a local stdio process.
+The default `core` toolset stays compact; install `--toolset full` for maintenance and artifact-sharing tools.
 
-## Quickstart
-
-macOS and Linux:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
-threadnote mcp-install claude --apply   # or codex / cursor / copilot
-threadnote doctor --dry-run
-```
-
-Native Windows PowerShell (experimental):
+Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
-threadnote mcp-install codex --apply    # or claude / cursor / copilot
-threadnote doctor --dry-run
 ```
 
-Native Windows support is experimental. The PowerShell installer uses npm's native `threadnote.cmd` launcher and
-installs OpenViking through `uv`; it does not require WSL, Git Bash, or a POSIX shim. Node.js 22.19 or newer is required
-on every platform. The manual native flow is `npm install --global threadnote` followed by `threadnote install`.
+## Daily workflow
 
-The CLI remains Threadnote's complete execution surface. The default stdio adapter is a compact interoperability layer
-with eight core tools: `recall_context`, `read_context`, `list_context`, `remember_context`,
-`review_session_context`, `apply_memory_candidates`, `share_publish`, and `threadnote_guide`. Advanced workflows can
-run through the CLI without reconfiguring MCP; install with `--toolset full` only when the agent needs those workflows
-as MCP tools.
-
-New to Threadnote? Ask your agent **"what can I do with Threadnote?"** — it calls the
-`threadnote_guide` MCP tool, which returns a short walkthrough tailored to your setup
-(server health, configured share teams, seeded projects) and offers to run each step
-with you. The walkthrough only loads when you ask, so it never sits in context otherwise.
-
-## Updates
-
-```bash
-threadnote update         # latest stable release
-threadnote update --beta  # latest beta release
-threadnote update --stable # return from beta to the stable release
+```sh
+threadnote recall "threadnote latest handoff" --caller-cwd "$PWD"
+threadnote read viking://user/me/memories/handoffs/active/threadnote/release.md
+threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
+threadnote handoff --project threadnote --topic release --text "..."
 ```
 
-Stable installs only report and install stable releases. After opting into a beta, ordinary `threadnote version` and
-`threadnote update` calls stay on the beta channel. Run `threadnote update --stable` to switch back, even when the
-stable release has a lower version than the installed beta.
+Repo files remain authoritative. `threadnote seed` imports only the files selected by the seed manifest. Canonical
+resources and memories keep stable `viking://` identifiers while their bytes live in the Threadnote-owned store.
 
-## Why Not Just Markdown Files?
+## Recall
 
-Use Markdown files. Threadnote makes them operational.
+Recall works without a model using deterministic lexical, field, scope, lifecycle, authority, time, graph, and
+feedback signals. Optional semantic retrieval and reranking run in process through `node-llama-cpp`. Model selection
+is explicit and experimental until a candidate passes the checked quality gate:
 
-- **`AGENTS.md` / `CLAUDE.md` / repo docs:** stable, reviewed, version-controlled rules.
-- **Random notes:** easy to write, hard for agents to rank, scope, update, or know when stale.
-- **Threadnote memories:** Markdown on disk plus semantic recall, stable URIs, lifecycle (`durable`, `handoff`,
-  `archived`), scoped compaction, MCP tools, and safe team sharing.
+```sh
+threadnote models list
+threadnote models install bge-small-en-v1.5-q8
+threadnote models select embedding bge-small-en-v1.5-q8
+threadnote index rebuild
+threadnote index verify
+```
 
-The source of truth is still local files. The benefit is that agents know how to find the right file, decide whether it
-is current, update it without creating duplicates, and safely move the useful part into a teammate's agent.
-The default semantic index is built locally with a GGUF embedding model through `llama.cpp`, so recall can rank
-relevant records without sending the memory corpus to a hosted embedding service.
+Models are downloaded only after an explicit install. Every built-in model manifest pins its immutable revision,
+filename, size, SHA-256, license, runtime version, and memory class. Downloads resume, checksums are verified before
+atomic promotion, and native compilation is disabled. The first measured BGE Small and BGE Small + Jina candidates
+improved semantic-query ranking but failed the no-answer gate, so 4.0 keeps lexical recall as the safe default. The
+reviewed candidate summaries are checked in under `test/evaluation/candidates/threadnote-4.0.0/`.
 
-## Agent Perspective
+## Upgrade from 3.x
 
-These are workflow examples from an agent's point of view:
+```sh
+threadnote migrate
+threadnote migrate --apply
+threadnote doctor
+threadnote index status
+```
 
-**Codex before Threadnote:** "I inspect the repo, ask what changed, rediscover the test command, and hope the compacted
-chat summary did not drop the important caveat."
+Migration inventories the legacy home, rejects unsafe links, checks free space, copies into sibling staging, validates
+every copied hash, and atomically promotes `~/.threadnote`. The source home is never modified or deleted, so rollback
+is simply restoring the previous `THREADNOTE_HOME` while investigating.
 
-**Codex with Threadnote:** "I recall the branch handoff and durable feature memory first. I can name the files touched,
-the last failing check, the design decision behind the code, and the next step before editing."
+## Quality contract
 
-**Claude Code before Threadnote:** "A long debugging thread compacts into a vague narrative. The next turn knows the arc,
-but not the exact command, blocker, or decision."
+The reviewed recall-v2 corpus contains 200 documents and 250 queries across lexical, semantic, code, scope, lifecycle,
+authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. Frozen 3.0.3 quality and M1 Max
+performance baselines are checked in under `test/evaluation/baselines/threadnote-3.0.3/`.
 
-**Claude Code with Threadnote:** "The pre-compact handoff captures the concrete state. The next session reads the same
-memory and continues without asking the user to reconstruct it."
+```sh
+npm run eval:recall:v2 -- \
+  --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
+  --fail-on-regression
+npm run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
+npm run bench:recall:micro -- --json
+```
 
-## Real-World Uses
-
-- **Share a team decision:** Alice publishes an API contract; Bob's different agent auto-syncs it on its next recall.
-- **Continue a branch:** "Continue where we left off" -> agent recalls the active handoff and durable feature memory.
-- **Switch agents:** "Save where we are" -> agent stores a handoff the next MCP-enabled agent can read.
-- **Survive compaction:** Claude Code's hook can snapshot a handoff before compaction; other agents can recall it later.
-- **Remember a repo fact:** "This repo cuts release notes from CI" -> agent stores a durable workflow memory.
-- **Review additional context from a task:** after storing the normal durable memory and handoff, the agent proposes up
-  to three extra candidates; approve, edit, defer, or reject them in the same conversation.
-- **Share with teammates:** publish a curated durable memory or reusable skill to a team git repo.
-- **Clean up overlap:** run `threadnote compact --project <repo> --topic <issue> --dry-run` before archiving stale
-  handoffs or forgetting exact duplicates.
-
-The adapter keeps the eight core tools above as its default surface. `threadnote_guide` catalogs advanced categories and
-their CLI equivalents without loading their schemas into every agent session. Pass `--toolset full` to `mcp-install`
-to expose compatibility aliases, memory maintenance, advanced sharing/artifact tools, and raw OpenViking parity tools
-with `ov_*` names.
-
-## Development
-
-Threadnote's infrastructure and orchestration run on Effect 4 beta, including typed command/HTTP failures, scoped
-resources, deterministic polling and retries, Effect Schema MCP inputs, and optional structured Effect AI
-consolidation. See [`docs/effect.md`](./docs/effect.md) for boundaries, opt-in configuration, parity gates, and the beta
-upgrade procedure. See [`CONTRIBUTION.md`](./CONTRIBUTION.md) for development setup, validation requirements, and pull
-request guidance.
-
-## Acknowledgments
-
-Threadnote is a workflow layer over [OpenViking](https://openviking.ai/) (AGPL-3.0).
-It installs OpenViking on your machine (via `uv tool install openviking[local-embed]`) and runs it as a **separate program** —
-shelling out to the `ov` CLI and talking to `openviking-server` over MCP. Threadnote does **not** bundle, modify, or
-redistribute OpenViking; its source and license reach you independently through PyPI. Threadnote's own license covers
-only Threadnote's code.
-
-See [`THIRD_PARTY.md`](./THIRD_PARTY.md) for the full attribution.
+See the [evaluation contract](test/evaluation/README.md), [4.0 plan](docs/4.0-plan.md),
+[migration](docs/migration.md), [sharing](docs/share.md), and
+[troubleshooting](docs/troubleshooting.md).
 
 ## License
 
-Threadnote is licensed under [AGPL-3.0-or-later](./LICENSE).
+Threadnote is licensed under AGPL-3.0-or-later. Model licenses are recorded separately in their manifests and
+third-party notices.

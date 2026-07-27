@@ -1,4 +1,4 @@
-# Example only. Developers should generate ~/.openviking/seed-manifest.yaml from their own checkouts with:
+# Example only. Developers should generate ~/.threadnote/seed-manifest.yaml from their own checkouts with:
 #   threadnote init-manifest --repo /path/to/repo
 version: 1
 projects:

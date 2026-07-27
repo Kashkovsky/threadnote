@@ -26,9 +26,8 @@ describe('agent instructions', () => {
       'secrets, credentials, customer data, or raw production logs',
       'Never publish handoffs or preferences',
       'confirm with the user',
-      '`threadnote start` without asking',
-      'retry the failed operation once',
       '`threadnote doctor --dry-run`',
+      'no daemon to start',
       'Before pausing, switching agents, or ending meaningful work',
       '`threadnote` CLI',
     ]) {

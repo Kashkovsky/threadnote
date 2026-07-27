@@ -1,10 +1,12 @@
 import {Clock, Effect} from 'effect';
-import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai-recall.js';
+import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import type {MemoryRecord} from '../memory_document.js';
 import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
+import {rerankWithSelectedLocalModel} from '../models/inference.js';
 import {loadRecallFeedback} from './feedback.js';
-import {loadRecallIndexData} from './index.js';
+import {loadRecallIndexData, loadRecallIndexDataBatch} from './index.js';
 import type {RecallCandidate} from './rank.js';
+import {selectedSemanticScores} from '../search/vector-index.js';
 
 interface RecallRuntimeConfig {
   readonly account: string;
@@ -23,11 +25,14 @@ interface PrepareRecallSectionsInput<R> {
   readonly limit: number;
   readonly minimumScore?: number;
   readonly passes: ReadonlyArray<readonly RecallHit[]>;
+  readonly preferredUriScopes?: readonly string[];
   readonly project?: string;
   readonly query: string;
   readonly queryVariants?: readonly string[];
   readonly readRecords: (uris: readonly string[]) => Effect.Effect<readonly MemoryRecord[], unknown, R>;
+  readonly rerankerCache?: RecallRerankerCache;
   readonly seedUris?: readonly string[];
+  readonly semanticScores?: ReadonlyMap<string, number> | null;
 }
 
 const INDEX_CANDIDATE_MULTIPLIER = 10;
@@ -39,6 +44,17 @@ const EXPANSION_DESCRIPTION_LENGTH_LIMIT = 80;
 const EXPANSION_DESCRIPTION_SEPARATOR = ' :: ';
 const MAX_DETERMINISTIC_QUERY_VARIANTS = 3;
 const MINIMUM_QUERY_VARIANT_TERMS = 2;
+const NATIVE_RERANK_CANDIDATE_LIMIT = 32;
+const NATIVE_RERANK_DOCUMENT_LIMIT = 4_000;
+
+export interface RecallRerankerCache {
+  readonly scores: Map<string, number>;
+  unavailable: boolean;
+}
+
+export function createRecallRerankerCache(): RecallRerankerCache {
+  return {scores: new Map(), unavailable: false};
+}
 
 export function deterministicRecallQueryVariants(query: string): readonly string[] {
   const clauses = query
@@ -76,16 +92,26 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   config: RecallRuntimeConfig,
   input: PrepareRecallSectionsInput<R>,
 ) {
+  const semanticScores =
+    input.semanticScores === undefined
+      ? yield* loadRecallSemanticScores(config, input.query, input.limit)
+      : (input.semanticScores ?? undefined);
   const rankingUris = [
     ...new Set([
       ...input.passes.flatMap(pass => pass.map(hit => hit.uri.replace(/#.*$/, ''))),
       ...input.exactMatches.map(match => match.uri.replace(/#.*$/, '')),
+      ...(semanticScores?.keys() ?? []),
     ]),
   ];
   const records = yield* input.readRecords(rankingUris);
   const now = new Date(yield* Clock.currentTimeMillis);
   const queryVariants = recallQueryVariants(input.query, input.queryVariants);
   const indexQueries = [input.query, ...queryVariants];
+  const scopeSets: ReadonlyArray<readonly string[] | undefined> = input.allowedUriScopes?.length
+    ? [input.allowedUriScopes]
+    : input.preferredUriScopes?.length
+      ? [input.preferredUriScopes, undefined]
+      : [undefined];
   const [feedbackByUri, recallIndexes] = yield* Effect.all(
     [
       loadRecallFeedback(config.agentContextHome, {
@@ -93,24 +119,40 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
         project: input.project,
         query: input.feedbackQuery,
       }),
-      Effect.forEach(
-        indexQueries,
-        indexQuery =>
-          loadRecallIndexData(config, {
-            allowedUriScopes: input.allowedUriScopes,
-            includeInactive: input.includeInactive,
+      loadRecallIndexDataBatch(config, {
+        includeInactive: input.includeInactive,
+        selections: indexQueries.flatMap(indexQuery =>
+          scopeSets.map(allowedUriScopes => ({
+            allowedUriScopes,
             limit: Math.max(INDEX_CANDIDATE_MINIMUM, input.limit * INDEX_CANDIDATE_MULTIPLIER),
             query: indexQuery,
             requiredUris: rankingUris,
-          }).pipe(Effect.catch(() => Effect.succeed(undefined))),
-        {concurrency: 2},
-      ),
+          })),
+        ),
+      }).pipe(Effect.catch(() => Effect.succeed([]))),
     ],
     {concurrency: 2},
   );
-  const recallIndex = recallIndexes.find(index => index !== undefined);
-  const recallIndexCandidateSets = recallIndexes.map(index => index?.candidates ?? []);
-  const indexedCandidates = mergeRecallIndexCandidates(recallIndexCandidateSets);
+  const flattenedRecallIndexes = recallIndexes;
+  const recallIndex = flattenedRecallIndexes.find(index => index !== undefined);
+  const recallIndexCandidateSets = flattenedRecallIndexes.map(index => index?.candidates ?? []);
+  const semanticCandidates = mergeRecallIndexCandidates(recallIndexCandidateSets).map(candidate => {
+    const semantic = semanticScores?.get(candidate.uri.replace(/#.*$/, ''));
+    return semantic === undefined ? candidate : {...candidate, semantic};
+  });
+  const indexedCandidates = yield* applySelectedNativeReranker(
+    config.agentContextHome,
+    input.query,
+    semanticCandidates,
+    input.rerankerCache,
+  ).pipe(
+    Effect.catch(() =>
+      Effect.sync(() => {
+        if (input.rerankerCache) input.rerankerCache.unavailable = true;
+        return applyCachedRerankerScores(semanticCandidates, input.rerankerCache);
+      }),
+    ),
+  );
   const expansionCandidates = mergeRecallExpansionCandidates(recallIndexCandidateSets, rankingUris);
   const sections = buildRecallSections(input.passes, input.exactMatches, input.limit, {
     allowExactRescue: input.allowExactRescue,
@@ -130,6 +172,64 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   });
   return {...sections, expansionCandidates};
 });
+
+export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(function* (
+  config: RecallRuntimeConfig,
+  query: string,
+  limit: number,
+) {
+  return yield* selectedSemanticScores(config, query, {
+    limit: Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER),
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+});
+
+const applySelectedNativeReranker = Effect.fn('recall.applySelectedNativeReranker')(function* (
+  home: string,
+  query: string,
+  candidates: readonly RecallCandidate[],
+  cache?: RecallRerankerCache,
+) {
+  const shortlist = candidates.slice(0, NATIVE_RERANK_CANDIDATE_LIMIT);
+  if (shortlist.length === 0) return candidates;
+  const missing = shortlist.filter(candidate => !cache?.scores.has(rerankerCacheKey(candidate)));
+  if (missing.length === 0 || cache?.unavailable === true) {
+    return applyCachedRerankerScores(candidates, cache);
+  }
+  const scores = yield* rerankWithSelectedLocalModel(
+    home,
+    query,
+    missing.map(candidate => candidate.text.slice(0, NATIVE_RERANK_DOCUMENT_LIMIT)),
+  );
+  if (!scores) {
+    if (cache) cache.unavailable = true;
+    return applyCachedRerankerScores(candidates, cache);
+  }
+  const scoresByKey = cache?.scores ?? new Map<string, number>();
+  for (const [index, candidate] of missing.entries()) {
+    scoresByKey.set(rerankerCacheKey(candidate), normalizeRerankerScore(scores[index] ?? 0));
+  }
+  return applyCachedRerankerScores(candidates, {scores: scoresByKey, unavailable: false});
+});
+
+function applyCachedRerankerScores(
+  candidates: readonly RecallCandidate[],
+  cache: RecallRerankerCache | undefined,
+): readonly RecallCandidate[] {
+  if (!cache || cache.scores.size === 0) return candidates;
+  return candidates.map(candidate => {
+    const reranker = cache.scores.get(rerankerCacheKey(candidate));
+    return reranker === undefined ? candidate : {...candidate, reranker};
+  });
+}
+
+function rerankerCacheKey(candidate: RecallCandidate): string {
+  return `${candidate.uri}\u0000${candidate.text}`;
+}
+
+function normalizeRerankerScore(score: number): number {
+  if (!Number.isFinite(score)) return 0;
+  return score >= 0 && score <= 1 ? score : 1 / (1 + Math.exp(-score));
+}
 
 export function buildRecallSelectionCandidates(
   ranked: readonly RecallHit[],

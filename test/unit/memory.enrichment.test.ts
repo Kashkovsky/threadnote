@@ -1,321 +1,72 @@
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {Effect} from 'effect';
-import {AiError} from 'effect/unstable/ai';
-import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import * as aiEnrichment from '../../src/effect/ai-enrichment.js';
-import * as localAi from '../../src/effect/local-ai.js';
-import {captureConsole} from '../../src/effect/console.js';
-import {runEnrichMemories} from '../../src/memory.js';
-import * as share from '../../src/share.js';
-import type {RuntimeConfig} from '../../src/types.js';
-import * as utils from '../../src/utils.js';
+import {Effect, Layer} from 'effect';
+import {describe, expect, it} from 'vitest';
+import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
+import {runNativeMemoryEnrichment} from '../../src/effect/ai/enrichment.js';
+import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
+import {LocalModelCatalog} from '../../src/models/catalog.js';
+import {selectLocalModel} from '../../src/models/selection.js';
+import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
+import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
-vi.mock('../../src/effect/ai-enrichment.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/effect/ai-enrichment.js')>();
-  return {
-    ...actual,
-    enrichMemoryWithInstalledLocalAi: vi.fn(() => Effect.succeed(['resume jobs after stalled heartbeat'])),
-  };
-});
+const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'gemma-4-e4b-it-q4')!;
 
-vi.mock('../../src/effect/local-ai.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/effect/local-ai.js')>();
-  return {
-    ...actual,
-    readLocalAiSettings: vi.fn(() =>
-      Effect.succeed({
-        enabled: true as const,
-        host: '127.0.0.1' as const,
-        model: 'test-model',
-        modelPath: '/tmp/test-model.gguf',
-        port: 1934,
-        version: 1 as const,
-      }),
-    ),
-    runLocalAiEnable: vi.fn(() => Effect.void),
-  };
-});
-
-vi.mock('../../src/share.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/share.js')>();
-  return {...actual, writeMemoryFile: vi.fn(() => Effect.void)};
-});
-
-vi.mock('../../src/utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/utils.js')>();
-  return {...actual, openVikingCliForMode: vi.fn(() => Effect.succeed('/ov'))};
-});
-
-describe('memory enrichment migration', () => {
-  const homes: string[] = [];
-
-  beforeEach(() => {
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReset();
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReturnValue(
-      Effect.succeed(['resume jobs after stalled heartbeat']),
-    );
-    vi.mocked(localAi.readLocalAiSettings).mockClear();
-    vi.mocked(localAi.runLocalAiEnable).mockClear();
-    vi.mocked(share.writeMemoryFile).mockClear();
-    vi.mocked(utils.openVikingCliForMode).mockClear();
-  });
-
-  afterEach(async () => {
-    await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
-  });
-
-  const makeEligibleMemory = async (suffix: string) => {
-    const home = await mkdtemp(join(tmpdir(), `threadnote-memory-enrichment-${suffix}-`));
-    homes.push(home);
-    const config: RuntimeConfig = {
-      account: 'local',
-      agentContextHome: home,
-      agentId: 'threadnote',
-      host: '127.0.0.1',
-      manifestPath: join(home, 'seed-manifest.yaml'),
-      openVikingVersion: '0.4.7',
-      port: 1933,
-      user: 'me',
-    };
-    const memoryPath = join(
-      home,
-      'data',
-      'viking',
-      'local',
-      'user',
-      'me',
-      'memories',
-      'durable',
-      'projects',
-      'orion-worker',
-      'lease-renewal.md',
-    );
-    const memory = [
-      'MEMORY',
-      'kind: durable',
-      'status: active',
-      'project: orion-worker',
-      'topic: lease-renewal',
-      'source_agent_client: codex',
-      'timestamp: 2026-07-23T00:00:00.000Z',
-      '',
-      'The coordinator renews a worker lease.',
-    ].join('\n');
-    await mkdir(join(memoryPath, '..'), {recursive: true});
-    await writeFile(memoryPath, memory, 'utf8');
-    return {config, memory, memoryPath};
-  };
-
-  it('includes configured shared durable memories and leaves publication to share sync', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'threadnote-memory-enrichment-'));
-    homes.push(home);
-    const config: RuntimeConfig = {
-      account: 'local',
-      agentContextHome: home,
-      agentId: 'threadnote',
-      host: '127.0.0.1',
-      manifestPath: join(home, 'seed-manifest.yaml'),
-      openVikingVersion: '0.4.7',
-      port: 1933,
-      user: 'me',
-    };
-    const root = join(home, 'data', 'viking', 'local', 'user', 'me', 'memories');
-    const active = join(root, 'durable', 'projects', 'threadnote', 'recall.md');
-    const enriched = join(root, 'handoffs', 'active', 'threadnote', 'current.md');
-    const shared = join(root, 'shared', 'team', 'durable', 'projects', 'threadnote', 'shared.md');
-    const sharedArtifact = join(root, 'shared', 'team', 'agent-artifacts', 'codex', 'skill', 'reviewer', 'SKILL.md');
-    await Promise.all([active, enriched, shared].map(path => mkdir(join(path, '..'), {recursive: true})));
-    await mkdir(join(sharedArtifact, '..'), {recursive: true});
-    await mkdir(join(home, 'share'), {recursive: true});
-    await writeFile(
-      join(home, 'share', 'teams.json'),
-      `${JSON.stringify(
-        {
-          defaultTeam: 'team',
-          teams: {
-            team: {
-              addedAt: '2026-07-23T00:00:00.000Z',
-              gitdir: join(home, 'share', 'teams', 'team.gitdir'),
-              name: 'team',
-              remote: 'git@example.com:team/memories.git',
-              worktree: join(root, 'shared', 'team'),
-            },
+describe('native memory enrichment', () => {
+  it('uses the selected in-process generation model and validates its structured output', async () => {
+    const home = await mkdtemp('threadnote-native-enrichment-');
+    try {
+      const effect = Effect.gen(function* () {
+        const catalog = yield* LocalModelCatalog;
+        yield* selectLocalModel(home, catalog, 'generation', manifest.id);
+        return yield* runNativeMemoryEnrichment(
+          {agentContextHome: home},
+          {
+            body: 'Workers resume after a stalled heartbeat lease expires.',
+            kind: 'durable',
+            project: 'threadnote',
+            topic: 'lease-recovery',
           },
-          version: 1,
-        },
-        undefined,
-        2,
-      )}\n`,
-      'utf8',
-    );
-    const document = (extraHeader: readonly string[], body: string) =>
-      [
-        'MEMORY',
-        'kind: durable',
-        'status: active',
-        'project: threadnote',
-        'topic: recall',
-        'source_agent_client: codex',
-        'timestamp: 2026-07-23T00:00:00.000Z',
-        ...extraHeader,
-        '',
-        body,
-      ].join('\n');
-    await writeFile(active, document([], 'Deterministic recall uses a local index.'), 'utf8');
-    await writeFile(enriched, document(['keywords: paraphrase recall'], 'Already enriched.'), 'utf8');
-    await writeFile(shared, document([], 'Shared memory should gain retrieval keywords.'), 'utf8');
-    await writeFile(sharedArtifact, '# Shared skill that is not a memory\n', 'utf8');
-
-    const {output} = await runEffect(captureConsole(runEnrichMemories(config, {})));
-
-    expect(output).toContain('2 would be processed');
-    expect(output).toContain('1 already enriched');
-    expect(output).toContain('2 personal markdown file(s) scanned');
-    expect(output).toContain('1 shared team memory file(s) scanned');
-    expect(output).toContain('Would enrich viking://user/me/memories/durable/projects/threadnote/recall.md');
-    expect(output).toContain(
-      'Would enrich viking://user/me/memories/shared/team/durable/projects/threadnote/shared.md',
-    );
-    expect(output).not.toContain('SKILL.md');
-
-    vi.mocked(share.writeMemoryFile).mockClear();
-    const applied = await runEffect(captureConsole(runEnrichMemories(config, {apply: true})));
-    const sharedUri = 'viking://user/me/memories/shared/team/durable/projects/threadnote/shared.md';
-    expect(share.writeMemoryFile).toHaveBeenCalledWith(
-      config,
-      '/ov',
-      sharedUri,
-      expect.stringContaining('keywords: resume jobs after stalled heartbeat'),
-      'replace',
-      false,
-      {quiet: true},
-    );
-    expect(applied.output).toContain('Run `threadnote share sync --team team` to publish 1 enriched shared memory.');
-
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReturnValue(
-      Effect.succeed(['sk-abcdefghijklmnopqr1234']),
-    );
-    vi.mocked(share.writeMemoryFile).mockClear();
-    await expect(runEffect(runEnrichMemories(config, {apply: true}))).rejects.toThrow(
-      '1 memory enrichment operation(s) failed',
-    );
-    expect(vi.mocked(share.writeMemoryFile).mock.calls.some(call => call[2] === sharedUri)).toBe(false);
-  });
-
-  it('leaves a memory untouched when it changes during model generation', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'threadnote-memory-enrichment-race-'));
-    homes.push(home);
-    const config: RuntimeConfig = {
-      account: 'local',
-      agentContextHome: home,
-      agentId: 'threadnote',
-      host: '127.0.0.1',
-      manifestPath: join(home, 'seed-manifest.yaml'),
-      openVikingVersion: '0.4.7',
-      port: 1933,
-      user: 'me',
-    };
-    const memoryPath = join(
-      home,
-      'data',
-      'viking',
-      'local',
-      'user',
-      'me',
-      'memories',
-      'durable',
-      'projects',
-      'orion-worker',
-      'lease-renewal.md',
-    );
-    await mkdir(join(memoryPath, '..'), {recursive: true});
-    const memory = (body: string) =>
-      [
-        'MEMORY',
-        'kind: durable',
-        'status: active',
-        'project: orion-worker',
-        'topic: lease-renewal',
-        'source_agent_client: codex',
-        'timestamp: 2026-07-23T00:00:00.000Z',
-        '',
-        body,
-      ].join('\n');
-    await writeFile(memoryPath, memory('The coordinator renews a worker lease.'), 'utf8');
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockImplementation(() =>
-      Effect.promise(async () => {
-        await writeFile(memoryPath, memory('A concurrent writer changed the lease policy.'), 'utf8');
-        return ['resume jobs after stalled heartbeat'];
-      }),
-    );
-
-    await expect(runEffect(runEnrichMemories(config, {apply: true}))).rejects.toThrow(
-      '1 memory enrichment operation(s) failed',
-    );
-
-    expect(await readFile(memoryPath, 'utf8')).toContain('A concurrent writer changed the lease policy.');
-    expect(share.writeMemoryFile).not.toHaveBeenCalled();
-  });
-
-  it('leaves a memory unchanged when local AI cannot generate useful keywords', async () => {
-    const {config, memory, memoryPath} = await makeEligibleMemory('empty');
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReturnValue(
-      Effect.fail(
-        new aiEnrichment.AiMemoryEnrichmentFailed({
-          cause: AiError.make({
-            method: 'generateObject',
-            module: 'LanguageModel',
-            reason: new AiError.StructuredOutputError({
-              description: 'The model returned no structured search phrases.',
-              responseText: '',
-            }),
-          }),
-          message: 'Effect AI memory enrichment failed.',
-        }),
-      ),
-    );
-
-    const {output} = await runEffect(captureConsole(runEnrichMemories(config, {apply: true})));
-
-    expect(output).toContain('No useful keywords generated; left unchanged.');
-    expect(output).toContain('Memory enrichment summary: 0 enriched; 1 unchanged; 0 failed; 1 attempted.');
-    expect(await readFile(memoryPath, 'utf8')).toBe(memory);
-    expect(share.writeMemoryFile).not.toHaveBeenCalled();
-
-    vi.mocked(aiEnrichment.enrichMemoryWithInstalledLocalAi).mockReturnValue(
-      Effect.fail(
-        new aiEnrichment.AiMemoryEnrichmentFailed({
-          cause: new Error('The local model connection failed.'),
-          message: 'Effect AI memory enrichment failed.',
-        }),
-      ),
-    );
-
-    await expect(runEffect(runEnrichMemories(config, {apply: true}))).rejects.toThrow(
-      '1 memory enrichment operation(s) failed',
-    );
-  });
-
-  it('enables an existing disabled installation without reinstalling its model', async () => {
-    const {config} = await makeEligibleMemory('disabled');
-    vi.mocked(localAi.readLocalAiSettings).mockReturnValue(
-      Effect.succeed({
-        enabled: false,
-        host: '127.0.0.1',
-        model: 'test-model',
-        modelPath: '/external/test-model.gguf',
-        port: 1934,
-        version: 1,
-      }),
-    );
-
-    const {output} = await runEffect(captureConsole(runEnrichMemories(config, {apply: true, installLocalAi: true})));
-
-    expect(output).toContain('Enabling the existing installation before enrichment.');
-    expect(localAi.runLocalAiEnable).toHaveBeenCalledWith(config, {});
-    expect(output).toContain('Memory enrichment summary: 1 enriched; 0 unchanged; 0 failed; 1 attempted.');
+        );
+      }).pipe(Effect.provide(fakeRuntimeLayer), Effect.provide(fakeStoreLayer(home)));
+      await expect(runEffect(effect)).resolves.toEqual([
+        'resume jobs after heartbeat timeout',
+        'recover worker after expired lease',
+      ]);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
   });
 });
+
+const fakeRuntimeLayer = Layer.succeed(
+  LocalModelRuntime,
+  LocalModelRuntime.of({
+    embedMany: () => Effect.die(new Error('Unexpected embedding')),
+    generate: () =>
+      Effect.succeed({
+        searchPhrases: ['resume jobs after heartbeat timeout', 'recover worker after expired lease', 'lease recovery'],
+      }),
+    rerank: () => Effect.die(new Error('Unexpected reranking')),
+  }),
+);
+
+function fakeStoreLayer(home: string) {
+  const installation = {
+    bytes: manifest.size,
+    installed: true,
+    modelId: manifest.id,
+    partialBytes: 0,
+    path: `${home}/models/gemma.gguf`,
+    verified: true,
+  };
+  return Layer.succeed(
+    LocalModelStore,
+    LocalModelStore.of({
+      install: () => Effect.die(new Error('Unexpected install')),
+      path: () => installation.path,
+      remove: () => Effect.succeed(false),
+      status: () => Effect.succeed(installation),
+      verify: () => Effect.succeed(installation),
+    } satisfies LocalModelStoreShape),
+  );
+}

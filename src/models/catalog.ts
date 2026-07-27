@@ -1,0 +1,170 @@
+import {Context, Effect, Layer, Schema} from 'effect';
+import {ModelManifestInvalid} from '../effect/ai/errors.js';
+
+export const LOCAL_MODEL_MANIFEST_VERSION = 1 as const;
+export const LOCAL_MODEL_ROLES = ['embedding', 'generation', 'reranker'] as const;
+export type LocalModelRole = (typeof LOCAL_MODEL_ROLES)[number];
+
+const LocalModelManifestSchema = Schema.Struct({
+  architecture: Schema.String,
+  contextLimit: Schema.Int,
+  dimensions: Schema.optionalKey(Schema.Int),
+  file: Schema.String,
+  id: Schema.String,
+  license: Schema.String,
+  minimumRamBytes: Schema.Int,
+  normalization: Schema.optionalKey(Schema.Literals(['l2', 'none'])),
+  promptPrefixes: Schema.optionalKey(
+    Schema.Struct({
+      document: Schema.optionalKey(Schema.String),
+      query: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  quantization: Schema.String,
+  repository: Schema.String,
+  revision: Schema.String,
+  role: Schema.Literals(LOCAL_MODEL_ROLES),
+  runtime: Schema.Struct({
+    nodeLlamaCpp: Schema.String,
+  }),
+  sha256: Schema.String,
+  size: Schema.Int,
+  task: Schema.optionalKey(Schema.String),
+  version: Schema.Literal(LOCAL_MODEL_MANIFEST_VERSION),
+});
+
+export type LocalModelManifest = typeof LocalModelManifestSchema.Type;
+
+export interface LocalModelCatalogShape {
+  readonly get: (modelId: string) => Effect.Effect<LocalModelManifest, ModelManifestInvalid>;
+  readonly list: (role?: LocalModelRole) => Effect.Effect<readonly LocalModelManifest[]>;
+  readonly selected: (role: LocalModelRole) => Effect.Effect<LocalModelManifest, ModelManifestInvalid>;
+}
+
+export class LocalModelCatalog extends Context.Service<LocalModelCatalog, LocalModelCatalogShape>()(
+  'threadnote/models/LocalModelCatalog',
+) {
+  static layer(manifests: readonly unknown[], selected: Readonly<Partial<Record<LocalModelRole, string>>> = {}) {
+    return Layer.effect(LocalModelCatalog, makeLocalModelCatalog(manifests, selected));
+  }
+}
+
+export function parseLocalModelManifest(value: unknown): LocalModelManifest {
+  const manifest = Schema.decodeUnknownSync(LocalModelManifestSchema)(value);
+  const problem = validateManifest(manifest);
+  if (problem) {
+    throw new ModelManifestInvalid({
+      message: problem,
+      modelId: manifest.id,
+    });
+  }
+  return manifest;
+}
+
+function makeLocalModelCatalog(
+  values: readonly unknown[],
+  selected: Readonly<Partial<Record<LocalModelRole, string>>>,
+) {
+  return Effect.try({
+    try: () => {
+      const manifests = values.map(parseLocalModelManifest);
+      const byId = new Map<string, LocalModelManifest>();
+      for (const manifest of manifests) {
+        if (byId.has(manifest.id)) {
+          throw new ModelManifestInvalid({
+            message: `Duplicate local model ID: ${manifest.id}.`,
+            modelId: manifest.id,
+          });
+        }
+        byId.set(manifest.id, manifest);
+      }
+      for (const [role, id] of Object.entries(selected)) {
+        const manifest = id ? byId.get(id) : undefined;
+        if (!manifest || manifest.role !== role) {
+          throw new ModelManifestInvalid({
+            message: `Selected ${role} model ${id ?? '(missing)'} does not exist with that role.`,
+            modelId: id ?? '',
+          });
+        }
+      }
+      return LocalModelCatalog.of({
+        get: modelId => {
+          const manifest = byId.get(modelId);
+          return manifest
+            ? Effect.succeed(manifest)
+            : Effect.fail(
+                new ModelManifestInvalid({
+                  message: `Unknown local model: ${modelId}.`,
+                  modelId,
+                }),
+              );
+        },
+        list: role =>
+          Effect.succeed(
+            manifests
+              .filter(manifest => role === undefined || manifest.role === role)
+              .sort((left, right) => left.id.localeCompare(right.id)),
+          ),
+        selected: role => {
+          const id = selected[role];
+          const manifest = id ? byId.get(id) : undefined;
+          return manifest
+            ? Effect.succeed(manifest)
+            : Effect.fail(
+                new ModelManifestInvalid({
+                  message: `No default ${role} model has been selected by the measured model bake-off.`,
+                  modelId: id ?? '',
+                }),
+              );
+        },
+      });
+    },
+    catch: cause =>
+      cause instanceof ModelManifestInvalid
+        ? cause
+        : new ModelManifestInvalid({
+            message: cause instanceof Error ? cause.message : String(cause),
+            modelId: '',
+          }),
+  });
+}
+
+function validateManifest(manifest: LocalModelManifest): string | undefined {
+  if (!/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/.test(manifest.id)) {
+    return `Invalid local model ID: ${manifest.id}.`;
+  }
+  if (!/^[0-9a-f]{64}$/.test(manifest.sha256)) {
+    return `Model ${manifest.id} must have a lowercase 64-character SHA-256.`;
+  }
+  if (!/^[0-9a-f]{40}$/.test(manifest.revision)) {
+    return `Model ${manifest.id} must pin a 40-character immutable revision.`;
+  }
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(manifest.repository)) {
+    return `Model ${manifest.id} must declare a safe owner/repository identifier.`;
+  }
+  const fileSegments = manifest.file.split('/');
+  if (
+    fileSegments.length === 0 ||
+    fileSegments.some(segment => !segment || segment === '.' || segment === '..' || /[\\?#]/.test(segment)) ||
+    !manifest.file.toLowerCase().endsWith('.gguf')
+  ) {
+    return `Model ${manifest.id} must declare a safe relative GGUF filename.`;
+  }
+  if (manifest.size <= 0 || manifest.minimumRamBytes <= 0 || manifest.contextLimit <= 0) {
+    return `Model ${manifest.id} has invalid size, RAM, or context limits.`;
+  }
+  if (manifest.role === 'embedding') {
+    if (!manifest.dimensions || manifest.dimensions <= 0) {
+      return `Embedding model ${manifest.id} must declare positive dimensions.`;
+    }
+    if (manifest.normalization !== 'l2') {
+      return `Embedding model ${manifest.id} must declare l2 normalization for the 4.0 vector index.`;
+    }
+    if (manifest.promptPrefixes?.query === undefined || manifest.promptPrefixes.document === undefined) {
+      return `Embedding model ${manifest.id} must declare query and document prefixes, including explicit empty prefixes.`;
+    }
+  } else if (manifest.dimensions !== undefined || manifest.normalization !== undefined) {
+    return `Non-embedding model ${manifest.id} cannot declare embedding dimensions or normalization.`;
+  }
+  return undefined;
+}

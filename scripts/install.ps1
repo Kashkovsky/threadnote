@@ -4,15 +4,11 @@ param(
   [switch]$Force,
   [switch]$NoStart,
   [switch]$WithHooks,
-  [string]$PackageManager,
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$ThreadnoteArgs
 )
 
 $ErrorActionPreference = 'Stop'
-if ($PackageManager -and $PackageManager -notin @('uv', 'pipx', 'pip')) {
-  throw "Unsupported package manager '$PackageManager'. Expected uv, pipx, or pip."
-}
 $package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@latest' }
 $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   $env:THREADNOTE_NPM_REGISTRY
@@ -38,9 +34,20 @@ if (-not $npm) {
 $loggedPackage = Format-InstallSourceForLog $package
 $loggedRegistry = Format-InstallSourceForLog $registry
 Write-Host "Installing $loggedPackage with npm from $loggedRegistry"
-& $npm.Source install --global $package "--registry=$registry"
-if ($LASTEXITCODE -ne 0) {
-  throw "npm install failed with exit code $LASTEXITCODE."
+$previousNodeLlamaCppPostinstall = $env:NODE_LLAMA_CPP_POSTINSTALL
+try {
+  $env:NODE_LLAMA_CPP_POSTINSTALL = 'skip'
+  & $npm.Source install --global $package "--registry=$registry"
+  $installExitCode = $LASTEXITCODE
+} finally {
+  if ($null -eq $previousNodeLlamaCppPostinstall) {
+    Remove-Item Env:NODE_LLAMA_CPP_POSTINSTALL -ErrorAction SilentlyContinue
+  } else {
+    $env:NODE_LLAMA_CPP_POSTINSTALL = $previousNodeLlamaCppPostinstall
+  }
+}
+if ($installExitCode -ne 0) {
+  throw "npm install failed with exit code $installExitCode."
 }
 
 $prefix = (& $npm.Source prefix --global).Trim()
@@ -53,36 +60,11 @@ if (-not $threadnotePath -or -not (Test-Path -LiteralPath $threadnotePath)) {
   $threadnotePath = $threadnote.Source
 }
 
-$needsUv = -not $PackageManager -or $PackageManager -eq 'uv'
-if ($needsUv -and -not (Get-Command uv.exe -ErrorAction SilentlyContinue) -and -not (Get-Command uv -ErrorAction SilentlyContinue)) {
-  Write-Host 'Installing uv for the isolated OpenViking environment'
-  $powerShellModulePath = Join-Path $PSHOME 'Modules'
-  if (-not (($env:PSModulePath -split ';') -contains $powerShellModulePath)) {
-    $env:PSModulePath = "$powerShellModulePath;$env:PSModulePath"
-  }
-  $securityModule = Join-Path $powerShellModulePath 'Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
-  if (Test-Path -LiteralPath $securityModule) {
-    Import-Module $securityModule -Force -ErrorAction Stop
-  }
-  $previousProcessExecutionPolicy = Get-ExecutionPolicy -Scope Process
-  try {
-    Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-  } finally {
-    Set-ExecutionPolicy -ExecutionPolicy $previousProcessExecutionPolicy -Scope Process -Force
-  }
-  $uvBin = Join-Path $HOME '.local\bin'
-  if (Test-Path -LiteralPath $uvBin) {
-    $env:Path = "$uvBin;$env:Path"
-  }
-}
-
 $installArgs = @('install')
 if ($DryRun) { $installArgs += '--dry-run' }
 if ($Force) { $installArgs += '--force' }
 if ($NoStart) { $installArgs += '--no-start' }
 if ($WithHooks) { $installArgs += '--with-hooks' }
-if ($PackageManager) { $installArgs += @('--package-manager', $PackageManager) }
 if ($ThreadnoteArgs) { $installArgs += $ThreadnoteArgs }
 
 Write-Host 'Running threadnote install'

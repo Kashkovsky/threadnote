@@ -1,0 +1,65 @@
+{
+  "createdAt": "2026-07-27T15:23:00.000Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "43773b70c2c1bc01b68917365523a0a5257d00fc",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "node": "v22.22.0",
+    "operatingSystem": "darwin 27.0.0",
+    "packageManager": "npm/10.9.4",
+    "runner": "scripts/evaluate-recall.ts",
+    "runnerVersion": "legacy-v1"
+  },
+  "fixture": {
+    "documents": 10000,
+    "qualityFixture": "test/evaluation/fixtures/recall-v1/fixture.json",
+    "warmups": 5
+  },
+  "quality": {
+    "averageContextTokens": 23.25,
+    "meanNdcgAt5": 1,
+    "meanReciprocalRank": 1,
+    "noAnswerPrecision": 1,
+    "noAnswerRecall": 1,
+    "recallAt5": 1,
+    "requiredReasonsPresent": true,
+    "staleHitRate": 0
+  },
+  "qualityQueryLatencyMilliseconds": {
+    "p50": 1.204958,
+    "p95": 3.966917
+  },
+  "scenarios": {
+    "coldDecode": {
+      "p50Milliseconds": 63.029083,
+      "p95LimitMilliseconds": 1000,
+      "p95Milliseconds": 71.1705,
+      "samples": 5
+    },
+    "hotQuery": {
+      "p50Milliseconds": 9.222792,
+      "p95LimitMilliseconds": 150,
+      "p95Milliseconds": 10.215792,
+      "samples": 25
+    },
+    "incrementalUpdate": {
+      "p50Milliseconds": 860.14925,
+      "p95LimitMilliseconds": 2000,
+      "p95Milliseconds": 903.028125,
+      "samples": 40
+    },
+    "sourceValidation": {
+      "p50Milliseconds": 840.160041,
+      "p95LimitMilliseconds": 2000,
+      "p95Milliseconds": 841.585083,
+      "samples": 3
+    }
+  },
+  "source": {
+    "openVikingVersion": "0.4.10",
+    "rankerVersion": "hybrid-v2",
+    "threadnoteVersion": "3.0.3"
+  },
+  "version": 1
+}

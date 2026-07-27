@@ -1,7 +1,6 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
-import {OPENVIKING_MCP_NAME} from './constants.js';
+import {THREADNOTE_MCP_NAME} from './constants.js';
 import {maybeRunEffect} from './effect/command.js';
-import {applicationError} from './effect/errors.js';
 import {SystemInfo} from './effect/system.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './mcp_toolset.js';
 import type {AgentClient, ClaudeMcpScope, JsonObject, McpInstallOptions, RuntimeConfig} from './types.js';
@@ -16,57 +15,27 @@ import {
   isJsonObject,
   parseJsonConfigObject,
   readFileIfExists,
-  readHttpStatus,
   removePathIfExists,
   toolRoot,
 } from './utils.js';
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
   return Effect.gen(function* () {
-    const name = options.name ?? OPENVIKING_MCP_NAME;
-    const url = options.url ?? `http://${config.host}:${config.port}/mcp`;
+    const name = options.name ?? THREADNOTE_MCP_NAME;
     const apply = options.apply === true;
-    const nativeHttp = options.nativeHttp === true;
     const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
-
-    if (nativeHttp) {
-      const mcpStatus = yield* readHttpStatus(url, 1200);
-      const unavailable = mcpStatus === undefined || mcpStatus === 404;
-      if (unavailable && apply) {
-        return yield* Effect.fail(
-          applicationError(
-            'install native MCP configuration',
-            new Error(
-              `OpenViking native MCP endpoint is not available at ${url}. ` +
-                'Use the default stdio adapter, or install an OpenViking build that exposes /mcp.',
-            ),
-          ),
-        );
-      }
-      if (unavailable) {
-        yield* Console.log(
-          `WARN OpenViking native MCP endpoint is not available at ${url}; default mcp-install uses stdio.`,
-        );
-      }
-    }
 
     if (agent === 'cursor') {
       yield* runCursorMcpInstall(config, name, {
         apply,
-        bearerTokenEnvVar: options.bearerTokenEnvVar,
-        nativeHttp,
         toolset,
-        url,
       });
       return;
     }
     if (agent === 'copilot') {
       yield* runCopilotMcpInstall(config, name, {
         apply,
-        bearerTokenEnvVar: options.bearerTokenEnvVar,
-        nativeHttp,
         toolset,
-        url,
       });
       return;
     }
@@ -74,11 +43,8 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
     const agentExecutable = apply ? yield* requiredMcpAgentExecutable(agent) : agent;
 
     const command = yield* buildMcpInstallCommand(config, agent, agentExecutable, name, {
-      bearerTokenEnvVar: options.bearerTokenEnvVar,
-      nativeHttp,
       scope: options.scope,
       toolset,
-      url,
     });
     const removeCommand = yield* buildMcpRemoveCommand(agent, agentExecutable, name);
 
@@ -89,7 +55,7 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
       }
       yield* Console.log(formatShellCommand(removeCommand.executable, removeCommand.args));
       yield* Console.log(formatShellCommand(command.executable, command.args));
-      yield* printMcpSnippet(config, agent, name, {nativeHttp, scope: options.scope, toolset, url});
+      yield* printMcpSnippet(config, agent, name, {scope: options.scope, toolset});
       return;
     }
 
@@ -106,20 +72,14 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
   name: string,
   options: {
     readonly apply: boolean;
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const path = yield* cursorMcpConfigPath();
   const serverConfig = yield* buildCursorMcpServerConfig(config, {
-    bearerTokenEnvVar: options.bearerTokenEnvVar,
-    nativeHttp: options.nativeHttp,
     toolset: options.toolset,
-    url: options.url,
   });
   const currentContent = yield* readFileIfExists(path);
   const nextContent = renderCursorMcpConfig(path, currentContent, name, serverConfig);
@@ -127,10 +87,7 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
   if (!options.apply) {
     yield* Console.log('Dry run. Re-run with --apply to modify Cursor MCP config.');
     yield* printCursorMcpSnippet(config, name, {
-      bearerTokenEnvVar: options.bearerTokenEnvVar,
-      nativeHttp: options.nativeHttp,
       toolset: options.toolset,
-      url: options.url,
     });
     return;
   }
@@ -151,20 +108,14 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   name: string,
   options: {
     readonly apply: boolean;
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const path = yield* copilotMcpConfigPath();
   const serverConfig = yield* buildCopilotMcpServerConfig(config, {
-    bearerTokenEnvVar: options.bearerTokenEnvVar,
-    nativeHttp: options.nativeHttp,
     toolset: options.toolset,
-    url: options.url,
   });
   const currentContent = yield* readFileIfExists(path);
   const nextContent = renderCopilotMcpConfig(path, currentContent, name, serverConfig);
@@ -172,10 +123,7 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   if (!options.apply) {
     yield* Console.log('Dry run. Re-run with --apply to modify GitHub Copilot MCP config.');
     yield* printCopilotMcpSnippet(config, name, {
-      bearerTokenEnvVar: options.bearerTokenEnvVar,
-      nativeHttp: options.nativeHttp,
       toolset: options.toolset,
-      url: options.url,
     });
     return;
   }
@@ -201,15 +149,15 @@ export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (value:
   }
   for (const client of clients) {
     if (client === 'cursor') {
-      yield* removeCursorMcpConfig(OPENVIKING_MCP_NAME, dryRun);
+      yield* removeCursorMcpConfig(THREADNOTE_MCP_NAME, dryRun);
       continue;
     }
     if (client === 'copilot') {
-      yield* removeCopilotMcpConfig(OPENVIKING_MCP_NAME, dryRun);
+      yield* removeCopilotMcpConfig(THREADNOTE_MCP_NAME, dryRun);
       continue;
     }
     const executable = yield* requiredMcpAgentExecutable(client);
-    const command = yield* buildMcpRemoveCommand(client, executable, OPENVIKING_MCP_NAME);
+    const command = yield* buildMcpRemoveCommand(client, executable, THREADNOTE_MCP_NAME);
     yield* maybeRunEffect(dryRun, command.executable, command.args, {
       allowFailure: true,
       cwd: command.cwd,
@@ -220,22 +168,22 @@ export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (value:
 export const removeMcpSnippets = Effect.fn('mcp.removeSnippets')(function* (config: RuntimeConfig, dryRun: boolean) {
   const path = yield* Path.Path;
   yield* removePathIfExists(
-    path.join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.codex.toml`),
+    path.join(config.agentContextHome, 'mcp', `${THREADNOTE_MCP_NAME}.codex.toml`),
     'MCP snippet',
     dryRun,
   );
   yield* removePathIfExists(
-    path.join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.claude.txt`),
+    path.join(config.agentContextHome, 'mcp', `${THREADNOTE_MCP_NAME}.claude.txt`),
     'MCP snippet',
     dryRun,
   );
   yield* removePathIfExists(
-    path.join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.cursor.json`),
+    path.join(config.agentContextHome, 'mcp', `${THREADNOTE_MCP_NAME}.cursor.json`),
     'MCP snippet',
     dryRun,
   );
   yield* removePathIfExists(
-    path.join(config.agentContextHome, 'mcp', `${OPENVIKING_MCP_NAME}.copilot.json`),
+    path.join(config.agentContextHome, 'mcp', `${THREADNOTE_MCP_NAME}.copilot.json`),
     'MCP snippet',
     dryRun,
   );
@@ -247,11 +195,8 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
   agentExecutable: string,
   name: string,
   options: {
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly scope?: ClaudeMcpScope;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   if (agent === 'cursor') {
@@ -262,45 +207,21 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
       new Error('GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.'),
     );
   }
-  const system = yield* SystemInfo;
   const claudeCwd = yield* getInvocationCwd();
   const claudeScope = options.scope ?? 'user';
-  if (!options.nativeHttp) {
-    const command = yield* mcpAdapterCommand();
-    const env = mcpEnvironment(config, options.toolset);
-    if (agent === 'codex') {
-      return {
-        executable: agentExecutable,
-        args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', ...command],
-      };
-    }
+  const command = yield* mcpAdapterCommand();
+  const env = mcpEnvironment(config, options.toolset);
+  if (agent === 'codex') {
     return {
       executable: agentExecutable,
-      args: ['mcp', 'add', '--scope', claudeScope, name, ...env.flatMap(value => ['--env', value]), '--', ...command],
-      cwd: claudeCwd,
+      args: ['mcp', 'add', ...env.flatMap(value => ['--env', value]), name, '--', ...command],
     };
   }
-
-  if (agent === 'codex') {
-    const args = ['mcp', 'add', name, '--url', options.url];
-    if (options.bearerTokenEnvVar) {
-      args.push('--bearer-token-env-var', options.bearerTokenEnvVar);
-    }
-    return {executable: agentExecutable, args};
-  }
-
-  const args = ['mcp', 'add', '--scope', claudeScope, '--transport', 'http', name, options.url];
-  if (options.bearerTokenEnvVar) {
-    const token = system.environment()[options.bearerTokenEnvVar];
-    if (token) {
-      args.push('--header', `Authorization: Bearer ${token}`);
-    } else {
-      yield* Console.log(
-        `WARN ${options.bearerTokenEnvVar} is not set; installing Claude MCP without an Authorization header.`,
-      );
-    }
-  }
-  return {executable: agentExecutable, args, cwd: claudeCwd};
+  return {
+    executable: agentExecutable,
+    args: ['mcp', 'add', '--scope', claudeScope, name, ...env.flatMap(value => ['--env', value]), '--', ...command],
+    cwd: claudeCwd,
+  };
 });
 
 const mcpAdapterCommand = Effect.fn('mcp.adapterCommand')(function* () {
@@ -374,19 +295,9 @@ function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset): JsonO
 const buildCursorMcpServerConfig = Effect.fn('mcp.buildCursorServerConfig')(function* (
   config: RuntimeConfig,
   options: {
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
-  if (options.nativeHttp) {
-    const server: Record<string, unknown> = {url: options.url};
-    if (options.bearerTokenEnvVar) {
-      server.headers = {Authorization: `Bearer \${env:${options.bearerTokenEnvVar}}`};
-    }
-    return server;
-  }
   const command = yield* mcpAdapterCommand();
   return {
     args: command.slice(1),
@@ -398,19 +309,9 @@ const buildCursorMcpServerConfig = Effect.fn('mcp.buildCursorServerConfig')(func
 const buildCopilotMcpServerConfig = Effect.fn('mcp.buildCopilotServerConfig')(function* (
   config: RuntimeConfig,
   options: {
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
-  if (options.nativeHttp) {
-    const server: Record<string, unknown> = {type: 'http', url: options.url};
-    if (options.bearerTokenEnvVar) {
-      server.headers = {Authorization: `Bearer \${env:${options.bearerTokenEnvVar}}`};
-    }
-    return server;
-  }
   const command = yield* mcpAdapterCommand();
   return {
     args: command.slice(1),
@@ -529,25 +430,19 @@ const printMcpSnippet = Effect.fn('mcp.printSnippet')(function* (
   agent: AgentClient,
   name: string,
   options: {
-    readonly nativeHttp: boolean;
     readonly scope?: ClaudeMcpScope;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   if (agent === 'cursor') {
     yield* printCursorMcpSnippet(config, name, {
-      nativeHttp: options.nativeHttp,
       toolset: options.toolset,
-      url: options.url,
     });
     return;
   }
   if (agent === 'copilot') {
     yield* printCopilotMcpSnippet(config, name, {
-      nativeHttp: options.nativeHttp,
       toolset: options.toolset,
-      url: options.url,
     });
     return;
   }
@@ -558,10 +453,8 @@ const printMcpSnippet = Effect.fn('mcp.printSnippet')(function* (
     `${name}.${agent}.${agent === 'codex' ? 'toml' : 'txt'}`,
   );
   const command = yield* buildMcpInstallCommand(config, agent, agent, name, {
-    nativeHttp: options.nativeHttp,
     scope: options.scope,
     toolset: options.toolset,
-    url: options.url,
   });
   const snippet = `${formatShellCommand(command.executable, command.args)}\n`;
   yield* Console.log(`\nSnippet (${snippetPath}):\n${snippet}`);
@@ -571,10 +464,7 @@ const printCursorMcpSnippet = Effect.fn('mcp.printCursorSnippet')(function* (
   config: RuntimeConfig,
   name: string,
   options: {
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   const path = yield* Path.Path;
@@ -587,10 +477,7 @@ const printCopilotMcpSnippet = Effect.fn('mcp.printCopilotSnippet')(function* (
   config: RuntimeConfig,
   name: string,
   options: {
-    readonly bearerTokenEnvVar?: string;
-    readonly nativeHttp: boolean;
     readonly toolset: McpToolset;
-    readonly url: string;
   },
 ) {
   const path = yield* Path.Path;

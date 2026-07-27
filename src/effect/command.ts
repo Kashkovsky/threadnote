@@ -1,4 +1,4 @@
-import {Console, Context, Effect, Layer, Path, Schema, Sink, Stdio, Stream} from 'effect';
+import {Console, Context, Effect, Layer, Schema, Sink, Stdio, Stream} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import {command as commandText, info, warning} from '../cli_ui.js';
@@ -78,12 +78,11 @@ export class CommandExecutor extends Context.Service<
     CommandExecutor,
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner;
-      const pathService = yield* Path.Path;
       const stdio = yield* Stdio.Stdio;
       const system = yield* SystemInfo;
       return CommandExecutor.of({
         execute: (executable, args, options) =>
-          executeCommand(executable, args, options, system, pathService).pipe(
+          executeCommand(executable, args, options, system).pipe(
             Effect.provideService(ChildProcessSpawner, childProcessSpawner),
           ),
         executeStreaming: (executable, args, options) =>
@@ -141,7 +140,6 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
   args: readonly string[],
   options: CommandOptions = {},
   system: SystemInfoShape,
-  pathService: Path.Path,
 ) {
   const environment = system.environment();
   const maxOutputBytes = options.maxOutputBytes ?? commandMaxOutputBytes(environment);
@@ -170,7 +168,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
         cwd: options.cwd,
-        env: commandEnvironment(executable, options.env, environment, pathService),
+        env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: 'ignore',
@@ -388,11 +386,6 @@ export function isGitExecutable(executable: string): boolean {
   return /^(?:git)(?:\.(?:bat|cmd|com|exe))?$/i.test(name);
 }
 
-export function isOpenVikingCliExecutable(executable: string): boolean {
-  const name = executable.replaceAll('\\', '/').split('/').at(-1) ?? '';
-  return /^(?:openviking|ov)(?:\.(?:bat|cmd|com|exe))?$/i.test(name);
-}
-
 export const windowsTaskkillExecutable = Effect.fn('CommandExecutor.windowsTaskkillExecutable')(function* () {
   const environment = (yield* SystemInfo).environment();
   return `${(environment.SystemRoot ?? 'C:\\Windows').replace(/[\\/]+$/, '')}\\System32\\taskkill.exe`;
@@ -421,23 +414,8 @@ export function commandEnvironment(
   executable: string,
   env: NodeJS.ProcessEnv | undefined,
   systemEnvironment: NodeJS.ProcessEnv,
-  pathService: Path.Path,
 ): NodeJS.ProcessEnv | undefined {
-  const selected = isGitExecutable(executable) ? withoutGitEnvironment(env ?? systemEnvironment) : env;
-  if (!isOpenVikingCliExecutable(executable)) {
-    return selected;
-  }
-  const openVikingEnvironment = selected ?? systemEnvironment;
-  const threadnoteHome = openVikingEnvironment.THREADNOTE_HOME;
-  if (!threadnoteHome) {
-    return selected;
-  }
-  return {
-    ...openVikingEnvironment,
-    OPENVIKING_CLI_CONFIG_FILE:
-      openVikingEnvironment.OPENVIKING_CLI_CONFIG_FILE ?? pathService.join(threadnoteHome, 'ovcli.conf'),
-    OPENVIKING_CONFIG_FILE: openVikingEnvironment.OPENVIKING_CONFIG_FILE ?? pathService.join(threadnoteHome, 'ov.conf'),
-  };
+  return isGitExecutable(executable) ? withoutGitEnvironment(env ?? systemEnvironment) : env;
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {
