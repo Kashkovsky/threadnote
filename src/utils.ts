@@ -1678,7 +1678,8 @@ function containmentRelations(
  * Build the exact-term grep scopes for a recall. Intent (from
  * `exactRecallScopeIntents`) selects which scope types to search; a resolved
  * project narrows the project-specific scopes (durable, handoffs, incidents) to
- * that project, while preferences and shared stay global. Seeded resources
+ * that project, while preferences, shared memories, and explicitly imported
+ * external sources stay global. Seeded resources
  * (`threadnote://resources/repos`) are intentionally NOT exact-grepped for
  * intent-classified queries — those are covered by the unscoped base semantic
  * pass plus the project-scoped seeded pass, and grepping every repo per term is
@@ -1710,9 +1711,10 @@ export function exactMemoryScopeUris(params: {
     if (intents.has('incidents')) {
       scopes.push(incidents);
     }
-    // Shared team memories are cross-cutting (durable knowledge published by
-    // teammates), so always include them alongside the intent-specific scopes.
+    // Shared team memories and explicitly imported external sources are
+    // cross-cutting, so always include them alongside intent-specific scopes.
     scopes.push(`${userBase}/shared`);
+    scopes.push('threadnote://resources/external');
     if (includeArchived) {
       if (intents.has('durable')) {
         scopes.push(`${userBase}/durable/archived`);
@@ -1734,6 +1736,7 @@ export function exactMemoryScopeUris(params: {
     `${userBase}/shared`,
     agentMemoriesUri,
     projectResourceUri ?? 'threadnote://resources/repos',
+    'threadnote://resources/external',
   ];
   return includeArchived
     ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]

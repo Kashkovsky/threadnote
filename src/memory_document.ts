@@ -5,6 +5,8 @@ export type MemoryAuthority = 'agent_generated' | 'canonical_repo' | 'external' 
 
 export type MemoryTrust = 'approved' | 'inferred' | 'untrusted';
 
+export type MemoryVisibility = 'external' | 'personal' | 'shared';
+
 export type MemoryRelationType = 'depends_on' | 'evidence_for' | 'references' | 'related_to' | 'supersedes';
 
 export interface MemoryRelation {
@@ -16,14 +18,17 @@ export interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly authority?: MemoryAuthority;
   readonly candidateId?: string;
+  readonly createdAt?: string;
   readonly evidence?: readonly string[];
   readonly kind: MemoryKind;
   readonly keywords?: readonly string[];
   readonly lastReviewed?: string;
+  readonly memoryId?: string;
   readonly project?: string;
   readonly references?: readonly string[];
   readonly relations?: readonly MemoryRelation[];
   readonly schemaVersion?: number;
+  readonly sourceHash?: string;
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceObservedAt?: string;
@@ -33,8 +38,10 @@ export interface MemoryMetadata {
   readonly timestamp: string;
   readonly topic?: string;
   readonly trust?: MemoryTrust;
+  readonly updatedAt?: string;
   readonly validFrom?: string;
   readonly validTo?: string;
+  readonly visibility?: MemoryVisibility;
 }
 
 export interface MemoryRecord {
@@ -90,14 +97,17 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
       authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
       candidateId: memoryHeaderValue(header, 'candidate_id'),
+      createdAt: memoryHeaderValue(header, 'created_at'),
       evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
       kind,
       keywords: memoryHeaderValues(header, 'keywords'),
       lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
+      memoryId: memoryHeaderValue(header, 'memory_id'),
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
       references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
       relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
       schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+      sourceHash: memoryHeaderValue(header, 'source_hash'),
       sourceAgentClient: memoryHeaderValue(header, 'source_agent_client') ?? 'unknown',
       sourceCommit: memoryHeaderValue(header, 'source_commit'),
       sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
@@ -107,8 +117,10 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       timestamp: memoryHeaderValue(header, 'timestamp') ?? new Date(0).toISOString(),
       topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic')),
       trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
+      updatedAt: memoryHeaderValue(header, 'updated_at'),
       validFrom: memoryHeaderValue(header, 'valid_from'),
       validTo: memoryHeaderValue(header, 'valid_to'),
+      visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
     },
     uri: canonicalResourceInput(uri),
   };
@@ -117,13 +129,17 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
 export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
   const header = [
     title,
-    metadata.schemaVersion !== undefined ? `schema_version: ${metadata.schemaVersion}` : undefined,
     `kind: ${metadata.kind}`,
     `status: ${metadata.status}`,
     memoryHeaderLine('project', metadata.project),
     memoryHeaderLine('topic', metadata.topic),
     memoryHeaderLine('source_agent_client', metadata.sourceAgentClient),
     memoryHeaderLine('timestamp', metadata.timestamp),
+    metadata.schemaVersion !== undefined ? `schema_version: ${metadata.schemaVersion}` : undefined,
+    memoryHeaderLine('memory_id', metadata.memoryId),
+    memoryHeaderLine('created_at', metadata.createdAt),
+    memoryHeaderLine('updated_at', metadata.updatedAt),
+    memoryHeaderLine('visibility', metadata.visibility),
     memoryHeaderLine('authority', metadata.authority),
     memoryHeaderLine('trust', metadata.trust),
     memoryHeaderLine('valid_from', metadata.validFrom),
@@ -133,6 +149,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('source_session_id', metadata.sourceSessionId),
     memoryHeaderLine('source_commit', metadata.sourceCommit),
     memoryHeaderLine('candidate_id', metadata.candidateId),
+    memoryHeaderLine('source_hash', metadata.sourceHash),
     memoryHeaderLine('supersedes', metadata.supersedes),
     memoryHeaderLine('archived_from', metadata.archivedFrom),
     ...(metadata.references ?? []).map(reference => memoryHeaderLine('references', reference)),
@@ -223,10 +240,12 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
     authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
     candidateId: memoryHeaderValue(header, 'candidate_id'),
+    createdAt: memoryHeaderValue(header, 'created_at'),
     evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
     kind: parseMemoryKind(memoryHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined),
     keywords: memoryHeaderValues(header, 'keywords'),
     lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
+    memoryId: memoryHeaderValue(header, 'memory_id'),
     project: normalizeOptionalMetadata(
       memoryHeaderValue(header, 'project') ??
         memoryHeaderValue(header, 'repo') ??
@@ -235,6 +254,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
     relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
     schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+    sourceHash: memoryHeaderValue(header, 'source_hash'),
     sourceAgentClient: memoryHeaderValue(header, 'source_agent_client'),
     sourceCommit: memoryHeaderValue(header, 'source_commit'),
     sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
@@ -244,8 +264,10 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     timestamp: memoryHeaderValue(header, 'timestamp'),
     topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic') ?? memoryHeaderValue(header, 'task')),
     trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
+    updatedAt: memoryHeaderValue(header, 'updated_at'),
     validFrom: memoryHeaderValue(header, 'valid_from'),
     validTo: memoryHeaderValue(header, 'valid_to'),
+    visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
   };
 }
 
@@ -294,6 +316,10 @@ function parseMemoryAuthority(value: string | undefined): MemoryAuthority | unde
 
 function parseMemoryTrust(value: string | undefined): MemoryTrust | undefined {
   return value === 'approved' || value === 'inferred' || value === 'untrusted' ? value : undefined;
+}
+
+function parseMemoryVisibility(value: string | undefined): MemoryVisibility | undefined {
+  return value === 'external' || value === 'personal' || value === 'shared' ? value : undefined;
 }
 
 function parseMemoryRelations(values: readonly string[] | undefined): readonly MemoryRelation[] | undefined {

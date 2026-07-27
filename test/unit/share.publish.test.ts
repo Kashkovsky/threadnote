@@ -156,6 +156,7 @@ describe('runSharePublish transaction ordering', () => {
     expect(existsSync(sourcePath)).toBe(false);
     expect(existsSync(targetPath)).toBe(true);
     expect(existsSync(worktreeTargetPath)).toBe(true);
+    expect(await readFile(targetPath, 'utf8')).toContain('visibility: shared');
   });
 
   it('resumes an equivalent canonical target left by an interrupted publish', async () => {

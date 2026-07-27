@@ -17,5 +17,13 @@ Share publishing scrubs known credential and machine-local path patterns before 
 preferences are not publishable. Publish order preserves the personal source until the shared canonical write,
 verification, git commit, and push succeed.
 
+Obsidian sources require an explicit include allowlist and always exclude `.obsidian/**`, trash, configured Inbox
+folders, and managed projection folders. Source traversal rejects symbolic links and vault-boundary escapes. Content is
+secret-scanned before the sanitized copy is committed to the native store. External resource URIs impose `external`
+authority and `untrusted` trust; source frontmatter cannot elevate either value.
+
+Obsidian projections write only managed paths, preserve edited and unmanaged files by default, and secret-scan each
+generated note before atomic replacement. Inbox notes form review candidates but never silently create durable memory.
+
 The manager binds to loopback, uses a per-process bearer token, and never exposes a model or memory server. MCP uses
 stdio. Threadnote has no background daemon, listening storage port, or native HTTP MCP endpoint.

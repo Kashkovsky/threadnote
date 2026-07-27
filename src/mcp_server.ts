@@ -1812,11 +1812,12 @@ function approvedCandidateMetadata(
   return {
     authority: 'user_approved',
     candidateId: candidate.candidateId,
+    createdAt: approvedAt,
     evidence: candidate.evidence,
     kind: candidate.kind,
     lastReviewed: approvedAt,
     project: candidate.project,
-    schemaVersion: 2,
+    schemaVersion: 3,
     sourceAgentClient: review.sourceAgentClient,
     sourceCommit: review.sourceCommit,
     sourceObservedAt: review.createdAt,
@@ -1825,6 +1826,8 @@ function approvedCandidateMetadata(
     timestamp: approvedAt,
     topic: candidate.topic,
     trust: 'approved',
+    updatedAt: approvedAt,
+    visibility: 'personal',
   };
 }
 
@@ -2427,16 +2430,33 @@ const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMemoryWri
   config: RuntimeConfig,
   params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
 ) {
+  const [replaced] = params.replaceUri ? yield* readMemoryRecordsByUri(config, [params.replaceUri]) : [];
+  const metadata: MemoryMetadata = {
+    ...params.metadata,
+    createdAt:
+      replaced?.metadata.createdAt ??
+      replaced?.metadata.timestamp ??
+      params.metadata.createdAt ??
+      params.metadata.timestamp,
+    memoryId:
+      replaced?.metadata.memoryId ??
+      params.metadata.memoryId ??
+      `tn_${(yield* sha256Hex(
+        params.metadata.candidateId ??
+          `${params.metadata.project ?? ''}\n${params.metadata.topic ?? ''}\n${params.bodyText}`,
+      )).slice(0, 20)}`,
+    schemaVersion: Math.max(3, params.metadata.schemaVersion ?? 0),
+    updatedAt: params.metadata.updatedAt ?? params.metadata.timestamp,
+    visibility: 'personal',
+  };
   // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
   // Drops the supersedes line when replaceUri points at the URI we're about
   // to write to (in-place update).
-  const candidateMetadata: MemoryMetadata = {...params.metadata, supersedes: params.replaceUri};
+  const candidateMetadata: MemoryMetadata = {...metadata, supersedes: params.replaceUri};
   const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
-  const finalMetadata: MemoryMetadata = isInPlaceUpdate
-    ? {...params.metadata, supersedes: undefined}
-    : candidateMetadata;
+  const finalMetadata: MemoryMetadata = isInPlaceUpdate ? {...metadata, supersedes: undefined} : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
   return {finalMetadata, isInPlaceUpdate, memory, memoryUri} satisfies PreparedPersonalMemoryWrite;
 });

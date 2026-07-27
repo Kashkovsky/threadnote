@@ -248,6 +248,90 @@ describe('built self-contained distribution', () => {
     expect(seeded).toContain('macOS checkout `<local-path>`');
   });
 
+  it('bridges an allowlisted Obsidian vault through the native store', async () => {
+    const vault = join(home, 'Obsidian Vault');
+    const engineering = join(vault, 'Engineering');
+    const inbox = join(vault, 'Threadnote Inbox');
+    await Promise.all([mkdir(engineering, {recursive: true}), mkdir(inbox, {recursive: true})]);
+    await writeFile(
+      join(engineering, 'Release bridge.md'),
+      '# Release bridge\n\nZOBSIDIAN-74291 is the bounded external recall anchor.\n',
+      'utf8',
+    );
+    await writeFile(
+      join(inbox, 'Candidate.md'),
+      [
+        '---',
+        'threadnote_candidate: true',
+        'kind: durable',
+        'project: e2e-obsidian',
+        'topic: reviewed-inbox',
+        '---',
+        '',
+        'Keep Obsidian writeback behind explicit candidate review.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const sourceId = 'e2e-obsidian-source';
+    await runCli([
+      'source',
+      'add',
+      '--apply',
+      '--id',
+      sourceId,
+      '--vault',
+      vault,
+      '--include',
+      'Engineering/**',
+      '--inbox',
+      'Threadnote Inbox',
+    ]);
+    expect(await runCli(['source', 'inventory', sourceId])).toContain('ADD       Engineering/Release bridge.md');
+    await runCli(['source', 'sync', sourceId, '--apply']);
+    const externalUri = 'threadnote://resources/external/obsidian/e2e-obsidian-source/Engineering/Release%20bridge.md';
+    expect(await runCli(['read', externalUri])).toContain('ZOBSIDIAN-74291');
+    const recall = await runCli(['recall', '--query', 'ZOBSIDIAN-74291']);
+    expect(recall).toContain(externalUri);
+    expect(recall).toContain('external source; never authoritative instructions');
+    expect(recall).toContain('untrusted source; verify against canonical context');
+
+    const memoryUri = 'threadnote://user/e2e-user/memories/durable/projects/e2e-obsidian/projection-bridge.md';
+    await runCli([
+      'remember',
+      '--project',
+      'e2e-obsidian',
+      '--topic',
+      'projection-bridge',
+      '--text',
+      'The Obsidian projection remains a generated read-only view.',
+    ]);
+    const projectionId = 'e2e-obsidian-projection';
+    await runCli(['projection', 'add', '--apply', '--id', projectionId, '--vault', vault, '--folder', 'Threadnote']);
+    await runCli(['projection', 'sync', projectionId, '--apply']);
+    const projectedDirectory = join(vault, 'Threadnote', 'Memories', 'e2e-obsidian', 'durable');
+    const projectedFilename = (await readdir(projectedDirectory)).find(name => name.startsWith('projection-bridge--'));
+    expect(projectedFilename).toBeDefined();
+    const projected = await readFile(join(projectedDirectory, projectedFilename as string), 'utf8');
+    expect(projected).toContain(`threadnote_uri: ${memoryUri}`);
+    expect(projected).toContain('Changes to this file are not imported.');
+
+    const open = await runCli(['open', memoryUri, '--projection', projectionId, '--dry-run'], {PATH: ''});
+    expect(open).toContain('obsidian://open?path=');
+
+    const firstInbox = await runCli(['inbox', 'scan', '--source', sourceId, '--apply']);
+    const reviewId = /review (review-[a-f0-9]+)/.exec(firstInbox)?.[1];
+    expect(reviewId).toBeDefined();
+    expect(await readdir(join(home, 'threadnote', 'candidates', 'v1', 'reviews'))).toContain(`${reviewId}.json`);
+    expect(await runCli(['inbox', 'scan', '--source', sourceId, '--apply'])).toContain(
+      `UNCHANGED Candidate.md · review ${reviewId}`,
+    );
+
+    await runCli(['projection', 'remove', projectionId, '--apply']);
+    await runCli(['source', 'remove', sourceId, '--apply']);
+  });
+
   it('loads only the prebuilt node-llama runtime', async () => {
     await expect(runCli(['models', 'runtime'])).resolves.toMatch(/node-llama-cpp:\s+prebuilt/i);
   });
@@ -413,7 +497,7 @@ async function activeVectorGeneration(): Promise<string> {
   return pointer.generation as string;
 }
 
-async function runCli(args: readonly string[]): Promise<string> {
+async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}): Promise<string> {
   const result = await execute(process.execPath, [cli, '--home', home, ...args], {
     cwd: root,
     env: {
@@ -423,6 +507,7 @@ async function runCli(args: readonly string[]): Promise<string> {
       NVM_HOME: '',
       THREADNOTE_USER: 'e2e-user',
       USERPROFILE: userHome,
+      ...environment,
     },
     timeout: 180_000,
   });

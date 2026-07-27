@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import {Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
 import {
   expandWeakRecallQueryEffect,
   limitRecallRewritesForConfidence,
@@ -225,13 +225,25 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   if (!text.trim()) {
     yield* Effect.fail(new Error('Provide memory text with --text or --stdin.'));
   }
+  const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const [replaced] = options.replace ? yield* readMemoryRecordsByUri(config, [options.replace]) : [];
+  const crypto = yield* Crypto.Crypto;
+  // Projection computes source_hash from canonical content. Keeping the
+  // high-entropy digest out of Threadnote's indexed memory preserves semantic
+  // retrieval quality while the stable identity and lifecycle fields remain
+  // part of the authoritative record.
   const baseMetadata: MemoryMetadata = {
+    createdAt: replaced?.metadata.createdAt ?? replaced?.metadata.timestamp ?? timestamp,
     kind: options.kind ?? 'durable',
+    memoryId: replaced?.metadata.memoryId ?? `tn_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`,
     project: normalizeOptionalMetadata(options.project),
+    schemaVersion: 3,
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: options.status ?? 'active',
-    timestamp: new Date().toISOString(),
+    timestamp,
     topic: normalizeOptionalMetadata(options.topic),
+    updatedAt: timestamp,
+    visibility: options.replace && isInSharedNamespace(config, options.replace) ? 'shared' : 'personal',
   };
   const metadata =
     options.dryRun === true || (options.replace !== undefined && isInSharedNamespace(config, options.replace))

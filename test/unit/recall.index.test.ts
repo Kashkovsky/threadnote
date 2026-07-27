@@ -201,6 +201,36 @@ describe('local recall index', () => {
     ]);
   });
 
+  it('reconstructs canonical encoded URIs for external resource paths', async () => {
+    const resourcePath = join(
+      directory,
+      'data',
+      'local',
+      'resources',
+      'external',
+      'obsidian',
+      'engineering',
+      'Release bridge.md',
+    );
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Release bridge\n\nZOBSIDIAN-74291 bounded external recall anchor.', 'utf8');
+
+    const candidates = await run(
+      loadRecallIndex(config(), {
+        includeInactive: false,
+        query: 'ZOBSIDIAN-74291',
+      }),
+    );
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        authority: 'external',
+        trust: 'untrusted',
+        uri: 'threadnote://resources/external/obsidian/engineering/Release%20bridge.md',
+      }),
+    ]);
+  });
+
   it('rebuilds after source changes and degrades safely from a corrupt cache', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});

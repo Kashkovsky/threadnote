@@ -14,6 +14,7 @@ import {
   type MemoryRelation,
 } from '../memory_document.js';
 import {redactSensitiveText} from '../scrubber.js';
+import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
 import type {ProjectManifest} from '../types.js';
 import {expandPath, globToRegExp} from '../utils.js';
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
@@ -964,15 +965,22 @@ function scanRecallSources(
         includeDirectory: candidate => !excludedDirectory(candidate, includeInactive),
         includeFile: candidate => !excludedFile(candidate),
       });
+      const rootId = parseResourceId(root.uri);
       sources.push(
         ...files
           .filter(file => file.size <= MAX_INDEXED_FILE_BYTES)
-          .map(file => ({
-            modifiedAt: file.modifiedAt?.toISOString(),
-            path: file.path,
-            size: file.size,
-            uri: `${root.uri}/${path.relative(root.path, file.path).split(path.sep).join('/')}`,
-          })),
+          .map(file => {
+            const relativeSegments = path
+              .relative(root.path, file.path)
+              .split(path.sep)
+              .map(segment => segment.normalize('NFC'));
+            return {
+              modifiedAt: file.modifiedAt?.toISOString(),
+              path: file.path,
+              size: file.size,
+              uri: canonicalResourceUri(rootId.namespace, [...rootId.segments, ...relativeSegments]),
+            };
+          }),
       );
     }
     return sources.sort((left, right) => left.uri.localeCompare(right.uri));

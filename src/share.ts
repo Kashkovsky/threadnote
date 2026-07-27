@@ -1843,7 +1843,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
-  const stripped = stripPersonalProvenance(rawContent);
+  const stripped = setMemoryVisibility(stripPersonalProvenance(rawContent), 'shared');
   const scrub = applyScrubber(stripped, {redact: options.redact === true});
   const targetUri = sharedUriFor(config, sourceUri, team.name);
 
@@ -1875,7 +1875,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   const message = options.message ?? `share: publish ${relativePath}`;
   const publish = Effect.fn('share.callback')(function* () {
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
-    const currentScrub = applyScrubber(stripPersonalProvenance(currentRawContent), {
+    const currentScrub = applyScrubber(setMemoryVisibility(stripPersonalProvenance(currentRawContent), 'shared'), {
       redact: options.redact === true,
     });
     if (currentScrub.blocker) {
@@ -3130,7 +3130,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
     throw new Error(`Memory ${sourceUri} is not in team "${team.name}" shared namespace.`);
   }
   const ov = NATIVE_RESOURCE_BACKEND;
-  const content = yield* readMemoryContent(config, ov, sourceUri, dryRun);
+  const content = setMemoryVisibility(yield* readMemoryContent(config, ov, sourceUri, dryRun), 'personal');
   const targetUri = personalUriFor(config, sourceUri, team.name);
   if (!dryRun && (yield* resourceExists(ov, config, targetUri))) {
     throw new Error(
@@ -4499,6 +4499,30 @@ export function stripPersonalProvenance(content: string): string {
     cleaned.push(lines[index]);
   }
   return cleaned.join('\n');
+}
+
+export function setMemoryVisibility(content: string, visibility: 'personal' | 'shared'): string {
+  const lines = content.split('\n');
+  if (lines[0]?.trim() !== 'MEMORY' && lines[0]?.trim() !== 'HANDOFF') {
+    return content;
+  }
+  const headerEnd = lines.findIndex(line => line.trim() === '');
+  if (headerEnd === -1) {
+    return content;
+  }
+  const visibilityIndex = lines.slice(1, headerEnd).findIndex(line => line.startsWith('visibility:'));
+  if (visibilityIndex >= 0) {
+    lines[visibilityIndex + 1] = `visibility: ${visibility}`;
+    return lines.join('\n');
+  }
+  let insertionIndex = headerEnd;
+  for (let index = 1; index < headerEnd; index += 1) {
+    if (/^(?:created_at|timestamp|updated_at):/.test(lines[index] ?? '')) {
+      insertionIndex = index + 1;
+    }
+  }
+  lines.splice(insertionIndex, 0, `visibility: ${visibility}`);
+  return lines.join('\n');
 }
 
 const readMemoryContent = Effect.fn('share.readMemoryContent')(function* (
