@@ -6,7 +6,12 @@ import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
-import {rebuildVectorIndex, selectedSemanticScores, vectorIndexStatus} from '../../src/search/vector-index.js';
+import {
+  ensureVectorIndex,
+  rebuildVectorIndex,
+  selectedSemanticScores,
+  vectorIndexStatus,
+} from '../../src/search/vector-index.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -126,6 +131,47 @@ describe('vector index generations', () => {
       expect(changed.embeddedChunkCount).toBe(1);
       expect(changed.reusedChunkCount).toBe(1);
       expect(embeddedInputs.map(inputs => inputs.length)).toEqual([2, 1]);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('automatically refreshes a stale vector generation and leaves a current one untouched', async () => {
+    const home = await mkdtemp('threadnote-vector-ensure-');
+    try {
+      const embeddedInputs: string[][] = [];
+      const runtimeLayer = fakeRuntimeLayer(
+        input => (input.toLowerCase().includes('alpha') ? 0 : 1),
+        inputs => embeddedInputs.push([...inputs]),
+      );
+      const initial = [
+        {text: '# Alpha\n\nStable canonical content.', uri: 'threadnote://resources/repos/a.md'},
+        {text: '# Beta\n\nOriginal canonical content.', uri: 'threadnote://resources/repos/b.md'},
+      ];
+      const ensure = (documents: typeof initial, corpusGeneration: string) =>
+        runEffect(
+          ensureVectorIndex({agentContextHome: home}, manifest, documents, {corpusGeneration}).pipe(
+            Effect.provide(runtimeLayer),
+            Effect.provide(modelStoreLayer),
+          ),
+        );
+
+      const first = await ensure(initial, 'lexical-generation-1');
+      const current = await ensure(initial, 'lexical-generation-1');
+      const changedDocuments = [
+        initial[0]!,
+        {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
+      ];
+      const refreshed = await ensure(changedDocuments, 'lexical-generation-2');
+      const status = await runEffect(vectorIndexStatus(home, manifest, changedDocuments));
+
+      expect(first.embeddedChunkCount).toBe(2);
+      expect(current.embeddedChunkCount).toBe(0);
+      expect(current.reusedChunkCount).toBe(2);
+      expect(refreshed.embeddedChunkCount).toBe(1);
+      expect(refreshed.reusedChunkCount).toBe(1);
+      expect(embeddedInputs.map(inputs => inputs.length)).toEqual([2, 1]);
+      expect(status.ready).toBe(true);
     } finally {
       await rm(home, {force: true, recursive: true});
     }

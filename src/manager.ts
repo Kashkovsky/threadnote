@@ -40,6 +40,7 @@ import {
 import {parseMemoryDocument, type MemoryRecord} from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  assertSharedWorktreeFileReady,
   isInSharedNamespace,
   parentUri,
   publishShareGitChange,
@@ -49,6 +50,7 @@ import {
   sharedTeamNameForUri,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeSharedWorktreeFile,
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
@@ -836,9 +838,12 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
       throw new Error(`${uri} is not in a configured shared namespace.`);
     }
     const team = yield* resolveTeam(config, teamName);
+    const existing = yield* readManagedMemory(config, uri);
+    const relativePath = resourceUriToWorktreeRelative(config, uri, team.name);
+    yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, existing.content);
     yield* ensureSharedDirectoryChain(config, ov, uri, false);
     yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
-    const relativePath = resourceUriToWorktreeRelative(config, uri, team.name);
+    yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content);
     yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
     return;
   }
@@ -950,8 +955,11 @@ const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function*
 ) {
   const team = yield* resolveTeam(config, teamName);
   const ov = NATIVE_RESOURCE_BACKEND;
+  const targetRelativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
+  yield* assertSharedWorktreeFileReady(team.config.worktree, targetRelativePath, undefined);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false);
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
+  yield* writeSharedWorktreeFile(team.config.worktree, targetRelativePath, content);
   yield* publishShareGitChange(
     team.config.worktree,
     resourceUriToWorktreeRelative(config, targetUri, team.name),

@@ -1002,7 +1002,9 @@
           </p>
           <div class="cta-row">
             <span class="pill">cross-user · cross-agent · Git-backed</span>
-            <span class="pill"><span id="version-tag">v2.0.4</span> · local semantic recall · AGPL-3.0-or-later</span>
+            <span class="pill"
+              ><span id="version-tag">v4.0.0 beta</span> · local semantic recall · AGPL-3.0-or-later</span
+            >
           </div>
         </div>
         <div class="scroll-cue">scroll ↓ &nbsp;·&nbsp; <span class="kbd">↓</span> / <span class="kbd">j</span></div>
@@ -1228,8 +1230,9 @@
               <span class="card-kicker">Local recall</span>
               <h3>Find the record, not the whole history</h3>
               <p>
-                Threadnote can run a local GGUF embedding model in-process through <code>node-llama-cpp</code> to rank
-                matches. Agents read only the selected <code>threadnote://</code> records; Markdown remains canonical.
+                Threadnote installs a compact local GGUF embedding model and runs it in-process through
+                <code>node-llama-cpp</code> to rank matches. Agents read only the selected
+                <code>threadnote://</code> records; Markdown remains canonical.
               </p>
             </div>
           </div>
@@ -1375,7 +1378,7 @@
                 <text x="240" y="361" text-anchor="middle">~/.threadnote/data/&lt;account&gt;/...</text>
 
                 <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="640" y="361" text-anchor="middle">indexes/vector (regenerable sidecar)</text>
+                <text x="640" y="361" text-anchor="middle">indexes/ (SQLite lexical + vector sidecar)</text>
               </g>
             </svg>
             <div class="architecture-legend">
@@ -1385,8 +1388,8 @@
                 pointer from every session.
               </div>
               <div>
-                <strong>Storage is plain markdown</strong> on your filesystem. The vectordb is regenerable; the source
-                of truth is on disk.
+                <strong>Storage is plain markdown</strong> on your filesystem. Lexical and vector indexes are
+                regenerable; the source of truth is on disk.
               </div>
               <div>
                 <strong>Recall is local and targeted.</strong> A GGUF embedding model running through
@@ -1429,8 +1432,11 @@
               <span class="card-kicker">Filtered</span>
               <h3>Built-in ignore + redaction</h3>
               <p>
-                <code>.threadnoteignore</code> excludes build output, binaries, env files, and logs. Known config files
-                (<code>.mcp.json</code>, <code>config.toml</code>, settings JSON) pass through a redactor before import.
+                <code>.threadnoteignore</code> excludes build output, binaries, env files, and logs before traversal.
+                Broad patterns also prune every dot-prefixed directory; a manifest can still seed one explicitly, such
+                as <code>.github/**</code> or <code>.claude/**</code>. Every text candidate passes through a redactor
+                before import, including local POSIX home paths. Windows, Git-Bash, and WSL path conventions remain
+                intact.
               </p>
             </div>
             <div class="card reveal">

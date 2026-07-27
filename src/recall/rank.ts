@@ -1,7 +1,7 @@
 import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_document.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
 
-export const RECALL_RANKER_VERSION = 'hybrid-v2';
+export const RECALL_RANKER_VERSION = 'hybrid-v3';
 
 export interface RecallFields {
   readonly identifiers?: readonly string[];
@@ -140,6 +140,7 @@ const EXACT_MULTI_TERM_MINIMUM = 2;
 const NO_ANSWER_SCORE_MINIMUM = 0.2;
 const LEXICAL_ONLY_ANSWER_MINIMUM = 0.5;
 const LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM = 0.08;
+const SEMANTIC_ONLY_ANSWER_MINIMUM = 0.271;
 const SIGNAL_ABSENCE_MAXIMUM = 0.05;
 const TEMPORALLY_INVALID_SCORE_MULTIPLIER = 0.25;
 const UNKNOWN_FRESHNESS_SCORE = 0.5;
@@ -240,9 +241,12 @@ export function rankRecallCandidates(
     .sort((left, right) => (right.semantic ?? 0) - (left.semantic ?? 0))
     .slice(0, MAX_GRAPH_SEMANTIC_ANCHORS)
     .map(candidate => candidate.uri);
-  const graphDistances = typedGraphDistances(candidates, [
-    ...new Set([...(context.seedUris ?? []), ...semanticAnchors]),
-  ]);
+  const explicitSeedUris = [...new Set(context.seedUris ?? [])];
+  const graphDistances = mergeGraphDistances(
+    typedGraphDistances(candidates, explicitSeedUris),
+    typedGraphDistances(candidates, semanticAnchors),
+    new Set(explicitSeedUris),
+  );
   const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
   const ranked = candidates
     .map((candidate, index) =>
@@ -613,6 +617,23 @@ function graphScore(
   return graph && graph.distance > 0 ? clamp(graph.weight / (1 + graph.distance * GRAPH_DISTANCE_PENALTY)) : 0;
 }
 
+function mergeGraphDistances(
+  explicit: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
+  semantic: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
+  explicitSeeds: ReadonlySet<string>,
+): ReadonlyMap<string, {readonly distance: number; readonly weight: number}> {
+  const merged = new Map(explicit);
+  for (const [uri, semanticDistance] of semantic) {
+    const explicitDistance = explicit.get(uri);
+    if (explicitSeeds.has(uri) || graphScore(uri, explicit) >= graphScore(uri, semantic)) {
+      if (explicitDistance) merged.set(uri, explicitDistance);
+      continue;
+    }
+    merged.set(uri, semanticDistance);
+  }
+  return merged;
+}
+
 function freshnessScore(timestamp: string | undefined, kind: MemoryKind | undefined, now: Date): number {
   const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
   if (!Number.isFinite(parsed)) {
@@ -745,7 +766,13 @@ function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConf
     topSignals.semantic <= SIGNAL_ABSENCE_MAXIMUM &&
     topSignals.graph <= SIGNAL_ABSENCE_MAXIMUM &&
     Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM;
-  if (results.length === 0 || first < NO_ANSWER_SCORE_MINIMUM || weakLexicalOnly) {
+  const weakSemanticOnly =
+    topSignals !== undefined &&
+    topSignals.semantic > SIGNAL_ABSENCE_MAXIMUM &&
+    topSignals.reranker <= SIGNAL_ABSENCE_MAXIMUM &&
+    Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < CORROBORATING_SIGNAL_MINIMUM &&
+    first < SEMANTIC_ONLY_ANSWER_MINIMUM;
+  if (results.length === 0 || first < NO_ANSWER_SCORE_MINIMUM || weakLexicalOnly || weakSemanticOnly) {
     return {
       level: 'no_answer',
       margin,

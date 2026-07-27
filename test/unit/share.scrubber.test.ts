@@ -75,6 +75,17 @@ describe('applyScrubber', () => {
     expect(redacted.redactions.find(r => r.name === 'macOS home path')?.count).toBe(1);
   });
 
+  it('does not treat Git-Bash, WSL, or Windows user paths as macOS homes', () => {
+    const input = 'Git-Bash /c/Users/jane/work, WSL /mnt/c/Users/jane/work, Windows C:/Users/jane/work';
+    const result = applyScrubber(input, {redact: false});
+    expect(result.blocker).toBeUndefined();
+    expect(result.cleaned).toBe(input);
+  });
+
+  it('still redacts a macOS home embedded in a file URL', () => {
+    expect(applyScrubber('open file:///Users/jane/work', {redact: true}).cleaned).toBe('open file://<local-path>');
+  });
+
   it('redacts linux home paths when preceded by a word boundary', () => {
     const input = 'cd/home/bob/work then done';
     const redacted = applyScrubber(input, {redact: true});

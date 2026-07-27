@@ -39,23 +39,23 @@ resources and memories keep stable `threadnote://` identifiers while their bytes
 
 ## Recall
 
-Recall works without a model using deterministic lexical, field, scope, lifecycle, authority, time, graph, and
-feedback signals. Optional semantic retrieval and reranking run in process through `node-llama-cpp`. Model selection
-is explicit and experimental until a candidate passes the checked quality gate:
+`threadnote install` automatically downloads, verifies, and selects the pinned 36.7 MB BGE Small embedding model.
+Recall combines its in-process `node-llama-cpp` vectors with deterministic lexical, field, scope, lifecycle, authority,
+time, graph, and feedback signals. The lexical path remains available as a fail-open fallback if native inference is
+temporarily unavailable.
 
 ```sh
 threadnote models list
-threadnote models install bge-small-en-v1.5-q8
-threadnote models select embedding bge-small-en-v1.5-q8
-threadnote index rebuild
 threadnote index verify
+threadnote index status
 ```
 
-Models are downloaded only after an explicit install. Every built-in model manifest pins its immutable revision,
-filename, size, SHA-256, license, runtime version, and memory class. Downloads resume, checksums are verified before
-atomic promotion, and native compilation is disabled. The first measured BGE Small and BGE Small + Jina candidates
-improved semantic-query ranking but failed the no-answer gate, so 4.0 keeps lexical recall as the safe default. The
-reviewed candidate summaries are checked in under `test/evaluation/candidates/threadnote-4.0.0/`.
+The core model download is resumable and is preserved across upgrades and repeat installs. Every built-in manifest
+pins its immutable revision, filename, size, SHA-256, license, runtime version, and memory class; checksums are verified
+before atomic promotion, and native compilation is disabled. Additional embedding, reranking, and generation models
+remain explicit choices. BGE Small passes the frozen category and no-answer gates; the measured Jina reranker does not
+and is not selected. Reviewed candidate summaries are checked in under
+`test/evaluation/candidates/threadnote-4.0.0/`.
 
 ## Upgrade from 3.x
 
@@ -69,8 +69,8 @@ threadnote index status
 Migration inventories the legacy home, rejects unsafe links, checks free space, copies into sibling staging, validates
 every copied hash, and atomically promotes `~/.threadnote`. If beta.1 already created an empty target, migration safely
 recovers memories, resources, configured shares, and verified installed models into it without overwriting different
-content. Canonical account data lives at `~/.threadnote/data/<account>`. The source home is never modified or deleted, so rollback
-is simply restoring the previous `THREADNOTE_HOME` while investigating.
+content. Canonical account data lives at `~/.threadnote/data/<account>`. The source home is never modified or deleted,
+so rollback is simply restoring the previous `THREADNOTE_HOME` while investigating.
 
 ## Quality contract
 

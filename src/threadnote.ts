@@ -17,6 +17,13 @@ const program = Effect.gen(function* () {
   const system = yield* SystemInfo;
   return yield* Command.runWith(threadnoteCommand, {version})(normalizeCliArguments(system.processArguments.slice(2)));
 }).pipe(
+  Effect.catchDefect(defect =>
+    Effect.gen(function* () {
+      yield* Console.error(errorMessage(defect));
+      const system = yield* SystemInfo;
+      yield* Effect.sync(() => system.setExitCode(1));
+    }),
+  ),
   Effect.tapError(error =>
     CliError.isCliError(error)
       ? Effect.void

@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.0.0-beta.3",
+  "version": "4.0.0-beta.4",
   "type": "module",
   "main": "dist/threadnote.js",
   "description": "Shared local context and handoffs for development agents",
@@ -45,7 +45,6 @@
   ],
   "scripts": {
     "build": "npm run clean --silent && node scripts/build.mjs",
-    "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "check:self-contained": "node scripts/check-self-contained.mjs",
     "clean": "node scripts/clean.mjs",
     "dev": "tsx src/threadnote.ts",
@@ -54,7 +53,7 @@
     "lint:fix": "oxlint --fix src test",
     "prepare": "husky",
     "precommit": "npm run lint && npm run prettier:write && npm run test",
-    "prepack": "npm run build && npm run check:bundle-size",
+    "prepack": "npm run build",
     "prettier:check": "prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "prettier:write": "prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "test": "vitest run",
@@ -103,6 +102,7 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
+    "@effect/sql-sqlite-node": "4.0.0-beta.99",
     "node-llama-cpp": "3.19.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"

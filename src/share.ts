@@ -1224,7 +1224,8 @@ function assertSafeShareRelativePath(relativePath: string): string {
   if (
     !relativePath ||
     relativePath.startsWith('/') ||
-    relativePath.split('/').some(segment => segment === '..' || segment.length === 0)
+    relativePath.includes('\\') ||
+    relativePath.split('/').some(segment => segment === '.' || segment === '..' || segment.length === 0)
   ) {
     throw new Error(`Invalid shared relative path: ${relativePath}`);
   }
@@ -1235,7 +1236,12 @@ const normalizePendingChange = Effect.fn('share.normalizePendingChange')(functio
   team: ResolvedTeam,
   change: ChangedFile,
 ) {
-  return {...change, path: yield* pathJoin(team.config.worktree, change.relativePath)};
+  const relativePath = assertSafeShareRelativePath(change.relativePath);
+  return {
+    ...change,
+    path: yield* pathJoin(team.config.worktree, ...relativePath.split('/')),
+    relativePath,
+  };
 });
 
 function isShareableMemoryChange(change: ChangedFile): boolean {
@@ -1709,6 +1715,103 @@ export const publishShareGitChange = Effect.fn('share.publishShareGitChange')(fu
   return messages;
 });
 
+export const writeSharedWorktreeFile = Effect.fn('share.writeSharedWorktreeFile')(function* (
+  worktree: string,
+  relativePath: string,
+  content: string,
+  dryRun = false,
+) {
+  const safeRelativePath = assertSafeShareRelativePath(relativePath);
+  const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
+  if (dryRun) {
+    yield* Console.log(`Would write shared worktree file: ${targetPath}`);
+    return targetPath;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const realWorktree = yield* fs.realPath(worktree);
+  let current = path.resolve(worktree);
+  for (const segment of safeRelativePath.split('/').slice(0, -1)) {
+    current = path.join(current, segment);
+    if (Option.isSome(yield* fs.readLink(current).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Refusing to write through a shared worktree symbolic link: ${current}`));
+    }
+    if (yield* fs.exists(current)) {
+      const info = yield* fs.stat(current);
+      if (info.type !== 'Directory') {
+        return yield* Effect.fail(new Error(`Shared worktree parent is not a directory: ${current}`));
+      }
+    } else {
+      yield* fs.makeDirectory(current, {mode: 0o700});
+    }
+    const expected = path.resolve(realWorktree, path.relative(path.resolve(worktree), current));
+    if ((yield* fs.realPath(current)) !== expected) {
+      return yield* Effect.fail(new Error(`Refusing to write through a shared worktree path alias: ${current}`));
+    }
+  }
+  if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
+    return yield* Effect.fail(new Error(`Refusing to replace a shared worktree symbolic link: ${targetPath}`));
+  }
+  const temporaryPath = `${targetPath}.${system.processId}.tmp`;
+  yield* fs.writeFileString(temporaryPath, content, {mode: 0o600});
+  yield* fs
+    .rename(temporaryPath, targetPath)
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  return targetPath;
+});
+
+export function assertSharedWorktreeFileReady(
+  worktree: string,
+  relativePath: string,
+  expectedContent: string | undefined,
+  dryRun = false,
+): Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
+  return Effect.gen(function* () {
+    if (dryRun) return;
+    const safeRelativePath = assertSafeShareRelativePath(relativePath);
+    const git = yield* requiredExecutable('git');
+    const unmerged = yield* runCommand(git, ['-C', worktree, 'ls-files', '-u', '--', safeRelativePath], {
+      allowFailure: true,
+    });
+    if (unmerged.exitCode !== 0) {
+      return yield* Effect.fail(
+        new Error(
+          `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
+        ),
+      );
+    }
+    if (unmerged.stdout.trim().length > 0) {
+      return yield* Effect.fail(
+        new Error(
+          `Refusing to overwrite unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
+        ),
+      );
+    }
+    const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(targetPath))) return;
+    if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Refusing to replace a shared worktree symbolic link: ${targetPath}`));
+    }
+    const info = yield* fs.stat(targetPath);
+    if (info.type !== 'File') {
+      return yield* Effect.fail(new Error(`Shared worktree target is not a regular file: ${targetPath}`));
+    }
+    const currentContent = yield* fs.readFileString(targetPath);
+    if (
+      expectedContent === undefined ||
+      canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(expectedContent)
+    ) {
+      return yield* Effect.fail(
+        new Error(
+          `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+        ),
+      );
+    }
+  });
+}
+
 const runGitCommand = Effect.fn('share.runGitCommand')(function* (
   dryRun: boolean,
   git: string,
@@ -1780,19 +1883,35 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
       );
     }
-    if (!dryRun && (yield* resourceExists(ov, config, targetUri))) {
+    const existingTarget =
+      !dryRun && (yield* resourceExists(ov, config, targetUri))
+        ? yield* readMemoryContent(config, ov, targetUri, false)
+        : undefined;
+    if (
+      existingTarget !== undefined &&
+      canonicalMemoryDocumentContent(existingTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)
+    ) {
       throw new Error(
-        `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
+        `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
       );
     }
+    yield* assertSharedWorktreeFileReady(worktree, relativePath, currentScrub.cleaned, dryRun);
     yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
-    yield* writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', dryRun);
+    yield* writeMemoryFile(
+      config,
+      ov,
+      targetUri,
+      currentScrub.cleaned,
+      existingTarget === undefined ? 'create' : 'replace',
+      dryRun,
+    );
     if (!dryRun) {
       const storedTarget = yield* readMemoryContent(config, ov, targetUri, false);
       if (canonicalMemoryDocumentContent(storedTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)) {
         throw new Error(`Shared target verification failed after writing ${targetUri}; personal source preserved.`);
       }
     }
+    yield* writeSharedWorktreeFile(worktree, relativePath, currentScrub.cleaned, dryRun);
     const gitMessages = yield* publishShareGitChange(worktree, relativePath, message, {
       dryRun,
       push: options.push,
@@ -1926,6 +2045,7 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   const ovHasResource = !dryRun && (yield* resourceExists(ov, config, targetUri));
   yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun, {quiet: true});
   yield* writeMemoryFile(config, ov, targetUri, content, ovHasResource ? 'replace' : 'create', dryRun, {quiet: true});
+  yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content, dryRun);
 
   const message = options.message ?? `share: publish ${relativePath}`;
   const gitMessages = yield* publishShareGitChange(team.config.worktree, relativePath, message, {
@@ -2053,6 +2173,12 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
       ovHasResource ? 'replace' : 'create',
       dryRun,
       {quiet: true},
+    );
+    yield* writeSharedWorktreeFile(
+      team.config.worktree,
+      `${skillRootRelative}/${entry.relativePath}`,
+      entry.content as string,
+      dryRun,
     );
   }
   yield* ensureDirectory(skillRootTargetDir, false);
@@ -2742,16 +2868,29 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
       ) {
         const priorBytes = yield* readFileBytesIfExists(worktreePath);
         const hadResource = yield* resourceExists(ov, config, uri);
+        const worktreeRelativePath = (yield* pathRelative(team.config.worktree, worktreePath))
+          .split(yield* pathSeparator)
+          .join('/');
         yield* ensureSharedDirectoryChain(config, ov, uri, dryRun, {quiet: true});
         yield* writeMemoryFile(config, ov, uri, content, hadResource ? 'replace' : 'create', dryRun, {quiet: true});
+        yield* writeSharedWorktreeFile(team.config.worktree, worktreeRelativePath, content, dryRun);
         rollbacks.push(
           Effect.fn('share.callback')(function* () {
             if (priorBytes !== undefined) {
               yield* writeMemoryFile(config, ov, uri, new TextDecoder().decode(priorBytes), 'replace', false, {
                 quiet: true,
               });
-            } else if (yield* resourceExists(ov, config, uri)) {
-              yield* removeMemoryUri(config, ov, uri, false, {quiet: true});
+              yield* writeSharedWorktreeFile(
+                team.config.worktree,
+                worktreeRelativePath,
+                new TextDecoder().decode(priorBytes),
+                false,
+              );
+            } else {
+              if (yield* resourceExists(ov, config, uri)) {
+                yield* removeMemoryUri(config, ov, uri, false, {quiet: true});
+              }
+              yield* rm(worktreePath, {force: true});
             }
           }),
         );
@@ -4733,10 +4872,14 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
     if (!isShareableMemoryChange(change)) {
       continue;
     }
-    const uri = yield* workfileToResourceUri(config, team, change.path);
+    let normalizedChange = change;
+    let changeLabel = conflictId(team.name, change.relativePath);
     const applyResult = yield* Effect.result(
       Effect.gen(function* () {
-        if (change.status === 'removed') {
+        normalizedChange = yield* normalizePendingChange({config: team, name: team.name}, change);
+        const uri = yield* workfileToResourceUri(config, team, normalizedChange.path);
+        changeLabel = uri;
+        if (normalizedChange.status === 'removed') {
           const currentContent = yield* readExistingMemoryContent(config, ov, uri);
           if (currentContent === undefined) {
             return;
@@ -4744,7 +4887,7 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
           yield* removeMemoryUri(config, ov, uri, false, options);
           return;
         }
-        if (!(yield* isRegularFileNoSymlink(change.path))) {
+        if (!(yield* isRegularFileNoSymlink(normalizedChange.path))) {
           return;
         }
         // Either 'modified' or 'added' from git's perspective; the file on disk
@@ -4755,7 +4898,7 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
         // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
         // earlier path — a prior share init/sync, or a local publish that wrote
         // the URI before the corresponding upstream commit landed in this clone.
-        const content = yield* readSharedInboundFileContent(uri, change.path);
+        const content = yield* readSharedInboundFileContent(uri, normalizedChange.path);
         const currentContent = yield* readExistingMemoryContent(config, ov, uri);
         if (currentContent !== undefined) {
           if (
@@ -4777,9 +4920,9 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
       const err = applyResult.failure;
       const message = err instanceof Error ? err.message : String(err);
       if (options.quiet !== true) {
-        yield* Console.warn(`share sync: ${uri}: ingest failed — will retry on the next sync. ${message}`);
+        yield* Console.warn(`share sync: ${changeLabel}: ingest failed — will retry on the next sync. ${message}`);
       }
-      failed.push(change);
+      failed.push(normalizedChange);
     }
   }
   return {failed};

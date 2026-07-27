@@ -1,5 +1,5 @@
 import {execFileSync, spawnSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
@@ -8,10 +8,12 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 const root = join(import.meta.dirname, '..');
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'threadnote-self-contained-'));
 const home = join(temporaryRoot, 'home');
+const userHome = join(temporaryRoot, 'user-home');
 const installRoot = join(temporaryRoot, 'install');
 const packRoot = join(temporaryRoot, 'pack');
 const runRoot = join(temporaryRoot, 'run');
 mkdirSync(home, {recursive: true});
+mkdirSync(userHome, {recursive: true});
 mkdirSync(installRoot, {recursive: true});
 mkdirSync(packRoot, {recursive: true});
 mkdirSync(runRoot, {recursive: true});
@@ -48,15 +50,28 @@ const cliShim = join(binRoot, process.platform === 'win32' ? 'threadnote.cmd' : 
 const mcpShim = join(binRoot, process.platform === 'win32' ? 'threadnote-mcp-server.cmd' : 'threadnote-mcp-server');
 const environment = {
   ...process.env,
+  HOME: userHome,
   PATH: dirname(process.execPath),
   THREADNOTE_HOME: home,
   THREADNOTE_USER: 'self-contained-smoke',
+  USERPROFILE: userHome,
 };
+const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
 
 try {
   const version = run(['--version']);
   if (!version.includes('4.0.0')) throw new Error(`Installed CLI shim reported an unexpected version:\n${version}`);
-  run(['install']);
+  mkdirSync(join(home, 'cache'), {recursive: true});
+  writeFileSync(join(home, 'cache', 'recall-index-v6.json'), '{"legacy":true}\n');
+  const install = run(['install']);
+  if (!install.includes(`${coreEmbeddingModelId}: core embedding model verified`)) {
+    throw new Error(`Clean install did not provision the core embedding model:\n${install}`);
+  }
+  const initial = assertCoreRecallArtifacts();
+  const longContext = Array.from(
+    {length: 900},
+    (_, index) => `QZ9-long-context-token-${String(index).padStart(4, '0')}`,
+  ).join(' ');
   run([
     'remember',
     '--kind',
@@ -66,10 +81,37 @@ try {
     '--topic',
     'self-contained-smoke',
     '--text',
-    'Native canonical storage works without an external runtime.',
+    `QZ9 native canonical storage works without an external runtime.\n\n${longContext}`,
   ]);
-  const recall = run(['recall', '--query', 'self contained native canonical storage']);
+  const recall = run(['recall', '--query', 'QZ9 self contained native canonical storage']);
   if (!recall.includes('self-contained-smoke')) throw new Error(`Recall smoke missed stored memory:\n${recall}`);
+  const refreshedGeneration = activeVectorGeneration();
+  if (refreshedGeneration === initial.vectorGeneration) {
+    throw new Error('Recall did not refresh the vector index after storing a canonical memory.');
+  }
+  assertActiveVectorSidecar(refreshedGeneration);
+
+  const repeatInstall = run(['install']);
+  if (!repeatInstall.includes(`${coreEmbeddingModelId}: core embedding model verified`)) {
+    throw new Error(`Repeat install did not verify the existing core model:\n${repeatInstall}`);
+  }
+  if (statSync(initial.modelPath).mtimeMs !== initial.modelModifiedAt) {
+    throw new Error('Repeat install replaced or modified an already installed core embedding model.');
+  }
+  if (activeVectorGeneration() !== refreshedGeneration) {
+    throw new Error('Repeat install unnecessarily replaced an already current vector generation.');
+  }
+
+  const doctor = run(['doctor']);
+  for (const required of [
+    /OK\s+lexical recall index:/,
+    new RegExp(`OK\\s+embedding model: ${coreEmbeddingModelId}`),
+    /OK\s+vector recall index:/,
+    /(?:OK|WARN)\s+.*MCP/i,
+    /OK\s+codex user instructions:/,
+  ]) {
+    if (!required.test(doctor)) throw new Error(`Doctor omitted a core release check (${required}):\n${doctor}`);
+  }
   const runtime = run(['models', 'runtime']);
   if (!/node-llama-cpp:\s+prebuilt/i.test(runtime)) {
     throw new Error(`Native runtime did not report a prebuilt binary:\n${runtime}`);
@@ -86,8 +128,53 @@ function run(args) {
     encoding: 'utf8',
     env: environment,
     shell: process.platform === 'win32',
-    timeout: 60_000,
+    timeout: 180_000,
   });
+}
+
+function assertCoreRecallArtifacts() {
+  const lexicalDatabase = join(home, 'indexes', 'lexical', 'active-v1.sqlite');
+  if (!existsSync(lexicalDatabase) || statSync(lexicalDatabase).size === 0) {
+    throw new Error('Clean install did not create a populated lexical SQLite index.');
+  }
+  if (existsSync(join(home, 'cache', 'recall-index-v6.json'))) {
+    throw new Error('Clean install left the legacy monolithic lexical JSON cache active.');
+  }
+  const selection = JSON.parse(readFileSync(join(home, 'models', 'selection.json'), 'utf8'));
+  if (selection?.roles?.embedding !== coreEmbeddingModelId) {
+    throw new Error(`Clean install selected an unexpected embedding model: ${JSON.stringify(selection)}`);
+  }
+  const modelRoot = join(home, 'models', 'embedding', coreEmbeddingModelId);
+  const receipt = JSON.parse(readFileSync(join(modelRoot, 'manifest.json'), 'utf8'));
+  const modelPath = join(modelRoot, `${receipt.sha256}.gguf`);
+  const installed = statSync(modelPath);
+  if (installed.size !== receipt.size) {
+    throw new Error(`Installed core model has ${installed.size} bytes; expected ${receipt.size}.`);
+  }
+  const vectorGeneration = activeVectorGeneration();
+  assertActiveVectorSidecar(vectorGeneration);
+  const files = readdirSync(home, {recursive: true});
+  if (files.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(String(file)))) {
+    throw new Error('Clean Threadnote home contains a Python, daemon, or OpenViking runtime artifact.');
+  }
+  return {modelModifiedAt: installed.mtimeMs, modelPath, vectorGeneration};
+}
+
+function activeVectorGeneration() {
+  const pointer = JSON.parse(
+    readFileSync(join(home, 'indexes', 'vectors', coreEmbeddingModelId, 'active.json'), 'utf8'),
+  );
+  if (typeof pointer?.generation !== 'string' || pointer.generation.length === 0) {
+    throw new Error(`Vector index pointer is invalid: ${JSON.stringify(pointer)}`);
+  }
+  return pointer.generation;
+}
+
+function assertActiveVectorSidecar(generation) {
+  const sidecar = join(home, 'indexes', 'vectors', coreEmbeddingModelId, 'generations', generation, 'vectors.bin');
+  if (!existsSync(sidecar) || statSync(sidecar).size === 0) {
+    throw new Error(`Vector index generation ${generation} has no sidecar.`);
+  }
 }
 
 async function verifyMcpShim() {
@@ -105,6 +192,22 @@ async function verifyMcpShim() {
     const tools = await client.listTools();
     if (!tools.tools.some(tool => tool.name === 'recall_context')) {
       throw new Error('Installed MCP shim did not expose recall_context.');
+    }
+    const recalled = await client.callTool(
+      {
+        arguments: {
+          query: 'QZ9 native canonical storage',
+          threshold: 0.1,
+          uri: 'threadnote://user/self-contained-smoke/memories/durable/projects/threadnote',
+        },
+        name: 'recall_context',
+      },
+      undefined,
+      {timeout: 180_000},
+    );
+    const text = (recalled.content ?? []).map(item => ('text' in item ? item.text : '')).join('\n');
+    if (recalled.isError === true || !text.includes('self-contained-smoke.md')) {
+      throw new Error(`Installed MCP recall did not find the canonical memory:\n${text}`);
     }
   } finally {
     await client.close();

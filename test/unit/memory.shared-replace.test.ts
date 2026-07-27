@@ -41,6 +41,28 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   const worktree = join(home, 'shared', 'default');
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(join(home, 'share'), {recursive: true});
+  await mkdir(worktree, {recursive: true});
+  const sharedContent =
+    'MEMORY\nkind: durable\nstatus: active\nproject: orion-worker\ntopic: lease\n\nOriginal shared lease memory.\n';
+  const canonicalSharedPath = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'test-user',
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'orion-worker',
+    'lease.md',
+  );
+  const worktreeSharedPath = join(worktree, 'durable', 'projects', 'orion-worker', 'lease.md');
+  await mkdir(join(canonicalSharedPath, '..'), {recursive: true});
+  await mkdir(join(worktreeSharedPath, '..'), {recursive: true});
+  await writeFile(canonicalSharedPath, sharedContent);
+  await writeFile(worktreeSharedPath, sharedContent);
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(

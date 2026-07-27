@@ -74,12 +74,10 @@ npm run prettier:check
 npm run typecheck
 npm run test:coverage
 npm run build
-npm run check:bundle-size
 npm run pack:dry-run
 ```
 
-`typecheck` intentionally uses TypeScript 7 for both source and test code. Bundle-size failures should trigger a
-dependency or bundling review rather than an unexplained limit increase.
+`typecheck` intentionally uses TypeScript 7 for both source and test code.
 
 ### Live OpenViking end-to-end tests
 

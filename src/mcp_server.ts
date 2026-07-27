@@ -21,6 +21,7 @@ import {
 } from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  assertSharedWorktreeFileReady,
   isInSharedNamespace,
   publishShareGitChange,
   resolveTeam,
@@ -31,6 +32,7 @@ import {
   stripPersonalProvenance,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeSharedWorktreeFile,
 } from './share.js';
 import {
   currentPackageVersion,
@@ -2467,10 +2469,16 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
     );
   }
 
+  const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+  if (!existingTarget) {
+    return argumentError(`Shared memory ${targetUri} no longer exists.`);
+  }
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
+  yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, existingTarget.content);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
   yield* writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
 
-  const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
+  yield* writeSharedWorktreeFile(resolved.config.worktree, relativePath, scrub.cleaned);
   const messages = [`Updated shared memory: ${targetUri}`];
   for (const redaction of scrub.redactions) {
     messages.push(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
@@ -3328,13 +3336,25 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
             if (currentScrub.blocker) {
               return {blocker: currentScrub.blocker, kind: 'blocked' as const};
             }
-            // Refuse to silently overwrite an existing shared memory (e.g., a
-            // teammate already published the same project/topic).
-            if (yield* resourceExists(ov, config, targetUri)) {
+            const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+            if (
+              existingTarget &&
+              canonicalMemoryDocumentContent(existingTarget.content) !==
+                canonicalMemoryDocumentContent(currentScrub.cleaned)
+            ) {
               return {kind: 'target_conflict' as const};
             }
+            yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, currentScrub.cleaned);
             yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
-            yield* writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', false, {quiet: true});
+            yield* writeMemoryFile(
+              config,
+              ov,
+              targetUri,
+              currentScrub.cleaned,
+              existingTarget ? 'replace' : 'create',
+              false,
+              {quiet: true},
+            );
             const [storedTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
             if (
               !storedTarget ||
@@ -3343,6 +3363,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
             ) {
               return {kind: 'target_verification_failed' as const};
             }
+            yield* writeSharedWorktreeFile(resolved.config.worktree, relativePath, currentScrub.cleaned);
             const gitMessages = yield* publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
               push: options.push,
             });

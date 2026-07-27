@@ -141,7 +141,9 @@ describe('doctor report resilience', () => {
         expect(report.output).toContain('FAIL storage layout:');
         expect(report.output).toMatch(/WARN (?:MCP configuration|copilot MCP):/);
         expect(report.output).toContain('WARN codex user instructions:');
-        expect(report.output).toContain('Summary: 1 failure(s)');
+        expect(report.output).toContain('FAIL embedding model:');
+        expect(report.output).toContain('FAIL vector recall index:');
+        expect(report.output).toContain('Summary: 3 failure(s)');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

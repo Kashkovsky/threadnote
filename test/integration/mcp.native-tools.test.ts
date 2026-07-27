@@ -154,7 +154,7 @@ describe('Threadnote MCP toolsets', () => {
           confidence: {
             level: expect.stringMatching(/^(?:high|medium|low|no_answer)$/),
           },
-          rankerVersion: 'hybrid-v2',
+          rankerVersion: 'hybrid-v3',
           results: expect.any(Array),
         });
       },

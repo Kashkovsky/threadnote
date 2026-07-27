@@ -6,6 +6,7 @@ import {listShareConflicts, showShareConflict} from '../../src/share.js';
 import {
   resolveShareConflict as resolveShareConflictEffect,
   runShareInit as runShareInitEffect,
+  runSharePublish as runSharePublishEffect,
   runShareSync as runShareSyncEffect,
   syncSharedReposBeforeAgentRead as syncSharedReposBeforeAgentReadEffect,
 } from '../../src/effect/share.js';
@@ -14,6 +15,8 @@ import {runCommand} from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runShareInit = (...args: Parameters<typeof runShareInitEffect>) => runEffect(runShareInitEffect(...args));
+const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
+  runEffect(runSharePublishEffect(...args));
 const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => runEffect(runShareSyncEffect(...args));
 const syncSharedReposBeforeAgentRead = (...args: Parameters<typeof syncSharedReposBeforeAgentReadEffect>) =>
   runEffect(syncSharedReposBeforeAgentReadEffect(...args));
@@ -225,6 +228,57 @@ describe('share sync git handling', () => {
     );
   });
 
+  it('publishes a canonical personal memory into the separate worktree and remote', async () => {
+    const {config, home, remote, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/publish-e2e.md';
+    const targetUri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/publish-e2e.md';
+    const content =
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: publish-e2e\n\nSeparate worktree publish.\n';
+    await writeCanonicalResource(home, sourceUri, content);
+
+    await runSharePublish(config, sourceUri, {team: 'default'});
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).resolves.toContain(
+      'Separate worktree publish.',
+    );
+    await expect(
+      readFile(join(worktree, 'durable', 'projects', 'threadnote', 'publish-e2e.md'), 'utf8'),
+    ).resolves.toContain('Separate worktree publish.');
+    await expect(
+      gitOutput(['--git-dir', remote, 'show', 'main:durable/projects/threadnote/publish-e2e.md']),
+    ).resolves.toContain('Separate worktree publish.');
+  });
+
+  it('preserves a dirty tracked destination and both canonical stores when publish conflicts', async () => {
+    const {config, home, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/publish-conflict.md';
+    const targetUri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/publish-conflict.md';
+    const relativePath = 'durable/projects/threadnote/publish-conflict.md';
+    const sourceContent =
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: publish-conflict\n\nPersonal source.\n';
+    const trackedContent =
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: publish-conflict\n\nTracked baseline.\n';
+    const dirtyContent =
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: publish-conflict\n\nDirty teammate edit.\n';
+    await writeCanonicalResource(home, sourceUri, sourceContent);
+    await mkdir(join(worktree, relativePath, '..'), {recursive: true});
+    await writeFile(join(worktree, relativePath), trackedContent, 'utf8');
+    await git(['add', relativePath], worktree);
+    await git(['commit', '-m', 'add tracked conflict target'], worktree);
+    await writeFile(join(worktree, relativePath), dirtyContent, 'utf8');
+    const statusBefore = await gitOutput(['status', '--porcelain'], worktree);
+
+    await expect(runSharePublish(config, sourceUri, {push: false, team: 'default'})).rejects.toThrow(
+      /changed shared worktree file/,
+    );
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).resolves.toBe(sourceContent);
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(dirtyContent);
+    await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe(statusBefore);
+  });
+
   it('syncs all configured teams when no team is provided', async () => {
     const repo = await makeShareRepo();
     const friends = await addShareTeam(repo, 'friends');
@@ -418,6 +472,49 @@ describe('share sync git handling', () => {
         {
           teams: {
             default: [{path: join(worktree, relativePath), relativePath, status: 'added'}],
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(
+      'MEMORY\nkind: durable\nstatus: active\n\nshared body\n',
+    );
+    await expect(readFile(pendingPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+  });
+
+  it('rebases a legacy-home pending path onto the current worktree before replay', async () => {
+    const {config, home, root, seed} = await makeShareRepo();
+    const {store} = await nativeStoreFixture(root);
+    const relativePath = 'durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
+    await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body', 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await writeCanonicalResource(store, uri, 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
+
+    const pendingPath = join(home, 'share', 'auto-sync-pending-reindexes.json');
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify(
+        {
+          teams: {
+            default: [
+              {
+                path: join(root, '.openviking', 'data', 'viking', relativePath),
+                relativePath,
+                status: 'added',
+              },
+            ],
           },
           version: 1,
         },

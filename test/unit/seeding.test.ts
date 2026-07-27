@@ -111,7 +111,9 @@ describe('runSeed', () => {
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('Would seed resource:');
-    expect(output).toContain('Seed complete: 1 candidate(s), 0 unchanged, 0 stale removed, 0 skipped for safety.');
+    expect(output).toContain(
+      'Seed complete: 1 candidate(s), 0 unchanged, 0 stale removed, 0 skipped for safety, 0 project(s) failed.',
+    );
   });
 
   it('uses the publish scrubber patterns when skipping seed files', async () => {
@@ -144,7 +146,142 @@ describe('runSeed', () => {
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('SKIP sample-repo/README.md: possible secret (database URI)');
-    expect(output).toContain('Seed complete: 0 candidate(s), 0 unchanged, 0 stale removed, 1 skipped for safety.');
+    expect(output).toContain(
+      'Seed complete: 0 candidate(s), 0 unchanged, 0 stale removed, 1 skipped for safety, 0 project(s) failed.',
+    );
+    expect(output).toContain('Seed safety summary: 1 file(s) were not seeded.');
+  });
+
+  it('redacts real macOS homes in every seeded text file without rejecting Windows path conventions', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    await writeFile(
+      join(repo, 'CLAUDE.md'),
+      [
+        'Local checkout: /Users/jane/work/project',
+        'Git-Bash commands use /c/Users/jane/work/project',
+        'WSL commands use /mnt/c/Users/jane/work/project',
+        'Windows tools use C:/Users/jane/work/project',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: threadnote://resources/repos/sample-repo',
+        '    seed: [CLAUDE.md]',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+
+    const output = await captureConsole(runSeed(config, {}));
+    const seeded = await readFile(
+      join(contextHome, 'data', 'local', 'resources', 'repos', 'sample-repo', 'CLAUDE.md'),
+      'utf8',
+    );
+
+    expect(output).not.toContain('SKIP');
+    expect(seeded).toContain('Local checkout: <local-path>');
+    expect(seeded).toContain('/c/Users/jane/work/project');
+    expect(seeded).toContain('/mnt/c/Users/jane/work/project');
+    expect(seeded).toContain('C:/Users/jane/work/project');
+  });
+
+  it('prunes ignored and implicit hidden directories while retaining explicitly seeded guidance roots', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const repo = await mkdtemp(join(tmpdir(), 'threadnote-seed-repo-'));
+    homes.push(contextHome, repo);
+    await mkdir(join(repo, 'node_modules', 'pkg'), {recursive: true});
+    await mkdir(join(repo, '.nx', 'cache'), {recursive: true});
+    await mkdir(join(repo, '.private'), {recursive: true});
+    await mkdir(join(repo, '.claude', 'commands'), {recursive: true});
+    await writeFile(join(repo, 'README.md'), '# Root\n', 'utf8');
+    await writeFile(join(repo, 'node_modules', 'pkg', 'README.md'), '# Dependency\n', 'utf8');
+    await writeFile(join(repo, '.nx', 'cache', 'result.md'), '# Cache\n', 'utf8');
+    await writeFile(join(repo, '.private', 'notes.md'), '# Private hidden folder\n', 'utf8');
+    await writeFile(join(repo, '.claude', 'commands', 'review.md'), '# Explicit guidance\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: sample-repo',
+        `    path: ${repo}`,
+        '    uri: threadnote://resources/repos/sample-repo',
+        '    seed:',
+        '      - "**/*.md"',
+        '      - ".claude/**/*.md"',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+
+    const output = await captureConsole(runSeed(config, {dryRun: true}));
+
+    expect(output).toContain('sample-repo/README.md');
+    expect(output).toContain('sample-repo/.claude/commands/review.md');
+    expect(output).not.toContain('node_modules');
+    expect(output).not.toContain('/.nx/');
+    expect(output).not.toContain('/.private/');
+  });
+
+  it('continues seeding later projects and reports an aggregate failure when one project fails', async () => {
+    const contextHome = await mkdtemp(join(tmpdir(), 'threadnote-seed-context-'));
+    const failingRepo = await mkdtemp(join(tmpdir(), 'threadnote-seed-failing-repo-'));
+    const healthyRepo = await mkdtemp(join(tmpdir(), 'threadnote-seed-healthy-repo-'));
+    homes.push(contextHome, failingRepo, healthyRepo);
+    await writeFile(join(failingRepo, 'bad?.md'), '# Failing project\n', 'utf8');
+    await writeFile(join(healthyRepo, 'README.md'), '# Healthy project\n', 'utf8');
+    const manifestPath = join(contextHome, 'seed-manifest.yaml');
+    await writeFile(
+      manifestPath,
+      [
+        'version: 1',
+        'projects:',
+        '  - name: failing',
+        `    path: ${failingRepo}`,
+        '    uri: threadnote://resources/repos/failing',
+        '    seed: ["*.md"]',
+        '  - name: healthy',
+        `    path: ${healthyRepo}`,
+        '    uri: threadnote://resources/repos/healthy',
+        '    seed: [README.md]',
+        '',
+      ].join('\n'),
+    );
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: contextHome,
+      agentId: 'threadnote',
+      manifestPath,
+      user: 'denys',
+    };
+
+    await expect(run(runSeed(config, {}))).rejects.toThrow('1 project(s) failed');
+    await expect(
+      readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'healthy', 'README.md'), 'utf8'),
+    ).resolves.toContain('Healthy project');
   });
 
   it('removes stale canonical resources when a seeded file is deleted or renamed', async () => {

@@ -48,6 +48,9 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 if (packageJson.dependencies?.['node-llama-cpp'] !== '3.19.1') {
   failures.push('node-llama-cpp must be an exact runtime dependency at 3.19.1');
 }
+if (packageJson.dependencies?.['@effect/sql-sqlite-node'] !== '4.0.0-beta.99') {
+  failures.push('@effect/sql-sqlite-node must match the exact Effect runtime version at 4.0.0-beta.99');
+}
 if (packageJson.config?.nodeLlamaCppPostinstall !== 'skip') {
   failures.push('node-llama-cpp postinstall must default to skip');
 }

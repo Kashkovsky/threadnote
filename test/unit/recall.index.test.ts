@@ -1,9 +1,11 @@
+import {DatabaseSync} from 'node:sqlite';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   clearRecallIndexMemoryCache,
   expireRecallIndexValidation,
   loadRecallIndex,
   loadRecallIndexDataBatch,
+  recallIndexDatabaseFilename,
 } from '../../src/recall/index.js';
 import {join, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
@@ -15,6 +17,24 @@ describe('local recall index', () => {
     agentContextHome: directory,
     user: 'me',
   });
+  const databasePath = (includeInactive = false) =>
+    join(directory, 'indexes', 'lexical', recallIndexDatabaseFilename(includeInactive));
+  const queryDatabase = <Row extends object>(sql: string): readonly Row[] => {
+    const database = new DatabaseSync(databasePath());
+    try {
+      return database.prepare(sql).all() as Row[];
+    } finally {
+      database.close();
+    }
+  };
+  const executeDatabase = (sql: string): void => {
+    const database = new DatabaseSync(databasePath());
+    try {
+      database.exec(sql);
+    } finally {
+      database.close();
+    }
+  };
 
   beforeEach(async () => {
     directory = await mkdtemp('threadnote-recall-index-');
@@ -91,23 +111,24 @@ describe('local recall index', () => {
       'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
     ]);
     expect(candidates[0]?.text).toMatch(/alpha-42|recall/);
-    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
-    expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
-    const cache = await readFile(cachePath, 'utf8');
-    expect(cache).not.toContain('# Alpha-42');
-    expect(cache).not.toContain('MEMORY\\nkind: durable');
-    expect(JSON.parse(cache)).toMatchObject({
-      corpusStatistics: {
-        documentCount: 2,
-        documentFrequency: expect.any(Object),
-      },
-    });
+    expect((await stat(databasePath())).mode & 0o777).toBe(0o600);
+    expect(queryDatabase<{document_count: number}>('SELECT COUNT(*) AS document_count FROM documents')).toEqual([
+      {document_count: 2},
+    ]);
+    expect(
+      queryDatabase<{posting_count: number}>('SELECT COUNT(*) AS posting_count FROM postings')[0]?.posting_count,
+    ).toBeGreaterThan(0);
+    const candidateJson = queryDatabase<{candidate_json: string}>('SELECT candidate_json FROM documents').map(
+      row => row.candidate_json,
+    );
+    expect(candidateJson.join('\n')).not.toContain('# Alpha-42');
+    expect(candidateJson.join('\n')).not.toContain('MEMORY\\nkind: durable');
 
     const withArchived = await run(loadRecallIndex(config(), {includeInactive: true}));
     expect(withArchived.map(candidate => candidate.uri)).toContain(
       'threadnote://user/me/memories/durable/archived/threadnote/old.md',
     );
-    await expect(stat(join(directory, 'cache', 'recall-index-v6-with-inactive.json'))).resolves.toMatchObject({
+    await expect(stat(databasePath(true))).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
@@ -124,8 +145,30 @@ describe('local recall index', () => {
       'beta-9000',
     );
 
-    await writeFile(join(directory, 'cache', 'recall-index-v6.json'), '{invalid', 'utf8');
+    await writeFile(databasePath(), '{invalid', 'utf8');
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
+    expect(await readFile(databasePath(), 'utf8')).toBe('{invalid');
+    const pointer = JSON.parse(
+      await readFile(join(directory, 'indexes', 'lexical', 'active-v1.pointer.json'), 'utf8'),
+    ) as {readonly database?: string};
+    expect(pointer.database).toMatch(/^generations\/active-[^/]+\.sqlite$/);
+    await expect(
+      stat(join(directory, 'indexes', 'lexical', ...(pointer.database ?? '').split('/'))),
+    ).resolves.toMatchObject({size: expect.any(Number)});
+  });
+
+  it('supports concurrent first opens without racing schema initialization', async () => {
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Concurrent\n\nfirst-open-anchor', 'utf8');
+
+    const results = await Promise.all(
+      Array.from({length: 4}, () =>
+        run(loadRecallIndex(config(), {includeInactive: false, query: 'first-open-anchor'})),
+      ),
+    );
+
+    expect(results.every(candidates => candidates[0]?.uri.endsWith('/doc.md'))).toBe(true);
   });
 
   it('force-refreshes a same-size source even when its modification time is preserved', async () => {
@@ -143,20 +186,12 @@ describe('local recall index', () => {
     expect(refreshed[0]?.text).not.toContain('alpha-42');
   });
 
-  it('rejects structurally invalid JSON caches and rebuilds them from canonical sources', async () => {
+  it('rejects structurally invalid candidate rows and rebuilds them from canonical sources', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\ncache-shape-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
-    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as {
-      candidates: Array<{text: unknown}>;
-      postings: Record<string, unknown>;
-    };
-    cache.candidates[0]!.text = 42;
-    cache.postings.invalid = [{documentLength: 'many', fieldWeight: 1, termFrequency: 1, uri: 'bad'}];
-    await writeFile(cachePath, JSON.stringify(cache), 'utf8');
-    await rm(`${cachePath}.stale`, {force: true});
+    executeDatabase(`UPDATE documents SET candidate_json = '{"text":42,"uri":"invalid"}'`);
     await run(clearRecallIndexMemoryCache());
 
     const rebuilt = await run(loadRecallIndex(config(), {includeInactive: false}));
@@ -165,30 +200,20 @@ describe('local recall index', () => {
     expect(rebuilt[0]?.text).toContain('cache-shape-anchor');
   });
 
-  it('rejects incomplete lookup and posting relationships in otherwise well-typed caches', async () => {
+  it('repairs incomplete posting relationships from canonical sources', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\nreferential-cache-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
+    executeDatabase('DELETE FROM postings');
 
-    for (const corrupt of [
-      (cache: Record<string, unknown>) => {
-        cache.uriLookup = {};
-      },
-      (cache: Record<string, unknown>) => {
-        cache.postings = {};
-      },
-    ]) {
-      const cache = JSON.parse(await readFile(cachePath, 'utf8')) as Record<string, unknown>;
-      corrupt(cache);
-      await writeFile(cachePath, JSON.stringify(cache), 'utf8');
-      await rm(`${cachePath}.stale`, {force: true});
-      await run(clearRecallIndexMemoryCache());
-
-      const rebuilt = await run(loadRecallIndex(config(), {includeInactive: false, query: 'referential-cache-anchor'}));
-      expect(rebuilt.map(candidate => candidate.uri)).toContain('threadnote://resources/repos/threadnote/doc.md');
-    }
+    const rebuilt = await run(
+      loadRecallIndex(config(), {
+        includeInactive: false,
+        query: 'referential-cache-anchor',
+      }),
+    );
+    expect(rebuilt.map(candidate => candidate.uri)).toContain('threadnote://resources/repos/threadnote/doc.md');
   });
 
   it('loads one corpus snapshot for multiple query and scope selections', async () => {
@@ -232,7 +257,7 @@ describe('local recall index', () => {
     expect(candidates[0]?.text).not.toContain('escaped-scan-anchor');
   });
 
-  it('leaves an older derived cache untouched and rebuilds the current version lazily', async () => {
+  it('removes legacy JSON caches only after activating the SQLite index', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cacheDirectory = join(directory, 'cache');
     await mkdir(join(resourcePath, '..'), {recursive: true});
@@ -247,12 +272,10 @@ describe('local recall index', () => {
     const candidates = await run(loadRecallIndex(config(), {includeInactive: false}));
 
     expect(candidates[0]?.text).toContain('managed-field-safe');
-    await expect(stat(join(cacheDirectory, 'recall-index-v6.json'))).resolves.toMatchObject({
+    await expect(stat(databasePath())).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
-    await expect(stat(join(cacheDirectory, 'recall-index-v1.json'))).resolves.toMatchObject({
-      isFile: expect.any(Function),
-    });
+    await expect(stat(join(cacheDirectory, 'recall-index-v1.json'))).rejects.toBeDefined();
   });
 
   it('uses a recently validated cache without walking the source tree again', async () => {
@@ -293,10 +316,9 @@ describe('local recall index', () => {
       'threadnote://resources/repos/threadnote/000.md',
       'threadnote://resources/repos/threadnote/139.md',
     ]);
-    const cache = JSON.parse(await readFile(join(directory, 'cache', 'recall-index-v6.json'), 'utf8')) as {
-      readonly postings?: unknown;
-    };
-    expect(cache.postings).toBeDefined();
+    expect(
+      queryDatabase<{posting_count: number}>('SELECT COUNT(*) AS posting_count FROM postings')[0]?.posting_count,
+    ).toBeGreaterThan(0);
   });
 
   it('uses enriched keywords to retrieve paraphrases absent from the memory body', async () => {
@@ -462,7 +484,6 @@ describe('local recall index', () => {
   it('keeps prototype-collision terms safe across an incremental cache refresh', async () => {
     const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     const resourcePath = join(resourceRoot, 'target.md');
-    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(resourceRoot, {recursive: true});
     await writeFile(resourcePath, '# Target\n\ninitial-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'initial-anchor'}));
@@ -472,14 +493,42 @@ describe('local recall index', () => {
     const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'constructor'}));
 
     expect(refreshed[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
-    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as {
-      readonly corpusStatistics: {readonly documentFrequency: Record<string, unknown>};
-      readonly postings: Record<string, unknown>;
-    };
-    expect(cache.corpusStatistics.documentFrequency.constructor).toBe(1);
-    expect(cache.postings.constructor).toEqual([
-      expect.objectContaining({uri: 'threadnote://resources/repos/threadnote/target.md'}),
-    ]);
+    expect(
+      queryDatabase<{document_frequency: number}>(
+        `SELECT document_frequency FROM term_statistics WHERE term = 'constructor'`,
+      ),
+    ).toEqual([{document_frequency: 1}]);
+    expect(
+      queryDatabase<{uri: string}>(
+        `SELECT d.uri FROM postings p JOIN documents d ON d.id = p.document_id WHERE p.term = 'constructor'`,
+      ),
+    ).toEqual([{uri: 'threadnote://resources/repos/threadnote/target.md'}]);
+  });
+
+  it('updates term statistics only for documents changed by an incremental refresh', async () => {
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
+    await mkdir(resourceRoot, {recursive: true});
+    await writeFile(join(resourceRoot, 'changed.md'), '# Changed\n\nchanged-term-001', 'utf8');
+    await writeFile(join(resourceRoot, 'untouched.md'), '# Untouched\n\nuntouched-unique-777', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false, query: 'changed-term-001'}));
+    const originalIds = queryDatabase<{id: number; uri: string}>('SELECT id, uri FROM documents ORDER BY uri');
+
+    await writeFile(join(resourceRoot, 'changed.md'), '# Changed\n\nchanged-term-002', 'utf8');
+    await run(expireRecallIndexValidation(directory, false));
+    await run(loadRecallIndex(config(), {includeInactive: false, query: 'changed-term-002'}));
+
+    const refreshedIds = queryDatabase<{id: number; uri: string}>('SELECT id, uri FROM documents ORDER BY uri');
+    const originalUntouchedId = originalIds.find(row => row.uri.endsWith('/untouched.md'))?.id;
+    const refreshedUntouchedId = refreshedIds.find(row => row.uri.endsWith('/untouched.md'))?.id;
+    expect(refreshedUntouchedId).toBe(originalUntouchedId);
+    expect(refreshedIds.find(row => row.uri.endsWith('/changed.md'))?.id).not.toBe(
+      originalIds.find(row => row.uri.endsWith('/changed.md'))?.id,
+    );
+    expect(
+      queryDatabase<{term: string}>(
+        `SELECT term FROM term_statistics WHERE term IN ('changed-term-001', 'changed-term-002') ORDER BY term`,
+      ),
+    ).toEqual([{term: 'changed-term-002'}]);
   });
 
   it('observes another process invalidating an already-warmed cache', async () => {
@@ -489,7 +538,7 @@ describe('local recall index', () => {
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'first-anchor'}));
 
     await writeFile(join(resourceRoot, 'second.md'), '# Second\n\nsecond-anchor', 'utf8');
-    await writeFile(join(directory, 'cache', 'recall-index-v6.json.stale'), 'external-generation\n', 'utf8');
+    await writeFile(`${databasePath()}.stale`, 'external-generation\n', 'utf8');
 
     const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'second-anchor'}));
     expect(refreshed[0]?.uri).toBe('threadnote://resources/repos/threadnote/second.md');
@@ -677,21 +726,23 @@ describe('local recall index', () => {
 
   it('persists a fresh corpus generation after explicit invalidation', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
-    const persisted = await readFile(cachePath, 'utf8');
+    const persisted = queryDatabase<{value: string}>(`SELECT value FROM metadata WHERE key = 'validated_at'`)[0]?.value;
 
     await run(expireRecallIndexValidation(directory, false));
     await run(loadRecallIndex(config(), {includeInactive: false}));
-    const revalidated = await readFile(cachePath, 'utf8');
+    const revalidated = queryDatabase<{value: string}>(`SELECT value FROM metadata WHERE key = 'validated_at'`)[0]
+      ?.value;
     expect(revalidated).not.toBe(persisted);
 
     await writeFile(resourcePath, '# Second\n\nbeta-9000', 'utf8');
     await run(expireRecallIndexValidation(directory, false));
     const updated = await run(loadRecallIndex(config(), {includeInactive: false}));
     expect(updated[0]?.text).toContain('beta-9000');
-    expect(await readFile(cachePath, 'utf8')).not.toBe(revalidated);
+    expect(queryDatabase<{value: string}>(`SELECT value FROM metadata WHERE key = 'validated_at'`)[0]?.value).not.toBe(
+      revalidated,
+    );
   });
 });
