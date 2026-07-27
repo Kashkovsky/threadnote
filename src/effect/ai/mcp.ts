@@ -1,5 +1,5 @@
 import * as NodeStdio from '@effect/platform-node/NodeStdio';
-import {Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
+import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {fromPromiseError} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
@@ -81,20 +81,20 @@ export class EffectMcpServerAdapter {
               return Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
                 Effect.flatMap(parsed =>
                   toolHandlerEffect(() => registration.handle(parsed), applicationServices).pipe(
-                    Effect.match({
-                      onFailure: error =>
+                    Effect.matchCause({
+                      onFailure: cause =>
                         new McpSchema.CallToolResult({
-                          content: [{type: 'text', text: error instanceof Error ? error.message : String(error)}],
+                          content: [{type: 'text', text: causeMessage(cause)}],
                           isError: true,
                         }),
                       onSuccess: result => new McpSchema.CallToolResult(result as McpSchema.CallToolResult),
                     }),
                   ),
                 ),
-                Effect.catch(cause =>
+                Effect.catchCause(cause =>
                   Effect.succeed(
                     new McpSchema.CallToolResult({
-                      content: [{type: 'text', text: cause instanceof Error ? cause.message : String(cause)}],
+                      content: [{type: 'text', text: causeMessage(cause)}],
                       isError: true,
                     }),
                   ),
@@ -116,6 +116,11 @@ export class EffectMcpServerAdapter {
       ),
     );
   }
+}
+
+function causeMessage(cause: Cause.Cause<unknown>): string {
+  const squashed = Cause.squash(cause);
+  return squashed instanceof Error ? squashed.message : String(squashed);
 }
 
 function flattenJsonSchemaConstraints(value: unknown): unknown {

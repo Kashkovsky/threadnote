@@ -459,6 +459,29 @@ describe('local recall index', () => {
     expect(stable[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
   });
 
+  it('keeps prototype-collision terms safe across an incremental cache refresh', async () => {
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
+    const resourcePath = join(resourceRoot, 'target.md');
+    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
+    await mkdir(resourceRoot, {recursive: true});
+    await writeFile(resourcePath, '# Target\n\ninitial-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false, query: 'initial-anchor'}));
+
+    await writeFile(resourcePath, '# Target\n\nconstructor prototype-collision-anchor', 'utf8');
+    await run(expireRecallIndexValidation(directory, false));
+    const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'constructor'}));
+
+    expect(refreshed[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
+    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as {
+      readonly corpusStatistics: {readonly documentFrequency: Record<string, unknown>};
+      readonly postings: Record<string, unknown>;
+    };
+    expect(cache.corpusStatistics.documentFrequency.constructor).toBe(1);
+    expect(cache.postings.constructor).toEqual([
+      expect.objectContaining({uri: 'threadnote://resources/repos/threadnote/target.md'}),
+    ]);
+  });
+
   it('observes another process invalidating an already-warmed cache', async () => {
     const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     await mkdir(resourceRoot, {recursive: true});

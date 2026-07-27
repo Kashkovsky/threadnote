@@ -40,6 +40,7 @@ type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number
 
 export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
   const system = yield* SystemInfo;
+  yield* Console.log('Running Threadnote doctor checks.');
   const checks = yield* collectDoctorChecks(config, options, system.platform);
   for (const check of checks) {
     yield* Console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
@@ -74,19 +75,30 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       name: 'node',
       status: nodeMajorVersion(system.nodeVersion) >= 22 ? 'ok' : 'fail',
     },
-    {
-      detail: config.agentContextHome,
-      name: 'Threadnote home',
-      status: (yield* fs.exists(config.agentContextHome)) ? 'ok' : 'warn',
-    },
-    yield* layoutReceiptCheck(fs, path, config.agentContextHome),
-    yield* manifestCheck(config.manifestPath),
-    yield* localAiDoctorCheck(config),
-    ...(yield* mcpConfigurationChecks()),
-    yield* recallIndexCheck(config),
-    yield* memoryProjectConsistencyCheck(config),
-    ...(yield* userAgentInstructionsChecks()),
   ];
+  checks.push(
+    yield* safeDoctorCheck(
+      'Threadnote home',
+      fs.exists(config.agentContextHome).pipe(
+        Effect.map(exists => ({
+          detail: config.agentContextHome,
+          name: 'Threadnote home',
+          status: exists ? ('ok' as const) : ('warn' as const),
+        })),
+      ),
+    ),
+  );
+  checks.push(
+    yield* safeDoctorCheck('storage layout', layoutReceiptCheck(fs, path, config.agentContextHome)),
+    yield* safeDoctorCheck('seed manifest', manifestCheck(config.manifestPath)),
+    yield* safeDoctorCheck('local generation model', localAiDoctorCheck(config)),
+  );
+  checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks())));
+  checks.push(
+    yield* safeDoctorCheck('lexical recall index', recallIndexCheck(config)),
+    yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
+  );
+  checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
       detail: 'THREADNOTE_HOME still targets a legacy .openviking directory; run `threadnote migrate`',
@@ -94,13 +106,44 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       status: 'fail',
     });
   }
-  checks.push({
-    detail: layout.canonicalRoot,
-    name: 'canonical store',
-    status: (yield* fs.exists(layout.canonicalRoot)) ? 'ok' : 'warn',
-  });
+  checks.push(
+    yield* safeDoctorCheck(
+      'canonical store',
+      fs.exists(layout.canonicalRoot).pipe(
+        Effect.map(exists => ({
+          detail: layout.canonicalRoot,
+          name: 'canonical store',
+          status: exists ? ('ok' as const) : ('warn' as const),
+        })),
+      ),
+    ),
+  );
   return checks;
 });
+
+function safeDoctorCheck<R>(
+  name: string,
+  check: Effect.Effect<DoctorCheck, unknown, R>,
+): Effect.Effect<DoctorCheck, never, R> {
+  return check.pipe(
+    Effect.catch(cause =>
+      Effect.succeed({
+        detail: errorMessage(cause),
+        name,
+        status: 'fail' as const,
+      }),
+    ),
+  );
+}
+
+function safeDoctorChecks<R>(
+  name: string,
+  checks: Effect.Effect<readonly DoctorCheck[], unknown, R>,
+): Effect.Effect<readonly DoctorCheck[], never, R> {
+  return checks.pipe(
+    Effect.catch(cause => Effect.succeed([{detail: errorMessage(cause), name, status: 'fail' as const}])),
+  );
+}
 
 export const runInstall = Effect.fn('lifecycle.install')(function* (config: RuntimeConfig, options: InstallOptions) {
   const dryRun = options.dryRun === true;
