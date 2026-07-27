@@ -22,6 +22,7 @@ import {
   findOpenVikingCli,
   pythonUserScriptsCandidateDirs,
   runCommand,
+  virtualEnvironmentPythonPathSegments,
 } from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -256,6 +257,7 @@ describe('Windows lifecycle defaults', () => {
 
   it('uses native Python launcher candidates and preserves npm command wrappers', () => {
     expect(pythonExecutableCandidates('win32')).toEqual(['py', 'python', 'python3']);
+    expect(virtualEnvironmentPythonPathSegments('win32')).toEqual(['Scripts', 'python.exe']);
     expect(shouldManageCommandShim('win32')).toBe(false);
   });
 
@@ -294,6 +296,7 @@ describe('Windows lifecycle defaults', () => {
 
   it('keeps existing POSIX defaults', () => {
     expect(pythonExecutableCandidates('linux')).toEqual(['python3', 'python']);
+    expect(virtualEnvironmentPythonPathSegments('linux')).toEqual(['bin', 'python']);
     expect(shouldManageCommandShim('linux')).toBe(true);
   });
 

@@ -14,6 +14,7 @@ import {
   findOpenVikingCli,
   isJsonObject,
   isTcpPortOpen,
+  pythonRuntimeForToolExecutable,
   readFileIfExists,
   toolRoot,
 } from '../utils.js';
@@ -132,7 +133,7 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
       yield* Console.log(
         `Downloading ${LOCAL_AI_MODEL_ID} (${formatModelSize(LOCAL_AI_MODEL_SIZE)}). This is a one-time local download.`,
       );
-      const download = yield* runStreamingCommandEffect(executable, args);
+      const download = yield* runStreamingCommandEffect(executable, args, {inheritOutput: true});
       if (download.exitCode !== 0) {
         return yield* Effect.fail(new Error(`Local AI model download exited with ${download.exitCode}.`));
       }
@@ -721,23 +722,8 @@ const resolveOpenVikingPython = Effect.fn('localAi.resolveOpenVikingPython')(fun
       new Error('OpenViking is required before installing local AI. Run threadnote install or threadnote repair.'),
     );
   }
-  const fs = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
-  const system = yield* SystemInfo;
-  const sibling = pathService.join(pathService.dirname(ov), system.platform === 'win32' ? 'python.exe' : 'python');
-  if (yield* fs.exists(sibling)) return sibling;
-  const raw = yield* fs.readFileString(ov).pipe(Effect.catch(() => Effect.succeed('')));
-  const firstLine = raw.split(/\r?\n/, 1)[0] ?? '';
-  const shebang = firstLine.startsWith('#!') ? firstLine.slice(2).trim() : undefined;
-  if (shebang) {
-    const parts = shebang.split(/\s+/);
-    if (parts[0]?.endsWith('/env') && parts[1]) {
-      const resolved = yield* findExecutable([parts[1]]);
-      if (resolved) return resolved;
-    } else if (parts[0]) {
-      return parts[0];
-    }
-  }
+  const python = yield* pythonRuntimeForToolExecutable(ov, 'openviking');
+  if (python) return python;
   return yield* Effect.fail(new Error(`Could not resolve the Python runtime used by OpenViking from ${ov}.`));
 });
 

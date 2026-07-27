@@ -22,6 +22,7 @@ export interface CommandInvocation {
 
 export interface StreamingCommandOptions {
   readonly env?: NodeJS.ProcessEnv;
+  readonly inheritOutput?: boolean;
   readonly maxOutputChars?: number;
 }
 
@@ -248,7 +249,12 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: 'inherit',
+        stderr: options.inheritOutput === true ? 'inherit' : 'pipe',
+        stdout: options.inheritOutput === true ? 'inherit' : 'pipe',
       }).pipe(Effect.mapError(spawnFailed));
+      if (options.inheritOutput === true) {
+        return {exitCode: Number(yield* handle.exitCode), stderr: '', stdout: ''};
+      }
       const stdio = yield* Stdio.Stdio;
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [

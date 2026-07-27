@@ -1,5 +1,13 @@
-import {Console, Effect, FileSystem, Path, Result, Terminal, pipe} from 'effect';
-import {heading, info as infoText, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
+import {Console, Effect, FileSystem, Path, Result, pipe} from 'effect';
+import {
+  heading,
+  info as infoText,
+  keyValue,
+  promptForConfirmation,
+  success,
+  warning,
+  withSpinnerEffect,
+} from './cli_ui.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
 import {getJsonEffect, getStatusEffect} from './effect/http.js';
@@ -361,7 +369,10 @@ function runStreamingSubcommand(dryRun: boolean, executable: string, args: reado
   }
   return Effect.gen(function* () {
     yield* Console.log(`Running: ${formatShellCommand(executable, args)}`);
-    const result = yield* runStreamingCommandEffect(executable, args, env ? {env} : undefined);
+    const result = yield* runStreamingCommandEffect(executable, args, {
+      ...(env ? {env} : {}),
+      inheritOutput: true,
+    });
     if (result.exitCode !== 0) {
       return yield* Effect.fail(
         applicationError(
@@ -586,7 +597,7 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
     const accepted =
       options.dryRun ||
       options.yes ||
-      (options.interactive && (yield* confirmPostUpdateMigration('Apply this migration now? [y/N] ')));
+      (options.interactive && (yield* promptForConfirmation('Apply this migration now? [y/N] ')));
     if (!accepted) {
       yield* Console.log('Skipped. Run manually later:');
       yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
@@ -720,16 +731,6 @@ const printPostUpdateMigration = Effect.fn('update.printPostUpdateMigration')(fu
   for (const line of migration.description) {
     yield* Console.log(`- ${line}`);
   }
-});
-
-const confirmPostUpdateMigration = Effect.fn('update.confirmPostUpdateMigration')(function* (
-  prompt: string,
-  defaultYes = false,
-) {
-  const terminal = yield* Terminal.Terminal;
-  yield* terminal.display(prompt);
-  const answer = (yield* terminal.readLine).trim().toLowerCase();
-  return answer === '' ? defaultYes : answer === 'y' || answer === 'yes';
 });
 
 function formatMigrationCommand(executable: string, args: readonly string[]): string {

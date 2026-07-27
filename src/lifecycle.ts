@@ -1,4 +1,4 @@
-import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path, Result, Sink, Terminal} from 'effect';
+import {Cause, Clock, Console, Effect, Exit, FileSystem, Option, Path, Result, Sink} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import yaml from 'js-yaml';
@@ -27,7 +27,7 @@ import {
 } from './effect/command.js';
 import {getTextEffect, HttpService} from './effect/http.js';
 import {SystemInfo} from './effect/system.js';
-import {startProgress} from './cli_ui.js';
+import {promptForConfirmation, startProgress} from './cli_ui.js';
 import {
   findStaleRecallIndexTargets,
   formatRecallIndexRepairMessages,
@@ -95,6 +95,7 @@ import {
   memoryFrontmatterField,
   memoryUriProjectSegment,
   parseJsonConfigObject,
+  pythonRuntimeForToolExecutable,
   pythonUserScriptsCandidateDirs,
   readFileIfExists,
   removePath,
@@ -242,11 +243,6 @@ const readFile = Effect.fn('lifecycle.readFile')(function* (target: string, enco
   return yield* fs.readFileString(target, encoding);
 });
 
-const realpath = Effect.fn('lifecycle.realpath')(function* (target: string) {
-  const fs = yield* FileSystem.FileSystem;
-  return yield* fs.realPath(target);
-});
-
 const writeFile = Effect.fn('lifecycle.writeFile')(function* (
   target: string,
   content: string,
@@ -285,7 +281,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     detail: platform,
   });
   checks.push((yield* commandCheck('node', ['--version'])) as DoctorCheck);
-  checks.push((yield* firstCommandCheck('python', pythonExecutableCandidates(platform), ['--version'])) as DoctorCheck);
+  checks.push((yield* pythonRuntimeCheck(platform)) as DoctorCheck);
   checks.push((yield* openVikingServerCheck()) as DoctorCheck);
   checks.push((yield* openVikingCliCheck()) as DoctorCheck);
   checks.push((yield* openVikingVersionCheck(config)) as DoctorCheck);
@@ -1716,24 +1712,40 @@ const commandPresenceCheck = Effect.fn('lifecycle.commandPresenceCheck')(functio
   };
 });
 
-const firstCommandCheck = Effect.fn('lifecycle.firstCommandCheck')(function* (
-  name: string,
-  commands: readonly string[],
-  args: readonly string[],
-) {
+const pythonRuntimeCheck = Effect.fn('lifecycle.pythonRuntimeCheck')(function* (currentPlatform: NodeJS.Platform) {
+  const commands = pythonExecutableCandidates(currentPlatform);
+  const failures: string[] = [];
   for (const command of commands) {
     const executable = yield* findExecutable([command]);
     if (!executable) {
       continue;
     }
-    const result = yield* runCommand(executable, args, {allowFailure: true});
-    return {
-      name,
-      status: result.exitCode === 0 ? 'ok' : 'warn',
-      detail: `${command}: ${firstLine(result.stdout || result.stderr) || executable}`,
-    };
+    const result = yield* runCommand(executable, ['--version'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      return {
+        name: 'python',
+        status: 'ok',
+        detail: `${command}: ${firstLine(result.stdout || result.stderr) || executable}`,
+      };
+    }
+    failures.push(`${command}: ${firstLine(result.stderr || result.stdout) || 'not working'}`);
   }
-  return {name, status: 'fail', detail: `none found: ${commands.join(', ')}`};
+  const serverPath = yield* findOpenVikingServer();
+  const toolPython = serverPath ? yield* siblingPythonForExecutable(serverPath) : undefined;
+  if (toolPython) {
+    const result = yield* runCommand(toolPython, ['--version'], {allowFailure: true});
+    if (result.exitCode === 0) {
+      return {
+        name: 'python',
+        status: 'ok',
+        detail: `OpenViking tool: ${firstLine(result.stdout || result.stderr) || toolPython}`,
+      };
+    }
+    failures.push(`OpenViking tool: ${firstLine(result.stderr || result.stdout) || 'not working'}`);
+  }
+  return failures.length > 0
+    ? {name: 'python', status: 'warn', detail: failures.join('; ')}
+    : {name: 'python', status: 'fail', detail: `none found: ${commands.join(', ')}`};
 });
 
 const pythonInstallerCheck = Effect.fn('lifecycle.pythonInstallerCheck')(function* () {
@@ -1992,19 +2004,7 @@ const hasPythonModule = Effect.fn('lifecycle.hasPythonModule')(function* (server
 const siblingPythonForExecutable = Effect.fn('lifecycle.siblingPythonForExecutable')(function* (
   executablePath: string,
 ) {
-  const system = yield* SystemInfo;
-  const resolvedPath = yield* realpath(executablePath).pipe(Effect.option);
-  if (Option.isNone(resolvedPath)) {
-    return undefined;
-  }
-  const names = system.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
-  for (const name of names) {
-    const pythonPath = yield* pathJoin(yield* pathDirname(resolvedPath.value), name);
-    if (yield* exists(pythonPath)) {
-      return pythonPath;
-    }
-  }
-  return undefined;
+  return yield* pythonRuntimeForToolExecutable(executablePath, 'openviking');
 });
 
 const manifestCheck = Effect.fn('lifecycle.manifestCheck')((path: string) =>
@@ -2384,12 +2384,11 @@ const offerToInstallUv = Effect.fn('lifecycle.offerToInstallUv')(function* () {
     );
     return false;
   }
-  const terminal = yield* Terminal.Terminal;
-  yield* terminal.display(
+  const accepted = yield* promptForConfirmation(
     'OpenViking installs into Python; neither uv nor pipx is on PATH so threadnote would fall back to `pip install --user`, which fails on PEP 668 setups.\nInstall uv now? [Y/n] ',
+    true,
   );
-  const answer = (yield* terminal.readLine).trim().toLowerCase();
-  if (answer === 'n' || answer === 'no') {
+  if (!accepted) {
     yield* Console.log(
       'Continuing with `python3 -m pip install --user`. You may hit PEP 668 errors on managed Pythons.',
     );

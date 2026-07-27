@@ -10,6 +10,7 @@ export interface SystemInfoShape {
   readonly platform: NodeJS.Platform;
   readonly processId: number;
   readonly processArguments: readonly string[];
+  readonly readLine: (prompt: string, onLine: (line: string) => void) => () => void;
   readonly signalProcess: (processId: number, signal: NodeJS.Signals) => void;
   readonly setExitCode: (code: number) => void;
   readonly setEnvironmentVariable: (name: string, value: string) => void;
@@ -45,6 +46,35 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
       platform: process.platform,
       processId: process.pid,
       processArguments: process.argv,
+      readLine: (prompt, onLine) => {
+        const input = process.stdin;
+        let buffered = '';
+        let settled = false;
+        const cleanup = () => {
+          input.off('data', onData);
+          input.off('end', onEnd);
+          input.pause();
+        };
+        const finish = (line: string) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          onLine(line);
+        };
+        const onData = (chunk: string | Uint8Array) => {
+          buffered += String(chunk);
+          const newline = buffered.search(/[\r\n]/);
+          if (newline >= 0) {
+            finish(buffered.slice(0, newline));
+          }
+        };
+        const onEnd = () => finish(buffered);
+        process.stdout.write(prompt);
+        input.on('data', onData);
+        input.once('end', onEnd);
+        input.resume();
+        return cleanup;
+      },
       signalProcess: (processId, signal) => {
         process.kill(processId, signal);
       },

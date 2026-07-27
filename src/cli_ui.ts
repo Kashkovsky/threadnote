@@ -72,6 +72,22 @@ export function keyValue(label: string, value: string): string {
   return `${label}: ${value}`;
 }
 
+export const promptForConfirmation = Effect.fn('cliUi.promptForConfirmation')(function* (
+  prompt: string,
+  defaultYes = false,
+) {
+  const system = yield* SystemInfo;
+  return yield* Effect.callback<boolean>(resume => {
+    const cleanup = system.readLine(prompt, answer => resume(Effect.succeed(confirmationAnswer(answer, defaultYes))));
+    return Effect.sync(cleanup);
+  });
+});
+
+export function confirmationAnswer(answer: string, defaultYes = false): boolean {
+  const normalized = answer.trim().toLowerCase();
+  return normalized === '' ? defaultYes : normalized === 'y' || normalized === 'yes';
+}
+
 export function shouldUseColor(): boolean {
   return colorEnabled;
 }

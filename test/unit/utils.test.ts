@@ -1,6 +1,6 @@
-import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {Effect} from 'effect';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
@@ -14,6 +14,7 @@ import {
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
+  findUvToolPython as findUvToolPythonEffect,
   findOpenVikingCli as findOpenVikingCliEffect,
   formatExactMatchPointers,
   formatRecallHits,
@@ -41,6 +42,7 @@ import {
   shellQuote,
   suggestedShellRc,
   uniqueUsefulWorkspaceTerms,
+  virtualEnvironmentPythonPathSegments,
 } from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -53,6 +55,7 @@ const enrichRecallQueryWithWorkspaceContext = (
   ...args: Parameters<typeof enrichRecallQueryWithWorkspaceContextEffect>
 ) => runEffect(enrichRecallQueryWithWorkspaceContextEffect(...args));
 const findOpenVikingCli = () => runEffect(findOpenVikingCliEffect());
+const findUvToolPython = (toolName: string) => runEffect(findUvToolPythonEffect(toolName));
 const isExecutable = (...args: Parameters<typeof isExecutableEffect>) => runEffect(isExecutableEffect(...args));
 const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
 const runInteractive = (...args: Parameters<typeof runInteractiveEffect>) => runEffect(runInteractiveEffect(...args));
@@ -302,6 +305,40 @@ describe('findOpenVikingCli', () => {
         process.env.THREADNOTE_OV = originalThreadnoteOv;
       }
       await rm(dir, {force: true, recursive: true});
+    }
+  });
+});
+
+describe('findUvToolPython', () => {
+  it('resolves the interpreter from the isolated uv tool environment', async () => {
+    const originalPath = process.env.PATH;
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-uv-tool-python-'));
+    const bin = join(root, 'bin');
+    const tools = join(root, 'tools');
+    const python = join(tools, 'openviking', ...virtualEnvironmentPythonPathSegments(process.platform));
+    const uv = join(bin, process.platform === 'win32' ? 'uv.CMD' : 'uv');
+    try {
+      await mkdir(bin, {recursive: true});
+      await mkdir(dirname(python), {recursive: true});
+      if (process.platform === 'win32') {
+        await writeFile(uv, `@ECHO off\r\n@ECHO ${tools}\r\n`);
+        await writeFile(python, '');
+      } else {
+        await writeFile(uv, `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(tools)}\n`);
+        await chmod(uv, 0o755);
+        await writeFile(python, '#!/bin/sh\nexit 0\n');
+        await chmod(python, 0o755);
+      }
+      process.env.PATH = bin;
+
+      await expect(findUvToolPython('openviking')).resolves.toBe(python);
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+      await rm(root, {force: true, recursive: true});
     }
   });
 });

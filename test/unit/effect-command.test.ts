@@ -105,6 +105,14 @@ describe('Effect CommandExecutor', () => {
     expect(isProcessRunning(childPid)).toBe(false);
   });
 
+  it('supports inherited output for interactive streaming commands', async () => {
+    const result = await run(
+      runStreamingCommandEffect(process.execPath, ['-e', 'process.exit(0)'], {inheritOutput: true}),
+    );
+
+    expect(result).toEqual({exitCode: 0, stderr: '', stdout: ''});
+  });
+
   it('injects Threadnote config paths into OpenViking CLI commands', async () => {
     const result = await run(
       Effect.gen(function* () {

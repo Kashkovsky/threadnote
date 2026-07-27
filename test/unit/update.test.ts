@@ -208,9 +208,11 @@ describe('runUpdate', () => {
     expect(executeStreaming).toHaveBeenCalledWith(
       '/usr/bin/npm',
       expect.arrayContaining(['install', '--global', 'threadnote@latest']),
-      {},
+      {inheritOutput: true},
     );
-    expect(executeStreaming).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], {});
+    expect(executeStreaming).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], {
+      inheritOutput: true,
+    });
     expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
   });
 
@@ -265,10 +267,15 @@ describe('runUpdate', () => {
     expect(executeStreaming).toHaveBeenCalledWith(
       deno,
       expect.arrayContaining(['install', '--global', 'npm:threadnote@latest']),
-      {env: expect.objectContaining({NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'})},
+      {
+        env: expect.objectContaining({NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'}),
+        inheritOutput: true,
+      },
     );
     expect(executeStreaming).not.toHaveBeenCalledWith('env', expect.any(Array), expect.anything());
-    expect(executeStreaming).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], {});
+    expect(executeStreaming).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], {
+      inheritOutput: true,
+    });
   });
 
   it('updates to the beta dist-tag when --beta is requested', async () => {
@@ -485,11 +492,11 @@ describe('runPostUpdate', () => {
       ),
     );
 
-    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['local-ai', 'install'], {});
-    expect(executeStreaming).toHaveBeenCalledWith(
-      '/threadnote',
-      ['enrich-memories', '--apply', '--install-local-ai'],
-      {},
-    );
+    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['local-ai', 'install'], {
+      inheritOutput: true,
+    });
+    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['enrich-memories', '--apply', '--install-local-ai'], {
+      inheritOutput: true,
+    });
   });
 });

@@ -159,6 +159,62 @@ export const findOpenVikingCli = Effect.fn('utils.findOpenVikingCli')(function* 
   return undefined;
 });
 
+export function virtualEnvironmentPythonPathSegments(currentPlatform: NodeJS.Platform): readonly [string, string] {
+  return currentPlatform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python'];
+}
+
+export const findUvToolPython = Effect.fn('utils.findUvToolPython')(function* (toolName: string) {
+  const uv = yield* findExecutable(['uv']);
+  if (!uv) {
+    return undefined;
+  }
+  const result = yield* runCommandEffect(uv, ['tool', 'dir'], {
+    allowFailure: true,
+    timeoutMs: 5000,
+  });
+  const toolDirectory = result.exitCode === 0 ? result.stdout.trim() : '';
+  if (!toolDirectory) {
+    return undefined;
+  }
+  const system = yield* SystemInfo;
+  const pathService = yield* Path.Path;
+  const candidate = pathService.join(toolDirectory, toolName, ...virtualEnvironmentPythonPathSegments(system.platform));
+  return (yield* isExecutable(candidate)) ? candidate : undefined;
+});
+
+export const pythonRuntimeForToolExecutable = Effect.fn('utils.pythonRuntimeForToolExecutable')(function* (
+  executablePath: string,
+  uvToolName?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const resolvedPath = yield* fs.realPath(executablePath).pipe(Effect.catch(() => Effect.succeed(executablePath)));
+  const siblingNames = system.platform === 'win32' ? ['python.exe', 'python'] : ['python'];
+  for (const name of siblingNames) {
+    const candidate = pathService.join(pathService.dirname(resolvedPath), name);
+    if (yield* isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+  if (system.platform !== 'win32') {
+    const raw = yield* fs.readFileString(resolvedPath).pipe(Effect.catch(() => Effect.succeed('')));
+    const firstLine = raw.split(/\r?\n/, 1)[0] ?? '';
+    const shebang = firstLine.startsWith('#!') ? firstLine.slice(2).trim() : undefined;
+    if (shebang) {
+      const parts = shebang.split(/\s+/);
+      const command = parts[0]?.endsWith('/env') ? parts[1] : parts[0];
+      if (command) {
+        const resolved = yield* findExecutable([command]);
+        if (resolved) {
+          return resolved;
+        }
+      }
+    }
+  }
+  return uvToolName ? yield* findUvToolPython(uvToolName) : undefined;
+});
+
 const openVikingToolCandidateDirs = Effect.fn('utils.openVikingToolCandidateDirs')(function* () {
   const system = yield* SystemInfo;
   const pathService = yield* Path.Path;
