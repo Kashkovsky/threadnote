@@ -67,6 +67,7 @@ import {sha256Hex} from './effect/digest.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ApplicationLayer} from './effect/runtime.js';
 import {SystemInfo} from './effect/system.js';
+import {captureConsole} from './effect/console.js';
 import {
   installSharedAgentArtifacts,
   listShareConflicts,
@@ -105,6 +106,7 @@ import {
 import {recordRecallFeedback} from './recall/feedback.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
+import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
@@ -207,7 +209,7 @@ const mainEffect = Effect.gen(function* () {
   });
   mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
-    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` results. At closeout store durable knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
+    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` results. At closeout store durable knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences. Use `obsidian_publish` only for user-selected memory URIs; preview first.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
@@ -262,6 +264,57 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
   }
 
   registerCandidateMemoryTools(server, config);
+
+  server.registerTool(
+    'obsidian_publish',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true},
+      description:
+        'Preview or publish explicitly selected Threadnote memory URIs to a configured Obsidian projection. Preview is the default; set apply=true only after the user selects the memories and destination projection.',
+      inputSchema: {
+        apply: McpInput.boolean('Write the selected memories and persist their projection selection'),
+        force: McpInput.boolean('Regenerate edited files already managed by this projection'),
+        projection: McpInput.string('Required configured Obsidian projection identifier'),
+        uri: McpInput.stringOrStrings('Required canonical Threadnote memory URI or list of URIs'),
+        uris: McpInput.stringOrStrings('Compatibility alias for uri'),
+      },
+    },
+    ({apply, force, projection, uri, uris}) => {
+      const checkedProjection = requiredText(projection, 'obsidian_publish', 'projection', {
+        projection: 'engineering-memory',
+        uri: 'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
+      });
+      if (!checkedProjection.ok) {
+        return checkedProjection.error;
+      }
+      const checkedUris = requiredResourceUriList(
+        uris ?? uri,
+        'obsidian_publish',
+        'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
+      );
+      if (!checkedUris.ok) {
+        return checkedUris.error;
+      }
+      return captureConsole(
+        runObsidianProjectionPublish(config, {
+          apply,
+          force,
+          id: checkedProjection.value,
+          uris: checkedUris.value,
+        }),
+      ).pipe(
+        Effect.map(({output, value}) => ({
+          content: [{type: 'text' as const, text: output}],
+          structuredContent: {
+            applied: apply === true,
+            entries: value,
+            projection: checkedProjection.value,
+            uris: checkedUris.value,
+          },
+        })),
+      );
+    },
+  );
 
   if (toolset === 'full') {
     registerArchiveTool(

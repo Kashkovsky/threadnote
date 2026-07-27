@@ -39,6 +39,7 @@ import {runObsidianOpen} from '../obsidian_open.js';
 import {
   runObsidianProjectionAdd,
   runObsidianProjectionList,
+  runObsidianProjectionPublish,
   runObsidianProjectionRemove,
   runObsidianProjectionStatus,
   runObsidianProjectionSync,
@@ -599,7 +600,19 @@ const projectionSync = Command.make(
     force: boolean('force', 'Regenerate edited managed files; never overwrites unmanaged files'),
   },
   options => withRuntimeEffect(config => runObsidianProjectionSync(config, options)),
-).pipe(Command.withDescription('Regenerate a managed Obsidian memory projection'));
+).pipe(Command.withDescription('Refresh memories already selected for an Obsidian projection'));
+
+const projectionPublish = Command.make(
+  'publish',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Select and write the memories; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without writing the vault or projection selection'),
+    force: boolean('force', 'Regenerate edited managed files; never overwrites unmanaged files'),
+    uri: repeatedString('uri', 'Canonical Threadnote memory URI; repeat for multiple memories'),
+  },
+  ({uri, ...options}) => withRuntimeEffect(config => runObsidianProjectionPublish(config, {...options, uris: uri})),
+).pipe(Command.withDescription('Publish explicitly selected Threadnote memories to Obsidian'));
 
 const projectionStatus = Command.make('status', {id: argument('id', 'Projection identifier')}, ({id}) =>
   withRuntimeEffect(config => runObsidianProjectionStatus(config, id)),
@@ -618,7 +631,14 @@ const projectionRemove = Command.make(
 
 const projection = Command.make('projection').pipe(
   Command.withDescription('Manage one-way human-readable memory projections'),
-  Command.withSubcommands([projectionAdd, projectionList, projectionSync, projectionStatus, projectionRemove]),
+  Command.withSubcommands([
+    projectionAdd,
+    projectionList,
+    projectionPublish,
+    projectionSync,
+    projectionStatus,
+    projectionRemove,
+  ]),
 );
 
 const openMemory = Command.make(

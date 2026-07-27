@@ -43,6 +43,7 @@ threadnote source inventory engineering
 threadnote source sync engineering
 threadnote source sync engineering --apply
 threadnote source status engineering
+threadnote recall --query "mobile authentication token mediator"
 ```
 
 The default sync is a dry run. Apply reads Markdown files only, rejects boundary
@@ -62,7 +63,11 @@ Watched refresh is intentionally not part of the initial bridge. Run sync
 explicitly so every refresh goes through the same inventory and reviewable
 safety boundary.
 
-## Project Threadnote memories into Obsidian
+After an applied sync, normal CLI and MCP recall searches include matching
+vault notes. Results retain their external/untrusted warnings and canonical
+`threadnote://resources/external/obsidian/...` URI.
+
+## Publish selected Threadnote memories into Obsidian
 
 ```bash
 threadnote projection add --type obsidian --id engineering-memory \
@@ -73,14 +78,39 @@ threadnote projection add --type obsidian --id engineering-memory \
   --folder Threadnote \
   --apply
 
-threadnote projection sync engineering-memory
+threadnote projection publish engineering-memory \
+  --uri threadnote://user/example/memories/durable/projects/threadnote/obsidian.md
+threadnote projection publish engineering-memory \
+  --uri threadnote://user/example/memories/durable/projects/threadnote/obsidian.md \
+  --apply
+
+# Repeat --uri to publish several selected memories.
+threadnote projection publish engineering-memory \
+  --uri <first-viking-memory-uri> \
+  --uri <second-viking-memory-uri> \
+  --apply
+
+# Refresh only memories already selected for this projection.
 threadnote projection sync engineering-memory --apply
 threadnote projection status engineering-memory
 ```
 
-By default, the projection includes active durable memories and handoffs,
-including shared memories. Repeat `--kind` or `--status` to choose another
-filter, and pass `--no-shared` to keep shared memories out.
+A new projection selects no memories. `publish` adds only the canonical memory
+URIs supplied with `--uri`; it never scans the rest of the memory corpus for
+export. The default projection policy accepts active durable memories and
+handoffs, including shared memories. Repeat `--kind` or `--status` when
+configuring the projection to allow another lifecycle class, and pass
+`--no-shared` to prevent shared memories from being selected.
+
+Agent sessions use the same contract through the core `obsidian_publish` MCP
+tool. The tool previews by default. The agent sets `apply: true` only after the
+user has selected the memory URIs and destination projection.
+
+Prototype configurations created before explicit selection remain in
+`all matching (legacy)` mode so an upgrade cannot silently remove their
+generated notes. Re-run `projection add` with the same id, vault, and folder
+plus `--apply` to migrate that projection to an empty explicit selection, then
+publish the desired memory URIs.
 
 The managed folder contains:
 
@@ -96,9 +126,9 @@ Generated notes contain a managed marker, stable memory ID, canonical
 `threadnote://` URI, lifecycle metadata, source hash, evidence, and relation links.
 Threadnote secret-scans rendered output before writing it.
 
-Sync never overwrites an unmanaged file. If a previously generated file was
-edited, status reports drift and preserves it. `--force` can regenerate or
-remove only paths already recorded as managed by that projection.
+Publish and sync never overwrite an unmanaged file. If a previously generated
+file was edited, status reports drift and preserves it. `--force` can regenerate
+or remove only paths already recorded as managed by that projection.
 
 ## Open a recalled memory
 

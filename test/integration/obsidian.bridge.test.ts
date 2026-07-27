@@ -8,6 +8,7 @@ import {ResourceStore} from '../../src/effect/resource-store.js';
 import {runObsidianInboxScan} from '../../src/obsidian_inbox.js';
 import {
   runObsidianProjectionAdd,
+  runObsidianProjectionPublish,
   runObsidianProjectionRemove,
   runObsidianProjectionSync,
 } from '../../src/obsidian_projection.js';
@@ -103,6 +104,8 @@ describe('Obsidian zero-plugin bridge', () => {
     expect(externalRecallIndex.candidates.map(candidate => candidate.uri)).toContain(externalUri);
 
     const memoryUri = 'threadnote://user/tester/memories/durable/projects/threadnote/obsidian-bridge.md';
+    const unselectedMemoryUri =
+      'threadnote://user/tester/memories/durable/projects/threadnote/unselected-obsidian-bridge.md';
     await runEffect(
       Effect.gen(function* () {
         const store = yield* ResourceStore;
@@ -127,6 +130,24 @@ describe('Obsidian zero-plugin bridge', () => {
           ].join('\n'),
           {mode: 'upsert'},
         );
+        yield* store.write(
+          {account: config.account, home: config.agentContextHome, user: config.user},
+          unselectedMemoryUri,
+          [
+            'MEMORY',
+            'schema_version: 3',
+            'memory_id: tn_unselected',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: unselected-obsidian-bridge',
+            'source_agent_client: codex',
+            'timestamp: 2026-07-27T00:00:00.000Z',
+            '',
+            'This memory must stay out of the vault until explicitly selected.',
+          ].join('\n'),
+          {mode: 'upsert'},
+        );
       }),
     );
     await runEffect(
@@ -137,13 +158,35 @@ describe('Obsidian zero-plugin bridge', () => {
         vault,
       }),
     );
-    await runEffect(runObsidianProjectionSync(config, {apply: true, id: 'memory'}));
 
-    const projected = join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable', 'obsidian-bridge--tn_bridge.md');
+    const projectedDirectory = join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable');
+    const projected = join(projectedDirectory, 'obsidian-bridge--tn_bridge.md');
+    const publishPreview = await runEffect(
+      captureConsole(
+        runObsidianProjectionPublish(config, {
+          apply: false,
+          id: 'memory',
+          uris: [memoryUri],
+        }),
+      ),
+    );
+    expect(publishPreview.output).toContain('Would publish 1 selected memory URI');
+    await expect(readFile(projected, 'utf8')).rejects.toThrow();
+
+    await runEffect(
+      runObsidianProjectionPublish(config, {
+        apply: true,
+        id: 'memory',
+        uris: [memoryUri],
+      }),
+    );
     const projectedContent = await readFile(projected, 'utf8');
     expect(projectedContent).toContain('threadnote_id: tn_bridge');
     expect(projectedContent).toContain('threadnote_uri: threadnote://user/tester/memories/');
     expect(projectedContent).toContain('Threadnote is authoritative');
+    expect(await readdir(projectedDirectory)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^unselected-obsidian-bridge--/)]),
+    );
     expect(await readFile(join(vault, 'Threadnote', 'Views', 'Active Handoffs.base'), 'utf8')).toContain(
       'threadnote_generated',
     );

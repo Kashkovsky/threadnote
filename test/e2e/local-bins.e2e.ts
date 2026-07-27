@@ -309,13 +309,19 @@ describe('built self-contained distribution', () => {
     ]);
     const projectionId = 'e2e-obsidian-projection';
     await runCli(['projection', 'add', '--apply', '--id', projectionId, '--vault', vault, '--folder', 'Threadnote']);
-    await runCli(['projection', 'sync', projectionId, '--apply']);
+    expect(await runCli(['projection', 'publish', projectionId, '--uri', memoryUri])).toContain(
+      'Would publish 1 selected memory URI',
+    );
+    await runCli(['projection', 'publish', projectionId, '--uri', memoryUri, '--apply']);
     const projectedDirectory = join(vault, 'Threadnote', 'Memories', 'e2e-obsidian', 'durable');
     const projectedFilename = (await readdir(projectedDirectory)).find(name => name.startsWith('projection-bridge--'));
     expect(projectedFilename).toBeDefined();
     const projected = await readFile(join(projectedDirectory, projectedFilename as string), 'utf8');
     expect(projected).toContain(`threadnote_uri: ${memoryUri}`);
     expect(projected).toContain('Changes to this file are not imported.');
+    expect(await readdir(join(vault, 'Threadnote', 'Memories'), {recursive: true})).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/native-e2e/)]),
+    );
 
     const open = await runCli(['open', memoryUri, '--projection', projectionId, '--dry-run'], {PATH: ''});
     expect(open).toContain('obsidian://open?path=');
@@ -336,7 +342,12 @@ describe('built self-contained distribution', () => {
     await expect(runCli(['models', 'runtime'])).resolves.toMatch(/node-llama-cpp:\s+prebuilt/i);
   });
 
-  it('serves native MCP tools and recalls the installed-package memory over stdio', async () => {
+  it('serves native core and full MCP toolsets over stdio', async () => {
+    const vault = join(home, 'MCP Obsidian Vault');
+    const projectionId = 'mcp-selected-memory';
+    const memoryUri = 'threadnote://user/e2e-user/memories/durable/projects/threadnote/native-e2e.md';
+    await mkdir(vault, {recursive: true});
+    await runCli(['projection', 'add', '--apply', '--id', projectionId, '--vault', vault, '--folder', 'Threadnote']);
     const transport = new StdioClientTransport({
       args: [join(root, 'bin', 'threadnote-mcp-server.cjs')],
       command: process.execPath,
@@ -355,7 +366,9 @@ describe('built self-contained distribution', () => {
     try {
       await client.connect(transport);
       const names = (await client.listTools()).tools.map(tool => tool.name);
-      expect(names).toEqual(expect.arrayContaining(['recall_context', 'remember_context', 'health', 'grep', 'glob']));
+      expect(names).toEqual(
+        expect.arrayContaining(['recall_context', 'remember_context', 'obsidian_publish', 'health', 'grep', 'glob']),
+      );
       expect(names.some(name => name.startsWith('ov_'))).toBe(false);
       const health = await client.callTool({arguments: {}, name: 'health'});
       expect(health.structuredContent).toMatchObject({status: 'ok', storage: 'native'});
@@ -374,8 +387,21 @@ describe('built self-contained distribution', () => {
       const text = (recalled.content as Array<{readonly text?: string}>).map(item => item.text ?? '').join('\n');
       expect(recalled.isError, text).not.toBe(true);
       expect(text).toContain('native-e2e.md');
+      const preview = await client.callTool({
+        arguments: {projection: projectionId, uri: memoryUri},
+        name: 'obsidian_publish',
+      });
+      expect(JSON.stringify(preview.content)).toContain('Would publish 1 selected memory URI');
+      const publish = await client.callTool({
+        arguments: {apply: true, projection: projectionId, uri: memoryUri},
+        name: 'obsidian_publish',
+      });
+      expect(publish.structuredContent).toMatchObject({applied: true, projection: projectionId, uris: [memoryUri]});
+      const projectedDirectory = join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable');
+      expect((await readdir(projectedDirectory)).some(name => name.startsWith('native-e2e--'))).toBe(true);
     } finally {
       await client.close();
+      await runCli(['projection', 'remove', projectionId, '--apply']);
     }
   });
 

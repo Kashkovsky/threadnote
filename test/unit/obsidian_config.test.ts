@@ -26,6 +26,7 @@ describe('Obsidian source configuration', () => {
         id: 'memory',
         includeShared: true,
         kinds: ['durable', 'handoff'],
+        selectedUris: ['threadnote://user/tester/memories/durable/projects/threadnote/obsidian.md'],
         statuses: ['active'],
         type: 'obsidian',
         vault: '/vault',
@@ -49,6 +50,40 @@ describe('Obsidian source configuration', () => {
         ].join('\n'),
       ),
     ).toThrow(/include must contain at least one allowlist pattern/i);
+  });
+
+  it('preserves configurations without selected_uris as legacy all-matching projections', () => {
+    const configuration = parseObsidianConfiguration(
+      [
+        'version: 1',
+        'sources: []',
+        'projections:',
+        '  - id: memory',
+        '    type: obsidian',
+        '    vault: /vault',
+        '    folder: Threadnote',
+      ].join('\n'),
+    );
+
+    expect(configuration.projections[0]?.selectedUris).toBeUndefined();
+  });
+
+  it('accepts only canonical memory resources in projection selections', () => {
+    expect(() =>
+      parseObsidianConfiguration(
+        [
+          'version: 1',
+          'sources: []',
+          'projections:',
+          '  - id: memory',
+          '    type: obsidian',
+          '    vault: /vault',
+          '    folder: Threadnote',
+          '    selected_uris:',
+          '      - threadnote://resources/external/obsidian/vault/Note.md',
+        ].join('\n'),
+      ),
+    ).toThrow(/only canonical Threadnote memory URIs/i);
   });
 
   it('rejects unsafe projection folders and duplicate identifiers', () => {
