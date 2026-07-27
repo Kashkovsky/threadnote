@@ -12,12 +12,12 @@ describe('recall chunker', () => {
       '',
       ...Array.from({length: 80}, (_, index) => `Paragraph ${index}: ${'safe storage '.repeat(8)}`),
     ].join('\n\n');
-    const first = chunkRecallDocument('viking://resources/repos/threadnote/storage.md', source, {
+    const first = chunkRecallDocument('threadnote://resources/repos/threadnote/storage.md', source, {
       maxCharacters: 600,
       overlapCharacters: 60,
     });
     const second = chunkRecallDocument(
-      'viking://resources/repos/threadnote/storage.md',
+      'threadnote://resources/repos/threadnote/storage.md',
       source.replaceAll('\n', '\r\n'),
       {
         maxCharacters: 600,
@@ -34,9 +34,9 @@ describe('recall chunker', () => {
   });
 
   it('rejects unsafe overlap settings and omits empty documents', () => {
-    expect(chunkRecallDocument('viking://resources/empty.md', ' \n')).toEqual([]);
+    expect(chunkRecallDocument('threadnote://resources/empty.md', ' \n')).toEqual([]);
     expect(() =>
-      chunkRecallDocument('viking://resources/invalid.md', 'value', {
+      chunkRecallDocument('threadnote://resources/invalid.md', 'value', {
         maxCharacters: 256,
         overlapCharacters: 128,
       }),

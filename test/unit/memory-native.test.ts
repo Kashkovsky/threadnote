@@ -26,7 +26,7 @@ describe('native memory workflow', () => {
           user: 'tester',
         };
         yield* TestClock.setTime(Date.now());
-        const uri = 'viking://user/tester/memories/durable/projects/threadnote/lease-recovery.md';
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/lease-recovery.md';
 
         yield* runRemember(config, {
           kind: 'durable',
@@ -40,7 +40,7 @@ describe('native memory workflow', () => {
         expect(read.output).toContain('QX7 lease recovery');
 
         const list = yield* captureConsole(
-          runList(config, 'viking://user/tester/memories/durable/projects/threadnote', {recursive: true}),
+          runList(config, 'threadnote://user/tester/memories/durable/projects/threadnote', {recursive: true}),
         );
         expect(list.output).toContain(uri);
 
@@ -66,7 +66,6 @@ describe('native memory workflow', () => {
             path.join(
               home,
               'data',
-              'viking',
               'local',
               'user',
               'tester',
@@ -118,7 +117,7 @@ describe('native memory workflow', () => {
         yield* runExportPack(sourceConfig, {path: packPath});
         yield* runImportPack(targetConfig, {path: packPath});
 
-        const importedUri = 'viking://user/target-user/memories/durable/projects/threadnote/pack-root.md';
+        const importedUri = 'threadnote://user/target-user/memories/durable/projects/threadnote/pack-root.md';
         expect((yield* captureConsole(runRead(targetConfig, importedUri, {}))).output).toContain(
           'Pack round-trip preserves',
         );
@@ -132,8 +131,8 @@ describe('native memory workflow', () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-preferred-recall-scope-'});
-        const globalRoot = path.join(home, 'data', 'viking', 'local', 'resources', 'repos', 'alpha');
-        const scopedRoot = path.join(home, 'data', 'viking', 'local', 'resources', 'repos', 'zeta');
+        const globalRoot = path.join(home, 'data', 'local', 'resources', 'repos', 'alpha');
+        const scopedRoot = path.join(home, 'data', 'local', 'resources', 'repos', 'zeta');
         yield* fs.makeDirectory(globalRoot, {recursive: true});
         yield* fs.makeDirectory(scopedRoot, {recursive: true});
         yield* Effect.forEach(
@@ -161,14 +160,14 @@ describe('native memory workflow', () => {
           includeInactive: false,
           limit: 5,
           passes: [],
-          preferredUriScopes: ['viking://resources/repos/zeta'],
+          preferredUriScopes: ['threadnote://resources/repos/zeta'],
           query: 'common recall term',
           readRecords: () => Effect.succeed([]),
           semanticScores: null,
         });
 
         expect(result.expansionCandidates.map(candidate => candidate.uri)).toContain(
-          'viking://resources/repos/zeta/target.md',
+          'threadnote://resources/repos/zeta/target.md',
         );
         expect(result.expansionCandidates.some(candidate => candidate.uri.includes('/repos/alpha/'))).toBe(true);
       }),

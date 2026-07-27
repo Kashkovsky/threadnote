@@ -39,7 +39,7 @@ describe('runSeed', () => {
         'projects:',
         '  - name: sample-repo',
         `    path: ${repo}`,
-        '    uri: viking://resources/repos/sample-repo',
+        '    uri: threadnote://resources/repos/sample-repo',
         '    seed:',
         '      - README.md',
         '',
@@ -56,7 +56,7 @@ describe('runSeed', () => {
     const output = await captureConsole(runSeed(config, {dryRun: true}));
 
     expect(output).toContain('Would seed resource:');
-    expect(output).toContain('viking://resources/repos/sample-repo/README.md');
+    expect(output).toContain('threadnote://resources/repos/sample-repo/README.md');
     expect(output).not.toContain('--wait');
     expect(output).not.toContain('--reason');
     expect(output).not.toContain('Project guidance for');
@@ -82,7 +82,7 @@ describe('runSeed', () => {
         'projects:',
         '  - name: sample-repo',
         `    path: ${repo}`,
-        '    uri: viking://resources/repos/sample-repo',
+        '    uri: threadnote://resources/repos/sample-repo',
         '    seed:',
         '      - README.md',
         '',
@@ -92,7 +92,7 @@ describe('runSeed', () => {
       join(contextHome, 'seed-state.json'),
       JSON.stringify({
         files: {
-          'viking://resources/repos/sample-repo/README.md': {
+          'threadnote://resources/repos/sample-repo/README.md': {
             mtimeMs: recordedMtimeMs,
             size: readmeStat.size,
           },
@@ -127,7 +127,7 @@ describe('runSeed', () => {
         'projects:',
         '  - name: sample-repo',
         `    path: ${repo}`,
-        '    uri: viking://resources/repos/sample-repo',
+        '    uri: threadnote://resources/repos/sample-repo',
         '    seed:',
         '      - README.md',
         '',
@@ -162,7 +162,7 @@ describe('runSeed', () => {
         'projects:',
         '  - name: sample-repo',
         `    path: ${repo}`,
-        '    uri: viking://resources/repos/sample-repo',
+        '    uri: threadnote://resources/repos/sample-repo',
         '    seed:',
         '      - "*.md"',
         '',
@@ -181,10 +181,10 @@ describe('runSeed', () => {
     const output = await captureConsole(runSeed(config, {}));
 
     await expect(
-      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'sample-repo', 'README.md')),
+      readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'sample-repo', 'README.md')),
     ).rejects.toThrow();
     await expect(
-      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'sample-repo', 'GUIDE.md'), 'utf8'),
+      readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'sample-repo', 'GUIDE.md'), 'utf8'),
     ).resolves.toContain('Sample');
     expect(output).toContain('1 stale removed');
   });
@@ -203,7 +203,7 @@ describe('runSeed', () => {
           'projects:',
           `  - name: ${name}`,
           `    path: ${repo}`,
-          '    uri: viking://resources/repos/stable-uri',
+          '    uri: threadnote://resources/repos/stable-uri',
           '    seed: [README.md]',
           '',
         ].join('\n'),
@@ -224,12 +224,12 @@ describe('runSeed', () => {
     const output = await captureConsole(runSeed(config, {}));
 
     await expect(
-      readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'stable-uri', 'README.md')),
+      readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'stable-uri', 'README.md')),
     ).rejects.toThrow();
     const state = JSON.parse(await readFile(join(contextHome, 'seed-state.json'), 'utf8')) as {
       readonly files: Record<string, unknown>;
     };
-    expect(state.files['viking://resources/repos/stable-uri/README.md']).toBeUndefined();
+    expect(state.files['threadnote://resources/repos/stable-uri/README.md']).toBeUndefined();
     expect(output).toContain('1 stale removed');
   });
 
@@ -248,11 +248,11 @@ describe('runSeed', () => {
         'projects:',
         '  - name: child',
         `    path: ${childRepo}`,
-        '    uri: viking://resources/repos/platform/service',
+        '    uri: threadnote://resources/repos/platform/service',
         '    seed: ["*.md"]',
         '  - name: parent',
         `    path: ${parentRepo}`,
-        '    uri: viking://resources/repos/platform',
+        '    uri: threadnote://resources/repos/platform',
         '    seed: ["*.md"]',
         '',
       ].join('\n'),
@@ -268,15 +268,12 @@ describe('runSeed', () => {
     await captureConsole(runSeed(config, {}));
 
     await expect(
-      readFile(
-        join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'platform', 'service', 'child.md'),
-        'utf8',
-      ),
+      readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'platform', 'service', 'child.md'), 'utf8'),
     ).resolves.toContain('Child');
     const state = JSON.parse(await readFile(join(contextHome, 'seed-state.json'), 'utf8')) as {
       readonly files: Record<string, {readonly project?: string}>;
     };
-    expect(state.files['viking://resources/repos/platform/service/child.md']?.project).toBe('child');
+    expect(state.files['threadnote://resources/repos/platform/service/child.md']?.project).toBe('child');
   });
 });
 
@@ -312,7 +309,7 @@ describe('seed-skills', () => {
         'projects:',
         '  - name: sample-repo',
         `    path: ${repo}`,
-        '    uri: viking://resources/repos/sample-repo',
+        '    uri: threadnote://resources/repos/sample-repo',
         '    seed: []',
         '',
       ].join('\n'),
@@ -332,9 +329,9 @@ describe('seed-skills', () => {
     expect(output).toContain(
       `Command repo-local:sample-repo:claude-commands: ${join(repo, '.claude', 'commands', 'review-pr.md')}`,
     );
-    expect(output).toMatch(/viking:\/\/resources\/agent-skills\/claude-commands-global\/weekly-[a-f0-9]{12}\.md/);
+    expect(output).toMatch(/threadnote:\/\/resources\/agent-skills\/claude-commands-global\/weekly-[a-f0-9]{12}\.md/);
     expect(output).toMatch(
-      /viking:\/\/resources\/agent-skills\/repo-local-sample-repo-claude-commands\/review-pr-[a-f0-9]{12}\.md/,
+      /threadnote:\/\/resources\/agent-skills\/repo-local-sample-repo-claude-commands\/review-pr-[a-f0-9]{12}\.md/,
     );
     expect(output).not.toContain('--reason');
     expect(output).not.toContain('Agent command catalog item from claude-commands-global: weekly.md');
@@ -362,7 +359,7 @@ describe('init-manifest', () => {
         'projects:',
         '  - name: existing-repo',
         `    path: ${existingRepo}`,
-        '    uri: viking://resources/repos/existing-repo',
+        '    uri: threadnote://resources/repos/existing-repo',
         '    seed: [README.md]',
         'worksets:',
         '  - name: platform',
@@ -422,7 +419,7 @@ describe('init-manifest', () => {
 
       const manifest = await run(readSeedManifest(manifestPath));
       expect(manifest.projects[0]?.name).toBe('threadnote');
-      expect(manifest.projects[0]?.uri).toBe('viking://resources/repos/threadnote');
+      expect(manifest.projects[0]?.uri).toBe('threadnote://resources/repos/threadnote');
     } finally {
       for (const key of GIT_ENV_KEYS) {
         const value = previousGitEnv.get(key);
@@ -454,7 +451,7 @@ describe('seedDependencyGraphs', () => {
           name: '../bad',
           path: repo,
           seed: [],
-          uri: 'viking://resources/repos/bad',
+          uri: 'threadnote://resources/repos/bad',
         },
       ],
       version: 1,
@@ -470,7 +467,7 @@ describe('seedDependencyGraphs', () => {
     await captureConsole(seedDependencyGraphs(config, 'threadnote-native', manifest, manifest.projects, false));
 
     expect(
-      await readFile(join(contextHome, 'data', 'viking', 'local', 'resources', 'repos', 'bad', '.graph.md'), 'utf8'),
+      await readFile(join(contextHome, 'data', 'local', 'resources', 'repos', 'bad', '.graph.md'), 'utf8'),
     ).toContain('# ../bad — dependency facts');
     await expect(readFile(join(contextHome, 'bad.graph.md'), 'utf8')).rejects.toThrow();
   });

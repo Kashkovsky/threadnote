@@ -29,7 +29,7 @@ describe('recall runtime orchestration', () => {
   it('reuses reranker scores across repeated prepare passes in one top-level recall', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-recall-runtime-'));
     homes.push(home);
-    const resource = join(home, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'runtime.md');
+    const resource = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'runtime.md');
     await mkdir(join(resource, '..'), {recursive: true});
     await writeFile(resource, '# Runtime\n\nreranker cache anchor');
     const config: RuntimeConfig = {

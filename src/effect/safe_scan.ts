@@ -15,10 +15,11 @@ export interface SafeFileScanOptions {
 const SAFE_SCAN_ENTRY_CONCURRENCY = 64;
 
 /**
- * Walks only real files and directories whose canonical path matches their
- * logical location beneath `boundaryRoot`. This rejects symlink aliases and
- * escapes while the visited set provides a second guard against directory
- * cycles.
+ * Walks only real files and directories beneath a canonicalized boundary.
+ * Every recursively discovered child is rejected if it is a symlink, so its
+ * expected real path can be derived from the already-verified parent without
+ * resolving the entire ancestor chain for every file. The visited set remains
+ * a second guard against directory cycles.
  */
 export const scanFilesWithinBoundary = Effect.fn('filesystem.scanFilesWithinBoundary')(function* (
   fs: FileSystem.FileSystem,
@@ -133,9 +134,7 @@ function inspectMappedPath(
     if (pathEscapesBoundary(relativePath, roots.pathService)) {
       return undefined;
     }
-    const expectedRealPath = roots.pathService.resolve(roots.realBoundaryRoot, relativePath);
-    const realPath = yield* fs.realPath(path);
-    if (realPath !== expectedRealPath) {
+    if (Option.isSome(yield* fs.readLink(path).pipe(Effect.option))) {
       return undefined;
     }
     const info = yield* fs.stat(path);
@@ -143,7 +142,7 @@ function inspectMappedPath(
       info.type === 'Directory' ? 'Directory' : info.type === 'File' ? 'File' : 'Other';
     return {
       modifiedAt: Option.getOrUndefined(info.mtime),
-      realPath,
+      realPath: roots.pathService.resolve(roots.realBoundaryRoot, relativePath),
       size: Number(info.size),
       type,
     };

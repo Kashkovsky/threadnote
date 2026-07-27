@@ -1,11 +1,18 @@
 import {Console, Effect, FileSystem, Path, Result} from 'effect';
+import {
+  USER_AGENT_INSTRUCTION_TARGETS,
+  USER_INSTRUCTIONS_END_MARKER,
+  USER_INSTRUCTIONS_START_MARKER,
+} from './constants.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
-import {removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
+import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {loadRecallIndexData} from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
+import {migrateThreadnoteStorageLayout} from './migration/layout.js';
+import {migrateLegacyLocalModels} from './migration/models.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
   DoctorCheck,
@@ -20,12 +27,16 @@ import type {
 import {
   assertSafeThreadnoteHomeForErase,
   errorMessage,
+  expandPath,
   formatStatus,
   memoryFrontmatterField,
   memoryUriProjectSegment,
+  readFileIfExists,
+  toolRoot,
 } from './utils.js';
 
 const LAYOUT_RECEIPT = 'layout.json';
+type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 
 export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
   const system = yield* SystemInfo;
@@ -71,8 +82,10 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* layoutReceiptCheck(fs, path, config.agentContextHome),
     yield* manifestCheck(config.manifestPath),
     yield* localAiDoctorCheck(config),
+    ...(yield* mcpConfigurationChecks()),
     yield* recallIndexCheck(config),
     yield* memoryProjectConsistencyCheck(config),
+    ...(yield* userAgentInstructionsChecks()),
   ];
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
@@ -93,6 +106,28 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   const dryRun = options.dryRun === true;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const layoutMigration = yield* migrateThreadnoteStorageLayout({
+    apply: !dryRun,
+    home: config.agentContextHome,
+  });
+  if (layoutMigration.action === 'dry_run') {
+    yield* Console.log(
+      `Would migrate ${layoutMigration.accounts} account(s) from the beta.1 canonical-store layout into ~/.threadnote/data.`,
+    );
+  } else if (layoutMigration.action === 'migrated' || layoutMigration.action === 'resumed') {
+    yield* Console.log(
+      `${layoutMigration.action === 'resumed' ? 'Resumed' : 'Migrated'} ${layoutMigration.accounts} account(s) into the Threadnote storage layout.`,
+    );
+  }
+  const modelMigration = yield* migrateLegacyLocalModels({
+    apply: !dryRun,
+    home: config.agentContextHome,
+  });
+  if (modelMigration.action === 'dry_run') {
+    yield* Console.log(`Would preserve installed local model(s): ${modelMigration.models.join(', ')}.`);
+  } else if (modelMigration.action === 'migrated' || modelMigration.action === 'resumed') {
+    yield* Console.log(`Preserved installed local model(s): ${modelMigration.models.join(', ')}.`);
+  }
   const layout = threadnoteStorageLayout(path, config.agentContextHome, config.account, uriSegment(config.user));
   const directories = [
     layout.home,
@@ -117,6 +152,7 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     }
     yield* writeLayoutReceipt(fs, path, config.agentContextHome);
   }
+  yield* installUserAgentInstructions(dryRun);
   if (options.start !== false) {
     yield* Console.log('Threadnote 4 uses in-process storage and inference; no background server is required.');
   }
@@ -183,6 +219,7 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
+  yield* removeUserAgentInstructions(dryRun);
   if (options.eraseMemories === true) {
     yield* eraseThreadnoteHome(config.agentContextHome, dryRun);
   } else {
@@ -207,7 +244,7 @@ export const memoryProjectConsistencyCheck = Effect.fn('lifecycle.memoryProjectC
     let checked = 0;
     for (const entry of entries) {
       if (!entry.endsWith('.md') || entry.endsWith('.summary.md') || entry.endsWith('.overview.md')) continue;
-      const uri = `viking://user/${uriSegment(config.user)}/memories/${entry.split(path.sep).join('/')}`;
+      const uri = `threadnote://user/${uriSegment(config.user)}/memories/${entry.split(path.sep).join('/')}`;
       const pathProject = memoryUriProjectSegment(uri);
       if (!pathProject) continue;
       const content = yield* fs
@@ -323,4 +360,167 @@ function eraseThreadnoteHome(home: string, dryRun: boolean) {
 
 function nodeMajorVersion(nodeVersion: string): number {
   return Number.parseInt(nodeVersion.split('.', 1)[0] ?? '0', 10);
+}
+
+export const userAgentInstructionsChecks = Effect.fn('lifecycle.userAgentInstructionsChecks')(function* () {
+  return yield* Effect.forEach(
+    USER_AGENT_INSTRUCTION_TARGETS,
+    target =>
+      Effect.gen(function* () {
+        const expectedInstructions = yield* renderUserAgentInstructions(target);
+        const targetPath = yield* expandPath(target.path);
+        const content = yield* readFileIfExists(targetPath);
+        if (content === undefined) {
+          return {
+            detail: `${targetPath} missing; repair will create it`,
+            name: target.label,
+            status: 'warn' as const,
+          };
+        }
+        const existingBlock = extractManagedBlock(content);
+        if (existingBlock === undefined) {
+          return {
+            detail: `${targetPath} missing Threadnote block; repair will add it`,
+            name: target.label,
+            status: 'warn' as const,
+          };
+        }
+        if (
+          (target.kind === 'file' && content !== expectedInstructions) ||
+          (target.kind === 'block' && existingBlock !== expectedInstructions)
+        ) {
+          return {
+            detail: `${targetPath} has stale Threadnote instructions; repair will update them`,
+            name: target.label,
+            status: 'warn' as const,
+          };
+        }
+        return {detail: targetPath, name: target.label, status: 'ok' as const};
+      }),
+    {concurrency: 'unbounded'},
+  );
+});
+
+const installUserAgentInstructions = Effect.fn('lifecycle.installUserAgentInstructions')(function* (dryRun: boolean) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
+    const instructions = yield* renderUserAgentInstructions(target);
+    const targetPath = yield* expandPath(target.path);
+    const currentContent = yield* readFileIfExists(targetPath);
+    if (target.kind === 'file' && currentContent !== undefined && extractManagedBlock(currentContent) === undefined) {
+      yield* Console.log(`WARN ${targetPath} is not managed by Threadnote; not modifying it`);
+      continue;
+    }
+    const nextContent = target.kind === 'file' ? instructions : upsertManagedBlock(currentContent ?? '', instructions);
+    if (nextContent === undefined) {
+      yield* Console.log(`WARN ${targetPath} has partial Threadnote markers; not modifying it`);
+      continue;
+    }
+    if (currentContent === nextContent) {
+      yield* Console.log(`Instructions already current: ${targetPath}`);
+      continue;
+    }
+    if (dryRun) {
+      yield* Console.log(
+        currentContent === undefined
+          ? `Would write agent instructions: ${targetPath}`
+          : `Would update agent instructions: ${targetPath}`,
+      );
+      continue;
+    }
+    yield* fs.makeDirectory(path.dirname(targetPath), {recursive: true, mode: 0o700});
+    yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
+    yield* Console.log(
+      currentContent === undefined
+        ? `Wrote agent instructions: ${targetPath}`
+        : `Updated agent instructions: ${targetPath}`,
+    );
+  }
+});
+
+const removeUserAgentInstructions = Effect.fn('lifecycle.removeUserAgentInstructions')(function* (dryRun: boolean) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
+    const targetPath = yield* expandPath(target.path);
+    const currentContent = yield* readFileIfExists(targetPath);
+    if (currentContent === undefined) continue;
+    if (target.kind === 'file') {
+      if (extractManagedBlock(currentContent) === undefined) continue;
+      if (dryRun) {
+        yield* Console.log(`Would remove ${target.label}: ${targetPath}`);
+      } else {
+        yield* fs.remove(targetPath);
+        yield* Console.log(`Removed ${target.label}: ${targetPath}`);
+      }
+      continue;
+    }
+    const nextContent = removeManagedBlock(currentContent);
+    if (nextContent === undefined || nextContent === currentContent) continue;
+    if (dryRun) {
+      yield* Console.log(`Would update ${targetPath}`);
+    } else if (nextContent.trim().length === 0) {
+      yield* fs.remove(targetPath);
+      yield* Console.log(`Removed ${target.label}: ${targetPath}`);
+    } else {
+      yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
+      yield* Console.log(`Updated ${targetPath}`);
+    }
+  }
+});
+
+const renderUserAgentInstructions = Effect.fn('lifecycle.renderUserAgentInstructions')(function* (
+  target: UserAgentInstructionTarget,
+) {
+  const block = yield* renderUserAgentInstructionsBlock();
+  if (target.kind === 'block') return block;
+  return [
+    '---',
+    'name: Threadnote',
+    'description: Shared local context and handoffs through Threadnote',
+    'applyTo: "**"',
+    '---',
+    '',
+    block,
+  ].join('\n');
+});
+
+const renderUserAgentInstructionsBlock = Effect.fn('lifecycle.renderUserAgentInstructionsBlock')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const instructions = (yield* fs.readFileString(path.join(yield* toolRoot(), 'docs', 'agent-instructions.md'))).trim();
+  return `${USER_INSTRUCTIONS_START_MARKER}\n${instructions}\n${USER_INSTRUCTIONS_END_MARKER}`;
+});
+
+function extractManagedBlock(content: string): string | undefined {
+  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
+  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return undefined;
+  return content.slice(startIndex, endIndex + USER_INSTRUCTIONS_END_MARKER.length);
+}
+
+function upsertManagedBlock(content: string, block: string): string | undefined {
+  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
+  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
+  if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) return undefined;
+  if (startIndex !== -1) {
+    const before = content.slice(0, startIndex).trimEnd();
+    const after = content.slice(endIndex + USER_INSTRUCTIONS_END_MARKER.length).trimStart();
+    return joinMarkdownSections([before, block, after]);
+  }
+  return joinMarkdownSections([content.trimEnd(), block]);
+}
+
+function removeManagedBlock(content: string): string | undefined {
+  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
+  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
+  if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) return undefined;
+  if (startIndex === -1) return content;
+  const before = content.slice(0, startIndex).trimEnd();
+  const after = content.slice(endIndex + USER_INSTRUCTIONS_END_MARKER.length).trimStart();
+  return joinMarkdownSections([before, after]);
+}
+
+function joinMarkdownSections(sections: readonly string[]): string {
+  return `${sections.filter(section => section.length > 0).join('\n\n')}\n`;
 }

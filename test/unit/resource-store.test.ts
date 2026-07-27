@@ -15,26 +15,33 @@ import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('ResourceId', () => {
-  it('canonicalizes compatibility aliases without changing viking URI identity', () => {
+  it('keeps threadnote URIs canonical', () => {
     expect(parseResourceId('threadnote://resources/repos/threadnote/guide%20file.md#heading')).toEqual({
       anchor: 'heading',
-      canonicalUri: 'viking://resources/repos/threadnote/guide%20file.md#heading',
+      canonicalUri: 'threadnote://resources/repos/threadnote/guide%20file.md#heading',
       inputScheme: 'threadnote',
       namespace: 'resources',
       segments: ['repos', 'threadnote', 'guide file.md'],
     });
   });
 
+  it('accepts a legacy scheme only as an input alias and emits a threadnote URI', () => {
+    expect(parseResourceId('viking://resources/repos/threadnote/guide.md')).toMatchObject({
+      canonicalUri: 'threadnote://resources/repos/threadnote/guide.md',
+      inputScheme: 'viking',
+    });
+  });
+
   it.each([
     'file:///tmp/memory.md',
-    'viking://resources/../escape.md',
-    'viking://resources/%2e%2e/escape.md',
-    'viking://resources/folder%2Fescape.md',
-    'viking://resources/folder\\escape.md',
-    'viking://resources/CON',
-    'viking://resources/trailing.',
-    'viking://resources/a//b',
-    'viking://resources/a?query=unsafe',
+    'threadnote://resources/../escape.md',
+    'threadnote://resources/%2e%2e/escape.md',
+    'threadnote://resources/folder%2Fescape.md',
+    'threadnote://resources/folder\\escape.md',
+    'threadnote://resources/CON',
+    'threadnote://resources/trailing.',
+    'threadnote://resources/a//b',
+    'threadnote://resources/a?query=unsafe',
   ])('rejects unsafe identifier %s', value => {
     expect(() => parseResourceId(value)).toThrow(InvalidResourceId);
   });
@@ -54,7 +61,7 @@ describe('ResourceId', () => {
       ),
     },
     ({segment}) => {
-      const parsed = parseResourceId(`viking://resources/${encodeURIComponent(segment)}`);
+      const parsed = parseResourceId(`threadnote://resources/${encodeURIComponent(segment)}`);
       expect(parsed.segments).toEqual([segment]);
       expect(parseResourceId(parsed.canonicalUri)).toEqual(parsed);
     },
@@ -71,25 +78,27 @@ describe('native ResourceStore', () => {
       await runEffect(
         Effect.gen(function* () {
           const store = yield* ResourceStore;
-          const uri = 'viking://user/test-user/memories/durable/projects/threadnote/storage.md';
+          const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/storage.md';
           const created = yield* store.write(location(home), uri, '# Storage\n\nfirst value', {mode: 'create'});
 
           expect(created.uri).toBe(uri);
           expect(yield* store.read(location(home), uri)).toBe('# Storage\n\nfirst value');
           expect((yield* store.stat(location(home), uri)).type).toBe('file');
           expect(
-            (yield* store.list(location(home), 'viking://user/test-user/memories', {recursive: true})).map(
+            (yield* store.list(location(home), 'threadnote://user/test-user/memories', {recursive: true})).map(
               entry => entry.uri,
             ),
           ).toContain(uri);
           expect(
-            (yield* store.glob(location(home), 'viking://user/test-user/memories', '**/*.md')).map(entry => entry.uri),
+            (yield* store.glob(location(home), 'threadnote://user/test-user/memories', '**/*.md')).map(
+              entry => entry.uri,
+            ),
           ).toContain(uri);
-          expect(yield* store.grep(location(home), 'viking://user/test-user/memories', 'FIRST')).toEqual([
+          expect(yield* store.grep(location(home), 'threadnote://user/test-user/memories', 'FIRST')).toEqual([
             {line: 3, text: 'first value', uri},
           ]);
           expect(
-            yield* store.grepMany(location(home), 'viking://user/test-user/memories', ['storage', 'FIRST']),
+            yield* store.grepMany(location(home), 'threadnote://user/test-user/memories', ['storage', 'FIRST']),
           ).toEqual([
             {line: 1, term: 'storage', text: '# Storage', uri},
             {line: 3, term: 'FIRST', text: 'first value', uri},
@@ -112,7 +121,7 @@ describe('native ResourceStore', () => {
 
           yield* store.remove(location(home), uri);
           expect(
-            (yield* store.list(location(home), 'viking://user/test-user/memories', {recursive: true})).some(
+            (yield* store.list(location(home), 'threadnote://user/test-user/memories', {recursive: true})).some(
               entry => entry.uri === uri,
             ),
           ).toBe(false);
@@ -128,14 +137,14 @@ describe('native ResourceStore', () => {
     try {
       const program = Effect.gen(function* () {
         const store = yield* ResourceStore;
-        const upper = 'viking://resources/repos/threadnote/Alpha.md';
+        const upper = 'threadnote://resources/repos/threadnote/Alpha.md';
         yield* store.write(location(home), upper, 'one', {mode: 'create'});
         expect(yield* Effect.flip(store.write(location(home), upper, 'two', {mode: 'create'}))).toBeInstanceOf(
           ResourceAlreadyExists,
         );
         expect(
           yield* Effect.flip(
-            store.write(location(home), 'viking://resources/repos/threadnote/alpha.md', 'two', {mode: 'create'}),
+            store.write(location(home), 'threadnote://resources/repos/threadnote/alpha.md', 'two', {mode: 'create'}),
           ),
         ).toBeInstanceOf(ResourcePathUnsafe);
       });
@@ -153,7 +162,7 @@ describe('native ResourceStore', () => {
         Effect.gen(function* () {
           const store = yield* ResourceStore;
           expect(yield* loadRecallIndex(config, {includeInactive: false})).toEqual([]);
-          const uri = 'viking://resources/repos/threadnote/new-resource.md';
+          const uri = 'threadnote://resources/repos/threadnote/new-resource.md';
           yield* store.write(location(home), uri, '# New resource\n\nmutation-invalidation-anchor', {
             mode: 'create',
           });
@@ -174,17 +183,8 @@ describe('native ResourceStore', () => {
     const home = await mkdtemp('threadnote-resource-index-replacement-');
     try {
       const config = {account: 'local', agentContextHome: home, user: 'test-user'};
-      const uri = 'viking://resources/repos/threadnote/replaced-resource.md';
-      const resourcePath = join(
-        home,
-        'data',
-        'viking',
-        'local',
-        'resources',
-        'repos',
-        'threadnote',
-        'replaced-resource.md',
-      );
+      const uri = 'threadnote://resources/repos/threadnote/replaced-resource.md';
+      const resourcePath = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'replaced-resource.md');
       await runEffect(
         Effect.gen(function* () {
           const store = yield* ResourceStore;
@@ -220,7 +220,7 @@ describe('native ResourceStore', () => {
       await runEffect(
         Effect.gen(function* () {
           const store = yield* ResourceStore;
-          const uri = 'viking://resources/repos/threadnote/committed.md';
+          const uri = 'threadnote://resources/repos/threadnote/committed.md';
           yield* store.write(location(home), uri, 'committed despite cache failure', {mode: 'create'});
           expect(yield* store.read(location(home), uri)).toBe('committed despite cache failure');
           yield* store.remove(location(home), uri);
@@ -243,17 +243,19 @@ describe('native ResourceStore', () => {
               content: 'first batch resource',
               options: {mode: 'upsert'},
               type: 'write',
-              uri: 'viking://resources/repos/threadnote/first.md',
+              uri: 'threadnote://resources/repos/threadnote/first.md',
             },
             {
               content: 'second batch resource',
               options: {mode: 'upsert'},
               type: 'write',
-              uri: 'viking://resources/repos/threadnote/second.md',
+              uri: 'threadnote://resources/repos/threadnote/second.md',
             },
           ]);
-          expect(yield* store.read(location(home), 'viking://resources/repos/threadnote/first.md')).toContain('first');
-          expect(yield* store.read(location(home), 'viking://resources/repos/threadnote/second.md')).toContain(
+          expect(yield* store.read(location(home), 'threadnote://resources/repos/threadnote/first.md')).toContain(
+            'first',
+          );
+          expect(yield* store.read(location(home), 'threadnote://resources/repos/threadnote/second.md')).toContain(
             'second',
           );
         }),
@@ -267,7 +269,7 @@ describe('native ResourceStore', () => {
     const home = await mkdtemp('threadnote-resource-symlink-');
     const outside = await mkdtemp('threadnote-resource-outside-');
     try {
-      const resources = join(home, 'data', 'viking', 'local', 'resources');
+      const resources = join(home, 'data', 'local', 'resources');
       await mkdir(resources, {recursive: true});
       await writeFile(join(outside, 'secret.md'), 'outside');
       await symlink(outside, join(resources, 'escape'));
@@ -276,7 +278,7 @@ describe('native ResourceStore', () => {
         runEffect(
           Effect.gen(function* () {
             const store = yield* ResourceStore;
-            return yield* store.read(location(home), 'viking://resources/escape/secret.md');
+            return yield* store.read(location(home), 'threadnote://resources/escape/secret.md');
           }),
         ),
       ).rejects.toBeInstanceOf(ResourcePathUnsafe);
@@ -290,8 +292,8 @@ describe('native ResourceStore', () => {
     const home = await mkdtemp('threadnote-resource-account-symlink-');
     const outside = await mkdtemp('threadnote-resource-account-outside-');
     try {
-      await mkdir(join(home, 'data', 'viking'), {recursive: true});
-      await symlink(outside, join(home, 'data', 'viking', 'local'));
+      await mkdir(join(home, 'data'), {recursive: true});
+      await symlink(outside, join(home, 'data', 'local'));
       const destination = join(outside, 'resources', 'repos', 'threadnote', 'redirected.md');
 
       await expect(
@@ -300,7 +302,7 @@ describe('native ResourceStore', () => {
             const store = yield* ResourceStore;
             return yield* store.write(
               location(home),
-              'viking://resources/repos/threadnote/redirected.md',
+              'threadnote://resources/repos/threadnote/redirected.md',
               'must not escape',
               {mode: 'create'},
             );

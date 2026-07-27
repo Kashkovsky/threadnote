@@ -244,7 +244,7 @@ export function buildRecallSelectionCandidates(
     const project =
       indexed?.fields?.project ??
       memoryUriProjectSegment(uri) ??
-      /^viking:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
+      /^threadnote:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
     const fields = [
       `category=${hit.category}`,
       project ? `project=${project}` : undefined,

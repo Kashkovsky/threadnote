@@ -250,7 +250,7 @@ function App(): React.ReactElement {
     [filter, navTreeTab, selectedUris, showSystem, tree],
   );
   const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
-  const outputUris = useMemo(() => vikingUrisFromText(output), [output]);
+  const outputUris = useMemo(() => resourceUrisFromText(output), [output]);
 
   async function refreshAll(): Promise<void> {
     const [nextState, nextTree, nextShares] = await Promise.all([
@@ -296,7 +296,7 @@ function App(): React.ReactElement {
   async function readContext(uri: string): Promise<void> {
     const trimmed = uri.trim();
     if (!trimmed) {
-      toastMessage('Provide a viking URI');
+      toastMessage('Provide a Threadnote URI');
       return;
     }
     try {
@@ -1162,7 +1162,7 @@ function App(): React.ReactElement {
                   <input
                     value={readUri}
                     onChange={event => setReadUri(event.target.value)}
-                    placeholder="viking://..."
+                    placeholder="threadnote://..."
                   />
                   <button disabled={!readUri.trim()} onClick={() => void readContext(readUri)}>
                     Read
@@ -1728,7 +1728,7 @@ function isMarkdownUri(uri: string): boolean {
 }
 
 function isResourceUri(uri: string): boolean {
-  return uri === 'viking://resources' || uri.startsWith('viking://resources/');
+  return uri === 'threadnote://resources' || uri.startsWith('threadnote://resources/');
 }
 
 function markdownBodyForPreview(content: string): string {
@@ -1747,8 +1747,8 @@ function nodeMatches(node: TreeNode, filter: string): boolean {
   return (node.children ?? []).some(child => nodeMatches(child, filter));
 }
 
-function vikingUrisFromText(text: string): readonly string[] {
-  const matches = text.match(/viking:\/\/[^\s)"'<>`\]]+/g) ?? [];
+function resourceUrisFromText(text: string): readonly string[] {
+  const matches = text.match(/threadnote:\/\/[^\s)"'<>`\]]+/g) ?? [];
   return [...new Set(matches.map(uri => uri.replace(/[.,;:]+$/, '')))];
 }
 

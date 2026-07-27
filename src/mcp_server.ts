@@ -29,7 +29,7 @@ import {
   sharedTeamNameForUri,
   sharedUriFor,
   stripPersonalProvenance,
-  vikingUriToWorktreeRelative,
+  resourceUriToWorktreeRelative,
   writeMemoryFile,
 } from './share.js';
 import {
@@ -205,7 +205,7 @@ const mainEffect = Effect.gen(function* () {
   });
   mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
-    'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `viking://` results. At closeout store durable feature knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
+    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` results. At closeout store durable knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);
@@ -223,7 +223,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     server,
     config,
     'recall_context',
-    'Search memories and seeded project guidance. Include the repo/project in the query; pass absolute callerCwd for current repo/branch. Returns viking:// pointers to read or list. Lower threshold if results are sparse.',
+    'Search memories and seeded project guidance. Include the repo/project in the query; pass absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
   );
   if (toolset === 'full') {
     registerSearchTool(
@@ -238,13 +238,13 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     server,
     config,
     'read_context',
-    'Read a viking:// file URI returned by recall_context or list_context.',
+    'Read a threadnote:// file URI returned by recall_context or list_context.',
   );
   if (toolset === 'full') {
     registerReadTool(server, config, 'read', 'Compatibility alias for read_context.');
   }
 
-  registerListTool(server, config, 'list_context', 'List a viking:// directory returned by recall_context.');
+  registerListTool(server, config, 'list_context', 'List a threadnote:// directory returned by recall_context.');
   if (toolset === 'full') {
     registerListTool(server, config, 'list', 'Compatibility alias for list_context.');
   }
@@ -302,14 +302,14 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
           'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
         ),
         team: McpInput.string('Team name; defaults to the configured default team'),
-        uri: McpInput.string('Required viking:// memory URI to publish'),
+        uri: McpInput.string('Required threadnote:// memory URI to publish'),
       },
     },
     ({message, preview, push, redact, team, uri}) => {
-      const checkedUri = requiredVikingUri(
+      const checkedUri = requiredResourceUri(
         uri,
         'share_publish',
-        'viking://user/example/memories/durable/projects/foo/bar.md',
+        'threadnote://user/example/memories/durable/projects/foo/bar.md',
       );
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -329,11 +329,11 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       description: 'Remove a resource from Threadnote canonical storage.',
       inputSchema: {
         recursive: McpInput.boolean('Remove a directory recursively'),
-        uri: McpInput.string('Required viking:// URI to remove'),
+        uri: McpInput.string('Required threadnote:// URI to remove'),
       },
     },
     ({recursive, uri}) => {
-      const checkedUri = requiredVikingUri(uri, 'forget', 'viking://user/you/memories/example.md');
+      const checkedUri = requiredResourceUri(uri, 'forget', 'threadnote://user/you/memories/example.md');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -353,7 +353,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         source_path: McpInput.string('Compatibility alias for path'),
         tempFileId: McpInput.string('Native progressive upload temp file id'),
         temp_file_id: McpInput.string('Native progressive upload temp file id'),
-        to: McpInput.string('Optional destination viking:// URI'),
+        to: McpInput.string('Optional destination threadnote:// URI'),
         wait: McpInput.boolean('Wait for processing to finish'),
         watchInterval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
         watch_interval: McpInput.integer('Watch interval in minutes', {minimum: 0}),
@@ -382,7 +382,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
         node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
         pattern: McpInput.string('Required text or regex pattern'),
-        uri: McpInput.string('Optional viking:// subtree (defaults to your memories root)'),
+        uri: McpInput.string('Optional threadnote:// subtree (defaults to your memories root)'),
       },
     },
     Effect.fn('mcp_server.callback')(function* ({
@@ -401,7 +401,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       if (!checkedLiteralPattern.ok) {
         return checkedLiteralPattern.error;
       }
-      const checkedUri = optionalVikingUri(uri, 'grep');
+      const checkedUri = optionalResourceUri(uri, 'grep');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -409,7 +409,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         caseInsensitive: caseInsensitive ?? case_insensitive,
         nodeLimit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
-        uri: checkedUri.value ?? `viking://user/${uriSegment(config.user)}/memories`,
+        uri: checkedUri.value ?? `threadnote://user/${uriSegment(config.user)}/memories`,
       });
     }),
   );
@@ -423,7 +423,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
         node_limit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 1000}),
         pattern: McpInput.string('Required glob pattern'),
-        uri: McpInput.string('Optional viking:// subtree'),
+        uri: McpInput.string('Optional threadnote:// subtree'),
       },
     },
     Effect.fn('mcp_server.callback')(function* ({nodeLimit, node_limit, pattern, uri}) {
@@ -435,14 +435,14 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       if (!checkedLiteralPattern.ok) {
         return checkedLiteralPattern.error;
       }
-      const checkedUri = optionalVikingUri(uri, 'glob');
+      const checkedUri = optionalResourceUri(uri, 'glob');
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
       return yield* runNativeGlobTool(config, {
         nodeLimit: nodeLimit ?? node_limit,
         pattern: checkedLiteralPattern.value,
-        uri: checkedUri.value ?? `viking://user/${uriSegment(config.user)}/memories`,
+        uri: checkedUri.value ?? `threadnote://user/${uriSegment(config.user)}/memories`,
       });
     }),
   );
@@ -477,10 +477,10 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
       description:
-        'Show one pending shared memory conflict, including local native canonical store content vs shared file diff and safe resolution options. The id comes from share_conflicts and has the form team:durable/projects/.../topic.md; a shared viking:// URI also works.',
+        'Show one pending shared memory conflict, including local native canonical store content vs shared file diff and safe resolution options. The id comes from share_conflicts and has the form team:durable/projects/.../topic.md; a shared threadnote:// URI also works.',
       inputSchema: {
         id: McpInput.string(
-          'Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI',
+          'Required conflict id from share_conflicts, relative path plus team, or shared threadnote:// URI',
         ),
         team: McpInput.string('Team name when id is only a relative path'),
       },
@@ -507,7 +507,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
           'Preview without writing native canonical store, shared files, git commits, or pending state',
         ),
         id: McpInput.string(
-          'Required conflict id from share_conflicts, relative path plus team, or shared viking:// URI',
+          'Required conflict id from share_conflicts, relative path plus team, or shared threadnote:// URI',
         ),
         mergedContent: McpInput.string(
           'Explicit merged memory markdown. Mutually exclusive with take. MCP equivalent of CLI --from-file.',
@@ -797,7 +797,7 @@ function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: Ru
       if (!checkedCandidateId.ok) {
         return checkedCandidateId.error;
       }
-      const checkedReplaceUri = optionalVikingUri(replaceUri, 'apply_memory_candidates');
+      const checkedReplaceUri = optionalResourceUri(replaceUri, 'apply_memory_candidates');
       if (!checkedReplaceUri.ok) {
         return checkedReplaceUri.error;
       }
@@ -1184,7 +1184,7 @@ function registerSearchTool(
       description,
       inputSchema: {
         query: McpInput.string('Required search query, for example "unity-ui-ccc latest handoff"'),
-        uri: McpInput.string('Optional viking:// subtree to search'),
+        uri: McpInput.string('Optional threadnote:// subtree to search'),
         callerCwd: McpInput.string(
           'Optional absolute caller workspace path used to resolve this/current branch queries',
         ),
@@ -1204,7 +1204,7 @@ function registerSearchTool(
       if (!checkedQuery.ok) {
         return checkedQuery.error;
       }
-      const checkedUri = optionalVikingUri(uri, name);
+      const checkedUri = optionalResourceUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -1274,7 +1274,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       }
     }
     const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
-    if (seededUri?.startsWith('viking://') && seededUri !== params.pinnedUri) {
+    if (seededUri?.startsWith('threadnote://') && seededUri !== params.pinnedUri) {
       scopedRecallUris.add(seededUri);
     }
 
@@ -1534,14 +1534,14 @@ function registerReadTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description: `${description} Required: pass JSON arguments with uri, or native native canonical store uris.`,
       inputSchema: {
-        uri: McpInput.string('Required viking:// file URI'),
+        uri: McpInput.string('Required threadnote:// file URI'),
         uris: McpInput.stringOrStrings(
-          'Native native canonical store MCP read input: a single viking:// URI or array of URIs',
+          'Native native canonical store MCP read input: a single threadnote:// URI or array of URIs',
         ),
       },
     },
     ({uri, uris}) => {
-      const checkedUris = requiredVikingUriList(uris ?? uri, name, 'viking://user/you/memories/.abstract.md');
+      const checkedUris = requiredResourceUriList(uris ?? uri, name, 'threadnote://user/you/memories/.abstract.md');
       if (!checkedUris.ok) {
         return checkedUris.error;
       }
@@ -1586,7 +1586,7 @@ function registerListTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        uri: McpInput.string('Optional viking:// directory URI; defaults to viking://'),
+        uri: McpInput.string('Optional threadnote:// directory URI; defaults to threadnote://'),
         all: McpInput.boolean('Show hidden files like .abstract.md and .overview.md'),
         recursive: McpInput.boolean('List recursively'),
         simple: McpInput.boolean('Only return paths'),
@@ -1595,7 +1595,7 @@ function registerListTool(
       },
     },
     Effect.fn('mcp_server.callback')(function* ({all, nodeLimit, node_limit, recursive, simple, uri}) {
-      const checkedUri = optionalVikingUri(uri, name);
+      const checkedUri = optionalResourceUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -1604,7 +1604,7 @@ function registerListTool(
         nodeLimit: nodeLimit ?? node_limit,
         recursive,
         simple,
-        uri: checkedUri.value ?? 'viking://',
+        uri: checkedUri.value ?? 'threadnote://',
       });
     }),
   );
@@ -1628,10 +1628,10 @@ function registerStoreTool(
         ),
         project: McpInput.string('Project/repo namespace, for example threadnote or mobile-native'),
         references: McpInput.stringOrStrings(
-          'Optional viking:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
+          'Optional threadnote:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
         ),
         replaceUri: McpInput.string(
-          'Optional viking:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
+          'Optional threadnote:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
         ),
         text: McpInput.string('Required memory text to store'),
         sourceAgentClient: McpInput.string('Originating client, for example cursor, copilot, codex, or claude'),
@@ -1644,11 +1644,11 @@ function registerStoreTool(
       if (!checkedText.ok) {
         return checkedText.error;
       }
-      const checkedReplaceUri = optionalVikingUri(replaceUri, name);
+      const checkedReplaceUri = optionalResourceUri(replaceUri, name);
       if (!checkedReplaceUri.ok) {
         return checkedReplaceUri.error;
       }
-      const checkedReferences = optionalVikingUriList(references, name);
+      const checkedReferences = optionalResourceUriList(references, name);
       if (!checkedReferences.ok) {
         return checkedReferences.error;
       }
@@ -1832,7 +1832,7 @@ function storedMemoryUri(result: CallToolResult): string | undefined {
     return structuredMemoryUri;
   }
   const text = textFromCallToolResult(result);
-  return /Stored memory:\s+(viking:\/\/\S+)/.exec(text)?.[1];
+  return /Stored memory:\s+(threadnote:\/\/\S+)/.exec(text)?.[1];
 }
 
 function replacementCleanupIsPending(result: CallToolResult): boolean {
@@ -1908,7 +1908,7 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
         ) {
           return 'conflict' as const;
         }
-        const removed = yield* removeVikingResourceWithRetry(
+        const removed = yield* removeResourceWithRetry(
           'threadnote-native',
           config,
           candidate.applyReplaceUri as string,
@@ -1916,11 +1916,7 @@ function reconcileCandidateReplacementCleanup(config: RuntimeConfig, candidate: 
         if (!removed) {
           return 'pending' as const;
         }
-        const stillExists = yield* vikingResourceExists(
-          'threadnote-native',
-          config,
-          candidate.applyReplaceUri as string,
-        );
+        const stillExists = yield* resourceExists('threadnote-native', config, candidate.applyReplaceUri as string);
         return stillExists ? ('pending' as const) : ('complete' as const);
       }),
     );
@@ -1938,7 +1934,7 @@ function registerRecallFeedbackTool(server: EffectMcpServerAdapter, config: Runt
         action: McpInput.literals(['dismiss', 'pin', 'useful', 'wrong']),
         project: McpInput.string('Optional project scope; pin is never global'),
         query: McpInput.string('The recall query; only its SHA-256 fingerprint is stored'),
-        uri: McpInput.string('The viking:// result URI receiving feedback'),
+        uri: McpInput.string('The threadnote:// result URI receiving feedback'),
       },
     },
     ({action, project, query, uri}) => {
@@ -1946,10 +1942,10 @@ function registerRecallFeedbackTool(server: EffectMcpServerAdapter, config: Runt
       if (!checkedQuery.ok) {
         return checkedQuery.error;
       }
-      const checkedUri = requiredVikingUri(
+      const checkedUri = requiredResourceUri(
         uri,
         'recall_feedback',
-        'viking://user/example/memories/durable/projects/threadnote/recall.md',
+        'threadnote://user/example/memories/durable/projects/threadnote/recall.md',
       );
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -2004,11 +2000,15 @@ function registerArchiveTool(
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
         project: McpInput.string('Project/repo namespace for the archived copy'),
         topic: McpInput.string('Topic for the archived copy'),
-        uri: McpInput.string('Required viking:// memory URI to archive'),
+        uri: McpInput.string('Required threadnote:// memory URI to archive'),
       },
     },
     ({kind, project, topic, uri}) => {
-      const checkedUri = requiredVikingUri(uri, name, 'viking://user/example/memories/handoffs/active/repo/topic.md');
+      const checkedUri = requiredResourceUri(
+        uri,
+        name,
+        'threadnote://user/example/memories/handoffs/active/repo/topic.md',
+      );
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
@@ -2043,7 +2043,7 @@ function registerArchiveTool(
         if (archiveResult.isError === true) {
           return archiveResult;
         }
-        const removedOriginal = yield* forgetVikingResourceWithRetry(config, checkedUri.value, false, sourceContent);
+        const removedOriginal = yield* forgetResourceWithRetry(config, checkedUri.value, false, sourceContent);
         const [content] = archiveResult.content;
         const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
         return {
@@ -2133,7 +2133,7 @@ function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConf
           }
         }
         for (const action of plan.forgets) {
-          const removed = yield* forgetVikingResourceWithRetry(config, action.uri, false, action.expectedContent);
+          const removed = yield* forgetResourceWithRetry(config, action.uri, false, action.expectedContent);
           appliedMessages.push(
             removed
               ? `Forgot exact duplicate: ${action.uri}`
@@ -2180,7 +2180,7 @@ function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
     if (archiveResult.isError === true) {
       return archiveResult;
     }
-    const removedOriginal = yield* forgetVikingResourceWithRetry(config, action.uri, false, action.expectedContent);
+    const removedOriginal = yield* forgetResourceWithRetry(config, action.uri, false, action.expectedContent);
     const [content] = archiveResult.content;
     const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
     return {
@@ -2274,7 +2274,7 @@ const localMemoryDirectoryForCompact = Effect.fn('mcpServer.localMemoryDirectory
 });
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(project);
   switch (kind) {
     case 'durable':
@@ -2290,7 +2290,7 @@ const localMemoryPathForUri = Effect.fn('mcpServer.localMemoryPathForUri')(funct
   config: RuntimeConfig,
   uri: string,
 ) {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
   if (!uri.startsWith(prefix)) {
     return undefined;
   }
@@ -2304,15 +2304,7 @@ const localMemoryPathForUri = Effect.fn('mcpServer.localMemoryPathForUri')(funct
 
 const localUserMemoriesRoot = Effect.fn('mcpServer.localUserMemoriesRoot')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
-  return path.join(
-    config.agentContextHome,
-    'data',
-    'viking',
-    config.account,
-    'user',
-    uriSegment(config.user),
-    'memories',
-  );
+  return path.join(config.agentContextHome, 'data', config.account, 'user', uriSegment(config.user), 'memories');
 });
 
 const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path: string) {
@@ -2374,7 +2366,7 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
           return yield* writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string);
         }
         const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
-        const destinationExists = yield* vikingResourceExists(ov, config, memoryUri);
+        const destinationExists = yield* resourceExists(ov, config, memoryUri);
         if (params.operation === 'replace' && destinationExists && params.replaceUri !== memoryUri) {
           const [destinationRecord] = yield* readMemoryRecordsByUri(config, [memoryUri]);
           if (destinationRecord?.metadata.candidateId !== params.metadata.candidateId) {
@@ -2395,7 +2387,7 @@ function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryPar
         const messages = [`Stored memory: ${memoryUri}`];
         let replacementCleanupPending = false;
         if (params.replaceUri && !isInPlaceUpdate) {
-          const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, params.replaceUri);
+          const removedReplacedMemory = yield* removeResourceWithRetry(ov, config, params.replaceUri);
           replacementCleanupPending = !removedReplacedMemory;
           messages.push(
             removedReplacedMemory
@@ -2478,7 +2470,7 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
   yield* writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
 
-  const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
   const messages = [`Updated shared memory: ${targetUri}`];
   for (const redaction of scrub.redactions) {
     messages.push(`Redacted ${redaction.count}× ${redaction.name} before shared update.`);
@@ -2489,7 +2481,7 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
   return {content: [{type: 'text', text: messages.join('\n')}]};
 });
 
-const vikingResourceExists = Effect.fn('mcp_server.vikingResourceExists')(function* (
+const resourceExists = Effect.fn('mcp_server.resourceExists')(function* (
   _ov: string,
   config: RuntimeConfig,
   uri: string,
@@ -2501,7 +2493,7 @@ const vikingResourceExists = Effect.fn('mcp_server.vikingResourceExists')(functi
   );
 });
 
-function removeVikingResourceWithRetry(_ov: string, config: RuntimeConfig, uri: string, recursive = false) {
+function removeResourceWithRetry(_ov: string, config: RuntimeConfig, uri: string, recursive = false) {
   return Effect.gen(function* () {
     const store = yield* ResourceStore;
     return yield* store.remove(resourceStoreLocation(config), uri, {recursive}).pipe(
@@ -2521,7 +2513,7 @@ function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentCon
 
 function runNativeRemoveTool(config: RuntimeConfig, uri: string, recursive: boolean) {
   return Effect.gen(function* () {
-    const removed = yield* forgetVikingResourceWithRetry(config, uri, recursive);
+    const removed = yield* forgetResourceWithRetry(config, uri, recursive);
     return {
       content: [
         {
@@ -2559,7 +2551,7 @@ const memoryUriFor = Effect.fn('mcpServer.memoryUriFor')(function* (
 });
 
 function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
-  const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
+  const baseUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(metadata.project ?? 'general');
   switch (metadata.kind) {
     case 'preference':
@@ -2592,7 +2584,7 @@ const memoryWriteMode = Effect.fn('mcp_server.memoryWriteMode')(function* (
   if (!shouldUseStableMemoryUri(metadata)) {
     return 'create';
   }
-  return (yield* vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+  return (yield* resourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
 });
 
 function exactMemoryScopes(
@@ -2602,12 +2594,12 @@ function exactMemoryScopes(
   project: ProjectManifest | undefined,
 ): readonly string[] {
   return exactMemoryScopeUris({
-    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    agentMemoriesUri: `threadnote://agent/${uriSegment(config.agentId)}/memories`,
     includeArchived,
     intents: exactRecallScopeIntents(query),
     projectName: project ? uriSegment(project.name) : undefined,
     projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
-    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+    userBase: `threadnote://user/${uriSegment(config.user)}/memories`,
   });
 }
 
@@ -2617,9 +2609,9 @@ const MAX_WORKSET_PASSES = 12;
 function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
   const scopes: string[] = [];
   for (const member of workset.projects) {
-    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    scopes.push(`threadnote://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
     const seeded = trimTrailingSlash(member.uri);
-    if (seeded.startsWith('viking://')) {
+    if (seeded.startsWith('threadnote://')) {
       scopes.push(seeded);
     }
   }
@@ -2634,7 +2626,7 @@ function projectMemoryScopeUris(
   if (!projectName) {
     return [];
   }
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(projectName);
   const scopes = [
     `${base}/durable/projects/${projectSegment}`,
@@ -2698,37 +2690,39 @@ function rejectLeadingDash(value: string, toolName: string, fieldName: string): 
   };
 }
 
-function requiredVikingUri(value: string | undefined, toolName: string, exampleUri: string): CheckedText {
+function requiredResourceUri(value: string | undefined, toolName: string, exampleUri: string): CheckedText {
   const checked = requiredText(value, toolName, 'uri', {uri: exampleUri});
   if (!checked.ok) {
     return checked;
   }
-  if (checked.value.startsWith('viking://')) {
-    return checked;
+  try {
+    return {ok: true, value: parseResourceId(checked.value).canonicalUri};
+  } catch {
+    return {
+      error: argumentError(`Threadnote MCP tool "${toolName}" needs a threadnote:// URI. Received: ${checked.value}`),
+      ok: false,
+    };
   }
-  return {
-    error: argumentError(`Threadnote MCP tool "${toolName}" needs a viking:// URI. Received: ${checked.value}`),
-    ok: false,
-  };
 }
 
-function optionalVikingUri(value: string | undefined, toolName: string): CheckedOptionalText {
+function optionalResourceUri(value: string | undefined, toolName: string): CheckedOptionalText {
   const normalized = value?.trim();
   if (!normalized) {
     return {ok: true, value: undefined};
   }
-  if (normalized.startsWith('viking://')) {
-    return {ok: true, value: normalized};
+  try {
+    return {ok: true, value: parseResourceId(normalized).canonicalUri};
+  } catch {
+    return {
+      error: argumentError(
+        `Threadnote MCP tool "${toolName}" optional "uri" must be a threadnote:// URI. Received: ${normalized}`,
+      ),
+      ok: false,
+    };
   }
-  return {
-    error: argumentError(
-      `Threadnote MCP tool "${toolName}" optional "uri" must start with viking://. Received: ${normalized}`,
-    ),
-    ok: false,
-  };
 }
 
-function optionalVikingUriList(
+function optionalResourceUriList(
   value: readonly string[] | string | undefined,
   toolName: string,
 ): CheckedOptionalTextArray {
@@ -2737,19 +2731,23 @@ function optionalVikingUriList(
   if (uris.length === 0) {
     return {ok: true, value: undefined};
   }
-  const invalid = uris.find(uri => !uri.startsWith('viking://'));
-  if (invalid) {
-    return {
-      error: argumentError(
-        `Threadnote MCP tool "${toolName}" needs viking:// URI values for "references". Received: ${invalid}`,
-      ),
-      ok: false,
-    };
+  const canonicalUris: string[] = [];
+  for (const uri of uris) {
+    try {
+      canonicalUris.push(parseResourceId(uri).canonicalUri);
+    } catch {
+      return {
+        error: argumentError(
+          `Threadnote MCP tool "${toolName}" needs threadnote:// URI values for "references". Received: ${uri}`,
+        ),
+        ok: false,
+      };
+    }
   }
-  return {ok: true, value: [...new Set(uris)]};
+  return {ok: true, value: [...new Set(canonicalUris)]};
 }
 
-function requiredVikingUriList(
+function requiredResourceUriList(
   value: readonly string[] | string | undefined,
   toolName: string,
   exampleUri: string,
@@ -2768,14 +2766,18 @@ function requiredVikingUriList(
       ok: false,
     };
   }
-  const invalid = uris.find(uri => !uri.startsWith('viking://'));
-  if (invalid) {
-    return {
-      error: argumentError(`Threadnote MCP tool "${toolName}" needs viking:// URI values. Received: ${invalid}`),
-      ok: false,
-    };
+  const canonicalUris: string[] = [];
+  for (const uri of uris) {
+    try {
+      canonicalUris.push(parseResourceId(uri).canonicalUri);
+    } catch {
+      return {
+        error: argumentError(`Threadnote MCP tool "${toolName}" needs threadnote:// URI values. Received: ${uri}`),
+        ok: false,
+      };
+    }
   }
-  return {ok: true, value: uris};
+  return {ok: true, value: [...new Set(canonicalUris)]};
 }
 
 function argumentError(text: string): CallToolResult {
@@ -2803,7 +2805,7 @@ const runNativeAddResourceTool = Effect.fn('mcp_server.runNativeAddResourceTool'
       [
         `Threadnote MCP tool "${toolName}" needs a non-empty "path" argument.`,
         'Pass JSON arguments to the tool call.',
-        `Example: ${toolName}(${JSON.stringify({path: '/path/to/README.md', to: 'viking://resources/my-repo/README.md'})})`,
+        `Example: ${toolName}(${JSON.stringify({path: '/path/to/README.md', to: 'threadnote://resources/my-repo/README.md'})})`,
       ].join('\n'),
     );
   }
@@ -2818,7 +2820,7 @@ const runNativeAddResourceTool = Effect.fn('mcp_server.runNativeAddResourceTool'
       `Threadnote 4 does not support native canonical store progressive-upload IDs. Pass a local file or directory in "path".`,
     );
   }
-  const checkedTo = optionalVikingUri(params.to, toolName);
+  const checkedTo = optionalResourceUri(params.to, toolName);
   if (!checkedTo.ok) {
     return checkedTo.error;
   }
@@ -2935,8 +2937,11 @@ function runNativeListTool(
         .list(location, uri, {recursive: options.recursive === true})
         .pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed([])));
     const entries =
-      options.uri === 'viking://'
-        ? [...(yield* listOne('viking://resources')), ...(yield* listOne(`viking://user/${uriSegment(config.user)}`))]
+      options.uri === 'threadnote://'
+        ? [
+            ...(yield* listOne('threadnote://resources')),
+            ...(yield* listOne(`threadnote://user/${uriSegment(config.user)}`)),
+          ]
         : yield* listOne(options.uri);
     const visible =
       options.all === true ? entries : entries.filter(entry => !entry.uri.split('/').at(-1)?.startsWith('.'));
@@ -3092,12 +3097,7 @@ function writeMemoryContentWithExpectedHash(
   });
 }
 
-function forgetVikingResourceWithRetry(
-  config: RuntimeConfig,
-  uri: string,
-  recursive = false,
-  expectedContent?: string,
-) {
+function forgetResourceWithRetry(config: RuntimeConfig, uri: string, recursive = false, expectedContent?: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     return yield* withMemoryUriLocks(
@@ -3113,7 +3113,7 @@ function forgetVikingResourceWithRetry(
             );
           }
         }
-        return yield* removeVikingResourceWithRetry('threadnote-native', config, uri, recursive);
+        return yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);
       }),
     );
   });
@@ -3307,7 +3307,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
       Effect.gen(function* () {
         const resolved = yield* resolveTeam(config, options.team);
         const targetUri = sharedUriFor(config, sourceUri, resolved.name);
-        const relativePath = vikingUriToWorktreeRelative(config, targetUri, resolved.name);
+        const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
         const commitMessage = options.message ?? `share: publish ${relativePath}`;
         const fs = yield* FileSystem.FileSystem;
         const publication = yield* withMemoryUriLocks(
@@ -3330,7 +3330,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
             }
             // Refuse to silently overwrite an existing shared memory (e.g., a
             // teammate already published the same project/topic).
-            if (yield* vikingResourceExists(ov, config, targetUri)) {
+            if (yield* resourceExists(ov, config, targetUri)) {
               return {kind: 'target_conflict' as const};
             }
             yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
@@ -3354,7 +3354,7 @@ function runSharePublishTool(config: RuntimeConfig, sourceUri: string, options: 
                 redactions: currentScrub.redactions,
               };
             }
-            const removed = yield* removeVikingResourceWithRetry(ov, config, sourceUri);
+            const removed = yield* removeResourceWithRetry(ov, config, sourceUri);
             return {
               gitMessages,
               kind: removed ? ('published' as const) : ('cleanup_pending' as const),

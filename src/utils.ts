@@ -21,6 +21,7 @@ import {
   type RecallSignals,
 } from './recall/rank.js';
 import {redactSensitiveText} from './scrubber.js';
+import {parseResourceId} from './storage/resource-id.js';
 import type {CommandStatus, JsonObject} from './types.js';
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
@@ -580,10 +581,8 @@ export function parsePositiveInteger(value: string, label: string): number {
   return parsed;
 }
 
-export function assertVikingUri(uri: string): void {
-  if (!uri.startsWith('viking://')) {
-    throw new Error(`Refusing non-viking URI: ${uri}`);
-  }
+export function assertResourceUri(uri: string): void {
+  parseResourceId(uri);
 }
 
 export function collectOption(value: string, previous: readonly string[]): readonly string[] {
@@ -734,10 +733,10 @@ export function trimTrailingSlash(value: string): string {
   return value.endsWith('/') ? value.slice(0, -1) : value;
 }
 
-export function parentVikingUri(uri: string): string {
+export function parentResourceUri(uri: string): string {
   const trimmedUri = trimTrailingSlash(uri);
   const slashIndex = trimmedUri.lastIndexOf('/');
-  return slashIndex <= 'viking://'.length ? trimmedUri : trimmedUri.slice(0, slashIndex);
+  return slashIndex <= 'threadnote://'.length ? trimmedUri : trimmedUri.slice(0, slashIndex);
 }
 
 export const sha256 = sha256Hex;
@@ -1014,7 +1013,7 @@ function recallSnippet(value: unknown): string {
 
 function isArchivedMemoryUri(uri: string): boolean {
   const documentUri = uri.replace(/#.*$/, '');
-  return /^viking:\/\/user\/[^/]+\/memories\/(?:durable|handoffs|incidents|preferences|smoke)\/archived(?:\/|$)/.test(
+  return /^threadnote:\/\/user\/[^/]+\/memories\/(?:durable|handoffs|incidents|preferences|smoke)\/archived(?:\/|$)/.test(
     documentUri,
   );
 }
@@ -1042,10 +1041,19 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
       continue;
     }
     for (const item of items) {
-      if (!isJsonObject(item) || typeof item.uri !== 'string' || isExcludedRecallUri(item.uri)) {
+      if (!isJsonObject(item) || typeof item.uri !== 'string') {
         continue;
       }
-      if (options.includeArchived !== true && isArchivedMemoryUri(item.uri)) {
+      let uri: string;
+      try {
+        uri = parseResourceId(item.uri).canonicalUri;
+      } catch {
+        continue;
+      }
+      if (isExcludedRecallUri(uri)) {
+        continue;
+      }
+      if (options.includeArchived !== true && isArchivedMemoryUri(uri)) {
         continue;
       }
       hits.push({
@@ -1053,7 +1061,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
         contextType: typeof item.context_type === 'string' ? item.context_type : 'result',
         score: typeof item.score === 'number' ? item.score : 0,
         snippet: recallSnippet(item.abstract ?? item.overview),
-        uri: item.uri,
+        uri,
       });
     }
   }
@@ -1145,7 +1153,7 @@ export function categoryForUri(uri: string): RecallCategory {
   if (uri.includes('/memories/')) {
     return 'memories';
   }
-  if (uri.startsWith('viking://resources/agent-skills/')) {
+  if (uri.startsWith('threadnote://resources/agent-skills/')) {
     return 'skills';
   }
   return 'resources';
@@ -1642,7 +1650,7 @@ function memoryStatusFromUri(uri: string): 'active' | 'archived' | 'superseded' 
 }
 
 function resourceProjectFromUri(uri: string): string | undefined {
-  return /^viking:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
+  return /^threadnote:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
 }
 
 function recallRelations(record: MemoryRecord, seedUris: readonly string[]): readonly MemoryRelation[] {
@@ -1650,7 +1658,7 @@ function recallRelations(record: MemoryRecord, seedUris: readonly string[]): rea
     ...(record.metadata.relations ?? []),
     ...(record.metadata.references ?? []).map(uri => ({type: 'references' as const, uri})),
     ...(record.metadata.evidence ?? [])
-      .filter(evidence => evidence.startsWith('viking://'))
+      .filter(evidence => evidence.startsWith('threadnote://'))
       .map(uri => ({type: 'evidence_for' as const, uri})),
     ...(record.metadata.supersedes ? [{type: 'supersedes' as const, uri: record.metadata.supersedes}] : []),
     ...containmentRelations(record.uri, seedUris),
@@ -1671,7 +1679,7 @@ function containmentRelations(
  * `exactRecallScopeIntents`) selects which scope types to search; a resolved
  * project narrows the project-specific scopes (durable, handoffs, incidents) to
  * that project, while preferences and shared stay global. Seeded resources
- * (`viking://resources/repos`) are intentionally NOT exact-grepped for
+ * (`threadnote://resources/repos`) are intentionally NOT exact-grepped for
  * intent-classified queries — those are covered by the unscoped base semantic
  * pass plus the project-scoped seeded pass, and grepping every repo per term is
  * broad and low-signal. The broad fallback (unclear intent) does include them.
@@ -1725,7 +1733,7 @@ export function exactMemoryScopeUris(params: {
     incidents,
     `${userBase}/shared`,
     agentMemoriesUri,
-    projectResourceUri ?? 'viking://resources/repos',
+    projectResourceUri ?? 'threadnote://resources/repos',
   ];
   return includeArchived
     ? [...scopes, `${userBase}/durable/archived`, `${userBase}/handoffs/archived`, `${userBase}/incidents/archived`]

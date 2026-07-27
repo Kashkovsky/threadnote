@@ -4,7 +4,7 @@ Use Threadnote as shared local context and memory. Repo files remain authoritati
 `AGENTS.md`, `CLAUDE.md`, or equivalent guidance first.
 
 At the start of a non-trivial task, call `recall_context` with the project and absolute `callerCwd`, then treat relevant
-`viking://` URIs as pointers and read them. Store reusable decisions and contracts with `kind: durable`; store status,
+`threadnote://` URIs as pointers and read them. Store reusable decisions and contracts with `kind: durable`; store status,
 checks, blockers, and next steps with `kind: handoff`. Use stable `project` and `topic` identities, and update an
 existing memory with `replaceUri` instead of creating timestamped duplicates.
 

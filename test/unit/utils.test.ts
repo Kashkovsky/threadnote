@@ -521,13 +521,13 @@ describe('exactRecallScopeIntents', () => {
 
 describe('exactMemoryScopeUris', () => {
   const base = {
-    agentMemoriesUri: 'viking://agent/threadnote/memories',
-    userBase: 'viking://user/denys/memories',
+    agentMemoriesUri: 'threadnote://agent/threadnote/memories',
+    userBase: 'threadnote://user/denys/memories',
   };
 
   it('searches preferences and shared for a preferences intent', () => {
     expect(exactMemoryScopeUris({...base, includeArchived: false, intents: new Set(['preferences'] as const)})).toEqual(
-      ['viking://user/denys/memories/preferences', 'viking://user/denys/memories/shared'],
+      ['threadnote://user/denys/memories/preferences', 'threadnote://user/denys/memories/shared'],
     );
   });
 
@@ -538,21 +538,21 @@ describe('exactMemoryScopeUris', () => {
         includeArchived: false,
         intents: new Set(['durable', 'handoffs', 'preferences'] as const),
         projectName: 'threadnote',
-        projectResourceUri: 'viking://resources/repos/threadnote',
+        projectResourceUri: 'threadnote://resources/repos/threadnote',
       }),
     ).toEqual([
-      'viking://user/denys/memories/preferences',
-      'viking://user/denys/memories/durable/projects/threadnote',
-      'viking://user/denys/memories/handoffs/active/threadnote',
-      'viking://user/denys/memories/shared',
+      'threadnote://user/denys/memories/preferences',
+      'threadnote://user/denys/memories/durable/projects/threadnote',
+      'threadnote://user/denys/memories/handoffs/active/threadnote',
+      'threadnote://user/denys/memories/shared',
     ]);
   });
 
   it('appends archived scopes for the present intents when includeArchived is set', () => {
     expect(exactMemoryScopeUris({...base, includeArchived: true, intents: new Set(['durable'] as const)})).toEqual([
-      'viking://user/denys/memories/durable/projects',
-      'viking://user/denys/memories/shared',
-      'viking://user/denys/memories/durable/archived',
+      'threadnote://user/denys/memories/durable/projects',
+      'threadnote://user/denys/memories/shared',
+      'threadnote://user/denys/memories/durable/archived',
     ]);
   });
 
@@ -563,16 +563,16 @@ describe('exactMemoryScopeUris', () => {
         includeArchived: false,
         intents: new Set(),
         projectName: 'threadnote',
-        projectResourceUri: 'viking://resources/repos/threadnote',
+        projectResourceUri: 'threadnote://resources/repos/threadnote',
       }),
     ).toEqual([
-      'viking://user/denys/memories/preferences',
-      'viking://user/denys/memories/durable/projects/threadnote',
-      'viking://user/denys/memories/handoffs/active/threadnote',
-      'viking://user/denys/memories/incidents/active/threadnote',
-      'viking://user/denys/memories/shared',
-      'viking://agent/threadnote/memories',
-      'viking://resources/repos/threadnote',
+      'threadnote://user/denys/memories/preferences',
+      'threadnote://user/denys/memories/durable/projects/threadnote',
+      'threadnote://user/denys/memories/handoffs/active/threadnote',
+      'threadnote://user/denys/memories/incidents/active/threadnote',
+      'threadnote://user/denys/memories/shared',
+      'threadnote://agent/threadnote/memories',
+      'threadnote://resources/repos/threadnote',
     ]);
   });
 });
@@ -580,14 +580,14 @@ describe('exactMemoryScopeUris', () => {
 describe('grepUrisFromJson', () => {
   it('extracts match URIs past the cmd: banner', () => {
     const output =
-      'cmd: ov grep --uri=x\n{"ok":true,"result":{"matches":[{"line":1,"uri":"viking://a.md","content":"x"},{"line":2,"uri":"viking://b.md","content":"y"}],"count":2}}';
-    expect(grepUrisFromJson(output)).toEqual(['viking://a.md', 'viking://b.md']);
+      'cmd: ov grep --uri=x\n{"ok":true,"result":{"matches":[{"line":1,"uri":"threadnote://a.md","content":"x"},{"line":2,"uri":"threadnote://b.md","content":"y"}],"count":2}}';
+    expect(grepUrisFromJson(output)).toEqual(['threadnote://a.md', 'threadnote://b.md']);
   });
 
   it('drops .overview/.abstract summary sidecars', () => {
     const output =
-      '{"ok":true,"result":{"matches":[{"line":1,"uri":"viking://a/.overview.md","content":"x"},{"line":2,"uri":"viking://a/real.md","content":"y"},{"line":3,"uri":"viking://a/.abstract.md","content":"z"}]}}';
-    expect(grepUrisFromJson(output)).toEqual(['viking://a/real.md']);
+      '{"ok":true,"result":{"matches":[{"line":1,"uri":"threadnote://a/.overview.md","content":"x"},{"line":2,"uri":"threadnote://a/real.md","content":"y"},{"line":3,"uri":"threadnote://a/.abstract.md","content":"z"}]}}';
+    expect(grepUrisFromJson(output)).toEqual(['threadnote://a/real.md']);
   });
 
   it('drops agent-artifact pack machinery so a review pack does not flood exact matches', () => {
@@ -597,14 +597,14 @@ describe('grepUrisFromJson', () => {
         matches: [
           {
             line: 1,
-            uri: 'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
+            uri: 'threadnote://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
             content: 'x',
           },
-          {line: 2, uri: 'viking://user/me/memories/durable/projects/x/real.md', content: 'y'},
+          {line: 2, uri: 'threadnote://user/me/memories/durable/projects/x/real.md', content: 'y'},
         ],
       },
     });
-    expect(grepUrisFromJson(output)).toEqual(['viking://user/me/memories/durable/projects/x/real.md']);
+    expect(grepUrisFromJson(output)).toEqual(['threadnote://user/me/memories/durable/projects/x/real.md']);
   });
 
   it('returns [] on malformed output', () => {
@@ -618,37 +618,42 @@ describe('collectExactMatches + formatExactMatchPointers', () => {
     const runGrep = (term: string) => {
       const uris =
         term === 'style'
-          ? ['viking://prefs.md#chunk_0001', 'viking://other.md']
+          ? ['threadnote://prefs.md#chunk_0001', 'threadnote://other.md']
           : term === 'tone'
-            ? ['viking://prefs.md#chunk_0002']
+            ? ['threadnote://prefs.md#chunk_0002']
             : [];
       return Effect.succeed(
         JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}}),
       );
     };
-    const matches = await collectExactMatches(['style', 'tone'], ['viking://scope'], runGrep);
+    const matches = await collectExactMatches(['style', 'tone'], ['threadnote://scope'], runGrep);
     expect(matches).toEqual([
-      {uri: 'viking://prefs.md', terms: ['style', 'tone']},
-      {uri: 'viking://other.md', terms: ['style']},
+      {uri: 'threadnote://prefs.md', terms: ['style', 'tone']},
+      {uri: 'threadnote://other.md', terms: ['style']},
     ]);
     const text = formatExactMatchPointers(matches);
     expect(text).toContain('Exact term matches (read the URI for full content):');
-    expect(text).toContain('- viking://prefs.md (style, tone)');
+    expect(text).toContain('- threadnote://prefs.md (style, tone)');
   });
 
   it('does not double-count a term when the same URI matches it in two scopes', async () => {
     const runGrep = (term: string, scope: string) => {
-      const uris = scope === 'viking://a' ? ['viking://dup.md'] : scope === 'viking://b' ? ['viking://dup.md'] : [];
+      const uris =
+        scope === 'threadnote://a'
+          ? ['threadnote://dup.md']
+          : scope === 'threadnote://b'
+            ? ['threadnote://dup.md']
+            : [];
       return Effect.succeed(
         JSON.stringify({ok: true, result: {matches: uris.map((uri, line) => ({line, uri, content: ''}))}}),
       );
     };
-    const matches = await collectExactMatches(['term'], ['viking://a', 'viking://b'], runGrep);
-    expect(matches).toEqual([{uri: 'viking://dup.md', terms: ['term']}]);
+    const matches = await collectExactMatches(['term'], ['threadnote://a', 'threadnote://b'], runGrep);
+    expect(matches).toEqual([{uri: 'threadnote://dup.md', terms: ['term']}]);
   });
 
   it('caps the pointer list and notes the overflow', () => {
-    const matches = Array.from({length: 10}, (_unused, index) => ({terms: ['t'], uri: `viking://m${index}.md`}));
+    const matches = Array.from({length: 10}, (_unused, index) => ({terms: ['t'], uri: `threadnote://m${index}.md`}));
     const text = formatExactMatchPointers(matches, 3) ?? '';
     expect(text.split('\n').filter(line => line.startsWith('- ')).length).toBe(3);
     expect(text).toContain('(+7 more exact matches');
@@ -667,18 +672,18 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       json({
         ok: true,
         result: {
-          memories: [{context_type: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, abstract: 'a  b\n c'}],
+          memories: [{context_type: 'memory', uri: 'threadnote://m.md#chunk_0001', score: 0.7, abstract: 'a  b\n c'}],
           resources: [
-            {context_type: 'resource', uri: 'viking://r.md', score: 0.6, abstract: 'doc'},
-            {context_type: 'resource', uri: 'viking://r/.overview.md', score: 0.9, abstract: 'sidecar'},
+            {context_type: 'resource', uri: 'threadnote://r.md', score: 0.6, abstract: 'doc'},
+            {context_type: 'resource', uri: 'threadnote://r/.overview.md', score: 0.9, abstract: 'sidecar'},
           ],
           skills: [],
         },
       }),
     );
     expect(hits).toEqual([
-      {category: 'memories', contextType: 'memory', uri: 'viking://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
-      {category: 'resources', contextType: 'resource', uri: 'viking://r.md', score: 0.6, snippet: 'doc'},
+      {category: 'memories', contextType: 'memory', uri: 'threadnote://m.md#chunk_0001', score: 0.7, snippet: 'a b c'},
+      {category: 'resources', contextType: 'resource', uri: 'threadnote://r.md', score: 0.6, snippet: 'doc'},
     ]);
   });
 
@@ -690,13 +695,13 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           memories: [
             {
               context_type: 'memory',
-              uri: 'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
+              uri: 'threadnote://user/me/memories/shared/default/agent-artifacts/packs/claude/r/r.pack.json',
               score: 0.7,
               abstract: 'pack',
             },
             {
               context_type: 'memory',
-              uri: 'viking://user/me/memories/durable/projects/x/real.md',
+              uri: 'threadnote://user/me/memories/durable/projects/x/real.md',
               score: 0.6,
               abstract: 'real',
             },
@@ -704,7 +709,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
         },
       }),
     );
-    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/me/memories/durable/projects/x/real.md']);
+    expect(hits.map(hit => hit.uri)).toEqual(['threadnote://user/me/memories/durable/projects/x/real.md']);
   });
 
   it('uses the hybrid ranker for live recall and explains why a relevant canonical resource leads', () => {
@@ -717,7 +722,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
               memories: [
                 {
                   context_type: 'memory',
-                  uri: 'viking://user/me/memories/durable/projects/threadnote/general.md',
+                  uri: 'threadnote://user/me/memories/durable/projects/threadnote/general.md',
                   score: 0.71,
                   abstract: 'General retry notes.',
                 },
@@ -725,7 +730,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
               resources: [
                 {
                   context_type: 'resource',
-                  uri: 'viking://resources/repos/threadnote/alpha-42.md',
+                  uri: 'threadnote://resources/repos/threadnote/alpha-42.md',
                   score: 0.68,
                   abstract: 'Alpha-42 bounded retry policy.',
                 },
@@ -734,7 +739,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           }),
         ),
       ],
-      [{terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'}],
+      [{terms: ['alpha-42'], uri: 'threadnote://resources/repos/threadnote/alpha-42.md'}],
       12,
       {project: 'threadnote', query: 'threadnote alpha-42 retry policy'},
     );
@@ -751,8 +756,8 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     const sections = buildRecallSections(
       [],
       [
-        {terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'},
-        {terms: ['beta-43'], uri: 'viking://resources/repos/threadnote/beta-43.md'},
+        {terms: ['alpha-42'], uri: 'threadnote://resources/repos/threadnote/alpha-42.md'},
+        {terms: ['beta-43'], uri: 'threadnote://resources/repos/threadnote/beta-43.md'},
       ],
       1,
       {
@@ -773,7 +778,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       [
         {
           terms: ['kubernetes'],
-          uri: 'viking://user/me/memories/durable/projects/threadnote/incidental.md',
+          uri: 'threadnote://user/me/memories/durable/projects/threadnote/incidental.md',
         },
       ],
       12,
@@ -799,7 +804,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           },
           text: 'alpha-42 bounded retry policy',
           trust: 'approved',
-          uri: 'viking://resources/repos/threadnote/alpha-42.md',
+          uri: 'threadnote://resources/repos/threadnote/alpha-42.md',
         },
       ],
       project: 'threadnote',
@@ -814,7 +819,8 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
   });
 
   it('rescues an authoritative exact shared memory before hybrid reranking', () => {
-    const uri = 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md';
+    const uri =
+      'threadnote://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md';
     const sections = buildRecallSections(
       [
         [
@@ -823,7 +829,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
             contextType: 'memory',
             score: 0.71,
             snippet: 'Windows installation remains unsupported and is documented in shared durable memory.',
-            uri: 'viking://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
+            uri: 'threadnote://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
           },
         ],
       ],
@@ -863,7 +869,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
   });
 
   it('caps hydrated record authority and trust at the personal-memory boundary', () => {
-    const uri = 'viking://user/me/memories/durable/projects/threadnote/unreviewed.md';
+    const uri = 'threadnote://user/me/memories/durable/projects/threadnote/unreviewed.md';
     const sections = buildRecallSections(
       [
         [
@@ -908,29 +914,29 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     const sections = buildRecallSections(
       [],
       [
-        {terms: ['alpha-42'], uri: 'viking://resources/repos/other/alpha-42.md'},
-        {terms: ['alpha-42'], uri: 'viking://resources/repos/threadnote/alpha-42.md'},
+        {terms: ['alpha-42'], uri: 'threadnote://resources/repos/other/alpha-42.md'},
+        {terms: ['alpha-42'], uri: 'threadnote://resources/repos/threadnote/alpha-42.md'},
       ],
       12,
       {
-        allowedUriScopes: ['viking://resources/repos/threadnote'],
+        allowedUriScopes: ['threadnote://resources/repos/threadnote'],
         indexedCandidates: [
           {
             fields: {identifiers: ['alpha-42']},
             text: 'alpha-42',
-            uri: 'viking://resources/repos/other/alpha-42.md',
+            uri: 'threadnote://resources/repos/other/alpha-42.md',
           },
           {
             fields: {identifiers: ['alpha-42']},
             text: 'alpha-42',
-            uri: 'viking://resources/repos/threadnote/alpha-42.md',
+            uri: 'threadnote://resources/repos/threadnote/alpha-42.md',
           },
         ],
         query: 'alpha-42',
       },
     );
 
-    expect(sections.ranked.map(hit => hit.uri)).toEqual(['viking://resources/repos/threadnote/alpha-42.md']);
+    expect(sections.ranked.map(hit => hit.uri)).toEqual(['threadnote://resources/repos/threadnote/alpha-42.md']);
     expect(sections.exactTail).toBeUndefined();
   });
 
@@ -943,7 +949,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
             contextType: 'memory',
             score: 0.2,
             snippet: 'weak alpha match',
-            uri: 'viking://user/me/memories/weak.md',
+            uri: 'threadnote://user/me/memories/weak.md',
           },
         ],
       ],
@@ -957,7 +963,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
   });
 
   it('filters hybrid results to a local-AI-selected URI allowlist', () => {
-    const selectedUri = 'viking://user/me/memories/durable/projects/orion-worker/lease.md';
+    const selectedUri = 'threadnote://user/me/memories/durable/projects/orion-worker/lease.md';
     const sections = buildRecallSections([], [], 12, {
       candidateUris: [selectedUri],
       indexedCandidates: [
@@ -969,7 +975,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
         {
           fields: {project: 'orion-worker', title: 'Worker metrics', topic: 'worker-metrics'},
           text: 'worker lease telemetry setting',
-          uri: 'viking://user/me/memories/durable/projects/orion-worker/metrics.md',
+          uri: 'threadnote://user/me/memories/durable/projects/orion-worker/metrics.md',
         },
       ],
       project: 'orion-worker',
@@ -983,7 +989,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     const indexedCandidates = Array.from({length: 250}, (_unused, index) => ({
       fields: {identifiers: ['alpha-42']},
       text: `alpha-42 candidate ${index}`,
-      uri: `viking://resources/repos/threadnote/${String(index).padStart(3, '0')}.md`,
+      uri: `threadnote://resources/repos/threadnote/${String(index).padStart(3, '0')}.md`,
     }));
 
     const sections = buildRecallSections([], [], 3, {
@@ -999,7 +1005,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     // No semantic pass matched; every shown hit is a promoted exact-only doc.
     const {semanticSection} = buildRecallSections(
       [],
-      [{terms: ['kubernetes'], uri: 'viking://user/me/memories/durable/projects/x/unrelated.md'}],
+      [{terms: ['kubernetes'], uri: 'threadnote://user/me/memories/durable/projects/x/unrelated.md'}],
       12,
     );
     expect(semanticSection?.split('\n')[0]).toBe(RECALL_LOW_CONFIDENCE_NOTE);
@@ -1008,14 +1014,18 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
 
   it('omits the low-confidence note when a semantic hit is present', () => {
     const {semanticSection} = buildRecallSections(
-      [parseRecallHits(json({ok: true, result: {memories: [{uri: 'viking://real.md', score: 0.7, abstract: 'x'}]}}))],
-      [{terms: ['kubernetes'], uri: 'viking://user/me/memories/durable/projects/x/unrelated.md'}],
+      [
+        parseRecallHits(
+          json({ok: true, result: {memories: [{uri: 'threadnote://real.md', score: 0.7, abstract: 'x'}]}}),
+        ),
+      ],
+      [{terms: ['kubernetes'], uri: 'threadnote://user/me/memories/durable/projects/x/unrelated.md'}],
       12,
     );
     expect(semanticSection).not.toContain(RECALL_LOW_CONFIDENCE_NOTE);
     // Positively assert the mixed state so the test cannot pass by dropping the
     // semantic hit or rendering an empty section.
-    expect(semanticSection).toContain('viking://real.md');
+    expect(semanticSection).toContain('threadnote://real.md');
     expect(semanticSection).toContain('keyword-only: kubernetes');
   });
 
@@ -1032,13 +1042,13 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           memories: [
             {
               context_type: 'memory',
-              uri: 'viking://user/denys/memories/handoffs/archived/threadnote/old.md#chunk_0000',
+              uri: 'threadnote://user/denys/memories/handoffs/archived/threadnote/old.md#chunk_0000',
               score: 0.8,
               abstract: 'old',
             },
             {
               context_type: 'memory',
-              uri: 'viking://user/denys/memories/durable/projects/threadnote/current.md',
+              uri: 'threadnote://user/denys/memories/durable/projects/threadnote/current.md',
               score: 0.7,
               abstract: 'current',
             },
@@ -1047,7 +1057,9 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       }),
     );
 
-    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/denys/memories/durable/projects/threadnote/current.md']);
+    expect(hits.map(hit => hit.uri)).toEqual([
+      'threadnote://user/denys/memories/durable/projects/threadnote/current.md',
+    ]);
   });
 
   it('keeps archived lifecycle memories when includeArchived is set', () => {
@@ -1058,7 +1070,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
           memories: [
             {
               context_type: 'memory',
-              uri: 'viking://user/denys/memories/durable/archived/threadnote/old.md',
+              uri: 'threadnote://user/denys/memories/durable/archived/threadnote/old.md',
               score: 0.8,
               abstract: 'old',
             },
@@ -1068,28 +1080,28 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       {includeArchived: true},
     );
 
-    expect(hits.map(hit => hit.uri)).toEqual(['viking://user/denys/memories/durable/archived/threadnote/old.md']);
+    expect(hits.map(hit => hit.uri)).toEqual(['threadnote://user/denys/memories/durable/archived/threadnote/old.md']);
   });
 
   it('merges passes, collapses chunks to one document, keeps the best score, ranks desc', () => {
     const base = parseRecallHits(
-      json({ok: true, result: {memories: [{uri: 'viking://doc.md#chunk_0000', score: 0.5, abstract: 'x'}]}}),
+      json({ok: true, result: {memories: [{uri: 'threadnote://doc.md#chunk_0000', score: 0.5, abstract: 'x'}]}}),
     );
     const scoped = parseRecallHits(
       json({
         ok: true,
         result: {
           memories: [
-            {uri: 'viking://doc.md#chunk_0009', score: 0.8, abstract: 'y'},
-            {uri: 'viking://other.md', score: 0.6, abstract: 'z'},
+            {uri: 'threadnote://doc.md#chunk_0009', score: 0.8, abstract: 'y'},
+            {uri: 'threadnote://other.md', score: 0.6, abstract: 'z'},
           ],
         },
       }),
     );
     const merged = mergeRecallHits([base, scoped]);
     expect(merged.map(hit => ({score: hit.score, uri: hit.uri}))).toEqual([
-      {score: 0.8, uri: 'viking://doc.md'},
-      {score: 0.6, uri: 'viking://other.md'},
+      {score: 0.8, uri: 'threadnote://doc.md'},
+      {score: 0.6, uri: 'threadnote://other.md'},
     ]);
   });
 
@@ -1099,14 +1111,14 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
         json({
           ok: true,
           result: {
-            memories: [{context_type: 'memory', uri: 'viking://mem.md', score: 0.5, abstract: 'm'}],
-            resources: [{context_type: 'resource', uri: 'viking://res.md', score: 0.9, abstract: 'r'}],
-            skills: [{context_type: 'skill', uri: 'viking://skill.md', score: 0.8, abstract: 's'}],
+            memories: [{context_type: 'memory', uri: 'threadnote://mem.md', score: 0.5, abstract: 'm'}],
+            resources: [{context_type: 'resource', uri: 'threadnote://res.md', score: 0.9, abstract: 'r'}],
+            skills: [{context_type: 'skill', uri: 'threadnote://skill.md', score: 0.8, abstract: 's'}],
           },
         }),
       ),
     ]);
-    expect(merged.map(hit => hit.uri)).toEqual(['viking://mem.md', 'viking://res.md', 'viking://skill.md']);
+    expect(merged.map(hit => hit.uri)).toEqual(['threadnote://mem.md', 'threadnote://res.md', 'threadnote://skill.md']);
   });
 
   it('formats a capped numbered list with overflow note', () => {
@@ -1115,10 +1127,10 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       contextType: 'memory',
       score: 0.5,
       snippet: '',
-      uri: `viking://m${index}.md`,
+      uri: `threadnote://m${index}.md`,
     }));
     const text = formatRecallHits(hits, 2) ?? '';
-    expect(text).toContain('1. memory · score 0.50 · viking://m0.md');
+    expect(text).toContain('1. memory · score 0.50 · threadnote://m0.md');
     expect(text).toContain('(+2 more');
     expect(formatRecallHits([], 5)).toBeUndefined();
   });
@@ -1131,12 +1143,22 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
             ok: true,
             result: {
               resources: [
-                {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
-                {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
+                {
+                  context_type: 'resource',
+                  uri: 'threadnote://r/.agents/skills/x/SKILL.md',
+                  score: 0.7,
+                  abstract: 'same',
+                },
+                {
+                  context_type: 'resource',
+                  uri: 'threadnote://r/.claude/skills/x/SKILL.md',
+                  score: 0.6,
+                  abstract: 'same',
+                },
               ],
               memories: [
-                {context_type: 'memory', uri: 'viking://m1.md', score: 0.8, abstract: 'dup'},
-                {context_type: 'memory', uri: 'viking://m2.md', score: 0.75, abstract: 'dup'},
+                {context_type: 'memory', uri: 'threadnote://m1.md', score: 0.8, abstract: 'dup'},
+                {context_type: 'memory', uri: 'threadnote://m2.md', score: 0.75, abstract: 'dup'},
               ],
             },
           }),
@@ -1147,9 +1169,9 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     );
     // One resource kept (highest score), both memories kept despite identical snippet.
     expect(ranked.map(hit => hit.uri)).toEqual([
-      'viking://m1.md',
-      'viking://m2.md',
-      'viking://r/.agents/skills/x/SKILL.md',
+      'threadnote://m1.md',
+      'threadnote://m2.md',
+      'threadnote://r/.agents/skills/x/SKILL.md',
     ]);
   });
 
@@ -1161,8 +1183,8 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
             ok: true,
             result: {
               resources: [
-                {context_type: 'resource', uri: 'viking://r/a.md', score: 0.7, abstract: ''},
-                {context_type: 'resource', uri: 'viking://r/b.md', score: 0.6, abstract: ''},
+                {context_type: 'resource', uri: 'threadnote://r/a.md', score: 0.7, abstract: ''},
+                {context_type: 'resource', uri: 'threadnote://r/b.md', score: 0.6, abstract: ''},
               ],
             },
           }),
@@ -1171,7 +1193,7 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
       [],
       12,
     );
-    expect(ranked.map(hit => hit.uri)).toEqual(['viking://r/a.md', 'viking://r/b.md']);
+    expect(ranked.map(hit => hit.uri)).toEqual(['threadnote://r/a.md', 'threadnote://r/b.md']);
   });
 
   it('keeps the exact-matched twin when a content-duplicate would otherwise be dropped', () => {
@@ -1183,32 +1205,46 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
             ok: true,
             result: {
               resources: [
-                {context_type: 'resource', uri: 'viking://r/.agents/skills/x/SKILL.md', score: 0.7, abstract: 'same'},
-                {context_type: 'resource', uri: 'viking://r/.claude/skills/x/SKILL.md', score: 0.6, abstract: 'same'},
+                {
+                  context_type: 'resource',
+                  uri: 'threadnote://r/.agents/skills/x/SKILL.md',
+                  score: 0.7,
+                  abstract: 'same',
+                },
+                {
+                  context_type: 'resource',
+                  uri: 'threadnote://r/.claude/skills/x/SKILL.md',
+                  score: 0.6,
+                  abstract: 'same',
+                },
               ],
             },
           }),
         ),
       ],
-      [{terms: ['chaos'], uri: 'viking://r/.claude/skills/x/SKILL.md'}],
+      [{terms: ['chaos'], uri: 'threadnote://r/.claude/skills/x/SKILL.md'}],
       12,
     );
-    expect(ranked.map(hit => hit.uri)).toEqual(['viking://r/.claude/skills/x/SKILL.md']);
+    expect(ranked.map(hit => hit.uri)).toEqual(['threadnote://r/.claude/skills/x/SKILL.md']);
   });
 
   it('builds an exact tail that excludes matches already shown in the ranked window', () => {
     const sections = buildRecallSections(
-      [parseRecallHits(json({ok: true, result: {memories: [{uri: 'viking://shown.md', score: 0.8, abstract: 'x'}]}}))],
       [
-        {terms: ['a'], uri: 'viking://shown.md'},
-        {terms: ['a'], uri: 'viking://resources/repos/coda/only-exact.md'},
+        parseRecallHits(
+          json({ok: true, result: {memories: [{uri: 'threadnote://shown.md', score: 0.8, abstract: 'x'}]}}),
+        ),
+      ],
+      [
+        {terms: ['a'], uri: 'threadnote://shown.md'},
+        {terms: ['a'], uri: 'threadnote://resources/repos/coda/only-exact.md'},
       ],
       12,
     );
     // shown.md is in the ranked window, so it is filtered out of the tail; the
     // exact-only doc was promoted into the window too, so the tail is empty.
     expect(sections.exactTail).toBeUndefined();
-    expect(sections.ranked.map(hit => hit.uri)).toContain('viking://resources/repos/coda/only-exact.md');
+    expect(sections.ranked.map(hit => hit.uri)).toContain('threadnote://resources/repos/coda/only-exact.md');
   });
 });
 
@@ -1218,7 +1254,7 @@ describe('buildRecallSections per-category reserve', () => {
     contextType: category === 'memories' ? 'memory' : category === 'skills' ? 'skill' : 'resource',
     score,
     snippet: '',
-    uri: `viking://${category}/${index}`,
+    uri: `threadnote://${category}/${index}`,
   });
   const numberedLines = (section: string | undefined): number =>
     (section ?? '').split('\n').filter(line => /^\d+\. /.test(line)).length;
@@ -1232,13 +1268,13 @@ describe('buildRecallSections per-category reserve', () => {
     const {semanticSection} = buildRecallSections([hits], [], 12);
     const text = semanticSection ?? '';
     // RECALL_CATEGORY_RESERVE = 2 → two resources and two skills are guaranteed visibility.
-    expect(text).toContain('viking://resources/0');
-    expect(text).toContain('viking://resources/1');
-    expect(text).not.toContain('viking://resources/2');
-    expect(text).toContain('viking://skills/0');
-    expect(text).toContain('viking://skills/1');
+    expect(text).toContain('threadnote://resources/0');
+    expect(text).toContain('threadnote://resources/1');
+    expect(text).not.toContain('threadnote://resources/2');
+    expect(text).toContain('threadnote://skills/0');
+    expect(text).toContain('threadnote://skills/1');
     // Memories still take every remaining slot: 12 - 2 - 2 = 8.
-    expect((text.match(/viking:\/\/memories\//g) ?? []).length).toBe(8);
+    expect((text.match(/threadnote:\/\/memories\//g) ?? []).length).toBe(8);
     // Display stays fully category-first: every memory precedes every resource,
     // which precedes every skill.
     const lines = text.split('\n').filter(line => /^\d+\. /.test(line));
@@ -1256,9 +1292,9 @@ describe('buildRecallSections per-category reserve', () => {
     const {semanticSection} = buildRecallSections([hits], [], 12);
     const lines = (semanticSection ?? '').split('\n').filter(line => /^\d+\. /.test(line));
     expect(lines.map(l => l.replace(/^\d+\. .* · /, ''))).toEqual([
-      'viking://memories/0',
-      'viking://resources/0',
-      'viking://skills/0',
+      'threadnote://memories/0',
+      'threadnote://resources/0',
+      'threadnote://skills/0',
     ]);
   });
 
@@ -1272,39 +1308,39 @@ describe('buildRecallSections per-category reserve', () => {
     ];
     const text = buildRecallSections([hits], [], 4).semanticSection ?? '';
     expect(numberedLines(text)).toBe(4);
-    expect(text).toContain('viking://memories/0');
-    expect(text).toContain('viking://memories/1');
-    expect(text).toContain('viking://resources/0');
-    expect(text).toContain('viking://resources/1');
-    expect(text).not.toContain('viking://skills/');
+    expect(text).toContain('threadnote://memories/0');
+    expect(text).toContain('threadnote://memories/1');
+    expect(text).toContain('threadnote://resources/0');
+    expect(text).toContain('threadnote://resources/1');
+    expect(text).not.toContain('threadnote://skills/');
   });
 
   it('does not starve a memory-only result of slots', () => {
     const hits = Array.from({length: 15}, (_unused, i) => mk('memories', i, 0.9 - i * 0.01));
     const {semanticSection} = buildRecallSections([hits], [], 12);
     expect(numberedLines(semanticSection)).toBe(12);
-    expect((semanticSection ?? '').match(/viking:\/\/memories\//g)?.length).toBe(12);
+    expect((semanticSection ?? '').match(/threadnote:\/\/memories\//g)?.length).toBe(12);
   });
 });
 
 describe('categoryForUri', () => {
   it('classifies memories, skill catalog, and resources', () => {
-    expect(categoryForUri('viking://user/me/memories/durable/projects/x/y.md')).toBe('memories');
-    expect(categoryForUri('viking://user/me/memories/shared/default/durable/x.md')).toBe('memories');
-    expect(categoryForUri('viking://resources/agent-skills/codex-global/foo/SKILL.md')).toBe('skills');
-    expect(categoryForUri('viking://resources/repos/coda/CLAUDE.md')).toBe('resources');
-    expect(categoryForUri('viking://resources/repos/coda/.claude/skills/x/SKILL.md')).toBe('resources');
+    expect(categoryForUri('threadnote://user/me/memories/durable/projects/x/y.md')).toBe('memories');
+    expect(categoryForUri('threadnote://user/me/memories/shared/default/durable/x.md')).toBe('memories');
+    expect(categoryForUri('threadnote://resources/agent-skills/codex-global/foo/SKILL.md')).toBe('skills');
+    expect(categoryForUri('threadnote://resources/repos/coda/CLAUDE.md')).toBe('resources');
+    expect(categoryForUri('threadnote://resources/repos/coda/.claude/skills/x/SKILL.md')).toBe('resources');
   });
 
   it('keeps shared agent artifacts out of the memory band (routes them to skills)', () => {
     expect(
-      categoryForUri('viking://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md'),
+      categoryForUri('threadnote://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md'),
     ).toBe('skills');
   });
 });
 
 describe('memoryUriProjectSegment', () => {
-  const u = (path: string): string => `viking://user/me/memories/${path}`;
+  const u = (path: string): string => `threadnote://user/me/memories/${path}`;
   it('extracts the project for personal durable/handoff/incident memories', () => {
     expect(memoryUriProjectSegment(u('durable/projects/mobile-native/auth.md'))).toBe('mobile-native');
     expect(memoryUriProjectSegment(u('durable/archived/mobile-native/auth.md'))).toBe('mobile-native');
@@ -1321,7 +1357,7 @@ describe('memoryUriProjectSegment', () => {
     expect(memoryUriProjectSegment(u('preferences/archived/old.md'))).toBeUndefined();
     expect(memoryUriProjectSegment(u('smoke/active/probe.md'))).toBeUndefined();
     expect(memoryUriProjectSegment(u('durable/projects/mobile-native'))).toBeUndefined(); // dir node, no file
-    expect(memoryUriProjectSegment('viking://resources/repos/coda/README.md')).toBeUndefined();
+    expect(memoryUriProjectSegment('threadnote://resources/repos/coda/README.md')).toBeUndefined();
   });
 
   it('ignores a chunk anchor', () => {
@@ -1360,20 +1396,20 @@ describe('isAgentArtifactPackUri', () => {
   it('flags pack machinery but not shared skills or plain memories', () => {
     expect(
       isAgentArtifactPackUri(
-        'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.json',
+        'threadnote://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.json',
       ),
     ).toBe(true);
     expect(
       isAgentArtifactPackUri(
-        'viking://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/files/prompts/f.md',
+        'threadnote://user/me/memories/shared/default/agent-artifacts/packs/claude/reviewer/files/prompts/f.md',
       ),
     ).toBe(true);
     expect(
       isAgentArtifactPackUri(
-        'viking://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md',
+        'threadnote://user/me/memories/shared/default/agent-artifacts/skills/claude/reviewer/SKILL.md',
       ),
     ).toBe(false);
-    expect(isAgentArtifactPackUri('viking://user/me/memories/durable/projects/x/y.md')).toBe(false);
+    expect(isAgentArtifactPackUri('threadnote://user/me/memories/durable/projects/x/y.md')).toBe(false);
   });
 });
 
@@ -1383,7 +1419,7 @@ describe('applyExactMatchBoost', () => {
     contextType: 'resource',
     score: 0.6,
     snippet: 's',
-    uri: 'viking://x',
+    uri: 'threadnote://x',
     ...over,
   });
 
@@ -1394,21 +1430,21 @@ describe('applyExactMatchBoost', () => {
 
   it('annotates a semantic hit that an exact term also matched', () => {
     const ranked = applyExactMatchBoost(
-      [hit({uri: 'viking://a', score: 0.6}), hit({uri: 'viking://b', score: 0.9})],
-      [{terms: ['release', 'test'], uri: 'viking://a'}],
+      [hit({uri: 'threadnote://a', score: 0.6}), hit({uri: 'threadnote://b', score: 0.9})],
+      [{terms: ['release', 'test'], uri: 'threadnote://a'}],
     );
-    const a = ranked.find(entry => entry.uri === 'viking://a');
+    const a = ranked.find(entry => entry.uri === 'threadnote://a');
     expect(a?.exactTerms).toEqual(['release', 'test']);
     // Exact match leads its category despite lower semantic score.
-    expect(ranked[0]?.uri).toBe('viking://a');
+    expect(ranked[0]?.uri).toBe('threadnote://a');
   });
 
   it('promotes an exact-only document into the ranked list with score 0', () => {
     const ranked = applyExactMatchBoost(
-      [hit({uri: 'viking://sem', score: 0.9})],
-      [{terms: ['conventions'], uri: 'viking://resources/repos/coda/CLAUDE.md'}],
+      [hit({uri: 'threadnote://sem', score: 0.9})],
+      [{terms: ['conventions'], uri: 'threadnote://resources/repos/coda/CLAUDE.md'}],
     );
-    const promoted = ranked.find(entry => entry.uri === 'viking://resources/repos/coda/CLAUDE.md');
+    const promoted = ranked.find(entry => entry.uri === 'threadnote://resources/repos/coda/CLAUDE.md');
     expect(promoted).toMatchObject({
       category: 'resources',
       contextType: 'resource',
@@ -1416,46 +1452,46 @@ describe('applyExactMatchBoost', () => {
       exactTerms: ['conventions'],
     });
     // Promoted exact match outranks the unmatched higher-scoring semantic hit in the same category.
-    expect(ranked[0]?.uri).toBe('viking://resources/repos/coda/CLAUDE.md');
+    expect(ranked[0]?.uri).toBe('threadnote://resources/repos/coda/CLAUDE.md');
   });
 
   it('orders by category, then blended exact strength + score', () => {
     const ranked = applyExactMatchBoost(
       [
-        hit({category: 'memories', contextType: 'memory', uri: 'viking://user/me/memories/m.md', score: 0.5}),
-        hit({uri: 'viking://r-one-term', score: 0.6}),
-        hit({uri: 'viking://r-two-terms', score: 0.55}),
+        hit({category: 'memories', contextType: 'memory', uri: 'threadnote://user/me/memories/m.md', score: 0.5}),
+        hit({uri: 'threadnote://r-one-term', score: 0.6}),
+        hit({uri: 'threadnote://r-two-terms', score: 0.55}),
       ],
       [
-        {terms: ['a'], uri: 'viking://r-one-term'},
-        {terms: ['a', 'b'], uri: 'viking://r-two-terms'},
+        {terms: ['a'], uri: 'threadnote://r-one-term'},
+        {terms: ['a', 'b'], uri: 'threadnote://r-two-terms'},
       ],
     );
     expect(ranked.map(entry => entry.uri)).toEqual([
-      'viking://user/me/memories/m.md',
-      'viking://r-two-terms',
-      'viking://r-one-term',
+      'threadnote://user/me/memories/m.md',
+      'threadnote://r-two-terms',
+      'threadnote://r-one-term',
     ]);
   });
 
   it('breaks ties by score when exact strength is equal', () => {
     const ranked = applyExactMatchBoost(
-      [hit({uri: 'viking://lo', score: 0.5}), hit({uri: 'viking://hi', score: 0.8})],
+      [hit({uri: 'threadnote://lo', score: 0.5}), hit({uri: 'threadnote://hi', score: 0.8})],
       [
-        {terms: ['a'], uri: 'viking://lo'},
-        {terms: ['a'], uri: 'viking://hi'},
+        {terms: ['a'], uri: 'threadnote://lo'},
+        {terms: ['a'], uri: 'threadnote://hi'},
       ],
     );
     // Same single-term match → higher semantic score wins.
-    expect(ranked.map(entry => entry.uri)).toEqual(['viking://hi', 'viking://lo']);
+    expect(ranked.map(entry => entry.uri)).toEqual(['threadnote://hi', 'threadnote://lo']);
   });
 
   it('renders promoted exact-only hits without a score and annotates boosted hits', () => {
     const ranked = applyExactMatchBoost(
-      [hit({uri: 'viking://sem', score: 0.62})],
+      [hit({uri: 'threadnote://sem', score: 0.62})],
       [
-        {terms: ['x'], uri: 'viking://sem'},
-        {terms: ['y', 'z'], uri: 'viking://resources/repos/coda/CLAUDE.md'},
+        {terms: ['x'], uri: 'threadnote://sem'},
+        {terms: ['y', 'z'], uri: 'threadnote://resources/repos/coda/CLAUDE.md'},
       ],
     );
     const lines = (formatRecallHits(ranked, 5) ?? '').split('\n');
@@ -1463,11 +1499,13 @@ describe('applyExactMatchBoost', () => {
     // Promoted exact-only line is labelled keyword-only (no semantic match),
     // carries no "score" token, and is not followed by a wrapped (3-space
     // indented) snippet line, since its snippet is empty.
-    expect(lines[promotedIndex]).toContain('resource · keyword-only: y, z · viking://resources/repos/coda/CLAUDE.md');
+    expect(lines[promotedIndex]).toContain(
+      'resource · keyword-only: y, z · threadnote://resources/repos/coda/CLAUDE.md',
+    );
     expect(lines[promotedIndex]).not.toContain('score');
     expect(lines[promotedIndex + 1] ?? '').not.toMatch(/^ {3}/);
     // A semantic hit that a term also matched keeps the "exact:" label.
-    expect(lines.join('\n')).toContain('resource · score 0.62 · exact: x · viking://sem');
+    expect(lines.join('\n')).toContain('resource · score 0.62 · exact: x · threadnote://sem');
   });
 
   it('weights a rare exact term above a common one (inverse document frequency)', () => {
@@ -1476,13 +1514,13 @@ describe('applyExactMatchBoost', () => {
     const ranked = applyExactMatchBoost(
       [],
       [
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c1.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c2.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/c3.md'},
-        {terms: ['rare'], uri: 'viking://user/me/memories/durable/projects/x/r.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/c1.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/c2.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/c3.md'},
+        {terms: ['rare'], uri: 'threadnote://user/me/memories/durable/projects/x/r.md'},
       ],
     );
-    expect(ranked[0]?.uri).toBe('viking://user/me/memories/durable/projects/x/r.md');
+    expect(ranked[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/x/r.md');
   });
 
   it('boosts an exact term that names the document slug over a body-only match', () => {
@@ -1491,8 +1529,11 @@ describe('applyExactMatchBoost', () => {
     const ranked = applyExactMatchBoost(
       [],
       [
-        {terms: ['observability'], uri: 'viking://user/me/memories/durable/projects/x/mobile-observability-spec.md'},
-        {terms: ['observability'], uri: 'viking://user/me/memories/durable/projects/x/desktop-layout-review.md'},
+        {
+          terms: ['observability'],
+          uri: 'threadnote://user/me/memories/durable/projects/x/mobile-observability-spec.md',
+        },
+        {terms: ['observability'], uri: 'threadnote://user/me/memories/durable/projects/x/desktop-layout-review.md'},
       ],
     );
     expect(ranked[0]?.uri).toContain('mobile-observability-spec');
@@ -1504,8 +1545,8 @@ describe('applyExactMatchBoost', () => {
     const ranked = applyExactMatchBoost(
       [],
       [
-        {terms: ['spec'], uri: 'viking://user/me/memories/durable/projects/x/mobile-alerting-spec.md'},
-        {terms: ['spec'], uri: 'viking://user/me/memories/durable/projects/x/design-respec-notes.md'},
+        {terms: ['spec'], uri: 'threadnote://user/me/memories/durable/projects/x/mobile-alerting-spec.md'},
+        {terms: ['spec'], uri: 'threadnote://user/me/memories/durable/projects/x/design-respec-notes.md'},
       ],
     );
     expect(ranked[0]?.uri).toContain('mobile-alerting-spec');
@@ -1517,15 +1558,22 @@ describe('applyExactMatchBoost', () => {
     // match only a corpus-common term (df 5 → strength 0.2), so they no longer
     // outrank the real semantic hit — this is the anti-flooding guarantee.
     const ranked = applyExactMatchBoost(
-      [hit({category: 'memories', contextType: 'memory', uri: 'viking://user/me/memories/semantic.md', score: 0.6})],
       [
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p1.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p2.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p3.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p4.md'},
-        {terms: ['common'], uri: 'viking://user/me/memories/durable/projects/x/p5.md'},
+        hit({
+          category: 'memories',
+          contextType: 'memory',
+          uri: 'threadnote://user/me/memories/semantic.md',
+          score: 0.6,
+        }),
+      ],
+      [
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/p1.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/p2.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/p3.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/p4.md'},
+        {terms: ['common'], uri: 'threadnote://user/me/memories/durable/projects/x/p5.md'},
       ],
     );
-    expect(ranked[0]?.uri).toBe('viking://user/me/memories/semantic.md');
+    expect(ranked[0]?.uri).toBe('threadnote://user/me/memories/semantic.md');
   });
 });

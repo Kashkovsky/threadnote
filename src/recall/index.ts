@@ -158,8 +158,8 @@ const loadRecallIndexCache = Effect.fn('recall.loadIndexCache')(function* (
     sameStringRecord(cached.authorityPolicyByUri, canonicalResourcePolicy.entryKeyByUri) &&
     sameSources(cached.sources, sources)
   ) {
-    const validatedCache = {...cached, validatedAt: now};
-    yield* Effect.sync(() => decodedCacheByPath.set(cachePath, validatedCache));
+    const validatedCache = {...cached, validatedAt: Math.max(now, cached.validatedAt + 1)};
+    yield* writeCacheAtomically(fs, cachePath, validatedCache);
     return validatedCache;
   }
 
@@ -203,18 +203,10 @@ const loadRecallIndexCache = Effect.fn('recall.loadIndexCache')(function* (
     postings,
     sources,
     uriLookup,
-    validatedAt: now,
+    validatedAt: Math.max(now, (cached?.validatedAt ?? -1) + 1),
     version: RECALL_INDEX_CACHE_VERSION,
   };
-  if (cached) {
-    const generation = yield* writeStaleGeneration(fs, cachePath);
-    yield* Effect.sync(() => {
-      decodedCacheByPath.set(cachePath, cache);
-      decodedCacheGenerationByPath.set(cachePath, generation);
-    });
-  } else {
-    yield* writeCacheAtomically(fs, cachePath, cache);
-  }
+  yield* writeCacheAtomically(fs, cachePath, cache);
   return cache;
 });
 
@@ -264,13 +256,20 @@ export const expireRecallIndexValidation = Effect.fn('recall.expireValidation')(
     'cache',
     includeInactive ? INACTIVE_CACHE_FILENAME : ACTIVE_CACHE_FILENAME,
   );
-  yield* Effect.sync(() => {
-    dirtyCachePaths.add(cachePath);
-    decodedCacheByPath.delete(cachePath);
-    decodedCacheGenerationByPath.delete(cachePath);
-  });
+  const cached = yield* Effect.sync(() => decodedCacheByPath.get(cachePath));
   yield* fs.makeDirectory(pathService.dirname(cachePath), {recursive: true});
-  yield* writeStaleGeneration(fs, cachePath);
+  const generation = yield* writeStaleGeneration(fs, cachePath);
+  yield* Effect.sync(() => {
+    if (cached) {
+      decodedCacheByPath.set(cachePath, {...cached, validatedAt: 0});
+      decodedCacheGenerationByPath.set(cachePath, generation);
+      dirtyCachePaths.delete(cachePath);
+    } else {
+      dirtyCachePaths.add(cachePath);
+      decodedCacheByPath.delete(cachePath);
+      decodedCacheGenerationByPath.delete(cachePath);
+    }
+  });
 });
 
 function selectRecallIndexData(cache: RecallIndexCache, options: LoadRecallIndexOptions): RecallIndexData {
@@ -576,12 +575,12 @@ function recallIndexRoots(
   config: RecallIndexConfig,
   pathService: Path.Path,
 ): readonly {readonly path: string; readonly uri: string}[] {
-  const storageRoot = pathService.join(config.agentContextHome, 'data', 'viking', config.account);
+  const storageRoot = pathService.join(config.agentContextHome, 'data', config.account);
   return [
-    {path: pathService.join(storageRoot, 'resources'), uri: 'viking://resources'},
+    {path: pathService.join(storageRoot, 'resources'), uri: 'threadnote://resources'},
     {
       path: pathService.join(storageRoot, 'user', uriSegment(config.user), 'memories'),
-      uri: `viking://user/${uriSegment(config.user)}/memories`,
+      uri: `threadnote://user/${uriSegment(config.user)}/memories`,
     },
   ];
 }
@@ -638,7 +637,7 @@ function memoryRelations(memory: ReturnType<typeof parseMemoryDocument>): readon
     ...(memory.metadata.relations ?? []),
     ...(memory.metadata.references ?? []).map(uri => ({type: 'references' as const, uri})),
     ...(memory.metadata.evidence ?? [])
-      .filter(evidence => evidence.startsWith('viking://'))
+      .filter(evidence => evidence.startsWith('threadnote://'))
       .map(uri => ({type: 'evidence_for' as const, uri})),
     ...(memory.metadata.supersedes ? [{type: 'supersedes' as const, uri: memory.metadata.supersedes}] : []),
   ];
@@ -677,7 +676,7 @@ function firstHeading(value: string): string | undefined {
 }
 
 function resourceProject(uri: string): string | undefined {
-  return /^viking:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
+  return /^threadnote:\/\/resources\/repos\/([^/]+)/.exec(uri)?.[1];
 }
 
 function uriTopic(uri: string): string {

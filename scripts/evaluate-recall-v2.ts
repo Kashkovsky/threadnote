@@ -6,6 +6,7 @@ import {
   createRecallEvaluationFixtureV2,
   expandRecallEvaluationFixtureV2,
   recallEvaluationCategoryCounts,
+  serializeRecallEvaluationFixtureV2Identity,
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
@@ -13,7 +14,7 @@ import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluati
 const options = parseArguments(process.argv.slice(2));
 const baseFixture = createRecallEvaluationFixtureV2();
 const fixture = expandRecallEvaluationFixtureV2(baseFixture, options.documentCount, options.seed);
-const fixtureJson = JSON.stringify(fixture);
+const fixtureJson = serializeRecallEvaluationFixtureV2Identity(fixture);
 const fixtureHash = createHash('sha256').update(fixtureJson).digest('hex');
 const run = runLexicalRecallEvaluationV2(fixture, {
   fixtureHash,

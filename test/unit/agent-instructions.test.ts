@@ -18,7 +18,7 @@ describe('agent instructions', () => {
       'Repo files remain authoritative',
       'non-trivial task',
       'callerCwd',
-      'viking://` URIs as pointers',
+      'threadnote://` URIs as pointers',
       '`kind: durable`',
       '`kind: handoff`',
       '`project` and `topic`',

@@ -78,7 +78,7 @@ describe('Effect CLI', () => {
 
     expect(result.stdout).toContain('current repo latest handoff');
     expect(result.stdout).toContain('threadnote');
-    expect(result.stdout).toContain('viking://user/');
+    expect(result.stdout).toContain('threadnote://user/');
   });
 
   it('rejects retired daemon port flags', async () => {

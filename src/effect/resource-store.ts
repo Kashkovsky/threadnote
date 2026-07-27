@@ -422,7 +422,7 @@ function resolveOwnedAccountBoundary(
     const realHome = yield* fs.realPath(logicalHome);
     let logicalCurrent = logicalHome;
     let realCurrent = realHome;
-    for (const segment of ['data', 'viking', location.account]) {
+    for (const segment of ['data', location.account]) {
       logicalCurrent = path.join(logicalCurrent, segment);
       if (Option.isSome(yield* fs.readLink(logicalCurrent).pipe(Effect.option))) {
         return yield* new ResourcePathUnsafe({

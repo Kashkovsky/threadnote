@@ -65,13 +65,28 @@ describe('OpenViking home migration', () => {
 
         const migrated = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(migrated.action).toBe('migrated');
-        expect(yield* fs.readFileString(path.join(targetHome, path.relative(legacyHome, memory)))).toContain(
-          'Canonical memory',
-        );
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              targetHome,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'runtime.md',
+            ),
+          ),
+        ).toContain('Canonical memory');
         expect(yield* fs.exists(path.join(targetHome, 'seed-manifest.yaml'))).toBe(true);
-        expect(yield* fs.readFileString(path.join(targetHome, path.relative(legacyHome, contentLock)))).toContain(
-          'version = 4',
-        );
+        expect(
+          yield* fs.readFileString(
+            path.join(targetHome, 'data', 'local', 'resources', 'repos', 'threadnote', 'Cargo.lock'),
+          ),
+        ).toContain('version = 4');
         expect(yield* fs.exists(path.join(targetHome, 'logs', 'server.log'))).toBe(false);
         expect(yield* fs.exists(path.join(targetHome, 'ov.conf'))).toBe(false);
         expect(yield* fs.readFileString(memory)).toContain('Canonical memory');
@@ -114,9 +129,11 @@ describe('OpenViking home migration', () => {
 
         const resumed = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(resumed.action).toBe('migrated');
-        expect(yield* fs.readFileString(path.join(targetHome, path.relative(legacyHome, source)))).toBe(
-          'newer canonical value',
-        );
+        expect(
+          yield* fs.readFileString(
+            path.join(targetHome, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md'),
+          ),
+        ).toBe('newer canonical value');
         expect(yield* fs.exists(interruptedStage)).toBe(true);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
@@ -136,6 +153,106 @@ describe('OpenViking home migration', () => {
         const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
         expect(error._tag).toBe('HomeMigrationConflict');
         expect(yield* fs.readFileString(path.join(targetHome, 'unrelated.txt'))).toBe('keep');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('recovers into an empty beta home without copying server metadata or overwriting generated state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-recovery-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const source = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'recovery.md',
+        );
+        yield* fs.makeDirectory(path.dirname(source), {recursive: true});
+        yield* fs.writeFileString(source, '# Recovered memory\n');
+        const legacyCurrent = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'current.md',
+        );
+        const betaCurrent = path.join(
+          targetHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'current.md',
+        );
+        yield* fs.makeDirectory(path.dirname(legacyCurrent), {recursive: true});
+        yield* fs.writeFileString(legacyCurrent, '# Legacy handoff\n');
+        yield* fs.makeDirectory(path.dirname(betaCurrent), {recursive: true});
+        yield* fs.writeFileString(betaCurrent, '# Current beta handoff\n');
+        yield* fs.writeFileString(path.join(legacyHome, 'data', 'viking', 'backend_meta.json'), '{"server":true}');
+        yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
+        yield* fs.makeDirectory(path.join(targetHome, 'data', 'local'), {recursive: true});
+        yield* fs.writeFileString(path.join(targetHome, 'cache', 'recall.json'), 'derived beta state');
+
+        const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
+        expect(result.action).toBe('recovered');
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              targetHome,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'recovery.md',
+            ),
+          ),
+        ).toContain('Recovered memory');
+        expect(yield* fs.readFileString(path.join(targetHome, 'cache', 'recall.json'))).toBe('derived beta state');
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              targetHome,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'handoffs',
+              'active',
+              'threadnote',
+              'current.md',
+            ),
+          ),
+        ).toContain('Current beta handoff');
+        expect(yield* fs.exists(path.join(targetHome, 'data', 'backend_meta.json'))).toBe(false);
+        expect(yield* fs.exists(path.join(targetHome, 'data', 'viking'))).toBe(false);
+        expect(yield* fs.readFileString(source)).toContain('Recovered memory');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
@@ -190,12 +307,23 @@ describe('OpenViking home migration', () => {
             2,
           )}\n`,
         );
+        yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
 
         const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
-        expect(result.action).toBe('migrated');
+        expect(result.action).toBe('recovered');
         expect(result.receipt?.stagedTreeSha256).toMatch(/^[0-9a-f]{64}$/);
 
-        const canonicalMemory = path.join(targetHome, path.relative(legacyHome, legacyWorktree), memoryRelative);
+        const canonicalMemory = path.join(
+          targetHome,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'shared',
+          'default',
+          memoryRelative,
+        );
         const migratedWorktree = path.join(targetHome, 'share', 'worktrees', 'default');
         const migratedGitdir = path.join(targetHome, 'share', 'teams', 'default.gitdir');
         expect(yield* fs.readFileString(canonicalMemory)).toContain('Shared storage contract');

@@ -12,7 +12,7 @@ describe('hybrid recall ranker', () => {
       },
       kind: 'durable' as const,
       text: 'Reschedules work after a stalled heartbeat.',
-      uri: 'viking://user/me/memories/lease-renewal.md',
+      uri: 'threadnote://user/me/memories/lease-renewal.md',
     };
     const ranked = rankRecallCandidates('resume jobs after a stalled heartbeat', [candidate], {
       project: 'orion-worker',
@@ -46,7 +46,7 @@ describe('hybrid recall ranker', () => {
           },
           kind: 'durable',
           text: 'A bounded coordinator reschedules stalled work.',
-          uri: 'viking://user/me/memories/lease-renewal.md',
+          uri: 'threadnote://user/me/memories/lease-renewal.md',
         },
       ],
       {project: 'orion-worker'},
@@ -64,7 +64,7 @@ describe('hybrid recall ranker', () => {
           fields: {project: 'threadnote', title: 'General retry notes'},
           semantic: 0.78,
           text: 'Common retry retry retry information.',
-          uri: 'viking://resources/repos/threadnote/general.md',
+          uri: 'threadnote://resources/repos/threadnote/general.md',
         },
         {
           fields: {
@@ -75,7 +75,7 @@ describe('hybrid recall ranker', () => {
           },
           semantic: 0.65,
           text: 'Alpha-42 uses bounded retries.',
-          uri: 'viking://resources/repos/threadnote/alpha-42.md',
+          uri: 'threadnote://resources/repos/threadnote/alpha-42.md',
         },
       ],
       {project: 'threadnote', now: new Date('2026-07-23T00:00:00.000Z')},
@@ -96,19 +96,19 @@ describe('hybrid recall ranker', () => {
           reranker: 0.12,
           semantic: 0.72,
           text: 'Worker lease timeout recovery.',
-          uri: 'viking://low-reranker',
+          uri: 'threadnote://low-reranker',
         },
         {
           reranker: 0.94,
           semantic: 0.72,
           text: 'Worker lease timeout recovery.',
-          uri: 'viking://high-reranker',
+          uri: 'threadnote://high-reranker',
         },
       ],
       {},
     );
 
-    expect(ranked.results[0]?.candidate.uri).toBe('viking://high-reranker');
+    expect(ranked.results[0]?.candidate.uri).toBe('threadnote://high-reranker');
     expect(ranked.results[0]?.signals.reranker).toBe(0.94);
     expect(ranked.results[0]?.reasons.map(reason => reason.code)).toContain('native_reranker');
   });
@@ -119,13 +119,13 @@ describe('hybrid recall ranker', () => {
         fields: {project: 'threadnote', title: 'Beta update channel', topic: 'beta-update-channel'},
         kind: 'durable' as const,
         text: 'Prerelease packages use npm beta dist-tag; stable packages use latest.',
-        uri: 'viking://user/me/memories/beta-update-channel.md',
+        uri: 'threadnote://user/me/memories/beta-update-channel.md',
       },
       {
         fields: {project: 'threadnote', title: 'Ordinary installation troubleshooting'},
         semantic: 0.5,
         text: 'Ordinary installation troubleshooting.',
-        uri: 'viking://user/me/memories/install-troubleshooting.md',
+        uri: 'threadnote://user/me/memories/install-troubleshooting.md',
       },
     ];
     const query = 'How do preview builds get upgraded compared with ordinary installs?';
@@ -154,7 +154,7 @@ describe('hybrid recall ranker', () => {
           kind: 'preference',
           semantic: 0.69,
           text: 'General posting style guidance that mentions release notes among many other formats.',
-          uri: 'viking://user/me/memories/preferences/denys-writing-style.md',
+          uri: 'threadnote://user/me/memories/preferences/denys-writing-style.md',
         },
         {
           fields: {
@@ -165,7 +165,7 @@ describe('hybrid recall ranker', () => {
           kind: 'preference',
           semantic: 0.68,
           text: 'Release descriptions should emphasize end-user value.',
-          uri: 'viking://user/me/memories/preferences/release-notes.md',
+          uri: 'threadnote://user/me/memories/preferences/release-notes.md',
         },
       ],
       {project: 'threadnote', now: new Date('2026-07-23T00:00:00.000Z')},
@@ -185,7 +185,7 @@ describe('hybrid recall ranker', () => {
           kind: 'handoff',
           semantic: 0.73,
           text: 'Windows installation remains unsupported and is documented in shared durable memory.',
-          uri: 'viking://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
+          uri: 'threadnote://user/me/memories/handoffs/active/threadnote/recall-and-memory-formation.md',
         },
         {
           authority: 'reviewed_shared',
@@ -198,7 +198,7 @@ describe('hybrid recall ranker', () => {
           semantic: 0.68,
           text: 'Native Windows installation is unsupported until the package, model, and lifecycle gates pass.',
           trust: 'approved',
-          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+          uri: 'threadnote://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
         },
       ],
       {project: 'threadnote', now: new Date('2026-07-23T00:00:00.000Z')},
@@ -219,7 +219,7 @@ describe('hybrid recall ranker', () => {
           kind: 'durable',
           semantic: 0.69,
           text: 'Threadnote macOS application guidance.',
-          uri: 'viking://user/me/memories/durable/projects/threadnote/macos-native-app.md',
+          uri: 'threadnote://user/me/memories/durable/projects/threadnote/macos-native-app.md',
         },
         {
           authority: 'reviewed_shared',
@@ -232,7 +232,7 @@ describe('hybrid recall ranker', () => {
           kind: 'durable',
           text: 'Native Windows installation remains unsupported.',
           trust: 'approved',
-          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+          uri: 'threadnote://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
         },
       ],
       {
@@ -258,7 +258,7 @@ describe('hybrid recall ranker', () => {
           kind: 'durable',
           semantic: 0.62,
           text: 'Threadnote native app installation decision.',
-          uri: 'viking://user/me/memories/durable/projects/threadnote/macos-native-app.md',
+          uri: 'threadnote://user/me/memories/durable/projects/threadnote/macos-native-app.md',
         },
         {
           authority: 'reviewed_shared',
@@ -267,7 +267,7 @@ describe('hybrid recall ranker', () => {
           kind: 'durable',
           text: 'Windows installation remains unsupported by a durable product decision.',
           trust: 'approved',
-          uri: 'viking://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
+          uri: 'threadnote://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md',
         },
       ],
       {
@@ -304,7 +304,7 @@ describe('hybrid recall ranker', () => {
           fields: {project: 'threadnote', title: 'Windows installation', topic: 'windows-installation'},
           kind: 'durable',
           text: 'Windows installation decision.',
-          uri: 'viking://user/me/memories/windows-installation.md',
+          uri: 'threadnote://user/me/memories/windows-installation.md',
         },
       ],
       {allowExactRescue: false, minimumScore: 0.95, project: 'threadnote'},
@@ -319,7 +319,7 @@ describe('hybrid recall ranker', () => {
       {
         fields: {project: 'threadnote'},
         text: 'Unrelated deployment instructions.',
-        uri: 'viking://user/me/memories/unrelated.md',
+        uri: 'threadnote://user/me/memories/unrelated.md',
       },
     ]);
 
@@ -336,7 +336,7 @@ describe('hybrid recall ranker', () => {
           fields: {project: 'my-project'},
           kind: 'durable',
           text: 'Unrelated deployment instructions.',
-          uri: 'viking://user/me/memories/unrelated.md',
+          uri: 'threadnote://user/me/memories/unrelated.md',
         },
       ],
       {allowExactRescue: true, minimumScore: 0.45, project: 'my-project'},
@@ -355,7 +355,7 @@ describe('hybrid recall ranker', () => {
           fields: {title: 'Policy'},
           kind: 'durable',
           text: 'Policy for unrelated deployments.',
-          uri: 'viking://user/me/memories/unrelated-policy.md',
+          uri: 'threadnote://user/me/memories/unrelated-policy.md',
         },
       ],
       {allowExactRescue: true, minimumScore: 0.45},
@@ -374,7 +374,7 @@ describe('hybrid recall ranker', () => {
           fields: {project: 'threadnote', title: 'Recall quality backlog', topic: 'recall-quality-backlog'},
           kind: 'durable',
           text: 'A negative-control query once used kubernetes canary rollout service mesh as its example.',
-          uri: 'viking://user/me/memories/durable/projects/threadnote/recall-quality-backlog.md',
+          uri: 'threadnote://user/me/memories/durable/projects/threadnote/recall-quality-backlog.md',
         },
       ],
       {allowExactRescue: true, project: 'threadnote'},
@@ -393,14 +393,14 @@ describe('hybrid recall ranker', () => {
           fields: {project: 'orion-worker', title: 'QX7 lease flow', topic: 'qx7-lease-flow'},
           kind: 'durable',
           text: 'The QX7 worker renews its execution lease.',
-          uri: 'viking://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
+          uri: 'threadnote://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
         },
       ],
       {allowExactRescue: true, project: 'orion-worker'},
     );
 
     expect(ranked.results.map(result => result.candidate.uri)).toEqual([
-      'viking://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
+      'threadnote://user/me/memories/durable/projects/orion-worker/qx7-lease-flow.md',
     ]);
   });
 
@@ -414,7 +414,7 @@ describe('hybrid recall ranker', () => {
       kind: 'durable' as const,
       semantic: 0.8,
       text: 'The evaluation records which ranking-signal paraphrases passed.',
-      uri: 'viking://user/me/memories/durable/projects/threadnote/recall-quality-evaluation.md',
+      uri: 'threadnote://user/me/memories/durable/projects/threadnote/recall-quality-evaluation.md',
     };
 
     expect(rankRecallCandidates('what controls memory ranking signals', [candidate]).results).toEqual([]);
@@ -422,7 +422,7 @@ describe('hybrid recall ranker', () => {
   });
 
   it('uses typed graph proximity without allowing authority to bypass topical relevance', () => {
-    const seedUri = 'viking://resources/repos/threadnote/design.md';
+    const seedUri = 'threadnote://resources/repos/threadnote/design.md';
     const ranked = rankRecallCandidates(
       'candidate review',
       [
@@ -431,7 +431,7 @@ describe('hybrid recall ranker', () => {
           fields: {title: 'Unrelated deployment guide'},
           semantic: 0,
           text: 'Kubernetes deployment topology.',
-          uri: 'viking://resources/repos/threadnote/deploy.md',
+          uri: 'threadnote://resources/repos/threadnote/deploy.md',
         },
         {
           authority: 'agent_generated',
@@ -439,19 +439,19 @@ describe('hybrid recall ranker', () => {
           relations: [{type: 'evidence_for', uri: seedUri}],
           semantic: 0.45,
           text: 'Candidate review requires approval.',
-          uri: 'viking://user/me/memories/candidate.md',
+          uri: 'threadnote://user/me/memories/candidate.md',
         },
       ],
       {seedUris: [seedUri]},
     );
 
-    expect(ranked.results.map(result => result.candidate.uri)).toEqual(['viking://user/me/memories/candidate.md']);
+    expect(ranked.results.map(result => result.candidate.uri)).toEqual(['threadnote://user/me/memories/candidate.md']);
     expect(ranked.results[0]?.signals.graph).toBeGreaterThan(0);
     expect(ranked.results[0]?.reasons.map(reason => reason.code)).toContain('graph_proximity');
   });
 
   it('does not let graph proximity alone bypass the topical relevance gate', () => {
-    const seedUri = 'viking://resources/repos/threadnote/design.md';
+    const seedUri = 'threadnote://resources/repos/threadnote/design.md';
     const ranked = rankRecallCandidates(
       'candidate review',
       [
@@ -461,7 +461,7 @@ describe('hybrid recall ranker', () => {
           relations: [{type: 'evidence_for', uri: seedUri}],
           semantic: 0,
           text: 'Kubernetes deployment topology.',
-          uri: 'viking://resources/repos/threadnote/unrelated.md',
+          uri: 'threadnote://resources/repos/threadnote/unrelated.md',
         },
       ],
       {seedUris: [seedUri]},
@@ -480,7 +480,7 @@ describe('hybrid recall ranker', () => {
           semantic: 0.8,
           status: 'superseded',
           text: 'The release channel is beta.',
-          uri: 'viking://user/me/memories/old.md',
+          uri: 'threadnote://user/me/memories/old.md',
           validTo: '2026-01-01T00:00:00.000Z',
         },
         {
@@ -488,7 +488,7 @@ describe('hybrid recall ranker', () => {
           semantic: 0.7,
           status: 'active',
           text: 'The release channel is stable.',
-          uri: 'viking://user/me/memories/current.md',
+          uri: 'threadnote://user/me/memories/current.md',
           validFrom: '2026-01-02T00:00:00.000Z',
         },
       ],
@@ -514,14 +514,14 @@ describe('hybrid recall ranker', () => {
           semantic: 0.9,
           status: 'archived',
           text: 'The release channel is beta.',
-          uri: 'viking://user/me/memories/archived.md',
+          uri: 'threadnote://user/me/memories/archived.md',
         },
         {
           fields: {project: 'threadnote', title: 'Release channel'},
           semantic: 0.7,
           status: 'active',
           text: 'The release channel is stable.',
-          uri: 'viking://user/me/memories/active.md',
+          uri: 'threadnote://user/me/memories/active.md',
         },
       ],
       {includeInactive: true, project: 'threadnote'},
@@ -541,7 +541,7 @@ describe('hybrid recall ranker', () => {
           semantic: 1,
           status: 'archived',
           text: 'The release channel is beta.',
-          uri: 'viking://user/me/memories/archived.md',
+          uri: 'threadnote://user/me/memories/archived.md',
         },
       ],
       {includeInactive: true, minimumScore: 0.45, project: 'threadnote'},
@@ -558,7 +558,7 @@ describe('hybrid recall ranker', () => {
         authority: 'canonical_repo',
         fields: {title: 'Release checklist'},
         text: 'Publish npm package and changelog.',
-        uri: 'viking://resources/repos/threadnote/release.md',
+        uri: 'threadnote://resources/repos/threadnote/release.md',
       },
     ]);
 
@@ -573,14 +573,14 @@ describe('hybrid recall ranker', () => {
         fields: {title: 'Effect workflow'},
         semantic: 0.7,
         text: 'Effect workflow guidance.',
-        uri: 'viking://user/me/memories/downranked.md',
+        uri: 'threadnote://user/me/memories/downranked.md',
       },
       {
         feedback: 1,
         fields: {title: 'Effect workflow'},
         semantic: 0.7,
         text: 'Effect workflow guidance.',
-        uri: 'viking://user/me/memories/upranked.md',
+        uri: 'threadnote://user/me/memories/upranked.md',
       },
     ]);
 
@@ -592,14 +592,14 @@ describe('hybrid recall ranker', () => {
     const target = {
       fields: {title: 'Rare lexical target'},
       text: 'rare-identifier bounded retry',
-      uri: 'viking://resources/repos/threadnote/target.md',
+      uri: 'threadnote://resources/repos/threadnote/target.md',
     };
     const corpus = [
       target,
       ...Array.from({length: 100}, (_unused, index) => ({
         fields: {title: `Common document ${index}`},
         text: 'common retry guidance',
-        uri: `viking://resources/repos/threadnote/common-${index}.md`,
+        uri: `threadnote://resources/repos/threadnote/common-${index}.md`,
       })),
     ];
     const corpusStatistics = buildRecallCorpusStatistics(corpus);

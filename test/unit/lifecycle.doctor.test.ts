@@ -25,7 +25,7 @@ async function makeConfig(): Promise<RuntimeConfig> {
 }
 
 function memoriesDir(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking', config.account, 'user', config.user, 'memories');
+  return join(config.agentContextHome, 'data', config.account, 'user', config.user, 'memories');
 }
 
 async function writeMemory(root: string, relPath: string, project: string | undefined): Promise<void> {

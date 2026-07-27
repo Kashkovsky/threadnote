@@ -27,7 +27,7 @@ describe('recall feedback', () => {
       project: 'threadnote',
       query: 'Threadnote recall quality',
       timestamp: '2026-07-23T10:00:00.000Z',
-      uri: 'viking://user/me/memory.md',
+      uri: 'threadnote://user/me/memory.md',
     };
     expect((await run(recordRecallFeedback(directory, input))).recorded).toBe(true);
     expect((await run(recordRecallFeedback(directory, input))).recorded).toBe(false);
@@ -61,7 +61,7 @@ describe('recall feedback', () => {
       queryFingerprint,
       rankerVersion: 'hybrid-v1',
       timestamp,
-      uri: 'viking://user/me/memory.md',
+      uri: 'threadnote://user/me/memory.md',
       version: 1,
     });
     const events = [
@@ -80,8 +80,8 @@ describe('recall feedback', () => {
       }),
     );
 
-    expect(scores.get('viking://user/me/memory.md')).toBeGreaterThanOrEqual(-1);
-    expect(scores.get('viking://user/me/memory.md')).toBeLessThan(0.4);
+    expect(scores.get('threadnote://user/me/memory.md')).toBeGreaterThanOrEqual(-1);
+    expect(scores.get('threadnote://user/me/memory.md')).toBeLessThan(0.4);
   });
 
   it('ignores legacy projectless pins and compacts expired events on write', async () => {
@@ -92,7 +92,7 @@ describe('recall feedback', () => {
       queryFingerprint: await run(recallQueryFingerprint('query')),
       rankerVersion: 'hybrid-v1',
       timestamp: '2026-07-23T00:00:00.000Z',
-      uri: 'viking://user/me/projectless-pin.md',
+      uri: 'threadnote://user/me/projectless-pin.md',
       version: 1,
     };
     expect(
@@ -114,7 +114,7 @@ describe('recall feedback', () => {
         ...projectlessPin,
         action: 'useful',
         timestamp: '2020-01-01T00:00:00.000Z',
-        uri: 'viking://user/me/expired.md',
+        uri: 'threadnote://user/me/expired.md',
       })}\n`,
       'utf8',
     );
@@ -124,13 +124,13 @@ describe('recall feedback', () => {
         project: 'threadnote',
         query: 'query',
         timestamp: '2026-07-23T00:00:00.000Z',
-        uri: 'viking://user/me/current.md',
+        uri: 'threadnote://user/me/current.md',
       }),
     );
 
     const stored = await readFile(feedbackPath, 'utf8');
-    expect(stored).toContain('viking://user/me/current.md');
-    expect(stored).not.toContain('viking://user/me/expired.md');
+    expect(stored).toContain('threadnote://user/me/current.md');
+    expect(stored).not.toContain('threadnote://user/me/expired.md');
   });
 
   it('serializes concurrent feedback rewrites without losing an event', async () => {
@@ -142,7 +142,7 @@ describe('recall feedback', () => {
             project: 'threadnote',
             query: `query-${suffix}`,
             timestamp: '2026-07-23T00:00:00.000Z',
-            uri: `viking://user/me/${suffix}.md`,
+            uri: `threadnote://user/me/${suffix}.md`,
           }),
         ),
         {concurrency: 2},

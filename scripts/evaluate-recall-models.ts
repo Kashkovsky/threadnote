@@ -5,7 +5,10 @@ import {Effect} from 'effect';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {baselineResult, parseRecallEvaluationBaselineV1} from '../src/evaluation/recall-baseline.js';
-import {createRecallEvaluationFixtureV2} from '../src/evaluation/recall-fixture.js';
+import {
+  createRecallEvaluationFixtureV2,
+  serializeRecallEvaluationFixtureV2Identity,
+} from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
 import {
   evaluateRecallRunV2,
@@ -20,7 +23,7 @@ import {normalizeVector} from '../src/search/vector-search.js';
 
 const options = parseArguments(process.argv.slice(2));
 const fixture = createRecallEvaluationFixtureV2();
-const fixtureHash = createHash('sha256').update(JSON.stringify(fixture)).digest('hex');
+const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 const baseline = parseRecallEvaluationBaselineV1(JSON.parse(await readFile(options.baseline, 'utf8')));
 if (baseline.fixture.hash !== fixtureHash) {
   throw new Error(

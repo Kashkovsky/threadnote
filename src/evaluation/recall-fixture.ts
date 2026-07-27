@@ -329,7 +329,7 @@ export function expandRecallEvaluationFixtureV2(
       text: `Synthetic benchmark distractor ${index}: ${terms.join(' ')}. This record is generated and has no expected relevance.`,
       timestamp: new Date(Date.UTC(2020 + (index % 6), index % 12, 1)).toISOString(),
       trust: 'untrusted',
-      uri: `viking://resources/generated/benchmark/${String(index).padStart(6, '0')}.md`,
+      uri: `threadnote://resources/generated/benchmark/${String(index).padStart(6, '0')}.md`,
     });
   }
   const expanded: RecallEvaluationFixtureV2 = {
@@ -426,7 +426,7 @@ function scenarioDocuments(scenario: RecallScenario, index: number): readonly Re
       text: `General background repeats common terms from ${scenario.title} but does not state its contract.`,
       timestamp: '2023-01-01T00:00:00.000Z',
       trust: 'untrusted',
-      uri: `viking://resources/repos/${scenario.project}/evaluation/${scenario.slug}-lexical-decoy.md`,
+      uri: `threadnote://resources/repos/${scenario.project}/evaluation/${scenario.slug}-lexical-decoy.md`,
     },
     {
       authority: 'external',
@@ -466,7 +466,7 @@ function scenarioDocuments(scenario: RecallScenario, index: number): readonly Re
       text: 'This unrelated record discusses gardening schedules, ceramic glazing, and coastal weather observations.',
       timestamp: '2022-01-01T00:00:00.000Z',
       trust: 'untrusted',
-      uri: `viking://resources/generated/unrelated/${String(index).padStart(3, '0')}.md`,
+      uri: `threadnote://resources/generated/unrelated/${String(index).padStart(3, '0')}.md`,
     },
   ];
   return candidates.map(document => ({
@@ -628,27 +628,27 @@ function rotatingQuery(
 }
 
 function targetDocumentUri(scenario: RecallScenario): string {
-  return `viking://resources/repos/${scenario.project}/evaluation/${scenario.slug}.md`;
+  return `threadnote://resources/repos/${scenario.project}/evaluation/${scenario.slug}.md`;
 }
 
 function supersededDocumentUri(scenario: RecallScenario): string {
-  return `viking://user/evaluation/memories/${scenario.project}/${scenario.slug}-superseded.md`;
+  return `threadnote://user/evaluation/memories/${scenario.project}/${scenario.slug}-superseded.md`;
 }
 
 function wrongScopeDocumentUri(scenario: RecallScenario, index: number): string {
-  return `viking://resources/repos/other-${index}/evaluation/${scenario.slug}.md`;
+  return `threadnote://resources/repos/other-${index}/evaluation/${scenario.slug}.md`;
 }
 
 function lowAuthorityDocumentUri(scenario: RecallScenario): string {
-  return `viking://user/evaluation/memories/${scenario.project}/${scenario.slug}-unreviewed.md`;
+  return `threadnote://user/evaluation/memories/${scenario.project}/${scenario.slug}-unreviewed.md`;
 }
 
 function injectionDocumentUri(scenario: RecallScenario): string {
-  return `viking://resources/external/evaluation/${scenario.slug}-injection.md`;
+  return `threadnote://resources/external/evaluation/${scenario.slug}-injection.md`;
 }
 
 function anchorDocumentUri(scenario: RecallScenario): string {
-  return `viking://resources/repos/${scenario.project}/evaluation/${scenario.slug}-anchor.md`;
+  return `threadnote://resources/repos/${scenario.project}/evaluation/${scenario.slug}-anchor.md`;
 }
 
 function xorshift32(seed: number): () => number {
@@ -685,4 +685,13 @@ export function recallEvaluationCategoryCounts(
     counts[query.category] += 1;
   }
   return counts;
+}
+
+/**
+ * Keeps the reviewed 3.0.3 fixture identity stable across the 4.0 URI
+ * namespace rename. Ranking content and judgments are unchanged, so a
+ * scheme-only rewrite must not invalidate stored baselines or candidates.
+ */
+export function serializeRecallEvaluationFixtureV2Identity(fixture: RecallEvaluationFixtureV2): string {
+  return JSON.stringify(fixture).replaceAll('threadnote://', 'viking://');
 }

@@ -1212,7 +1212,7 @@
               <h3>One workflow, four agents</h3>
               <p>
                 Codex, Claude Code, Cursor, and Copilot recall and write through the same MCP tools and
-                <code>viking://</code> pointers.
+                <code>threadnote://</code> pointers.
               </p>
             </div>
             <div class="card reveal">
@@ -1229,7 +1229,7 @@
               <h3>Find the record, not the whole history</h3>
               <p>
                 Threadnote can run a local GGUF embedding model in-process through <code>node-llama-cpp</code> to rank
-                matches. Agents read only the selected <code>viking://</code> records; Markdown remains canonical.
+                matches. Agents read only the selected <code>threadnote://</code> records; Markdown remains canonical.
               </p>
             </div>
           </div>
@@ -1276,7 +1276,7 @@
                   and personal workflow facts.
                 </li>
                 <li>
-                  <strong>Read pattern:</strong> semantic recall returns scoped <code>viking://</code> URIs; only
+                  <strong>Read pattern:</strong> semantic recall returns scoped <code>threadnote://</code> URIs; only
                   relevant content enters the context window.
                 </li>
                 <li>
@@ -1372,7 +1372,7 @@
               <!-- storage -->
               <g font-family="JetBrains Mono, monospace" font-size="12" fill="#ececf1">
                 <rect x="60" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="240" y="361" text-anchor="middle">~/.threadnote/data/viking/&lt;account&gt;/...</text>
+                <text x="240" y="361" text-anchor="middle">~/.threadnote/data/&lt;account&gt;/...</text>
 
                 <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
                 <text x="640" y="361" text-anchor="middle">indexes/vector (regenerable sidecar)</text>
@@ -1381,7 +1381,7 @@
             <div class="architecture-legend">
               <div><strong>One adapter, one URI scheme.</strong> Every agent calls the same MCP tools.</div>
               <div>
-                <strong>URIs are stable.</strong> A memory at <code>viking://user/&lt;you&gt;/...</code> is the same
+                <strong>URIs are stable.</strong> A memory at <code>threadnote://user/&lt;you&gt;/...</code> is the same
                 pointer from every session.
               </div>
               <div>
@@ -1554,7 +1554,7 @@
 projects:
   - name: web-app
     path: ~/src/web-app
-    uri: viking://resources/repos/web-app
+    uri: threadnote://resources/repos/web-app
     seed:
       - AGENTS.md
       - CLAUDE.md
@@ -1562,7 +1562,7 @@ projects:
       - .claude/skills/**/SKILL.md
   - name: mobile-app
     path: ~/src/mobile-app
-    uri: viking://resources/repos/mobile-app
+    uri: threadnote://resources/repos/mobile-app
     seed:
       - AGENTS.md
       - docs/**/*.md
@@ -1576,7 +1576,7 @@ worksets:
           <ul class="flat reveal" style="margin-top: 2rem">
             <li>
               <strong>Recall is smart enough to scope by query.</strong> Ask "web-app durable feature memories" and
-              recall prefers <code>viking://resources/repos/web-app</code> first.
+              recall prefers <code>threadnote://resources/repos/web-app</code> first.
             </li>
             <li>
               <strong>Seeding is opt-in and re-runnable.</strong> <code>threadnote seed</code> never deletes; it
@@ -1693,14 +1693,14 @@ threadnote handoff \
   --task "Address reviewer comments on token refresh PR" \
   --pr "https://github.com/acme/web-app/pull/184" \
   --ci "lint and auth tests passing" \
-  --reference "viking://user/&lt;you&gt;/memories/durable/projects/web-app/token-client.md" \
+  --reference "threadnote://user/&lt;you&gt;/memories/durable/projects/web-app/token-client.md" \
   --tests "make lint-lite; mocha auth_client_test 77 passing" \
   --next-step "Push and request re-review"
 
 # Later, update the durable memory in place (no timestamped duplicates):
 threadnote remember \
   --kind durable --project web-app --topic auth-token-refresh \
-  --replace viking://user/&lt;you&gt;/memories/durable/projects/web-app/auth-token-refresh.md \
+  --replace threadnote://user/&lt;you&gt;/memories/durable/projects/web-app/auth-token-refresh.md \
   --text "..."</code></pre>
           </div>
         </div>
@@ -1738,7 +1738,7 @@ threadnote remember \
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ threadnote share publish \
-    viking://user/&lt;you&gt;/memories/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
+    threadnote://user/&lt;you&gt;/memories/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
 <span class="out">Scrubber: no secret patterns detected.</span>
 <span class="out">git commit -m 'share: publish durable/projects/&lt;p&gt;/&lt;t&gt;.md'</span>
 <span class="out-strong">Published. Pushed to origin/main.</span></pre>
@@ -1755,7 +1755,7 @@ threadnote remember \
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ recall_context({query: "shared feature memory"})</span>
-<span class="out">→ viking://user/you/memories/shared/default/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
+<span class="out">→ threadnote://user/you/memories/shared/default/durable/projects/&lt;p&gt;/&lt;t&gt;.md</span>
 <span class="out">Auto-synced shared memories: default</span>
 <span class="out-strong">Recall now finds new shared memories alongside personal.</span></pre>
               </div>
@@ -1885,8 +1885,8 @@ threadnote remember \
               <div class="v-say">Continue where we left off on this branch.</div>
               <pre class="v-call">recall_context({query: "&lt;branch&gt; latest handoff durable feature memory"})</pre>
               <pre class="v-response">
-→ viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md
-→ viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+→ threadnote://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md
+→ threadnote://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md</pre>
               <div class="v-answer">
                 Fresh session, fresh agent. It reads both pointers, picks up the design decisions, the open PR, what's
                 left to test, and what just failed in CI. No re-explaining.
@@ -1910,7 +1910,7 @@ threadnote remember \
               <pre class="v-call">
 remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "&lt;feature&gt;", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre>
+Stored: threadnote://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.md</pre>
               <div class="v-answer">
                 Open the next agent — the SessionStart hook recalls the same handoff and the durable memory. It picks up
                 the test command and the open blocker without you retyping them.
@@ -1920,7 +1920,7 @@ Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/&lt;feature&gt;.
             <div class="vignette reveal">
               <div class="v-say">Share this feature's design memory with the team.</div>
               <pre class="v-call">
-share_publish({uri: "viking://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre>
+share_publish({uri: "threadnote://user/you/memories/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md"})</pre>
               <pre class="v-response">
 Published → shared/&lt;team&gt;/durable/projects/&lt;repo&gt;/&lt;feature&gt;.md
 git push: ok</pre>
@@ -1935,7 +1935,7 @@ git push: ok</pre>
               <pre class="v-call">
 remember_context({kind: "handoff", project: "&lt;repo&gt;", topic: "auto-precompact", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre>
+Stored: threadnote://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.md</pre>
               <div class="v-answer">
                 Compaction summarizes the conversation arc but loses concrete working state. Threadnote's hook captures
                 a scrubbed trace summary and current handoff first; the post-compaction turn recalls them and resumes
@@ -1948,7 +1948,7 @@ Stored: viking://user/you/memories/handoffs/active/&lt;repo&gt;/auto-precompact.
               <pre class="v-call">
 remember_context({kind: "durable", project: "&lt;repo&gt;", topic: "release-process", text: "..."})</pre>
               <pre class="v-response">
-Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre>
+Stored: threadnote://user/you/memories/durable/projects/&lt;repo&gt;/release-process.md</pre>
               <div class="v-answer">
                 Next time anyone asks where releases happen, the agent finds it in two seconds. No grepping the wiki.
               </div>
@@ -1958,7 +1958,7 @@ Stored: viking://user/you/memories/durable/projects/&lt;repo&gt;/release-process
               <div class="v-say">What did we conclude about the export-workflow timeout?</div>
               <pre class="v-call">recall_context({query: "export workflow timeout findings"})</pre>
               <pre class="v-response">
-→ viking://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre>
+→ threadnote://user/you/memories/durable/projects/&lt;repo&gt;/export-timeout.md (score 0.71)</pre>
               <div class="v-answer">
                 Re-open the same investigation three weeks later; the durable memory points your agent at the right
                 files and the resolution. The trail doesn't decay.

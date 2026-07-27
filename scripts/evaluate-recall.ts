@@ -66,15 +66,7 @@ const runProductionBenchmark = Effect.scoped(
     const fs = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
     const agentContextHome = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-recall-eval-'});
-    const resourceRoot = pathService.join(
-      agentContextHome,
-      'data',
-      'viking',
-      'local',
-      'resources',
-      'repos',
-      'threadnote',
-    );
+    const resourceRoot = pathService.join(agentContextHome, 'data', 'local', 'resources', 'repos', 'threadnote');
     const repoRoot = pathService.join(agentContextHome, 'benchmark-repo');
     const manifestPath = pathService.join(agentContextHome, 'seed-manifest.yaml');
     const seedStatePath = pathService.join(agentContextHome, 'seed-state.json');
@@ -109,7 +101,7 @@ const runProductionBenchmark = Effect.scoped(
             name: 'threadnote',
             path: repoRoot,
             seed: ['09999.md'],
-            uri: 'viking://resources/repos/threadnote',
+            uri: 'threadnote://resources/repos/threadnote',
           },
         ],
         version: 1,
@@ -125,7 +117,7 @@ const runProductionBenchmark = Effect.scoped(
         seedStatePath,
         `${JSON.stringify({
           files: {
-            'viking://resources/repos/threadnote/09999.md': {
+            'threadnote://resources/repos/threadnote/09999.md': {
               mtimeMs: modifiedAt,
               size: Number(targetInfo.size),
             },
@@ -138,8 +130,8 @@ const runProductionBenchmark = Effect.scoped(
     const config = {account: 'local', agentContextHome, manifestPath, user: 'benchmark'};
     const initialIndex = yield* loadRecallIndex(config, {forceRefresh: true, includeInactive: false});
     if (
-      initialIndex.find(candidate => candidate.uri === 'viking://resources/repos/threadnote/09999.md')?.authority !==
-      'canonical_repo'
+      initialIndex.find(candidate => candidate.uri === 'threadnote://resources/repos/threadnote/09999.md')
+        ?.authority !== 'canonical_repo'
     ) {
       return yield* Effect.fail(new Error('Production benchmark target did not receive verified seed authority.'));
     }
@@ -158,11 +150,11 @@ const runProductionBenchmark = Effect.scoped(
     const prepare = prepareForQuery(`common retrieval ${PRODUCTION_BENCHMARK_QUERY}`);
     for (let index = 0; index < PRODUCTION_BENCHMARK_WARMUP_COUNT; index += 1) {
       const warmup = yield* prepare;
-      if (!warmup.ranked.some(hit => hit.uri === 'viking://resources/repos/threadnote/09999.md')) {
+      if (!warmup.ranked.some(hit => hit.uri === 'threadnote://resources/repos/threadnote/09999.md')) {
         return yield* Effect.fail(new Error('Production benchmark failed to retrieve its exact target.'));
       }
     }
-    const targetUri = 'viking://resources/repos/threadnote/09999.md';
+    const targetUri = 'threadnote://resources/repos/threadnote/09999.md';
     const measure = (
       samples: number,
       p95LimitMilliseconds: number,

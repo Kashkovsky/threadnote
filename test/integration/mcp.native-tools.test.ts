@@ -89,7 +89,7 @@ describe('Threadnote MCP toolsets', () => {
         const instructions = client.getInstructions() ?? '';
         expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(512);
         expect(instructions).toContain('callerCwd');
-        expect(instructions).toContain('viking://');
+        expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
         expect(instructions).toContain('directly');
@@ -227,7 +227,7 @@ describe('Threadnote MCP toolsets', () => {
         });
 
         expect(applied).toContain(
-          'Stored memory: viking://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
+          'Stored memory: threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
         );
       },
       {toolset: 'core'},
@@ -255,7 +255,7 @@ describe('Threadnote MCP toolsets', () => {
         const review = JSON.parse(await readFile(reviewPath, 'utf8')) as {
           candidates: Array<Record<string, unknown>>;
         };
-        const destinationUri = `viking://user/test-user/memories/durable/projects/threadnote/${topic}.md`;
+        const destinationUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${topic}.md`;
         review.candidates[0] = {
           ...review.candidates[0],
           applyApprovedAt: '2026-07-23T10:00:00.000Z',
@@ -269,7 +269,6 @@ describe('Threadnote MCP toolsets', () => {
         const destinationPath = join(
           fixture.home,
           'data',
-          'viking',
           'local',
           'user',
           'test-user',
@@ -322,7 +321,6 @@ describe('Threadnote MCP toolsets', () => {
         const sharedPath = join(
           fixture.home,
           'data',
-          'viking',
           'local',
           'user',
           'test-user',
@@ -374,7 +372,7 @@ describe('Threadnote MCP toolsets', () => {
         });
 
         expect(applied).toContain(
-          `Stored memory: viking://user/test-user/memories/durable/projects/threadnote/${topic}.md`,
+          `Stored memory: threadnote://user/test-user/memories/durable/projects/threadnote/${topic}.md`,
         );
       },
       {toolset: 'core'},
@@ -422,7 +420,7 @@ describe('Threadnote MCP toolsets', () => {
         await client.callTool({arguments: {query: 'alpha-42'}, name: 'recall_context'}, undefined, {timeout: 5000});
         const imported = await client.callTool(
           {
-            arguments: {path: importRoot, to: 'viking://resources/import-collision-test'},
+            arguments: {path: importRoot, to: 'threadnote://resources/import-collision-test'},
             name: 'add_resource',
           },
           undefined,
@@ -431,13 +429,13 @@ describe('Threadnote MCP toolsets', () => {
         expect(imported.isError).not.toBe(true);
         expect(imported.structuredContent).toMatchObject({
           imported: expect.arrayContaining([
-            'viking://resources/import-collision-test/a%20b.txt',
-            'viking://resources/import-collision-test/a%2Bb.txt',
+            'threadnote://resources/import-collision-test/a%20b.txt',
+            'threadnote://resources/import-collision-test/a%2Bb.txt',
           ]),
         });
 
         await callText(client, 'recall_context', {
-          pinnedUri: 'viking://resources/import-collision-test',
+          pinnedUri: 'threadnote://resources/import-collision-test',
           query: 'alpha-42',
         });
       },

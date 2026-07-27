@@ -35,7 +35,6 @@ async function makeRuntime(): Promise<ShareRuntime> {
   const sourcePath = join(
     home,
     'data',
-    'viking',
     'local',
     'user',
     'test-user',
@@ -112,11 +111,10 @@ describe('runSharePublish transaction ordering', () => {
   it('pushes the shared memory before removing the personal source', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
     const sourcePath = join(
       config.agentContextHome,
       'data',
-      'viking',
       'local',
       'user',
       'test-user',
@@ -129,7 +127,6 @@ describe('runSharePublish transaction ordering', () => {
     const targetPath = join(
       config.agentContextHome,
       'data',
-      'viking',
       'local',
       'user',
       'test-user',
@@ -154,11 +151,10 @@ describe('runSharePublish transaction ordering', () => {
   it('does not remove the personal source when git push fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
     const sourcePath = join(
       config.agentContextHome,
       'data',
-      'viking',
       'local',
       'user',
       'test-user',

@@ -32,8 +32,8 @@ describe('vector index generations', () => {
         const catalog = yield* LocalModelCatalog;
         yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
         const rebuilt = yield* rebuildVectorIndex({agentContextHome: home}, manifest, [
-          {text: '# Alpha\n\nThe release semaphore controls deployment.', uri: 'viking://resources/repos/a.md'},
-          {text: '# Beta\n\nThe orchard contains pear trees.', uri: 'viking://resources/repos/b.md'},
+          {text: '# Alpha\n\nThe release semaphore controls deployment.', uri: 'threadnote://resources/repos/a.md'},
+          {text: '# Beta\n\nThe orchard contains pear trees.', uri: 'threadnote://resources/repos/b.md'},
         ]);
         const scores = yield* selectedSemanticScores({agentContextHome: home}, 'alpha deployment');
         return {rebuilt, scores};
@@ -41,8 +41,8 @@ describe('vector index generations', () => {
       const {rebuilt, scores} = await runEffect(effect);
       expect(rebuilt.ready).toBe(true);
       expect(rebuilt.chunkCount).toBe(2);
-      expect(scores?.get('viking://resources/repos/a.md')).toBeCloseTo(1);
-      expect(scores?.get('viking://resources/repos/b.md')).toBeCloseTo(0);
+      expect(scores?.get('threadnote://resources/repos/a.md')).toBeCloseTo(1);
+      expect(scores?.get('threadnote://resources/repos/b.md')).toBeCloseTo(0);
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -51,7 +51,7 @@ describe('vector index generations', () => {
   it('keeps the active generation when a replacement embedding run is interrupted', async () => {
     const home = await mkdtemp('threadnote-vector-interrupt-');
     try {
-      const candidates = [{text: '# Alpha\n\nStable canonical content.', uri: 'viking://resources/repos/a.md'}];
+      const candidates = [{text: '# Alpha\n\nStable canonical content.', uri: 'threadnote://resources/repos/a.md'}];
       const first = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
           Effect.provide(fakeRuntimeLayer(() => 0)),
@@ -60,7 +60,7 @@ describe('vector index generations', () => {
       );
       const failed = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, [
-          {text: '# Alpha\n\nChanged canonical content.', uri: 'viking://resources/repos/a.md'},
+          {text: '# Alpha\n\nChanged canonical content.', uri: 'threadnote://resources/repos/a.md'},
         ]).pipe(
           Effect.provide(
             Layer.succeed(
@@ -101,8 +101,8 @@ describe('vector index generations', () => {
         inputs => embeddedInputs.push([...inputs]),
       );
       const candidates = [
-        {text: '# Alpha\n\nStable canonical content.', uri: 'viking://resources/repos/a.md'},
-        {text: '# Beta\n\nOriginal canonical content.', uri: 'viking://resources/repos/b.md'},
+        {text: '# Alpha\n\nStable canonical content.', uri: 'threadnote://resources/repos/a.md'},
+        {text: '# Beta\n\nOriginal canonical content.', uri: 'threadnote://resources/repos/b.md'},
       ];
       const rebuild = (documents: typeof candidates) =>
         runEffect(
@@ -116,7 +116,7 @@ describe('vector index generations', () => {
       const unchanged = await rebuild(candidates);
       const changed = await rebuild([
         candidates[0]!,
-        {text: '# Beta\n\nChanged canonical content.', uri: 'viking://resources/repos/b.md'},
+        {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
       ]);
 
       expect(first.embeddedChunkCount).toBe(2);
@@ -135,7 +135,7 @@ describe('vector index generations', () => {
     const home = await mkdtemp('threadnote-vector-resume-');
     const candidates = Array.from({length: 300}, (_, index) => ({
       text: `# Document ${index}\n\nCanonical content ${index}.`,
-      uri: `viking://resources/repos/doc-${index}.md`,
+      uri: `threadnote://resources/repos/doc-${index}.md`,
     }));
     try {
       let call = 0;

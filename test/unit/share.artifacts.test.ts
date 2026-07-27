@@ -99,17 +99,7 @@ describe('shared agent artifacts', () => {
   });
 
   async function blockNativeArtifactWrites(config: ShareRuntime): Promise<void> {
-    const parent = join(
-      config.agentContextHome,
-      'data',
-      'viking',
-      'local',
-      'user',
-      'test-user',
-      'memories',
-      'shared',
-      'default',
-    );
+    const parent = join(config.agentContextHome, 'data', 'local', 'user', 'test-user', 'memories', 'shared', 'default');
     await mkdir(parent, {recursive: true});
     await writeFile(join(parent, 'agent-artifacts'), 'blocks canonical directory creation');
   }
@@ -125,7 +115,7 @@ describe('shared agent artifacts', () => {
     const result = await runEffect(shareAgentArtifact(config, sourcePath, {}));
 
     expect(result.targetUri).toBe(
-      'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+      'threadnote://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
     );
     expect(vi.mocked(utils.runCommand).mock.calls).toEqual(
       expect.arrayContaining([
@@ -147,7 +137,6 @@ describe('shared agent artifacts', () => {
         join(
           config.agentContextHome,
           'data',
-          'viking',
           'local',
           'user',
           'test-user',
@@ -439,7 +428,7 @@ describe('shared agent artifacts', () => {
     const result = await runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}));
 
     expect(result.targetUri).toBe(
-      'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
+      'threadnote://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
     );
     const sharedRoot = join(
       config.agentContextHome,
@@ -702,7 +691,7 @@ describe('shared agent artifacts', () => {
     const result = await runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}));
 
     expect(result.targetUri).toBe(
-      'viking://user/test-user/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.md',
+      'threadnote://user/test-user/memories/shared/default/agent-artifacts/packs/claude/reviewer/reviewer.pack.md',
     );
     const packRoot = join(
       config.agentContextHome,

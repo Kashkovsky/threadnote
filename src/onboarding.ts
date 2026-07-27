@@ -85,7 +85,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     'Recall context — pull back the last handoff and durable knowledge for the current',
     'repo+branch before starting work, so the session continues where the last one left off.',
     '  Run: recall_context({"query":"<repo> latest handoff","callerCwd":"<abs cwd>"}), then',
-    '  read_context the most relevant viking:// URI it returns.',
+    '  read_context the most relevant threadnote:// URI it returns.',
     '',
     'Capture work — Store routine durable feature knowledge and handoffs directly at meaningful',
     'task closeout; these writes do not need user approval.',
@@ -99,7 +99,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     'Share with your team — publish a durable memory teammates’ agents can recall. Secrets are',
     'scrubbed/blocked; handoffs/preferences/local-path notes are never shared.',
     hasTeam
-      ? '  Run: share_publish({"uri":"viking://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
+      ? '  Run: share_publish({"uri":"threadnote://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
       : '  First (one-time): `threadnote share init git@github.com:org/team-memories.git`, then share_publish({"uri":"..."}).',
     '',
     ...(fullToolset

@@ -18,6 +18,10 @@ developer home, network access, local canonical data, and model-generated releva
 The seed and generated-document count are part of the fixture identity. Generated records are marked `reviewed:
 false`; they must never be added to relevance judgments.
 
+Fixture identity normalizes the 4.0 `threadnote://` namespace rename back to the frozen 3.0.3 representation before
+hashing. This keeps stored baselines and measured model candidates comparable when only the URI scheme changed; corpus,
+query, or judgment changes still produce a different hash.
+
 To add a scenario, add one hand-reviewed entry to `SCENARIOS`. Each entry creates eight documents and ten query
 contracts. If a new behavior does not fit that shape, add an explicit document/query builder and preserve the minimum
 counts. Validate that:

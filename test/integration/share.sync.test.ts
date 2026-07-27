@@ -60,7 +60,7 @@ async function gitOutput(args: readonly string[], cwd?: string): Promise<string>
 }
 
 function canonicalResourceFile(home: string, uri: string): string {
-  return join(home, 'data', 'viking', 'local', ...uri.slice('viking://'.length).split('/'));
+  return join(home, 'data', 'local', ...uri.slice('threadnote://'.length).split('/'));
 }
 
 async function writeCanonicalResource(home: string, uri: string, content: string, _encoding = 'utf8'): Promise<void> {
@@ -231,8 +231,8 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(repo.root);
     const defaultRelativePath = 'durable/projects/threadnote/default.md';
     const friendsRelativePath = 'durable/projects/threadnote/friends.md';
-    const defaultUri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/default.md';
-    const friendsUri = 'viking://user/denys/memories/shared/friends/durable/projects/threadnote/friends.md';
+    const defaultUri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/default.md';
+    const friendsUri = 'threadnote://user/denys/memories/shared/friends/durable/projects/threadnote/friends.md';
 
     await mkdir(join(repo.seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(
@@ -266,8 +266,8 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(repo.root);
     const defaultRelativePath = 'durable/projects/threadnote/default.md';
     const friendsRelativePath = 'durable/projects/threadnote/friends.md';
-    const defaultUri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/default.md';
-    const friendsUri = 'viking://user/denys/memories/shared/friends/durable/projects/threadnote/friends.md';
+    const defaultUri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/default.md';
+    const friendsUri = 'threadnote://user/denys/memories/shared/friends/durable/projects/threadnote/friends.md';
 
     await mkdir(join(repo.seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(
@@ -341,7 +341,7 @@ describe('share sync git handling', () => {
     const {config, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/leak.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/leak.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/leak.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(
       join(seed, relativePath),
@@ -367,7 +367,7 @@ describe('share sync git handling', () => {
     const {config, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(
       join(seed, relativePath),
@@ -375,7 +375,7 @@ describe('share sync git handling', () => {
         'MEMORY',
         'kind: durable',
         'status: active',
-        'references: viking://user/alice/memories/durable/projects/threadnote/local.md',
+        'references: threadnote://user/alice/memories/durable/projects/threadnote/local.md',
         '',
         'shared body',
         '',
@@ -402,7 +402,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body', 'utf8');
     await git(['add', relativePath], seed);
@@ -439,7 +439,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'agent-artifacts/skills/codex/reviewer/SKILL.md';
-    const uri = 'viking://user/denys/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md';
     await mkdir(dirname(join(seed, relativePath)), {recursive: true});
     await writeFile(join(seed, relativePath), '# Reviewer\n\nReview pull requests.\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -459,7 +459,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -497,7 +497,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -547,7 +547,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -589,7 +589,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nshared body\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -632,7 +632,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
     const newContent = 'MEMORY\nkind: durable\nstatus: active\n\nnew shared';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
@@ -679,7 +679,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
     const newContent = 'MEMORY\nkind: durable\nstatus: active\n\nnew shared';
     const localContent = 'MEMORY\nkind: durable\nstatus: active\n\nlocal edit\n';
@@ -728,7 +728,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), `${oldContent}\n`, 'utf8');
@@ -783,7 +783,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
     const id = `default:${relativePath}`;
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
     const localContent = 'MEMORY\nkind: durable\nstatus: active\n\nlocal edit\n';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
@@ -830,7 +830,7 @@ describe('share sync git handling', () => {
     const {config, home, root, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const sharedContent = 'MEMORY\nkind: durable\nstatus: active\n\nsafe remote body\n';
     await mkdir(dirname(join(worktree, relativePath)), {recursive: true});
     await writeFile(join(worktree, relativePath), sharedContent, 'utf8');
@@ -880,7 +880,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const oldContent = 'MEMORY\nkind: durable\nstatus: active\n\nold shared';
     const newContent = 'MEMORY\nkind: durable\nstatus: active\n\nnew shared';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
@@ -925,7 +925,7 @@ describe('share sync git handling', () => {
     const {config, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nold shared\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -948,7 +948,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nold shared\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -984,7 +984,7 @@ describe('share sync git handling', () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const remoteContent = 'MEMORY\nkind: durable\nstatus: active\n\nremote body\n';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), remoteContent, 'utf8');
@@ -1029,7 +1029,7 @@ describe('share sync git handling', () => {
     const {config, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const trailer = ['<!-- MEMORY_FIELDS', '{', '  "version": 1', '}', '-->'].join('\n');
     const remoteContent = `MEMORY\nkind: durable\nstatus: active\n\nremote body\n\n${trailer}\n`;
     await mkdir(dirname(join(seed, relativePath)), {recursive: true});
@@ -1051,7 +1051,7 @@ describe('share sync git handling', () => {
     const {config, root, seed} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     const trailer = ['<!-- MEMORY_FIELDS', '{', '  "version": 1', '}', '-->'].join('\n');
     const remoteContent = `MEMORY\nkind: durable\nstatus: active\n\nremote body\n\n${trailer}\n`;
     await mkdir(dirname(join(seed, relativePath)), {recursive: true});
@@ -1071,7 +1071,7 @@ describe('share sync git handling', () => {
     const {config, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);
     const relativePath = 'durable/projects/threadnote/shared.md';
-    const uri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/shared.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(join(seed, relativePath), 'MEMORY\nkind: durable\nstatus: active\n\nold shared\n', 'utf8');
     await git(['add', relativePath], seed);
@@ -1200,7 +1200,7 @@ describe('share sync git handling', () => {
     const {store} = await nativeStoreFixture(root);
     const blockedPath = 'durable/projects/threadnote/blocked.md';
     const safePath = 'durable/projects/threadnote/safe.md';
-    const safeUri = 'viking://user/denys/memories/shared/default/durable/projects/threadnote/safe.md';
+    const safeUri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/safe.md';
     await mkdir(join(seed, 'durable', 'projects', 'threadnote'), {recursive: true});
     await writeFile(
       join(seed, blockedPath),

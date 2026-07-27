@@ -84,7 +84,7 @@ import type {
   RuntimeConfig,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   ensureDirectory,
@@ -97,7 +97,7 @@ import {
   getInvocationCwd,
   gitValue,
   isJsonObject,
-  parentVikingUri,
+  parentResourceUri,
   parsePositiveInteger,
   readFileIfExists,
   type RecallHit,
@@ -120,7 +120,7 @@ import {
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   stripPersonalProvenance,
-  vikingUriToWorktreeRelative,
+  resourceUriToWorktreeRelative,
   writeMemoryFile,
 } from './share.js';
 
@@ -301,7 +301,7 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
       }
 
       const memoryUri = migratedDurableMemoryUri(config, candidate.hash);
-      if (!dryRun && (yield* vikingResourceExists(ov, config, memoryUri))) {
+      if (!dryRun && (yield* resourceExists(ov, config, memoryUri))) {
         duplicateCount += 1;
         existingHashes.add(candidate.hash);
         continue;
@@ -518,7 +518,7 @@ const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* 
     const relative = path.relative(root, file.path).split(path.sep).join('/');
     return {
       path: file.path,
-      uri: `viking://user/${uriSegment(config.user)}/memories/${relative}`,
+      uri: `threadnote://user/${uriSegment(config.user)}/memories/${relative}`,
     };
   });
   const teams = yield* readTeamsFile(config);
@@ -538,7 +538,7 @@ const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* 
           const relative = path.relative(settings.worktree, file.path).split(path.sep).join('/');
           return {
             path: file.path,
-            uri: `viking://user/${uriSegment(config.user)}/memories/shared/${team}/${relative}`,
+            uri: `threadnote://user/${uriSegment(config.user)}/memories/shared/${team}/${relative}`,
           };
         });
       }),
@@ -622,7 +622,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
 
       yield* Console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${candidate.sourceUri} -> ${destinationUri}`);
       if (!dryRun) {
-        if (yield* vikingResourceExists(ov, config, destinationUri)) {
+        if (yield* resourceExists(ov, config, destinationUri)) {
           existingCount += 1;
           yield* Console.log(`Archived copy already exists; cleaning up legacy source: ${candidate.sourceUri}`);
         } else {
@@ -631,7 +631,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
           yield* ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata));
           yield* writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create');
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+        const removedOriginal = yield* removeResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.original,
         });
         if (!removedOriginal) {
@@ -708,10 +708,10 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
         if (candidate.destinationExistsWithSameContent) {
           existingCount += 1;
         } else {
-          yield* ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri));
+          yield* ensureMemoryDirectory(ov, config, parentResourceUri(candidate.destinationUri));
           yield* writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false);
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+        const removedOriginal = yield* removeResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.sourceContent,
         });
         if (!removedOriginal) {
@@ -827,7 +827,7 @@ const projectNameMigrationMemoryEvidence = Effect.fn('memory.projectNameMigratio
         if (!content) {
           continue;
         }
-        const sourceUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry}`;
+        const sourceUri = `threadnote://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry}`;
         const record = parseMemoryDocument(sourceUri, content);
         if (record?.metadata.project && uriSegment(record.metadata.project) === oldSegment) {
           projectEvidence.oldProject = record.metadata.project;
@@ -957,7 +957,7 @@ const projectNameMigrationCandidates = Effect.fn('memory.projectNameMigrationCan
       ...location.relativePath,
       context.oldSegment,
     );
-    const sourceDirectoryUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
+    const sourceDirectoryUri = `threadnote://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
     const entries = yield* fs.readDirectory(sourceDirectory).pipe(Effect.option);
     if (entries._tag === 'None') {
       continue;
@@ -1092,8 +1092,8 @@ const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNa
       isSeedManifestProjectNameCandidate(
         project,
         candidate,
-        `viking://resources/repos/${candidate.oldSegment}`,
-        `viking://resources/repos/${candidate.newSegment}`,
+        `threadnote://resources/repos/${candidate.oldSegment}`,
+        `threadnote://resources/repos/${candidate.newSegment}`,
       ),
     );
     if (!context) {
@@ -1111,8 +1111,8 @@ const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNa
       ...project,
       name: context.newProject,
       uri:
-        trimTrailingSlash(project.uri) === `viking://resources/repos/${context.oldSegment}`
-          ? `viking://resources/repos/${context.newSegment}`
+        trimTrailingSlash(project.uri) === `threadnote://resources/repos/${context.oldSegment}`
+          ? `threadnote://resources/repos/${context.newSegment}`
           : project.uri,
     };
   });
@@ -1247,8 +1247,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const query = yield* enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions);
   const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
   const dryRun = options.dryRun === true;
+  const explicitUri = options.uri ? parseResourceId(options.uri).canonicalUri : undefined;
   const inferredUri =
-    options.uri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
+    explicitUri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
   const queryProject = yield* inferProjectFromQuery(config.manifestPath, options.project ?? options.query);
   const project = queryProject ?? (yield* inferProjectFromQuery(config.manifestPath, projectQuery));
   const projectMemoryName = yield* recallProjectMemoryName(options.project, workspaceOptions);
@@ -1273,7 +1274,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   }
   const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
   if (options.project && project) {
-    const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
+    const projectMemoryUri = `threadnote://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
     if (!scopedRecallUris.has(projectMemoryUri)) {
       scopedRecallUris.add(projectMemoryUri);
     }
@@ -1284,7 +1285,12 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     }
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
-  if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
+  if (
+    seededUri?.startsWith('threadnote://') &&
+    seededUri !== inferredUri &&
+    !options.uri &&
+    options.inferScope !== false
+  ) {
     scopedRecallUris.add(seededUri);
   }
 
@@ -1331,7 +1337,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const prepareSections = (candidateUris?: readonly string[]) =>
     prepareRecallSections(config, {
       allowExactRescue: options.threshold === undefined,
-      allowedUriScopes: options.uri ? [options.uri] : undefined,
+      allowedUriScopes: explicitUri ? [explicitUri] : undefined,
       candidateUris,
       exactMatches,
       feedbackQuery: options.query,
@@ -1339,7 +1345,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       limit: recallLimit,
       minimumScore: hybridMinimumScore,
       passes,
-      preferredUriScopes: options.uri ? undefined : [...scopedRecallUris],
+      preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
       project: recallProjectName,
       query,
       queryVariants: expansionQueries,
@@ -1380,7 +1386,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const expansionVocabulary =
     needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
       ? yield* loadRecallExpansionVocabulary(config, {
-          allowedUriScopes: options.uri ? [options.uri] : [...scopedRecallUris],
+          allowedUriScopes: explicitUri ? [explicitUri] : [...scopedRecallUris],
           includeInactive: includeArchived,
           project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
@@ -1483,7 +1489,7 @@ export function stripAdvancedSearchFlags(args: readonly string[]): readonly stri
 }
 
 export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, uri: string, options: ReadOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
+  yield* attemptSync(() => assertResourceUri(uri));
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
   }
@@ -1700,7 +1706,7 @@ const localMemoryDirectoryForCompact = Effect.fn('memory.localMemoryDirectoryFor
 });
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(project);
   switch (kind) {
     case 'durable':
@@ -1713,7 +1719,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
 }
 
 const localMemoryPathForUri = Effect.fn('memory.localMemoryPathForUri')(function* (config: RuntimeConfig, uri: string) {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
   if (!uri.startsWith(prefix)) {
     return undefined;
   }
@@ -1726,7 +1732,7 @@ const localMemoryPathForUri = Effect.fn('memory.localMemoryPathForUri')(function
 });
 
 export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, uri: string, options: ListOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
+  yield* attemptSync(() => assertResourceUri(uri));
   const nodeLimit = options.nodeLimit
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
@@ -1772,7 +1778,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
   uri: string,
   options: ArchiveOptions,
 ) {
-  yield* attemptSync(() => assertVikingUri(uri));
+  yield* attemptSync(() => assertResourceUri(uri));
   const ov = NATIVE_RESOURCE_BACKEND;
   const store = yield* ResourceStore;
   const original = options.dryRun === true ? undefined : (yield* store.read(resourceStoreLocation(config), uri)).trim();
@@ -1815,7 +1821,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
     metadata,
     title: 'MEMORY',
   });
-  const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, uri, {
+  const removedOriginal = yield* removeResourceWithRetry(ov, config, uri, {
     expectedContent: originalLocalContent ?? originalMemory,
   });
   if (removedOriginal) {
@@ -1828,12 +1834,12 @@ export const runArchive = Effect.fn('runArchive')(function* (
 });
 
 export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
+  yield* attemptSync(() => assertResourceUri(uri));
   if (options.dryRun === true) {
     yield* Console.log(`Would remove native resource: ${uri}`);
     return;
   }
-  const removed = yield* removeVikingResourceWithRetry(NATIVE_RESOURCE_BACKEND, config, uri);
+  const removed = yield* removeResourceWithRetry(NATIVE_RESOURCE_BACKEND, config, uri);
   if (!removed) {
     yield* Effect.fail(new Error(`Resource does not exist: ${uri}`));
   }
@@ -1843,7 +1849,7 @@ export const runExportPack = Effect.fn('runExportPack')(function* (config: Runti
   const path = yield* Path.Path;
   const defaultPath = path.join(config.agentContextHome, `threadnote-${safeTimestamp()}.threadnote-pack.json`);
   const outputPath = yield* expandPath(options.path ?? defaultPath);
-  const sourceUri = canonicalPackRoot(options.uri ?? `viking://user/${uriSegment(config.user)}/memories`);
+  const sourceUri = canonicalPackRoot(options.uri ?? `threadnote://user/${uriSegment(config.user)}/memories`);
   if (options.dryRun === true) {
     yield* Console.log(`Would export native resources under ${sourceUri} to ${outputPath}.`);
     return;
@@ -1986,8 +1992,8 @@ const inferRecallUri = Effect.fn('memory.inferRecallUri')(function* (config: Run
   }
   const project = yield* inferProjectFromQuery(config.manifestPath, query);
   return project
-    ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
-    : 'viking://resources/agent-skills';
+    ? `threadnote://resources/agent-skills/repo-local-${uriSegment(project.name)}`
+    : 'threadnote://resources/agent-skills';
 });
 
 export function hasAgentSkillCatalogIntent(query: string): boolean {
@@ -2033,7 +2039,7 @@ const collectNativeExactMemoryMatches = Effect.fn('memory.collectNativeExactMemo
 
 const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
   if (options.replaceUri) {
-    yield* attemptSync(() => assertVikingUri(options.replaceUri as string));
+    yield* attemptSync(() => assertResourceUri(options.replaceUri as string));
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
@@ -2088,7 +2094,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
       yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false);
       yield* Console.log(`Stored memory: ${memoryUri}`);
       if (options.replaceUri && !isInPlaceUpdate) {
-        const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri, {
+        const removedReplacedMemory = yield* removeResourceWithRetry(ov, config, options.replaceUri, {
           alreadyLocked: true,
         });
         if (removedReplacedMemory) {
@@ -2163,7 +2169,7 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
     );
   }
   const memory = scrub.cleaned;
-  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
 
   if (options.dryRun) {
     yield* Console.log(memory);
@@ -2202,7 +2208,7 @@ const writeDurableMemoryFile = Effect.fn('memory.writeDurableMemoryFile')(functi
   yield* writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
 });
 
-function removeVikingResourceWithRetry(
+function removeResourceWithRetry(
   _ov: string,
   config: RuntimeConfig,
   uri: string,
@@ -2238,11 +2244,7 @@ function removeVikingResourceWithRetry(
   });
 }
 
-const vikingResourceExists = Effect.fn('memory.vikingResourceExists')(function* (
-  _ov: string,
-  config: RuntimeConfig,
-  uri: string,
-) {
+const resourceExists = Effect.fn('memory.resourceExists')(function* (_ov: string, config: RuntimeConfig, uri: string) {
   const store = yield* ResourceStore;
   return yield* store.stat(resourceStoreLocation(config), uri).pipe(
     Effect.as(true),
@@ -2264,7 +2266,7 @@ const ensureMemoryDirectory = Effect.fn('memory.ensureMemoryDirectory')(function
 });
 
 function durableMemoryDirectoryUri(config: RuntimeConfig): string {
-  return `viking://user/${uriSegment(config.user)}/memories/events`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/events`;
 }
 
 function migratedDurableMemoryUri(config: RuntimeConfig, hash: string): string {
@@ -2337,9 +2339,9 @@ const MAX_WORKSET_PASSES = 12;
 function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
   const scopes: string[] = [];
   for (const member of workset.projects) {
-    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    scopes.push(`threadnote://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
     const seeded = trimTrailingSlash(member.uri);
-    if (seeded.startsWith('viking://')) {
+    if (seeded.startsWith('threadnote://')) {
       scopes.push(seeded);
     }
   }
@@ -2361,7 +2363,7 @@ function projectMemoryScopeUris(
   if (!projectName) {
     return [];
   }
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(projectName);
   const scopes = [
     `${base}/durable/projects/${projectSegment}`,
@@ -2385,12 +2387,12 @@ function exactMemoryScopes(
   project: ProjectManifest | undefined,
 ): readonly string[] {
   return exactMemoryScopeUris({
-    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    agentMemoriesUri: `threadnote://agent/${uriSegment(config.agentId)}/memories`,
     includeArchived,
     intents: exactRecallScopeIntents(query),
     projectName: project ? uriSegment(project.name) : undefined,
     projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
-    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+    userBase: `threadnote://user/${uriSegment(config.user)}/memories`,
   });
 }
 
@@ -2406,7 +2408,7 @@ const memoryUriFor = Effect.fn('memory.memoryUriFor')(function* (
 });
 
 function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
-  const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
+  const baseUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(metadata.project ?? 'general');
   switch (metadata.kind) {
     case 'preference':
@@ -2439,7 +2441,7 @@ const memoryWriteMode = Effect.fn('memory.memoryWriteMode')(function* (
   if (!shouldUseStableMemoryUri(metadata)) {
     return 'create';
   }
-  return (yield* vikingResourceExists(NATIVE_RESOURCE_BACKEND, config, memoryUri)) ? 'replace' : 'create';
+  return (yield* resourceExists(NATIVE_RESOURCE_BACKEND, config, memoryUri)) ? 'replace' : 'create';
 });
 
 function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {
@@ -2496,7 +2498,7 @@ const legacySourceAccounts = Effect.fn('memory.legacySourceAccounts')(function* 
     return uniqueStrings(explicitAccounts);
   }
   if (options.allAccounts === true) {
-    const accounts = yield* childDirectoryNames(yield* localVikingDataRoot(config));
+    const accounts = yield* childDirectoryNames(yield* localDataRoot(config));
     return accounts.filter(account => !account.startsWith('_'));
   }
   return [config.account];
@@ -2507,7 +2509,7 @@ const legacyMemoryCandidates = Effect.fn('memory.legacyMemoryCandidates')(functi
   sourceAccounts: readonly string[],
 ) {
   const path = yield* Path.Path;
-  const dataRoot = yield* localVikingDataRoot(config);
+  const dataRoot = yield* localDataRoot(config);
   const candidates: LegacyMemoryCandidate[] = [];
   for (const sourceAccount of sourceAccounts) {
     const sessionRoot = path.join(dataRoot, sourceAccount, 'session');
@@ -2579,7 +2581,7 @@ function isLegacyThreadnoteMemory(text: string): boolean {
 
 const existingDurableMemoryHashes = Effect.fn('memory.existingDurableMemoryHashes')(function* (config: RuntimeConfig) {
   const hashes = new Set<string>();
-  yield* collectDurableMemoryHashes(yield* localVikingDataRoot(config), hashes);
+  yield* collectDurableMemoryHashes(yield* localDataRoot(config), hashes);
   return hashes;
 });
 
@@ -2676,14 +2678,14 @@ function legacySourceLabel(candidate: LegacyMemoryCandidate): string {
   return `${candidate.sourceAccount}/${candidate.sourceSession}/${candidate.sourceArchive}`;
 }
 
-const localVikingDataRoot = Effect.fn('memory.localVikingDataRoot')(function* (config: RuntimeConfig) {
+const localDataRoot = Effect.fn('memory.localDataRoot')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
-  return path.join(config.agentContextHome, 'data', 'viking');
+  return path.join(config.agentContextHome, 'data');
 });
 
 const localUserMemoriesRoot = Effect.fn('memory.localUserMemoriesRoot')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
-  return path.join(yield* localVikingDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
+  return path.join(yield* localDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
 });
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
@@ -2703,11 +2705,11 @@ function normalizeReferenceUris(references: readonly string[] | undefined): read
   const seen = new Set<string>();
   for (const raw of references) {
     const uri = raw.trim();
-    if (!uri || seen.has(uri)) {
+    if (!uri) {
       continue;
     }
-    assertVikingUri(uri);
-    seen.add(uri);
+    const canonicalUri = parseResourceId(uri).canonicalUri;
+    seen.add(canonicalUri);
   }
   return seen.size > 0 ? [...seen] : undefined;
 }

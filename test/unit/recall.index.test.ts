@@ -25,11 +25,10 @@ describe('local recall index', () => {
   });
 
   it('indexes the full eligible local corpus and atomically caches tokens and metadata', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'alpha.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'alpha.md');
     const activePath = join(
       directory,
       'data',
-      'viking',
       'local',
       'user',
       'me',
@@ -42,7 +41,6 @@ describe('local recall index', () => {
     const archivedPath = join(
       directory,
       'data',
-      'viking',
       'local',
       'user',
       'me',
@@ -89,8 +87,8 @@ describe('local recall index', () => {
     const candidates = await run(loadRecallIndex(config(), {includeInactive: false}));
 
     expect(candidates.map(candidate => candidate.uri).sort()).toEqual([
-      'viking://resources/repos/threadnote/alpha.md',
-      'viking://user/me/memories/durable/projects/threadnote/recall.md',
+      'threadnote://resources/repos/threadnote/alpha.md',
+      'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
     ]);
     expect(candidates[0]?.text).toMatch(/alpha-42|recall/);
     const cachePath = join(directory, 'cache', 'recall-index-v6.json');
@@ -107,7 +105,7 @@ describe('local recall index', () => {
 
     const withArchived = await run(loadRecallIndex(config(), {includeInactive: true}));
     expect(withArchived.map(candidate => candidate.uri)).toContain(
-      'viking://user/me/memories/durable/archived/threadnote/old.md',
+      'threadnote://user/me/memories/durable/archived/threadnote/old.md',
     );
     await expect(stat(join(directory, 'cache', 'recall-index-v6-with-inactive.json'))).resolves.toMatchObject({
       isFile: expect.any(Function),
@@ -116,7 +114,7 @@ describe('local recall index', () => {
   });
 
   it('rebuilds after source changes and degrades safely from a corrupt cache', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     expect((await run(loadRecallIndex(config(), {includeInactive: false})))[0]?.text).toContain('alpha-42');
@@ -131,7 +129,7 @@ describe('local recall index', () => {
   });
 
   it('force-refreshes a same-size source even when its modification time is preserved', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
@@ -146,7 +144,7 @@ describe('local recall index', () => {
   });
 
   it('rejects structurally invalid JSON caches and rebuilds them from canonical sources', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\ncache-shape-anchor', 'utf8');
@@ -168,7 +166,7 @@ describe('local recall index', () => {
   });
 
   it('rejects incomplete lookup and posting relationships in otherwise well-typed caches', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\nreferential-cache-anchor', 'utf8');
@@ -189,13 +187,13 @@ describe('local recall index', () => {
       await run(clearRecallIndexMemoryCache());
 
       const rebuilt = await run(loadRecallIndex(config(), {includeInactive: false, query: 'referential-cache-anchor'}));
-      expect(rebuilt.map(candidate => candidate.uri)).toContain('viking://resources/repos/threadnote/doc.md');
+      expect(rebuilt.map(candidate => candidate.uri)).toContain('threadnote://resources/repos/threadnote/doc.md');
     }
   });
 
   it('loads one corpus snapshot for multiple query and scope selections', async () => {
-    const alpha = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'alpha', 'doc.md');
-    const beta = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'beta', 'doc.md');
+    const alpha = join(directory, 'data', 'local', 'resources', 'repos', 'alpha', 'doc.md');
+    const beta = join(directory, 'data', 'local', 'resources', 'repos', 'beta', 'doc.md');
     await mkdir(join(alpha, '..'), {recursive: true});
     await mkdir(join(beta, '..'), {recursive: true});
     await writeFile(alpha, '# Alpha\n\nshared batch anchor', 'utf8');
@@ -205,18 +203,22 @@ describe('local recall index', () => {
       loadRecallIndexDataBatch(config(), {
         includeInactive: false,
         selections: [
-          {allowedUriScopes: ['viking://resources/repos/alpha'], query: 'shared batch anchor'},
-          {allowedUriScopes: ['viking://resources/repos/beta'], query: 'shared batch anchor'},
+          {allowedUriScopes: ['threadnote://resources/repos/alpha'], query: 'shared batch anchor'},
+          {allowedUriScopes: ['threadnote://resources/repos/beta'], query: 'shared batch anchor'},
         ],
       }),
     );
 
-    expect(results[0]?.candidates.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/alpha/doc.md']);
-    expect(results[1]?.candidates.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/beta/doc.md']);
+    expect(results[0]?.candidates.map(candidate => candidate.uri)).toEqual([
+      'threadnote://resources/repos/alpha/doc.md',
+    ]);
+    expect(results[1]?.candidates.map(candidate => candidate.uri)).toEqual([
+      'threadnote://resources/repos/beta/doc.md',
+    ]);
   });
 
   it('rejects file escapes and directory cycles introduced through symlinks', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     const outsidePath = join(directory, 'outside.md');
     await mkdir(resourceRoot, {recursive: true});
     await writeFile(join(resourceRoot, 'safe.md'), '# Safe\n\nsafe-scan-anchor', 'utf8');
@@ -226,12 +228,12 @@ describe('local recall index', () => {
 
     const candidates = await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
 
-    expect(candidates.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/threadnote/safe.md']);
+    expect(candidates.map(candidate => candidate.uri)).toEqual(['threadnote://resources/repos/threadnote/safe.md']);
     expect(candidates[0]?.text).not.toContain('escaped-scan-anchor');
   });
 
   it('leaves an older derived cache untouched and rebuilds the current version lazily', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cacheDirectory = join(directory, 'cache');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await mkdir(cacheDirectory, {recursive: true});
@@ -254,7 +256,7 @@ describe('local recall index', () => {
   });
 
   it('uses a recently validated cache without walking the source tree again', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Cached\n\nbounded-validation', 'utf8');
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(1);
@@ -266,7 +268,7 @@ describe('local recall index', () => {
   });
 
   it('uses persisted postings to return a bounded query pool plus required semantic hits', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     await mkdir(resourceRoot, {recursive: true});
     await Promise.all(
       Array.from({length: 140}, (_unused, index) =>
@@ -283,13 +285,13 @@ describe('local recall index', () => {
         includeInactive: false,
         limit: 5,
         query: 'alpha-42',
-        requiredUris: ['viking://resources/repos/threadnote/000.md'],
+        requiredUris: ['threadnote://resources/repos/threadnote/000.md'],
       }),
     );
 
     expect(selected.map(candidate => candidate.uri)).toEqual([
-      'viking://resources/repos/threadnote/000.md',
-      'viking://resources/repos/threadnote/139.md',
+      'threadnote://resources/repos/threadnote/000.md',
+      'threadnote://resources/repos/threadnote/139.md',
     ]);
     const cache = JSON.parse(await readFile(join(directory, 'cache', 'recall-index-v6.json'), 'utf8')) as {
       readonly postings?: unknown;
@@ -301,7 +303,6 @@ describe('local recall index', () => {
     const memoryPath = join(
       directory,
       'data',
-      'viking',
       'local',
       'user',
       'me',
@@ -338,13 +339,13 @@ describe('local recall index', () => {
     );
 
     expect(candidates.map(candidate => candidate.uri)).toContain(
-      'viking://user/me/memories/durable/projects/orion-worker/lease-renewal.md',
+      'threadnote://user/me/memories/durable/projects/orion-worker/lease-renewal.md',
     );
     expect(candidates[0]?.fields?.keywords).toEqual(['resume jobs after stalled heartbeat', 'worker lease renewal']);
   });
 
   it('unions per-term lexical pools so a late rare identifier survives an early common term', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     await mkdir(resourceRoot, {recursive: true});
     await Promise.all(
       Array.from({length: 700}, (_unused, index) =>
@@ -364,11 +365,11 @@ describe('local recall index', () => {
       }),
     );
 
-    expect(selected[0]?.uri).toBe('viking://resources/repos/threadnote/699.md');
+    expect(selected[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
   });
 
   it('applies URI scope before truncating each lexical posting pool', async () => {
-    const resourcesRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos');
+    const resourcesRoot = join(directory, 'data', 'local', 'resources', 'repos');
     const outsideRoot = join(resourcesRoot, 'outside');
     const insideRoot = join(resourcesRoot, 'threadnote');
     await mkdir(outsideRoot, {recursive: true});
@@ -382,18 +383,18 @@ describe('local recall index', () => {
 
     const selected = await run(
       loadRecallIndex(config(), {
-        allowedUriScopes: ['viking://resources/repos/threadnote'],
+        allowedUriScopes: ['threadnote://resources/repos/threadnote'],
         includeInactive: false,
         limit: 1,
         query: 'scoped-anchor',
       }),
     );
 
-    expect(selected.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/threadnote/target.md']);
+    expect(selected.map(candidate => candidate.uri)).toEqual(['threadnote://resources/repos/threadnote/target.md']);
   });
 
   it('selects capped query terms by corpus IDF independently of query order', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     const commonTerms = Array.from({length: 40}, (_unused, index) => `commonterm${String(index).padStart(2, '0')}`);
     const rareTerm = 'rare-cap-9999';
     await mkdir(resourceRoot, {recursive: true});
@@ -408,12 +409,12 @@ describe('local recall index', () => {
     const rareFirst = await recall([rareTerm, ...commonTerms].join(' '));
     const rareLast = await recall([...commonTerms, rareTerm].join(' '));
 
-    expect(rareFirst.map(candidate => candidate.uri)).toContain('viking://resources/repos/threadnote/rare.md');
+    expect(rareFirst.map(candidate => candidate.uri)).toContain('threadnote://resources/repos/threadnote/rare.md');
     expect(rareLast.map(candidate => candidate.uri)).toEqual(rareFirst.map(candidate => candidate.uri));
   });
 
   it('does not let globally rare out-of-scope terms consume a scoped query cap', async () => {
-    const resourcesRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos');
+    const resourcesRoot = join(directory, 'data', 'local', 'resources', 'repos');
     const insideRoot = join(resourcesRoot, 'threadnote');
     const outsideRoot = join(resourcesRoot, 'outside');
     const outsideTerms = Array.from({length: 40}, (_unused, index) => `outside-term-${String(index).padStart(2, '0')}`);
@@ -429,18 +430,18 @@ describe('local recall index', () => {
 
     const selected = await run(
       loadRecallIndex(config(), {
-        allowedUriScopes: ['viking://resources/repos/threadnote'],
+        allowedUriScopes: ['threadnote://resources/repos/threadnote'],
         includeInactive: false,
         limit: 1,
         query: [...outsideTerms, 'inside-anchor'].join(' '),
       }),
     );
 
-    expect(selected[0]?.uri).toMatch(/^viking:\/\/resources\/repos\/threadnote\//);
+    expect(selected[0]?.uri).toMatch(/^threadnote:\/\/resources\/repos\/threadnote\//);
   });
 
   it('keeps many incremental generations queryable without stale inherited lookups', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     const resourcePath = join(resourceRoot, 'target.md');
     await mkdir(resourceRoot, {recursive: true});
     await writeFile(resourcePath, '# Target\n\nstable-anchor update-000', 'utf8');
@@ -451,15 +452,15 @@ describe('local recall index', () => {
       await writeFile(resourcePath, `# Target\n\nstable-anchor ${updateTerm}`, 'utf8');
       await run(expireRecallIndexValidation(directory, false));
       const updated = await run(loadRecallIndex(config(), {includeInactive: false, query: updateTerm}));
-      expect(updated[0]?.uri).toBe('viking://resources/repos/threadnote/target.md');
+      expect(updated[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
     }
 
     const stable = await run(loadRecallIndex(config(), {includeInactive: false, query: 'stable-anchor'}));
-    expect(stable[0]?.uri).toBe('viking://resources/repos/threadnote/target.md');
+    expect(stable[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
   });
 
   it('observes another process invalidating an already-warmed cache', async () => {
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     await mkdir(resourceRoot, {recursive: true});
     await writeFile(join(resourceRoot, 'first.md'), '# First\n\nfirst-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'first-anchor'}));
@@ -468,14 +469,13 @@ describe('local recall index', () => {
     await writeFile(join(directory, 'cache', 'recall-index-v6.json.stale'), 'external-generation\n', 'utf8');
 
     const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'second-anchor'}));
-    expect(refreshed[0]?.uri).toBe('viking://resources/repos/threadnote/second.md');
+    expect(refreshed[0]?.uri).toBe('threadnote://resources/repos/threadnote/second.md');
   });
 
   it('caps self-asserted authority and trust at the URI source boundary', async () => {
     const personalPath = join(
       directory,
       'data',
-      'viking',
       'local',
       'user',
       'me',
@@ -515,28 +515,10 @@ describe('local recall index', () => {
     const repoRoot = join(directory, 'repo');
     const repoSourcePath = join(repoRoot, 'canonical.md');
     const mismatchedRepoSourcePath = join(repoRoot, 'mismatched.md');
-    const canonicalPath = join(
-      directory,
-      'data',
-      'viking',
-      'local',
-      'resources',
-      'repos',
-      'threadnote',
-      'canonical.md',
-    );
-    const forgedPath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'forged.md');
-    const mismatchedPath = join(
-      directory,
-      'data',
-      'viking',
-      'local',
-      'resources',
-      'repos',
-      'threadnote',
-      'mismatched.md',
-    );
-    const importedPath = join(directory, 'data', 'viking', 'local', 'resources', 'imports', 'external.md');
+    const canonicalPath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'canonical.md');
+    const forgedPath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'forged.md');
+    const mismatchedPath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'mismatched.md');
+    const importedPath = join(directory, 'data', 'local', 'resources', 'imports', 'external.md');
     const manifestPath = join(directory, 'seed-manifest.yaml');
     await mkdir(repoRoot, {recursive: true});
     await mkdir(join(canonicalPath, '..'), {recursive: true});
@@ -557,7 +539,7 @@ describe('local recall index', () => {
         'projects:',
         '  - name: threadnote',
         `    path: ${JSON.stringify(repoRoot)}`,
-        '    uri: viking://resources/repos/threadnote',
+        '    uri: threadnote://resources/repos/threadnote',
         '    seed:',
         '      - "*.md"',
       ].join('\n'),
@@ -567,11 +549,11 @@ describe('local recall index', () => {
       join(directory, 'seed-state.json'),
       JSON.stringify({
         files: {
-          'viking://resources/repos/threadnote/canonical.md': {
+          'threadnote://resources/repos/threadnote/canonical.md': {
             mtimeMs: repoSourceInfo.mtimeMs,
             size: repoSourceInfo.size,
           },
-          'viking://resources/repos/threadnote/mismatched.md': {
+          'threadnote://resources/repos/threadnote/mismatched.md': {
             mtimeMs: mismatchedRepoSourceInfo.mtimeMs,
             size: mismatchedRepoSourceInfo.size,
           },
@@ -586,19 +568,19 @@ describe('local recall index', () => {
     );
     const byUri = new Map(candidates.map(candidate => [candidate.uri, candidate]));
 
-    expect(byUri.get('viking://resources/repos/threadnote/canonical.md')).toMatchObject({
+    expect(byUri.get('threadnote://resources/repos/threadnote/canonical.md')).toMatchObject({
       authority: 'canonical_repo',
       trust: 'approved',
     });
-    expect(byUri.get('viking://resources/imports/external.md')).toMatchObject({
+    expect(byUri.get('threadnote://resources/imports/external.md')).toMatchObject({
       authority: 'external',
       trust: 'untrusted',
     });
-    expect(byUri.get('viking://resources/repos/threadnote/forged.md')).toMatchObject({
+    expect(byUri.get('threadnote://resources/repos/threadnote/forged.md')).toMatchObject({
       authority: 'external',
       trust: 'untrusted',
     });
-    expect(byUri.get('viking://resources/repos/threadnote/mismatched.md')).toMatchObject({
+    expect(byUri.get('threadnote://resources/repos/threadnote/mismatched.md')).toMatchObject({
       authority: 'external',
       trust: 'untrusted',
     });
@@ -606,10 +588,10 @@ describe('local recall index', () => {
 
   it('reindexes only the URI whose verified seed provenance changed', async () => {
     const repoRoot = join(directory, 'repo');
-    const resourceRoot = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
     const manifestPath = join(directory, 'seed-manifest.yaml');
-    const targetUri = 'viking://resources/repos/threadnote/target.md';
-    const stableUri = 'viking://resources/repos/threadnote/stable.md';
+    const targetUri = 'threadnote://resources/repos/threadnote/target.md';
+    const stableUri = 'threadnote://resources/repos/threadnote/stable.md';
     const targetRepoPath = join(repoRoot, 'target.md');
     const stableRepoPath = join(repoRoot, 'stable.md');
     const targetResourcePath = join(resourceRoot, 'target.md');
@@ -628,7 +610,7 @@ describe('local recall index', () => {
             name: 'threadnote',
             path: repoRoot,
             seed: ['*.md'],
-            uri: 'viking://resources/repos/threadnote',
+            uri: 'threadnote://resources/repos/threadnote',
           },
         ],
         version: 1,
@@ -671,7 +653,7 @@ describe('local recall index', () => {
   });
 
   it('persists a fresh corpus generation after explicit invalidation', async () => {
-    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');

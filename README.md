@@ -29,13 +29,13 @@ irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install
 
 ```sh
 threadnote recall "threadnote latest handoff" --caller-cwd "$PWD"
-threadnote read viking://user/me/memories/handoffs/active/threadnote/release.md
+threadnote read threadnote://user/me/memories/handoffs/active/threadnote/release.md
 threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
 threadnote handoff --project threadnote --topic release --text "..."
 ```
 
 Repo files remain authoritative. `threadnote seed` imports only the files selected by the seed manifest. Canonical
-resources and memories keep stable `viking://` identifiers while their bytes live in the Threadnote-owned store.
+resources and memories keep stable `threadnote://` identifiers while their bytes live in the Threadnote-owned store.
 
 ## Recall
 
@@ -67,7 +67,9 @@ threadnote index status
 ```
 
 Migration inventories the legacy home, rejects unsafe links, checks free space, copies into sibling staging, validates
-every copied hash, and atomically promotes `~/.threadnote`. The source home is never modified or deleted, so rollback
+every copied hash, and atomically promotes `~/.threadnote`. If beta.1 already created an empty target, migration safely
+recovers memories, resources, configured shares, and verified installed models into it without overwriting different
+content. Canonical account data lives at `~/.threadnote/data/<account>`. The source home is never modified or deleted, so rollback
 is simply restoring the previous `THREADNOTE_HOME` while investigating.
 
 ## Quality contract

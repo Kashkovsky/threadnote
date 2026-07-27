@@ -95,7 +95,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -126,7 +126,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -154,7 +154,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -179,7 +179,7 @@ describe('remember shared replacement', () => {
         runRemember(config, {
           dryRun: true,
           kind: 'handoff',
-          replace: 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
+          replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
           text: 'Not shareable.',
         }).pipe(Effect.provide(ApplicationLayer)),
       ),
@@ -194,7 +194,7 @@ describe('remember shared replacement', () => {
     await runTestEffect(
       runRemember(config, {
         kind: 'durable',
-        replace: 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
+        replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
         text: 'Updated shared lease memory.',
       }).pipe(Effect.provide(ApplicationLayer)),
     );
@@ -205,7 +205,7 @@ describe('remember shared replacement', () => {
   it('surfaces git push failures instead of reporting a successful shared update', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
         return Effect.succeed(ok());

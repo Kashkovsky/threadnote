@@ -5,7 +5,7 @@ Date: 2026-07-27
 
 ## Decision
 
-Threadnote owns canonical resource bytes under `~/.threadnote/data/viking/` and preserves stable `viking://`
+Threadnote owns canonical resource bytes under `~/.threadnote/data/` and preserves stable `threadnote://`
 identifiers. The implementation is an Effect `ResourceStore` service over ordinary files. It validates portable
 segments and containment, rejects escaping links, serializes writers with heartbeat locks, supports compare-and-swap,
 and commits same-directory temporary files with atomic rename.
@@ -33,7 +33,7 @@ measured for the current bounded corpus. A future approximate index may replace 
 The decision is benchmark-reversible. Re-evaluate the derived index implementation when the checked-in 10k budget
 fails on a supported platform, a real corpus crosses the 100k boundary, exact scan becomes a material part of recall
 latency, or multi-process index updates cannot meet their reliability budget. The replacement must still leave
-canonical Markdown and `viking://` identifiers untouched.
+canonical Markdown and `threadnote://` identifiers untouched.
 
 ## Consequences
 

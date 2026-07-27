@@ -530,7 +530,7 @@ describe('runPostUpdate', () => {
       inheritOutput: true,
     });
     expect(JSON.parse(await readFile(join(config.agentContextHome, 'post-update-state.json'), 'utf8'))).toMatchObject({
-      handledMigrationIds: ['self-contained-home-v1'],
+      handledMigrationIds: ['self-contained-home-recovery-v2', 'self-contained-home-v1'],
     });
 
     executeStreaming.mockClear();
