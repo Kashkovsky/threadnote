@@ -175,10 +175,14 @@ Inspect the persisted model path and loopback service:
 threadnote local-ai status
 threadnote local-ai enable
 threadnote local-ai start
+threadnote doctor
 ```
 
 Startup logs are written to `THREADNOTE_HOME/logs/local-ai.log`. If the model file is missing or fails verification,
-or the private access token is missing or has unsafe permissions, rerun `threadnote local-ai install --force`. A
+or the private access token is missing or has unsafe permissions, rerun `threadnote local-ai install --force` (add
+`--model LFM2.5-350M` for that model). `threadnote doctor` reports whether local AI is absent, disabled, healthy, or
+misconfigured. To choose another already-installed model, run `threadnote local-ai model switch`; if none are
+available, it prints the appropriate install commands instead of opening an empty selector. A
 local-model failure does not block recall: Threadnote returns its deterministic result without query expansion or
 candidate post-filtering. Stop
 also refuses to signal a recorded PID when the authenticated endpoint cannot prove the same launch identity; inspect

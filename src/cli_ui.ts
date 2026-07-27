@@ -88,6 +88,43 @@ export function confirmationAnswer(answer: string, defaultYes = false): boolean 
   return normalized === '' ? defaultYes : normalized === 'y' || normalized === 'yes';
 }
 
+export function selectionIndex(answer: string, choiceCount: number, defaultIndex = 0): number | undefined {
+  const normalized = answer.trim();
+  if (normalized === '') {
+    return defaultIndex >= 0 && defaultIndex < choiceCount ? defaultIndex : undefined;
+  }
+  const selected = Number(normalized);
+  return Number.isInteger(selected) && selected >= 1 && selected <= choiceCount ? selected - 1 : undefined;
+}
+
+export function promptForSelection(
+  prompt: string,
+  choices: readonly string[],
+  defaultIndex = 0,
+): Effect.Effect<number, never, SystemInfo> {
+  return Effect.gen(function* () {
+    if (choices.length === 0) {
+      return -1;
+    }
+    yield* Console.log(prompt);
+    for (const [index, choice] of choices.entries()) {
+      yield* Console.log(`${index === defaultIndex ? '>' : ' '} ${index + 1}. ${choice}`);
+    }
+    const system = yield* SystemInfo;
+    while (true) {
+      const answer = yield* Effect.callback<string>(resume => {
+        const cleanup = system.readLine(`Select [${defaultIndex + 1}]: `, line => resume(Effect.succeed(line)));
+        return Effect.sync(cleanup);
+      });
+      const selected = selectionIndex(answer, choices.length, defaultIndex);
+      if (selected !== undefined) {
+        return selected;
+      }
+      yield* Console.log(`Enter a number from 1 to ${choices.length}, then press Enter.`);
+    }
+  });
+}
+
 export function shouldUseColor(): boolean {
   return colorEnabled;
 }

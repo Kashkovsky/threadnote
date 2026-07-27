@@ -9,6 +9,7 @@ import {
   runLocalAiDisable,
   runLocalAiEnable,
   runLocalAiInstall,
+  runLocalAiModelSwitch,
   runLocalAiStart,
   runLocalAiStatus,
   runLocalAiStop,
@@ -347,11 +348,12 @@ const localAiInstall = Command.make(
   {
     dryRun: boolean('dry-run', 'Print local AI installation actions without making changes'),
     force: boolean('force', 'Re-download and re-verify the managed model'),
-    modelPath: optionalString('model-path', 'Use an existing verified Gemma 4 E4B Q4_0 GGUF file'),
+    model: optionalString('model', 'Model to install: gemma-4-E4B-it-Q4_0 or LFM2.5-350M'),
+    modelPath: optionalString('model-path', 'Use an existing verified GGUF file for the selected model'),
     start: negatedBoolean('start', 'Install and configure without starting the local model service'),
   },
   options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
-).pipe(Command.withDescription('Install and enable the recommended local recall model'));
+).pipe(Command.withDescription('Install and enable a local recall model (Gemma by default)'));
 
 const localAiEnable = Command.make(
   'enable',
@@ -381,6 +383,20 @@ const localAiStatus = Command.make('status', {}, () => withRuntimeEffect(config 
   Command.withDescription('Show local model installation and health'),
 );
 
+const localAiModelSwitch = Command.make(
+  'switch',
+  {
+    dryRun: boolean('dry-run', 'Select a model and print the switch actions without changing configuration'),
+    model: optionalString('model', 'Switch directly to an installed model instead of prompting'),
+  },
+  options => withRuntimeEffect(config => runLocalAiModelSwitch(config, options)),
+).pipe(Command.withDescription('Interactively switch between installed local AI models'));
+
+const localAiModel = Command.make('model').pipe(
+  Command.withDescription('Manage installed local AI models'),
+  Command.withSubcommands([localAiModelSwitch]),
+);
+
 const localAiUninstall = Command.make(
   'uninstall',
   {
@@ -399,6 +415,7 @@ const localAi = Command.make('local-ai').pipe(
     localAiStart,
     localAiStop,
     localAiStatus,
+    localAiModel,
     localAiUninstall,
   ]),
 );

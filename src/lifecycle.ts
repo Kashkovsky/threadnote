@@ -26,6 +26,7 @@ import {
   windowsTaskkillExecutable,
 } from './effect/command.js';
 import {getTextEffect, HttpService} from './effect/http.js';
+import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {promptForConfirmation, startProgress} from './cli_ui.js';
 import {
@@ -287,6 +288,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
   checks.push((yield* openVikingVersionCheck(config)) as DoctorCheck);
   checks.push((yield* recallShapeCheck(config)) as DoctorCheck);
   checks.push((yield* localEmbeddingCheck()) as DoctorCheck);
+  checks.push((yield* localAiDoctorCheck(config)) as DoctorCheck);
   checks.push((yield* pythonSystemCertificatesCheck()) as DoctorCheck);
   checks.push((yield* pythonInstallerCheck()) as DoctorCheck);
   checks.push((yield* commandPresenceCheck('codex', ['--version'])) as DoctorCheck);

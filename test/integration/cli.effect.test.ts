@@ -25,6 +25,16 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--stable');
   });
 
+  it('exposes local AI model installation and switching commands', async () => {
+    const install = await runCli(['local-ai', 'install', '--help']);
+    const switching = await runCli(['local-ai', 'model', 'switch', '--help']);
+
+    expect(install.stdout).toContain('--model string');
+    expect(install.stdout).toContain('LFM2.5-350M');
+    expect(switching.stdout).toContain('threadnote local-ai model switch [flags]');
+    expect(switching.stdout).toContain('--model string');
+  });
+
   it('rejects conflicting explicit update channels before checking npm', async () => {
     await expect(runCli(['update', '--beta', '--stable', '--check'])).rejects.toMatchObject({
       code: 1,

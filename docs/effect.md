@@ -70,14 +70,19 @@ model; declining dismisses that offer without enabling or downloading anything. 
 
 ```bash
 threadnote local-ai install
+threadnote local-ai install --model LFM2.5-350M
+threadnote local-ai model switch
 threadnote local-ai status
 threadnote enrich-memories                         # preview personal and shared-memory backfill
 threadnote enrich-memories --apply --install-local-ai
 ```
 
-`local-ai install` downloads the pinned official Gemma 4 E4B Q4_0 GGUF file (4.59 GB), verifies its size and SHA-256,
-stores the model under `THREADNOTE_HOME/threadnote/models`, and writes a versioned
-`THREADNOTE_HOME/threadnote/local-ai.json`. Pass `--model-path <path>` to verify and reuse an existing copy instead.
+With no `--model`, `local-ai install` downloads the recommended pinned official Gemma 4 E4B Q4_0 GGUF file (4.59 GB).
+`--model LFM2.5-350M` selects the pinned official
+[LFM2.5 350M Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) file (0.23 GB). Each download is verified
+by exact size and SHA-256, stored under `THREADNOTE_HOME/threadnote/models`, and retained when another installed model
+is selected. Threadnote writes the active model to a versioned `THREADNOTE_HOME/threadnote/local-ai.json`. Pass
+`--model-path <path>` to verify and reuse an existing GGUF copy for the selected model instead.
 The service binds only to `127.0.0.1:1934`. Installation also creates a mode-0600 access token. Health checks use a
 challenge-response proof before Threadnote sends any prompt, and the OpenAI-compatible endpoints require that token.
 
@@ -117,12 +122,16 @@ threadnote local-ai enable                  # enables the installed model; the n
 threadnote local-ai start
 threadnote local-ai stop
 threadnote local-ai status
+threadnote local-ai model switch            # interactively select an installed model and press Enter
+threadnote local-ai model switch --model LFM2.5-350M
 threadnote local-ai uninstall               # preserves the managed model
 threadnote local-ai uninstall --erase-model # also removes the managed model
 ```
 
 `start` and `stop` control only the current service process. `enable` and `disable` persist whether Threadnote may use
-the installed provider for recall, enrichment, and consolidation.
+the installed provider for recall, enrichment, and consolidation. Switching safely stops the authenticated current
+service, changes the active model, and restarts it when local AI is enabled. If no verified managed model is present,
+the switch command exits successfully and prints installation commands.
 
 For recall, deterministic retrieval and ranking always run first. High-confidence results never call the model.
 For weaker results, an explicit loopback model first reranks at most 24 query-ranked local index candidates using

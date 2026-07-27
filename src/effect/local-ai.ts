@@ -1,5 +1,13 @@
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {Clock, Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effect';
+import {promptForSelection} from '../cli_ui.js';
+import {
+  DEFAULT_LOCAL_AI_MODEL,
+  findLocalAiModel,
+  LOCAL_AI_MODELS,
+  type LocalAiModelDefinition,
+  requireLocalAiModel,
+} from '../local_ai_models.js';
 import {runCommandEffect, runStreamingCommandEffect} from './command.js';
 import {sha256Hex} from './digest.js';
 import {withExclusiveFileLock} from './file_lock.js';
@@ -19,12 +27,12 @@ import {
   toolRoot,
 } from '../utils.js';
 
-export const LOCAL_AI_MODEL_ID = 'gemma-4-E4B-it-Q4_0';
-export const LOCAL_AI_MODEL_FILE = 'gemma-4-E4B-it-Q4_0.gguf';
-export const LOCAL_AI_MODEL_REPOSITORY = 'ggml-org/gemma-4-E4B-it-GGUF';
-export const LOCAL_AI_MODEL_REVISION = '06f24bb269339b2a19a5167199b81e89ef813c10';
-export const LOCAL_AI_MODEL_SHA256 = 'a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2';
-export const LOCAL_AI_MODEL_SIZE = 4_590_807_392;
+export const LOCAL_AI_MODEL_ID = DEFAULT_LOCAL_AI_MODEL.id;
+export const LOCAL_AI_MODEL_FILE = DEFAULT_LOCAL_AI_MODEL.file;
+export const LOCAL_AI_MODEL_REPOSITORY = DEFAULT_LOCAL_AI_MODEL.repository;
+export const LOCAL_AI_MODEL_REVISION = DEFAULT_LOCAL_AI_MODEL.revision;
+export const LOCAL_AI_MODEL_SHA256 = DEFAULT_LOCAL_AI_MODEL.sha256;
+export const LOCAL_AI_MODEL_SIZE = DEFAULT_LOCAL_AI_MODEL.size;
 export const LOCAL_AI_DEFAULT_PORT = 1934;
 
 const LOCAL_AI_CONFIG_VERSION = 1;
@@ -69,6 +77,7 @@ interface LocalAiHealth {
 export interface LocalAiInstallOptions {
   readonly dryRun?: boolean;
   readonly force?: boolean;
+  readonly model?: string;
   readonly modelPath?: string;
   readonly start?: boolean;
 }
@@ -77,8 +86,17 @@ export interface LocalAiLifecycleOptions {
   readonly dryRun?: boolean;
 }
 
+export interface LocalAiModelSwitchOptions extends LocalAiLifecycleOptions {
+  readonly model?: string;
+}
+
 export interface LocalAiUninstallOptions extends LocalAiLifecycleOptions {
   readonly eraseModel?: boolean;
+}
+
+export interface InstalledLocalAiModel {
+  readonly definition: LocalAiModelDefinition;
+  readonly path: string;
 }
 
 export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
@@ -86,13 +104,14 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
   options: LocalAiInstallOptions,
 ) {
   const dryRun = options.dryRun === true;
+  const model = yield* resolveLocalAiModel(options.model);
   const pathService = yield* Path.Path;
-  const managedModelPath = yield* localAiManagedModelPath(config);
+  const managedModelPath = yield* localAiManagedModelPath(config, model);
   const modelPath = options.modelPath ? yield* expandPath(options.modelPath) : managedModelPath;
   const settings: LocalAiSettings = {
     enabled: true,
     host: '127.0.0.1',
-    model: LOCAL_AI_MODEL_ID,
+    model: model.id,
     modelPath,
     port: LOCAL_AI_DEFAULT_PORT,
     version: LOCAL_AI_CONFIG_VERSION,
@@ -103,12 +122,12 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
   if (dryRun) {
     if (!options.modelPath) {
       yield* Console.log(
-        `Would download ${LOCAL_AI_MODEL_REPOSITORY}/${LOCAL_AI_MODEL_FILE} (${formatModelSize(LOCAL_AI_MODEL_SIZE)}) to ${modelPath}.`,
+        `Would download ${model.repository}/${model.file} (${formatModelSize(model.size)}) to ${modelPath}.`,
       );
     } else {
       yield* Console.log(`Would verify existing model: ${modelPath}`);
     }
-    yield* Console.log(`Would verify SHA-256 ${LOCAL_AI_MODEL_SHA256}.`);
+    yield* Console.log(`Would verify SHA-256 ${model.sha256}.`);
     yield* Console.log(`Would write local AI configuration: ${configPath}`);
     yield* Console.log(`Would create a private local AI access token: ${tokenPath}`);
     if (options.start !== false) {
@@ -120,7 +139,7 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
   let verified = false;
   if (!options.modelPath) {
     if (options.force !== true) {
-      verified = yield* verifyLocalAiModel(modelPath).pipe(
+      verified = yield* verifyLocalAiModel(model, modelPath).pipe(
         Effect.as(true),
         Effect.catch(() => Effect.succeed(false)),
       );
@@ -129,9 +148,9 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
       const fs = yield* FileSystem.FileSystem;
       yield* fs.remove(modelPath, {force: true});
       yield* ensureDirectory(pathService.dirname(modelPath), false);
-      const {args, executable} = yield* localAiDownloadCommand(modelPath);
+      const {args, executable} = yield* localAiDownloadCommand(model, modelPath);
       yield* Console.log(
-        `Downloading ${LOCAL_AI_MODEL_ID} (${formatModelSize(LOCAL_AI_MODEL_SIZE)}). This is a one-time local download.`,
+        `Downloading ${model.id} (${formatModelSize(model.size)}). This is a one-time local download.`,
       );
       const download = yield* runStreamingCommandEffect(executable, args, {inheritOutput: true});
       if (download.exitCode !== 0) {
@@ -141,15 +160,89 @@ export const runLocalAiInstall = Effect.fn('localAi.install')(function* (
   }
 
   if (!verified) {
-    yield* verifyLocalAiModel(modelPath);
+    yield* verifyLocalAiModel(model, modelPath);
   }
-  yield* ensureLocalAiAccessToken(config);
-  yield* writeLocalAiSettings(config, settings);
-  yield* Console.log(`Enabled local AI recall with ${LOCAL_AI_MODEL_ID}.`);
+  const token = yield* ensureLocalAiAccessToken(config);
+  yield* configureLocalAiModel(config, settings, token, {start: options.start !== false});
+  yield* Console.log(`Enabled local AI recall with ${model.id}.`);
   yield* Console.log(`Configuration: ${configPath}`);
-  if (options.start !== false) {
-    yield* startLocalAiServer(config, {announce: true});
+});
+
+export const runLocalAiModelSwitch = Effect.fn('localAi.model.switch')(function* (
+  config: RuntimeConfig,
+  options: LocalAiModelSwitchOptions,
+) {
+  const current = yield* readLocalAiSettings(config);
+  const installed = yield* listInstalledLocalAiModels(config, current);
+  if (installed.length === 0) {
+    yield* Console.log('No installed local AI models are available.');
+    yield* Console.log('Install one with:');
+    yield* Console.log(`  threadnote local-ai install`);
+    yield* Console.log(`  threadnote local-ai install --model LFM2.5-350M`);
+    return;
   }
+
+  let selected: InstalledLocalAiModel | undefined;
+  if (options.model) {
+    const requested = yield* resolveLocalAiModel(options.model);
+    selected = installed.find(item => item.definition.id === requested.id);
+    if (!selected) {
+      yield* Console.log(`${requested.id} is not installed.`);
+      yield* Console.log(`Install it with: threadnote local-ai install --model ${requested.id}`);
+      return;
+    }
+  } else {
+    const system = yield* SystemInfo;
+    if (!system.stdinIsTTY || !system.stdoutIsTTY) {
+      yield* Console.log('Interactive model selection requires a terminal.');
+      yield* Console.log('Switch directly with: threadnote local-ai model switch --model <model>');
+      return;
+    }
+    const currentIndex = Math.max(
+      0,
+      installed.findIndex(item => item.definition.id === current?.model && item.path === current.modelPath),
+    );
+    const selectedIndex = yield* promptForSelection(
+      'Select an installed local AI model:',
+      installed.map(item => {
+        const active = item.definition.id === current?.model && item.path === current.modelPath ? ' (current)' : '';
+        return `${item.definition.displayName} — ${formatModelSize(item.definition.size)}${active}`;
+      }),
+      currentIndex,
+    );
+    selected = installed[selectedIndex];
+  }
+
+  if (!selected) {
+    return;
+  }
+  if (selected.definition.id === current?.model && selected.path === current.modelPath) {
+    yield* Console.log(`${selected.definition.id} is already selected.`);
+    return;
+  }
+
+  const settings: LocalAiSettings = {
+    enabled: current?.enabled ?? true,
+    host: '127.0.0.1',
+    model: selected.definition.id,
+    modelPath: selected.path,
+    port: current?.port ?? LOCAL_AI_DEFAULT_PORT,
+    version: LOCAL_AI_CONFIG_VERSION,
+  };
+  if (options.dryRun === true) {
+    yield* Console.log(`Would switch local AI from ${current?.model ?? 'no configured model'} to ${settings.model}.`);
+    yield* Console.log(
+      settings.enabled
+        ? `Would restart the loopback model service at ${localAiApiUrl(settings)}.`
+        : 'Would preserve the disabled local AI state.',
+    );
+    return;
+  }
+
+  yield* assertLocalAiModelPresent(settings);
+  const token = yield* ensureLocalAiAccessToken(config);
+  yield* configureLocalAiModel(config, settings, token, {start: settings.enabled});
+  yield* Console.log(`Switched local AI model to ${settings.model}.`);
 });
 
 export const runLocalAiEnable = Effect.fn('localAi.enable')(function* (
@@ -254,14 +347,12 @@ export const runLocalAiStatus = Effect.fn('localAi.status')(function* (config: R
     yield* Console.log('Install it with: threadnote local-ai install');
     return;
   }
-  const fs = yield* FileSystem.FileSystem;
-  const modelInfo = yield* fs.stat(settings.modelPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const model = findLocalAiModel(settings.model);
+  const modelPresent = model ? yield* localAiModelFilePresent(model, settings.modelPath) : false;
   yield* Console.log(`Local AI recall: ${settings.enabled ? 'enabled' : 'disabled'}`);
   yield* Console.log(`Model: ${settings.model}`);
   yield* Console.log(`Model file: ${settings.modelPath}`);
-  yield* Console.log(
-    `Model present: ${modelInfo?.type === 'File' && Number(modelInfo.size) === LOCAL_AI_MODEL_SIZE ? 'yes' : 'no'}`,
-  );
+  yield* Console.log(`Model present: ${modelPresent ? 'yes' : 'no'}`);
   yield* Console.log(`Endpoint: ${localAiApiUrl(settings)}`);
   if (!settings.enabled) {
     const token = yield* readLocalAiAccessToken(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
@@ -273,6 +364,91 @@ export const runLocalAiStatus = Effect.fn('localAi.status')(function* (config: R
   const token = yield* requireLocalAiAccessToken(config);
   const health = yield* readLocalAiHealth(settings, token);
   yield* Console.log(health ? `Service: healthy (pid ${health.pid})` : 'Service: stopped or unhealthy');
+});
+
+export const localAiDoctorCheck = Effect.fn('localAi.doctorCheck')(function* (config: RuntimeConfig) {
+  return yield* Effect.gen(function* () {
+    const settings = yield* readLocalAiSettings(config);
+    if (!settings) {
+      const installed = yield* listInstalledLocalAiModels(config);
+      return installed.length === 0
+        ? {
+            detail: 'not installed (optional); run threadnote local-ai install',
+            name: 'local AI',
+            status: 'ok' as const,
+          }
+        : {
+            detail:
+              `${installed.length} model${installed.length === 1 ? '' : 's'} present but not configured; ` +
+              'run threadnote local-ai model switch',
+            name: 'local AI',
+            status: 'ok' as const,
+          };
+    }
+
+    const model = findLocalAiModel(settings.model);
+    if (!model) {
+      return {
+        detail: `configured model ${settings.model} is not in this Threadnote model catalog`,
+        name: 'local AI',
+        status: 'warn' as const,
+      };
+    }
+    if (!(yield* localAiModelFilePresent(model, settings.modelPath))) {
+      return {
+        detail:
+          `${settings.enabled ? 'enabled' : 'disabled'}; ${model.id} model file missing or wrong size; ` +
+          `run threadnote local-ai install --model ${model.id}`,
+        name: 'local AI',
+        status: 'warn' as const,
+      };
+    }
+
+    const token = yield* readLocalAiAccessToken(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (!token) {
+      return {
+        detail:
+          `${settings.enabled ? 'enabled' : 'disabled'}; ${model.id} present; access token missing or invalid; ` +
+          `run threadnote local-ai install --model ${model.id} --force`,
+        name: 'local AI',
+        status: 'warn' as const,
+      };
+    }
+
+    const health = yield* readLocalAiHealth(settings, token);
+    if (!settings.enabled) {
+      return health
+        ? {
+            detail: `disabled; ${model.id} present; service still healthy (pid ${health.pid})`,
+            name: 'local AI',
+            status: 'warn' as const,
+          }
+        : {
+            detail: `disabled; ${model.id} present; service stopped`,
+            name: 'local AI',
+            status: 'ok' as const,
+          };
+    }
+    return health?.model === settings.model
+      ? {
+          detail: `enabled; ${model.id} present; service healthy (pid ${health.pid})`,
+          name: 'local AI',
+          status: 'ok' as const,
+        }
+      : {
+          detail: `enabled; ${model.id} present; service stopped or unhealthy; run threadnote local-ai start`,
+          name: 'local AI',
+          status: 'warn' as const,
+        };
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        detail: `could not inspect local AI: ${errorMessage(error)}`,
+        name: 'local AI',
+        status: 'warn' as const,
+      }),
+    ),
+  );
 });
 
 export const runLocalAiUninstall = Effect.fn('localAi.uninstall')(function* (
@@ -316,6 +492,25 @@ export const readLocalAiSettings = Effect.fn('localAi.readSettings')(function* (
   });
 });
 
+export const listInstalledLocalAiModels = Effect.fn('localAi.listInstalledModels')(function* (
+  config: LocalAiRuntimeConfig,
+  configured?: LocalAiSettings,
+) {
+  const installed: InstalledLocalAiModel[] = [];
+  for (const model of LOCAL_AI_MODELS) {
+    const managedPath = yield* localAiManagedModelPath(config, model);
+    const candidates =
+      configured?.model === model.id ? Array.from(new Set([configured.modelPath, managedPath])) : [managedPath];
+    for (const candidate of candidates) {
+      if (yield* localAiModelFilePresent(model, candidate)) {
+        installed.push({definition: model, path: candidate});
+        break;
+      }
+    }
+  }
+  return installed;
+});
+
 export function parseLocalAiSettings(value: unknown): LocalAiSettings {
   if (
     !isJsonObject(value) ||
@@ -345,6 +540,39 @@ export function parseLocalAiSettings(value: unknown): LocalAiSettings {
 export function localAiApiUrl(settings: Pick<LocalAiSettings, 'host' | 'port'>): string {
   return `http://${settings.host}:${settings.port}/v1`;
 }
+
+const resolveLocalAiModel = Effect.fn('localAi.resolveModel')((requested: string | undefined) =>
+  Effect.try({
+    try: () => requireLocalAiModel(requested),
+    catch: cause => new Error(errorMessage(cause), {cause}),
+  }),
+);
+
+const configureLocalAiModel = Effect.fn('localAi.configureModel')(function* (
+  config: RuntimeConfig,
+  settings: LocalAiSettings,
+  token: string,
+  options: {readonly start: boolean},
+) {
+  yield* withLocalAiLifecycleLock(
+    config,
+    Effect.gen(function* () {
+      const previous = yield* readLocalAiSettings(config);
+      const switching =
+        previous !== undefined && (previous.model !== settings.model || previous.modelPath !== settings.modelPath);
+      if (switching) {
+        const record = yield* readLocalAiProcessRecord(config);
+        if (record) {
+          yield* stopLocalAiProcess(config, record);
+        }
+      }
+      yield* writeLocalAiSettings(config, settings);
+      if (options.start) {
+        yield* startLocalAiServerUnlocked(config, settings, token, {announce: true});
+      }
+    }),
+  );
+});
 
 const startLocalAiServer = Effect.fn('localAi.startServer')(function* (
   config: LocalAiRuntimeConfig,
@@ -630,32 +858,46 @@ function constantTimeTextEqual(left: string, right: string): boolean {
 }
 
 const assertLocalAiModelPresent = Effect.fn('localAi.assertModelPresent')(function* (settings: LocalAiSettings) {
-  const fs = yield* FileSystem.FileSystem;
-  const info = yield* fs.stat(settings.modelPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  if (info?.type !== 'File' || Number(info.size) !== LOCAL_AI_MODEL_SIZE) {
+  const model = findLocalAiModel(settings.model);
+  if (!model) {
+    return yield* Effect.fail(new Error(`Configured local AI model is unsupported: ${settings.model}.`));
+  }
+  if (!(yield* localAiModelFilePresent(model, settings.modelPath))) {
     return yield* Effect.fail(
       new Error(
         `Configured local AI model is missing or has the wrong size: ${settings.modelPath}. ` +
-          'Run threadnote local-ai install --force.',
+          `Run threadnote local-ai install --model ${model.id} --force.`,
       ),
     );
   }
 });
 
-const verifyLocalAiModel = Effect.fn('localAi.verifyModel')(function* (modelPath: string) {
+const localAiModelFilePresent = Effect.fn('localAi.modelFilePresent')(function* (
+  model: LocalAiModelDefinition,
+  modelPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(modelPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return info?.type === 'File' && Number(info.size) === model.size;
+});
+
+const verifyLocalAiModel = Effect.fn('localAi.verifyModel')(function* (
+  model: LocalAiModelDefinition,
+  modelPath: string,
+) {
   yield* assertLocalAiModelPresent({
     enabled: true,
     host: '127.0.0.1',
-    model: LOCAL_AI_MODEL_ID,
+    model: model.id,
     modelPath,
     port: LOCAL_AI_DEFAULT_PORT,
     version: 1,
   });
-  yield* Console.log(`Verifying ${LOCAL_AI_MODEL_ID} SHA-256.`);
+  yield* Console.log(`Verifying ${model.id} SHA-256.`);
   const digest = yield* sha256File(modelPath);
-  if (digest !== LOCAL_AI_MODEL_SHA256) {
+  if (digest !== model.sha256) {
     return yield* Effect.fail(
-      new Error(`Local AI model checksum mismatch for ${modelPath}. Expected ${LOCAL_AI_MODEL_SHA256}, got ${digest}.`),
+      new Error(`Local AI model checksum mismatch for ${modelPath}. Expected ${model.sha256}, got ${digest}.`),
     );
   }
 });
@@ -689,7 +931,10 @@ const findHashCommand = Effect.fn('localAi.findHashCommand')(function* (
   return build(executable);
 });
 
-const localAiDownloadCommand = Effect.fn('localAi.downloadCommand')(function* (modelPath: string) {
+const localAiDownloadCommand = Effect.fn('localAi.downloadCommand')(function* (
+  model: LocalAiModelDefinition,
+  modelPath: string,
+) {
   const pathService = yield* Path.Path;
   const python = yield* resolveOpenVikingPython();
   const binDirectory = pathService.dirname(python);
@@ -700,10 +945,10 @@ const localAiDownloadCommand = Effect.fn('localAi.downloadCommand')(function* (m
   const hf = (yield* fs.exists(siblingHf)) ? siblingHf : yield* findExecutable(['hf']);
   const commonArgs = [
     'download',
-    LOCAL_AI_MODEL_REPOSITORY,
-    LOCAL_AI_MODEL_FILE,
+    model.repository,
+    model.file,
     '--revision',
-    LOCAL_AI_MODEL_REVISION,
+    model.revision,
     '--local-dir',
     pathService.dirname(modelPath),
   ];
@@ -850,9 +1095,12 @@ const localAiModelsDirectory = Effect.fn('localAi.modelsDirectory')(function* (c
   return pathService.join(config.agentContextHome, 'threadnote', 'models');
 });
 
-const localAiManagedModelPath = Effect.fn('localAi.managedModelPath')(function* (config: LocalAiRuntimeConfig) {
+const localAiManagedModelPath = Effect.fn('localAi.managedModelPath')(function* (
+  config: LocalAiRuntimeConfig,
+  model: LocalAiModelDefinition = DEFAULT_LOCAL_AI_MODEL,
+) {
   const pathService = yield* Path.Path;
-  return pathService.join(yield* localAiModelsDirectory(config), LOCAL_AI_MODEL_FILE);
+  return pathService.join(yield* localAiModelsDirectory(config), model.file);
 });
 
 function formatModelSize(bytes: number): string {
