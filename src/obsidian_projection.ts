@@ -20,6 +20,7 @@ import {
   writeObsidianConfiguration,
 } from './obsidian_config.js';
 import {applyScrubber} from './scrubber.js';
+import {parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from './types.js';
 import {expandPath, isDirectory, toPosixPath} from './utils.js';
 
@@ -38,6 +39,10 @@ export interface ObsidianProjectionCommandOptions {
   readonly dryRun?: boolean;
   readonly force?: boolean;
   readonly id: string;
+}
+
+export interface ObsidianProjectionPublishOptions extends ObsidianProjectionCommandOptions {
+  readonly uris: readonly string[];
 }
 
 export type ObsidianProjectionAction = 'add' | 'drift' | 'remove' | 'skip' | 'unchanged' | 'update';
@@ -98,17 +103,19 @@ export const runObsidianProjectionAdd = Effect.fn('obsidian.projectionAdd')(func
   const id = normalizeIdentifier(options.id, 'projection id');
   const vault = yield* canonicalDirectory(options.vault, 'Obsidian vault');
   const folder = normalizeProjectionFolder(options.folder);
+  const current = yield* readObsidianConfiguration(config);
+  const existing = current.projections.find(projection => projection.id === id);
   const projection: ObsidianProjectionConfig = {
     enabled: true,
     folder,
     id,
     includeShared: options.includeShared !== false,
     kinds: options.kinds?.length ? [...new Set(options.kinds)] : ['durable', 'handoff'],
+    selectedUris: existing?.selectedUris ?? [],
     statuses: options.statuses?.length ? [...new Set(options.statuses)] : ['active'],
     type: 'obsidian',
     vault,
   };
-  const current = yield* readObsidianConfiguration(config);
   const projectionExclude = `${folder}/**`;
   const sources = current.sources.map(source =>
     source.vault === vault && !source.exclude.includes(projectionExclude)
@@ -232,6 +239,58 @@ export const runObsidianProjectionSync = Effect.fn('obsidian.projectionSync')(fu
   );
 });
 
+export const runObsidianProjectionPublish = Effect.fn('obsidian.projectionPublish')(function* (
+  config: RuntimeConfig,
+  options: ObsidianProjectionPublishOptions,
+) {
+  const apply = options.apply === true && options.dryRun !== true;
+  const configuration = yield* readObsidianConfiguration(config);
+  const projection = requireObsidianProjection(configuration, options.id);
+  if (!projection.enabled) {
+    return yield* Effect.fail(new Error(`Obsidian projection "${projection.id}" is disabled.`));
+  }
+  if (projection.selectedUris === undefined) {
+    return yield* Effect.fail(
+      new Error(
+        `Obsidian projection "${projection.id}" predates explicit memory selection. ` +
+          'Re-run threadnote projection add with the same id, vault, and folder plus --apply, then publish again.',
+      ),
+    );
+  }
+  const requestedUris = normalizeProjectionMemoryUris(config, options.uris);
+  const selectedUris = [...new Set([...projection.selectedUris, ...requestedUris])].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const nextProjection = {...projection, selectedUris};
+  const plan = yield* buildProjectionPlan(config, nextProjection);
+  const projectedUris = new Set([...plan.desired.values()].flatMap(file => (file.uri === undefined ? [] : [file.uri])));
+  const unavailable = requestedUris.filter(uri => !projectedUris.has(uri));
+  if (unavailable.length > 0) {
+    return yield* Effect.fail(
+      new Error(
+        `Cannot publish ${unavailable.join(', ')}. Ensure each memory exists and matches projection ` +
+          `"${projection.id}" kind, status, and shared-memory filters.`,
+      ),
+    );
+  }
+  const addedSelectionCount = selectedUris.length - projection.selectedUris.length;
+  yield* Console.log(
+    `${apply ? 'Publishing' : 'Would publish'} ${requestedUris.length} selected memory URI(s) to ` +
+      `Obsidian projection "${projection.id}" (${addedSelectionCount} newly selected).`,
+  );
+  if (!apply) {
+    yield* printProjectionPlan(plan);
+    yield* Console.log('Dry run complete. Re-run with --apply to write the selected memories to the vault.');
+    return plan.entries;
+  }
+  yield* writeObsidianConfiguration(config, upsertObsidianProjection(configuration, nextProjection));
+  return yield* runObsidianProjectionSync(config, {
+    apply: true,
+    force: options.force,
+    id: projection.id,
+  });
+});
+
 export const runObsidianProjectionRemove = Effect.fn('obsidian.projectionRemove')(function* (
   config: RuntimeConfig,
   options: ObsidianProjectionCommandOptions,
@@ -300,7 +359,8 @@ export const resolveProjectedMemoryPath = Effect.fn('obsidian.resolveProjectedMe
   if (matches.length === 0) {
     return yield* Effect.fail(
       new Error(
-        `Memory ${uri} is not present in an enabled Obsidian projection. Run threadnote projection sync <id> --apply.`,
+        `Memory ${uri} is not present in an enabled Obsidian projection. ` +
+          'Run threadnote projection publish <id> --uri <memory-uri> --apply.',
       ),
     );
   }
@@ -378,20 +438,32 @@ const readProjectionMemories = Effect.fn('obsidian.readProjectionMemories')(func
 ) {
   const store = yield* ResourceStore;
   const location = resourceStoreLocation(config);
-  const rootUri = `threadnote://user/${uriSegment(config.user)}/memories`;
-  const entries = yield* store
-    .list(location, rootUri, {recursive: true})
-    .pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed([])));
+  const selectedUris =
+    projection.selectedUris ??
+    (yield* store.list(location, `threadnote://user/${uriSegment(config.user)}/memories`, {recursive: true}).pipe(
+      Effect.catchTag('ResourceNotFound', () => Effect.succeed([])),
+      Effect.map(entries =>
+        entries
+          .filter(entry => entry.type === 'file' && entry.uri.toLowerCase().endsWith('.md'))
+          .map(entry => entry.uri),
+        ),
+    ));
   const records = yield* Effect.forEach(
-    entries.filter(entry => entry.type === 'file' && entry.uri.toLowerCase().endsWith('.md')),
-    entry =>
+    selectedUris,
+    uri =>
       Effect.gen(function* () {
-        const record = parseMemoryDocument(entry.uri, yield* store.read(location, entry.uri));
+        const content = yield* store
+          .read(location, uri)
+          .pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed(undefined)));
+        if (content === undefined) {
+          return undefined;
+        }
+        const record = parseMemoryDocument(uri, content);
         if (
           !record ||
           !projection.kinds.includes(record.metadata.kind) ||
           !projection.statuses.includes(record.metadata.status) ||
-          (!projection.includeShared && isSharedMemoryUri(entry.uri))
+          (!projection.includeShared && isSharedMemoryUri(uri))
         ) {
           return undefined;
         }
@@ -763,6 +835,7 @@ function normalizeIdentifier(value: string, label: string): string {
 function projectionSummary(projection: ObsidianProjectionConfig): string {
   return [
     `${projection.id} · ${projection.enabled ? 'enabled' : 'disabled'} · ${projection.vault}/${projection.folder}`,
+    `  selected memories: ${projection.selectedUris?.length ?? 'all matching (legacy)'}`,
     `  kinds: ${projection.kinds.join(', ')}`,
     `  statuses: ${projection.statuses.join(', ')}`,
     `  shared: ${projection.includeShared ? 'included' : 'excluded'}`,
@@ -808,6 +881,37 @@ function projectionActionRank(action: ObsidianProjectionAction): number {
 function uriBasename(uri: string): string {
   const withoutAnchor = uri.replace(/#.*$/, '').replace(/\/+$/, '');
   return withoutAnchor.slice(withoutAnchor.lastIndexOf('/') + 1).replace(/\.md$/i, '');
+}
+
+function normalizeProjectionMemoryUris(
+  config: Pick<RuntimeConfig, 'user'>,
+  values: readonly string[],
+): readonly string[] {
+  if (values.length === 0) {
+    throw new Error('Provide at least one Threadnote memory URI with --uri.');
+  }
+  const expectedUser = uriSegment(config.user);
+  return [...new Set(values.map(value => canonicalProjectionMemoryUri(value, expectedUser)))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+}
+
+function canonicalProjectionMemoryUri(value: string, expectedUser: string): string {
+  const parsed = parseResourceId(value);
+  if (parsed.anchor) {
+    throw new Error(`Obsidian projections require whole-memory URIs without anchors: ${value}`);
+  }
+  const canonical = resourceIdWithoutAnchor(parsed);
+  if (
+    canonical.namespace !== 'user' ||
+    canonical.segments[0] !== expectedUser ||
+    canonical.segments[1] !== 'memories' ||
+    canonical.segments.length < 3 ||
+    !canonical.segments.at(-1)?.toLowerCase().endsWith('.md')
+  ) {
+    throw new Error(`Obsidian projections accept only current-user Threadnote memory URIs: ${value}`);
+  }
+  return canonical.canonicalUri;
 }
 
 function withoutMarkdownExtension(path: string): string {

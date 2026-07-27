@@ -1,6 +1,7 @@
 import {Crypto, Effect, FileSystem, Path} from 'effect';
 import yaml from 'js-yaml';
 import {withExclusiveFileLock} from './effect/file_lock.js';
+import {parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from './types.js';
 import {isJsonObject} from './utils.js';
 
@@ -21,6 +22,7 @@ export interface ObsidianProjectionConfig {
   readonly id: string;
   readonly includeShared: boolean;
   readonly kinds: readonly MemoryKind[];
+  readonly selectedUris?: readonly string[];
   readonly statuses: readonly MemoryStatus[];
   readonly type: 'obsidian';
   readonly vault: string;
@@ -139,6 +141,7 @@ export function renderObsidianConfiguration(value: ObsidianConfiguration): strin
       kinds: [...projection.kinds],
       statuses: [...projection.statuses],
       include_shared: projection.includeShared,
+      ...(projection.selectedUris === undefined ? {} : {selected_uris: [...projection.selectedUris]}),
       enabled: projection.enabled,
     })),
   };
@@ -239,6 +242,9 @@ function parseProjection(value: unknown, label: string): ObsidianProjectionConfi
     id,
     includeShared: optionalBoolean(value.include_shared, true, `${label}.include_shared`),
     kinds: memoryKinds(value.kinds, `${label}.kinds`),
+    ...(value.selected_uris === undefined
+      ? {}
+      : {selectedUris: selectedMemoryUris(value.selected_uris, `${label}.selected_uris`)}),
     statuses: memoryStatuses(value.statuses, `${label}.statuses`),
     type: 'obsidian',
     vault: requiredAbsoluteVaultPath(value.vault, `${label}.vault`),
@@ -345,4 +351,21 @@ function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] 
     throw new Error(`${label} contains an unsupported memory status.`);
   }
   return values as readonly MemoryStatus[];
+}
+
+function selectedMemoryUris(value: unknown, label: string): readonly string[] {
+  return requiredStringArray(value, label)
+    .map(uri => {
+      const parsed = resourceIdWithoutAnchor(parseResourceId(uri));
+      if (
+        parsed.namespace !== 'user' ||
+        parsed.segments.length < 3 ||
+        parsed.segments[1] !== 'memories' ||
+        !parsed.segments.at(-1)?.toLowerCase().endsWith('.md')
+      ) {
+        throw new Error(`${label} may contain only canonical Threadnote memory URIs.`);
+      }
+      return parsed.canonicalUri;
+    })
+    .sort((left, right) => left.localeCompare(right));
 }

@@ -17,6 +17,7 @@ const CORE_TOOL_NAMES = [
   'remember_context',
   'review_session_context',
   'apply_memory_candidates',
+  'obsidian_publish',
   'threadnote_guide',
   'share_publish',
 ];
