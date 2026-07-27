@@ -133,14 +133,17 @@ function staleDeadLockToken(
       return undefined;
     }
     const info = yield* fs.stat(path);
+    const token = (yield* fs.readFileString(path)).trim();
+    const ownerPid = fileLockOwnerPid(token);
+    if (ownerPid !== undefined && !system.isProcessRunning(ownerPid)) {
+      return token;
+    }
     const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
     const now = yield* Clock.currentTimeMillis;
     if (modifiedAt === undefined || now - modifiedAt <= staleAfterMilliseconds) {
       return undefined;
     }
-    const token = (yield* fs.readFileString(path)).trim();
-    const ownerPid = fileLockOwnerPid(token);
-    return ownerPid === undefined || !system.isProcessRunning(ownerPid) ? token : undefined;
+    return ownerPid === undefined ? token : undefined;
   });
 }
 

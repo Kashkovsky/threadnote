@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {publishShareGitChange} from '../../src/share.js';
+import {publishShareGitChange, syncSharedReposBeforeAgentRead} from '../../src/share.js';
 import {
   runShareRemove as runShareRemoveEffect,
   runShareRename as runShareRenameEffect,
@@ -142,6 +142,24 @@ describe('share administration', () => {
       'git',
       ['-C', join(config.agentContextHome, 'share-worktree'), 'rm', '--', '-dash.md'],
       {allowFailure: true},
+    );
+  });
+
+  it('bounds automatic share fetch and upstream inspection commands', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    await runEffect(syncSharedReposBeforeAgentRead(config));
+
+    expect(vi.mocked(utils.runCommand)).toHaveBeenCalledWith(
+      'git',
+      ['-C', join(config.agentContextHome, 'share', 'worktrees', 'default'), 'fetch', 'origin'],
+      {allowFailure: true, timeoutMs: 5_000},
+    );
+    expect(vi.mocked(utils.runCommand)).toHaveBeenCalledWith(
+      'git',
+      ['-C', join(config.agentContextHome, 'share', 'worktrees', 'default'), 'rev-list', '--count', 'HEAD..@{u}'],
+      {allowFailure: true, timeoutMs: 5_000},
     );
   });
 

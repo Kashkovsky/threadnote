@@ -78,6 +78,7 @@ const PACK_FILES_DIR = 'files';
 // back to the real install directory at install time so hardcoded paths resolve
 // on a teammate's machine.
 const PACK_ROOT_TOKEN = '${THREADNOTE_PACK_ROOT}';
+const AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS = 5_000;
 export const SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS = 5 * 60 * 1000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
@@ -706,6 +707,7 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
   for (const [name, team] of teams) {
     const fetchResult = yield* runCommand(git, ['-C', team.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
       allowFailure: true,
+      timeoutMs: AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
     });
     if (fetchResult.exitCode !== 0) {
       statuses.push({
@@ -715,7 +717,12 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
       });
       continue;
     }
-    const behind = yield* gitOutput(team.worktree, ['rev-list', '--count', 'HEAD..@{u}'], false);
+    const behind = yield* gitOutput(
+      team.worktree,
+      ['rev-list', '--count', 'HEAD..@{u}'],
+      false,
+      AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
+    );
     if (behind === undefined) {
       statuses.push({
         behind: 0,
@@ -4599,11 +4606,19 @@ const isShareGitOperationInProgress = Effect.fn('share.isShareGitOperationInProg
 });
 
 /** Returns the trimmed stdout of `git -C <worktree> <args>` on success, or `undefined` on dry-run / non-zero exit. */
-const gitOutput = Effect.fn('share.gitOutput')(function* (worktree: string, args: readonly string[], dryRun: boolean) {
+const gitOutput = Effect.fn('share.gitOutput')(function* (
+  worktree: string,
+  args: readonly string[],
+  dryRun: boolean,
+  timeoutMs?: number,
+) {
   if (dryRun) {
     return undefined;
   }
-  const result = yield* runCommand('git', ['-C', worktree, ...args], {allowFailure: true});
+  const result = yield* runCommand('git', ['-C', worktree, ...args], {
+    allowFailure: true,
+    ...(timeoutMs === undefined ? {} : {timeoutMs}),
+  });
   if (result.exitCode !== 0) {
     return undefined;
   }

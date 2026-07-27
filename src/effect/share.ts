@@ -50,6 +50,8 @@ import type {
   ShareRuntime,
 } from '../types.js';
 
+const SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS = 250;
+
 export const runShareInit = (config: ShareRuntime, remoteUrl: string, options: ShareInitOptions) =>
   withSharedRepositoryLock(config, runShareInitEffect(config, remoteUrl, options));
 export const runShareStatus = (config: ShareRuntime, options: ShareStatusOptions) =>
@@ -70,7 +72,9 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
   }
 });
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
-  return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config));
+  return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
+    waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
+  });
 });
 export const runShareConflicts = (config: ShareRuntime, options: ShareConflictOptions) =>
   withSharedRepositoryLock(config, runShareConflictsEffect(config, options));
