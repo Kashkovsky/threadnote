@@ -27,11 +27,30 @@ import {
   runMigrateLifecycle,
   runMigrateMemories,
   runMigrateProjectNames,
+  parseMemoryKind,
+  parseMemoryStatus,
   runRead,
   runRecall,
   runRemember,
 } from '../memory.js';
 import {runMcpInstall} from '../mcp.js';
+import {runObsidianInboxScan} from '../obsidian_inbox.js';
+import {runObsidianOpen} from '../obsidian_open.js';
+import {
+  runObsidianProjectionAdd,
+  runObsidianProjectionList,
+  runObsidianProjectionRemove,
+  runObsidianProjectionStatus,
+  runObsidianProjectionSync,
+} from '../obsidian_projection.js';
+import {
+  runObsidianSourceAdd,
+  runObsidianSourceInventory,
+  runObsidianSourceList,
+  runObsidianSourceRemove,
+  runObsidianSourceStatus,
+  runObsidianSourceSync,
+} from '../obsidian_source.js';
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
 import {
@@ -492,6 +511,139 @@ const indexPurge = Command.make(
 const indexCommand = Command.make('index').pipe(
   Command.withDescription('Inspect and rebuild derived recall indexes'),
   Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
+);
+
+const sourceAdd = Command.make(
+  'add',
+  {
+    apply: boolean('apply', 'Write the source configuration; without this, print a preview'),
+    exclude: repeatedString('exclude', 'Vault-relative exclusion glob; repeat for multiple'),
+    id: requiredString('id', 'Stable source identifier'),
+    inbox: optionalString('inbox', 'Vault-relative Threadnote Inbox folder'),
+    include: repeatedString('include', 'Required vault-relative allowlist glob; repeat for multiple'),
+    type: defaultChoice('type', ['obsidian'], 'External source type', 'obsidian'),
+    vault: requiredString('vault', 'Obsidian vault directory'),
+  },
+  ({type: _type, ...options}) => withRuntimeEffect(config => runObsidianSourceAdd(config, options)),
+).pipe(Command.withDescription('Configure an allowlisted read-only external source'));
+
+const sourceList = Command.make('list', {}, () => withRuntimeEffect(config => runObsidianSourceList(config))).pipe(
+  Command.withDescription('List configured external sources'),
+);
+
+const sourceInventory = Command.make('inventory', {id: argument('id', 'Source identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianSourceInventory(config, id)),
+).pipe(Command.withDescription('Inventory allowed, changed, removed, and unsafe source notes'));
+
+const sourceSync = Command.make(
+  'sync',
+  {
+    id: argument('id', 'Source identifier'),
+    apply: boolean('apply', 'Update the external index; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without updating the external index'),
+  },
+  options => withRuntimeEffect(config => runObsidianSourceSync(config, options)),
+).pipe(Command.withDescription('Incrementally synchronize an allowlisted external source'));
+
+const sourceStatus = Command.make('status', {id: argument('id', 'Source identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianSourceStatus(config, id)),
+).pipe(Command.withDescription('Show source configuration and pending changes'));
+
+const sourceRemove = Command.make(
+  'remove',
+  {
+    id: argument('id', 'Source identifier'),
+    apply: boolean('apply', 'Remove source configuration and its external index'),
+    dryRun: boolean('dry-run', 'Print removal without changing anything'),
+  },
+  options => withRuntimeEffect(config => runObsidianSourceRemove(config, options)),
+).pipe(Command.withDescription('Remove a source index while preserving its vault and Threadnote memories'));
+
+const source = Command.make('source').pipe(
+  Command.withDescription('Manage capability-scoped external knowledge sources'),
+  Command.withSubcommands([sourceAdd, sourceList, sourceInventory, sourceSync, sourceStatus, sourceRemove]),
+);
+
+const projectionAdd = Command.make(
+  'add',
+  {
+    apply: boolean('apply', 'Write the projection configuration; without this, print a preview'),
+    folder: defaultString('folder', 'Vault-relative managed projection folder', 'Threadnote'),
+    id: requiredString('id', 'Stable projection identifier'),
+    includeShared: negatedBoolean('shared', 'Exclude shared memories from this projection'),
+    kind: repeatedString('kind', 'Memory kind to project; repeat for multiple'),
+    status: repeatedString('status', 'Memory status to project; repeat for multiple'),
+    type: defaultChoice('type', ['obsidian'], 'Projection type', 'obsidian'),
+    vault: requiredString('vault', 'Obsidian vault directory'),
+  },
+  ({kind, status, type: _type, ...options}) =>
+    withRuntimeEffect(config =>
+      runObsidianProjectionAdd(config, {
+        ...options,
+        kinds: kind.map(parseMemoryKind),
+        statuses: status.map(parseMemoryStatus),
+      }),
+    ),
+).pipe(Command.withDescription('Configure a deterministic read-only memory projection'));
+
+const projectionList = Command.make('list', {}, () =>
+  withRuntimeEffect(config => runObsidianProjectionList(config)),
+).pipe(Command.withDescription('List configured memory projections'));
+
+const projectionSync = Command.make(
+  'sync',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Write projection changes; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without writing the vault'),
+    force: boolean('force', 'Regenerate edited managed files; never overwrites unmanaged files'),
+  },
+  options => withRuntimeEffect(config => runObsidianProjectionSync(config, options)),
+).pipe(Command.withDescription('Regenerate a managed Obsidian memory projection'));
+
+const projectionStatus = Command.make('status', {id: argument('id', 'Projection identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianProjectionStatus(config, id)),
+).pipe(Command.withDescription('Show projection configuration, drift, and pending changes'));
+
+const projectionRemove = Command.make(
+  'remove',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Remove unchanged managed files and projection configuration'),
+    dryRun: boolean('dry-run', 'Print removal without changing anything'),
+    force: boolean('force', 'Also remove edited files previously managed by this projection'),
+  },
+  options => withRuntimeEffect(config => runObsidianProjectionRemove(config, options)),
+).pipe(Command.withDescription('Remove managed projection files while preserving the vault and memories'));
+
+const projection = Command.make('projection').pipe(
+  Command.withDescription('Manage one-way human-readable memory projections'),
+  Command.withSubcommands([projectionAdd, projectionList, projectionSync, projectionStatus, projectionRemove]),
+);
+
+const openMemory = Command.make(
+  'open',
+  {
+    uri: argument('uri', 'Projected threadnote:// memory URI'),
+    dryRun: boolean('dry-run', 'Print the Obsidian command without opening it'),
+    projection: optionalString('projection', 'Projection identifier when a memory appears in more than one'),
+  },
+  ({uri, ...options}) => withRuntimeEffect(config => runObsidianOpen(config, uri, options)),
+).pipe(Command.withDescription('Open a projected Threadnote memory in Obsidian'));
+
+const inboxScan = Command.make(
+  'scan',
+  {
+    apply: boolean('apply', 'Persist candidate reviews; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print candidate reviews without persisting them'),
+    source: requiredString('source', 'Obsidian source identifier with a configured Inbox'),
+  },
+  options => withRuntimeEffect(config => runObsidianInboxScan(config, options)),
+).pipe(Command.withDescription('Form reviewed memory candidates from an explicit Obsidian Inbox'));
+
+const inbox = Command.make('inbox').pipe(
+  Command.withDescription('Review explicit external writeback candidates'),
+  Command.withSubcommands([inboxScan]),
 );
 
 const seed = Command.make(
@@ -972,6 +1124,10 @@ export const threadnoteCommand = root.pipe(
     models,
     indexCommand,
     localAi,
+    source,
+    projection,
+    openMemory,
+    inbox,
     seed,
     initManifest,
     seedSkills,

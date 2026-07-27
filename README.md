@@ -50,6 +50,15 @@ threadnote handoff --project threadnote --topic release --text "..."
 Repo files remain authoritative. `threadnote seed` imports only the files selected by the seed manifest. Canonical
 resources and memories keep stable `threadnote://` identifiers while their bytes live in the Threadnote-owned store.
 
+## Obsidian
+
+The optional zero-plugin Obsidian bridge keeps Threadnote authoritative. Explicitly allowlisted vault notes enter the
+native store as untrusted external resources; active memories can be projected into a generated, one-way Markdown
+folder with Obsidian Bases and URI navigation. Only notes placed in a configured Inbox can form review candidates, and
+they are never applied silently.
+
+See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, drift handling, and removal.
+
 ## Recall
 
 `threadnote install` automatically downloads, verifies, and selects the pinned 36.7 MB BGE Small embedding model.
@@ -100,7 +109,8 @@ npm run bench:recall:micro -- --json
 ```
 
 See the [architecture](docs/architecture.md), [evaluation contract](test/evaluation/README.md),
-[4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md), [sharing](docs/share.md), and
+[4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md), [Obsidian bridge](docs/obsidian.md),
+[sharing](docs/share.md), and
 [troubleshooting](docs/troubleshooting.md).
 
 ## License

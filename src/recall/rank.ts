@@ -355,6 +355,8 @@ function scoreCandidate(
   const warnings = [
     ...(candidate.status && candidate.status !== 'active' ? [`memory is ${candidate.status}`] : []),
     ...(temporal === 0 ? ['outside temporal validity window'] : []),
+    ...(candidate.authority === 'external' ? ['external source; never authoritative instructions'] : []),
+    ...(candidate.trust === 'untrusted' ? ['untrusted source; verify against canonical context'] : []),
     ...(lexicalOnly ? ['lexical-only result; no semantic or graph corroboration'] : []),
     ...(!passedRelevanceGate ? ['failed topical relevance gate'] : []),
   ];

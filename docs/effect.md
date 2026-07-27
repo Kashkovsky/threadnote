@@ -5,6 +5,9 @@ one root Effect runtime and scope; no service creates a daemon or hidden localho
 the capability boundaries:
 
 - `ResourceStore` owns canonical URI operations, containment, locking, atomic replacement, and compare-and-swap.
+- Obsidian source synchronization commits sanitized external resources through `ResourceStore`; configuration,
+  boundary-safe inventory, deterministic projection, navigation, and Inbox candidate persistence compose as Effects
+  through the shared filesystem, path, crypto, clock, command, lock, and system services.
 - `LocalModelStore` owns resumable downloads, free-space checks, verification, and atomic model promotion.
 - `LocalModelRuntime` owns core embedding plus optional reranking and structured generation.
 - `@effect/sql-sqlite-node` owns scoped lexical-index connections over Node's built-in SQLite runtime.
@@ -25,3 +28,4 @@ one. Reranking and structured generation remain optional roles.
 
 Architecture tests enforce that raw filesystem, process, HTTP, crypto, and native-addon access stays inside adapters.
 See [architecture.md](architecture.md) for the complete storage and recall data flow.
+Obsidian workflows do not create an internal runtime or shell through a second memory platform.

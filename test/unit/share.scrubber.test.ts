@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {applyScrubber, scrubberBlocker, stripPersonalProvenance} from '../../src/share.js';
+import {applyScrubber, scrubberBlocker, setMemoryVisibility, stripPersonalProvenance} from '../../src/share.js';
 
 function fixture(...parts: readonly string[]): string {
   return parts.join('');
@@ -185,5 +185,36 @@ describe('stripPersonalProvenance', () => {
     const out = stripPersonalProvenance(input);
     expect(out).not.toMatch(/^supersedes:/m);
     expect(out).toContain('project: y');
+  });
+});
+
+describe('setMemoryVisibility', () => {
+  it('changes visibility without changing stable identity or unknown headers', () => {
+    const personal = [
+      'MEMORY',
+      'schema_version: 3',
+      'memory_id: tn_stable',
+      'kind: durable',
+      'timestamp: 2026-07-27T00:00:00.000Z',
+      'visibility: personal',
+      'future_field: preserved',
+      '',
+      'Body.',
+    ].join('\n');
+
+    const shared = setMemoryVisibility(personal, 'shared');
+
+    expect(shared).toContain('memory_id: tn_stable');
+    expect(shared).toContain('visibility: shared');
+    expect(shared).toContain('future_field: preserved');
+    expect(shared).not.toContain('visibility: personal');
+  });
+
+  it('adds missing visibility to legacy memory headers and ignores non-memory documents', () => {
+    const legacy = ['HANDOFF', 'kind: handoff', 'timestamp: 2026-07-27T00:00:00.000Z', '', 'Body.'].join('\n');
+    expect(setMemoryVisibility(legacy, 'shared')).toContain(
+      'timestamp: 2026-07-27T00:00:00.000Z\nvisibility: shared\n\nBody.',
+    );
+    expect(setMemoryVisibility('plain Markdown', 'shared')).toBe('plain Markdown');
   });
 });

@@ -45,16 +45,19 @@ describe('memory document contract', () => {
     const metadata: MemoryMetadata = {
       authority: 'user_approved',
       candidateId: 'candidate-1',
+      createdAt: '2026-07-23T10:00:00.000Z',
       evidence: ['session:turn-12', 'commit:abc123'],
       kind: 'durable',
       keywords: ['stalled worker recovery', 'lease renewal'],
       lastReviewed: '2026-07-23T10:10:00.000Z',
+      memoryId: 'tn_01k0example',
       project: 'threadnote',
       relations: [
         {type: 'depends_on', uri: 'threadnote://resources/repos/threadnote/docs/effect.md'},
         {type: 'supersedes', uri: 'threadnote://user/me/memories/old.md'},
       ],
       schemaVersion: 2,
+      sourceHash: 'sha256:abc123',
       sourceAgentClient: 'codex',
       sourceCommit: 'abc123',
       sourceObservedAt: '2026-07-23T10:00:00.000Z',
@@ -63,8 +66,10 @@ describe('memory document contract', () => {
       timestamp: '2026-07-23T10:11:00.000Z',
       topic: 'recall',
       trust: 'approved',
+      updatedAt: '2026-07-23T10:11:00.000Z',
       validFrom: '2026-07-23T00:00:00.000Z',
       validTo: '2027-07-23T00:00:00.000Z',
+      visibility: 'personal',
     };
 
     const document = formatMemoryDocument('MEMORY', metadata, 'Effect workflows compose upward.');

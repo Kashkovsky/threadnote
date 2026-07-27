@@ -527,7 +527,11 @@ describe('exactMemoryScopeUris', () => {
 
   it('searches preferences and shared for a preferences intent', () => {
     expect(exactMemoryScopeUris({...base, includeArchived: false, intents: new Set(['preferences'] as const)})).toEqual(
-      ['threadnote://user/denys/memories/preferences', 'threadnote://user/denys/memories/shared'],
+      [
+        'threadnote://user/denys/memories/preferences',
+        'threadnote://user/denys/memories/shared',
+        'threadnote://resources/external',
+      ],
     );
   });
 
@@ -545,6 +549,7 @@ describe('exactMemoryScopeUris', () => {
       'threadnote://user/denys/memories/durable/projects/threadnote',
       'threadnote://user/denys/memories/handoffs/active/threadnote',
       'threadnote://user/denys/memories/shared',
+      'threadnote://resources/external',
     ]);
   });
 
@@ -552,6 +557,7 @@ describe('exactMemoryScopeUris', () => {
     expect(exactMemoryScopeUris({...base, includeArchived: true, intents: new Set(['durable'] as const)})).toEqual([
       'threadnote://user/denys/memories/durable/projects',
       'threadnote://user/denys/memories/shared',
+      'threadnote://resources/external',
       'threadnote://user/denys/memories/durable/archived',
     ]);
   });
@@ -573,6 +579,7 @@ describe('exactMemoryScopeUris', () => {
       'threadnote://user/denys/memories/shared',
       'threadnote://agent/threadnote/memories',
       'threadnote://resources/repos/threadnote',
+      'threadnote://resources/external',
     ]);
   });
 });
