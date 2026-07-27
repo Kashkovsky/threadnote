@@ -91,6 +91,7 @@ jobs:
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
           test/unit/lifecycle.install.test.ts
+          test/unit/local-ai.test.ts
           test/unit/update.test.ts
           test/unit/mcp.test.ts
 

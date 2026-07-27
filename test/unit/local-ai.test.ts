@@ -21,7 +21,9 @@ import {
   localAiHealthProof,
   localAiApiUrl,
   localAiProcessOwnershipMatches,
+  localAiStartupOwnershipMatches,
   parseLocalAiSettings,
+  resolveLocalAiServerPython,
   runLocalAiDisable,
   runLocalAiEnable,
   runLocalAiInstall,
@@ -94,6 +96,35 @@ describe('local AI configuration', () => {
     expect(localAiProcessOwnershipMatches(record, undefined, settings)).toBe(false);
     expect(localAiProcessOwnershipMatches(record, {...health, launchId: 'reused-pid'}, settings)).toBe(false);
     expect(localAiProcessOwnershipMatches(record, {...health, pid: 43}, settings)).toBe(false);
+  });
+
+  it('accepts the authenticated PID handoff from a Windows virtual-environment redirector', () => {
+    const settings = {model: LOCAL_AI_MODEL_ID};
+    const launch = {launchId: 'launch-id', pid: 42};
+    const redirected = {launchId: 'launch-id', model: LOCAL_AI_MODEL_ID, pid: 43};
+
+    expect(localAiStartupOwnershipMatches(launch, redirected, settings, 'win32')).toBe(true);
+    expect(localAiStartupOwnershipMatches(launch, redirected, settings, 'darwin')).toBe(false);
+    expect(
+      localAiStartupOwnershipMatches(launch, {...redirected, launchId: 'different-launch'}, settings, 'win32'),
+    ).toBe(false);
+    expect(localAiStartupOwnershipMatches(launch, {...redirected, model: 'different-model'}, settings, 'win32')).toBe(
+      false,
+    );
+  });
+
+  it('uses the windowless Python sibling for the Windows local AI server', async () => {
+    const home = await makeHome();
+    const scripts = join(home, 'Scripts');
+    const python = join(scripts, 'python.exe');
+    const windowlessPython = join(scripts, 'pythonw.exe');
+    await mkdir(scripts, {recursive: true});
+    await writeFile(python, '');
+    await writeFile(windowlessPython, '');
+
+    const resolved = await runEffect(resolveLocalAiServerPython(python).pipe(Effect.provide(ApplicationLayer)));
+
+    expect(resolved).toBe(process.platform === 'win32' ? windowlessPython : python);
   });
 
   it('lets an explicit environment provider override or disable persisted local AI', async () => {
@@ -184,6 +215,102 @@ describe('local AI configuration', () => {
       await expect(
         runEffect(ensureLocalAiStarted(runtime(home)).pipe(Effect.provide(ApplicationLayer))),
       ).rejects.toThrow(`Configured local AI model is unsupported: ${model}`);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => (error === undefined ? resolve() : reject(error))),
+      );
+    }
+  });
+
+  it('records an authenticated healthy service that survived a failed launcher handoff', async () => {
+    const home = await makeHome();
+    const launchId = 'redirected-launch';
+    const pid = 43;
+    const server = createServer((request, response) => {
+      const challenge = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('challenge') ?? '';
+      const proof = createHash('sha256')
+        .update([challenge, 'threadnote-local-ai', LOCAL_AI_MODEL_ID, String(pid), launchId, ACCESS_TOKEN].join('\0'))
+        .digest('hex');
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(
+        JSON.stringify({
+          launchId,
+          model: LOCAL_AI_MODEL_ID,
+          pid,
+          proof,
+          service: 'threadnote-local-ai',
+          status: 'ok',
+        }),
+      );
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    await writeSettings(home, {port});
+
+    try {
+      await runEffect(ensureLocalAiStarted(runtime(home)).pipe(Effect.provide(ApplicationLayer)));
+      const record = JSON.parse(await readFile(join(home, 'local-ai-server.json'), 'utf8')) as Record<string, unknown>;
+      expect(record).toMatchObject({launchId, pid, version: 1});
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => (error === undefined ? resolve() : reject(error))),
+      );
+    }
+  });
+
+  it('rewrites a Windows redirector PID but rejects the same healthy mismatch elsewhere', async () => {
+    const home = await makeHome();
+    const launchId = 'redirected-launch';
+    const recordedPid = 42;
+    const servingPid = 43;
+    const server = createServer((request, response) => {
+      const challenge = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('challenge') ?? '';
+      const proof = createHash('sha256')
+        .update(
+          [challenge, 'threadnote-local-ai', LOCAL_AI_MODEL_ID, String(servingPid), launchId, ACCESS_TOKEN].join('\0'),
+        )
+        .digest('hex');
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(
+        JSON.stringify({
+          launchId,
+          model: LOCAL_AI_MODEL_ID,
+          pid: servingPid,
+          proof,
+          service: 'threadnote-local-ai',
+          status: 'ok',
+        }),
+      );
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    await writeSettings(home, {port});
+    await writeFile(
+      join(home, 'local-ai-server.json'),
+      `${JSON.stringify({
+        launchId,
+        modelPath: '/models/gemma.gguf',
+        pid: recordedPid,
+        startedAt: '2026-07-27T00:00:00.000Z',
+        version: 1,
+      })}\n`,
+    );
+
+    try {
+      const started = runEffect(ensureLocalAiStarted(runtime(home)).pipe(Effect.provide(ApplicationLayer)));
+      if (process.platform === 'win32') {
+        await started;
+      } else {
+        await expect(started).rejects.toThrow(
+          `Authenticated local AI endpoint pid ${servingPid} does not match recorded process ${recordedPid}`,
+        );
+      }
+      const record = JSON.parse(await readFile(join(home, 'local-ai-server.json'), 'utf8')) as Record<string, unknown>;
+      expect(record).toMatchObject({
+        launchId,
+        pid: process.platform === 'win32' ? servingPid : recordedPid,
+        version: 1,
+      });
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close(error => (error === undefined ? resolve() : reject(error))),

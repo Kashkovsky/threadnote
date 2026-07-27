@@ -600,12 +600,35 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
   options: {readonly announce: boolean},
 ) {
   yield* requireConfiguredLocalAiModel(settings);
+  const system = yield* SystemInfo;
+  const existingRecord = yield* readLocalAiProcessRecord(config);
   const healthy = yield* readLocalAiHealth(settings, token);
   if (healthy) {
     if (healthy.model !== settings.model) {
       return yield* Effect.fail(
         new Error(`Local AI endpoint is serving ${healthy.model}, but Threadnote is configured for ${settings.model}.`),
       );
+    }
+    if (!existingRecord) {
+      yield* writeLocalAiProcessRecord(config, {
+        launchId: healthy.launchId,
+        modelPath: settings.modelPath,
+        pid: healthy.pid,
+        startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+        version: 1,
+      });
+    } else {
+      if (!localAiStartupOwnershipMatches(existingRecord, healthy, settings, system.platform)) {
+        return yield* Effect.fail(
+          new Error(
+            `Authenticated local AI endpoint pid ${healthy.pid} does not match recorded process ${existingRecord.pid}. ` +
+              'Inspect it before replacing the process record or stopping it manually.',
+          ),
+        );
+      }
+      if (healthy.pid !== existingRecord.pid) {
+        yield* writeLocalAiProcessRecord(config, {...existingRecord, pid: healthy.pid});
+      }
     }
     if (options.announce) {
       yield* Console.log(`Local AI is already healthy at ${localAiApiUrl(settings)} (pid ${healthy.pid}).`);
@@ -614,15 +637,12 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
   }
 
   yield* assertLocalAiModelPresent(settings);
-  const system = yield* SystemInfo;
-  const existingRecord = yield* readLocalAiProcessRecord(config);
   if (existingRecord && system.isProcessRunning(existingRecord.pid)) {
     const recovered = yield* waitForLocalAiHealth(settings, token, LOCAL_AI_START_TIMEOUT_MILLISECONDS);
-    if (
-      recovered?.pid === existingRecord.pid &&
-      recovered.launchId === existingRecord.launchId &&
-      recovered.model === settings.model
-    ) {
+    if (recovered && localAiStartupOwnershipMatches(existingRecord, recovered, settings, system.platform)) {
+      if (recovered.pid !== existingRecord.pid) {
+        yield* writeLocalAiProcessRecord(config, {...existingRecord, pid: recovered.pid});
+      }
       return;
     }
     return yield* Effect.fail(
@@ -647,7 +667,7 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
 
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
-  const python = yield* resolveOpenVikingPython();
+  const python = yield* resolveLocalAiServerPython(yield* resolveOpenVikingPython());
   const script = pathService.join(yield* toolRoot(), 'scripts', LOCAL_AI_SERVER_SCRIPT);
   const tokenPath = yield* localAiTokenPath(config);
   const logPath = pathService.join(config.agentContextHome, 'logs', 'local-ai.log');
@@ -680,7 +700,7 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
     startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
     version: 1,
   };
-  yield* fs.writeFileString(yield* localAiPidPath(config), `${JSON.stringify(record, null, 2)}\n`, {mode: 0o600});
+  yield* writeLocalAiProcessRecord(config, record);
   const started = yield* waitForLocalAiHealth(settings, token, LOCAL_AI_START_TIMEOUT_MILLISECONDS);
   if (!started) {
     yield* terminateLocalAiProcess(pid).pipe(Effect.ignore);
@@ -692,7 +712,7 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
       ),
     );
   }
-  if (started.pid !== pid || started.launchId !== launchId) {
+  if (!localAiStartupOwnershipMatches(record, started, settings, system.platform)) {
     yield* terminateLocalAiProcess(pid).pipe(Effect.ignore);
     yield* fs.remove(yield* localAiPidPath(config), {force: true});
     return yield* Effect.fail(
@@ -701,10 +721,28 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
       ),
     );
   }
+  if (started.pid !== pid) {
+    yield* writeLocalAiProcessRecord(config, {...record, pid: started.pid});
+  }
   if (options.announce) {
-    yield* Console.log(`Started local AI with pid ${pid}. Endpoint: ${localAiApiUrl(settings)}. Logs: ${logPath}`);
+    yield* Console.log(
+      `Started local AI with pid ${started.pid}. Endpoint: ${localAiApiUrl(settings)}. Logs: ${logPath}`,
+    );
   }
 });
+
+export function localAiStartupOwnershipMatches(
+  launch: Pick<LocalAiProcessRecord, 'launchId' | 'pid'>,
+  health: Pick<LocalAiHealth, 'launchId' | 'model' | 'pid'>,
+  settings: Pick<LocalAiSettings, 'model'>,
+  platform: NodeJS.Platform,
+): boolean {
+  return (
+    launch.launchId === health.launchId &&
+    health.model === settings.model &&
+    (launch.pid === health.pid || platform === 'win32')
+  );
+}
 
 const spawnDetachedLocalAi = Effect.fn('localAi.spawnDetached')(function* (
   executable: string,
@@ -983,6 +1021,17 @@ const resolveOpenVikingPython = Effect.fn('localAi.resolveOpenVikingPython')(fun
   return yield* Effect.fail(new Error(`Could not resolve the Python runtime used by OpenViking from ${ov}.`));
 });
 
+export const resolveLocalAiServerPython = Effect.fn('localAi.resolveServerPython')(function* (python: string) {
+  const system = yield* SystemInfo;
+  if (system.platform !== 'win32') {
+    return python;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const windowlessPython = pathService.join(pathService.dirname(python), 'pythonw.exe');
+  return (yield* fs.exists(windowlessPython)) ? windowlessPython : python;
+});
+
 const writeLocalAiSettings = Effect.fn('localAi.writeSettings')(function* (
   config: LocalAiRuntimeConfig,
   settings: LocalAiSettings,
@@ -1068,6 +1117,14 @@ const readLocalAiProcessRecord = Effect.fn('localAi.readProcessRecord')(function
     startedAt: parsed.startedAt,
     version: 1,
   } satisfies LocalAiProcessRecord;
+});
+
+const writeLocalAiProcessRecord = Effect.fn('localAi.writeProcessRecord')(function* (
+  config: LocalAiRuntimeConfig,
+  record: LocalAiProcessRecord,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.writeFileString(yield* localAiPidPath(config), `${JSON.stringify(record, null, 2)}\n`, {mode: 0o600});
 });
 
 const requireLocalAiSettings = Effect.fn('localAi.requireSettings')(function* (config: LocalAiRuntimeConfig) {
