@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Path} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
 import {MAX_SECRET_MATCHES_TO_PRINT} from './constants.js';
 import {sha256Hex} from './effect/digest.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
@@ -48,6 +48,11 @@ export interface ObsidianInventory {
   readonly source: ObsidianSourceConfig;
 }
 
+export interface ObsidianSourceAutoSyncResult {
+  readonly syncedSources: readonly string[];
+  readonly warnings: readonly string[];
+}
+
 interface ObsidianSourceFileState {
   readonly contentHash: string;
   readonly modifiedAt?: string;
@@ -76,6 +81,12 @@ interface ScannedObsidianNote {
 interface ObsidianInventoryPlan extends ObsidianInventory {
   readonly safeNotes: readonly ScannedObsidianNote[];
   readonly state: ObsidianSourceState;
+}
+
+interface ObsidianSourceSyncBehavior {
+  readonly apply: boolean;
+  readonly log: boolean;
+  readonly writeUnchangedState: boolean;
 }
 
 const SOURCE_STATE_VERSION = 1;
@@ -178,6 +189,54 @@ export const runObsidianSourceSync = Effect.fn('obsidian.sourceSync')(function* 
   if (!source.enabled) {
     return yield* Effect.fail(new Error(`Obsidian source "${source.id}" is disabled.`));
   }
+  return yield* syncObsidianSource(config, source, {
+    apply,
+    log: true,
+    writeUnchangedState: true,
+  });
+});
+
+export const syncObsidianSourcesBeforeRecall = Effect.fn('obsidian.syncBeforeRecall')(function* (
+  config: RuntimeConfig,
+) {
+  const configuration = yield* readObsidianConfiguration(config);
+  const syncedSources: string[] = [];
+  const warnings: string[] = [];
+  for (const source of configuration.sources.filter(candidate => candidate.enabled)) {
+    const result = yield* Effect.result(
+      syncObsidianSource(config, source, {
+        apply: true,
+        log: false,
+        writeUnchangedState: false,
+      }),
+    );
+    if (Result.isFailure(result)) {
+      warnings.push(
+        `Auto-sync for Obsidian source "${source.id}" failed: ${
+          result.failure instanceof Error ? result.failure.message : String(result.failure)
+        }`,
+      );
+      continue;
+    }
+    if (result.success.entries.some(entry => isSourceMutation(entry.action))) {
+      syncedSources.push(source.id);
+    }
+    const skipped = result.success.entries.filter(entry => entry.action === 'skip').length;
+    if (skipped > 0) {
+      warnings.push(
+        `Obsidian source "${source.id}" skipped ${skipped} note(s). ` +
+          `Run \`threadnote source status ${source.id}\` for details.`,
+      );
+    }
+  }
+  return {syncedSources, warnings} satisfies ObsidianSourceAutoSyncResult;
+});
+
+const syncObsidianSource = Effect.fn('obsidian.syncSource')(function* (
+  config: RuntimeConfig,
+  source: ObsidianSourceConfig,
+  behavior: ObsidianSourceSyncBehavior,
+) {
   const fs = yield* FileSystem.FileSystem;
   const statePath = yield* sourceStatePath(config, source.id);
   return yield* withExclusiveFileLock(
@@ -186,9 +245,13 @@ export const runObsidianSourceSync = Effect.fn('obsidian.sourceSync')(function* 
     SOURCE_LOCK_OPTIONS,
     Effect.gen(function* () {
       const plan = yield* buildObsidianInventory(config, source);
-      yield* printInventory(plan);
-      if (!apply) {
-        yield* Console.log('Dry run complete. Re-run with --apply to update the external index.');
+      if (behavior.log) {
+        yield* printInventory(plan);
+      }
+      if (!behavior.apply) {
+        if (behavior.log) {
+          yield* Console.log('Dry run complete. Re-run with --apply to update the external index.');
+        }
         return {entries: plan.entries, source: plan.source} satisfies ObsidianInventory;
       }
       const changedPaths = new Set(
@@ -215,6 +278,9 @@ export const runObsidianSourceSync = Effect.fn('obsidian.sourceSync')(function* 
         const store = yield* ResourceStore;
         yield* store.mutate(resourceStoreLocation(config), mutations);
       }
+      if (mutations.length === 0 && !behavior.writeUnchangedState) {
+        return {entries: plan.entries, source: plan.source} satisfies ObsidianInventory;
+      }
       const currentTimeMillis = yield* Clock.currentTimeMillis;
       const nextState: ObsidianSourceState = {
         files: Object.fromEntries(
@@ -233,11 +299,13 @@ export const runObsidianSourceSync = Effect.fn('obsidian.sourceSync')(function* 
         version: SOURCE_STATE_VERSION,
       };
       yield* writeSourceState(statePath, nextState);
-      const counts = inventoryCounts(plan.entries);
-      yield* Console.log(
-        `Obsidian source sync complete: ${counts.add} added, ${counts.update} updated, ${counts.remove} removed, ` +
-          `${counts.unchanged} unchanged, ${counts.skip} skipped.`,
-      );
+      if (behavior.log) {
+        const counts = inventoryCounts(plan.entries);
+        yield* Console.log(
+          `Obsidian source sync complete: ${counts.add} added, ${counts.update} updated, ${counts.remove} removed, ` +
+            `${counts.unchanged} unchanged, ${counts.skip} skipped.`,
+        );
+      }
       return {entries: plan.entries, source: plan.source} satisfies ObsidianInventory;
     }),
   );
@@ -589,6 +657,10 @@ function inventoryCounts(entries: readonly ObsidianInventoryEntry[]): Record<Obs
 
 function inventoryActionRank(action: ObsidianInventoryAction): number {
   return {add: 0, update: 1, remove: 2, skip: 3, unchanged: 4}[action];
+}
+
+function isSourceMutation(action: ObsidianInventoryAction): boolean {
+  return action === 'add' || action === 'update' || action === 'remove';
 }
 
 function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {

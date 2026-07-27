@@ -53,10 +53,10 @@ resources and memories keep stable `threadnote://` identifiers while their bytes
 ## Obsidian
 
 The optional zero-plugin Obsidian bridge keeps Threadnote authoritative. Explicitly allowlisted vault notes enter the
-native store as untrusted external resources and participate in normal recall. Users can publish explicitly selected
-memory URIs into a generated, one-way Markdown folder with Obsidian Bases and URI navigation; connecting a projection
-does not export the whole memory corpus. Only notes placed in a configured Inbox can form review candidates, and they
-are never applied silently.
+native store as untrusted external resources, refresh automatically before recall, and participate in normal ranking.
+Users can publish explicitly selected memory URIs into a generated, one-way Markdown folder with Obsidian Bases and URI
+navigation; connecting a projection does not export the whole memory corpus. Only notes placed in a configured Inbox
+can form review candidates, and they are never applied silently.
 
 See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, drift handling, and removal.
 

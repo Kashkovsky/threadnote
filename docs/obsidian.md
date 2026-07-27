@@ -36,7 +36,7 @@ threadnote source add --type obsidian --id engineering \
   --apply
 ```
 
-Inventory and sync are explicit:
+Inventory and manual sync remain available for inspection and troubleshooting:
 
 ```bash
 threadnote source inventory engineering
@@ -46,10 +46,17 @@ threadnote source status engineering
 threadnote recall --query "mobile authentication token mediator"
 ```
 
-The default sync is a dry run. Apply reads Markdown files only, rejects boundary
-escapes and symlinks, blocks likely credentials, redacts local path leaks in a
-sanitized copy, and atomically commits that copy to Threadnote's native store
-under:
+Every non-dry-run CLI recall and MCP `recall_context` first refreshes all enabled
+Obsidian sources. It applies only detected additions, updates, and removals; an
+unchanged source causes no state write. A source failure becomes an auto-sync
+warning and recall continues against the last successful snapshot, matching
+Threadnote's shared-memory auto-sync behavior.
+
+The explicit `source sync` command is a dry run unless `--apply` is passed.
+Automatic and explicit sync use the same boundary checks: they read Markdown
+files only, reject boundary escapes and symlinks, block likely credentials,
+redact local path leaks in a sanitized copy, and atomically commit that copy to
+Threadnote's native store under:
 
 ```text
 threadnote://resources/external/obsidian/<source-id>/<vault-relative-path>
@@ -59,13 +66,13 @@ The vault itself is never modified. Recall derives `authority: external` and
 `trust: untrusted` from this URI boundary, regardless of source frontmatter, and
 warns that the result is not authoritative guidance.
 
-Watched refresh is intentionally not part of the initial bridge. Run sync
-explicitly so every refresh goes through the same inventory and reviewable
-safety boundary.
+Background filesystem watching is intentionally not part of the bridge.
+Recall-time refresh keeps the indexed snapshot current while ensuring every
+refresh goes through the same inventory and safety boundary.
 
-After an applied sync, normal CLI and MCP recall searches include matching
-vault notes. Results retain their external/untrusted warnings and canonical
-`threadnote://resources/external/obsidian/...` URI.
+After recall-time refresh or an explicit applied sync, normal CLI and MCP recall
+searches include matching vault notes. Results retain their external/untrusted
+warnings and canonical `threadnote://resources/external/obsidian/...` URI.
 
 ## Publish selected Threadnote memories into Obsidian
 

@@ -16,7 +16,7 @@ import {
   runObsidianSourceAdd,
   runObsidianSourceInventory,
   runObsidianSourceRemove,
-  runObsidianSourceSync,
+  syncObsidianSourcesBeforeRecall,
 } from '../../src/obsidian_source.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -82,7 +82,12 @@ describe('Obsidian zero-plugin bridge', () => {
     expect(inventory.output).toContain('SKIP      Engineering/Secret.md');
     expect(inventory.output).not.toContain('Bridge.md');
 
-    await runEffect(runObsidianSourceSync(config, {apply: true, id: 'engineering'}));
+    const initialSourceSync = await runEffect(syncObsidianSourcesBeforeRecall(config));
+    expect(initialSourceSync.syncedSources).toEqual(['engineering']);
+    expect(await runEffect(syncObsidianSourcesBeforeRecall(config))).toEqual({
+      syncedSources: [],
+      warnings: [expect.stringMatching(/skipped 1 note/)],
+    });
     const externalUri = 'threadnote://resources/external/obsidian/engineering/Engineering/Auth.md';
     expect(
       await runEffect(
@@ -95,6 +100,22 @@ describe('Obsidian zero-plugin bridge', () => {
         }),
       ),
     ).toContain('Use the token mediator');
+    await write(
+      join(vault, 'Engineering', 'Auth.md'),
+      '# Mobile authentication\n\nUse the refreshed token mediator policy.',
+    );
+    expect((await runEffect(syncObsidianSourcesBeforeRecall(config))).syncedSources).toEqual(['engineering']);
+    expect(
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          return yield* store.read(
+            {account: config.account, home: config.agentContextHome, user: config.user},
+            externalUri,
+          );
+        }),
+      ),
+    ).toContain('refreshed token mediator policy');
     const externalRecallIndex = await runEffect(
       loadRecallIndexData(config, {
         includeInactive: false,
@@ -223,6 +244,10 @@ describe('Obsidian zero-plugin bridge', () => {
     await write(userNote, 'This file is not managed by Threadnote.');
     await runEffect(runObsidianProjectionRemove(config, {apply: true, id: 'memory'}));
     expect(await readFile(userNote, 'utf8')).toBe('This file is not managed by Threadnote.');
+    await rm(vault, {force: true, recursive: true});
+    expect((await runEffect(syncObsidianSourcesBeforeRecall(config))).warnings).toEqual([
+      expect.stringMatching(/Auto-sync for Obsidian source "engineering" failed:.*not a directory/i),
+    ]);
     await runEffect(runObsidianSourceRemove(config, {apply: true, id: 'engineering'}));
     await expect(
       runEffect(

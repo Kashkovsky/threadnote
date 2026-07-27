@@ -107,6 +107,7 @@ import {recordRecallFeedback} from './recall/feedback.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
+import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
@@ -1304,6 +1305,17 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
         return Effect.succeed([] as readonly string[]);
       }),
     );
+    const obsidianSyncWarnings: string[] = [];
+    const syncedObsidianSources = yield* syncObsidianSourcesBeforeRecall(config).pipe(
+      Effect.map(syncResult => {
+        obsidianSyncWarnings.push(...syncResult.warnings);
+        return syncResult.syncedSources;
+      }),
+      Effect.catch(error => {
+        obsidianSyncWarnings.push(`Obsidian source refresh failed: ${errorMessage(error)}`);
+        return Effect.succeed([] as readonly string[]);
+      }),
+    );
     const query = yield* enrichRecallQueryWithWorkspaceContext(params.query, {
       cwd: params.callerCwd,
       includeProcessCwd: false,
@@ -1488,7 +1500,13 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     if (syncedTeams.length > 0) {
       sections.push(`Auto-synced shared memories: ${syncedTeams.join(', ')}`);
     }
+    if (syncedObsidianSources.length > 0) {
+      sections.push(`Auto-synced Obsidian sources: ${syncedObsidianSources.join(', ')}`);
+    }
     for (const warning of syncWarnings) {
+      sections.push(`Auto-sync warning: ${warning}`);
+    }
+    for (const warning of obsidianSyncWarnings) {
       sections.push(`Auto-sync warning: ${warning}`);
     }
     if (sections.length === 0) {
