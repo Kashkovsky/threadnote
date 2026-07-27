@@ -9,7 +9,7 @@ isolated under `~/.threadnote/share/teams/` and `~/.threadnote/share/worktrees/`
 threadnote share init git@github.com:org/team-memories.git
 threadnote share status
 threadnote share sync
-threadnote share publish viking://user/me/memories/durable/projects/app/cache.md
+threadnote share publish threadnote://user/me/memories/durable/projects/app/cache.md
 ```
 
 Only active durable memories are publishable. The scrubber blocks credentials, customer-like secrets, and residual

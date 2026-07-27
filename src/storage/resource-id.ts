@@ -24,7 +24,7 @@ const PORTABLE_UNSAFE_CHARACTERS = /[<>:"|?*\\]/;
 export function parseResourceId(input: string): ResourceId {
   const trimmed = input.trim();
   const match = RESOURCE_ID_PATTERN.exec(trimmed);
-  if (!match) return invalid(input, 'expected viking:// or threadnote:// URI syntax');
+  if (!match) return invalid(input, 'expected threadnote:// URI syntax (legacy viking:// aliases are accepted)');
   const inputScheme = match[1]!.toLowerCase() as ResourceIdScheme;
   const namespace = decodeSegment(match[2]!, input, 'namespace');
   const rawPath = match[3] ?? '';
@@ -49,7 +49,7 @@ export function canonicalResourceUri(namespace: string, segments: readonly strin
   for (const segment of segments) validatePortableSegment(segment, segment);
   const path = segments.length > 0 ? `/${segments.map(encodeURIComponent).join('/')}` : '';
   const fragment = anchor ? `#${encodeURIComponent(anchor)}` : '';
-  return `viking://${encodeURIComponent(namespace)}${path}${fragment}`;
+  return `threadnote://${encodeURIComponent(namespace)}${path}${fragment}`;
 }
 
 export function resourceIdWithoutAnchor(resourceId: ResourceId): ResourceId {

@@ -574,7 +574,7 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
-    replace: optionalString('replace', 'Supersede an existing viking:// memory after storing the new memory'),
+    replace: optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     status: defaultChoice('status', ['active', 'archived', 'superseded'], 'Memory lifecycle status', 'active'),
     stdin: boolean('stdin', 'Read memory text from stdin'),
@@ -659,7 +659,7 @@ const recall = Command.make(
     project: optionalString('project', 'Add a scoped project memory pass alongside global search'),
     query: requiredString('query', 'Search query'),
     threshold: optionalString('threshold', 'Minimum relevance score 0-1'),
-    uri: optionalString('uri', 'Restrict search to a viking:// URI'),
+    uri: optionalString('uri', 'Restrict search to a threadnote:// URI'),
     workset: optionalString('workset', 'Recall across a named seed-manifest workset'),
   },
   options => withRuntimeEffect(config => runRecall(config, options)),
@@ -694,10 +694,10 @@ const read = Command.make(
   'read',
   {
     dryRun: boolean('dry-run', 'Print the native read without running it'),
-    uri: argument('uri', 'viking:// URI to read'),
+    uri: argument('uri', 'threadnote:// URI to read'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
-).pipe(Command.withDescription('Read a viking:// URI returned by recall or list'));
+).pipe(Command.withDescription('Read a threadnote:// URI returned by recall or list'));
 
 const list = Command.make(
   'list',
@@ -707,10 +707,10 @@ const list = Command.make(
     nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of nodes to list'), 'n', 'string'),
     recursive: boolean('recursive', 'List subdirectories recursively').pipe(Flag.withAlias('r')),
     simple: boolean('simple', 'Print only paths').pipe(Flag.withAlias('s')),
-    uri: optionalArgument('uri', 'viking:// directory URI', 'viking://'),
+    uri: optionalArgument('uri', 'threadnote:// directory URI', 'threadnote://'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runList(config, uri, options)),
-).pipe(Command.withDescription('List a viking:// directory'), Command.withAlias('ls'));
+).pipe(Command.withDescription('List a threadnote:// directory'), Command.withAlias('ls'));
 
 const handoff = Command.make(
   'handoff',
@@ -722,7 +722,7 @@ const handoff = Command.make(
     nextStep: optionalString('next-step', 'Suggested next step'),
     pr: optionalString('pr', 'Related pull request reference'),
     project: optionalString('project', 'Project/repo namespace; defaults to current repo'),
-    reference: repeatedString('reference', 'Prior viking:// context URI; repeat for multiple'),
+    reference: repeatedString('reference', 'Prior threadnote:// context URI; repeat for multiple'),
     replace: optionalString('replace', 'Supersede an existing memory after storing the handoff'),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     task: optionalString('task', 'Current task summary'),
@@ -740,7 +740,7 @@ const archive = Command.make(
     kind: optionalChoice('kind', ['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory kind'),
     project: optionalString('project', 'Override inferred project/repo namespace'),
     topic: optionalString('topic', 'Override inferred topic'),
-    uri: argument('uri', 'viking:// memory URI to archive'),
+    uri: argument('uri', 'threadnote:// memory URI to archive'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runArchive(config, uri, options)),
 ).pipe(Command.withDescription('Move a memory into the archived lifecycle tree'));
@@ -749,10 +749,10 @@ const forget = Command.make(
   'forget',
   {
     dryRun: boolean('dry-run', 'Print the native delete without running it'),
-    uri: argument('uri', 'viking:// URI to remove'),
+    uri: argument('uri', 'threadnote:// URI to remove'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
-).pipe(Command.withDescription('Remove a viking:// URI from local Threadnote context'));
+).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
 
 const shareInit = Command.make(
   'init',
@@ -793,7 +793,7 @@ const shareConflicts = Command.make(
 const conflictShow = Command.make(
   'show',
   {
-    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared viking:// URI'),
+    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared threadnote:// URI'),
     team: optionalString('team', 'Team name for a relative path'),
   },
   ({conflictId, ...options}) => withRuntimeEffect(config => runShareConflictShow(config, conflictId, options)),
@@ -802,7 +802,7 @@ const conflictShow = Command.make(
 const conflictResolve = Command.make(
   'resolve',
   {
-    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared viking:// URI'),
+    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared threadnote:// URI'),
     dryRun: boolean('dry-run', 'Print actions without writing'),
     fromFile: optionalString('from-file', 'Merged memory markdown to write to both stores'),
     message: optionalString('message', 'Commit message'),
@@ -829,7 +829,7 @@ const publishFlags = {
 
 const sharePublish = Command.make(
   'publish',
-  {...publishFlags, uri: argument('viking-uri', 'Personal viking:// memory URI')},
+  {...publishFlags, uri: argument('resource-uri', 'Personal threadnote:// memory URI')},
   ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
@@ -876,7 +876,7 @@ const shareUnpublish = Command.make(
     message: optionalString('message', 'Commit message override'),
     push: negatedBoolean('push', 'Skip the push step'),
     team: optionalString('team', 'Team name'),
-    uri: argument('viking-uri', 'Shared viking:// memory URI'),
+    uri: argument('resource-uri', 'Shared threadnote:// memory URI'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runShareUnpublish(config, uri, options)),
 ).pipe(Command.withDescription('Pull a shared memory back into the personal namespace'));
@@ -941,7 +941,7 @@ const exportPack = Command.make(
   {
     dryRun: boolean('dry-run', 'Print the native export without running it'),
     path: optionalString('path', 'Output .ovpack path'),
-    uri: optionalString('uri', 'Source viking:// URI; defaults to the current user memories'),
+    uri: optionalString('uri', 'Source threadnote:// URI; defaults to the current user memories'),
   },
   options => withRuntimeEffect(config => runExportPack(config, options)),
 ).pipe(Command.withDescription('Export local Threadnote context to an .ovpack archive'));
@@ -951,7 +951,7 @@ const importPack = Command.make(
   {
     dryRun: boolean('dry-run', 'Print the native import without running it'),
     path: requiredString('path', 'Input .ovpack path'),
-    targetUri: optionalString('target-uri', 'Target parent viking:// URI; defaults to the current user'),
+    targetUri: optionalString('target-uri', 'Target parent threadnote:// URI; defaults to the current user'),
   },
   options => withRuntimeEffect(config => runImportPack(config, options)),
 ).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));

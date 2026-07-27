@@ -47,7 +47,7 @@ import {
   removeMemoryUri,
   resolveTeam,
   sharedTeamNameForUri,
-  vikingUriToWorktreeRelative,
+  resourceUriToWorktreeRelative,
   writeMemoryFile,
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
@@ -64,7 +64,7 @@ import type {
   RuntimeConfig,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   errorMessage,
   findExecutable,
   runCommand,
@@ -277,12 +277,12 @@ export function createManagerServer(
 
 export const memoryTree = Effect.fn('manager.memoryTree')(function* (config: RuntimeConfig) {
   const root = yield* localMemoriesRoot(config);
-  return yield* readTree(config, root, `viking://user/${uriSegment(config.user)}/memories`, '');
+  return yield* readTree(config, root, `threadnote://user/${uriSegment(config.user)}/memories`, '');
 });
 
 export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (config: RuntimeConfig) {
   const root = yield* localResourcesRoot(config);
-  return yield* readTree(config, root, 'viking://resources', '', {
+  return yield* readTree(config, root, 'threadnote://resources', '', {
     parseMemoryDocuments: false,
     rootName: 'resources',
   }).pipe(
@@ -297,14 +297,14 @@ export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (confi
         isSystem: false,
         name: 'resources',
         relativePath: '',
-        uri: 'viking://resources',
+        uri: 'threadnote://resources',
       });
     }),
   );
 });
 
 export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function* (config: RuntimeConfig, uri: string) {
-  assertVikingUri(uri);
+  assertResourceUri(uri);
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
     return yield* Effect.fail(new Error(`Manager can only read current-user memory URIs: ${uri}`));
@@ -341,7 +341,7 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
   uri: string,
   runEffect?: ManagerEffectPromise,
 ) {
-  assertVikingUri(uri);
+  assertResourceUri(uri);
   const localMemory = yield* Effect.result(readManagedMemory(config, uri));
   if (Result.isSuccess(localMemory)) {
     return {
@@ -828,7 +828,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   uri: string,
   content: string,
 ) {
-  assertVikingUri(uri);
+  assertResourceUri(uri);
   const ov = NATIVE_RESOURCE_BACKEND;
   if (isInSharedNamespace(config, uri)) {
     const teamName = sharedTeamNameForUri(config, uri);
@@ -838,7 +838,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
     const team = yield* resolveTeam(config, teamName);
     yield* ensureSharedDirectoryChain(config, ov, uri, false);
     yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
-    const relativePath = vikingUriToWorktreeRelative(config, uri, team.name);
+    const relativePath = resourceUriToWorktreeRelative(config, uri, team.name);
     yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
     return;
   }
@@ -852,7 +852,7 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
   target: TargetMemoryInput,
   runEffect: ManagerEffectPromise | undefined,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const source = yield* readManagedMemory(config, sourceUri);
   const sourceRecord = source.record;
   const text = sourceRecord?.body ?? source.content;
@@ -954,13 +954,13 @@ const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function*
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, targetUri, team.name),
-    `share: move ${vikingUriToWorktreeRelative(config, sourceUri, team.name)} to ${vikingUriToWorktreeRelative(config, targetUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, targetUri, team.name),
+    `share: move ${resourceUriToWorktreeRelative(config, sourceUri, team.name)} to ${resourceUriToWorktreeRelative(config, targetUri, team.name)}`,
   );
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, sourceUri, team.name),
+    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
     {
       verb: 'rm',
     },
@@ -980,8 +980,8 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
   const ov = NATIVE_RESOURCE_BACKEND;
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, sourceUri, team.name),
+    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
     {
       verb: 'rm',
     },
@@ -990,8 +990,8 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
 });
 
 const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (config: RuntimeConfig, uri: string) {
-  assertVikingUri(uri);
-  const rootUri = `viking://user/${uriSegment(config.user)}/memories`;
+  assertResourceUri(uri);
+  const rootUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
     throw new Error('Refusing to remove the root memories folder.');
   }
@@ -1226,7 +1226,7 @@ function consolidationPrompt(sources: readonly {readonly content: string; readon
   return [
     'Consolidate these Threadnote memories into one concise memory.',
     'Return only the replacement memory body in Markdown. Do not include frontmatter.',
-    'Preserve important facts, current status, decisions, blockers, and source viking:// URIs.',
+    'Preserve important facts, current status, decisions, blockers, and source threadnote:// URIs.',
     '',
     ...sources.flatMap(source => [`--- SOURCE ${source.node.uri} ---`, source.content.trim(), '']),
   ].join('\n');
@@ -1344,7 +1344,7 @@ function sharedMemoryUriFor(
   if (metadata.kind !== 'durable') {
     throw new Error('Only durable memories can be moved into shared team memory.');
   }
-  return `viking://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
 }
 
 function memoryDirectoryUri(
@@ -1353,7 +1353,7 @@ function memoryDirectoryUri(
   status: MemoryStatus,
   projectSegment: string,
 ): string {
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   switch (kind) {
     case 'preference':
       return status === 'active' ? `${base}/preferences` : `${base}/preferences/${uriSegment(status)}`;
@@ -1371,26 +1371,18 @@ function memoryDirectoryUri(
 }
 
 const localMemoriesRoot = Effect.fn('manager.localMemoriesRoot')(function* (config: RuntimeConfig) {
-  return yield* pathJoin(
-    config.agentContextHome,
-    'data',
-    'viking',
-    config.account,
-    'user',
-    uriSegment(config.user),
-    'memories',
-  );
+  return yield* pathJoin(config.agentContextHome, 'data', config.account, 'user', uriSegment(config.user), 'memories');
 });
 
 const localResourcesRoot = Effect.fn('manager.localResourcesRoot')(function* (config: RuntimeConfig) {
-  return yield* pathJoin(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+  return yield* pathJoin(config.agentContextHome, 'data', config.account, 'resources');
 });
 
 const localPathForMemoryUri = Effect.fn('manager.localPathForMemoryUri')(function* (
   config: RuntimeConfig,
   uri: string,
 ) {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories`;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri !== prefix && !uri.startsWith(`${prefix}/`)) {
     return undefined;
   }
@@ -1420,7 +1412,7 @@ const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function*
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
     throw new Error(`Path is outside the memories tree: ${path}`);
   }
-  return `viking://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
 });
 
 const ensurePersonalDirectoryChain = Effect.fn('manager.ensurePersonalDirectoryChain')(function* (
@@ -1429,7 +1421,7 @@ const ensurePersonalDirectoryChain = Effect.fn('manager.ensurePersonalDirectoryC
   directoryUri: string,
 ) {
   const store = yield* ResourceStore;
-  const prefix = 'viking://';
+  const prefix = 'threadnote://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {

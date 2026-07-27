@@ -46,7 +46,6 @@ describe('built self-contained distribution', () => {
     const canonical = join(
       home,
       'data',
-      'viking',
       'local',
       'user',
       'e2e-user',

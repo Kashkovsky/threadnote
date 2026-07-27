@@ -44,7 +44,7 @@ function existing(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
       timestamp: '2026-07-22T00:00:00.000Z',
       topic: 'recall-memory-formation',
     },
-    uri: 'viking://user/me/memories/durable/projects/threadnote/recall-memory-formation.md',
+    uri: 'threadnote://user/me/memories/durable/projects/threadnote/recall-memory-formation.md',
     ...overrides,
   };
 }
@@ -120,7 +120,7 @@ describe('candidate-memory formation', () => {
         timestamp: '2026-07-22T00:00:00.000Z',
         topic: 'recall-memory-formation',
       },
-      uri: 'viking://user/me/memories/preferences/recall-memory-formation.md',
+      uri: 'threadnote://user/me/memories/preferences/recall-memory-formation.md',
     });
     const review = await run(
       buildCandidateReview(
@@ -142,7 +142,6 @@ describe('candidate-memory formation', () => {
       const projectDirectory = join(
         scanDirectory,
         'data',
-        'viking',
         'local',
         'user',
         'me',
@@ -182,7 +181,7 @@ describe('candidate-memory formation', () => {
 
   it('normalizes Windows filesystem separators in comparison target URIs', async () => {
     const agentContextHome = 'C:\\context';
-    const projectDirectory = 'C:\\context\\data\\viking\\local\\user\\me\\memories\\durable\\projects\\threadnote';
+    const projectDirectory = 'C:\\context\\data\\local\\user\\me\\memories\\durable\\projects\\threadnote';
     const memoryPath = `${projectDirectory}\\recall.md`;
     const memoryContent = [
       'MEMORY',
@@ -232,11 +231,11 @@ describe('candidate-memory formation', () => {
       ).pipe(Effect.provide(WindowsTestLayer)),
     );
 
-    expect(records[0]?.uri).toBe('viking://user/me/memories/durable/projects/threadnote/recall.md');
+    expect(records[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/threadnote/recall.md');
     expect(review.candidates[0]).toMatchObject({
       comparison: 'duplicate',
       recommendation: 'no_action',
-      targetUri: 'viking://user/me/memories/durable/projects/threadnote/recall.md',
+      targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
     });
   });
 

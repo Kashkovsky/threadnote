@@ -6,6 +6,7 @@ import {
   type MemoryMetadata,
   type MemoryRecord,
 } from './memory_document.js';
+import {parseResourceId} from './storage/resource-id.js';
 import type {MemoryKind, MemoryStatus} from './types.js';
 
 export type CompactableMemoryKind = Extract<MemoryKind, 'durable' | 'handoff' | 'incident'>;
@@ -337,24 +338,27 @@ export function formatReferencedContextPointers(uris: readonly string[], maxUris
 
 export function activePersonalMemoryUrisFromText(text: string, user: string): readonly string[] {
   const userSegment = uriSegment(user);
-  const matches = text.matchAll(/viking:\/\/[^\s)]+/g);
+  const matches = text.matchAll(/(?:threadnote|viking):\/\/[^\s)]+/g);
   const uris: string[] = [];
   for (const match of matches) {
     const uri = match[0]?.replace(/[.,;:]+$/g, '');
-    if (!uri || !parsePersonalMemoryUri(uri, userSegment)) {
+    const canonicalUri = uri ? canonicalResourceInput(uri) : undefined;
+    if (!canonicalUri || !parsePersonalMemoryUri(canonicalUri, userSegment)) {
       continue;
     }
-    uris.push(uri);
+    uris.push(canonicalUri);
   }
   return [...new Set(uris)];
 }
 
 export function parsePersonalMemoryUri(uri: string, user: string): ParsedMemoryUri | undefined {
-  const prefix = `viking://user/${uriSegment(user)}/memories/`;
-  if (!uri.startsWith(prefix) || isSharedMemoryUri(uri)) {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri) return undefined;
+  const prefix = `threadnote://user/${uriSegment(user)}/memories/`;
+  if (!canonicalUri.startsWith(prefix) || isSharedMemoryUri(canonicalUri)) {
     return undefined;
   }
-  const rest = uri.slice(prefix.length);
+  const rest = canonicalUri.slice(prefix.length);
   const parts = rest.split('/').filter(Boolean);
   if (parts.length < 4) {
     return undefined;
@@ -369,6 +373,14 @@ export function parsePersonalMemoryUri(uri: string, user: string): ParsedMemoryU
     return {kind: 'incident', project: parts[2], status: 'active', topic: parts[3].replace(/\.md$/, '')};
   }
   return undefined;
+}
+
+function canonicalResourceInput(uri: string): string | undefined {
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return undefined;
+  }
 }
 
 export function handoffTopicForBranch(

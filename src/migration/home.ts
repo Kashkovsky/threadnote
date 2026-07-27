@@ -1,11 +1,9 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {sha256Hex} from '../effect/digest.js';
-import {
-  LEGACY_OPENVIKING_HOME_DIRECTORY,
-  THREADNOTE_HOME_DIRECTORY,
-  THREADNOTE_STORAGE_LAYOUT_VERSION,
-} from '../storage/layout.js';
-import {SystemInfo} from '../effect/system.js';
+import {sha256FileHex, sha256Hex} from '../effect/digest.js';
+import {LEGACY_OPENVIKING_HOME_DIRECTORY, THREADNOTE_HOME_DIRECTORY} from '../storage/layout.js';
+import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {migrateThreadnoteStorageLayout} from './layout.js';
+import {migrateLegacyLocalModels} from './models.js';
 
 export const HOME_MIGRATION_ID = 'openviking-home-v1';
 export const HOME_MIGRATION_RECEIPT_VERSION = 1 as const;
@@ -27,6 +25,8 @@ const EXCLUDED_LEGACY_PATHS = new Set([
 ]);
 
 const EXCLUDED_LEGACY_THREADNOTE_PATHS = new Set([
+  'data/.openviking.pid',
+  'data/viking/backend_meta.json',
   'threadnote/local-ai-token',
   'threadnote/local-ai.json',
   'threadnote/shared-repository.lock',
@@ -53,7 +53,7 @@ export interface HomeMigrationReceipt {
 }
 
 export interface HomeMigrationResult {
-  readonly action: 'already_migrated' | 'dry_run' | 'migrated' | 'no_legacy_home' | 'resumed';
+  readonly action: 'already_migrated' | 'dry_run' | 'migrated' | 'no_legacy_home' | 'recovered' | 'resumed';
   readonly receipt?: HomeMigrationReceipt;
 }
 
@@ -135,12 +135,18 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
     if (receipt?.legacyHome === legacyHome && receipt.targetHome === targetHome) {
       return {action: 'already_migrated', receipt};
     }
-    return yield* Effect.fail(
-      new HomeMigrationConflict({
-        message: `Target home already exists without a matching ${HOME_MIGRATION_ID} receipt.`,
-        path: targetHome,
-      }),
-    );
+    if (!(yield* fs.exists(legacyHome))) {
+      return {action: 'no_legacy_home'};
+    }
+    if (!(yield* isRecoverableThreadnoteTarget(fs, path, targetHome))) {
+      return yield* Effect.fail(
+        new HomeMigrationConflict({
+          message: `Target home already exists without a matching ${HOME_MIGRATION_ID} receipt or a recognizable Threadnote layout.`,
+          path: targetHome,
+        }),
+      );
+    }
+    return yield* recoverIntoExistingTarget(fs, path, system, legacyHome, targetHome, options.apply === true);
   }
   if (!(yield* fs.exists(legacyHome))) {
     return {action: 'no_legacy_home'};
@@ -202,16 +208,13 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
   }
 
   yield* migrateLegacyShares(fs, path, stage, shareMigrations);
-  const stagedInventory = yield* inventoryHome(fs, path, stage, () => true);
+  yield* migrateThreadnoteStorageLayout({apply: true, home: stage});
+  yield* migrateLegacyLocalModels({apply: true, home: stage});
+  const stagedInventory = yield* inventoryHome(fs, path, stage, relativePath => relativePath !== LAYOUT_RELATIVE_PATH);
   const completedReceipt: HomeMigrationReceipt = {
     ...receipt,
     stagedTreeSha256: stagedInventory.treeSha256,
   };
-  yield* fs.writeFileString(
-    path.join(stage, LAYOUT_RELATIVE_PATH),
-    `${JSON.stringify({version: THREADNOTE_STORAGE_LAYOUT_VERSION}, null, 2)}\n`,
-    {flag: 'wx', mode: 0o600},
-  );
   const receiptPath = path.join(stage, RECEIPT_RELATIVE_PATH);
   yield* fs.makeDirectory(path.dirname(receiptPath), {recursive: true, mode: 0o700});
   yield* fs.writeFileString(receiptPath, `${JSON.stringify(completedReceipt, null, 2)}\n`, {flag: 'wx', mode: 0o600});
@@ -237,7 +240,39 @@ export const migrateOpenVikingHome = (options: HomeMigrationOptions = {}) =>
   >;
 
 export const runHomeMigration = Effect.fn('homeMigration.run')(function* (options: HomeMigrationOptions) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const targetHome = resolveHomeInput(
+    path,
+    system.homeDirectory,
+    options.targetHome ?? path.join(system.homeDirectory, THREADNOTE_HOME_DIRECTORY),
+  );
   const result = yield* migrateOpenVikingHome(options);
+  if (yield* fs.exists(targetHome)) {
+    const layoutResult = yield* migrateThreadnoteStorageLayout({
+      apply: options.apply === true,
+      home: targetHome,
+    });
+    const modelResult = yield* migrateLegacyLocalModels({
+      apply: options.apply === true,
+      home: targetHome,
+    });
+    if (layoutResult.action === 'dry_run') {
+      yield* Console.log(
+        `Would migrate ${layoutResult.accounts} account(s) from the beta.1 canonical-store layout into ~/.threadnote/data.`,
+      );
+    } else if (layoutResult.action === 'migrated' || layoutResult.action === 'resumed') {
+      yield* Console.log(
+        `${layoutResult.action === 'resumed' ? 'Resumed' : 'Migrated'} ${layoutResult.accounts} account(s) into the Threadnote storage layout.`,
+      );
+    }
+    if (modelResult.action === 'dry_run') {
+      yield* Console.log(`Would preserve installed local model(s): ${modelResult.models.join(', ')}.`);
+    } else if (modelResult.action === 'migrated' || modelResult.action === 'resumed') {
+      yield* Console.log(`Preserved installed local model(s): ${modelResult.models.join(', ')}.`);
+    }
+  }
   switch (result.action) {
     case 'already_migrated':
       yield* Console.log(`Threadnote home is already migrated: ${result.receipt?.targetHome}`);
@@ -255,10 +290,274 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
     case 'no_legacy_home':
       yield* Console.log('No legacy ~/.openviking home was found; nothing to migrate.');
       return;
+    case 'recovered':
+      yield* Console.log(
+        `Recovered legacy memories, resources, and share configuration into ${result.receipt?.targetHome}.`,
+      );
+      yield* Console.log(`Legacy home was preserved unchanged: ${result.receipt?.legacyHome}`);
+      return;
     case 'resumed':
       yield* Console.log(`Promoted a previously validated migration: ${result.receipt?.targetHome}`);
   }
 });
+
+function isRecoverableThreadnoteTarget(fs: FileSystem.FileSystem, path: Path.Path, targetHome: string) {
+  return Effect.gen(function* () {
+    const structuralMarkers = ['cache', 'data', 'indexes', 'layout.json', 'migration', 'models', 'share', 'threadnote'];
+    for (const marker of structuralMarkers) {
+      if (yield* fs.exists(path.join(targetHome, marker))) return true;
+    }
+    return false;
+  });
+}
+
+function recoverIntoExistingTarget(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  system: SystemInfoShape,
+  legacyHome: string,
+  targetHome: string,
+  apply: boolean,
+) {
+  return Effect.gen(function* () {
+    yield* fs.access(legacyHome, {readable: true});
+    yield* fs.access(targetHome, {writable: true});
+    const inventory = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
+    const shareMigrations = yield* planLegacyShareMigrations(fs, path, legacyHome, targetHome);
+    const availableBytes = yield* system.availableDiskBytes(targetHome);
+    if (availableBytes !== undefined) {
+      yield* assertSufficientHomeMigrationDiskSpace(
+        inventory.bytes + duplicatedMigrationBytes(inventory, shareMigrations),
+        availableBytes,
+      );
+    }
+    yield* preflightMappedInventory(fs, path, targetHome, inventory);
+    const receipt: HomeMigrationReceipt = {
+      bytes: inventory.bytes,
+      completedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+      directories: inventory.directories,
+      files: inventory.files,
+      id: HOME_MIGRATION_ID,
+      legacyHome,
+      sourceTreeSha256: inventory.treeSha256,
+      symlinks: inventory.symlinks,
+      targetHome,
+      version: HOME_MIGRATION_RECEIPT_VERSION,
+    };
+    if (!apply) {
+      return {action: 'dry_run', receipt} satisfies HomeMigrationResult;
+    }
+
+    yield* copyMappedInventory(fs, path, legacyHome, targetHome, inventory);
+    yield* verifyMappedInventory(fs, path, targetHome, inventory);
+    const sourceAfterCopy = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
+    if (sourceAfterCopy.treeSha256 !== inventory.treeSha256) {
+      return yield* new HomeMigrationConflict({
+        message: 'The legacy home changed during recovery. Copied files were retained; rerun after writes stop.',
+        path: legacyHome,
+      });
+    }
+    yield* migrateLegacySharesIntoExisting(fs, path, targetHome, shareMigrations);
+    yield* migrateThreadnoteStorageLayout({apply: true, home: targetHome});
+    yield* migrateLegacyLocalModels({apply: true, home: targetHome});
+    const targetInventory = yield* inventoryHome(
+      fs,
+      path,
+      targetHome,
+      relativePath => relativePath !== RECEIPT_RELATIVE_PATH,
+    );
+    const completedReceipt: HomeMigrationReceipt = {...receipt, stagedTreeSha256: targetInventory.treeSha256};
+    const receiptPath = path.join(targetHome, RECEIPT_RELATIVE_PATH);
+    yield* fs.makeDirectory(path.dirname(receiptPath), {recursive: true, mode: 0o700});
+    yield* fs.writeFileString(receiptPath, `${JSON.stringify(completedReceipt, null, 2)}\n`, {mode: 0o600});
+    return {action: 'recovered', receipt: completedReceipt} satisfies HomeMigrationResult;
+  });
+}
+
+function preflightMappedInventory(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  targetHome: string,
+  inventory: HomeInventory,
+) {
+  return Effect.gen(function* () {
+    for (const entry of inventory.entries) {
+      if (entry.type !== 'directory' && (yield* hasCurrentBetaEntry(fs, path, targetHome, entry.relativePath))) {
+        continue;
+      }
+      const target = path.join(targetHome, mappedLegacyRelative(entry.relativePath));
+      if (!(yield* fs.exists(target))) continue;
+      if (entry.type === 'directory') {
+        const info = yield* fs.stat(target);
+        if (info.type === 'Directory' && Option.isNone(yield* fs.readLink(target).pipe(Effect.option))) continue;
+      } else if (entry.type === 'file') {
+        const info = yield* fs.stat(target);
+        if (
+          info.type === 'File' &&
+          Number(info.size) === entry.size &&
+          (yield* sha256FileHex(target)) === entry.digest
+        ) {
+          continue;
+        }
+      } else {
+        const link = yield* fs.readLink(target).pipe(Effect.option);
+        if (Option.isSome(link) && (yield* sha256Hex(link.value)) === entry.digest) continue;
+      }
+      return yield* new HomeMigrationConflict({
+        message: `Recovery would overwrite different existing content: ${mappedLegacyRelative(entry.relativePath)}.`,
+        path: target,
+      });
+    }
+  });
+}
+
+function copyMappedInventory(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  sourceRoot: string,
+  targetRoot: string,
+  inventory: HomeInventory,
+) {
+  return Effect.gen(function* () {
+    for (const entry of inventory.entries) {
+      const source = path.join(sourceRoot, entry.relativePath);
+      const target = path.join(targetRoot, mappedLegacyRelative(entry.relativePath));
+      if (entry.type !== 'directory' && (yield* hasCurrentBetaEntry(fs, path, targetRoot, entry.relativePath))) {
+        continue;
+      }
+      if (yield* fs.exists(target)) continue;
+      if (entry.type === 'directory') {
+        yield* fs.makeDirectory(target, {recursive: true, mode: 0o700});
+      } else if (entry.type === 'file') {
+        yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+        const temporary = `${target}.${HOME_MIGRATION_ID}.tmp`;
+        yield* fs.copyFile(source, temporary);
+        yield* fs.chmod(temporary, 0o600 | (entry.mode & 0o100));
+        yield* fs.rename(temporary, target);
+      } else {
+        yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+        yield* fs.symlink(yield* fs.readLink(source), target);
+      }
+    }
+  });
+}
+
+function verifyMappedInventory(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  targetRoot: string,
+  inventory: HomeInventory,
+) {
+  return Effect.gen(function* () {
+    for (const entry of inventory.entries) {
+      if (entry.type === 'directory') continue;
+      if (yield* hasCurrentBetaEntry(fs, path, targetRoot, entry.relativePath)) continue;
+      const target = path.join(targetRoot, mappedLegacyRelative(entry.relativePath));
+      if (entry.type === 'file') {
+        const info = yield* fs.stat(target);
+        if (
+          info.type !== 'File' ||
+          Number(info.size) !== entry.size ||
+          (yield* sha256FileHex(target)) !== entry.digest
+        ) {
+          return yield* new HomeMigrationConflict({
+            message: `Recovered file failed validation: ${mappedLegacyRelative(entry.relativePath)}.`,
+            path: target,
+          });
+        }
+      } else {
+        const link = yield* fs.readLink(target);
+        if ((yield* sha256Hex(link)) !== entry.digest) {
+          return yield* new HomeMigrationConflict({
+            message: `Recovered symbolic link failed validation: ${mappedLegacyRelative(entry.relativePath)}.`,
+            path: target,
+          });
+        }
+      }
+    }
+  });
+}
+
+function mappedLegacyRelative(relativePath: string): string {
+  const portable = portableInput(relativePath);
+  const legacyPrefix = 'data/viking';
+  return portable === legacyPrefix
+    ? 'data'
+    : portable.startsWith(`${legacyPrefix}/`)
+      ? `data/${portable.slice(legacyPrefix.length + 1)}`
+      : portable;
+}
+
+function hasCurrentBetaEntry(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  targetRoot: string,
+  legacyRelativePath: string,
+) {
+  const portable = portableInput(legacyRelativePath);
+  if (mappedLegacyRelative(portable) === portable) return Effect.succeed(false);
+  return fs.exists(path.join(targetRoot, portable));
+}
+
+function migrateLegacySharesIntoExisting(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  targetHome: string,
+  migrations: readonly LegacyShareMigration[],
+) {
+  return Effect.gen(function* () {
+    if (migrations.length === 0) return;
+    const teamsPath = path.join(targetHome, 'share', 'teams.json');
+    const teamsFile = JSON.parse(yield* fs.readFileString(teamsPath)) as {
+      teams?: Record<string, Record<string, unknown>>;
+    };
+    for (const migration of migrations) {
+      const canonicalWorktree = path.join(targetHome, mappedLegacyRelative(migration.sourceWorktreeRelative));
+      const canonicalGitMarker = path.join(canonicalWorktree, '.git');
+      if (yield* fs.exists(canonicalGitMarker)) {
+        yield* fs.remove(canonicalGitMarker, {recursive: true});
+      }
+
+      if (!(yield* fs.exists(migration.finalWorktree))) {
+        const temporaryWorktree = path.join(targetHome, 'share', 'worktrees', `.${migration.name}.migrate`);
+        if (yield* fs.exists(temporaryWorktree)) {
+          yield* fs.remove(temporaryWorktree, {recursive: true});
+        }
+        yield* fs.makeDirectory(path.dirname(temporaryWorktree), {recursive: true, mode: 0o700});
+        yield* fs.copy(migration.sourceWorktree, temporaryWorktree, {preserveTimestamps: true});
+        const temporaryGitMarker = path.join(temporaryWorktree, '.git');
+        if (yield* fs.exists(temporaryGitMarker)) {
+          yield* fs.remove(temporaryGitMarker, {recursive: true});
+        }
+        yield* fs.writeFileString(temporaryGitMarker, `gitdir: ${migration.finalGitdir}\n`, {mode: 0o600});
+        yield* fs.rename(temporaryWorktree, migration.finalWorktree);
+      }
+
+      const targetSourceGitdir = path.join(targetHome, migration.sourceGitdirRelative);
+      if (targetSourceGitdir !== migration.finalGitdir && !(yield* fs.exists(migration.finalGitdir))) {
+        yield* fs.makeDirectory(path.dirname(migration.finalGitdir), {recursive: true, mode: 0o700});
+        yield* fs.copy(migration.sourceGitdir, migration.finalGitdir, {preserveTimestamps: true});
+      }
+      const gitConfigPath = path.join(migration.finalGitdir, 'config');
+      if (yield* fs.exists(gitConfigPath)) {
+        const gitConfig = yield* fs.readFileString(gitConfigPath);
+        yield* fs.writeFileString(
+          gitConfigPath,
+          gitConfig
+            .replaceAll(migration.sourceWorktree, migration.finalWorktree)
+            .replaceAll(migration.sourceGitdir, migration.finalGitdir),
+          {mode: 0o600},
+        );
+      }
+      const entry = teamsFile.teams?.[migration.name];
+      if (entry) {
+        entry.gitdir = migration.finalGitdir;
+        entry.worktree = migration.finalWorktree;
+      }
+    }
+    yield* fs.writeFileString(teamsPath, `${JSON.stringify(teamsFile, null, 2)}\n`, {mode: 0o600});
+  });
+}
 
 function assertSeparateHomes(path: Path.Path, legacyHome: string, targetHome: string): void {
   if (
@@ -324,9 +623,8 @@ function inventoryHome(
             entries.push({digest: '', mode: info.mode, relativePath, size: 0, type: 'directory'});
             yield* visit(absolutePath, relativePath);
           } else if (info.type === 'File') {
-            const content = yield* fs.readFile(absolutePath);
             entries.push({
-              digest: yield* sha256Hex(content),
+              digest: yield* sha256FileHex(absolutePath).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
               mode: info.mode,
               relativePath,
               size: Number(info.size),

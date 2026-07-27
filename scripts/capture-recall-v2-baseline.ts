@@ -6,13 +6,16 @@ import {
   parseRecallEvaluationBaselineV1,
   type RecallEvaluationBaselineV1,
 } from '../src/evaluation/recall-baseline.js';
-import {createRecallEvaluationFixtureV2} from '../src/evaluation/recall-fixture.js';
+import {
+  createRecallEvaluationFixtureV2,
+  serializeRecallEvaluationFixtureV2Identity,
+} from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
 
 const options = parseArguments(process.argv.slice(2));
 const fixture = createRecallEvaluationFixtureV2();
-const fixtureHash = createHash('sha256').update(JSON.stringify(fixture)).digest('hex');
+const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 const result = evaluateRecallRunV2(
   fixture,
   runLexicalRecallEvaluationV2(fixture, {

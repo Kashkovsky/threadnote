@@ -1,9 +1,9 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {THREADNOTE_MCP_NAME} from './constants.js';
-import {maybeRunEffect} from './effect/command.js';
+import {maybeRunEffect, runCommandEffect} from './effect/command.js';
 import {SystemInfo} from './effect/system.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './mcp_toolset.js';
-import type {AgentClient, ClaudeMcpScope, JsonObject, McpInstallOptions, RuntimeConfig} from './types.js';
+import type {AgentClient, ClaudeMcpScope, DoctorCheck, JsonObject, McpInstallOptions, RuntimeConfig} from './types.js';
 import {
   ensureDirectory,
   exists,
@@ -64,6 +64,60 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
       cwd: removeCommand.cwd,
     });
     yield* maybeRunEffect(false, command.executable, command.args, {cwd: command.cwd});
+  });
+}
+
+export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(function* () {
+  const checks: DoctorCheck[] = [];
+  for (const agent of ['codex', 'claude'] as const) {
+    const executable = yield* findMcpAgentExecutable(agent);
+    if (!executable) continue;
+    const result = yield* runCommandEffect(executable, ['mcp', 'get', THREADNOTE_MCP_NAME], {
+      allowFailure: true,
+      maxOutputBytes: 64 * 1024,
+      timeoutMs: 5_000,
+    }).pipe(Effect.option);
+    const configured = result._tag === 'Some' && result.value.exitCode === 0;
+    checks.push({
+      detail: configured
+        ? `${THREADNOTE_MCP_NAME} server configured`
+        : `missing or unreadable; repair will configure ${THREADNOTE_MCP_NAME}`,
+      name: `${agent} MCP`,
+      status: configured ? 'ok' : 'warn',
+    });
+  }
+
+  if (yield* isCursorAvailable()) {
+    checks.push(yield* jsonMcpConfigurationCheck('cursor MCP', yield* cursorMcpConfigPath(), 'mcpServers'));
+  }
+  if (yield* isCopilotAvailable()) {
+    checks.push(yield* jsonMcpConfigurationCheck('copilot MCP', yield* copilotMcpConfigPath(), 'servers'));
+  }
+  if (checks.length === 0) {
+    checks.push({
+      detail: 'no supported agent client detected; run threadnote mcp-install <agent> --apply',
+      name: 'MCP configuration',
+      status: 'warn',
+    });
+  }
+  return checks;
+});
+
+function jsonMcpConfigurationCheck(name: string, configPath: string, containerKey: 'mcpServers' | 'servers') {
+  return Effect.gen(function* () {
+    const raw = yield* readFileIfExists(configPath);
+    const parsed = raw ? parseJsonConfigObject(raw) : undefined;
+    const container = parsed?.[containerKey];
+    const configured =
+      typeof container === 'object' &&
+      container !== null &&
+      !Array.isArray(container) &&
+      THREADNOTE_MCP_NAME in container;
+    return {
+      detail: configured ? `${THREADNOTE_MCP_NAME} server configured in ${configPath}` : `${configPath} missing entry`,
+      name,
+      status: configured ? ('ok' as const) : ('warn' as const),
+    };
   });
 }
 

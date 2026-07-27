@@ -5,8 +5,8 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
 
-const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
-const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
+const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+const targetUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
 
 interface TextContent {
   readonly text: string;
@@ -15,11 +15,10 @@ interface TextContent {
 
 async function makeHome(root: string): Promise<string> {
   const home = join(root, 'home');
-  const worktree = join(home, 'data', 'viking', 'local', 'user', 'test-user', 'memories', 'shared', 'default');
+  const worktree = join(home, 'data', 'local', 'user', 'test-user', 'memories', 'shared', 'default');
   const sourcePath = join(
     home,
     'data',
-    'viking',
     'local',
     'user',
     'test-user',
@@ -81,7 +80,6 @@ async function makeFakeBin(root: string, options: {readonly mutateSourceOnCommit
     root,
     'home',
     'data',
-    'viking',
     'local',
     'user',
     'test-user',
@@ -181,7 +179,6 @@ describe('Threadnote MCP share_publish', () => {
     const sourcePath = join(
       home,
       'data',
-      'viking',
       'local',
       'user',
       'test-user',

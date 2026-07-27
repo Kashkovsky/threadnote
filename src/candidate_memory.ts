@@ -298,7 +298,6 @@ export const readActiveProjectMemories = Effect.fn('candidate.readActiveProjectM
   const root = pathService.join(
     config.agentContextHome,
     'data',
-    'viking',
     config.account,
     'user',
     uriSegment(config.user),
@@ -330,7 +329,10 @@ export const readActiveProjectMemories = Effect.fn('candidate.readActiveProjectM
       Effect.gen(function* () {
         const content = yield* fs.readFileString(path);
         const relative = pathService.relative(root, path).split(pathService.sep).join('/');
-        const record = parseMemoryDocument(`viking://user/${uriSegment(config.user)}/memories/${relative}`, content);
+        const record = parseMemoryDocument(
+          `threadnote://user/${uriSegment(config.user)}/memories/${relative}`,
+          content,
+        );
         return record?.metadata.status === 'active' &&
           (record.metadata.project === project || record.metadata.kind === 'preference')
           ? record

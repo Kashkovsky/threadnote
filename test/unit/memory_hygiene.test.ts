@@ -52,13 +52,13 @@ function record(
 describe('buildCompactPlan', () => {
   it('keeps one exact duplicate and forgets redundant copies', () => {
     const stable = record({
-      uri: 'viking://user/me/memories/durable/projects/mobile-native/mobile-auth.md',
+      uri: 'threadnote://user/me/memories/durable/projects/mobile-native/mobile-auth.md',
       headerTitle: 'MEMORY',
       metadata: {kind: 'durable', topic: 'mobile-auth', timestamp: '2026-05-20T00:00:00.000Z'},
       body: 'Shared auth contract.',
     });
     const duplicate = record({
-      uri: 'viking://user/me/memories/durable/projects/mobile-native/threadnote-2026.md',
+      uri: 'threadnote://user/me/memories/durable/projects/mobile-native/threadnote-2026.md',
       headerTitle: 'MEMORY',
       metadata: {kind: 'durable', topic: 'mobile-auth', timestamp: '2026-05-19T00:00:00.000Z'},
       body: 'Shared auth contract.',
@@ -75,12 +75,12 @@ describe('buildCompactPlan', () => {
 
   it('archives older non-exact handoffs for the same group', () => {
     const oldHandoff = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/threadnote-old.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/threadnote-old.md',
       metadata: {timestamp: '2026-05-19T00:00:00.000Z'},
       body: 'task: first pass',
     });
     const newHandoff = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
       metadata: {timestamp: '2026-05-21T00:00:00.000Z'},
       body: 'task: latest status',
     });
@@ -96,17 +96,17 @@ describe('buildCompactPlan', () => {
 
   it('handles handoff groups with both duplicates and newer different content', () => {
     const duplicateA = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/threadnote-a.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/threadnote-a.md',
       metadata: {timestamp: '2026-05-19T00:00:00.000Z'},
       body: 'task: old',
     });
     const duplicateB = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/threadnote-b.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/threadnote-b.md',
       metadata: {timestamp: '2026-05-19T01:00:00.000Z'},
       body: 'task: old',
     });
     const latest = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
       metadata: {timestamp: '2026-05-21T00:00:00.000Z'},
       body: 'task: latest status',
     });
@@ -123,13 +123,13 @@ describe('buildCompactPlan', () => {
 
   it('leaves non-exact durable memories for manual review', () => {
     const left = record({
-      uri: 'viking://user/me/memories/durable/projects/mobile-native/mobile-auth.md',
+      uri: 'threadnote://user/me/memories/durable/projects/mobile-native/mobile-auth.md',
       headerTitle: 'MEMORY',
       metadata: {kind: 'durable', topic: 'mobile-auth'},
       body: 'Contract A.',
     });
     const right = record({
-      uri: 'viking://user/me/memories/durable/projects/mobile-native/threadnote-new.md',
+      uri: 'threadnote://user/me/memories/durable/projects/mobile-native/threadnote-new.md',
       headerTitle: 'MEMORY',
       metadata: {kind: 'durable', topic: 'mobile-auth', timestamp: '2026-05-21T00:00:00.000Z'},
       body: 'Contract B.',
@@ -145,7 +145,7 @@ describe('buildCompactPlan', () => {
 
   it('reports stale singleton handoffs without mutating them', () => {
     const stale = record({
-      uri: 'viking://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
       metadata: {timestamp: '2026-05-01T00:00:00.000Z'},
       body: 'status: PR OPEN. Awaiting review.',
     });
@@ -161,7 +161,7 @@ describe('buildCompactPlan', () => {
 
 describe('memoryContentWithHygieneSources', () => {
   it('strips self-supersedes while preserving source URIs', () => {
-    const uri = 'viking://user/me/memories/handoffs/active/mobile-native/mobile-auth.md';
+    const uri = 'threadnote://user/me/memories/handoffs/active/mobile-native/mobile-auth.md';
     const input = record({
       content: [
         'HANDOFF',
@@ -189,8 +189,8 @@ describe('memoryContentWithHygieneSources', () => {
 describe('recallHygieneNudges', () => {
   it('returns no hint below thresholds', () => {
     const text = [
-      'viking://user/me/memories/handoffs/active/mobile-native/a.md',
-      'viking://user/me/memories/handoffs/active/mobile-native/b.md',
+      'threadnote://user/me/memories/handoffs/active/mobile-native/a.md',
+      'threadnote://user/me/memories/handoffs/active/mobile-native/b.md',
     ].join('\n');
 
     expect(recallHygieneNudges(text, {user: 'me'})).toEqual([]);
@@ -199,7 +199,7 @@ describe('recallHygieneNudges', () => {
   it('nudges for overlapping active memories', () => {
     const records = [1, 2, 3].map(index =>
       record({
-        uri: `viking://user/me/memories/handoffs/active/mobile-native/threadnote-${index}.md`,
+        uri: `threadnote://user/me/memories/handoffs/active/mobile-native/threadnote-${index}.md`,
       }),
     );
 
@@ -211,12 +211,12 @@ describe('recallHygieneNudges', () => {
   it('nudges for many active project handoffs but ignores archived/shared/resources', () => {
     const active = Array.from(
       {length: 10},
-      (_, index) => `viking://user/me/memories/handoffs/active/mobile-native/topic-${index}.md`,
+      (_, index) => `threadnote://user/me/memories/handoffs/active/mobile-native/topic-${index}.md`,
     );
     const ignored = [
-      'viking://user/me/memories/handoffs/archived/mobile-native/topic.md',
-      'viking://user/me/memories/shared/default/durable/projects/mobile-native/topic.md',
-      'viking://resources/repos/mobile-native/README.md',
+      'threadnote://user/me/memories/handoffs/archived/mobile-native/topic.md',
+      'threadnote://user/me/memories/shared/default/durable/projects/mobile-native/topic.md',
+      'threadnote://resources/repos/mobile-native/README.md',
     ];
 
     expect(recallHygieneNudges([...active, ...ignored].join('\n'), {user: 'me'})).toEqual([
@@ -246,12 +246,12 @@ describe('formatCompactPlan', () => {
     const plan = buildCompactPlan(
       [
         record({
-          uri: 'viking://user/me/memories/handoffs/active/mobile-native/old.md',
+          uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/old.md',
           metadata: {timestamp: '2026-05-19T00:00:00.000Z'},
           body: 'task: old',
         }),
         record({
-          uri: 'viking://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
+          uri: 'threadnote://user/me/memories/handoffs/active/mobile-native/mobile-auth.md',
           metadata: {timestamp: '2026-05-20T00:00:00.000Z'},
           body: 'task: new',
         }),
@@ -274,37 +274,40 @@ describe('references relation', () => {
       'topic: my-branch',
       'source_agent_client: codex',
       'timestamp: 2026-07-02T00:00:00.000Z',
-      'references: viking://user/me/memories/durable/projects/threadnote/design.md',
-      'references: viking://user/me/memories/handoffs/active/threadnote/prior.md',
+      'references: threadnote://user/me/memories/durable/projects/threadnote/design.md',
+      'references: threadnote://user/me/memories/handoffs/active/threadnote/prior.md',
       '',
       'task: keep going',
     ].join('\n');
-    const parsed = parseMemoryDocument('viking://user/me/memories/handoffs/active/threadnote/my-branch.md', content);
+    const parsed = parseMemoryDocument(
+      'threadnote://user/me/memories/handoffs/active/threadnote/my-branch.md',
+      content,
+    );
     expect(parsed?.metadata.references).toEqual([
-      'viking://user/me/memories/durable/projects/threadnote/design.md',
-      'viking://user/me/memories/handoffs/active/threadnote/prior.md',
+      'threadnote://user/me/memories/durable/projects/threadnote/design.md',
+      'threadnote://user/me/memories/handoffs/active/threadnote/prior.md',
     ]);
   });
 
   it('leaves references undefined when absent', () => {
     const content = ['MEMORY', 'kind: durable', 'status: active', 'project: x', '', 'body'].join('\n');
-    const parsed = parseMemoryDocument('viking://user/me/memories/durable/projects/x/a.md', content);
+    const parsed = parseMemoryDocument('threadnote://user/me/memories/durable/projects/x/a.md', content);
     expect(parsed?.metadata.references).toBeUndefined();
   });
 
   it('collects referenced uris off records, skipping ones already surfaced', () => {
     const withRefs = record({
-      uri: 'viking://user/me/memories/handoffs/active/threadnote/branch.md',
+      uri: 'threadnote://user/me/memories/handoffs/active/threadnote/branch.md',
       metadata: {
         references: [
-          'viking://user/me/memories/durable/projects/threadnote/design.md',
-          'viking://user/me/memories/durable/projects/threadnote/shown.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/design.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/shown.md',
         ],
       },
     });
-    const recallOutput = 'surfaced: viking://user/me/memories/durable/projects/threadnote/shown.md';
+    const recallOutput = 'surfaced: threadnote://user/me/memories/durable/projects/threadnote/shown.md';
     expect(referencedUrisFromRecords([withRefs], recallOutput)).toEqual([
-      'viking://user/me/memories/durable/projects/threadnote/design.md',
+      'threadnote://user/me/memories/durable/projects/threadnote/design.md',
     ]);
   });
 
@@ -312,15 +315,15 @@ describe('references relation', () => {
     expect(
       formatReferencedContextPointers(
         [
-          'viking://user/me/memories/durable/projects/threadnote/first.md',
-          'viking://user/me/memories/durable/projects/threadnote/second.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/first.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/second.md',
         ],
         1,
       ),
     ).toBe(
       [
         'Referenced read-only context (one-way pointers from surfaced memories):',
-        '- viking://user/me/memories/durable/projects/threadnote/first.md',
+        '- threadnote://user/me/memories/durable/projects/threadnote/first.md',
         '- … 1 more referenced memory omitted',
       ].join('\n'),
     );

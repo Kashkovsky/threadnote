@@ -4,6 +4,7 @@ import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 import {canonicalMemoryDocumentContent} from './memory_document.js';
 import {ResourceStore} from './effect/resource-store.js';
+import {parseResourceId} from './storage/resource-id.js';
 import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 import type {
   ShareAgentArtifactAgent,
@@ -29,7 +30,7 @@ import type {
   ShareUnpublishOptions,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   ensureDirectory,
   exists,
   expandPath,
@@ -1189,16 +1190,17 @@ const parseShareConflictReference = Effect.fn('share.parseShareConflictReference
 ) {
   const trimmed = reference.trim();
   if (!trimmed) {
-    throw new Error('Provide a conflict id, relative path, or viking:// shared memory URI.');
+    throw new Error('Provide a conflict id, relative path, or threadnote:// shared memory URI.');
   }
-  if (trimmed.startsWith('viking://')) {
-    const teamName = sharedTeamNameForUri(config, trimmed);
+  const canonicalReference = canonicalResourceInput(trimmed);
+  if (canonicalReference) {
+    const teamName = sharedTeamNameForUri(config, canonicalReference);
     if (!teamName) {
       throw new Error(`Shared memory URI does not include a configured team: ${trimmed}`);
     }
     const team = yield* resolveTeam(config, optionTeam ?? teamName);
     return {
-      relativePath: assertSafeShareRelativePath(vikingUriToWorktreeRelative(config, trimmed, team.name)),
+      relativePath: assertSafeShareRelativePath(resourceUriToWorktreeRelative(config, canonicalReference, team.name)),
       team,
     };
   }
@@ -1259,7 +1261,7 @@ const inspectShareConflict = Effect.fn('share.inspectShareConflict')(function* (
   change: ChangedFile,
 ) {
   const ov = NATIVE_RESOURCE_BACKEND;
-  const uri = yield* workfileToVikingUri(config, team.config, change.path);
+  const uri = yield* workfileToResourceUri(config, team.config, change.path);
   const localContent = yield* readOptionalMemoryContent(config, ov, uri);
   const shared = yield* readOptionalSharedConflictContent(uri, change);
   const previous = yield* readOptionalPreviousConflictContent(team.config.worktree, uri, change);
@@ -1324,7 +1326,7 @@ const readOptionalMemoryContent = Effect.fn('share.readOptionalMemoryContent')(f
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
+  if (!(yield* resourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
@@ -1722,7 +1724,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   sourceUri: string,
   options: SharePublishOptions,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
   const preview = options.preview === true;
@@ -1759,7 +1761,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     );
   }
   const worktree = team.config.worktree;
-  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
   const message = options.message ?? `share: publish ${relativePath}`;
   const publish = Effect.fn('share.callback')(function* () {
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
@@ -1771,7 +1773,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
       );
     }
-    if (!dryRun && (yield* vikingResourceExists(ov, config, targetUri))) {
+    if (!dryRun && (yield* resourceExists(ov, config, targetUri))) {
       throw new Error(
         `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
       );
@@ -1860,7 +1862,7 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   const scrub = applyScrubber(rawContent, {redact: options.redact === true});
   const relativePath = sharedArtifactRelativePath(artifact);
   const targetPath = yield* pathJoin(team.config.worktree, ...relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   const messages: string[] = [
     `${preview ? 'Previewing' : dryRun ? 'Would share' : 'Sharing'} ${artifact.kind} ${artifact.agent}/${artifact.name}`,
     `Source: ${yield* portablePath(resolvedSourcePath)}`,
@@ -1914,7 +1916,7 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   }
 
   const ov = NATIVE_RESOURCE_BACKEND;
-  const ovHasResource = !dryRun && (yield* vikingResourceExists(ov, config, targetUri));
+  const ovHasResource = !dryRun && (yield* resourceExists(ov, config, targetUri));
   yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun, {quiet: true});
   yield* writeMemoryFile(config, ov, targetUri, content, ovHasResource ? 'replace' : 'create', dryRun, {quiet: true});
 
@@ -1950,7 +1952,7 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const skillRootRelative = `${SHAREABLE_ARTIFACT_DIR}/skills/${artifact.agent}/${artifact.name}`;
   const skillRootTargetDir = yield* pathJoin(team.config.worktree, ...skillRootRelative.split('/'));
   const skillMdTargetPath = yield* pathJoin(skillRootTargetDir, 'SKILL.md');
-  const skillMdTargetUri = yield* workfileToVikingUri(config, team.config, skillMdTargetPath);
+  const skillMdTargetUri = yield* workfileToResourceUri(config, team.config, skillMdTargetPath);
   const skillRootTargetUri = parentUri(skillMdTargetUri);
   const skillMdSourcePath = yield* pathJoin(skillDir, 'SKILL.md');
 
@@ -2034,7 +2036,7 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const markdownMembers = orderSkillMdFirst(prepared.filter(entry => entry.relativePath.endsWith('.md')));
   const otherMembers = prepared.filter(entry => !entry.relativePath.endsWith('.md'));
   for (const entry of markdownMembers) {
-    const ovHasResource = yield* vikingResourceExists(ov, config, entry.targetUri);
+    const ovHasResource = yield* resourceExists(ov, config, entry.targetUri);
     yield* ensureSharedDirectoryChain(config, ov, entry.targetUri, dryRun, {quiet: true});
     yield* writeMemoryFile(
       config,
@@ -2085,7 +2087,7 @@ const prepareBundleMember = Effect.fn('share.prepareBundleMember')(function* (
 ) {
   const buffer = yield* readFile(member.absolutePath);
   const targetPath = yield* pathJoin(skillRootTargetDir, ...member.relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   if (isProbablyBinary(buffer)) {
     const credential = detectBinaryCredential(buffer);
     const blocker =
@@ -2439,7 +2441,7 @@ const preparePackMember = Effect.fn('share.preparePackMember')(function* (
 ) {
   const buffer = yield* readFile(member.absolutePath);
   const targetPath = yield* pathJoin(filesTargetDir, ...member.relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   if (isProbablyBinary(buffer)) {
     // Binary members cannot be tokenized or scrubbed, so an embedded credential
     // or machine-local path can never be neutralized — block rather than ship it
@@ -2601,7 +2603,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const filesTargetDir = yield* pathJoin(team.config.worktree, ...filesRelative.split('/'));
   const packRootTargetDir = yield* pathJoin(team.config.worktree, ...packRootRelative.split('/'));
   const indexTargetPath = yield* pathJoin(team.config.worktree, ...indexRelative.split('/'));
-  const indexTargetUri = yield* workfileToVikingUri(config, team.config, indexTargetPath);
+  const indexTargetUri = yield* workfileToResourceUri(config, team.config, indexTargetPath);
 
   const prepared = yield* Effect.all(
     members.map(member => preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options)),
@@ -2732,7 +2734,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
         worktreePath: string,
       ) {
         const priorBytes = yield* readFileBytesIfExists(worktreePath);
-        const hadResource = yield* vikingResourceExists(ov, config, uri);
+        const hadResource = yield* resourceExists(ov, config, uri);
         yield* ensureSharedDirectoryChain(config, ov, uri, dryRun, {quiet: true});
         yield* writeMemoryFile(config, ov, uri, content, hadResource ? 'replace' : 'create', dryRun, {quiet: true});
         rollbacks.push(
@@ -2741,7 +2743,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
               yield* writeMemoryFile(config, ov, uri, new TextDecoder().decode(priorBytes), 'replace', false, {
                 quiet: true,
               });
-            } else if (yield* vikingResourceExists(ov, config, uri)) {
+            } else if (yield* resourceExists(ov, config, uri)) {
               yield* removeMemoryUri(config, ov, uri, false, {quiet: true});
             }
           }),
@@ -2807,14 +2809,14 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
         // removal failure must not abort the publish (which would leave a staged
         // deletion behind for a later sync); surface it as a warning instead.
         if (stale.endsWith('.md')) {
-          const staleUri = yield* workfileToVikingUri(
+          const staleUri = yield* workfileToResourceUri(
             config,
             team.config,
             yield* pathJoin(team.config.worktree, ...stale.split('/')),
           );
           const pruneResult = yield* Effect.result(
             Effect.gen(function* () {
-              if (yield* vikingResourceExists(ov, config, staleUri)) {
+              if (yield* resourceExists(ov, config, staleUri)) {
                 yield* removeMemoryUri(config, ov, staleUri, dryRun, {quiet: true});
               }
             }),
@@ -2975,7 +2977,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   sourceUri: string,
   options: ShareUnpublishOptions,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
   if (!isInTeamNamespace(config, sourceUri, team.name)) {
@@ -2984,7 +2986,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   const ov = NATIVE_RESOURCE_BACKEND;
   const content = yield* readMemoryContent(config, ov, sourceUri, dryRun);
   const targetUri = personalUriFor(config, sourceUri, team.name);
-  if (!dryRun && (yield* vikingResourceExists(ov, config, targetUri))) {
+  if (!dryRun && (yield* resourceExists(ov, config, targetUri))) {
     throw new Error(
       `Refusing to unpublish: a personal memory already exists at ${targetUri}. Move or forget it first, then retry.`,
     );
@@ -2992,7 +2994,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
 
   const worktree = team.config.worktree;
-  const relativePath = vikingUriToWorktreeRelative(config, sourceUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, sourceUri, team.name);
   const message = options.message ?? `share: unpublish ${relativePath}`;
   const gitMessages = yield* publishShareGitChange(worktree, relativePath, message, {
     dryRun,
@@ -3132,7 +3134,7 @@ export const runShareRename = Effect.fn('share.runShareRename')(function* (
   yield* removeMemoryUri(
     config,
     ov,
-    `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
+    `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
     false,
   );
   yield* Console.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
@@ -3228,7 +3230,7 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
     if (!rel.startsWith('durable/')) {
       continue;
     }
-    const targetUri = `viking://user/${uriSegment(config.user)}/memories/${rel}`;
+    const targetUri = `threadnote://user/${uriSegment(config.user)}/memories/${rel}`;
     const content = yield* readFile(file, 'utf8');
     if (dryRun) {
       yield* Console.log(`Would preserve ${rel} -> ${targetUri}`);
@@ -3247,7 +3249,7 @@ const ensurePersonalDirectoryChain = Effect.fn('share.ensurePersonalDirectoryCha
   directoryUri: string,
 ) {
   const store = yield* ResourceStore;
-  const prefix = 'viking://';
+  const prefix = 'threadnote://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {
@@ -3382,7 +3384,7 @@ const ingestWorktreeFiles = Effect.fn('share.ingestWorktreeFiles')(function* (
   const ov = NATIVE_RESOURCE_BACKEND;
   const files = yield* walkMemoryFiles(team.worktree);
   for (const file of files) {
-    const uri = yield* workfileToVikingUri(config, team, file);
+    const uri = yield* workfileToResourceUri(config, team, file);
     yield* ensureSharedDirectoryChain(config, ov, uri, false);
     yield* ingestSingleFile(ov, config, uri, file, initialMode);
   }
@@ -3430,13 +3432,13 @@ const walkMemoryFiles = Effect.fn('share.walkMemoryFiles')(function* (root: stri
   return out;
 });
 
-const workfileToVikingUri = Effect.fn('share.workfileToVikingUri')(function* (
+const workfileToResourceUri = Effect.fn('share.workfileToResourceUri')(function* (
   config: ShareRuntime,
   team: ShareTeamConfig,
   filePath: string,
 ) {
   const rel = (yield* pathRelative(team.worktree, filePath)).split(yield* pathSeparator).join('/');
-  return `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team.name}/${rel}`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team.name}/${rel}`;
 });
 
 export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean {
@@ -3444,20 +3446,24 @@ export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean 
 }
 
 export function sharedTeamNameForUri(config: ShareRuntime, uri: string): string | undefined {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!uri.startsWith(prefix)) {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri) return undefined;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     return undefined;
   }
-  const [team] = uri.slice(prefix.length).split('/');
+  const [team] = canonicalUri.slice(prefix.length).split('/');
   return team || undefined;
 }
 
 export function sharedMemoryUriParts(config: ShareRuntime, uri: string): SharedMemoryUriParts | undefined {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!uri.startsWith(prefix)) {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri) return undefined;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     return undefined;
   }
-  const [team, kind, scope, project, ...topicParts] = uri.slice(prefix.length).split('/');
+  const [team, kind, scope, project, ...topicParts] = canonicalUri.slice(prefix.length).split('/');
   if (!team) {
     return undefined;
   }
@@ -3474,33 +3480,40 @@ export function sharedMemoryUriParts(config: ShareRuntime, uri: string): SharedM
 }
 
 function isInTeamNamespace(config: ShareRuntime, uri: string, team: string): boolean {
-  return uri.startsWith(`viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`);
+  return (
+    canonicalResourceInput(uri)?.startsWith(
+      `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`,
+    ) === true
+  );
 }
 
 export function sharedUriFor(config: ShareRuntime, personalUri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
-  if (!personalUri.startsWith(prefix)) {
+  const canonicalUri = parseResourceId(personalUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`Refusing to publish memory outside the current user namespace: ${personalUri}`);
   }
-  const rest = personalUri.slice(prefix.length);
+  const rest = canonicalUri.slice(prefix.length);
   return `${prefix}${SHARED_SEGMENT}/${team}/${rest}`;
 }
 
 function personalUriFor(config: ShareRuntime, sharedUri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
-  if (!sharedUri.startsWith(prefix)) {
+  const canonicalUri = parseResourceId(sharedUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`Refusing to unpublish a URI outside team "${team}" shared namespace: ${sharedUri}`);
   }
-  const rest = sharedUri.slice(prefix.length);
-  return `viking://user/${uriSegment(config.user)}/memories/${rest}`;
+  const rest = canonicalUri.slice(prefix.length);
+  return `threadnote://user/${uriSegment(config.user)}/memories/${rest}`;
 }
 
-export function vikingUriToWorktreeRelative(config: ShareRuntime, uri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
-  if (!uri.startsWith(prefix)) {
+export function resourceUriToWorktreeRelative(config: ShareRuntime, uri: string, team: string): string {
+  const canonicalUri = parseResourceId(uri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`URI ${uri} is not inside team "${team}" shared subtree.`);
   }
-  return uri.slice(prefix.length);
+  return canonicalUri.slice(prefix.length);
 }
 
 const isRegularFileNoSymlink = Effect.fn('share.isRegularFileNoSymlink')(function* (path: string) {
@@ -4309,7 +4322,7 @@ const printShareArtifactResult = Effect.fn('share.printShareArtifactResult')(fun
 /**
  * Removes personal lifecycle, candidate, session, evidence, and relation
  * provenance from the header block before a memory is published to a team's
- * shared git repo. Personal viking:// URIs do not resolve for teammates, and
+ * shared git repo. Personal threadnote:// URIs do not resolve for teammates, and
  * candidate/session IDs are local workflow state rather than durable knowledge.
  * Defence-in-depth: even if a producer accidentally retains local provenance,
  * it stops here.
@@ -4386,16 +4399,25 @@ export function parentUri(uri: string): string {
 }
 
 export function sharedDirectoryChain(config: ShareRuntime, directoryUri: string): readonly string[] {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!directoryUri.startsWith(prefix)) {
-    return [directoryUri];
+  const canonicalUri = parseResourceId(directoryUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
+    return [canonicalUri];
   }
-  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
+  const parts = canonicalUri.slice(prefix.length).split('/').filter(Boolean);
   const chain: string[] = [];
   for (let index = 1; index <= parts.length; index += 1) {
     chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
   }
   return chain;
+}
+
+function canonicalResourceInput(uri: string): string | undefined {
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return undefined;
+  }
 }
 
 export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
@@ -4485,7 +4507,7 @@ export const removeMemoryUri = Effect.fn('share.removeMemoryUri')(function* (
   yield* store.remove(resourceStoreLocation(config), uri).pipe(Effect.catchTag('ResourceNotFound', () => Effect.void));
 });
 
-export const vikingResourceExists = Effect.fn('share.vikingResourceExists')(function* (
+export const resourceExists = Effect.fn('share.resourceExists')(function* (
   _ov: string,
   config: ShareRuntime,
   uri: string,
@@ -4696,7 +4718,7 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
     if (!isShareableMemoryChange(change)) {
       continue;
     }
-    const uri = yield* workfileToVikingUri(config, team, change.path);
+    const uri = yield* workfileToResourceUri(config, team, change.path);
     const applyResult = yield* Effect.result(
       Effect.gen(function* () {
         if (change.status === 'removed') {
@@ -4753,13 +4775,13 @@ const readExistingMemoryContent = Effect.fn('share.readExistingMemoryContent')(f
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
+  if (!(yield* resourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
 });
 
-const vikingResourceExistsStrict = Effect.fn('share.vikingResourceExistsStrict')(function* (
+const resourceExistsStrict = Effect.fn('share.resourceExistsStrict')(function* (
   _ov: string,
   config: ShareRuntime,
   uri: string,

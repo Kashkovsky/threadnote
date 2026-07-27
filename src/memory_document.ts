@@ -1,4 +1,5 @@
 import type {MemoryKind, MemoryStatus} from './types.js';
+import {parseResourceId} from './storage/resource-id.js';
 
 export type MemoryAuthority = 'agent_generated' | 'canonical_repo' | 'external' | 'reviewed_shared' | 'user_approved';
 
@@ -86,15 +87,15 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
     content: trimmed,
     headerTitle: firstLine,
     metadata: {
-      archivedFrom: memoryHeaderValue(header, 'archived_from'),
+      archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
       authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
       candidateId: memoryHeaderValue(header, 'candidate_id'),
-      evidence: memoryHeaderValues(header, 'evidence'),
+      evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
       kind,
       keywords: memoryHeaderValues(header, 'keywords'),
       lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
-      references: memoryHeaderValues(header, 'references'),
+      references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
       relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
       schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
       sourceAgentClient: memoryHeaderValue(header, 'source_agent_client') ?? 'unknown',
@@ -102,14 +103,14 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
       sourceSessionId: memoryHeaderValue(header, 'source_session_id'),
       status: parseMemoryStatus(memoryHeaderValue(header, 'status')) ?? 'active',
-      supersedes: memoryHeaderValue(header, 'supersedes'),
+      supersedes: canonicalOptionalResourceInput(memoryHeaderValue(header, 'supersedes')),
       timestamp: memoryHeaderValue(header, 'timestamp') ?? new Date(0).toISOString(),
       topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic')),
       trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
       validFrom: memoryHeaderValue(header, 'valid_from'),
       validTo: memoryHeaderValue(header, 'valid_to'),
     },
-    uri,
+    uri: canonicalResourceInput(uri),
   };
 }
 
@@ -172,11 +173,12 @@ export function boundedMemoryAuthority(
   options: {readonly canonicalResource?: boolean} = {},
 ): MemoryAuthority {
   const reviewedCandidate = isReviewedCandidateMetadata(metadata);
+  const canonicalUri = canonicalResourceInput(uri);
   const fallback: MemoryAuthority = options.canonicalResource
     ? 'canonical_repo'
-    : uri.startsWith('viking://resources/')
+    : canonicalUri.startsWith('threadnote://resources/')
       ? 'external'
-      : isSharedMemoryUri(uri)
+      : isSharedMemoryUri(canonicalUri)
         ? 'reviewed_shared'
         : reviewedCandidate
           ? 'user_approved'
@@ -191,10 +193,11 @@ export function boundedMemoryTrust(
   options: {readonly canonicalResource?: boolean} = {},
 ): MemoryTrust {
   const reviewedCandidate = isReviewedCandidateMetadata(metadata);
+  const canonicalUri = canonicalResourceInput(uri);
   const fallback: MemoryTrust =
-    options.canonicalResource || isSharedMemoryUri(uri) || reviewedCandidate
+    options.canonicalResource || isSharedMemoryUri(canonicalUri) || reviewedCandidate
       ? 'approved'
-      : uri.startsWith('viking://resources/')
+      : canonicalUri.startsWith('threadnote://resources/')
         ? 'untrusted'
         : 'inferred';
   const asserted = metadata?.trust;
@@ -202,17 +205,25 @@ export function boundedMemoryTrust(
 }
 
 export function isSharedMemoryUri(uri: string): boolean {
-  return /^viking:\/\/user\/[^/]+\/memories\/shared\/[^/]+\//.test(uri);
+  return /^threadnote:\/\/user\/[^/]+\/memories\/shared\/[^/]+\//.test(canonicalResourceInput(uri));
+}
+
+function canonicalResourceInput(uri: string): string {
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return uri;
+  }
 }
 
 export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
   const header = memory.slice(0, Math.max(0, memory.indexOf('\n\n')) || memory.length);
   const firstLine = header.split('\n')[0]?.trim();
   return {
-    archivedFrom: memoryHeaderValue(header, 'archived_from'),
+    archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
     authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
     candidateId: memoryHeaderValue(header, 'candidate_id'),
-    evidence: memoryHeaderValues(header, 'evidence'),
+    evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
     kind: parseMemoryKind(memoryHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined),
     keywords: memoryHeaderValues(header, 'keywords'),
     lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
@@ -221,7 +232,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
         memoryHeaderValue(header, 'repo') ??
         memoryHeaderValue(header, 'repo_path'),
     ),
-    references: memoryHeaderValues(header, 'references'),
+    references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
     relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
     schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
     sourceAgentClient: memoryHeaderValue(header, 'source_agent_client'),
@@ -229,7 +240,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
     sourceSessionId: memoryHeaderValue(header, 'source_session_id'),
     status: parseMemoryStatus(memoryHeaderValue(header, 'status')),
-    supersedes: memoryHeaderValue(header, 'supersedes'),
+    supersedes: canonicalOptionalResourceInput(memoryHeaderValue(header, 'supersedes')),
     timestamp: memoryHeaderValue(header, 'timestamp'),
     topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic') ?? memoryHeaderValue(header, 'task')),
     trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
@@ -296,14 +307,27 @@ function parseMemoryRelations(values: readonly string[] | undefined): readonly M
         return undefined;
       }
       const type = value.slice(0, separator);
-      const uri = value.slice(separator + 1).trim();
-      if (!uri.startsWith('viking://') || !isMemoryRelationType(type)) {
+      const uri = canonicalOptionalResourceInput(value.slice(separator + 1).trim());
+      if (!uri || !uri.startsWith('threadnote://') || !isMemoryRelationType(type)) {
         return undefined;
       }
       return {type, uri};
     })
     .filter((relation): relation is MemoryRelation => relation !== undefined);
   return relations.length > 0 ? relations : undefined;
+}
+
+function canonicalOptionalResourceInput(uri: string | undefined): string | undefined {
+  if (!uri) return undefined;
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return uri;
+  }
+}
+
+function canonicalResourceInputs(values: readonly string[] | undefined): readonly string[] | undefined {
+  return values?.map(value => canonicalOptionalResourceInput(value) ?? value);
 }
 
 function isMemoryRelationType(value: string): value is MemoryRelationType {

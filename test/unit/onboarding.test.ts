@@ -44,7 +44,7 @@ describe('buildOnboardingGuide', () => {
   it('names configured teams and offers direct publish', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: ['default', 'friends']});
     expect(guide).toContain('Team sharing is configured: default, friends');
-    expect(guide).toContain('share_publish({"uri":"viking://');
+    expect(guide).toContain('share_publish({"uri":"threadnote://');
   });
 
   it('lists seeded projects when present', () => {

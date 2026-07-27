@@ -94,9 +94,7 @@ describe('share administration', () => {
     expect(teams.teams.default).toBeUndefined();
     await expect(access(join(config.agentContextHome, 'share', 'worktrees', 'friends'))).resolves.toBeUndefined();
     await expect(
-      access(
-        join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'friends'),
-      ),
+      access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'friends')),
     ).resolves.toBeUndefined();
     await expect(access(join(config.agentContextHome, 'share', 'teams', 'friends.gitdir'))).resolves.toBeUndefined();
   });
@@ -160,7 +158,6 @@ describe('share administration', () => {
         join(
           config.agentContextHome,
           'data',
-          'viking',
           'local',
           'user',
           'denys',
@@ -174,9 +171,7 @@ describe('share administration', () => {
       ),
     ).resolves.toContain('Body');
     await expect(
-      access(
-        join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories', 'shared', 'default'),
-      ),
+      access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'default')),
     ).rejects.toThrow();
   });
 });

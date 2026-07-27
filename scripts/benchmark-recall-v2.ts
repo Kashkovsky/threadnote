@@ -10,12 +10,16 @@ import {
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
 } from '../src/evaluation/benchmark.js';
-import {createRecallEvaluationFixtureV2, expandRecallEvaluationFixtureV2} from '../src/evaluation/recall-fixture.js';
+import {
+  createRecallEvaluationFixtureV2,
+  expandRecallEvaluationFixtureV2,
+  serializeRecallEvaluationFixtureV2Identity,
+} from '../src/evaluation/recall-fixture.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
 
 const options = parseArguments(process.argv.slice(2));
 const fixture = expandRecallEvaluationFixtureV2(createRecallEvaluationFixtureV2(), options.documentCount, options.seed);
-const fixtureHash = createHash('sha256').update(JSON.stringify(fixture)).digest('hex');
+const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 const query = fixture.queries[0]!;
 const runQuery = () =>
   rankRecallCandidates(query.query, fixture.documents, {

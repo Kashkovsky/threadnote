@@ -1,6 +1,6 @@
 # Security
 
-Threadnote stores local canonical content under `~/.threadnote` with private directories and files. Every `viking://`
+Threadnote stores local canonical content under `~/.threadnote` with private directories and files. Every `threadnote://`
 identifier is parsed into validated portable segments; traversal, ambiguous encodings, escaping links, and unsupported
 file types are rejected.
 

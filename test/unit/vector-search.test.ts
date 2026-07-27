@@ -77,13 +77,13 @@ describe('packed vector sidecar', () => {
         {
           fingerprint: 'doc-a-sha',
           id: 'doc-a#0',
-          uri: 'viking://resources/repos/threadnote/doc-a.md',
+          uri: 'threadnote://resources/repos/threadnote/doc-a.md',
           vector: [1, 0],
         },
         {
           fingerprint: 'doc-b-sha',
           id: 'doc-b#0',
-          uri: 'viking://resources/repos/threadnote/doc-b.md',
+          uri: 'threadnote://resources/repos/threadnote/doc-b.md',
           vector: diagonal,
         },
       ],
@@ -110,13 +110,13 @@ describe('packed vector sidecar', () => {
       {
         fingerprint: 'doc-a-sha',
         id: 'doc-a#0',
-        uri: 'viking://resources/repos/threadnote/doc-a.md',
+        uri: 'threadnote://resources/repos/threadnote/doc-a.md',
         vector: [1, 0],
       },
       {
         fingerprint: 'doc-b-sha',
         id: 'doc-b#0',
-        uri: 'viking://resources/repos/threadnote/doc-b.md',
+        uri: 'threadnote://resources/repos/threadnote/doc-b.md',
         vector: [0.707107, 0.707107],
       },
     ]);
@@ -124,7 +124,7 @@ describe('packed vector sidecar', () => {
 
   it('detects payload corruption and incompatible embedding metadata', () => {
     const encoded = encodeVectorSidecar({
-      entries: [{fingerprint: 'sha', id: 'doc', uri: 'viking://doc', vector: [1, 0]}],
+      entries: [{fingerprint: 'sha', id: 'doc', uri: 'threadnote://doc', vector: [1, 0]}],
       metadata: {
         chunkerVersion: 1,
         dimensions: 2,
@@ -138,7 +138,7 @@ describe('packed vector sidecar', () => {
     expect(() => decodeVectorSidecar(encoded)).toThrow(VectorSidecarInvalid);
     expect(() =>
       encodeVectorSidecar({
-        entries: [{fingerprint: 'sha', id: 'doc', uri: 'viking://doc', vector: [0.5, 0]}],
+        entries: [{fingerprint: 'sha', id: 'doc', uri: 'threadnote://doc', vector: [0.5, 0]}],
         metadata: {
           chunkerVersion: 1,
           dimensions: 2,

@@ -7,8 +7,8 @@
       "title": "Move legacy handoff memories into lifecycle archive paths",
       "description": [
         "Threadnote now separates current durable knowledge from the historical handoff trail.",
-        "This migration scans legacy viking://user/<you>/memories/events/*.md files for clear handoff records only.",
-        "Matching handoffs are copied to viking://user/<you>/memories/handoffs/archived/<project>/legacy-<hash>.md with lifecycle metadata.",
+        "This migration scans legacy threadnote://user/<you>/memories/events/*.md files for clear handoff records only.",
+        "Matching handoffs are copied to threadnote://user/<you>/memories/handoffs/archived/<project>/legacy-<hash>.md with lifecycle metadata.",
         "After each archived copy is stored, Threadnote removes the original legacy events file to reduce duplicate recall results.",
         "Ambiguous MEMORY records, preferences, durable facts, incidents, and sensitive-looking content are left untouched for manual review."
       ],
@@ -55,6 +55,23 @@
       "instructions": [
         "Home migration finished. Run `threadnote doctor`, then `threadnote index status`.",
         "Optional semantic recall starts with `threadnote models list`; install and select a measured embedding model before rebuilding the vector index."
+      ]
+    },
+    {
+      "id": "self-contained-home-recovery-v2",
+      "introducedIn": "4.0.0",
+      "appliesToPrereleases": true,
+      "title": "Recover canonical data into the final Threadnote 4 layout",
+      "description": [
+        "This follow-up repairs the 4.0.0-beta.1 upgrade path when ~/.threadnote was created before the legacy home import.",
+        "It restores memories, resources, configured shares, and verified installed local models without overwriting different content already present in ~/.threadnote.",
+        "The canonical account store is flattened to ~/.threadnote/data/<account>, and all newly emitted resource identifiers use threadnote://.",
+        "The legacy ~/.openviking home remains unchanged as the rollback source."
+      ],
+      "commandArgs": ["migrate", "--apply"],
+      "instructions": [
+        "Recovery migration finished. Run `threadnote repair`, then verify memory/resource/share counts in `threadnote manager`.",
+        "An already-installed verified 3.x generation model is adopted and selected without downloading it again."
       ]
     }
   ]

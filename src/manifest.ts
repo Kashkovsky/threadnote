@@ -1,6 +1,7 @@
 import {Effect, FileSystem} from 'effect';
 import yaml from 'js-yaml';
 import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
+import {parseResourceId} from './storage/resource-id.js';
 import {escapeRegExp, isJsonObject} from './utils.js';
 
 export function uriSegment(value: string): string {
@@ -175,7 +176,7 @@ export function parseSeedManifest(raw: string, path: string): SeedManifest {
       name: readString(projectValue, 'name'),
       path: readString(projectValue, 'path'),
       seed,
-      uri: readString(projectValue, 'uri'),
+      uri: parseResourceId(readString(projectValue, 'uri')).canonicalUri,
     });
   }
 
@@ -183,7 +184,7 @@ export function parseSeedManifest(raw: string, path: string): SeedManifest {
   if (isJsonObject(loaded.future_monorepo)) {
     futureMonorepo = {
       pathCandidates: readStringArray(loaded.future_monorepo, 'path_candidates'),
-      uri: readString(loaded.future_monorepo, 'uri'),
+      uri: parseResourceId(readString(loaded.future_monorepo, 'uri')).canonicalUri,
     };
   }
 

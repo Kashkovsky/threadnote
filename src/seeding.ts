@@ -509,10 +509,10 @@ export const projectManifestForRepo = Effect.fn('seeding.projectManifestForRepo'
   const usedNames = new Set(existingProjects.map(project => project.name));
   const usedUris = new Set(existingProjects.map(project => project.uri));
   let name = baseName;
-  let uri = `viking://resources/repos/${name}`;
+  let uri = `threadnote://resources/repos/${name}`;
   if (usedNames.has(name) || usedUris.has(uri)) {
     name = `${baseName}-${(yield* sha256(repoRoot)).slice(0, 8)}`;
-    uri = `viking://resources/repos/${name}`;
+    uri = `threadnote://resources/repos/${name}`;
   }
   return {
     name,
@@ -667,7 +667,7 @@ const resolveAbsolutePattern = Effect.fn('seeding.resolveAbsolutePattern')(funct
 });
 
 function skillResourceUri(skill: SkillCandidate): string {
-  return `viking://resources/agent-skills/${uriSegment(skill.source)}/${skillResourceName(skill)}-${skill.hash.slice(0, 12)}.md`;
+  return `threadnote://resources/agent-skills/${uriSegment(skill.source)}/${skillResourceName(skill)}-${skill.hash.slice(0, 12)}.md`;
 }
 
 function skillResourceName(skill: SkillCandidate): string {

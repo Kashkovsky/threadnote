@@ -83,7 +83,7 @@ describe('Effect share transaction', () => {
       }),
     );
     shareMocks.sharedUriFor.mockReturnValue(
-      'viking://user/test-user/memories/shared/alpha/durable/projects/threadnote/recall.md',
+      'threadnote://user/test-user/memories/shared/alpha/durable/projects/threadnote/recall.md',
     );
     shareMocks.runSharePublish.mockImplementation((_config, _sourceUri, options) =>
       Effect.sync(() => {
@@ -99,7 +99,7 @@ describe('Effect share transaction', () => {
           agentId: 'threadnote',
           user: 'test-user',
         },
-        'viking://user/test-user/memories/durable/projects/threadnote/recall.md',
+        'threadnote://user/test-user/memories/durable/projects/threadnote/recall.md',
         {},
       ),
     );

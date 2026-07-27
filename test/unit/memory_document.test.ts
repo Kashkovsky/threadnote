@@ -15,7 +15,7 @@ describe('memory document contract', () => {
     const metadata: MemoryMetadata = {
       kind: 'durable',
       project: 'threadnote',
-      references: ['viking://resources/repos/threadnote/README.md'],
+      references: ['threadnote://resources/repos/threadnote/README.md'],
       sourceAgentClient: 'codex',
       status: 'active',
       timestamp: '2026-07-23T10:00:00.000Z',
@@ -33,12 +33,12 @@ describe('memory document contract', () => {
         'topic: recall',
         'source_agent_client: codex',
         'timestamp: 2026-07-23T10:00:00.000Z',
-        'references: viking://resources/repos/threadnote/README.md',
+        'references: threadnote://resources/repos/threadnote/README.md',
         '',
         'Use the shared ranker.',
       ].join('\n'),
     );
-    expect(parseMemoryDocument('viking://user/me/memory.md', document)?.metadata).toEqual(metadata);
+    expect(parseMemoryDocument('threadnote://user/me/memory.md', document)?.metadata).toEqual(metadata);
   });
 
   it('round-trips authority, validity, provenance, evidence, and typed relations', () => {
@@ -51,8 +51,8 @@ describe('memory document contract', () => {
       lastReviewed: '2026-07-23T10:10:00.000Z',
       project: 'threadnote',
       relations: [
-        {type: 'depends_on', uri: 'viking://resources/repos/threadnote/docs/effect.md'},
-        {type: 'supersedes', uri: 'viking://user/me/memories/old.md'},
+        {type: 'depends_on', uri: 'threadnote://resources/repos/threadnote/docs/effect.md'},
+        {type: 'supersedes', uri: 'threadnote://user/me/memories/old.md'},
       ],
       schemaVersion: 2,
       sourceAgentClient: 'codex',
@@ -68,7 +68,7 @@ describe('memory document contract', () => {
     };
 
     const document = formatMemoryDocument('MEMORY', metadata, 'Effect workflows compose upward.');
-    const parsed = parseMemoryDocument('viking://user/me/memory.md', document);
+    const parsed = parseMemoryDocument('threadnote://user/me/memory.md', document);
 
     expect(parsed?.metadata).toEqual(metadata);
     expect(parsed?.body).toBe('Effect workflows compose upward.');
@@ -157,7 +157,7 @@ describe('memory document contract', () => {
       '-->',
     ].join('\n');
 
-    const parsed = parseMemoryDocument('viking://user/me/memory.md', document);
+    const parsed = parseMemoryDocument('threadnote://user/me/memory.md', document);
 
     expect(parsed?.body).toBe('Only this text belongs to the memory body.');
     expect(parsed?.content).toBe(document);
@@ -167,7 +167,7 @@ describe('memory document contract', () => {
   });
 
   it('accepts reviewed-candidate authority without allowing ordinary memories to self-elevate', () => {
-    const uri = 'viking://user/me/memories/durable/projects/threadnote/recall.md';
+    const uri = 'threadnote://user/me/memories/durable/projects/threadnote/recall.md';
     expect(boundedMemoryAuthority(uri, {authority: 'canonical_repo', trust: 'approved'})).toBe('agent_generated');
     expect(boundedMemoryTrust(uri, {authority: 'canonical_repo', trust: 'approved'})).toBe('inferred');
     const reviewed: Partial<MemoryMetadata> = {
@@ -179,13 +179,13 @@ describe('memory document contract', () => {
     };
     expect(boundedMemoryAuthority(uri, reviewed)).toBe('user_approved');
     expect(boundedMemoryTrust(uri, reviewed)).toBe('approved');
-    const projectNamedShared = 'viking://user/me/memories/durable/projects/shared/topic.md';
+    const projectNamedShared = 'threadnote://user/me/memories/durable/projects/shared/topic.md';
     expect(boundedMemoryAuthority(projectNamedShared)).toBe('agent_generated');
     expect(boundedMemoryTrust(projectNamedShared)).toBe('inferred');
-    const teamShared = 'viking://user/me/memories/shared/team/durable/projects/threadnote/topic.md';
+    const teamShared = 'threadnote://user/me/memories/shared/team/durable/projects/threadnote/topic.md';
     expect(boundedMemoryAuthority(teamShared)).toBe('reviewed_shared');
     expect(boundedMemoryTrust(teamShared)).toBe('approved');
-    const importedResource = 'viking://resources/imports/external.md';
+    const importedResource = 'threadnote://resources/imports/external.md';
     expect(boundedMemoryAuthority(importedResource)).toBe('external');
     expect(boundedMemoryTrust(importedResource)).toBe('untrusted');
     expect(boundedMemoryAuthority(importedResource, undefined, {canonicalResource: true})).toBe('canonical_repo');
@@ -217,14 +217,14 @@ describe('memory document contract', () => {
 
   it('ignores malformed and untyped relations', () => {
     const parsed = parseMemoryDocument(
-      'viking://user/me/memory.md',
+      'threadnote://user/me/memory.md',
       [
         'MEMORY',
         'kind: durable',
         'status: active',
         'source_agent_client: codex',
         'timestamp: 2026-07-23T10:00:00.000Z',
-        'relation: unknown viking://user/me/other.md',
+        'relation: unknown threadnote://user/me/other.md',
         'relation: related_to https://example.com',
         '',
         'Body',

@@ -1,8 +1,13 @@
+import {createHash} from 'node:crypto';
 import {readFileSync, readdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, it} from '@effect/vitest';
 import {parseBenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {parseRecallEvaluationBaselineV1} from '../../src/evaluation/recall-baseline.js';
+import {
+  createRecallEvaluationFixtureV2,
+  serializeRecallEvaluationFixtureV2Identity,
+} from '../../src/evaluation/recall-fixture.js';
 
 const BASELINE_ROOT = 'test/evaluation/baselines/threadnote-3.0.3';
 const BENCHMARK_ROOT = join(BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
@@ -11,9 +16,12 @@ const CANDIDATE_ROOT = 'test/evaluation/candidates/threadnote-4.0.0';
 describe('frozen Threadnote 3.0.3 baselines', () => {
   it('validates the compact recall-v2 baseline', () => {
     const baseline = parseRecallEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'recall-v2-lexical.json')));
+    const fixture = createRecallEvaluationFixtureV2();
+    const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 
     expect(baseline.fixture).toMatchObject({documents: 200, queries: 250, version: 2});
-    expect(baseline.fixture.hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(baseline.fixture.hash).toBe(fixtureHash);
+    expect(fixture.documents.every(document => document.uri.startsWith('threadnote://'))).toBe(true);
     expect(baseline.knownContractFailures).toBeGreaterThan(0);
     expect(baseline.source).toMatchObject({
       openVikingVersion: '0.4.10',

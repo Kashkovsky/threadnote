@@ -20,11 +20,21 @@ const allowedLegacySources = new Set([
   'src/migration/home.ts',
   'src/storage/layout.ts',
 ]);
+const allowedLegacyIdentifierSources = new Set([
+  'src/evaluation/recall-fixture.ts',
+  'src/memory_hygiene.ts',
+  'src/migration/home.ts',
+  'src/migration/layout.ts',
+  'src/storage/resource-id.ts',
+]);
 for (const file of files(join(root, 'src'))) {
   const path = relative(root, file).split('\\').join('/');
   const content = readFileSync(file, 'utf8');
   if (/\b(?:openviking|python|pipx)\b/i.test(content) && !allowedLegacySources.has(path)) {
     failures.push(`legacy runtime token outside migration boundary: ${path}`);
+  }
+  if (/(?:viking:\/\/|data\/viking)/i.test(content) && !allowedLegacyIdentifierSources.has(path)) {
+    failures.push(`legacy identifier or storage path outside compatibility boundary: ${path}`);
   }
   if (/from ['"]node-llama-cpp['"]/.test(content) && path !== 'src/effect/ai/node-llama-cpp.ts') {
     failures.push(`raw node-llama-cpp import outside adapter: ${path}`);

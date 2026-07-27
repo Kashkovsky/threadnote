@@ -128,8 +128,8 @@ describe('runRecall native index', () => {
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('current repo latest handoff');
     expect(output).toContain('threadnote');
-    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
-    expect(output).toContain('--uri viking://user/denys/memories/handoffs/active/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/handoffs/active/threadnote');
     expect(output).not.toContain('easy-to-type');
   });
 
@@ -160,11 +160,11 @@ describe('runRecall native index', () => {
           'projects:',
           '  - name: threadnote',
           `    path: ${repoRoot}`,
-          '    uri: viking://resources/repos/threadnote',
+          '    uri: threadnote://resources/repos/threadnote',
           '    seed: []',
           '  - name: orion-worker',
           `    path: ${dir}/orion-worker`,
-          '    uri: viking://resources/repos/orion-worker',
+          '    uri: threadnote://resources/repos/orion-worker',
           '    seed: []',
           '',
         ].join('\n'),
@@ -191,9 +191,9 @@ describe('runRecall native index', () => {
     }
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/orion-worker');
-    expect(output).toContain('--uri viking://resources/repos/orion-worker');
-    expect(output).not.toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/orion-worker');
+    expect(output).toContain('--uri threadnote://resources/repos/orion-worker');
+    expect(output).not.toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
   });
 
   it('does not duplicate current project durable scope through workset expansion', async () => {
@@ -223,7 +223,7 @@ describe('runRecall native index', () => {
           'projects:',
           '  - name: threadnote',
           `    path: ${repoRoot}`,
-          '    uri: viking://resources/repos/threadnote',
+          '    uri: threadnote://resources/repos/threadnote',
           '    seed: []',
           'worksets:',
           '  - name: platform',
@@ -258,7 +258,7 @@ describe('runRecall native index', () => {
     }
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    const durableScope = '--uri viking://user/denys/memories/durable/projects/threadnote';
+    const durableScope = '--uri threadnote://user/denys/memories/durable/projects/threadnote';
     expect(output.split(durableScope)).toHaveLength(2);
   });
 
@@ -272,7 +272,7 @@ describe('runRecall native index', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -301,7 +301,7 @@ describe('runRecall native index', () => {
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Workset scope: platform (alpha)');
-    expect(output).toContain('viking://resources/repos/alpha');
+    expect(output).toContain('threadnote://resources/repos/alpha');
   });
 
   it('reports an unknown explicit workset instead of running unscoped', async () => {
@@ -314,7 +314,7 @@ describe('runRecall native index', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -354,7 +354,7 @@ describe('runRecall native index', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -373,7 +373,7 @@ describe('runRecall native index', () => {
             {
               dryRun: true,
               query: 'current status',
-              uri: 'viking://resources/repos/alpha',
+              uri: 'threadnote://resources/repos/alpha',
               workset: 'platfrom',
             },
           ),
@@ -389,8 +389,8 @@ describe('runRecall native index', () => {
 describe('stripAdvancedSearchFlags', () => {
   it('removes --threshold and --level with their values, keeping the rest', () => {
     expect(
-      stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'viking://x']),
-    ).toEqual(['search', 'q', '--uri', 'viking://x']);
+      stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'threadnote://x']),
+    ).toEqual(['search', 'q', '--uri', 'threadnote://x']);
   });
 
   it('is a no-op when no advanced flags are present', () => {

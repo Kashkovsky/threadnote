@@ -54,7 +54,7 @@ vi.mock('../../src/seeding.js', async importOriginal => {
 
 async function makeRuntime(): Promise<RuntimeConfig> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-manager-'));
-  const root = join(home, 'data', 'viking', 'local', 'user', 'denys', 'memories');
+  const root = join(home, 'data', 'local', 'user', 'denys', 'memories');
   await mkdir(join(root, 'durable', 'projects', 'threadnote'), {recursive: true});
   await writeFile(
     join(root, 'durable', 'projects', 'threadnote', 'manager-ui.md'),
@@ -137,7 +137,7 @@ describe('manager catalog', () => {
       .mockImplementation((_config, options) => Console.log(`recall result: ${options.query}`));
   });
 
-  it('maps local memory files into viking URIs with parsed metadata', async () => {
+  it('maps local memory files into Threadnote URIs with parsed metadata', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
 
@@ -145,7 +145,7 @@ describe('manager catalog', () => {
     const project = tree.children?.find(child => child.name === 'durable')?.children?.[0]?.children?.[0];
     const leaf = project?.children?.find(child => child.name === 'manager-ui.md');
 
-    expect(leaf?.uri).toBe('viking://user/denys/memories/durable/projects/threadnote/manager-ui.md');
+    expect(leaf?.uri).toBe('threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md');
     expect(leaf?.metadata?.project).toBe('threadnote');
     expect(leaf?.metadata?.topic).toBe('manager-ui');
   });
@@ -153,7 +153,7 @@ describe('manager catalog', () => {
   it('maps seeded resources into a read-only resources tree', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const root = join(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+    const root = join(config.agentContextHome, 'data', config.account, 'resources');
     await mkdir(join(root, 'agent-skills', 'codex-global'), {recursive: true});
     await writeFile(join(root, 'agent-skills', 'codex-global', 'threadnote-abc123.md'), 'Skill body');
 
@@ -164,8 +164,8 @@ describe('manager catalog', () => {
       ?.children?.find(child => child.name === 'threadnote-abc123.md');
 
     expect(tree.name).toBe('resources');
-    expect(tree.uri).toBe('viking://resources');
-    expect(skill?.uri).toBe('viking://resources/agent-skills/codex-global/threadnote-abc123.md');
+    expect(tree.uri).toBe('threadnote://resources');
+    expect(skill?.uri).toBe('threadnote://resources/agent-skills/codex-global/threadnote-abc123.md');
     expect(skill?.metadata).toBeUndefined();
   });
 
@@ -174,7 +174,7 @@ describe('manager catalog', () => {
     homes.push(config.agentContextHome);
 
     const result = await runEffect(
-      readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/manager-ui.md'),
+      readManagedMemory(config, 'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md'),
     );
 
     expect(result.content).toContain('Manager UI feature notes.');
@@ -185,7 +185,7 @@ describe('manager catalog', () => {
   it('skips symlinked memory entries and rejects direct symlink reads', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const root = join(config.agentContextHome, 'data', 'viking', 'local', 'user', 'denys', 'memories');
+    const root = join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories');
     const secretPath = join(config.agentContextHome, 'local-secret.txt');
     const linkPath = join(root, 'durable', 'projects', 'threadnote', 'leak.md');
     await writeFile(secretPath, 'do not expose through manager\n', 'utf8');
@@ -196,7 +196,7 @@ describe('manager catalog', () => {
 
     expect(project?.children?.map(child => child.name)).not.toContain('leak.md');
     await expect(
-      runEffect(readManagedMemory(config, 'viking://user/denys/memories/durable/projects/threadnote/leak.md')),
+      runEffect(readManagedMemory(config, 'threadnote://user/denys/memories/durable/projects/threadnote/leak.md')),
     ).rejects.toThrow(/regular memory files/);
   });
 });
@@ -205,16 +205,16 @@ describe('manager UI selection helpers', () => {
   function selectionTree(): TreeNode {
     return {
       children: [
-        fileNode('viking://user/denys/memories/durable/projects/threadnote/first.md', 'first.md'),
-        fileNode('viking://user/denys/memories/durable/projects/threadnote/second.md', 'second.md'),
-        fileNode('viking://user/denys/memories/durable/projects/threadnote/.abstract.md', '.abstract.md', true),
+        fileNode('threadnote://user/denys/memories/durable/projects/threadnote/first.md', 'first.md'),
+        fileNode('threadnote://user/denys/memories/durable/projects/threadnote/second.md', 'second.md'),
+        fileNode('threadnote://user/denys/memories/durable/projects/threadnote/.abstract.md', '.abstract.md', true),
       ],
       isDir: true,
       isShared: false,
       isSystem: false,
       name: 'threadnote',
       relativePath: 'durable/projects/threadnote',
-      uri: 'viking://user/denys/memories/durable/projects/threadnote',
+      uri: 'threadnote://user/denys/memories/durable/projects/threadnote',
     };
   }
 
@@ -222,27 +222,27 @@ describe('manager UI selection helpers', () => {
     const tree = selectionTree();
 
     expect(selectableMemoryUris(tree, {filter: 'first', showSystem: false})).toEqual([
-      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/first.md',
     ]);
     expect(selectableMemoryUris(tree, {filter: '', showSystem: false})).toEqual([
-      'viking://user/denys/memories/durable/projects/threadnote/first.md',
-      'viking://user/denys/memories/durable/projects/threadnote/second.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/first.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/second.md',
     ]);
   });
 
   it('prunes hidden selected memories before bulk actions', () => {
     const tree = selectionTree();
     const selected = new Set([
-      'viking://user/denys/memories/durable/projects/threadnote/first.md',
-      'viking://user/denys/memories/durable/projects/threadnote/second.md',
-      'viking://user/denys/memories/durable/projects/threadnote/.abstract.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/first.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/second.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/.abstract.md',
     ]);
 
     expect([...pruneSelectedMemoryUris(selected, tree, {filter: 'first', showSystem: false})]).toEqual([
-      'viking://user/denys/memories/durable/projects/threadnote/first.md',
+      'threadnote://user/denys/memories/durable/projects/threadnote/first.md',
     ]);
 
-    const visibleOnly = new Set(['viking://user/denys/memories/durable/projects/threadnote/first.md']);
+    const visibleOnly = new Set(['threadnote://user/denys/memories/durable/projects/threadnote/first.md']);
     expect(pruneSelectedMemoryUris(visibleOnly, tree, {filter: 'first', showSystem: false})).toBe(visibleOnly);
   });
 });
@@ -275,8 +275,8 @@ describe('manager http API', () => {
       const accepted = await fetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
       const body = (await accepted.json()) as {readonly resourcesTree?: TreeNode; readonly tree?: TreeNode};
       expect(accepted.status).toBe(200);
-      expect(body.tree?.uri).toBe('viking://user/denys/memories');
-      expect(body.resourcesTree?.uri).toBe('viking://resources');
+      expect(body.tree?.uri).toBe('threadnote://user/denys/memories');
+      expect(body.resourcesTree?.uri).toBe('threadnote://resources');
     } finally {
       await server.close();
     }
@@ -298,8 +298,8 @@ describe('manager http API', () => {
           action: 'archive',
           confirm: true,
           uris: [
-            'viking://user/denys/memories/durable/projects/threadnote/good.md',
-            'viking://user/denys/memories/durable/projects/threadnote/bad.md',
+            'threadnote://user/denys/memories/durable/projects/threadnote/good.md',
+            'threadnote://user/denys/memories/durable/projects/threadnote/bad.md',
           ],
         }),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
@@ -322,7 +322,7 @@ describe('manager http API', () => {
     const server = await startServer(config, 'secret');
     try {
       const response = await fetch(`${server.url}/api/read`, {
-        body: JSON.stringify({uri: 'viking://user/denys/memories/durable/projects/threadnote/manager-ui.md'}),
+        body: JSON.stringify({uri: 'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md'}),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
       });
@@ -333,7 +333,9 @@ describe('manager http API', () => {
 
       expect(response.status).toBe(200);
       expect(body.content).toContain('Manager UI feature notes.');
-      expect(body.localMemory?.node.uri).toBe('viking://user/denys/memories/durable/projects/threadnote/manager-ui.md');
+      expect(body.localMemory?.node.uri).toBe(
+        'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md',
+      );
     } finally {
       await server.close();
     }
@@ -391,7 +393,6 @@ describe('manager http API', () => {
     const projectPath = join(
       config.agentContextHome,
       'data',
-      'viking',
       config.account,
       'user',
       config.user,
@@ -405,7 +406,7 @@ describe('manager http API', () => {
       const response = await fetch(`${server.url}/api/folder/remove`, {
         body: JSON.stringify({
           confirm: true,
-          uri: 'viking://user/denys/memories/durable/projects/threadnote',
+          uri: 'threadnote://user/denys/memories/durable/projects/threadnote',
         }),
         headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
         method: 'POST',
@@ -413,7 +414,7 @@ describe('manager http API', () => {
       const body = (await response.json()) as {readonly output: string};
 
       expect(response.status).toBe(200);
-      expect(body.output).toContain('Removed folder: viking://user/denys/memories/durable/projects/threadnote');
+      expect(body.output).toContain('Removed folder: threadnote://user/denys/memories/durable/projects/threadnote');
       expect(body.output).toContain('Forgot 2 files.');
       expect(
         vi
@@ -421,8 +422,8 @@ describe('manager http API', () => {
           .mock.calls.map(call => call[1])
           .sort(),
       ).toEqual([
-        'viking://user/denys/memories/durable/projects/threadnote/.abstract.md',
-        'viking://user/denys/memories/durable/projects/threadnote/manager-ui.md',
+        'threadnote://user/denys/memories/durable/projects/threadnote/.abstract.md',
+        'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md',
       ]);
       await expect(stat(projectPath)).rejects.toMatchObject({code: 'ENOENT'});
     } finally {

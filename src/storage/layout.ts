@@ -3,7 +3,9 @@ import {validatePortableSegment} from './resource-id.js';
 
 export const THREADNOTE_HOME_DIRECTORY = '.threadnote';
 export const LEGACY_OPENVIKING_HOME_DIRECTORY = '.openviking';
-export const THREADNOTE_STORAGE_LAYOUT_VERSION = 1 as const;
+export const THREADNOTE_STORAGE_LAYOUT_VERSION = 2 as const;
+export const LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION = 1 as const;
+export const LEGACY_THREADNOTE_DATA_DIRECTORY = 'viking';
 
 export interface ThreadnoteStorageLayout {
   readonly accountRoot: string;
@@ -30,7 +32,7 @@ export function threadnoteStorageLayout(
 ): ThreadnoteStorageLayout {
   validatePortableSegment(account, account);
   validatePortableSegment(userSegment, userSegment);
-  const canonicalRoot = path.join(home, 'data', 'viking');
+  const canonicalRoot = path.join(home, 'data');
   const accountRoot = path.join(canonicalRoot, account);
   return {
     accountRoot,
