@@ -72,6 +72,20 @@ describe('Effect file lock', () => {
     ).resolves.toBe('acquired');
   });
 
+  it('recovers a fresh lock immediately when its recorded owner is no longer alive', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* withExclusiveFileLock(fs, lockPath, TEST_LOCK_OPTIONS, Effect.succeed('acquired'));
+        }),
+      ),
+    ).resolves.toBe('acquired');
+  });
+
   it('recovers a stale lock even when an old recovery guard was orphaned', async () => {
     await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
