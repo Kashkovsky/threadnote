@@ -70,7 +70,31 @@ describe('frozen Threadnote 3.0.3 baselines', () => {
     ]);
   });
 
-  it('stores measured 4.0 model candidates without selecting a failed pipeline', () => {
+  it('stores the 4.0 SQLite indexed-recall benchmark within every release budget', () => {
+    const indexed = readJson(
+      join(CANDIDATE_ROOT, 'benchmarks', 'darwin-arm64-m1-max', 'recall-index-sqlite-10000.json'),
+    ) as {
+      readonly fixture?: {readonly documents?: number};
+      readonly scenarios?: Readonly<
+        Record<string, {readonly p95LimitMilliseconds?: number; readonly p95Milliseconds?: number}>
+      >;
+      readonly source?: {readonly index?: string};
+    };
+
+    expect(indexed.fixture?.documents).toBe(10_000);
+    expect(indexed.source?.index).toContain('@effect/sql-sqlite-node');
+    expect(Object.keys(indexed.scenarios ?? {}).sort()).toEqual([
+      'coldDecode',
+      'hotQuery',
+      'incrementalUpdate',
+      'sourceValidation',
+    ]);
+    for (const scenario of Object.values(indexed.scenarios ?? {})) {
+      expect(scenario.p95Milliseconds).toBeLessThanOrEqual(scenario.p95LimitMilliseconds ?? 0);
+    }
+  });
+
+  it('stores the passing 4.0 core embedding result and rejected reranker result', () => {
     const candidates = readdirSync(CANDIDATE_ROOT)
       .filter(name => name.endsWith('.json'))
       .map(name => readJson(join(CANDIDATE_ROOT, name)) as ModelCandidateSummary);
@@ -78,11 +102,15 @@ describe('frozen Threadnote 3.0.3 baselines', () => {
     expect(candidates).toHaveLength(2);
     for (const candidate of candidates) {
       expect(candidate.fixture.hash).toBe('3967acf33893251f03126720ebf6fb55f6b6eed62f2c84f768963e9a352e9348');
-      expect(candidate.gate.passed).toBe(false);
-      expect(candidate.gate.failures.some(failure => failure.includes('noAnswerRecall'))).toBe(true);
-      expect(candidate.result.metrics.noAnswerRecall).toBe(0);
       expect(candidate.models.every(model => /^[0-9a-f]{64}$/.test(model.sha256))).toBe(true);
     }
+    const coreEmbedding = candidates.find(candidate => candidate.models.length === 1);
+    const withReranker = candidates.find(candidate => candidate.models.length === 2);
+    expect(coreEmbedding?.gate).toEqual(expect.objectContaining({failures: [], passed: true}));
+    expect(coreEmbedding?.result.metrics.noAnswerRecall).toBe(1);
+    expect(withReranker?.gate.passed).toBe(false);
+    expect(withReranker?.gate.failures.some(failure => failure.includes('noAnswerRecall'))).toBe(true);
+    expect(withReranker?.result.metrics.noAnswerRecall).toBe(0);
   });
 });
 

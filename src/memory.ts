@@ -112,6 +112,7 @@ import {
 } from './utils.js';
 import {
   applyScrubber,
+  assertSharedWorktreeFileReady,
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   publishShareGitChange,
@@ -122,6 +123,7 @@ import {
   stripPersonalProvenance,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeSharedWorktreeFile,
 } from './share.js';
 
 interface LegacyMemoryCandidate {
@@ -463,8 +465,22 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
               new Error(`Refusing to enrich shared memory ${candidate.uri}: possible ${scrub.blocker}.`),
             );
           }
+          const team = yield* resolveTeam(config, sharedTeam);
+          yield* assertSharedWorktreeFileReady(
+            team.config.worktree,
+            resourceUriToWorktreeRelative(config, candidate.uri, team.name),
+            currentContent,
+          );
         }
         yield* writeMemoryFile(config, ov, candidate.uri, content, 'replace', false, {quiet: true});
+        if (sharedTeam) {
+          const team = yield* resolveTeam(config, sharedTeam);
+          yield* writeSharedWorktreeFile(
+            team.config.worktree,
+            resourceUriToWorktreeRelative(config, candidate.uri, team.name),
+            content,
+          );
+        }
       }),
     );
     const written = yield* Effect.result(sharedTeam ? withSharedRepositoryLock(config, store) : store);
@@ -2175,8 +2191,15 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
     yield* Console.log(memory);
     yield* Console.log('\nWould run:');
   }
+  const [existingTarget] = options.dryRun ? [] : yield* readMemoryRecordsByUri(config, [targetUri]);
+  if (!options.dryRun && !existingTarget) {
+    return yield* Effect.fail(new Error(`Shared memory ${targetUri} no longer exists.`));
+  }
+  const previousContent = existingTarget?.content;
+  yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, previousContent, options.dryRun);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
   yield* writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
+  yield* writeSharedWorktreeFile(team.config.worktree, relativePath, memory, options.dryRun);
 
   const gitMessages = yield* publishShareGitChange(
     team.config.worktree,

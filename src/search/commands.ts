@@ -13,9 +13,7 @@ export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
   if (!modelId) {
-    return yield* Effect.fail(
-      new Error('No embedding model is selected. Install and select one with `threadnote models`.'),
-    );
+    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
   }
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== 'embedding') {
@@ -23,7 +21,9 @@ export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
   }
   const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
   yield* Console.log(`Embedding ${index.candidates.length} canonical document(s) with ${manifest.id}.`);
-  const result = yield* rebuildVectorIndex(config, manifest, index.candidates);
+  const result = yield* rebuildVectorIndex(config, manifest, index.candidates, {
+    corpusGeneration: index.generation,
+  });
   yield* Console.log(
     `Activated vector generation ${result.generation}: ${result.chunkCount} chunk(s), ${result.dimensions} dimensions.`,
   );
@@ -50,7 +50,9 @@ export const runIndexVerify = Effect.fn('index.command.verify')(function* (
   const catalog = yield* LocalModelCatalog;
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
-  if (!modelId) return yield* Effect.fail(new Error('No embedding model is selected.'));
+  if (!modelId) {
+    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
+  }
   const manifest = yield* catalog.get(modelId);
   const status = yield* vectorIndexStatus(config.agentContextHome, manifest);
   if (!status.ready) {
@@ -68,7 +70,9 @@ export const runIndexPurge = Effect.fn('index.command.purge')(function* (
   const catalog = yield* LocalModelCatalog;
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
-  if (!modelId) return yield* Effect.fail(new Error('No embedding model is selected.'));
+  if (!modelId) {
+    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
+  }
   yield* catalog.get(modelId);
   if (options.dryRun === true) {
     yield* Console.log(`Would purge derived vector generations for ${modelId}; canonical resources are untouched.`);

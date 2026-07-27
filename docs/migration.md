@@ -24,7 +24,9 @@ The migration:
 10. writes a checksummed migration receipt;
 11. atomically promotes the staging directory;
 12. flattens canonical content to `~/.threadnote/data/<account>`;
-13. adopts any verified 3.x managed GGUF generation model into the role-aware model store and preserves its selection.
+13. adopts any verified 3.x managed GGUF generation model into the role-aware model store and preserves its selection;
+14. installs and selects the core BGE embedding model if no valid embedding selection already exists;
+15. rebuilds the derived lexical SQLite and vector indexes from the migrated canonical content.
 
 Interrupted staging and beta-home recovery are resumable. Re-running after success is idempotent. If beta.1 already
 wrote a resource at the same logical path, that current Threadnote copy wins while the older copy remains available in
@@ -41,5 +43,6 @@ threadnote models list
 threadnote index status
 ```
 
-Lexical recall is immediately available. Optional vector indexes are derived data and should be rebuilt with an
-explicitly installed and selected embedding model.
+Lexical and vector recall are immediately available after install or repair completes. Both indexes are derived data
+under `~/.threadnote/indexes/`; canonical memories and resources remain ordinary files under
+`~/.threadnote/data/<account>`.

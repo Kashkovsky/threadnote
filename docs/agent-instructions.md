@@ -16,6 +16,9 @@ Use MCP tools when available and the `threadnote` CLI as fallback. If native sto
 `threadnote doctor --dry-run`, report the diagnostic, and continue independent work when possible. The 4.0 runtime has
 no daemon to start.
 
+If Threadnote itself causes an issue, offer to open a GitHub issue in `Kashkovsky/threadnote` without sensitive
+information, and create it only after the user explicitly approves.
+
 Before publishing safe durable memory, confirm with the user. Never publish handoffs or preferences. Resolve dirty git
 or share conflicts before syncing, and never overwrite local modifications with force without explicit approval.
 Before pausing, switching agents, or ending meaningful work with local changes, store a concise handoff.

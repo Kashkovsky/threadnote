@@ -56,6 +56,8 @@ interface NativeModel {
     readonly ignoreMemorySafetyChecks: false;
     readonly sequences: 1;
   }) => Promise<NativeGenerationContext>;
+  readonly detokenize: (tokens: readonly number[], specialTokens?: boolean, lastTokens?: readonly number[]) => string;
+  readonly tokenize: (text: string, specialTokens?: boolean, options?: 'trimLeadingSpace') => readonly number[];
 }
 
 interface NativeGenerationContext {
@@ -104,11 +106,15 @@ interface NodeLlamaCppModule {
   }) => NativeChatSession;
   readonly getLlama: (options: {
     readonly build: 'never';
+    readonly logLevel: 'error';
     readonly progressLogs: false;
     readonly skipDownload: true;
     readonly usePrebuiltBinaries: true;
   }) => Promise<NativeLlama>;
 }
+
+const EMBEDDING_CONTEXT_TOKEN_RESERVE = 16;
+const EMBEDDING_WINDOW_OVERLAP_TOKENS = 32;
 
 export interface NodeLlamaCppLayerOptions {
   readonly loadModule?: () => Promise<NodeLlamaCppModule>;
@@ -134,6 +140,7 @@ export const nodeLlamaCppEngineLayer = (options: NodeLlamaCppLayerOptions = {}) 
           () =>
             module.getLlama({
               build: 'never',
+              logLevel: 'error',
               progressLogs: false,
               skipDownload: true,
               usePrebuiltBinaries: true,
@@ -178,7 +185,7 @@ function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEng
           ),
           native => disposeIgnoringFailure(native),
         );
-        return embeddingSession(options, context);
+        return embeddingSession(options, model, context);
       }),
     loadGenerationSession: options =>
       Effect.gen(function* () {
@@ -234,7 +241,7 @@ function generationSession(
           const context = yield* Effect.acquireRelease(
             fromPromiseInterruptible(
               signal =>
-                createContext({
+                createContext.call(model, {
                   contextSize: options.contextSize,
                   createSignal: signal,
                   ignoreMemorySafetyChecks: false,
@@ -248,13 +255,13 @@ function generationSession(
               cause =>
                 new GenerationFailed({
                   cause,
-                  message: `Could not create a generation context for ${options.modelId}.`,
+                  message: `Could not create a generation context for ${options.modelId}: ${errorMessage(cause)}`,
                   modelId: options.modelId,
                 }),
             ),
           );
           const grammar = yield* fromPromiseInterruptible(
-            () => createGrammar(request.jsonSchema),
+            () => createGrammar.call(llama, request.jsonSchema),
             cause =>
               new GenerationFailed({
                 cause,
@@ -325,6 +332,7 @@ function acquireModel(llama: NativeLlama, options: LocalModelLoadOptions) {
 
 function embeddingSession(
   options: LocalModelLoadOptions & {readonly dimensions: number},
+  model: NativeModel,
   context: NativeEmbeddingContext,
 ): LlamaEmbeddingSession {
   return {
@@ -336,7 +344,9 @@ function embeddingSession(
             void context.dispose();
           };
           signal.addEventListener('abort', disposeOnAbort, {once: true});
-          return Promise.all(inputs.map(input => context.getEmbeddingFor(input))).finally(() => {
+          return Promise.all(
+            inputs.map(input => embeddingForInput(model, context, input, options.contextSize)),
+          ).finally(() => {
             signal.removeEventListener('abort', disposeOnAbort);
           });
         },
@@ -371,6 +381,64 @@ function embeddingSession(
       ),
     modelId: options.modelId,
   };
+}
+
+async function embeddingForInput(
+  model: NativeModel,
+  context: NativeEmbeddingContext,
+  input: string,
+  contextSize: number | undefined,
+): Promise<NativeEmbedding> {
+  const windows = embeddingInputWindows(model, input, contextSize);
+  if (windows.length === 1) {
+    return context.getEmbeddingFor(windows[0]!.text);
+  }
+  const embeddings = await Promise.all(windows.map(window => context.getEmbeddingFor(window.text)));
+  const dimensions = embeddings[0]?.vector.length ?? 0;
+  const pooled = new Array<number>(dimensions).fill(0);
+  let totalWeight = 0;
+  for (const [index, embedding] of embeddings.entries()) {
+    const weight = windows[index]!.weight;
+    totalWeight += weight;
+    for (let dimension = 0; dimension < dimensions; dimension += 1) {
+      pooled[dimension] += (embedding.vector[dimension] ?? 0) * weight;
+    }
+  }
+  if (totalWeight > 0) {
+    for (let dimension = 0; dimension < dimensions; dimension += 1) {
+      pooled[dimension] /= totalWeight;
+    }
+  }
+  const magnitude = Math.sqrt(pooled.reduce((sum, value) => sum + value * value, 0));
+  return {vector: magnitude > 0 ? pooled.map(value => value / magnitude) : pooled};
+}
+
+function embeddingInputWindows(
+  model: NativeModel,
+  input: string,
+  contextSize: number | undefined,
+): readonly {readonly text: string; readonly weight: number}[] {
+  if (contextSize === undefined || contextSize <= EMBEDDING_CONTEXT_TOKEN_RESERVE + 1) {
+    return [{text: input, weight: 1}];
+  }
+  const maximumTokens = contextSize - EMBEDDING_CONTEXT_TOKEN_RESERVE;
+  const tokens = model.tokenize(input, false);
+  if (tokens.length <= maximumTokens) {
+    return [{text: input, weight: Math.max(1, tokens.length)}];
+  }
+  const overlapTokens = Math.min(EMBEDDING_WINDOW_OVERLAP_TOKENS, Math.max(1, Math.floor(maximumTokens / 8)));
+  const windows: Array<{readonly text: string; readonly weight: number}> = [];
+  for (let start = 0; start < tokens.length;) {
+    const end = Math.min(tokens.length, start + maximumTokens);
+    const windowTokens = tokens.slice(start, end);
+    const text = model.detokenize(windowTokens, false);
+    if (text.length > 0) {
+      windows.push({text, weight: windowTokens.length});
+    }
+    if (end >= tokens.length) break;
+    start = end - overlapTokens;
+  }
+  return windows.length > 0 ? windows : [{text: input, weight: 1}];
 }
 
 function rankingSession(options: LocalModelLoadOptions, context: NativeRankingContext): LlamaRankingSession {

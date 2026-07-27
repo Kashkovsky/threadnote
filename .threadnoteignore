@@ -8,6 +8,7 @@ build/
 out/
 coverage/
 .next/
+.nx/
 .turbo/
 .gradle/
 DerivedData/

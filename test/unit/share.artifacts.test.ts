@@ -152,6 +152,21 @@ describe('shared agent artifacts', () => {
         'utf8',
       ),
     ).resolves.toContain('Reviewer');
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'shared',
+          'default',
+          'agent-artifacts',
+          'skills',
+          'codex',
+          'reviewer',
+          'SKILL.md',
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('Reviewer');
   });
 
   it('refuses to overwrite a different shared artifact unless forced', async () => {
@@ -442,6 +457,7 @@ describe('shared agent artifacts', () => {
     await expect(readFile(join(sharedRoot, 'scripts', 'run.ts'), 'utf8')).resolves.toBe(
       'export const run = () => 1;\n',
     );
+    await expect(readFile(join(sharedRoot, 'SKILL.md'), 'utf8')).resolves.toContain('Reviewer');
     const manifest = JSON.parse(await readFile(join(sharedRoot, '.threadnote-bundle.json'), 'utf8'));
     expect(manifest.members.map((m: {path: string}) => m.path)).toEqual(['SKILL.md', 'scripts/run.ts']);
     const addArgs = findGitAddArgs();
@@ -706,6 +722,10 @@ describe('shared agent artifacts', () => {
     expect(sharedVcs).toContain(`${PACK_TOKEN}/scripts`);
     expect(sharedVcs).not.toContain('/Users/yaroslavvoloshchuk');
     expect(sharedVcs).not.toContain(repo);
+    await expect(readFile(join(packRoot, 'reviewer.pack.md'), 'utf8')).resolves.toContain('# reviewer');
+    await expect(
+      readFile(join(packRoot, 'files', '.claude', 'skills', 'review-pr', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('Review PR');
     const packJson = JSON.parse(await readFile(join(packRoot, 'reviewer.pack.json'), 'utf8'));
     expect(packJson.deps.mcp).toEqual(['mcp__pal__clink']);
     expect(packJson.members.map((m: {path: string}) => m.path)).toContain('scripts/vcs.ts');

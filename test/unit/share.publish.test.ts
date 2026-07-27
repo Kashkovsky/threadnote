@@ -1,5 +1,5 @@
 import {existsSync} from 'node:fs';
-import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
@@ -138,6 +138,15 @@ describe('runSharePublish transaction ordering', () => {
       'foo',
       'bar.md',
     );
+    const worktreeTargetPath = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
     const sourcePresentAtPush: boolean[] = [];
     mockPublishCommands(sourcePath, ok('pushed'), sourcePresentAtPush);
 
@@ -146,6 +155,100 @@ describe('runSharePublish transaction ordering', () => {
     expect(sourcePresentAtPush).toEqual([true]);
     expect(existsSync(sourcePath)).toBe(false);
     expect(existsSync(targetPath)).toBe(true);
+    expect(existsSync(worktreeTargetPath)).toBe(true);
+  });
+
+  it('resumes an equivalent canonical target left by an interrupted publish', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const canonicalTargetPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    await mkdir(join(canonicalTargetPath, '..'), {recursive: true});
+    await writeFile(canonicalTargetPath, await readFile(sourcePath, 'utf8'));
+    mockPublishCommands(sourcePath, ok('pushed'), []);
+
+    await runSharePublish(config, sourceUri, {});
+
+    expect(existsSync(sourcePath)).toBe(false);
+    expect(existsSync(join(config.agentContextHome, 'shared', 'default', 'durable', 'projects', 'foo', 'bar.md'))).toBe(
+      true,
+    );
+  });
+
+  it('refuses to overwrite a changed shared worktree target before writing canonical state', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const canonicalTargetPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const worktreeTargetPath = join(
+      config.agentContextHome,
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    await mkdir(join(worktreeTargetPath, '..'), {recursive: true});
+    await writeFile(worktreeTargetPath, 'MEMORY\nkind: durable\nstatus: active\n\nNewer teammate content\n');
+    mockPublishCommands(sourcePath, ok('pushed'), []);
+
+    await expect(runSharePublish(config, sourceUri, {})).rejects.toThrow(/changed shared worktree file/);
+
+    await expect(readFile(sourcePath, 'utf8')).resolves.toContain('Body');
+    await expect(readFile(canonicalTargetPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(worktreeTargetPath, 'utf8')).resolves.toContain('Newer teammate content');
+    expect(vi.mocked(utils.runCommand).mock.calls.some(([, args]) => args.includes('add'))).toBe(false);
   });
 
   it('does not remove the personal source when git push fails', async () => {

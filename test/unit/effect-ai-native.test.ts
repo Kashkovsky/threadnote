@@ -123,11 +123,13 @@ describe('Effect AI native harness', () => {
                         getEmbeddingFor: (input: string) => Promise.resolve({vector: [input.length, 1]}),
                       }),
                     createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+                    detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
                     disposed: false,
                     dispose: () => {
                       events.push('model:dispose');
                       return Promise.resolve();
                     },
+                    tokenize: (text: string) => [...text].map(character => character.codePointAt(0)!),
                   }),
               });
             },
@@ -150,12 +152,76 @@ describe('Effect AI native harness', () => {
       expect(calls).toEqual([
         {
           build: 'never',
+          logLevel: 'error',
           progressLogs: false,
           skipDownload: true,
           usePrebuiltBinaries: true,
         },
       ]);
       expect(events).toEqual(['context:dispose', 'model:dispose', 'llama:dispose']);
+    }),
+  );
+
+  it.effect('tokenizes and pools overlong embedding inputs within the model context', () =>
+    Effect.gen(function* () {
+      const embeddedWindows: string[] = [];
+      const input = String.fromCodePoint(...Array.from({length: 80}, (_, index) => 33 + index));
+      const layer = nodeLlamaCppEngineLayer({
+        loadModule: () =>
+          Promise.resolve({
+            getLlama: () =>
+              Promise.resolve({
+                buildType: 'prebuilt' as const,
+                cpuMathCores: 8,
+                disposed: false,
+                dispose: () => Promise.resolve(),
+                gpu: false as const,
+                loadModel: () =>
+                  Promise.resolve({
+                    createEmbeddingContext: () =>
+                      Promise.resolve({
+                        disposed: false,
+                        dispose: () => Promise.resolve(),
+                        getEmbeddingFor: (input: string) => {
+                          embeddedWindows.push(input);
+                          const index = embeddedWindows.length - 1;
+                          return Promise.resolve({vector: [index + 1, 6 - index]});
+                        },
+                      }),
+                    createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+                    detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
+                    disposed: false,
+                    dispose: () => Promise.resolve(),
+                    tokenize: (text: string) => [...text].map(character => character.codePointAt(0)!),
+                  }),
+              }),
+          }),
+      });
+
+      const vector = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const engine = yield* LlamaCppEngine;
+          const session = yield* engine.loadEmbeddingSession({
+            contextSize: 32,
+            dimensions: 2,
+            modelId: 'fake',
+            modelPath: '/models/fake.gguf',
+          });
+          return (yield* session.embedMany([input]))[0];
+        }),
+      ).pipe(Effect.provide(layer));
+
+      expect(embeddedWindows).toEqual([
+        input.slice(0, 16),
+        input.slice(14, 30),
+        input.slice(28, 44),
+        input.slice(42, 58),
+        input.slice(56, 72),
+        input.slice(70, 80),
+      ]);
+      const magnitude = Math.sqrt(300 ** 2 + 330 ** 2);
+      expect(vector?.[0]).toBeCloseTo(300 / magnitude, 10);
+      expect(vector?.[1]).toBeCloseTo(330 / magnitude, 10);
     }),
   );
 
@@ -177,42 +243,51 @@ describe('Effect AI native harness', () => {
           return Promise.resolve('{"answer":"native"}');
         }
       }
+      const nativeModel = {
+        createContext() {
+          if (this !== nativeModel) return Promise.reject(new Error('createContext was called without its model'));
+          return Promise.resolve({
+            disposed: false,
+            dispose: () => {
+              events.push('context:dispose');
+              return Promise.resolve();
+            },
+            getSequence: () => ({id: 1}),
+          });
+        },
+        createEmbeddingContext: () => Promise.reject(new Error('Unexpected embedding context')),
+        createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+        detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
+        disposed: false,
+        dispose: () => {
+          events.push('model:dispose');
+          return Promise.resolve();
+        },
+        tokenize: (text: string) => [...text].map(character => character.codePointAt(0)!),
+      };
+      const nativeLlama = {
+        buildType: 'prebuilt' as const,
+        cpuMathCores: 4,
+        createGrammarForJsonSchema(schema: Readonly<Record<string, unknown>>) {
+          if (this !== nativeLlama) {
+            return Promise.reject(new Error('createGrammarForJsonSchema was called without its llama runtime'));
+          }
+          expect(schema).toMatchObject({type: 'object'});
+          return Promise.resolve({parse: (json: string) => JSON.parse(json) as unknown});
+        },
+        disposed: false,
+        dispose: () => {
+          events.push('llama:dispose');
+          return Promise.resolve();
+        },
+        gpu: false as const,
+        loadModel: () => Promise.resolve(nativeModel),
+      };
       const engineLayer = nodeLlamaCppEngineLayer({
         loadModule: () =>
           Promise.resolve({
             LlamaChatSession: FakeChatSession,
-            getLlama: () =>
-              Promise.resolve({
-                buildType: 'prebuilt' as const,
-                cpuMathCores: 4,
-                createGrammarForJsonSchema: () =>
-                  Promise.resolve({parse: (json: string) => JSON.parse(json) as unknown}),
-                disposed: false,
-                dispose: () => {
-                  events.push('llama:dispose');
-                  return Promise.resolve();
-                },
-                gpu: false as const,
-                loadModel: () =>
-                  Promise.resolve({
-                    createContext: () =>
-                      Promise.resolve({
-                        disposed: false,
-                        dispose: () => {
-                          events.push('context:dispose');
-                          return Promise.resolve();
-                        },
-                        getSequence: () => ({id: 1}),
-                      }),
-                    createEmbeddingContext: () => Promise.reject(new Error('Unexpected embedding context')),
-                    createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
-                    disposed: false,
-                    dispose: () => {
-                      events.push('model:dispose');
-                      return Promise.resolve();
-                    },
-                  }),
-              }),
+            getLlama: () => Promise.resolve(nativeLlama),
           }),
       });
       const generatorLayer = llamaStructuredGeneratorLayer({

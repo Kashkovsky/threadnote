@@ -1,12 +1,12 @@
-import {Console, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Cause, Console, Effect, FileSystem, Option, Path, Result} from 'effect';
 import yaml from 'js-yaml';
-import {DEFAULT_SEED_PATTERNS, MAX_SECRET_MATCHES_TO_PRINT, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
+import {DEFAULT_SEED_PATTERNS, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {applicationError} from './effect/errors.js';
-import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
+import {ResourceStore, type ResourceStoreMutation, type ResourceStoreShape} from './effect/resource-store.js';
 import {SystemInfo} from './effect/system.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
-import {detectSecretMatches} from './scrubber.js';
+import {applyScrubber} from './scrubber.js';
 import type {
   InitManifestOptions,
   ProjectManifest,
@@ -50,6 +50,29 @@ interface SeedStateFile {
 }
 
 const log = Console.log;
+const MAX_SEED_CANDIDATES_PER_PROJECT = 20_000;
+const MAX_SEED_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_SEED_WALK_ENTRIES_PER_PROJECT = 250_000;
+const SEED_MUTATION_BATCH_SIZE = 16;
+
+interface SeedCounters {
+  failedProjects: number;
+  imported: number;
+  removed: number;
+  skipped: number;
+  unchanged: number;
+}
+
+interface SeedWalkBudget {
+  candidates: number;
+  entries: number;
+}
+
+interface PendingSeedMutation {
+  readonly mutation: ResourceStoreMutation;
+  readonly stateEntry?: SeedStateEntry;
+  readonly stateUri: string;
+}
 
 export function runSeed(config: RuntimeConfig, options: SeedOptions) {
   return Effect.gen(function* () {
@@ -58,7 +81,6 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
     const manifest = yield* readSeedManifest(config.manifestPath);
     const ignorePatterns = yield* loadIgnorePatterns();
     const store = yield* ResourceStore;
-    const location = resourceStoreLocation(config);
     const statePath = path.join(config.agentContextHome, SEED_STATE_FILE);
     const state: {files: Record<string, SeedStateEntry>; version: 1} =
       options.force === true ? {files: {}, version: 1} : yield* readSeedState(statePath);
@@ -70,11 +92,14 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
       try: () => filterProjects(manifest.projects, options.only),
       catch: cause => applicationError('filter seed projects', cause),
     });
-    let importedCount = 0;
-    let removedCount = 0;
-    let skippedCount = 0;
-    let unchangedCount = 0;
-    const mutations: ResourceStoreMutation[] = [];
+    const counters: SeedCounters = {
+      failedProjects: 0,
+      imported: 0,
+      removed: 0,
+      skipped: 0,
+      unchanged: 0,
+    };
+    const failedProjectNames: string[] = [];
 
     for (const project of projects) {
       const projectRoot = yield* expandPath(project.path);
@@ -83,80 +108,199 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
         continue;
       }
 
-      const candidates = yield* collectSeedCandidates(project, projectRoot, ignorePatterns);
-      const currentUris = new Set(candidates.map(candidate => candidate.destinationUri));
-      for (const candidate of candidates) {
-        const fileStat = yield* statSeedFile(candidate.filePath);
-        const recorded = state.files[candidate.destinationUri];
-        if (
-          fileStat &&
-          recorded &&
-          recorded.mtimeMs === fileStat.mtimeMs &&
-          recorded.size === fileStat.size &&
-          recorded.sha256 === fileStat.sha256
-        ) {
-          unchangedCount += 1;
-          if (options.dryRun !== true && recorded.project !== project.name) {
-            state.files[candidate.destinationUri] = {...recorded, project: project.name};
-          }
-          continue;
+      const result = yield* Effect.result(
+        Effect.sandbox(
+          seedProject({
+            config,
+            counters,
+            ignorePatterns,
+            manifest,
+            options,
+            project,
+            projectRoot,
+            state,
+            store,
+          }),
+        ),
+      );
+      if (Result.isFailure(result)) {
+        if (Cause.hasInterruptsOnly(result.failure)) {
+          return yield* Effect.failCause(result.failure);
         }
-        const content = yield* prepareSeedContent(candidate);
-        if (content === undefined) {
-          if (recorded) {
-            if (options.dryRun === true) {
-              yield* log(`Would remove unsafe seeded resource: ${candidate.destinationUri}`);
-            } else {
-              mutations.push({ignoreMissing: true, type: 'remove', uri: candidate.destinationUri});
-              delete state.files[candidate.destinationUri];
-            }
-            removedCount += 1;
-          }
-          skippedCount += 1;
-          continue;
-        }
-        if (options.dryRun === true) {
-          yield* log(`Would seed resource: ${candidate.filePath} -> ${candidate.destinationUri}`);
-        } else {
-          mutations.push({
-            content,
-            options: {mode: 'upsert'},
-            type: 'write',
-            uri: candidate.destinationUri,
-          });
-        }
-        importedCount += 1;
-        if (fileStat && options.dryRun !== true) {
-          state.files[candidate.destinationUri] = {...fileStat, project: project.name};
-        }
-      }
-      for (const uri of Object.keys(state.files).filter(
-        uri =>
-          seedStateEntryOwnedByProject(uri, state.files[uri]!, project, manifest.projects) && !currentUris.has(uri),
-      )) {
-        if (options.dryRun === true) {
-          yield* log(`Would remove stale seeded resource: ${uri}`);
-        } else {
-          mutations.push({ignoreMissing: true, type: 'remove', uri});
-          delete state.files[uri];
-        }
-        removedCount += 1;
+        counters.failedProjects += 1;
+        failedProjectNames.push(project.name);
+        const error = Cause.squash(result.failure);
+        yield* log(`ERROR project ${project.name} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
     if (options.dryRun !== true) {
-      yield* store.mutate(location, mutations);
       yield* writeSeedState(statePath, state);
     }
     yield* log(
-      `Seed complete: ${importedCount} candidate(s), ${unchangedCount} unchanged, ${removedCount} stale removed, ${skippedCount} skipped for safety.`,
+      `Seed complete: ${counters.imported} candidate(s), ${counters.unchanged} unchanged, ${counters.removed} stale removed, ${counters.skipped} skipped for safety, ${counters.failedProjects} project(s) failed.`,
     );
+    if (counters.skipped > 0) {
+      yield* log(
+        `Seed safety summary: ${counters.skipped} file(s) were not seeded. Review the SKIP lines above for details.`,
+      );
+    }
 
     if (options.graph === true) {
       yield* seedDependencyGraphs(config, 'threadnote-native', manifest, projects, options.dryRun === true);
     }
+    if (failedProjectNames.length > 0) {
+      return yield* Effect.fail(
+        applicationError(
+          'seed projects',
+          new Error(
+            `${failedProjectNames.length} project(s) failed after the remaining projects were processed: ${failedProjectNames.join(', ')}`,
+          ),
+        ),
+      );
+    }
   });
 }
+
+const seedProject = Effect.fn('seeding.seedProject')(function* ({
+  config,
+  counters,
+  ignorePatterns,
+  manifest,
+  options,
+  project,
+  projectRoot,
+  state,
+  store,
+}: {
+  readonly config: RuntimeConfig;
+  readonly counters: SeedCounters;
+  readonly ignorePatterns: readonly string[];
+  readonly manifest: SeedManifest;
+  readonly options: SeedOptions;
+  readonly project: ProjectManifest;
+  readonly projectRoot: string;
+  readonly state: {files: Record<string, SeedStateEntry>; version: 1};
+  readonly store: ResourceStoreShape;
+}) {
+  const currentUris = new Set<string>();
+  const pending: PendingSeedMutation[] = [];
+  const location = resourceStoreLocation(config);
+  const flush = Effect.fn('seeding.flushMutations')(function* () {
+    if (pending.length === 0 || options.dryRun === true) {
+      return;
+    }
+    const batch = pending.splice(0);
+    yield* store.mutate(
+      location,
+      batch.map(entry => entry.mutation),
+    );
+    for (const entry of batch) {
+      if (entry.stateEntry === undefined) {
+        delete state.files[entry.stateUri];
+      } else {
+        state.files[entry.stateUri] = entry.stateEntry;
+      }
+    }
+  });
+  const queue = Effect.fn('seeding.queueMutation')(function* (entry: PendingSeedMutation) {
+    pending.push(entry);
+    if (pending.length >= SEED_MUTATION_BATCH_SIZE) {
+      yield* flush();
+    }
+  });
+
+  yield* visitSeedCandidates(project, projectRoot, ignorePatterns, candidate =>
+    Effect.gen(function* () {
+      currentUris.add(candidate.destinationUri);
+      const fileStat = yield* statSeedFile(candidate.filePath);
+      const recorded = state.files[candidate.destinationUri];
+      if (fileStat?.type === 'too-large') {
+        yield* log(
+          `SKIP ${candidate.projectName}/${candidate.relativePath}: file is ${fileStat.size} bytes; maximum seed file size is ${MAX_SEED_FILE_BYTES} bytes`,
+        );
+        if (recorded) {
+          if (options.dryRun === true) {
+            yield* log(`Would remove unsafe seeded resource: ${candidate.destinationUri}`);
+          } else {
+            yield* queue({
+              mutation: {ignoreMissing: true, type: 'remove', uri: candidate.destinationUri},
+              stateUri: candidate.destinationUri,
+            });
+          }
+          counters.removed += 1;
+        }
+        counters.skipped += 1;
+        return;
+      }
+      if (
+        fileStat?.type === 'file' &&
+        recorded &&
+        recorded.mtimeMs === fileStat.mtimeMs &&
+        recorded.size === fileStat.size &&
+        recorded.sha256 === fileStat.sha256
+      ) {
+        counters.unchanged += 1;
+        if (options.dryRun !== true && recorded.project !== project.name) {
+          state.files[candidate.destinationUri] = {...recorded, project: project.name};
+        }
+        return;
+      }
+      const content = yield* prepareSeedContent(candidate);
+      if (content === undefined) {
+        if (recorded) {
+          if (options.dryRun === true) {
+            yield* log(`Would remove unsafe seeded resource: ${candidate.destinationUri}`);
+          } else {
+            yield* queue({
+              mutation: {ignoreMissing: true, type: 'remove', uri: candidate.destinationUri},
+              stateUri: candidate.destinationUri,
+            });
+          }
+          counters.removed += 1;
+        }
+        counters.skipped += 1;
+        return;
+      }
+      if (options.dryRun === true) {
+        yield* log(`Would seed resource: ${candidate.filePath} -> ${candidate.destinationUri}`);
+      } else {
+        yield* queue({
+          mutation: {
+            content,
+            options: {mode: 'upsert'},
+            type: 'write',
+            uri: candidate.destinationUri,
+          },
+          stateEntry:
+            fileStat?.type === 'file'
+              ? {
+                  mtimeMs: fileStat.mtimeMs,
+                  project: project.name,
+                  sha256: fileStat.sha256,
+                  size: fileStat.size,
+                }
+              : undefined,
+          stateUri: candidate.destinationUri,
+        });
+      }
+      counters.imported += 1;
+    }),
+  );
+  yield* flush();
+
+  for (const uri of Object.keys(state.files).filter(
+    uri => seedStateEntryOwnedByProject(uri, state.files[uri]!, project, manifest.projects) && !currentUris.has(uri),
+  )) {
+    if (options.dryRun === true) {
+      yield* log(`Would remove stale seeded resource: ${uri}`);
+    } else {
+      yield* queue({mutation: {ignoreMissing: true, type: 'remove', uri}, stateUri: uri});
+    }
+    counters.removed += 1;
+  }
+  yield* flush();
+});
 
 /**
  * Seeds a per-project `.graph.md` dependency-facts resource. Facts are extracted
@@ -204,14 +348,10 @@ export function seedDependencyGraphs(
         projectByPublishedName,
       );
       const document = buildGraphDocument({externalCount, facts, internalEdges, projectName: project.name});
-      const secretMatches = detectSecretMatches(document);
-      if (secretMatches.length > 0) {
+      const scrubbed = applyScrubber(document, {redact: true});
+      if (scrubbed.blocker !== undefined) {
         skipped += 1;
-        yield* log(
-          `SKIP ${project.name}/.graph.md: possible secret (${secretMatches
-            .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
-            .join(', ')})`,
-        );
+        yield* log(`SKIP ${project.name}/.graph.md: possible secret (${scrubbed.blocker})`);
         continue;
       }
       const destinationUri = `${trimTrailingSlash(project.uri)}/.graph.md`;
@@ -220,7 +360,7 @@ export function seedDependencyGraphs(
         written += 1;
         continue;
       }
-      mutations.push({content: document, options: {mode: 'upsert'}, type: 'write', uri: destinationUri});
+      mutations.push({content: scrubbed.cleaned, options: {mode: 'upsert'}, type: 'write', uri: destinationUri});
       written += 1;
     }
     if (!dryRun) {
@@ -254,13 +394,19 @@ function statSeedFile(path: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const info = yield* fs.stat(path).pipe(Effect.option);
-    return info._tag === 'Some'
-      ? {
-          mtimeMs: Option.getOrElse(info.value.mtime, () => new Date(0)).getTime(),
-          sha256: yield* sha256(yield* fs.readFile(path)),
-          size: Number(info.value.size),
-        }
-      : undefined;
+    if (info._tag === 'None' || info.value.type !== 'File') {
+      return undefined;
+    }
+    const size = Number(info.value.size);
+    if (size > MAX_SEED_FILE_BYTES) {
+      return {size, type: 'too-large' as const};
+    }
+    return {
+      mtimeMs: Option.getOrElse(info.value.mtime, () => new Date(0)).getTime(),
+      sha256: yield* sha256(yield* fs.readFile(path)),
+      size,
+      type: 'file' as const,
+    };
   });
 }
 
@@ -456,7 +602,6 @@ export function runWorksetShow(config: RuntimeConfig, name: string) {
 
 export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const store = yield* ResourceStore;
     const catalogItems = yield* collectSkillCandidates(config);
     const mutations: ResourceStoreMutation[] = [];
@@ -472,7 +617,7 @@ export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
         yield* log(`Would seed skill resource: ${skill.filePath} -> ${destinationUri}`);
       } else {
         mutations.push({
-          content: yield* fs.readFileString(skill.filePath),
+          content: skill.content,
           options: {mode: 'upsert'},
           type: 'write',
           uri: destinationUri,
@@ -522,72 +667,143 @@ export const projectManifestForRepo = Effect.fn('seeding.projectManifestForRepo'
   };
 });
 
-const collectSeedCandidates = Effect.fn('seeding.collectSeedCandidates')(function* (
+const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
   project: ProjectManifest,
   projectRoot: string,
   ignorePatterns: readonly string[],
+  visit: (candidate: SeedCandidate) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>,
 ) {
   const path = yield* Path.Path;
-  const candidates: SeedCandidate[] = [];
   const seen = new Set<string>();
+  const budget: SeedWalkBudget = {candidates: 0, entries: 0};
   for (const pattern of project.seed) {
-    const files = yield* resolveProjectPattern(projectRoot, pattern);
-    for (const filePath of files) {
-      const relativePath = toPosixPath(path.relative(projectRoot, filePath));
-      if (seen.has(relativePath) || matchesIgnore(relativePath, ignorePatterns)) {
-        continue;
-      }
-      seen.add(relativePath);
-      candidates.push({
-        destinationUri: `${trimTrailingSlash(project.uri)}/${relativePath}`,
-        filePath,
-        projectName: project.name,
-        relativePath,
-      });
-    }
+    yield* visitProjectPattern(projectRoot, pattern, ignorePatterns, budget, filePath =>
+      Effect.gen(function* () {
+        const relativePath = toPosixPath(path.relative(projectRoot, filePath));
+        if (seen.has(relativePath)) {
+          return;
+        }
+        seen.add(relativePath);
+        budget.candidates += 1;
+        if (budget.candidates > MAX_SEED_CANDIDATES_PER_PROJECT) {
+          return yield* Effect.fail(
+            new Error(
+              `candidate limit exceeded (${MAX_SEED_CANDIDATES_PER_PROJECT}); narrow the project's seed patterns`,
+            ),
+          );
+        }
+        yield* visit({
+          destinationUri: `${trimTrailingSlash(project.uri)}/${relativePath}`,
+          filePath,
+          projectName: project.name,
+          relativePath,
+        });
+      }),
+    );
   }
-  return candidates;
 });
 
-const resolveProjectPattern = Effect.fn('seeding.resolveProjectPattern')(function* (
+const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
   projectRoot: string,
   pattern: string,
+  ignorePatterns: readonly string[],
+  budget: SeedWalkBudget,
+  visitFile: (filePath: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const normalizedPattern = toPosixPath(pattern);
   if (!hasGlob(normalizedPattern)) {
     const filePath = path.join(projectRoot, normalizedPattern);
-    return (yield* isFile(filePath)) ? [filePath] : [];
+    const relativePath = toPosixPath(path.relative(projectRoot, filePath));
+    if ((yield* isFile(filePath)) && !matchesIgnore(relativePath, ignorePatterns)) {
+      yield* visitFile(filePath);
+    }
+    return;
   }
 
   const globBase = getGlobBase(normalizedPattern);
   const basePath = path.join(projectRoot, globBase);
   if (!(yield* exists(basePath))) {
-    return [];
+    return;
   }
 
   const regex = globToRegExp(normalizedPattern);
-  const files = yield* walkFiles(basePath);
-  return files.filter(filePath => regex.test(toPosixPath(path.relative(projectRoot, filePath))));
+  const patternDepth = normalizedPattern.split('/').filter(segment => segment !== '' && segment !== '.').length;
+  const recursiveGlob = normalizedPattern.includes('**');
+  const explicitlyIncludedHiddenDirectories = new Set(
+    normalizedPattern
+      .split('/')
+      .filter(segment => segment.startsWith('.') && segment !== '.' && segment !== '..' && !hasGlob(segment)),
+  );
+  const visitPath: (currentPath: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path> = Effect.fn(
+    'seeding.visitProjectPath',
+  )(function* (currentPath: string) {
+    const relativePath = toPosixPath(path.relative(projectRoot, currentPath));
+    if (relativePath !== '' && matchesIgnore(relativePath, ignorePatterns)) {
+      return;
+    }
+    const pathStat = yield* fs.stat(currentPath).pipe(Effect.option);
+    if (pathStat._tag === 'None' || pathStat.value.type === 'SymbolicLink') {
+      return;
+    }
+    if (pathStat.value.type === 'File') {
+      if (regex.test(relativePath)) {
+        yield* visitFile(currentPath);
+      }
+      return;
+    }
+    if (pathStat.value.type !== 'Directory') {
+      return;
+    }
+    const directoryName = relativePath.split('/').at(-1) ?? '';
+    if (
+      directoryName.startsWith('.') &&
+      relativePath !== '' &&
+      !explicitlyIncludedHiddenDirectories.has(directoryName)
+    ) {
+      return;
+    }
+    const directoryDepth =
+      relativePath === '' ? 0 : relativePath.split('/').filter(segment => segment !== '' && segment !== '.').length;
+    if (!recursiveGlob && directoryDepth >= patternDepth) {
+      return;
+    }
+    for (const entry of yield* fs.readDirectory(currentPath)) {
+      const entryPath = path.join(currentPath, entry);
+      const entryRelativePath = toPosixPath(path.relative(projectRoot, entryPath));
+      if (matchesIgnore(entryRelativePath, ignorePatterns)) {
+        continue;
+      }
+      budget.entries += 1;
+      if (budget.entries > MAX_SEED_WALK_ENTRIES_PER_PROJECT) {
+        return yield* Effect.fail(
+          new Error(
+            `filesystem traversal limit exceeded (${MAX_SEED_WALK_ENTRIES_PER_PROJECT} entries); narrow the project's seed patterns or extend .threadnoteignore`,
+          ),
+        );
+      }
+      yield* visitPath(entryPath);
+    }
+  });
+  yield* visitPath(basePath);
 });
 
 const prepareSeedContent = Effect.fn('seeding.prepareSeedContent')(function* (candidate: SeedCandidate) {
   const fs = yield* FileSystem.FileSystem;
   const content = yield* fs.readFileString(candidate.filePath);
-  const redactedContent = shouldRedactPath(candidate.relativePath)
+  const preRedactedContent = shouldRedactPath(candidate.relativePath)
     ? redactContent(candidate.relativePath, content)
     : content;
-  const secretMatches = detectSecretMatches(redactedContent);
-  if (secretMatches.length > 0) {
+  const scrubbed = applyScrubber(preRedactedContent, {redact: true});
+  if (scrubbed.blocker !== undefined) {
     yield* Console.log(
-      `SKIP ${candidate.projectName}/${candidate.relativePath}: possible secret (${secretMatches
-        .slice(0, MAX_SECRET_MATCHES_TO_PRINT)
-        .join(', ')})`,
+      `SKIP ${candidate.projectName}/${candidate.relativePath}: possible secret (${scrubbed.blocker})`,
     );
     return undefined;
   }
 
-  return redactedContent;
+  return scrubbed.cleaned;
 });
 
 function resourceStoreLocation(config: RuntimeConfig) {
@@ -635,17 +851,17 @@ const collectSkillCandidates = Effect.fn('seeding.collectSkillCandidates')(funct
     const files = yield* resolveAbsolutePattern(yield* expandPath(source.pattern));
     for (const filePath of files) {
       const content = yield* fs.readFileString(filePath);
-      const matches = detectSecretMatches(content);
-      if (matches.length > 0) {
-        yield* Console.log(`SKIP skill with possible secret: ${filePath}`);
+      const scrubbed = applyScrubber(content, {redact: true});
+      if (scrubbed.blocker !== undefined) {
+        yield* Console.log(`SKIP skill with possible secret (${scrubbed.blocker}): ${filePath}`);
         continue;
       }
-      const hash = yield* sha256(content);
+      const hash = yield* sha256(scrubbed.cleaned);
       if (seenHashes.has(hash)) {
         continue;
       }
       seenHashes.add(hash);
-      skills.push({filePath, hash, kind: source.kind, source: source.source});
+      skills.push({content: scrubbed.cleaned, filePath, hash, kind: source.kind, source: source.source});
     }
   }
   return skills;

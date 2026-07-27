@@ -1,6 +1,7 @@
 import {Clock, Crypto, Effect, FileSystem, Path, Result} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {LocalModelStore} from '../models/store.js';
 import {readModelSelection} from '../models/selection.js';
@@ -17,8 +18,13 @@ import {
 const VECTOR_INDEX_POINTER_VERSION = 1 as const;
 const VECTOR_INDEX_EMBED_BATCH_SIZE = 256;
 interface VectorIndexPointer {
+  readonly chunkCount?: number;
+  readonly chunkerVersion?: number;
+  readonly corpusGeneration?: string;
   readonly createdAt: string;
+  readonly dimensions?: number;
   readonly generation: string;
+  readonly modelSha256?: string;
   readonly sidecarSha256: string;
   readonly version: typeof VECTOR_INDEX_POINTER_VERSION;
 }
@@ -43,10 +49,97 @@ export interface VectorIndexStatus {
   readonly reusedChunkCount?: number;
 }
 
+interface VectorIndexBuildOptions {
+  readonly corpusGeneration?: string;
+}
+
 export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
   config: {readonly agentContextHome: string},
   manifest: LocalModelManifest,
   candidates: readonly RecallCandidate[],
+  options: VectorIndexBuildOptions = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* withVectorIndexLock(fs, path, config.agentContextHome, manifest.id, () =>
+    rebuildVectorIndexUnlocked(config, manifest, candidates, options),
+  );
+});
+
+export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* (
+  config: {readonly agentContextHome: string},
+  manifest: LocalModelManifest,
+  candidates: readonly RecallCandidate[],
+  options: VectorIndexBuildOptions = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const chunks = candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
+  const current = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, options).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  if (current) {
+    return current;
+  }
+  return yield* withVectorIndexLock(fs, path, config.agentContextHome, manifest.id, () =>
+    Effect.gen(function* () {
+      const lockedCurrent = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, options).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      if (lockedCurrent) {
+        return lockedCurrent;
+      }
+      return yield* rebuildVectorIndexUnlocked(config, manifest, candidates, options, chunks);
+    }),
+  );
+});
+
+export const vectorIndexMatchesGeneration = Effect.fn('vectorIndex.matchesGeneration')(function* (
+  home: string,
+  manifest: LocalModelManifest,
+  corpusGeneration: string,
+) {
+  const active = yield* readActiveVectorSidecar(home, manifest).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  if (!active) return false;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const pointer = yield* readVectorPointer(path, fs, home, manifest.id);
+  return pointerMatchesCorpus(pointer, manifest, corpusGeneration);
+});
+
+const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* (
+  home: string,
+  manifest: LocalModelManifest,
+  chunks: readonly RecallChunk[],
+  options: VectorIndexBuildOptions,
+) {
+  const active = yield* readActiveVectorSidecar(home, manifest);
+  if (!active) return undefined;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const pointer = yield* readVectorPointer(path, fs, home, manifest.id);
+  const current = options.corpusGeneration
+    ? pointerMatchesCorpus(pointer, manifest, options.corpusGeneration)
+    : vectorSidecarMatchesChunks(active, chunks);
+  if (!current) return undefined;
+  return {
+    chunkCount: active.entries.length,
+    createdAt: pointer?.createdAt,
+    dimensions: active.metadata.dimensions,
+    embeddedChunkCount: 0,
+    generation: pointer?.generation,
+    modelId: manifest.id,
+    ready: true,
+    reusedChunkCount: active.entries.length,
+  } satisfies VectorIndexStatus;
+});
+
+const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(function* (
+  config: {readonly agentContextHome: string},
+  manifest: LocalModelManifest,
+  candidates: readonly RecallCandidate[],
+  options: VectorIndexBuildOptions = {},
+  preparedChunks?: readonly RecallChunk[],
 ) {
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
     return yield* Effect.fail(new Error(`Model ${manifest.id} is not an embedding model.`));
@@ -57,7 +150,7 @@ export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
   const runtime = yield* LocalModelRuntime;
   const store = yield* LocalModelStore;
   const installed = yield* store.verify(config.agentContextHome, manifest);
-  const chunks = candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
+  const chunks = preparedChunks ?? candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
   const root = vectorModelRoot(path, config.agentContextHome, manifest.id);
   const jobId = yield* sha256Hex(
     `${manifest.sha256}\n${RECALL_CHUNKER_VERSION}\n${chunks.map(chunk => chunk.id).join('\n')}`,
@@ -122,8 +215,13 @@ export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
   yield* fs.makeDirectory(generationDirectory, {recursive: true, mode: 0o700});
   yield* fs.writeFile(sidecarPath, encoded, {mode: 0o600});
   const pointer: VectorIndexPointer = {
+    chunkCount: entries.length,
+    chunkerVersion: RECALL_CHUNKER_VERSION,
+    corpusGeneration: options.corpusGeneration,
     createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+    dimensions: manifest.dimensions,
     generation,
+    modelSha256: manifest.sha256,
     sidecarSha256: yield* sha256Hex(encoded),
     version: VECTOR_INDEX_POINTER_VERSION,
   };
@@ -192,6 +290,7 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
 export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
   home: string,
   manifest: LocalModelManifest,
+  candidates?: readonly RecallCandidate[],
 ) {
   const sidecar = yield* readActiveVectorSidecar(home, manifest).pipe(Effect.result);
   if (Result.isFailure(sidecar)) {
@@ -204,6 +303,21 @@ export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
   }
   if (!sidecar.success) {
     return {chunkCount: 0, modelId: manifest.id, ready: false, reason: 'not built'} satisfies VectorIndexStatus;
+  }
+  if (
+    candidates &&
+    !vectorSidecarMatchesChunks(
+      sidecar.success,
+      candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text)),
+    )
+  ) {
+    return {
+      chunkCount: sidecar.success.entries.length,
+      dimensions: sidecar.success.metadata.dimensions,
+      modelId: manifest.id,
+      ready: false,
+      reason: 'stale; canonical documents changed',
+    } satisfies VectorIndexStatus;
   }
   const path = yield* Path.Path;
   const pointer = yield* readVectorPointer(path, yield* FileSystem.FileSystem, home, manifest.id);
@@ -374,6 +488,35 @@ function vectorModelRoot(path: Path.Path, home: string, modelId: string): string
   return path.join(home, 'indexes', 'vectors', modelId);
 }
 
+function withVectorIndexLock<A, E, R>(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  home: string,
+  modelId: string,
+  effect: () => Effect.Effect<A, E, R>,
+) {
+  return withExclusiveFileLock(
+    fs,
+    path.join(home, 'locks', 'indexes', 'vectors', `${modelId}.lock`),
+    {
+      heartbeatIntervalMilliseconds: 10_000,
+      retryIntervalMilliseconds: 100,
+      staleAfterMilliseconds: 60_000,
+      waitTimeoutMilliseconds: 120_000,
+    },
+    Effect.suspend(effect),
+  );
+}
+
+function vectorSidecarMatchesChunks(sidecar: VectorSidecar, chunks: readonly RecallChunk[]): boolean {
+  if (sidecar.entries.length !== chunks.length) return false;
+  const expectedById = new Map(chunks.map(chunk => [chunk.id, chunk]));
+  return sidecar.entries.every(entry => {
+    const expected = expectedById.get(entry.id);
+    return expected?.fingerprint === entry.fingerprint && expected.uri === entry.uri;
+  });
+}
+
 function vectorSidecarCacheKey(path: Path.Path, home: string, modelId: string): string {
   return `${path.resolve(home)}\u0000${modelId}`;
 }
@@ -387,6 +530,21 @@ function vectorSidecarIsCompatible(sidecar: VectorSidecar, manifest: LocalModelM
   );
 }
 
+function pointerMatchesCorpus(
+  pointer: VectorIndexPointer | undefined,
+  manifest: LocalModelManifest,
+  corpusGeneration: string,
+): boolean {
+  return (
+    pointer?.corpusGeneration === corpusGeneration &&
+    pointer.modelSha256 === manifest.sha256 &&
+    pointer.dimensions === manifest.dimensions &&
+    pointer.chunkerVersion === RECALL_CHUNKER_VERSION &&
+    pointer.chunkCount !== undefined &&
+    pointer.chunkCount >= 0
+  );
+}
+
 function isVectorPointer(value: unknown): value is VectorIndexPointer {
   if (typeof value !== 'object' || value === null) return false;
   const pointer = value as Partial<VectorIndexPointer>;
@@ -396,7 +554,12 @@ function isVectorPointer(value: unknown): value is VectorIndexPointer {
     typeof pointer.generation === 'string' &&
     /^[0-9]+-[a-f0-9-]+$/.test(pointer.generation) &&
     typeof pointer.sidecarSha256 === 'string' &&
-    /^[0-9a-f]{64}$/.test(pointer.sidecarSha256)
+    /^[0-9a-f]{64}$/.test(pointer.sidecarSha256) &&
+    (pointer.chunkCount === undefined || (Number.isInteger(pointer.chunkCount) && pointer.chunkCount >= 0)) &&
+    (pointer.chunkerVersion === undefined || Number.isInteger(pointer.chunkerVersion)) &&
+    (pointer.corpusGeneration === undefined || typeof pointer.corpusGeneration === 'string') &&
+    (pointer.dimensions === undefined || (Number.isInteger(pointer.dimensions) && pointer.dimensions > 0)) &&
+    (pointer.modelSha256 === undefined || /^[0-9a-f]{64}$/.test(pointer.modelSha256))
   );
 }
 

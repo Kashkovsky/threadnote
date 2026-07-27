@@ -1,5 +1,6 @@
 import {Effect, Layer} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {GenerationFailed} from '../../src/effect/ai/errors.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {runNativeMemoryEnrichment} from '../../src/effect/ai/enrichment.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
@@ -36,6 +37,30 @@ describe('native memory enrichment', () => {
       await rm(home, {force: true, recursive: true});
     }
   });
+
+  it('keeps the native generation failure actionable when enrichment is skipped', async () => {
+    const home = await mkdtemp('threadnote-native-enrichment-');
+    try {
+      const effect = Effect.gen(function* () {
+        const catalog = yield* LocalModelCatalog;
+        yield* selectLocalModel(home, catalog, 'generation', manifest.id);
+        return yield* runNativeMemoryEnrichment(
+          {agentContextHome: home},
+          {
+            body: 'A durable memory.',
+            kind: 'durable',
+            project: 'threadnote',
+            topic: 'native-enrichment',
+          },
+        );
+      }).pipe(Effect.provide(failingRuntimeLayer), Effect.provide(fakeStoreLayer(home)));
+      await expect(runEffect(effect)).rejects.toThrow(
+        'Native memory enrichment failed: Could not create a generation context for gemma-4-e4b-it-q4: native context detail',
+      );
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
 });
 
 const fakeRuntimeLayer = Layer.succeed(
@@ -46,6 +71,22 @@ const fakeRuntimeLayer = Layer.succeed(
       Effect.succeed({
         searchPhrases: ['resume jobs after heartbeat timeout', 'recover worker after expired lease', 'lease recovery'],
       }),
+    rerank: () => Effect.die(new Error('Unexpected reranking')),
+  }),
+);
+
+const failingRuntimeLayer = Layer.succeed(
+  LocalModelRuntime,
+  LocalModelRuntime.of({
+    embedMany: () => Effect.die(new Error('Unexpected embedding')),
+    generate: request =>
+      Effect.fail(
+        new GenerationFailed({
+          cause: new TypeError("Cannot read properties of undefined (reading '_vocabOnly')"),
+          message: `Could not create a generation context for ${request.manifest.id}: native context detail`,
+          modelId: request.manifest.id,
+        }),
+      ),
     rerank: () => Effect.die(new Error('Unexpected reranking')),
   }),
 );

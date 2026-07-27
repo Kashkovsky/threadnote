@@ -1,8 +1,11 @@
 import type {LocalModelManifest} from './catalog.js';
 
+export const CORE_EMBEDDING_MODEL_ID = 'bge-small-en-v1.5-q8';
+
 /**
- * Measured candidates, not selected defaults. A role is selected only after its
- * Phase 0 bake-off artifact passes the category-level recall and hardware gates.
+ * Pinned local models. BGE Small is the core embedding model because its small
+ * footprint makes automatic installation practical; semantic answer gating is
+ * governed separately by the recall benchmark.
  */
 export const BUILTIN_MODEL_MANIFESTS = [
   {

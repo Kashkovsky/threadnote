@@ -153,7 +153,7 @@ export const runNativeMemoryEnrichment = Effect.fn('MemoryEnricher.runNative')(f
         ? cause
         : new AiMemoryEnrichmentFailed({
             cause,
-            message: 'Native memory enrichment failed.',
+            message: `Native memory enrichment failed: ${redactSensitiveText(errorMessage(cause))}`,
           }),
     ),
   );
@@ -258,4 +258,8 @@ function normalizeKeywordKey(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

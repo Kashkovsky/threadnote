@@ -566,6 +566,38 @@ describe('hybrid recall ranker', () => {
     expect(ranked.confidence.level).toBe('no_answer');
   });
 
+  it('rejects uncorroborated semantic background similarity below the measured answer boundary', () => {
+    const ranked = rankRecallCandidates('quantum networking policy', [
+      {
+        authority: 'canonical_repo',
+        semantic: 0.78,
+        status: 'active',
+        text: 'Publish the package and verify its release tag.',
+        trust: 'approved',
+        uri: 'threadnote://resources/repos/threadnote/release.md',
+      },
+    ]);
+
+    expect(ranked.results).toHaveLength(1);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
+  it('allows exceptionally strong semantic evidence without lexical overlap', () => {
+    const ranked = rankRecallCandidates('resume jobs after a stalled heartbeat', [
+      {
+        authority: 'canonical_repo',
+        semantic: 0.98,
+        status: 'active',
+        text: 'The coordinator reschedules work when worker liveness expires.',
+        trust: 'approved',
+        uri: 'threadnote://resources/repos/orion/lease-renewal.md',
+      },
+    ]);
+
+    expect(ranked.results).toHaveLength(1);
+    expect(ranked.confidence.level).not.toBe('no_answer');
+  });
+
   it('includes bounded user feedback as a transparent reranking signal', () => {
     const ranked = rankRecallCandidates('effect workflow', [
       {

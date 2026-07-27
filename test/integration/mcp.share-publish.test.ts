@@ -15,7 +15,7 @@ interface TextContent {
 
 async function makeHome(root: string): Promise<string> {
   const home = join(root, 'home');
-  const worktree = join(home, 'data', 'local', 'user', 'test-user', 'memories', 'shared', 'default');
+  const worktree = join(home, 'share', 'worktrees', 'default');
   const sourcePath = join(
     home,
     'data',
@@ -94,7 +94,7 @@ async function makeFakeBin(root: string, options: {readonly mutateSourceOnCommit
     join(bin, 'git'),
     `#! /usr/bin/env node
 const args = process.argv.slice(2);
-if (args.includes('fetch') || args.includes('add')) {
+if (args.includes('fetch') || args.includes('add') || args.includes('ls-files')) {
   process.exit(0);
 }
 if (args.includes('rev-list')) {
@@ -164,6 +164,9 @@ describe('Threadnote MCP share_publish', () => {
       const text = (result.content as TextContent[]).map(item => item.text).join('\n');
       expect(text).toContain(`Published ${sourceUri} -> ${targetUri}`);
       expect(text).toContain('git push skipped (push=false)');
+      await expect(
+        readFile(join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'), 'utf8'),
+      ).resolves.toContain('Body');
     } finally {
       await client.close().catch(() => undefined);
       await rm(root, {force: true, recursive: true});

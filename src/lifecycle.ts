@@ -13,6 +13,11 @@ import {loadRecallIndexData} from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
 import {migrateLegacyLocalModels} from './migration/models.js';
+import {provisionCoreEmbedding} from './models/core-embedding.js';
+import {LocalModelCatalog} from './models/catalog.js';
+import {readModelSelection} from './models/selection.js';
+import {LocalModelStore} from './models/store.js';
+import {ensureVectorIndex, vectorIndexStatus} from './search/vector-index.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
   DoctorCheck,
@@ -96,6 +101,8 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks())));
   checks.push(
     yield* safeDoctorCheck('lexical recall index', recallIndexCheck(config)),
+    yield* safeDoctorCheck('embedding model', embeddingModelCheck(config)),
+    yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config)),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
   );
   checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
@@ -195,6 +202,20 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     }
     yield* writeLayoutReceipt(fs, path, config.agentContextHome);
   }
+  const embedding = yield* provisionCoreEmbedding(config, {dryRun});
+  if (dryRun) {
+    yield* Console.log(
+      `Would build the lexical SQLite index and ${embedding.manifest.id} vector index from canonical documents.`,
+    );
+  } else {
+    const index = yield* loadRecallIndexData(config, {includeInactive: false});
+    const vectors = yield* ensureVectorIndex(config, embedding.manifest, index.candidates, {
+      corpusGeneration: index.generation,
+    });
+    yield* Console.log(
+      `Recall indexes ready: ${index.candidates.length} lexical document(s), ${vectors.chunkCount} vector chunk(s).`,
+    );
+  }
   yield* installUserAgentInstructions(dryRun);
   if (options.start !== false) {
     yield* Console.log('Threadnote 4 uses in-process storage and inference; no background server is required.');
@@ -203,22 +224,33 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     yield* Console.log(
       dryRun
         ? 'Dry run complete. Run without --dry-run to initialize the Threadnote home.'
-        : 'Install complete. Next: `threadnote seed`, then `threadnote models list` for optional semantic recall.',
+        : 'Install complete. Semantic recall is ready. Next: `threadnote seed` to add repository resources.',
     );
   }
+  return embedding;
 });
 
 export const runRepair = Effect.fn('lifecycle.repair')(function* (config: RuntimeConfig, options: RepairOptions) {
   const dryRun = options.dryRun === true;
   yield* Console.log('Repairing the self-contained Threadnote home.');
-  yield* runInstall(config, {dryRun, printNextSteps: false, start: false});
+  const embedding = yield* runInstall(config, {dryRun, printNextSteps: false, start: false});
   if (!dryRun) {
     yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false}).pipe(
-      Effect.tap(index => Console.log(`Rebuilt lexical recall index for ${index.candidates.length} document(s).`)),
-      Effect.catch(cause => Console.warn(`WARN lexical index repair failed: ${errorMessage(cause)}`)),
+      Effect.tap(index =>
+        ensureVectorIndex(config, embedding.manifest, index.candidates, {
+          corpusGeneration: index.generation,
+        }).pipe(
+          Effect.tap(vectors =>
+            Console.log(
+              `Rebuilt recall indexes for ${index.candidates.length} document(s) and ${vectors.chunkCount} vector chunk(s).`,
+            ),
+          ),
+        ),
+      ),
+      Effect.catch(cause => Console.warn(`WARN recall index repair failed: ${errorMessage(cause)}`)),
     );
   } else {
-    yield* Console.log('Would validate and rebuild the derived lexical recall index.');
+    yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
   const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
   for (const client of mcpClients) {
@@ -343,6 +375,67 @@ function recallIndexCheck(config: RuntimeConfig) {
       }),
     ),
   );
+}
+
+function embeddingModelCheck(config: RuntimeConfig) {
+  return Effect.gen(function* () {
+    const selection = yield* readModelSelection(config.agentContextHome);
+    const modelId = selection.roles.embedding;
+    if (!modelId) {
+      return {
+        detail: 'missing; run `threadnote repair` to install the core embedding model',
+        name: 'embedding model',
+        status: 'fail' as const,
+      };
+    }
+    const catalog = yield* LocalModelCatalog;
+    const manifest = yield* catalog.get(modelId);
+    if (manifest.role !== 'embedding') {
+      return {detail: `${modelId} is not an embedding model`, name: 'embedding model', status: 'fail' as const};
+    }
+    const store = yield* LocalModelStore;
+    const verified = yield* store.verify(config.agentContextHome, manifest).pipe(Effect.result);
+    return Result.isSuccess(verified)
+      ? {
+          detail: `${manifest.id}; ${manifest.dimensions ?? 0} dimensions; verified`,
+          name: 'embedding model',
+          status: 'ok' as const,
+        }
+      : {
+          detail: `${manifest.id} is not installed or failed verification; run \`threadnote repair\``,
+          name: 'embedding model',
+          status: 'fail' as const,
+        };
+  });
+}
+
+function vectorRecallIndexCheck(config: RuntimeConfig) {
+  return Effect.gen(function* () {
+    const selection = yield* readModelSelection(config.agentContextHome);
+    const modelId = selection.roles.embedding;
+    if (!modelId) {
+      return {
+        detail: 'unavailable until the core embedding model is installed',
+        name: 'vector recall index',
+        status: 'fail' as const,
+      };
+    }
+    const catalog = yield* LocalModelCatalog;
+    const manifest = yield* catalog.get(modelId);
+    const index = yield* loadRecallIndexData(config, {includeInactive: false});
+    const status = yield* vectorIndexStatus(config.agentContextHome, manifest, index.candidates);
+    return status.ready
+      ? {
+          detail: `${status.chunkCount} chunk(s); ${manifest.id}; generation ${status.generation ?? 'unknown'}`,
+          name: 'vector recall index',
+          status: 'ok' as const,
+        }
+      : {
+          detail: `${manifest.id}; ${status.reason ?? 'not built'}; run \`threadnote repair\``,
+          name: 'vector recall index',
+          status: 'fail' as const,
+        };
+  });
 }
 
 function layoutReceiptCheck(fs: FileSystem.FileSystem, path: Path.Path, home: string) {

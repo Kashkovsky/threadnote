@@ -1,12 +1,15 @@
-import {Clock, Effect} from 'effect';
+import {Cause, Clock, Effect} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import type {MemoryRecord} from '../memory_document.js';
 import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
 import {rerankWithSelectedLocalModel} from '../models/inference.js';
+import {LocalModelCatalog} from '../models/catalog.js';
+import {readModelSelection} from '../models/selection.js';
+import {LocalModelStore} from '../models/store.js';
 import {loadRecallFeedback} from './feedback.js';
 import {loadRecallIndexData, loadRecallIndexDataBatch} from './index.js';
 import type {RecallCandidate} from './rank.js';
-import {selectedSemanticScores} from '../search/vector-index.js';
+import {ensureVectorIndex, selectedSemanticScores, vectorIndexMatchesGeneration} from '../search/vector-index.js';
 
 interface RecallRuntimeConfig {
   readonly account: string;
@@ -178,9 +181,31 @@ export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(f
   query: string,
   limit: number,
 ) {
-  return yield* selectedSemanticScores(config, query, {
-    limit: Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER),
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return yield* Effect.gen(function* () {
+    const selection = yield* readModelSelection(config.agentContextHome);
+    const modelId = selection.roles.embedding;
+    if (!modelId) return undefined;
+    const catalog = yield* LocalModelCatalog;
+    const manifest = yield* catalog.get(modelId);
+    if (manifest.role !== 'embedding') return undefined;
+    const store = yield* LocalModelStore;
+    const installed = yield* store.status(config.agentContextHome, manifest);
+    if (!installed.installed) return undefined;
+    const snapshot = yield* loadRecallIndexData(config, {
+      includeInactive: false,
+      limit: 0,
+      query: '',
+    });
+    if (!(yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, snapshot.generation))) {
+      const index = yield* loadRecallIndexData(config, {includeInactive: false});
+      yield* ensureVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
+    }
+    return yield* selectedSemanticScores(config, query, {
+      limit: Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER),
+    });
+  }).pipe(
+    Effect.catchCause(cause => (Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
+  );
 });
 
 const applySelectedNativeReranker = Effect.fn('recall.applySelectedNativeReranker')(function* (
