@@ -30,7 +30,8 @@ describe('Effect CLI', () => {
     const switching = await runCli(['local-ai', 'model', 'switch', '--help']);
 
     expect(install.stdout).toContain('--model string');
-    expect(install.stdout).toContain('LFM2.5-350M');
+    expect(install.stdout).toContain('gemma-4-E4B-it-Q4_0');
+    expect(install.stdout).not.toContain('LFM2.5-350M');
     expect(switching.stdout).toContain('threadnote local-ai model switch [flags]');
     expect(switching.stdout).toContain('--model string');
   });

@@ -1,4 +1,7 @@
+import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, truncate, writeFile} from 'node:fs/promises';
+import {createServer} from 'node:http';
+import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
@@ -12,6 +15,7 @@ import {
 import {
   LOCAL_AI_DEFAULT_PORT,
   LOCAL_AI_MODEL_ID,
+  ensureLocalAiStarted,
   listInstalledLocalAiModels,
   localAiDoctorCheck,
   localAiHealthProof,
@@ -129,28 +133,15 @@ describe('local AI configuration', () => {
     expect(result.output).toContain('Would start the loopback model service at http://127.0.0.1:1934/v1');
   });
 
-  it('resolves the friendly LFM model name to the pinned official GGUF artifact', async () => {
-    const home = await makeHome();
-    const result = await runEffect(
-      captureConsole(runLocalAiInstall(runtime(home), {dryRun: true, model: 'LFM2.5-350M'})).pipe(
-        Effect.provide(ApplicationLayer),
-      ),
-    );
-
-    expect(findLocalAiModel('LiquidAI/LFM2.5-350M')?.id).toBe('LFM2.5-350M');
-    expect(result.output).toContain('LiquidAI/LFM2.5-350M-GGUF/LFM2.5-350M-Q4_K_M.gguf');
-    expect(result.output).toContain('0.23 GB');
-    expect(result.output).toContain('7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4');
-  });
-
-  it('rejects unknown install model names with the available choices', async () => {
+  it('rejects unverified install model names with the verified choice', async () => {
     const home = await makeHome();
 
+    expect(findLocalAiModel('LFM2.5-350M')).toBeUndefined();
     await expect(
       runEffect(
-        runLocalAiInstall(runtime(home), {dryRun: true, model: 'unknown'}).pipe(Effect.provide(ApplicationLayer)),
+        runLocalAiInstall(runtime(home), {dryRun: true, model: 'LFM2.5-350M'}).pipe(Effect.provide(ApplicationLayer)),
       ),
-    ).rejects.toThrow(/Available models: gemma-4-E4B-it-Q4_0, LFM2.5-350M/);
+    ).rejects.toThrow(/Available models: gemma-4-E4B-it-Q4_0/);
   });
 
   it('guides model installation instead of crashing when no models are available', async () => {
@@ -160,30 +151,64 @@ describe('local AI configuration', () => {
     );
 
     expect(result.output).toContain('No installed local AI models are available.');
-    expect(result.output).toContain('threadnote local-ai install --model LFM2.5-350M');
+    expect(result.output).toContain('threadnote local-ai install');
+    expect(result.output).not.toContain('LFM2.5-350M');
   });
 
-  it('switches directly between installed models while preserving disabled state', async () => {
+  it('rejects an explicit unverified switch even when no verified model is installed', async () => {
+    const home = await makeHome();
+
+    await expect(
+      runEffect(runLocalAiModelSwitch(runtime(home), {model: 'LFM2.5-350M'}).pipe(Effect.provide(ApplicationLayer))),
+    ).rejects.toThrow(/Unknown local AI model "LFM2.5-350M"/);
+  });
+
+  it('refuses a healthy service when its configured model is no longer verified', async () => {
+    const home = await makeHome();
+    const model = 'LFM2.5-350M';
+    const launchId = 'retired-model-test';
+    const pid = 42;
+    const server = createServer((request, response) => {
+      const challenge = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('challenge') ?? '';
+      const proof = createHash('sha256')
+        .update([challenge, 'threadnote-local-ai', model, String(pid), launchId, ACCESS_TOKEN].join('\0'))
+        .digest('hex');
+      response.writeHead(200, {'content-type': 'application/json'});
+      response.end(JSON.stringify({launchId, model, pid, proof, service: 'threadnote-local-ai', status: 'ok'}));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    await writeSettings(home, {model, modelPath: '/models/retired.gguf', port});
+
+    try {
+      await expect(
+        runEffect(ensureLocalAiStarted(runtime(home)).pipe(Effect.provide(ApplicationLayer))),
+      ).rejects.toThrow(`Configured local AI model is unsupported: ${model}`);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => (error === undefined ? resolve() : reject(error))),
+      );
+    }
+  });
+
+  it('selects a verified installed model when no model is configured', async () => {
     const home = await makeHome();
     const gemma = findLocalAiModel(LOCAL_AI_MODEL_ID)!;
-    const lfm = findLocalAiModel('LFM2.5-350M')!;
     const gemmaPath = join(home, 'threadnote', 'models', gemma.file);
-    const lfmPath = join(home, 'threadnote', 'models', lfm.file);
     await mkdir(join(home, 'threadnote', 'models'), {recursive: true});
-    await Promise.all([writeFile(gemmaPath, ''), writeFile(lfmPath, '')]);
-    await Promise.all([truncate(gemmaPath, gemma.size), truncate(lfmPath, lfm.size)]);
-    await writeSettings(home, {enabled: false, model: gemma.id, modelPath: gemmaPath});
+    await writeFile(gemmaPath, '');
+    await truncate(gemmaPath, gemma.size);
 
     const installed = await runEffect(listInstalledLocalAiModels(runtime(home)).pipe(Effect.provide(ApplicationLayer)));
     const result = await runEffect(
-      captureConsole(runLocalAiModelSwitch(runtime(home), {dryRun: true, model: 'LiquidAI/LFM2.5-350M'})).pipe(
+      captureConsole(runLocalAiModelSwitch(runtime(home), {dryRun: true, model: gemma.id})).pipe(
         Effect.provide(ApplicationLayer),
       ),
     );
 
-    expect(installed.map(item => item.definition.id)).toEqual([gemma.id, lfm.id]);
-    expect(result.output).toContain(`Would switch local AI from ${gemma.id} to ${lfm.id}.`);
-    expect(result.output).toContain('Would preserve the disabled local AI state.');
+    expect(installed.map(item => item.definition.id)).toEqual([gemma.id]);
+    expect(result.output).toContain(`Would switch local AI from no configured model to ${gemma.id}.`);
+    expect(result.output).toContain('Would restart the loopback model service');
   });
 
   it('reports optional and broken configured local AI states to doctor', async () => {
@@ -202,9 +227,7 @@ describe('local AI configuration', () => {
     });
     const broken = await runEffect(localAiDoctorCheck(runtime(brokenHome)).pipe(Effect.provide(ApplicationLayer)));
     expect(broken).toMatchObject({
-      detail: expect.stringContaining(
-        'LFM2.5-350M model file missing or wrong size; run threadnote local-ai install --model LFM2.5-350M',
-      ),
+      detail: 'configured model LFM2.5-350M is not in this Threadnote model catalog',
       name: 'local AI',
       status: 'warn',
     });
@@ -252,6 +275,7 @@ async function writeSettings(
     readonly enabled?: boolean;
     readonly model?: string;
     readonly modelPath?: string;
+    readonly port?: number;
   } = {},
 ): Promise<void> {
   const directory = join(home, 'threadnote');
@@ -263,7 +287,7 @@ async function writeSettings(
       host: '127.0.0.1',
       model: options.model ?? LOCAL_AI_MODEL_ID,
       modelPath: options.modelPath ?? '/models/gemma.gguf',
-      port: LOCAL_AI_DEFAULT_PORT,
+      port: options.port ?? LOCAL_AI_DEFAULT_PORT,
       version: 1,
     })}\n`,
   );

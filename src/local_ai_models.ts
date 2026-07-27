@@ -22,17 +22,6 @@ export const LOCAL_AI_MODELS: readonly LocalAiModelDefinition[] = [
     sha256: 'a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2',
     size: 4_590_807_392,
   },
-  {
-    aliases: ['lfm2.5-350m', 'liquidai/lfm2.5-350m', 'liquidai/lfm2.5-350m-gguf', 'lfm2.5-350m-q4_k_m'],
-    description: 'Compact, fast model for constrained local hardware',
-    displayName: 'LFM2.5 350M (Q4_K_M)',
-    file: 'LFM2.5-350M-Q4_K_M.gguf',
-    id: 'LFM2.5-350M',
-    repository: 'LiquidAI/LFM2.5-350M-GGUF',
-    revision: 'bb7ee58b243e4cede04187e323e760b04f8a0091',
-    sha256: '7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4',
-    size: 229_312_224,
-  },
 ];
 
 export const DEFAULT_LOCAL_AI_MODEL = LOCAL_AI_MODELS[0]!;

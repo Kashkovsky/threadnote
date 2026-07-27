@@ -172,19 +172,22 @@ export const runLocalAiModelSwitch = Effect.fn('localAi.model.switch')(function*
   config: RuntimeConfig,
   options: LocalAiModelSwitchOptions,
 ) {
+  const requested = options.model ? yield* resolveLocalAiModel(options.model) : undefined;
   const current = yield* readLocalAiSettings(config);
   const installed = yield* listInstalledLocalAiModels(config, current);
   if (installed.length === 0) {
+    if (requested) {
+      yield* Console.log(`${requested.id} is not installed.`);
+      yield* Console.log(`Install it with: threadnote local-ai install --model ${requested.id}`);
+      return;
+    }
     yield* Console.log('No installed local AI models are available.');
-    yield* Console.log('Install one with:');
-    yield* Console.log(`  threadnote local-ai install`);
-    yield* Console.log(`  threadnote local-ai install --model LFM2.5-350M`);
+    yield* Console.log('Install the verified model with: threadnote local-ai install');
     return;
   }
 
   let selected: InstalledLocalAiModel | undefined;
-  if (options.model) {
-    const requested = yield* resolveLocalAiModel(options.model);
+  if (requested) {
     selected = installed.find(item => item.definition.id === requested.id);
     if (!selected) {
       yield* Console.log(`${requested.id} is not installed.`);
@@ -596,6 +599,7 @@ const startLocalAiServerUnlocked = Effect.fn('localAi.startServerUnlocked')(func
   token: string,
   options: {readonly announce: boolean},
 ) {
+  yield* requireConfiguredLocalAiModel(settings);
   const healthy = yield* readLocalAiHealth(settings, token);
   if (healthy) {
     if (healthy.model !== settings.model) {
@@ -858,10 +862,7 @@ function constantTimeTextEqual(left: string, right: string): boolean {
 }
 
 const assertLocalAiModelPresent = Effect.fn('localAi.assertModelPresent')(function* (settings: LocalAiSettings) {
-  const model = findLocalAiModel(settings.model);
-  if (!model) {
-    return yield* Effect.fail(new Error(`Configured local AI model is unsupported: ${settings.model}.`));
-  }
+  const model = yield* requireConfiguredLocalAiModel(settings);
   if (!(yield* localAiModelFilePresent(model, settings.modelPath))) {
     return yield* Effect.fail(
       new Error(
@@ -870,6 +871,16 @@ const assertLocalAiModelPresent = Effect.fn('localAi.assertModelPresent')(functi
       ),
     );
   }
+});
+
+const requireConfiguredLocalAiModel = Effect.fn('localAi.requireConfiguredModel')(function* (
+  settings: LocalAiSettings,
+) {
+  const model = findLocalAiModel(settings.model);
+  if (!model) {
+    return yield* Effect.fail(new Error(`Configured local AI model is unsupported: ${settings.model}.`));
+  }
+  return model;
 });
 
 const localAiModelFilePresent = Effect.fn('localAi.modelFilePresent')(function* (

@@ -38,13 +38,12 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Targeted local recall.** OpenViking runs a local GGUF embedding model through `llama.cpp` to rank semantic matches;
   agents load selected `viking://` records instead of replaying the entire memory history.
 - **Optional local recall refinement.** `threadnote local-ai install` adds the recommended pinned, verified Gemma
-  model; `threadnote local-ai install --model LFM2.5-350M` installs a smaller alternative for constrained hardware.
-  The selected model helps expand weak and medium-confidence paraphrases and filters their bounded result set while
-  deterministic ordering remains in control. When available, it also adds compact retrieval aliases to new personal
-  memories; `threadnote enrich-memories --apply` can backfill personal and configured shared durable memories with
-  streamed progress. Shared changes remain local until `threadnote share sync`. Toggle the installed model without
-  removing it with `threadnote local-ai disable` and `threadnote local-ai enable`, or choose among installed models with
-  `threadnote local-ai model switch`.
+  model. It helps expand weak and medium-confidence paraphrases and filters their bounded result set while deterministic
+  ordering remains in control. When available, it also adds compact retrieval aliases to new personal memories;
+  `threadnote enrich-memories --apply` can backfill personal and configured shared durable memories with streamed
+  progress. Shared changes remain local until `threadnote share sync`. Toggle the installed model without removing it
+  with `threadnote local-ai disable` and `threadnote local-ai enable`; the generic
+  `threadnote local-ai model switch` command is retained for future verified models.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, currentness, authority, and bounded
   feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, the agent writes normal durable feature knowledge

@@ -13,6 +13,7 @@ import {afterAll, afterEach, beforeAll, describe, expect, it} from 'vitest';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CLI_BIN = join(REPO_ROOT, 'bin', 'threadnote.cjs');
 const MCP_BIN = join(REPO_ROOT, 'bin', 'threadnote-mcp-server.cjs');
+const VERIFIED_LOCAL_AI_MODEL = 'gemma-4-E4B-it-Q4_0';
 const TEMP_ROOTS: string[] = [];
 let LIVE_OV: LiveOpenViking;
 
@@ -215,6 +216,11 @@ describe('published local bins', () => {
     await expectCliFailure(fixture, ['remember', '--dry-run', '--text', '   '], 'Provide memory text');
     await expectCliFailure(
       fixture,
+      ['local-ai', 'install', '--model', 'LFM2.5-350M', '--dry-run'],
+      'Unknown local AI model',
+    );
+    await expectCliFailure(
+      fixture,
       ['compact', '--project', 'e2e', '--apply', '--dry-run'],
       'Cannot combine --apply with --dry-run',
     );
@@ -384,7 +390,6 @@ describe('published local bins', () => {
       ['stop', '--dry-run'],
       ['uninstall', '--dry-run', '--mcp', 'none', '--preserve-memories'],
       ['local-ai', 'install', '--dry-run', '--no-start'],
-      ['local-ai', 'install', '--model', 'LFM2.5-350M', '--dry-run', '--no-start'],
       ['local-ai', 'model', 'switch'],
       ['local-ai', 'status'],
       ['seed-skills', '--dry-run'],
@@ -724,7 +729,7 @@ describe('published local bins', () => {
           'automatic task rescheduling',
         ],
       },
-      {token},
+      {model: VERIFIED_LOCAL_AI_MODEL, token},
     );
     const localAiDirectory = join(fixture.home, 'threadnote');
     const configPath = join(localAiDirectory, 'local-ai.json');
@@ -736,7 +741,7 @@ describe('published local bins', () => {
         {
           enabled: true,
           host: '127.0.0.1',
-          model: 'e2e-model',
+          model: VERIFIED_LOCAL_AI_MODEL,
           modelPath: join(fixture.root, 'unused-model.gguf'),
           port: Number(new URL(ai.baseUrl).port),
           version: 1,
@@ -1952,7 +1957,7 @@ async function makeOpenAiCompatibleServer(
     | ((request: {readonly body: unknown; readonly index: number}) => Readonly<Record<string, unknown>>) = {
     draft: 'Consolidated by Effect AI E2E',
   },
-  localAi?: {readonly token: string},
+  localAi?: {readonly model: string; readonly token: string},
 ): Promise<{
   readonly baseUrl: string;
   readonly close: () => Promise<void>;
@@ -1966,11 +1971,13 @@ async function makeOpenAiCompatibleServer(
       const launchId = 'threadnote-local-ai-e2e';
       const pid = process.pid;
       const proof = createHash('sha256')
-        .update([challenge, 'threadnote-local-ai', 'e2e-model', String(pid), launchId, localAi.token].join('\0'))
+        .update([challenge, 'threadnote-local-ai', localAi.model, String(pid), launchId, localAi.token].join('\0'))
         .digest('hex');
       response
         .writeHead(200, {'content-type': 'application/json'})
-        .end(JSON.stringify({launchId, model: 'e2e-model', pid, proof, service: 'threadnote-local-ai', status: 'ok'}));
+        .end(
+          JSON.stringify({launchId, model: localAi.model, pid, proof, service: 'threadnote-local-ai', status: 'ok'}),
+        );
       return;
     }
     const chunks: Buffer[] = [];
@@ -2000,7 +2007,7 @@ async function makeOpenAiCompatibleServer(
         ],
         created: Math.floor(Date.now() / 1000),
         id: 'chatcmpl-threadnote-e2e',
-        model: 'e2e-model',
+        model: localAi?.model ?? 'e2e-model',
         object: 'chat.completion',
         usage: {completion_tokens: 10, prompt_tokens: 20, total_tokens: 30},
       }),

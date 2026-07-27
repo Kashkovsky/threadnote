@@ -348,7 +348,7 @@ const localAiInstall = Command.make(
   {
     dryRun: boolean('dry-run', 'Print local AI installation actions without making changes'),
     force: boolean('force', 'Re-download and re-verify the managed model'),
-    model: optionalString('model', 'Model to install: gemma-4-E4B-it-Q4_0 or LFM2.5-350M'),
+    model: optionalString('model', 'Verified model to install: gemma-4-E4B-it-Q4_0'),
     modelPath: optionalString('model-path', 'Use an existing verified GGUF file for the selected model'),
     start: negatedBoolean('start', 'Install and configure without starting the local model service'),
   },
