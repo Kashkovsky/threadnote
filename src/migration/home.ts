@@ -32,6 +32,8 @@ const EXCLUDED_LEGACY_THREADNOTE_PATHS = new Set([
   'threadnote/shared-repository.lock',
 ]);
 
+const EXCLUDED_OS_METADATA_FILENAMES = new Set(['.ds_store', 'desktop.ini', 'thumbs.db']);
+
 export interface HomeMigrationOptions {
   readonly apply?: boolean;
   readonly legacyHome?: string;
@@ -924,7 +926,13 @@ function migrateLegacyShares(
 function shouldIncludeLegacyPath(relativePath: string): boolean {
   const portable = portableInput(relativePath);
   const top = portable.split('/')[0] ?? '';
-  return !EXCLUDED_LEGACY_PATHS.has(top) && !EXCLUDED_LEGACY_THREADNOTE_PATHS.has(portable);
+  const basename = portable.split('/').at(-1) ?? '';
+  return (
+    !EXCLUDED_LEGACY_PATHS.has(top) &&
+    !EXCLUDED_LEGACY_THREADNOTE_PATHS.has(portable) &&
+    !EXCLUDED_OS_METADATA_FILENAMES.has(basename.toLowerCase()) &&
+    !basename.startsWith('._')
+  );
 }
 
 function portableRelative(path: Path.Path, value: string): string {

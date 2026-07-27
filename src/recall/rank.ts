@@ -480,7 +480,9 @@ function normalizedBm25(
 
 function inverseDocumentFrequency(term: string, corpusStatistics: RecallCorpusStatistics): number {
   const documentCount = Math.max(1, corpusStatistics.documentCount);
-  const documentsWithTerm = corpusStatistics.documentFrequency[term] ?? 0;
+  const documentsWithTerm = Object.hasOwn(corpusStatistics.documentFrequency, term)
+    ? (corpusStatistics.documentFrequency[term] ?? 0)
+    : 0;
   return Math.log(
     1 + (documentCount - documentsWithTerm + BM25_IDF_SMOOTHING) / (documentsWithTerm + BM25_IDF_SMOOTHING),
   );
@@ -804,7 +806,7 @@ function qualifyingExactTerms(candidate: RecallCandidate): readonly string[] {
 
 export function buildRecallCorpusStatistics(candidates: readonly RecallCandidate[]): RecallCorpusStatistics {
   const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
-  const frequencies: Record<string, number> = {};
+  const frequencies = Object.create(null) as Record<string, number>;
   for (const terms of corpus) {
     for (const term of new Set(terms)) {
       frequencies[term] = (frequencies[term] ?? 0) + 1;

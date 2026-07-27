@@ -257,6 +257,64 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('ignores mutable operating-system metadata while recovering into an existing beta home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-os-metadata-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const sourceMemory = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'metadata.md',
+        );
+        yield* fs.makeDirectory(path.dirname(sourceMemory), {recursive: true});
+        yield* fs.writeFileString(sourceMemory, '# Real content\n');
+        yield* fs.writeFileString(path.join(legacyHome, 'data', '.DS_Store'), 'mutable legacy metadata');
+        yield* fs.writeFileString(path.join(legacyHome, 'data', '._metadata.md'), 'appledouble metadata');
+        yield* fs.writeFileString(path.join(legacyHome, 'data', 'Thumbs.db'), 'Windows thumbnail metadata');
+        yield* fs.writeFileString(path.join(legacyHome, 'data', 'desktop.ini'), 'Windows folder metadata');
+        yield* fs.makeDirectory(path.join(targetHome, 'data', 'viking'), {recursive: true});
+        yield* fs.writeFileString(path.join(targetHome, 'data', '.DS_Store'), 'newer Finder metadata');
+
+        const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
+
+        expect(result.action).toBe('recovered');
+        expect(result.receipt?.files).toBe(1);
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              targetHome,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'metadata.md',
+            ),
+          ),
+        ).toContain('Real content');
+        expect(yield* fs.readFileString(path.join(targetHome, 'data', '.DS_Store'))).toBe('newer Finder metadata');
+        expect(yield* fs.exists(path.join(targetHome, 'data', '._metadata.md'))).toBe(false);
+        expect(yield* fs.exists(path.join(targetHome, 'data', 'Thumbs.db'))).toBe(false);
+        expect(yield* fs.exists(path.join(targetHome, 'data', 'desktop.ini'))).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('isolates legacy share worktrees while preserving canonical shared memories and git metadata', () =>
     Effect.scoped(
       Effect.gen(function* () {

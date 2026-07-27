@@ -295,7 +295,7 @@ function selectRecallIndexData(cache: RecallIndexCache, options: LoadRecallIndex
   const scores = new Map<number, number>();
   const queryTerms = selectQueryTerms(indexTerms(options.query), cache, options.allowedUriScopes);
   for (const term of queryTerms) {
-    const termPostings = cache.postings[term];
+    const termPostings = postingList(cache.postings, term);
     type TermCandidate = {
       readonly candidateIndex: number;
       readonly posting: RecallIndexPosting;
@@ -306,7 +306,7 @@ function selectRecallIndexData(cache: RecallIndexCache, options: LoadRecallIndex
       right.posting.fieldWeight - left.posting.fieldWeight ||
       left.posting.uri.localeCompare(right.posting.uri);
     const termCandidates: TermCandidate[] = [];
-    for (const posting of termPostings ?? []) {
+    for (const posting of termPostings) {
       const candidateIndex = cache.uriLookup[posting.uri];
       const candidate = candidateIndex === undefined ? undefined : cache.candidates[candidateIndex];
       if (!candidate || !uriMatchesScopes(candidate.uri, options.allowedUriScopes)) {
@@ -355,7 +355,7 @@ function buildRecallIndexLookups(candidates: readonly RecallCandidate[]): {
   readonly uriLookup: Readonly<Record<string, number>>;
 } {
   const postingsByTerm = new Map<string, RecallIndexPosting[]>();
-  const uriLookup: Record<string, number> = {};
+  const uriLookup = Object.create(null) as Record<string, number>;
   candidates.forEach((candidate, candidateIndex) => {
     uriLookup[stripRecallAnchor(candidate.uri)] = candidateIndex;
     for (const [term, posting] of candidatePostings(candidate)) {
@@ -370,7 +370,10 @@ function buildRecallIndexLookups(candidates: readonly RecallCandidate[]): {
   for (const [term, entries] of postingsByTerm) {
     postingsByTerm.set(term, [...sortPostings(entries)]);
   }
-  const postings = Object.fromEntries(postingsByTerm);
+  const postings = Object.create(null) as Record<string, readonly RecallIndexPosting[]>;
+  for (const [term, entries] of postingsByTerm) {
+    postings[term] = entries;
+  }
   return {postings, uriLookup};
 }
 
@@ -405,14 +408,14 @@ function updateRecallIndexLookups(
       }
     }
   }
-  const postings = {...cached.postings} as Record<string, readonly RecallIndexPosting[]>;
+  const postings = nullPrototypeRecord(cached.postings);
   for (const term of affectedTerms) {
     postings[term] = sortPostings([
-      ...(cached.postings[term] ?? []).filter(posting => !affectedUris.has(posting.uri)),
+      ...postingList(cached.postings, term).filter(posting => !affectedUris.has(posting.uri)),
       ...(changedPostings.get(term) ?? []),
     ]);
   }
-  const uriLookup: Record<string, number> = {};
+  const uriLookup = Object.create(null) as Record<string, number>;
   candidates.forEach((candidate, candidateIndex) => {
     uriLookup[stripRecallAnchor(candidate.uri)] = candidateIndex;
   });
@@ -433,10 +436,11 @@ function updateRecallCorpusStatistics(
     })
     .filter((candidate): candidate is RecallCandidate => candidate !== undefined);
   const newCandidates = candidates.filter(candidate => changedUris.has(stripRecallAnchor(candidate.uri)));
-  const documentFrequency = {...cached.corpusStatistics.documentFrequency};
+  const documentFrequency = nullPrototypeRecord(cached.corpusStatistics.documentFrequency);
   const adjust = (candidate: RecallCandidate, delta: number): void => {
     for (const term of new Set(recallDocumentTerms(candidate))) {
-      documentFrequency[term] = (documentFrequency[term] ?? 0) + delta;
+      documentFrequency[term] = ownRecordValue(documentFrequency, term) ?? 0;
+      documentFrequency[term] += delta;
     }
   };
   oldCandidates.forEach(candidate => adjust(candidate, -1));
@@ -504,7 +508,7 @@ function postingLexicalScore(
   corpusStatistics: RecallCorpusStatistics,
 ): number {
   const documentCount = Math.max(1, corpusStatistics.documentCount);
-  const documentsWithTerm = corpusStatistics.documentFrequency[term] ?? 0;
+  const documentsWithTerm = ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0;
   const inverseDocumentFrequency = Math.log(
     1 +
       (documentCount - documentsWithTerm + POSTING_BM25_IDF_SMOOTHING) /
@@ -535,8 +539,8 @@ function selectQueryTerms(
   );
   const documentFrequency = (term: string): number =>
     scoped
-      ? (cache.postings[term] ?? []).filter(posting => uriMatchesScopes(posting.uri, allowedUriScopes)).length
-      : (cache.corpusStatistics.documentFrequency[term] ?? 0);
+      ? postingList(cache.postings, term).filter(posting => uriMatchesScopes(posting.uri, allowedUriScopes)).length
+      : (ownRecordValue(cache.corpusStatistics.documentFrequency, term) ?? 0);
   return [...new Set(terms)]
     .map(term => ({frequency: documentFrequency(term), term}))
     .filter(item => item.frequency > 0)
@@ -979,7 +983,17 @@ function parseCache(value: unknown): RecallIndexCache | undefined {
   ) {
     return undefined;
   }
-  return value as unknown as RecallIndexCache;
+  const parsed = value as unknown as RecallIndexCache;
+  return {
+    ...parsed,
+    authorityPolicyByUri: nullPrototypeRecord(parsed.authorityPolicyByUri),
+    corpusStatistics: {
+      ...parsed.corpusStatistics,
+      documentFrequency: nullPrototypeRecord(parsed.corpusStatistics.documentFrequency),
+    },
+    postings: nullPrototypeRecord(parsed.postings),
+    uriLookup: nullPrototypeRecord(parsed.uriLookup),
+  };
 }
 
 function recallCorpusStatisticsIsValid(value: unknown): value is RecallCorpusStatistics {
@@ -1115,6 +1129,22 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every(entry => typeof entry === 'string');
+}
+
+function ownRecordValue<Value>(record: Readonly<Record<string, Value>>, key: string): Value | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+function nullPrototypeRecord<Value>(record: Readonly<Record<string, Value>>): Record<string, Value> {
+  return Object.assign(Object.create(null) as Record<string, Value>, record);
+}
+
+function postingList(
+  postings: Readonly<Record<string, readonly RecallIndexPosting[]>>,
+  term: string,
+): readonly RecallIndexPosting[] {
+  const entries = ownRecordValue(postings, term);
+  return Array.isArray(entries) ? entries : [];
 }
 
 /**
