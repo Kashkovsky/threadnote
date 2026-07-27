@@ -44,7 +44,7 @@ export interface MemoryRecord {
   readonly uri: string;
 }
 
-const OPENVIKING_MEMORY_FIELDS_TRAILER = /\r?\n\r?\n<!-- MEMORY_FIELDS\r?\n[\s\S]*?\r?\n-->\s*$/;
+const LEGACY_MEMORY_FIELDS_TRAILER = /\r?\n\r?\n<!-- MEMORY_FIELDS\r?\n[\s\S]*?\r?\n-->\s*$/;
 const HEADER_LINE_BREAK = /[\r\n]/;
 const AUTHORITY_LEVEL: Readonly<Record<MemoryAuthority, number>> = {
   external: 0,
@@ -71,7 +71,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       ? ''
       : trimmed
           .slice(separatorIndex + 2)
-          .replace(OPENVIKING_MEMORY_FIELDS_TRAILER, '')
+          .replace(LEGACY_MEMORY_FIELDS_TRAILER, '')
           .trim();
   const firstLine = header.split('\n')[0]?.trim();
   if (firstLine !== 'MEMORY' && firstLine !== 'HANDOFF') {
@@ -153,11 +153,11 @@ export function formatMemoryDocumentWithKeywords(content: string, keywords: read
 }
 
 /**
- * OpenViking appends a managed indexing trailer after writes. It is not part
+ * A legacy indexer appended a managed indexing trailer after writes. It is not part
  * of the user-approved memory payload and must not affect content identity.
  */
 export function canonicalMemoryDocumentContent(content: string): string {
-  return content.trim().replace(OPENVIKING_MEMORY_FIELDS_TRAILER, '').trim();
+  return content.trim().replace(LEGACY_MEMORY_FIELDS_TRAILER, '').trim();
 }
 
 /**

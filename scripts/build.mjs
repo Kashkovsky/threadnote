@@ -15,6 +15,7 @@ await Promise.all([
     outfile: 'dist/threadnote.js',
     platform: 'node',
     target: 'node20',
+    external: ['node-llama-cpp'],
   }),
   build({
     banner: nodeBanner,
@@ -26,6 +27,7 @@ await Promise.all([
     outfile: 'dist/mcp_server.js',
     platform: 'node',
     target: 'node20',
+    external: ['node-llama-cpp'],
   }),
   build({
     bundle: true,

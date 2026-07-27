@@ -1,5 +1,5 @@
 import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
-import {Context, Effect, Layer, Schema} from 'effect';
+import {Context, Effect, FileSystem, Layer, Schema, Stream} from 'effect';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import type {HttpClientResponse} from 'effect/unstable/http/HttpClientResponse';
@@ -31,21 +31,31 @@ export interface HttpGetOptions {
   readonly timeoutMs?: number;
 }
 
+export interface HttpDownloadOptions extends HttpGetOptions {
+  readonly offset?: number;
+}
+
 const dynamicFetch: typeof globalThis.fetch = (...args) => globalThis.fetch(...args);
 
-export class HttpService extends Context.Service<
-  HttpService,
-  {
-    readonly getJson: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<HttpResponse<unknown>, HttpError>;
-    readonly getStatus: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<number, HttpRequestFailed>;
-    readonly getText: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<HttpResponse<string>, HttpError>;
-  }
->()('threadnote/effect/HttpService') {
+export interface HttpServiceShape {
+  readonly downloadToFile: (
+    url: string | URL,
+    path: string,
+    options?: HttpDownloadOptions,
+  ) => Effect.Effect<{readonly resumed: boolean; readonly status: number}, HttpError>;
+  readonly getJson: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<HttpResponse<unknown>, HttpError>;
+  readonly getStatus: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<number, HttpRequestFailed>;
+  readonly getText: (url: string | URL, options?: HttpGetOptions) => Effect.Effect<HttpResponse<string>, HttpError>;
+}
+
+export class HttpService extends Context.Service<HttpService, HttpServiceShape>()('threadnote/effect/HttpService') {
   static readonly layer = Layer.effect(
     HttpService,
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
+      const fs = yield* FileSystem.FileSystem;
       return HttpService.of({
+        downloadToFile: (url, path, options) => download(client, fs, url, path, options),
         getJson: (url, options) => execute(client, url, options, response => response.json),
         getStatus: (url, options) => executeStatus(client, url, options),
         getText: (url, options) => execute(client, url, options, response => response.text),
@@ -53,6 +63,70 @@ export class HttpService extends Context.Service<
     }),
   ).pipe(Layer.provide(NodeHttpClient.layerFetch));
 }
+
+const download = (
+  client: HttpClient.HttpClient,
+  fs: FileSystem.FileSystem,
+  url: string | URL,
+  path: string,
+  options: HttpDownloadOptions | undefined,
+): Effect.Effect<{readonly resumed: boolean; readonly status: number}, HttpError> => {
+  const urlText = String(url);
+  const offset = options?.offset && options.offset > 0 ? options.offset : 0;
+  let request = HttpClientRequest.get(url);
+  request = HttpClientRequest.setHeaders(request, {
+    ...(options?.headers ?? {}),
+    ...(offset > 0 ? {Range: `bytes=${offset}-`} : {}),
+  });
+  const operation = Effect.gen(function* () {
+    const response = yield* client.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.Fetch, dynamicFetch),
+      Effect.mapError(
+        cause =>
+          new HttpRequestFailed({
+            cause,
+            message: `GET ${urlText} failed`,
+            method: 'GET',
+            url: urlText,
+          }),
+      ),
+    );
+    if (response.status < 200 || response.status >= 300) {
+      return yield* new HttpStatusError({
+        message: `GET ${urlText} returned HTTP ${response.status}`,
+        method: 'GET',
+        status: response.status,
+        url: urlText,
+      });
+    }
+    const resumed = offset > 0 && response.status === 206;
+    yield* Stream.run(response.stream, fs.sink(path, {flag: resumed ? 'a' : 'w', mode: 0o600})).pipe(
+      Effect.mapError(
+        cause =>
+          new HttpRequestFailed({
+            cause,
+            message: `GET ${urlText} response could not be written`,
+            method: 'GET',
+            url: urlText,
+          }),
+      ),
+    );
+    return {resumed, status: response.status};
+  });
+  return operation.pipe(
+    Effect.timeout(options?.timeoutMs ?? 30 * 60_000),
+    Effect.mapError(cause =>
+      cause instanceof HttpRequestFailed || cause instanceof HttpStatusError
+        ? cause
+        : new HttpRequestFailed({
+            cause,
+            message: `GET ${urlText} failed`,
+            method: 'GET',
+            url: urlText,
+          }),
+    ),
+  );
+};
 
 const execute = <A>(
   client: HttpClient.HttpClient,

@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import * as aiEnrichment from '../../src/effect/ai-enrichment.js';
+import * as aiEnrichment from '../../src/effect/ai/enrichment.js';
 import {runRemember} from '../../src/memory.js';
 import type {MemoryMetadata} from '../../src/memory_document.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
@@ -17,15 +17,14 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
-vi.mock('../../src/effect/ai-enrichment.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/effect/ai-enrichment.js')>();
+vi.mock('../../src/effect/ai/enrichment.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/effect/ai/enrichment.js')>();
   return {
     ...actual,
     enrichMemoryMetadataWithConfiguredLocalAi: vi.fn((_config: RuntimeConfig, metadata: MemoryMetadata) =>
@@ -66,10 +65,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(home, 'manifest.json'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'test-user',
   };
 }
@@ -81,7 +77,6 @@ describe('remember shared replacement', () => {
     vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
       dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
     );
-    vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockReset();
     vi.mocked(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).mockClear();

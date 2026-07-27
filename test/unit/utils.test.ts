@@ -1,6 +1,6 @@
-import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {
@@ -14,8 +14,6 @@ import {
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
-  findUvToolPython as findUvToolPythonEffect,
-  findOpenVikingCli as findOpenVikingCliEffect,
   formatExactMatchPointers,
   formatRecallHits,
   formatShellCommand,
@@ -42,7 +40,6 @@ import {
   shellQuote,
   suggestedShellRc,
   uniqueUsefulWorkspaceTerms,
-  virtualEnvironmentPythonPathSegments,
 } from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -54,8 +51,6 @@ const collectExactMatches = (
 const enrichRecallQueryWithWorkspaceContext = (
   ...args: Parameters<typeof enrichRecallQueryWithWorkspaceContextEffect>
 ) => runEffect(enrichRecallQueryWithWorkspaceContextEffect(...args));
-const findOpenVikingCli = () => runEffect(findOpenVikingCliEffect());
-const findUvToolPython = (toolName: string) => runEffect(findUvToolPythonEffect(toolName));
 const isExecutable = (...args: Parameters<typeof isExecutableEffect>) => runEffect(isExecutableEffect(...args));
 const runCommand = (...args: Parameters<typeof runCommandEffect>) => runEffect(runCommandEffect(...args));
 const runInteractive = (...args: Parameters<typeof runInteractiveEffect>) => runEffect(runInteractiveEffect(...args));
@@ -270,76 +265,6 @@ describe('runInteractive', () => {
 
   it('resolves non-zero instead of hanging when the binary cannot be spawned', async () => {
     expect(await runInteractive('threadnote-nonexistent-binary-xyz', ['--version'])).toBe(1);
-  });
-});
-
-describe('findOpenVikingCli', () => {
-  it('finds ov in UV_TOOL_BIN_DIR when it is outside PATH', async () => {
-    const originalPath = process.env.PATH;
-    const originalUvToolBinDir = process.env.UV_TOOL_BIN_DIR;
-    const originalThreadnoteOv = process.env.THREADNOTE_OV;
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-ov-bin-'));
-    const ov = join(dir, 'ov');
-    try {
-      await writeFile(ov, '#!/bin/sh\nexit 0\n');
-      await chmod(ov, 0o755);
-      process.env.PATH = '/usr/bin:/bin';
-      process.env.UV_TOOL_BIN_DIR = dir;
-      delete process.env.THREADNOTE_OV;
-
-      expect(await findOpenVikingCli()).toBe(ov);
-    } finally {
-      if (originalPath === undefined) {
-        delete process.env.PATH;
-      } else {
-        process.env.PATH = originalPath;
-      }
-      if (originalUvToolBinDir === undefined) {
-        delete process.env.UV_TOOL_BIN_DIR;
-      } else {
-        process.env.UV_TOOL_BIN_DIR = originalUvToolBinDir;
-      }
-      if (originalThreadnoteOv === undefined) {
-        delete process.env.THREADNOTE_OV;
-      } else {
-        process.env.THREADNOTE_OV = originalThreadnoteOv;
-      }
-      await rm(dir, {force: true, recursive: true});
-    }
-  });
-});
-
-describe('findUvToolPython', () => {
-  it('resolves the interpreter from the isolated uv tool environment', async () => {
-    const originalPath = process.env.PATH;
-    const root = await mkdtemp(join(tmpdir(), 'threadnote-uv-tool-python-'));
-    const bin = join(root, 'bin');
-    const tools = join(root, 'tools');
-    const python = join(tools, 'openviking', ...virtualEnvironmentPythonPathSegments(process.platform));
-    const uv = join(bin, process.platform === 'win32' ? 'uv.CMD' : 'uv');
-    try {
-      await mkdir(bin, {recursive: true});
-      await mkdir(dirname(python), {recursive: true});
-      if (process.platform === 'win32') {
-        await writeFile(uv, `@ECHO off\r\n@ECHO ${tools}\r\n`);
-        await writeFile(python, '');
-      } else {
-        await writeFile(uv, `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(tools)}\n`);
-        await chmod(uv, 0o755);
-        await writeFile(python, '#!/bin/sh\nexit 0\n');
-        await chmod(python, 0o755);
-      }
-      process.env.PATH = bin;
-
-      await expect(findUvToolPython('openviking')).resolves.toBe(python);
-    } finally {
-      if (originalPath === undefined) {
-        delete process.env.PATH;
-      } else {
-        process.env.PATH = originalPath;
-      }
-      await rm(root, {force: true, recursive: true});
-    }
   });
 });
 
@@ -911,9 +836,9 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
         query: 'threadnote can users install reliably on native Windows what remains unsupported',
         records: [
           {
-            body: 'Native Windows installation remains unsupported until package, OpenViking, and lifecycle gates pass.',
+            body: 'Native Windows installation remains unsupported until package, model, and lifecycle gates pass.',
             content:
-              'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: windows-installation-support\n\nNative Windows installation remains unsupported until package, OpenViking, and lifecycle gates pass.',
+              'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: windows-installation-support\n\nNative Windows installation remains unsupported until package, model, and lifecycle gates pass.',
             headerTitle: 'MEMORY',
             metadata: {
               kind: 'durable',

@@ -1,5 +1,10 @@
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {expireRecallIndexValidation, loadRecallIndex} from '../../src/recall/index.js';
+import {
+  clearRecallIndexMemoryCache,
+  expireRecallIndexValidation,
+  loadRecallIndex,
+  loadRecallIndexDataBatch,
+} from '../../src/recall/index.js';
 import {join, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -123,6 +128,91 @@ describe('local recall index', () => {
 
     await writeFile(join(directory, 'cache', 'recall-index-v6.json'), '{invalid', 'utf8');
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
+  });
+
+  it('force-refreshes a same-size source even when its modification time is preserved', async () => {
+    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+    const original = await stat(resourcePath);
+
+    await writeFile(resourcePath, '# Other\n\nomega-99', 'utf8');
+    await utimes(resourcePath, original.mtimeMs, original.mtimeMs);
+    const refreshed = await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
+
+    expect(refreshed[0]?.text).toContain('omega-99');
+    expect(refreshed[0]?.text).not.toContain('alpha-42');
+  });
+
+  it('rejects structurally invalid JSON caches and rebuilds them from canonical sources', async () => {
+    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Valid\n\ncache-shape-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as {
+      candidates: Array<{text: unknown}>;
+      postings: Record<string, unknown>;
+    };
+    cache.candidates[0]!.text = 42;
+    cache.postings.invalid = [{documentLength: 'many', fieldWeight: 1, termFrequency: 1, uri: 'bad'}];
+    await writeFile(cachePath, JSON.stringify(cache), 'utf8');
+    await rm(`${cachePath}.stale`, {force: true});
+    await run(clearRecallIndexMemoryCache());
+
+    const rebuilt = await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    expect(rebuilt).toHaveLength(1);
+    expect(rebuilt[0]?.text).toContain('cache-shape-anchor');
+  });
+
+  it('rejects incomplete lookup and posting relationships in otherwise well-typed caches', async () => {
+    const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    const cachePath = join(directory, 'cache', 'recall-index-v6.json');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Valid\n\nreferential-cache-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    for (const corrupt of [
+      (cache: Record<string, unknown>) => {
+        cache.uriLookup = {};
+      },
+      (cache: Record<string, unknown>) => {
+        cache.postings = {};
+      },
+    ]) {
+      const cache = JSON.parse(await readFile(cachePath, 'utf8')) as Record<string, unknown>;
+      corrupt(cache);
+      await writeFile(cachePath, JSON.stringify(cache), 'utf8');
+      await rm(`${cachePath}.stale`, {force: true});
+      await run(clearRecallIndexMemoryCache());
+
+      const rebuilt = await run(loadRecallIndex(config(), {includeInactive: false, query: 'referential-cache-anchor'}));
+      expect(rebuilt.map(candidate => candidate.uri)).toContain('viking://resources/repos/threadnote/doc.md');
+    }
+  });
+
+  it('loads one corpus snapshot for multiple query and scope selections', async () => {
+    const alpha = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'alpha', 'doc.md');
+    const beta = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'beta', 'doc.md');
+    await mkdir(join(alpha, '..'), {recursive: true});
+    await mkdir(join(beta, '..'), {recursive: true});
+    await writeFile(alpha, '# Alpha\n\nshared batch anchor', 'utf8');
+    await writeFile(beta, '# Beta\n\nshared batch anchor', 'utf8');
+
+    const results = await run(
+      loadRecallIndexDataBatch(config(), {
+        includeInactive: false,
+        selections: [
+          {allowedUriScopes: ['viking://resources/repos/alpha'], query: 'shared batch anchor'},
+          {allowedUriScopes: ['viking://resources/repos/beta'], query: 'shared batch anchor'},
+        ],
+      }),
+    );
+
+    expect(results[0]?.candidates.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/alpha/doc.md']);
+    expect(results[1]?.candidates.map(candidate => candidate.uri)).toEqual(['viking://resources/repos/beta/doc.md']);
   });
 
   it('rejects file escapes and directory cycles introduced through symlinks', async () => {
@@ -575,12 +665,12 @@ describe('local recall index', () => {
     await run(expireRecallIndexValidation(directory, false));
     const updated = await run(loadRecallIndex(recallConfig, {includeInactive: false}));
 
-    expect(updated.find(candidate => candidate.uri === stableUri)).toBe(initialStable);
-    expect(updated.find(candidate => candidate.uri === targetUri)).not.toBe(initialTarget);
+    expect(updated.find(candidate => candidate.uri === stableUri)).toStrictEqual(initialStable);
+    expect(updated.find(candidate => candidate.uri === targetUri)).not.toStrictEqual(initialTarget);
     expect(updated.find(candidate => candidate.uri === targetUri)?.text).toContain('seed-target-v2');
   });
 
-  it('keeps validation and incremental updates in the decoded generation without rewriting the corpus cache', async () => {
+  it('persists a fresh corpus generation after explicit invalidation', async () => {
     const resourcePath = join(directory, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cachePath = join(directory, 'cache', 'recall-index-v6.json');
     await mkdir(join(resourcePath, '..'), {recursive: true});
@@ -590,12 +680,13 @@ describe('local recall index', () => {
 
     await run(expireRecallIndexValidation(directory, false));
     await run(loadRecallIndex(config(), {includeInactive: false}));
-    expect(await readFile(cachePath, 'utf8')).toBe(persisted);
+    const revalidated = await readFile(cachePath, 'utf8');
+    expect(revalidated).not.toBe(persisted);
 
     await writeFile(resourcePath, '# Second\n\nbeta-9000', 'utf8');
     await run(expireRecallIndexValidation(directory, false));
     const updated = await run(loadRecallIndex(config(), {includeInactive: false}));
     expect(updated[0]?.text).toContain('beta-9000');
-    expect(await readFile(cachePath, 'utf8')).toBe(persisted);
+    expect(await readFile(cachePath, 'utf8')).not.toBe(revalidated);
   });
 });

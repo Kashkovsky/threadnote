@@ -17,10 +17,7 @@ function runtime(): RuntimeConfig {
     account: 'local',
     agentContextHome: '/tmp/threadnote-test',
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
-    openVikingVersion: '0.4.7',
-    port: 1933,
     user: 'denys',
   };
 }

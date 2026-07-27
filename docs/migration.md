@@ -1,258 +1,39 @@
-# Migration
+# 4.0 home migration
 
-This guide explains how to switch a developer workflow to `threadnote` without losing the repo-local instruction
-model that current agents rely on.
+Threadnote 4 owns `~/.threadnote`. The legacy 3.x home is input to a one-time, non-destructive migration and is not a
+runtime dependency.
 
-## Short Answer
-
-Do not remove `AGENTS.md`, `CLAUDE.md`, `.claude/`, or `.agents/` as part of the migration.
-
-Those files remain the versioned source of truth for repo-local behavior. OpenViking becomes a shared, searchable
-context and memory layer on top of them. It helps agents recall handoffs, skills, and curated guidance across tools,
-but it should not replace the files that fresh agents read directly from the working tree.
-
-## Authority Model
-
-- `AGENTS.md` and `CLAUDE.md`: canonical repo instructions. Keep these small, current, and checked in.
-- Nested `AGENTS.md` and `CLAUDE.md`: canonical module-specific overrides. Keep them next to the code they govern.
-- `.claude/commands` and `.claude/skills`: executable or tool-specific workflows. Keep them where Claude and other
-  local tools can discover them.
-- `.agents/`: agent/plugin metadata or repo-local automation config. Keep it unless the owning tool no longer uses it.
-- OpenViking: durable memory, cross-agent handoffs, searchable snapshots of curated guidance, and seeded skill
-  catalogs.
-
-When these sources disagree, the checked-in repo instruction file wins. Update the source file first, then refresh the
-OpenViking context.
-
-## DX Model
-
-Developers should not need to run `recall`, `remember`, or `handoff` as a normal habit.
-
-The intended workflow has three layers:
-
-- Agent-first: Codex, Claude, Copilot, or another MCP-enabled agent calls OpenViking tools when the task calls for
-  shared context.
-- Short CLI fallback: humans and scripts can run `threadnote recall`, `threadnote remember`, or
-  `threadnote handoff` from any repo.
-- Checkout-local command: `npm run threadnote -- ...` is the bootstrap and debugging path before the short command shim
-  is installed.
-
-After MCP install, developers can use natural language:
-
-```text
-Recall the last handoff for this branch.
-Remember that this repo uses <durable workflow fact>.
-Create a handoff for the next agent before you stop.
+```sh
+threadnote migrate
+threadnote migrate --apply
 ```
 
-For better continuity, run `threadnote install` so it can add the agent-side guidance from `docs/agent-instructions.md`
-to user-level Codex, Claude, Cursor, and Copilot instruction files. That guidance tells agents to recall context at task
-start and, after meaningful work, directly store normal durable feature knowledge and handoff state. Only additional
-session-extracted candidates require the user to approve, edit, defer, or reject them.
+The migration:
 
-## Migration Steps
+1. inventories canonical resources, memories, seed state, share metadata, and applicable settings;
+2. rejects absolute symlinks and relative symlinks or paths that escape the source;
+3. excludes server, interpreter-environment, PID, socket, cache, and transient files;
+4. checks target free space for source bytes plus a bounded safety margin;
+5. copies into a staging sibling of the final home;
+6. records source size, modification time, and SHA-256;
+7. verifies every staged hash and detects source changes during the copy;
+8. isolates legacy Git share worktrees under `share/worktrees/`, rewrites their Git pointers, and retains a separate
+   canonical Markdown copy;
+9. records and verifies the transformed staging-tree hash;
+10. writes a checksummed migration receipt;
+11. atomically promotes the staging directory.
 
-Run install commands from any working directory. Run manifest commands from a repo root, or pass explicit `--repo`
-paths.
+Interrupted staging is resumable. Re-running after success is idempotent. An unrelated existing target is never
+overwritten. The source remains byte-for-byte untouched and is never automatically removed.
 
-1. Check prerequisites:
+After promotion:
 
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
-   threadnote doctor --dry-run
-   ```
-
-   To force Bun or Deno:
-
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=bun sh
-   curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | THREADNOTE_RUNTIME=deno sh
-   ```
-
-2. Install or repair local OpenViking. This also installs the short `threadnote` command shim to `~/.local/bin` and
-   upserts user-level agent instructions by default. The one-line installer already runs `threadnote install`; run these
-   only when doing the manual install flow or previewing changes:
-
-   ```bash
-   threadnote install --dry-run
-   threadnote install
-   ```
-
-   If `threadnote` is not found after install, add `~/.local/bin` to `PATH` or rerun install with
-   `THREADNOTE_BIN_DIR=<dir-on-path>`.
-
-3. Create the developer-local manifest for the repos this machine actually uses:
-
-   ```bash
-   threadnote init-manifest --repo ~/src/my-service --repo ~/work/mobile-app
-   ```
-
-   `--repo` can be repeated. Paths may be anywhere on the machine. If no `--repo` is provided, the current git repo is
-   used. The manifest is written to `~/.openviking/seed-manifest.yaml` by default and is intentionally not checked in.
-
-4. Verify the local service:
-
-   ```bash
-   threadnote doctor --dry-run
-   ```
-
-5. Inspect curated repo imports:
-
-   ```bash
-   threadnote seed --dry-run
-   ```
-
-6. Seed curated repo guidance after reviewing the dry-run output:
-
-   ```bash
-   threadnote seed
-   ```
-
-   Seeded docs refresh on the next `threadnote seed`/`repair`, which re-runs the
-   secret scan. To let OpenViking auto-refresh them between runs, opt in with
-   `THREADNOTE_SEED_WATCH_INTERVAL=<minutes> threadnote seed`. Watches attach
-   only to original, non-redaction-prone files, since an OpenViking-managed
-   refresh re-ingests the file without Threadnote's per-import secret scan.
-
-7. Inspect and seed shared skills:
-
-   ```bash
-   threadnote seed-skills --dry-run
-   threadnote seed-skills
-   ```
-
-8. Wire one agent at a time:
-
-   ```bash
-   threadnote mcp-install codex
-   threadnote mcp-install codex --apply
-   ```
-
-   The default stdio adapter installs the focused core toolset. Add `--toolset full` when the agent needs MCP tools for
-   memory maintenance, raw OpenViking operations, sharing conflicts, or shared skills and bundles. Start a fresh agent
-   session after changing the toolset.
-
-   Then repeat for Claude:
-
-   ```bash
-   threadnote mcp-install claude
-   threadnote mcp-install claude --apply
-   ```
-
-   Claude installs at user scope by default so it works from every repo/worktree. Use `--scope local` only when a
-   repo-specific Claude MCP entry is intentional.
-
-   For Cursor:
-
-   ```bash
-   threadnote mcp-install cursor
-   threadnote mcp-install cursor --apply
-   ```
-
-   Cursor installs by updating the global `~/.cursor/mcp.json` file.
-
-   For GitHub Copilot in VS Code:
-
-   ```bash
-   threadnote mcp-install copilot
-   threadnote mcp-install copilot --apply
-   ```
-
-   Copilot installs by updating the VS Code user-profile `mcp.json` file. If VS Code uses a custom profile path, set
-   `THREADNOTE_COPILOT_MCP_CONFIG` to that `mcp.json` path before running `mcp-install copilot`.
-
-   Later, if the checkout that installed the MCP adapter is deleted or moved, repair it from any fresh checkout:
-
-   ```bash
-   threadnote repair
-   ```
-
-9. Validate recall:
-
-   ```bash
-   threadnote recall --query "repo testing guidance"
-   ```
-
-## Daily Workflow
-
-At the start of a task, agents should still read the nearest `AGENTS.md` or `CLAUDE.md` files from the repo. OpenViking
-is the cross-session layer.
-
-Preferred developer behavior is conversational:
-
-```text
-Recall anything relevant for this branch before you start.
-Remember this feature decision for future agents: ...
-Create a handoff now.
+```sh
+threadnote doctor
+threadnote recall "latest handoff"
+threadnote models list
+threadnote index status
 ```
 
-Preferred agent behavior is automatic after `threadnote install` has updated the user-level instruction files:
-
-- On non-trivial task start, search OpenViking for recent handoffs, durable feature memories for the branch/topic, and
-  relevant repo guidance.
-- When the user says "remember", store the memory after checking that it contains no secret or customer data.
-- When continuing the same active issue, keep two current-state records when useful: a durable feature memory for design,
-  decisions, interfaces, and gotchas, plus a handoff for status, tests, blockers, and next steps.
-- When valuable feature knowledge changes, update the durable feature memory with the same project/topic or
-  `remember --replace <uri>` instead of burying that knowledge only in a handoff.
-- When current status changes, update the active handoff with the same project/topic or `handoff --replace <uri>` instead
-  of creating another near-duplicate progress memory.
-- When recall surfaces clearly duplicate or stale memories, run `threadnote compact --project <name> --topic <topic>
---dry-run` or `compact_context({"project":"<name>","topic":"<topic>","dryRun":true})`. Keep cleanup scoped to the
-  current project/topic; archive stale handoffs by default and forget only exact redundant duplicates.
-- Before pausing, switching agents, or finishing meaningful code changes, store a concise handoff with status, tests,
-  blockers, and next steps.
-
-Manual CLI remains available for scripts and emergencies:
-
-```bash
-threadnote recall --query "last handoff for this branch"
-threadnote recall --query "durable feature knowledge for this branch"
-threadnote remember --kind durable --project example --topic active-feature --text "Feature knowledge..."
-threadnote remember --replace viking://user/example/memories/events/current.md --text "Updated durable engineering note..."
-threadnote compact --project example --topic active-feature --dry-run
-threadnote handoff --project example --topic active-feature --task "short task summary" --tests "checks run" --next-step "what the next agent should do"
-```
-
-## Repo Paths
-
-The workflow is not tied to any fixed repo list. Repo discovery is manifest-driven:
-
-- `~/.openviking/seed-manifest.yaml`: developer-local default manifest, created by `threadnote init-manifest`.
-- `THREADNOTE_MANIFEST`: override for custom teams, experiments, or CI.
-- `--manifest <path>`: one-off override for `seed` and `seed-skills`.
-- `config/seed-manifest.example.yaml`: checked-in example only.
-
-Use `threadnote init-manifest --repo <path>` whenever a developer adds a new repo they want included. The command
-derives a stable `viking://resources/repos/<repo-name>` URI and keeps the seed patterns conservative.
-
-## Refreshing Context
-
-OpenViking stores imported context as durable resources. For v1, treat `seed` as a first-ingest operation. When a
-seeded instruction file changes, update the checked-in source first, then refresh the relevant `viking://` resource.
-
-Current practical options:
-
-- Remove the old resource with `forget`, then re-run a scoped seed manifest.
-- Use `remember` for short corrections that should be available immediately.
-- Export/import packs only for moving a known-good local context between machines.
-
-Do not edit OpenViking directly and leave the repo instruction file stale.
-
-## What To Remove
-
-Remove nothing during the initial migration.
-
-After the workflow is proven, teams may delete or consolidate only content that has a clear owner-approved replacement.
-Good candidates are stale handoff notes, obsolete duplicate docs, or abandoned per-agent experiments. Bad candidates are
-canonical instructions, active commands, active skills, MCP config, or anything required by existing tools.
-
-## Cutover Checklist
-
-- `doctor --dry-run` reports a healthy OpenViking server and no stale recall index warnings.
-- `threadnote` works from a different repo or subdirectory.
-- `mcp-install` has been applied for the agent the developer actually uses.
-- `recall` returns seeded guidance.
-- A test `handoff` can be stored and recalled by another agent.
-- `AGENTS.md` and `CLAUDE.md` still describe the source-of-truth repo rules.
-- The team has agreed on which seeded paths are allowed and which sensitive paths stay excluded.
+Lexical recall is immediately available. Optional vector indexes are derived data and should be rebuilt with an
+explicitly installed and selected embedding model.

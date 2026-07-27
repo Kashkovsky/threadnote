@@ -140,7 +140,7 @@ describe('memory document contract', () => {
     expect(enriched).not.toContain('MEMORY_FIELDS');
   });
 
-  it('excludes the managed OpenViking memory-fields trailer from the parsed body', () => {
+  it('excludes the legacy managed memory-fields trailer from the parsed body', () => {
     const document = [
       'MEMORY',
       'kind: durable',

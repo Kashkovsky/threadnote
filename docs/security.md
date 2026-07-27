@@ -1,32 +1,20 @@
 # Security
 
-`threadnote` treats OpenViking as durable local memory, so the default workflow is conservative.
+Threadnote stores local canonical content under `~/.threadnote` with private directories and files. Every `viking://`
+identifier is parsed into validated portable segments; traversal, ambiguous encodings, escaping links, and unsupported
+file types are rejected.
 
-## Do Not Ingest
+Writes use per-resource locks, compare-and-swap where replacement semantics require it, a same-directory temporary
+file, durable close, and atomic rename. Derived index generations are activated by a checksummed pointer only after
+the full generation exists.
 
-- Credentials, access tokens, API keys, certificates, private keys, or shell history.
-- Customer data, production data, HIPAA data, or production logs without explicit approval and scrubbing.
-- Local auth files such as `~/.codex/auth.json`, `~/.claude/.credentials.json`, Cursor account/session files, or VS Code
-  Copilot account/session files.
-- Local settings files that may contain secrets unless they go through redaction.
+Model downloads are explicit and pinned by immutable repository revision, byte count, SHA-256, role, runtime version,
+and license. Partial downloads are never loaded. The llama adapter requests prebuilt binaries and refuses runtime
+compilation or implicit binary download.
 
-## Built-In Controls
+Share publishing scrubs known credential and machine-local path patterns before writing or pushing. Handoffs and
+preferences are not publishable. Publish order preserves the personal source until the shared canonical write,
+verification, git commit, and push succeed.
 
-- `.threadnoteignore` excludes common secret and build-output paths.
-- `.mcp.json`, `config.toml`, and settings JSON are redacted before import.
-- Files are skipped if common secret patterns remain after redaction.
-- `mcp-install` requires `--apply` before it changes Codex, Claude, Cursor, or Copilot config.
-- `install` updates user-level Codex, Claude, Cursor, and Copilot instruction files through managed Threadnote content.
-  Existing personal instructions outside managed blocks are preserved.
-- `uninstall` preserves local memories by default. `--erase-memories` is required before deleting `THREADNOTE_HOME`.
-- Config files created under `THREADNOTE_HOME` are written with user-only permissions.
-
-## Rollout Requirements
-
-Before team-wide use, get explicit legal and security review for:
-
-- OpenViking licensing and operational use.
-- Approved embedding and summary model providers.
-- At-rest encryption settings.
-- Local API key requirements.
-- Forget/removal expectations for stale or sensitive context.
+The manager binds to loopback, uses a per-process bearer token, and never exposes a model or memory server. MCP uses
+stdio. Threadnote has no background daemon, listening storage port, or native HTTP MCP endpoint.

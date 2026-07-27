@@ -1,0 +1,83 @@
+{
+  "benchmarks": [
+    {
+      "arguments": {},
+      "name": "hybrid rank one query / 200 documents",
+      "statistics": {
+        "averageNanoseconds": 9921248.746268706,
+        "heap": {
+          "_": 43,
+          "total": 287593816,
+          "min": 5391648,
+          "max": 8024616,
+          "avg": 6688228.279069767
+        },
+        "maximumNanoseconds": 11186750,
+        "minimumNanoseconds": 9308250,
+        "p50Nanoseconds": 9901500.000000477,
+        "p99Nanoseconds": 10869500,
+        "samples": 67
+      }
+    },
+    {
+      "arguments": {},
+      "name": "hybrid rank one query / 1000 documents",
+      "statistics": {
+        "averageNanoseconds": 47359424.27272727,
+        "heap": {
+          "_": 9,
+          "total": 95444912,
+          "min": 10248928,
+          "max": 10899504,
+          "avg": 10604990.222222222
+        },
+        "maximumNanoseconds": 48881166,
+        "minimumNanoseconds": 46793042,
+        "p50Nanoseconds": 47382709,
+        "p99Nanoseconds": 47636125,
+        "samples": 11
+      }
+    },
+    {
+      "arguments": {},
+      "name": "hybrid rank one query / 10000 documents",
+      "statistics": {
+        "averageNanoseconds": 482831520.83333325,
+        "heap": {
+          "_": 9,
+          "total": 388045704,
+          "min": 31287712,
+          "max": 47405704,
+          "avg": 43116189.333333336
+        },
+        "maximumNanoseconds": 494356958,
+        "minimumNanoseconds": 471329542,
+        "p50Nanoseconds": 483870083,
+        "p99Nanoseconds": 492163792,
+        "samples": 12
+      }
+    }
+  ],
+  "createdAt": "2026-07-27T15:25:14.534Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "43773b70c2c1bc01b68917365523a0a5257d00fc",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "memoryBytes": 68719476736,
+    "node": "v22.22.0",
+    "operatingSystem": "darwin 27.0.0",
+    "packageManager": "npm/10.9.4",
+    "runtime": "node"
+  },
+  "fixtures": {
+    "200": "3967acf33893251f03126720ebf6fb55f6b6eed62f2c84f768963e9a352e9348",
+    "1000": "dbc8258af5e0e10b99e34eb55f8e5b0b2b992e7f647d5726ace7ae2e12deab74",
+    "10000": "30beea845c4e2052a27bbf27af29f140a3c59ca7357d1dfc2e14363ad647deb0"
+  },
+  "runner": {
+    "name": "mitata",
+    "version": "1.0.34"
+  },
+  "version": 1
+}

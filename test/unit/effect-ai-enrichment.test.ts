@@ -6,7 +6,7 @@ import {
   MemoryEnricher,
   memoryEnrichmentPrompt,
   normalizeMemoryKeywords,
-} from '../../src/effect/ai-enrichment.js';
+} from '../../src/effect/ai/enrichment.js';
 
 const input = {
   body: 'The coordinator schedules replacement work when a heartbeat expires.',

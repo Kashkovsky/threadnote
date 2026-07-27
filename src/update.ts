@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Result, pipe} from 'effect';
+import {Console, Effect, FileSystem, Path, Result} from 'effect';
 import {
   heading,
   info as infoText,
@@ -10,8 +10,7 @@ import {
 } from './cli_ui.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
-import {getJsonEffect, getStatusEffect} from './effect/http.js';
-import {pollUntilEffect} from './effect/time.js';
+import {getJsonEffect} from './effect/http.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
@@ -23,11 +22,8 @@ import {
   errorMessage,
   findExecutable,
   currentPackageVersion,
-  findOpenVikingCli,
-  isTcpPortOpen,
   isJsonObject,
   readFileIfExists,
-  runCommand,
   toolRoot,
   formatShellCommand,
 } from './utils.js';
@@ -169,28 +165,49 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     updateCommand.env,
   );
 
-  if (options.repair === false) {
-    yield* Console.log('Skipping repair because --no-repair was provided.');
-    yield* printWhatsNewIfAvailable(info);
-    return;
-  }
-
+  const shouldRepair = options.repair !== false;
   const threadnoteCommand = yield* installedThreadnoteCommand(runtime, runtimeExecutable);
-  yield* Console.log('');
-  yield* Console.log('Repairing local Threadnote setup after package update.');
-  yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
-  if (options.postUpdate !== false) {
-    const postUpdateArgs = [
-      'post-update',
-      '--from-version',
-      info.currentVersion,
-      '--to-version',
-      latestVersion,
-      ...(options.yes === true ? ['--yes'] : []),
-    ];
-    yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
+  const postUpdateArgs = [
+    'post-update',
+    '--from-version',
+    info.currentVersion,
+    '--to-version',
+    latestVersion,
+    ...(options.yes === true ? ['--yes'] : []),
+  ];
+  const crossesSelfContainedHomeBoundary = crossesMajorVersion(info.currentVersion, latestVersion, 4);
+  if (crossesSelfContainedHomeBoundary) {
+    if (options.postUpdate !== false) {
+      yield* Console.log('');
+      yield* Console.log('Migrating the Threadnote home before repair initializes the 4.x layout.');
+      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
+    } else {
+      yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
+    }
+    if (shouldRepair && options.postUpdate !== false && options.yes === true) {
+      yield* Console.log('');
+      yield* Console.log('Repairing local Threadnote setup after home migration.');
+      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+    } else if (shouldRepair) {
+      yield* Console.log('Repair was deferred so it cannot create ~/.threadnote before migration is accepted.');
+      yield* Console.log(`Run: ${threadnoteCommand} migrate --apply`);
+      yield* Console.log(`Then: ${threadnoteCommand} repair`);
+    } else {
+      yield* Console.log('Skipping repair because --no-repair was provided.');
+    }
   } else {
-    yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
+    if (shouldRepair) {
+      yield* Console.log('');
+      yield* Console.log('Repairing local Threadnote setup after package update.');
+      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
+    } else {
+      yield* Console.log('Skipping repair because --no-repair was provided.');
+    }
+    if (options.postUpdate !== false) {
+      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
+    } else {
+      yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
+    }
   }
   yield* Console.log(
     'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
@@ -230,7 +247,6 @@ export const runPostUpdate = Effect.fn('runPostUpdate')(function* (config: Runti
   const toVersion = options.toVersion;
   const system = yield* SystemInfo;
   const interactive = system.stdinIsTTY && system.stdoutIsTTY;
-  yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun === true});
   yield* runApplicablePostUpdateMigrations(config, {
     dryRun: options.dryRun === true,
     fromVersion,
@@ -246,7 +262,6 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
     const system = yield* SystemInfo;
     const toVersion = yield* currentPackageVersion();
     const interactive = system.stdinIsTTY && system.stdoutIsTTY;
-    yield* ensurePinnedOpenVikingInstalled(config, {dryRun: options.dryRun});
     const state = yield* readPostUpdateState(config);
     const migrations = yield* applicablePostUpdateMigrations(config, {
       fromVersion: '0.0.0',
@@ -281,94 +296,8 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
 }
 
 /**
- * Detects the installed OpenViking CLI version and, if it's older than the
- * pinned `config.openVikingVersion`, transparently upgrades by spawning
- * `threadnote install --force --no-start` and then restarting the OV server
- * so the new binary takes effect. No prompt — `threadnote update` is the
- * user's signal that they want the whole stack brought up to date, and a
- * stale OV binary breaks `doctor`/share-sync until restarted.
- *
- * No-ops if OV is not installed at all (the install command path covers
- * fresh installs), if the installed version is unparseable, or if the
- * installed version is already at-or-above the pin.
- *
- * Lives in update.ts (not lifecycle.ts) to avoid a lifecycle <-> update
- * import cycle; restarts via threadnote subcommands, or `launchctl` direct
- * when a LaunchAgent is in play (so the user's launchd setup is preserved
- * instead of getting silently shifted to a detached process).
- */
-function ensurePinnedOpenVikingInstalled(config: RuntimeConfig, options: {readonly dryRun: boolean}) {
-  return Effect.gen(function* () {
-    const ov = yield* findOpenVikingCli();
-    if (!ov) {
-      return;
-    }
-    const installedVersion = yield* readOpenVikingCliVersion(ov);
-    if (!installedVersion) {
-      yield* Console.log(
-        `Could not detect OpenViking CLI version via \`${ov} version\`; skipping pinned-version check.`,
-      );
-      return;
-    }
-    const pinned = config.openVikingVersion;
-    if (compareVersions(installedVersion, pinned) >= 0) {
-      return;
-    }
-    yield* Console.log('');
-    yield* Console.log(`Upgrading OpenViking ${installedVersion} -> ${pinned} (pinned by Threadnote).`);
-    yield* Console.log('Picks up upstream CLI, resource-ingestion, and index reliability fixes.');
-
-    // Capture the server state BEFORE we swap binaries so we know what to
-    // restart afterward. install --no-start leaves the existing process
-    // untouched, but that process is still the pre-upgrade binary, so the
-    // user would otherwise need to manually `threadnote stop && threadnote
-    // start` to actually be on the new version.
-    const wasRunning = yield* isOpenVikingHealthy(config);
-    const usingLaunchd = yield* isLaunchAgentInstalled();
-
-    const threadnoteCommand =
-      currentThreadnoteCommand(yield* SystemInfo) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-    yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, ['install', '--force', '--no-start']);
-
-    if (options.dryRun) {
-      if (wasRunning || usingLaunchd) {
-        yield* Console.log('Would restart OpenViking server so the new binary takes effect.');
-      }
-      return;
-    }
-
-    if (!wasRunning && !usingLaunchd) {
-      return;
-    }
-
-    yield* Console.log('Restarting OpenViking server so the new binary takes effect.');
-    if (usingLaunchd) {
-      const system = yield* SystemInfo;
-      const path = yield* Path.Path;
-      const launchAgentPath = launchAgentPlistPath(system.homeDirectory, path);
-      yield* runCommand('launchctl', ['unload', launchAgentPath], {allowFailure: true});
-      yield* waitForOpenVikingPortClosed(config, 15_000);
-      yield* runCommand('launchctl', ['load', launchAgentPath], {allowFailure: true});
-    } else {
-      yield* runStreamingSubcommand(false, threadnoteCommand, ['stop']);
-      yield* waitForOpenVikingPortClosed(config, 15_000);
-      yield* runStreamingSubcommand(false, threadnoteCommand, ['start']);
-    }
-    const healthyAfter = yield* waitForOpenVikingHealthy(config, 10_000);
-    if (!healthyAfter) {
-      yield* Console.log(
-        `Warning: OpenViking did not return to healthy at ${openVikingHealthEndpoint(config)} within 10s after the restart.`,
-      );
-      yield* Console.log('Check the server log or run: threadnote start');
-    }
-  });
-}
-
-/**
  * Run a subprocess with its stdout/stderr inherited so the user sees output
- * live, instead of buffering through `runCommand`/`maybeRun` (which also
- * imposes the 10-minute command timeout — fatal for long-running steps like a
- * package install, an OpenViking reinstall, or a churning repair). Dry-run
+ * live, instead of buffering through the regular command runner. Dry-run
  * defers to `maybeRun` so it only prints the command it would run.
  */
 function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
@@ -391,81 +320,6 @@ function runStreamingSubcommand(dryRun: boolean, executable: string, args: reado
     }
   });
 }
-
-function openVikingHealthEndpoint(config: RuntimeConfig): string {
-  return `http://${config.host}:${config.port}/health`;
-}
-
-const isOpenVikingHealthy = Effect.fn('isOpenVikingHealthy')((config: RuntimeConfig) =>
-  getStatusEffect(openVikingHealthEndpoint(config), {timeoutMs: 800}).pipe(
-    Effect.map(status => status >= 200 && status < 300),
-    Effect.catch(() => Effect.succeed(false)),
-  ),
-);
-
-function waitForOpenVikingHealthy(config: RuntimeConfig, timeoutMs: number) {
-  return pipe(
-    pollUntilEffect(
-      getStatusEffect(openVikingHealthEndpoint(config), {timeoutMs: 800}).pipe(
-        Effect.map(status => (status >= 200 && status < 300 ? true : undefined)),
-        Effect.catch(() => Effect.succeed(undefined)),
-      ),
-      {intervalMs: 500, timeoutMs},
-    ),
-    Effect.map(result => result === true),
-  );
-}
-
-function waitForOpenVikingPortClosed(config: RuntimeConfig, timeoutMs: number) {
-  return Effect.gen(function* () {
-    yield* Console.log(`Waiting for OpenViking port ${config.host}:${config.port} to close before restart.`);
-    const closed = yield* pipe(
-      pollUntilEffect(
-        isTcpPortOpen(config.host, config.port, 300).pipe(Effect.map(open => (open ? undefined : true))),
-        {intervalMs: 300, timeoutMs},
-      ),
-      Effect.map(result => result === true),
-    );
-    if (closed) {
-      return true;
-    }
-    yield* Console.log(
-      `Warning: OpenViking port ${config.host}:${config.port} is still in use after ${timeoutMs / 1000}s; start may fail.`,
-    );
-    return false;
-  });
-}
-
-function launchAgentPlistPath(homeDirectory: string, path: Path.Path): string {
-  return path.join(homeDirectory, 'Library', 'LaunchAgents', 'io.threadnote.openviking.plist');
-}
-
-function isLaunchAgentInstalled() {
-  return Effect.gen(function* () {
-    const system = yield* SystemInfo;
-    if (system.platform !== 'darwin') {
-      return false;
-    }
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    return yield* fs
-      .exists(launchAgentPlistPath(system.homeDirectory, path))
-      .pipe(Effect.catch(() => Effect.succeed(false)));
-  });
-}
-
-export const readOpenVikingCliVersion = Effect.fn('update.readOpenVikingCliVersion')(function* (ov: string) {
-  const result = yield* runCommand(ov, ['--version'], {allowFailure: true});
-  if (result.exitCode !== 0) {
-    return undefined;
-  }
-  // `ov --version` is local-only and remains available while the server is
-  // stopped. OpenViking 0.4.10 prints `openviking 0.4.10`.
-  const match = `${result.stdout}\n${result.stderr}`.match(
-    /^\s*openviking(?:\s+CLI)?\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/im,
-  );
-  return match ? match[1] : undefined;
-});
 
 function getUpdateInfo(
   config: RuntimeConfig,
@@ -646,8 +500,10 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
     }
   }
 
-  if (!options.dryRun && options.markHandled) {
-    yield* writePostUpdateState(config, {handledMigrationIds: [...handledMigrationIds].sort()});
+  const nextHandledMigrationIds = [...handledMigrationIds].sort();
+  const previousHandledMigrationIds = [...state.handledMigrationIds].sort();
+  if (!options.dryRun && options.markHandled && !arraysEqual(nextHandledMigrationIds, previousHandledMigrationIds)) {
+    yield* writePostUpdateState(config, {handledMigrationIds: nextHandledMigrationIds});
   }
 });
 
@@ -682,6 +538,10 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
   }
   return applicable;
 });
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 
 const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(function* () {
   const path = yield* Path.Path;
@@ -739,6 +599,16 @@ function postUpdateMigrationReached(migration: PostUpdateMigration, fromVersion:
 
 function stableVersionCore(version: string): string {
   return version.trim().replace(/^v/, '').split(/[+-]/, 1)[0] ?? '';
+}
+
+function crossesMajorVersion(fromVersion: string, toVersion: string, major: number): boolean {
+  const versionMajor = (version: string): number | undefined => {
+    const parsed = /^(\d+)(?:\.|$)/.exec(stableVersionCore(version));
+    return parsed ? Number(parsed[1]) : undefined;
+  };
+  const fromMajor = versionMajor(fromVersion);
+  const toMajor = versionMajor(toVersion);
+  return fromMajor !== undefined && toMajor !== undefined && fromMajor < major && toMajor >= major;
 }
 
 function stringArray(value: JsonObject, key: string): readonly string[] {
@@ -890,10 +760,16 @@ function updatePackageCommand(
 } {
   const packageSpec = `${NPM_PACKAGE_NAME}@${channel}`;
   if (runtime === 'npm') {
-    return {executable: runtimeExecutable, args: ['install', '--global', packageSpec, `--registry=${registry}`]};
+    return {
+      executable: runtimeExecutable,
+      args: ['install', '--global', packageSpec, `--registry=${registry}`, '--node-llama-cpp-postinstall=skip'],
+    };
   }
   if (runtime === 'bun') {
-    return {executable: runtimeExecutable, args: ['install', '--global', packageSpec, `--registry=${registry}`]};
+    return {
+      executable: runtimeExecutable,
+      args: ['install', '--global', packageSpec, `--registry=${registry}`, '--node-llama-cpp-postinstall=skip'],
+    };
   }
   return {
     executable: runtimeExecutable,
@@ -910,7 +786,11 @@ function updatePackageCommand(
       '--allow-net',
       `npm:${packageSpec}`,
     ],
-    env: {...environment, NPM_CONFIG_REGISTRY: registry},
+    env: {
+      ...environment,
+      NODE_LLAMA_CPP_POSTINSTALL: 'skip',
+      NPM_CONFIG_REGISTRY: registry,
+    },
   };
 }
 

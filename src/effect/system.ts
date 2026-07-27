@@ -1,11 +1,14 @@
-import {Context, Layer} from 'effect';
+import {statfs} from 'node:fs/promises';
+import {Context, Effect, Layer} from 'effect';
 
 export interface SystemInfoShape {
+  readonly availableDiskBytes: (path: string) => Effect.Effect<number | undefined, unknown>;
   readonly currentDirectory: () => string;
   readonly environment: () => NodeJS.ProcessEnv;
   readonly executablePath: string;
   readonly homeDirectory: string;
   readonly isProcessRunning: (processId: number) => boolean;
+  readonly nodeVersion: string;
   readonly pathDelimiter: string;
   readonly platform: NodeJS.Platform;
   readonly processId: number;
@@ -25,6 +28,14 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
   static readonly layer = Layer.sync(SystemInfo, () => {
     const homeDirectory = resolveHomeDirectory(process.env, process.platform);
     return SystemInfo.of({
+      availableDiskBytes: path =>
+        Effect.tryPromise(() => statfs(path, {bigint: true})).pipe(
+          Effect.map(statistics => {
+            const available = statistics.bavail * statistics.bsize;
+            return available > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(available);
+          }),
+          Effect.catchIf(isUnsupportedStatfs, () => Effect.succeed(undefined)),
+        ),
       currentDirectory: () => process.cwd(),
       environment: () => process.env,
       executablePath: process.execPath,
@@ -42,6 +53,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
           );
         }
       },
+      nodeVersion: process.versions.node,
       pathDelimiter: process.platform === 'win32' ? ';' : ':',
       platform: process.platform,
       processId: process.pid,
@@ -112,4 +124,10 @@ export function resolveHomeDirectory(environment: NodeJS.ProcessEnv, platform: N
 
 function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
+}
+
+function isUnsupportedStatfs(cause: unknown): boolean {
+  return (
+    typeof cause === 'object' && cause !== null && 'code' in cause && ['ENOSYS', 'ENOTSUP'].includes(String(cause.code))
+  );
 }

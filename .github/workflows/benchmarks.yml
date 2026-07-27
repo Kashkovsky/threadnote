@@ -1,0 +1,91 @@
+name: Platform benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_100k:
+        description: Run the 100k scale-boundary suite on Linux
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recall-10k:
+    name: Recall 10k · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Capture process benchmark
+        run: >-
+          npm run bench:recall --
+          --documents 10000
+          --samples 25
+          --warmups 5
+          --output artifacts/recall-10k-${{ runner.os }}-${{ runner.arch }}.json
+
+      - name: Capture built-artifact microbenchmark
+        shell: bash
+        run: >-
+          npm run bench:recall:micro --
+          --output artifacts/recall-micro-${{ runner.os }}-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-benchmarks-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  recall-100k:
+    name: Recall 100k scale boundary · linux
+    if: github.event_name == 'schedule' || inputs.include_100k
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Capture 100k process benchmark
+        run: >-
+          npm run bench:recall --
+          --documents 100000
+          --samples 5
+          --warmups 1
+          --output artifacts/recall-100k-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-benchmarks-100k-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30

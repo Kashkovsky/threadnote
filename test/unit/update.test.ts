@@ -1,4 +1,4 @@
-import {chmod, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {Effect} from 'effect';
@@ -11,7 +11,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
     ...actual,
     currentPackageVersion: vi.fn(actual.currentPackageVersion),
     findExecutable: vi.fn(),
-    findOpenVikingCli: vi.fn(),
     isExecutable: vi.fn(),
     isTcpPortOpen: vi.fn(),
     maybeRun: vi.fn(),
@@ -23,7 +22,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
 
 import {
   parseUpdateRuntime,
-  readOpenVikingCliVersion as readOpenVikingCliVersionEffect,
   requestedUpdateChannel,
   resolveUpdateRegistry,
   runPostUpdate,
@@ -38,26 +36,8 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
-const readOpenVikingCliVersion = (ov: string) => runEffect(readOpenVikingCliVersionEffect(ov));
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
-
-describe('readOpenVikingCliVersion', () => {
-  it('uses the server-independent CLI version flag', async () => {
-    vi.mocked(utils.runCommand).mockReturnValueOnce(Effect.succeed(ok('openviking 0.4.10\n')));
-
-    await expect(readOpenVikingCliVersion('/ov')).resolves.toBe('0.4.10');
-    expect(utils.runCommand).toHaveBeenCalledWith('/ov', ['--version'], {allowFailure: true});
-  });
-
-  it('does not mistake OpenViking setup guidance for a version', async () => {
-    vi.mocked(utils.runCommand).mockReturnValueOnce(
-      Effect.succeed(ok('OpenViking needs a display language before running commands.\n')),
-    );
-
-    await expect(readOpenVikingCliVersion('/ov')).resolves.toBeUndefined();
-  });
-});
 
 async function makeRuntime(): Promise<RuntimeConfig> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-update-'));
@@ -65,10 +45,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(home, 'seed-manifest.yaml'),
-    openVikingVersion: '0.4.7',
-    port: 1933,
     user: 'denys',
   };
 }
@@ -97,7 +74,6 @@ function mockRegistryVersions(latest: string, beta: string) {
 describe('parseUpdateRuntime', () => {
   beforeEach(() => {
     vi.mocked(utils.findExecutable).mockReset();
-    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -106,7 +82,6 @@ describe('parseUpdateRuntime', () => {
     vi.mocked(utils.sleep).mockReset();
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('2.0.4'));
     vi.mocked(utils.maybeRun).mockReturnValue(Effect.succeed(ok()));
-    vi.mocked(utils.findOpenVikingCli).mockReturnValue(Effect.succeed(undefined));
     vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok()));
     vi.mocked(utils.runInteractive).mockReturnValue(Effect.succeed(0));
     vi.mocked(utils.sleep).mockReturnValue(Effect.void);
@@ -145,7 +120,6 @@ describe('runUpdate', () => {
     delete process.env.THREADNOTE_NPM_REGISTRY;
     delete process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
     vi.mocked(utils.findExecutable).mockReset();
-    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -162,7 +136,6 @@ describe('runUpdate', () => {
       }
       return Effect.succeed(undefined);
     });
-    vi.mocked(utils.findOpenVikingCli).mockReturnValue(Effect.succeed(undefined));
     vi.mocked(utils.isExecutable).mockReturnValue(Effect.succeed(true));
     vi.mocked(utils.maybeRun).mockReturnValue(Effect.succeed(ok()));
     vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
@@ -193,6 +166,7 @@ describe('runUpdate', () => {
   it('streams the package update and repair output instead of buffering it', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0'));
     const fetch = mockRegistryVersions('99.0.0', '100.0.0-beta.1');
     const prefix = join(config.agentContextHome, 'npm-global');
     const threadnote = runtimeThreadnoteBinPath('npm', prefix, process.platform);
@@ -227,6 +201,7 @@ describe('runUpdate', () => {
   it('runs Deno directly with the registry in its environment', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0'));
     mockRegistryVersions('99.0.0', '100.0.0-beta.1');
     const deno = 'C:\\Program Files\\Deno\\deno.exe';
     const originalDenoInstallRoot = process.env.DENO_INSTALL_ROOT;
@@ -276,7 +251,10 @@ describe('runUpdate', () => {
       deno,
       expect.arrayContaining(['install', '--global', 'npm:threadnote@latest']),
       {
-        env: expect.objectContaining({NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/'}),
+        env: expect.objectContaining({
+          NODE_LLAMA_CPP_POSTINSTALL: 'skip',
+          NPM_CONFIG_REGISTRY: 'https://registry.npmjs.org/',
+        }),
         inheritOutput: true,
       },
     );
@@ -284,6 +262,98 @@ describe('runUpdate', () => {
     expect(executeStreaming).toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], {
       inheritOutput: true,
     });
+  });
+
+  it('migrates the legacy home before repair when crossing into 4.x', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
+    mockRegistryVersions('4.0.0', '4.0.0-beta.1');
+    const prefix = join(config.agentContextHome, 'npm-global');
+    const threadnote = runtimeThreadnoteBinPath('npm', prefix, process.platform);
+    await mkdir(dirname(threadnote), {recursive: true});
+    await writeFile(threadnote, '#!/bin/sh\n');
+    await chmod(threadnote, 0o755);
+    const executeStreaming = vi.fn(
+      (_executable: string, _args: readonly string[], _options?: {readonly env?: NodeJS.ProcessEnv}) =>
+        Effect.succeed(ok()),
+    );
+    const executor = CommandExecutor.of({
+      execute: (_executable, args) => Effect.succeed(args[0] === 'prefix' ? ok(`${prefix}\n`) : ok()),
+      executeStreaming,
+    });
+
+    await runEffect(
+      runUpdate(config, {runtime: 'npm', yes: true}).pipe(Effect.provideService(CommandExecutor, executor)),
+    );
+
+    const threadnoteCalls = executeStreaming.mock.calls
+      .filter(([executable]) => executable === threadnote)
+      .map(([, args]) => args);
+    expect(threadnoteCalls).toEqual([
+      ['post-update', '--from-version', '3.0.3', '--to-version', '4.0.0', '--yes'],
+      ['repair', '--no-post-update'],
+    ]);
+  });
+
+  it('defers repair when a 4.x home migration is not accepted automatically', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
+    mockRegistryVersions('4.0.0', '4.0.0-beta.1');
+    const prefix = join(config.agentContextHome, 'npm-global');
+    const threadnote = runtimeThreadnoteBinPath('npm', prefix, process.platform);
+    await mkdir(dirname(threadnote), {recursive: true});
+    await writeFile(threadnote, '#!/bin/sh\n');
+    await chmod(threadnote, 0o755);
+    const executeStreaming = vi.fn(
+      (_executable: string, _args: readonly string[], _options?: {readonly env?: NodeJS.ProcessEnv}) =>
+        Effect.succeed(ok()),
+    );
+    const executor = CommandExecutor.of({
+      execute: (_executable, args) => Effect.succeed(args[0] === 'prefix' ? ok(`${prefix}\n`) : ok()),
+      executeStreaming,
+    });
+
+    const result = await runEffect(
+      captureConsole(
+        runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(Effect.provideService(CommandExecutor, executor)),
+      ),
+    );
+
+    expect(executeStreaming).not.toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], expect.anything());
+    expect(result.output).toContain('Repair was deferred');
+    expect(result.output).toContain('migrate --apply');
+  });
+
+  it('still runs the 4.x post-update migration when repair is disabled', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
+    mockRegistryVersions('4.0.0', '4.0.0-beta.1');
+    const prefix = join(config.agentContextHome, 'npm-global');
+    const threadnote = runtimeThreadnoteBinPath('npm', prefix, process.platform);
+    await mkdir(dirname(threadnote), {recursive: true});
+    await writeFile(threadnote, '#!/bin/sh\n');
+    await chmod(threadnote, 0o755);
+    const executeStreaming = vi.fn(() => Effect.succeed(ok()));
+    const executor = CommandExecutor.of({
+      execute: (_executable, args) => Effect.succeed(args[0] === 'prefix' ? ok(`${prefix}\n`) : ok()),
+      executeStreaming,
+    });
+
+    await runEffect(
+      runUpdate(config, {repair: false, runtime: 'npm', yes: true}).pipe(
+        Effect.provideService(CommandExecutor, executor),
+      ),
+    );
+
+    expect(executeStreaming).toHaveBeenCalledWith(
+      threadnote,
+      ['post-update', '--from-version', '3.0.3', '--to-version', '4.0.0', '--yes'],
+      {inheritOutput: true},
+    );
+    expect(executeStreaming).not.toHaveBeenCalledWith(threadnote, ['repair', '--no-post-update'], expect.anything());
   });
 
   it('updates to the beta dist-tag when --beta is requested', async () => {
@@ -415,7 +485,6 @@ describe('runPostUpdate', () => {
 
   beforeEach(() => {
     vi.mocked(utils.findExecutable).mockReset();
-    vi.mocked(utils.findOpenVikingCli).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
     vi.mocked(utils.maybeRun).mockReset();
@@ -428,15 +497,9 @@ describe('runPostUpdate', () => {
       }
       return Effect.succeed(undefined);
     });
-    vi.mocked(utils.findOpenVikingCli).mockReturnValue(Effect.succeed('/ov'));
     vi.mocked(utils.isTcpPortOpen).mockReturnValue(Effect.succeed(false));
     vi.mocked(utils.maybeRun).mockReturnValue(Effect.succeed(ok()));
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === '--version') {
-        return Effect.succeed(ok('openviking 0.3.23\n'));
-      }
-      return Effect.succeed(ok());
-    });
+    vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok()));
     vi.mocked(utils.runInteractive).mockReturnValue(Effect.succeed(0));
     vi.mocked(utils.sleep).mockReturnValue(Effect.void);
     process.argv = [process.argv[0] ?? 'node', '/threadnote'];
@@ -448,72 +511,9 @@ describe('runPostUpdate', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('waits for the old OpenViking port listener to close before starting after a pin upgrade', async () => {
+  it('offers the self-contained home migration during the 4.0.0 beta cycle', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('healthy')),
-    );
-
-    const executeStreaming = vi.fn(
-      (_executable: string, _args: readonly string[], _options?: {readonly env?: NodeJS.ProcessEnv}) =>
-        Effect.succeed(ok()),
-    );
-    const executor = CommandExecutor.of({
-      execute: () => Effect.succeed(ok()),
-      executeStreaming,
-    });
-    await runEffect(
-      runPostUpdate(config, {fromVersion: '1.1.0', toVersion: '1.1.0'}).pipe(
-        Effect.provideService(CommandExecutor, executor),
-      ),
-    );
-
-    const stopCall = executeStreaming.mock.calls.find(call => call[1][0] === 'stop');
-    const startCall = executeStreaming.mock.calls.find(call => call[1][0] === 'start');
-    const installCall = executeStreaming.mock.calls.find(call => call[1][0] === 'install');
-
-    expect(installCall?.[1]).toEqual(['install', '--force', '--no-start']);
-    expect(stopCall).toBeDefined();
-    expect(startCall).toBeDefined();
-    expect(vi.mocked(utils.isTcpPortOpen)).toHaveBeenCalledWith('127.0.0.1', 1933, 300);
-    expect(vi.mocked(utils.isTcpPortOpen).mock.invocationCallOrder[0]).toBeLessThan(
-      executeStreaming.mock.invocationCallOrder[executeStreaming.mock.calls.findIndex(call => call[1][0] === 'start')],
-    );
-  });
-
-  it('does not run the obsolete OpenViking semantic-queue patch after the 1.4.4 update', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === '--version') {
-        return Effect.succeed(ok('openviking 0.4.7\n'));
-      }
-      return Effect.succeed(ok());
-    });
-
-    await runTestEffect(
-      runPostUpdate(config, {fromVersion: '1.4.3', toVersion: '1.4.4', yes: true}).pipe(
-        Effect.provide(ApplicationLayer),
-      ),
-    );
-
-    expect(vi.mocked(utils.runInteractive)).not.toHaveBeenCalledWith(
-      expect.any(String),
-      expect.arrayContaining(['repair-semantic-queue']),
-    );
-  });
-
-  it('offers local recall and full memory enrichment during the 3.0.0 beta cycle', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === '--version') {
-        return Effect.succeed(ok('openviking 0.4.7\n'));
-      }
-      return Effect.succeed(ok());
-    });
     const executeStreaming = vi.fn(() => Effect.succeed(ok()));
     const executor = CommandExecutor.of({
       execute: () => Effect.succeed(ok()),
@@ -521,16 +521,69 @@ describe('runPostUpdate', () => {
     });
 
     await runEffect(
-      runPostUpdate(config, {fromVersion: '3.0.0-beta.4', toVersion: '3.0.0-beta.5', yes: true}).pipe(
+      runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
         Effect.provideService(CommandExecutor, executor),
       ),
     );
 
-    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['local-ai', 'install'], {
+    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['migrate', '--apply'], {
       inheritOutput: true,
     });
-    expect(executeStreaming).toHaveBeenCalledWith('/threadnote', ['enrich-memories', '--apply', '--install-local-ai'], {
-      inheritOutput: true,
+    expect(JSON.parse(await readFile(join(config.agentContextHome, 'post-update-state.json'), 'utf8'))).toMatchObject({
+      handledMigrationIds: ['self-contained-home-v1'],
     });
+
+    executeStreaming.mockClear();
+    await runEffect(
+      runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
+        Effect.provideService(CommandExecutor, executor),
+      ),
+    );
+    expect(executeStreaming).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a failed post-update migration as handled', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const executor = CommandExecutor.of({
+      execute: () => Effect.succeed(ok()),
+      executeStreaming: () => Effect.succeed({...ok(), exitCode: 1}),
+    });
+
+    await expect(
+      runEffect(
+        runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
+          Effect.provideService(CommandExecutor, executor),
+        ),
+      ),
+    ).rejects.toThrow(/exited with 1/);
+    await expect(readFile(join(config.agentContextHome, 'post-update-state.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('does not create the Threadnote home when all applicable migrations are declined', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'threadnote-post-update-declined-'));
+    homes.push(parent);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: join(parent, '.threadnote'),
+      agentId: 'threadnote',
+      manifestPath: join(parent, '.threadnote', 'seed-manifest.yaml'),
+      user: 'denys',
+    };
+    const executeStreaming = vi.fn(() => Effect.succeed(ok()));
+    const executor = CommandExecutor.of({
+      execute: () => Effect.succeed(ok()),
+      executeStreaming,
+    });
+
+    await runEffect(
+      runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0'}).pipe(
+        Effect.provideService(CommandExecutor, executor),
+      ),
+    );
+
+    expect(executeStreaming).not.toHaveBeenCalled();
+    await expect(readFile(join(config.agentContextHome, 'post-update-state.json'), 'utf8')).rejects.toThrow();
+    await expect(stat(config.agentContextHome)).rejects.toThrow();
   });
 });

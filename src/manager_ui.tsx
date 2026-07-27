@@ -79,7 +79,6 @@ interface StateResponse {
     readonly user: string;
   };
   readonly latestVersion?: string;
-  readonly openVikingLogPath: string;
   readonly version: string;
 }
 
@@ -1081,12 +1080,10 @@ function App(): React.ReactElement {
                 <button
                   disabled={doctorBusy}
                   onClick={() =>
-                    void runDoctorAction('Started OpenViking', 'Starting OpenViking', () =>
-                      api('/api/doctor/start', {}),
-                    )
+                    void runDoctorAction('Runtime ready', 'Checking runtime', () => api('/api/doctor/start', {}))
                   }
                 >
-                  Start OpenViking
+                  Verify Runtime
                 </button>
                 <button
                   disabled={doctorBusy}

@@ -229,10 +229,7 @@ function runtimeConfig(agentContextHome: string): RuntimeConfig {
     account: 'local',
     agentContextHome,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(agentContextHome, 'seed-manifest.yaml'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'denys',
   };
 }

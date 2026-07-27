@@ -1194,10 +1194,8 @@
           <span class="slide-eyebrow">04 · The model</span>
           <h2>Persistence is the plumbing. Portability is the product.</h2>
           <p class="lead">
-            Threadnote connects supported agents to a local
-            <a href="https://openviking.ai/" target="_blank" rel="noopener">OpenViking</a> store, then uses explicit Git
-            publishing for team knowledge. The local lifecycle makes shared records current, scoped, and safe enough to
-            reuse.
+            Threadnote connects supported agents to its own local Markdown store, then uses explicit Git publishing for
+            team knowledge. The local lifecycle makes shared records current, scoped, and safe enough to reuse.
           </p>
 
           <div class="grid grid-2" style="margin-top: 2rem">
@@ -1230,8 +1228,8 @@
               <span class="card-kicker">Local recall</span>
               <h3>Find the record, not the whole history</h3>
               <p>
-                OpenViking runs a local GGUF embedding model through <code>llama.cpp</code> to rank matches. Agents read
-                only the selected <code>viking://</code> records; the Markdown source stays on disk.
+                Threadnote can run a local GGUF embedding model in-process through <code>node-llama-cpp</code> to rank
+                matches. Agents read only the selected <code>viking://</code> records; Markdown remains canonical.
               </p>
             </div>
           </div>
@@ -1270,8 +1268,8 @@
               <h3>Threadnote</h3>
               <ul class="flat">
                 <li>
-                  <strong>Where it lives:</strong> local OpenViking store, cross-repo, cross-agent. Optionally published
-                  to a team git repo.
+                  <strong>Where it lives:</strong> <code>~/.threadnote</code>, cross-repo and cross-agent. Optionally
+                  published to a team Git repo.
                 </li>
                 <li>
                   <strong>Best for:</strong> feature knowledge, handoffs, branch state, prod-on-call findings, skills,
@@ -1351,17 +1349,17 @@
                 </text>
               </g>
 
-              <!-- arrow to OV -->
+              <!-- arrow to native runtime -->
               <g stroke="#5ee0c5" stroke-width="1.5" fill="none" marker-end="url(#arrow)" opacity="0.7">
                 <line x1="440" y1="210" x2="440" y2="244" />
               </g>
 
-              <!-- OpenViking -->
+              <!-- native runtime -->
               <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
                 <rect x="290" y="246" width="300" height="60" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
-                <text x="440" y="272" text-anchor="middle">openviking-server</text>
+                <text x="440" y="272" text-anchor="middle">Threadnote native runtime</text>
                 <text x="440" y="290" text-anchor="middle" fill="#8a8a96" font-size="11">
-                  127.0.0.1:1933 · python · uv-managed
+                  Effect services · node-llama-cpp · in-process
                 </text>
               </g>
 
@@ -1374,10 +1372,10 @@
               <!-- storage -->
               <g font-family="JetBrains Mono, monospace" font-size="12" fill="#ececf1">
                 <rect x="60" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="240" y="361" text-anchor="middle">~/.openviking/data/viking/&lt;account&gt;/...</text>
+                <text x="240" y="361" text-anchor="middle">~/.threadnote/data/viking/&lt;account&gt;/...</text>
 
                 <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="640" y="361" text-anchor="middle">vectordb (local semantic index)</text>
+                <text x="640" y="361" text-anchor="middle">indexes/vector (regenerable sidecar)</text>
               </g>
             </svg>
             <div class="architecture-legend">
@@ -1415,7 +1413,7 @@
               <h3>Writes stay on disk</h3>
               <p>
                 Every <code>remember</code> / <code>handoff</code> writes under <code>THREADNOTE_HOME</code> (defaults
-                to <code>~/.openviking</code>). Nothing leaves the machine without explicit user action.
+                to <code>~/.threadnote</code>). Nothing leaves the machine without explicit user action.
               </p>
             </div>
             <div class="card reveal">
@@ -1471,8 +1469,7 @@
           <span class="slide-eyebrow">08 · Install</span>
           <h2>One command. Then point your agents at it.</h2>
           <p class="lead">
-            The installer wires up the npm package, the OpenViking Python environment, and the local server. After that,
-            <code>mcp-install</code> per agent and you're done.
+            The installer wires up one npm package. After that, run <code>mcp-install</code> for each agent you use.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1482,14 +1479,10 @@
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</span>
 
-<span class="out">Installed threadnote@1.3.2</span>
+<span class="out">Installed threadnote@4.0.0</span>
 <span class="out">Already exists: ~/.local/bin/threadnote</span>
-<span class="out">OpenViking installs into Python; neither uv nor pipx is</span>
-<span class="out">on PATH so threadnote would fall back to `pip install</span>
-<span class="out">--user`, which fails on PEP 668 setups.</span>
-<span class="out">Install uv now? [Y/n] </span><span class="out-strong">Y</span>
-<span class="out">Installing uv via Homebrew…</span>
-<span class="out-strong">OK   openviking 0.4.10 ready · server healthy</span></pre>
+<span class="out">Initialized ~/.threadnote</span>
+<span class="out-strong">OK   native store ready · no daemon required</span></pre>
               </div>
               <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
                 On native Windows PowerShell, run
@@ -1514,9 +1507,8 @@
               </div>
               <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
                 Without <code>--apply</code>, each command prints a dry run so you can review before changing your agent
-                configs. The default adapter exposes eight focused core tools; add <code>--toolset full</code> for
-                memory maintenance, raw OpenViking, conflict, skill, and bundle tools. Run <code>doctor</code> anytime
-                to verify.
+                configs. The default adapter exposes focused core tools; add <code>--toolset full</code> for memory
+                maintenance, conflict, skill, and bundle tools. Run <code>doctor</code> anytime to verify.
               </p>
             </div>
           </div>
@@ -1546,7 +1538,7 @@
                 <pre><span class="cmd">$ threadnote init-manifest \
     --repo ~/src/web-app \
     --repo ~/src/mobile-app</span>
-<span class="out">Wrote ~/.openviking/seed-manifest.yaml (2 project(s))</span>
+<span class="out">Wrote ~/.threadnote/seed-manifest.yaml (2 project(s))</span>
 
 <span class="cmd">$ threadnote seed --graph</span>
 <span class="out-strong">Imported 47 curated path(s); skipped 6 secret-flagged.</span>
@@ -1640,7 +1632,7 @@ worksets:
 <span class="out">OK   threadnote shim: ~/.local/bin/threadnote</span>
 <span class="out">OK   codex / claude / cursor / copilot user instructions</span>
 <span class="out">OK   manifest, ignore file, templates</span>
-<span class="out">OK   openviking health</span>
+<span class="out">OK   canonical store and derived indexes</span>
 <span class="out-strong">Summary: 0 failure(s), 0 warning(s)</span></pre>
               </div>
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
@@ -1731,13 +1723,13 @@ threadnote remember \
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ threadnote share init git@github.com:org/team-memories.git</span>
-<span class="out">Cloned into ~/.openviking/data/.../memories/shared/default/</span>
-<span class="out">Ingested 12 shared memory file(s) into OpenViking.</span>
-<span class="out">Added .gitignore exclusions for OV directory summaries.</span></pre>
+<span class="out">Cloned into ~/.threadnote/share/worktrees/default/</span>
+<span class="out">Ingested 12 shared memory file(s) into the native store.</span>
+<span class="out">Added .gitignore exclusions for derived summaries.</span></pre>
               </div>
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.6rem">
-                Working tree lives inside the OV data tree so recall sees it. The git directory is moved aside via
-                <code>--separate-git-dir</code> so OV never sees git internals.
+                The Git worktree is isolated from canonical storage. Threadnote validates and copies reviewed changes
+                into the local store; <code>--separate-git-dir</code> keeps Git internals out of recall.
               </p>
             </div>
 
@@ -1818,20 +1810,6 @@ threadnote remember \
             manage shares — everything it does, the CLI and MCP do too.
           </p>
 
-          <img
-            src="web-manager.png"
-            alt="Threadnote web manager — Health and Doctor view with the memory tree, Memory / Sharing / Health / Tools tabs, and Run Doctor / Start OpenViking / Repair controls"
-            loading="lazy"
-            style="
-              width: 100%;
-              height: auto;
-              display: block;
-              margin-top: 1.5rem;
-              border: 1px solid var(--line);
-              border-radius: var(--radius-lg);
-            "
-          />
-
           <div class="grid grid-2" style="margin-top: 1.5rem">
             <div class="card reveal">
               <span class="card-kicker">Memory</span>
@@ -1845,8 +1823,8 @@ threadnote remember \
               <span class="card-kicker">Health</span>
               <h3>Doctor on open</h3>
               <p>
-                The default tab runs <code>doctor</code> automatically. Run Doctor, Start OpenViking, and Repair stream
-                into a scrollable output pane — the view in the screenshot above.
+                The default tab runs <code>doctor</code> automatically. Doctor and Repair stream into a scrollable
+                output pane, including canonical-store, model, and index checks.
               </p>
             </div>
             <div class="card reveal">
@@ -2017,7 +1995,7 @@ threadnote doctor --dry-run</code></pre>
           </div>
 
           <p class="colophon">
-            threadnote · AGPL-3.0-or-later · built on OpenViking 0.4.10 · use <span class="kbd">↑</span>
+            threadnote · AGPL-3.0-or-later · self-contained Node.js runtime · use <span class="kbd">↑</span>
             <span class="kbd">↓</span> / <span class="kbd">j</span> <span class="kbd">k</span> to navigate
           </p>
         </div>

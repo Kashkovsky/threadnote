@@ -3,9 +3,16 @@ import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effec
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
-import {ensureEffectAiReady, resolveEffectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
+import {
+  ensureEffectAiReady,
+  resolveEffectAiConfiguration,
+  runEffectAiConsolidation,
+  runNativeAiConsolidation,
+} from './effect/ai/consolidator.js';
+import {resolveSelectedLocalModel} from './models/inference.js';
 import {runCommandEffect} from './effect/command.js';
 import {captureConsole} from './effect/console.js';
+import {ResourceStore} from './effect/resource-store.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {SystemInfo} from './effect/system.js';
@@ -60,14 +67,12 @@ import {
   assertVikingUri,
   errorMessage,
   findExecutable,
-  openVikingCliForMode,
   runCommand,
   safeTimestamp,
   sha256,
   shellQuote,
   toolRoot,
 } from './utils.js';
-import {openVikingLogPath, withIdentity} from './runtime.js';
 
 interface ManagerDirectoryEntry {
   readonly name: string;
@@ -176,6 +181,7 @@ interface ManagerResponseSink {
 
 type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
 type ManagerEffectPromise = undefined;
+const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
 
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
@@ -352,6 +358,7 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const effectAi = yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment());
+  const nativeGeneration = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
   const [codex, claude, cursor, copilot] = yield* Effect.all([
     findExecutable(['codex']),
     findExecutable(['claude']),
@@ -364,10 +371,10 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
     {available: cursor !== undefined, command: cursor, id: 'cursor', label: 'Cursor'},
     {available: copilot !== undefined, command: copilot, id: 'copilot', label: 'Copilot'},
     {
-      available: effectAi !== undefined,
-      command: effectAi?.configuration.model,
+      available: nativeGeneration !== undefined || effectAi !== undefined,
+      command: nativeGeneration?.manifest.id ?? effectAi?.configuration.model,
       id: 'effect-ai',
-      label: 'Effect AI (OpenAI-compatible)',
+      label: nativeGeneration ? 'Threadnote local AI' : 'Effect AI (explicit remote provider)',
     },
   ];
 });
@@ -395,7 +402,6 @@ function handleRequestEffect(
         agents,
         config: publicConfig(context.config),
         latestVersion: Result.isSuccess(latest) ? latest.success : undefined,
-        openVikingLogPath: yield* openVikingLogPath(context.config),
         version,
       });
     });
@@ -823,7 +829,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   content: string,
 ) {
   assertVikingUri(uri);
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   if (isInSharedNamespace(config, uri)) {
     const teamName = sharedTeamNameForUri(config, uri);
     if (!teamName) {
@@ -943,7 +949,7 @@ const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function*
   teamName: string,
 ) {
   const team = yield* resolveTeam(config, teamName);
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false);
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
   yield* publishShareGitChange(
@@ -971,7 +977,7 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
     throw new Error(`${sourceUri} is not a shared memory.`);
   }
   const team = yield* resolveTeam(config, teamName);
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   yield* publishShareGitChange(
     team.config.worktree,
     vikingUriToWorktreeRelative(config, sourceUri, team.name),
@@ -1156,15 +1162,19 @@ function runConsolidationAgent(
   if (agent === 'effect-ai') {
     return Effect.gen(function* () {
       const resolved = yield* resolveEffectAiConfiguration(runtimeConfig, (yield* SystemInfo).environment());
-      if (!resolved) {
-        return yield* Effect.fail(
-          new Error(
-            'Effect AI is not configured. Run `threadnote local-ai install`, or set the THREADNOTE_EFFECT_AI provider variables.',
-          ),
-        );
+      if (resolved) {
+        yield* ensureEffectAiReady(runtimeConfig, resolved);
+        return yield* runEffectAiConsolidation(prompt, resolved.configuration);
       }
-      yield* ensureEffectAiReady(runtimeConfig, resolved);
-      return yield* runEffectAiConsolidation(prompt, resolved.configuration);
+      const native = yield* runNativeAiConsolidation(runtimeConfig, prompt);
+      return (
+        native ??
+        (yield* Effect.fail(
+          new Error(
+            'No generation model is selected. Install and select one with `threadnote models`, or configure an explicit remote Effect AI provider.',
+          ),
+        ))
+      );
     });
   }
   if (agent !== 'codex' && agent !== 'claude') {
@@ -1258,17 +1268,7 @@ const collectManagerDoctorChecks = Effect.fn('manager.collectManagerDoctorChecks
   }
   const result = yield* runCommand(
     threadnote,
-    [
-      '--home',
-      config.agentContextHome,
-      '--manifest',
-      config.manifestPath,
-      '--host',
-      config.host,
-      '--port',
-      String(config.port),
-      'doctor',
-    ],
+    ['--home', config.agentContextHome, '--manifest', config.manifestPath, 'doctor'],
     {allowFailure: true, maxOutputBytes: 1024 * 1024},
   );
   const checks = parseDoctorChecksFromOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
@@ -1425,21 +1425,16 @@ const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function*
 
 const ensurePersonalDirectoryChain = Effect.fn('manager.ensurePersonalDirectoryChain')(function* (
   config: RuntimeConfig,
-  ov: string,
+  _ov: string,
   directoryUri: string,
 ) {
+  const store = yield* ResourceStore;
   const prefix = 'viking://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {
     const uri = `${prefix}${parts.slice(0, index).join('/')}`;
-    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-    if (statResult.exitCode !== 0) {
-      yield* runCommand(
-        ov,
-        withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
-      );
-    }
+    yield* store.makeDirectory({account: config.account, home: config.agentContextHome, user: config.user}, uri);
   }
 });
 
@@ -1448,9 +1443,7 @@ function publicConfig(config: RuntimeConfig): Record<string, unknown> {
     account: config.account,
     agentContextHome: config.agentContextHome,
     agentId: config.agentId,
-    host: config.host,
     manifestPath: config.manifestPath,
-    port: config.port,
     user: config.user,
   };
 }

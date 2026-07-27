@@ -25,7 +25,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
@@ -33,7 +32,6 @@ vi.mock('../../src/utils.js', async importOriginal => {
 });
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stdout, stderr: ''});
-const fail = (stderr = '[NOT_FOUND]'): CommandResult => ({exitCode: 1, stdout: '', stderr});
 
 async function makeRuntime(): Promise<ShareRuntime> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-share-artifacts-'));
@@ -71,12 +69,6 @@ async function makeRuntime(): Promise<ShareRuntime> {
 
 function mockPublishCommands(): void {
   vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-    if (executable === '/ov' && args[0] === 'stat') {
-      return Effect.succeed(fail());
-    }
-    if (executable === '/ov' && (args[0] === 'mkdir' || args[0] === 'write')) {
-      return Effect.succeed(ok('ok'));
-    }
     if (executable === 'git' && (args.includes('add') || args.includes('commit') || args.includes('push'))) {
       return Effect.succeed(ok('ok'));
     }
@@ -106,6 +98,22 @@ describe('shared agent artifacts', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
+  async function blockNativeArtifactWrites(config: ShareRuntime): Promise<void> {
+    const parent = join(
+      config.agentContextHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'shared',
+      'default',
+    );
+    await mkdir(parent, {recursive: true});
+    await writeFile(join(parent, 'agent-artifacts'), 'blocks canonical directory creation');
+  }
+
   it('publishes a Codex skill into the shared artifact catalog and indexes it', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -122,14 +130,6 @@ describe('shared agent artifacts', () => {
     expect(vi.mocked(utils.runCommand).mock.calls).toEqual(
       expect.arrayContaining([
         [
-          '/ov',
-          expect.arrayContaining([
-            'write',
-            'viking://user/test-user/memories/shared/default/agent-artifacts/skills/codex/reviewer/SKILL.md',
-          ]),
-          {allowFailure: true},
-        ],
-        [
           'git',
           [
             '-C',
@@ -142,6 +142,27 @@ describe('shared agent artifacts', () => {
         ],
       ]),
     );
+    await expect(
+      readFile(
+        join(
+          config.agentContextHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'default',
+          'agent-artifacts',
+          'skills',
+          'codex',
+          'reviewer',
+          'SKILL.md',
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('Reviewer');
   });
 
   it('refuses to overwrite a different shared artifact unless forced', async () => {
@@ -161,26 +182,17 @@ describe('shared agent artifacts', () => {
     await expect(readFile(join(sharedPath, 'review.md'), 'utf8')).resolves.toBe('old command\n');
   });
 
-  it('does not leave a shared artifact file behind when OpenViking write fails', async () => {
+  it('does not leave a shared artifact file behind when the native canonical write fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
     await mkdir(join(sourcePath, '..'), {recursive: true});
     await writeFile(sourcePath, '# Reviewer\n');
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === 'stat') {
-        return Effect.succeed(fail());
-      }
-      if (executable === '/ov' && args[0] === 'mkdir') {
-        return Effect.succeed(ok('ok'));
-      }
-      if (executable === '/ov' && args[0] === 'write') {
-        return Effect.succeed(fail('write failed'));
-      }
-      return Effect.succeed(ok());
-    });
+    await blockNativeArtifactWrites(config);
 
-    await expect(runEffect(shareAgentArtifact(config, sourcePath, {}))).rejects.toThrow(/write failed/);
+    await expect(runEffect(shareAgentArtifact(config, sourcePath, {}))).rejects.toThrow(
+      /directory|path|exist|resource stat/i,
+    );
 
     await expect(
       readFile(
@@ -534,27 +546,18 @@ describe('shared agent artifacts', () => {
     );
   });
 
-  it('does not materialize bundle companions when the SKILL.md OpenViking write fails', async () => {
+  it('does not materialize bundle companions when the native SKILL.md write fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const skillDir = join(config.agentContextHome, '.codex', 'skills', 'reviewer');
     await mkdir(join(skillDir, 'scripts'), {recursive: true});
     await writeFile(join(skillDir, 'SKILL.md'), '# Reviewer\n');
     await writeFile(join(skillDir, 'scripts', 'run.ts'), 'export const run = () => 1;\n');
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === 'stat') {
-        return Effect.succeed(fail());
-      }
-      if (executable === '/ov' && args[0] === 'mkdir') {
-        return Effect.succeed(ok('ok'));
-      }
-      if (executable === '/ov' && args[0] === 'write') {
-        return Effect.succeed(fail('write failed'));
-      }
-      return Effect.succeed(ok());
-    });
+    await blockNativeArtifactWrites(config);
 
-    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(/write failed/);
+    await expect(runEffect(shareAgentArtifact(config, join(skillDir, 'SKILL.md'), {}))).rejects.toThrow(
+      /directory|path|exist|resource stat/i,
+    );
     const sharedRoot = join(
       config.agentContextHome,
       'shared',
@@ -1119,25 +1122,14 @@ describe('shared agent artifacts', () => {
     ).rejects.toThrow(/Refusing to overwrite/);
   });
 
-  it('rolls back a pack publish, materializing nothing when an OpenViking write fails', async () => {
+  it('rolls back a pack publish, materializing nothing when the native canonical write fails', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const repo = await makeReviewerManifestRepo();
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === 'stat') {
-        return Effect.succeed(fail());
-      }
-      if (executable === '/ov' && args[0] === 'mkdir') {
-        return Effect.succeed(ok('ok'));
-      }
-      if (executable === '/ov' && args[0] === 'write') {
-        return Effect.succeed(fail('write failed'));
-      }
-      return Effect.succeed(ok());
-    });
+    await blockNativeArtifactWrites(config);
 
     await expect(runEffect(shareBundlePack(config, join(repo, 'threadnote-bundle.json'), {}))).rejects.toThrow(
-      /write failed/,
+      /directory|path|exist|resource stat/i,
     );
     const packRoot = join(
       config.agentContextHome,

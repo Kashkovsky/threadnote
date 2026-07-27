@@ -17,7 +17,7 @@ describe('buildOnboardingGuide', () => {
     expect(guide).not.toContain('compact_context(');
     expect(guide).not.toContain('share_skill(');
     expect(guide).toContain('Memory maintenance');
-    expect(guide).toContain('OpenViking utilities and raw parity');
+    expect(guide).toContain('Native resource utilities');
     expect(guide).toContain('Advanced sharing and artifacts');
     expect(guide).toContain('mcp-install <agent> --toolset full --apply');
     // It instructs the agent to present + offer, not to paste verbatim.
@@ -52,15 +52,15 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('Seeded project guidance is available for: coda, mobile-native');
   });
 
-  it('leads with starting the server when it is down', () => {
-    const guide = buildOnboardingGuide({seededProjects: [], serverUp: false, teams: []});
-    expect(guide).toContain('OpenViking is NOT responding');
-    expect(guide).toContain('threadnote start');
+  it('leads with initializing the owned home when the runtime is not ready', () => {
+    const guide = buildOnboardingGuide({runtimeReady: false, seededProjects: [], teams: []});
+    expect(guide).toContain('Threadnote home is not ready');
+    expect(guide).toContain('threadnote install');
   });
 
-  it('says the server is running when healthy', () => {
-    const guide = buildOnboardingGuide({seededProjects: [], serverUp: true, teams: []});
-    expect(guide).toContain('OpenViking is running.');
+  it('says the self-contained runtime is ready when healthy', () => {
+    const guide = buildOnboardingGuide({runtimeReady: true, seededProjects: [], teams: []});
+    expect(guide).toContain('self-contained Threadnote runtime is ready');
     expect(guide).toContain('threadnote doctor');
   });
 });

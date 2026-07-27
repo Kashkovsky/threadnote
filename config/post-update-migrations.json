@@ -41,42 +41,21 @@
       "requiresProjectNameConsolidation": true
     },
     {
-      "id": "local-ai-recall-gemma-4-e4b-v1",
-      "introducedIn": "3.0.0",
+      "id": "self-contained-home-v1",
+      "introducedIn": "4.0.0",
       "appliesToPrereleases": true,
-      "title": "Optional local AI recall with Gemma 4 E4B",
+      "title": "Migrate to the self-contained Threadnote home",
       "description": [
-        "Threadnote can improve weak and medium-confidence recalls with a local instruction model while keeping deterministic retrieval and ranking in control.",
-        "This optional action downloads the official Gemma 4 E4B Q4_0 GGUF model (4.59 GB), verifies its pinned SHA-256, and stores its configuration under THREADNOTE_HOME.",
-        "The authenticated model service binds to 127.0.0.1 only and uses the llama.cpp runtime already installed with OpenViking.",
-        "High-confidence recalls never invoke the model; model failures fall back to the original deterministic result.",
-        "Gemma model use is subject to Google's Gemma Terms: https://ai.google.dev/gemma/terms"
+        "Threadnote 4 stores canonical resources, derived indexes, model files, and share metadata under ~/.threadnote.",
+        "The migration inventories ~/.openviking without starting it, excludes runtime-only Python and server artifacts, copies into a sibling staging directory, validates hashes, and atomically promotes the result.",
+        "The legacy ~/.openviking home is preserved unchanged as the rollback source and is never deleted automatically.",
+        "Threadnote 4 uses in-process node-llama-cpp for optional embeddings, reranking, and generation; no Python or background OpenViking service is required."
       ],
-      "commandArgs": ["local-ai", "install"],
+      "commandArgs": ["migrate", "--apply"],
       "instructions": [
-        "Local AI recall is enabled. Run `threadnote local-ai status` to inspect it or `threadnote local-ai disable` to turn it off while preserving the installation."
-      ],
-      "markHandledWhenSkipped": true
-    },
-    {
-      "id": "local-ai-memory-enrichment-v1",
-      "introducedIn": "3.0.0",
-      "appliesToPrereleases": true,
-      "title": "Optional full local-AI memory enrichment",
-      "description": [
-        "Threadnote can add compact retrieval keywords to existing personal and configured shared durable memories so deterministic recall finds stronger paraphrase matches before AI post-processing.",
-        "The migration updates eligible memory documents in place. Shared team changes remain local and reviewable until you run the printed threadnote share sync command.",
-        "If local AI is not installed, accepting this action downloads and verifies the pinned Gemma 4 E4B model first (4.59 GB).",
-        "A full corpus can take a long time because every memory is processed locally. Progress and generated keywords stream to the console.",
-        "The added repeated keywords headers are ignored by older Threadnote parsers, so existing shared-memory readers remain compatible."
-      ],
-      "commandArgs": ["enrich-memories", "--apply", "--install-local-ai"],
-      "instructions": [
-        "Memory enrichment finished. Future active personal memories are enriched automatically when local AI is available.",
-        "Run the printed `threadnote share sync --team <team>` command after reviewing enriched shared memories.",
-        "Rerun `threadnote enrich-memories --apply` to resume remaining memories, or add `--force` to regenerate existing keywords."
-      ],
-      "markHandledWhenSkipped": true
+        "Home migration finished. Run `threadnote doctor`, then `threadnote index status`.",
+        "Optional semantic recall starts with `threadnote models list`; install and select a measured embedding model before rebuilding the vector index."
+      ]
     }
   ]
 }
