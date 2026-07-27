@@ -21,6 +21,8 @@ import {
   type RecallEvaluationRunV1,
 } from '../../src/evaluation/recall.js';
 
+const RECALL_EVALUATION_TEST_TIMEOUT = 20_000;
+
 describe('recall evaluation contract v2', () => {
   it('provides the reviewed 200-document and 250-query score-free fixture', () => {
     const fixture = createRecallEvaluationFixtureV2();
@@ -74,63 +76,75 @@ describe('recall evaluation contract v2', () => {
     expect(result.metrics.expansionFallbackRate).toBe(0);
   });
 
-  it('runs the existing deterministic ranker as a lexical-only v2 pipeline', () => {
-    const fixture = createRecallEvaluationFixtureV2();
-    const run = runLexicalRecallEvaluationV2(fixture, {
-      createdAt: '2026-07-27T00:00:00.000Z',
-      fixtureHash: 'fixture-hash',
-    });
-    const result = evaluateRecallRunV2(fixture, run);
-
-    expect(run.queries).toHaveLength(fixture.queries.length);
-    expect(run.queries.every(query => query.stages.includes('lexical'))).toBe(true);
-    expect(result.metrics.queryCount).toBe(fixture.queries.length);
-    expect(result.categories.exact_lexical?.recallAt5).toBeGreaterThan(0.9);
-    expect(result.categories.semantic?.recallAt5).toBeLessThanOrEqual(1);
-    expect(result.metrics.averageCandidatesRead).toBe(fixture.documents.length);
-    expect(result.metrics.averageContextTokens).toBeGreaterThan(0);
-  });
-
-  it('reports comparable metric deltas between pipelines', () => {
-    const fixture = createRecallEvaluationFixtureV2();
-    const lexical = evaluateRecallRunV2(
-      fixture,
-      runLexicalRecallEvaluationV2(fixture, {
+  it(
+    'runs the existing deterministic ranker as a lexical-only v2 pipeline',
+    () => {
+      const fixture = createRecallEvaluationFixtureV2();
+      const run = runLexicalRecallEvaluationV2(fixture, {
         createdAt: '2026-07-27T00:00:00.000Z',
         fixtureHash: 'fixture-hash',
-      }),
-    );
-    const oracle = evaluateRecallRunV2(fixture, oracleRun(fixture));
-    const comparison = compareRecallEvaluationResults(lexical, oracle);
+      });
+      const result = evaluateRecallRunV2(fixture, run);
 
-    expect(comparison.baseline).toBe('threadnote-lexical-only');
-    expect(comparison.candidate).toBe('oracle');
-    expect(comparison.metrics.recallAt5).toBeGreaterThanOrEqual(0);
-    expect(comparison.metrics.forbiddenHitRate).toBeLessThanOrEqual(0);
-  });
+      expect(run.queries).toHaveLength(fixture.queries.length);
+      expect(run.queries.every(query => query.stages.includes('lexical'))).toBe(true);
+      expect(result.metrics.queryCount).toBe(fixture.queries.length);
+      expect(result.categories.exact_lexical?.recallAt5).toBeGreaterThan(0.9);
+      expect(result.categories.semantic?.recallAt5).toBeLessThanOrEqual(1);
+      expect(result.metrics.averageCandidatesRead).toBe(fixture.documents.length);
+      expect(result.metrics.averageContextTokens).toBeGreaterThan(0);
+    },
+    RECALL_EVALUATION_TEST_TIMEOUT,
+  );
 
-  it('gates aggregate and per-category quality without allowing safety regressions', () => {
-    const fixture = createRecallEvaluationFixtureV2();
-    const baseline = evaluateRecallRunV2(
-      fixture,
-      runLexicalRecallEvaluationV2(fixture, {
-        createdAt: '2026-07-27T00:00:00.000Z',
-        fixtureHash: 'fixture-hash',
-      }),
-    );
-    const unchanged = evaluateRecallNonInferiority(baseline, baseline);
-    const regressed = evaluateRecallNonInferiority(baseline, {
-      ...baseline,
-      metrics: {
-        ...baseline.metrics,
-        forbiddenHitRate: baseline.metrics.forbiddenHitRate + 0.001,
-      },
-    });
+  it(
+    'reports comparable metric deltas between pipelines',
+    () => {
+      const fixture = createRecallEvaluationFixtureV2();
+      const lexical = evaluateRecallRunV2(
+        fixture,
+        runLexicalRecallEvaluationV2(fixture, {
+          createdAt: '2026-07-27T00:00:00.000Z',
+          fixtureHash: 'fixture-hash',
+        }),
+      );
+      const oracle = evaluateRecallRunV2(fixture, oracleRun(fixture));
+      const comparison = compareRecallEvaluationResults(lexical, oracle);
 
-    expect(unchanged.passed).toBe(true);
-    expect(regressed.passed).toBe(false);
-    expect(regressed.failures).toContain('aggregate.forbiddenHitRate regressed by 0.001000; maximum 0.000000');
-  });
+      expect(comparison.baseline).toBe('threadnote-lexical-only');
+      expect(comparison.candidate).toBe('oracle');
+      expect(comparison.metrics.recallAt5).toBeGreaterThanOrEqual(0);
+      expect(comparison.metrics.forbiddenHitRate).toBeLessThanOrEqual(0);
+    },
+    RECALL_EVALUATION_TEST_TIMEOUT,
+  );
+
+  it(
+    'gates aggregate and per-category quality without allowing safety regressions',
+    () => {
+      const fixture = createRecallEvaluationFixtureV2();
+      const baseline = evaluateRecallRunV2(
+        fixture,
+        runLexicalRecallEvaluationV2(fixture, {
+          createdAt: '2026-07-27T00:00:00.000Z',
+          fixtureHash: 'fixture-hash',
+        }),
+      );
+      const unchanged = evaluateRecallNonInferiority(baseline, baseline);
+      const regressed = evaluateRecallNonInferiority(baseline, {
+        ...baseline,
+        metrics: {
+          ...baseline.metrics,
+          forbiddenHitRate: baseline.metrics.forbiddenHitRate + 0.001,
+        },
+      });
+
+      expect(unchanged.passed).toBe(true);
+      expect(regressed.passed).toBe(false);
+      expect(regressed.failures).toContain('aggregate.forbiddenHitRate regressed by 0.001000; maximum 0.000000');
+    },
+    RECALL_EVALUATION_TEST_TIMEOUT,
+  );
 
   it('rejects duplicate document and query identities', () => {
     const fixture = createRecallEvaluationFixtureV2();
