@@ -5,33 +5,36 @@ Use Threadnote/OpenViking as shared local context and memory. Repo files remain 
 
 ## Tools
 
-Prefer Threadnote MCP tools and pass JSON arguments. Core: `recall_context`,
+Prefer Threadnote MCP tools with JSON arguments. Core: `recall_context`,
 `read_context`, `list_context`, `remember_context`, `review_session_context`, `apply_memory_candidates`,
-`share_publish`, and `threadnote_guide`. Use the `threadnote` CLI when a tool is unavailable; inspect syntax with
-`threadnote <command> --help`. Advanced tools need `threadnote mcp-install <agent> --toolset full --apply` and a new
-session; guide capabilities are callable only when their tool is present.
+`share_publish`, and `threadnote_guide`. Use the `threadnote` CLI if a tool is unavailable; inspect syntax with
+`threadnote <command> --help`. Advanced tools require `threadnote mcp-install <agent> --toolset full --apply` and a new
+session; guide capabilities require their tools.
+
+If Threadnote MCP/CLI reports OpenViking unavailable or unreachable, run `threadnote start` without asking and retry
+the failed operation once. If startup fails, run `threadnote doctor --dry-run`, report it, and continue independent
+work if possible; never loop.
 
 ## Recall
 
-At the start of a non-trivial task, recall the current repo and branch, active handoffs, durable feature knowledge,
-seeded project guidance, relevant skills, and user/team preferences. Include the repo/project name in the query so
-seeded guidance under `viking://resources/repos/<project>` is searched. For "current repo" or "this branch", pass the
-absolute workspace path as `callerCwd`.
+At the start of a non-trivial task, recall the repo/branch, active handoffs, durable feature knowledge, seeded guidance,
+relevant skills, and user/team preferences. Name the repo/project in the query to search
+`viking://resources/repos/<project>`. For "current repo" or "this branch", pass the absolute workspace path as
+`callerCwd`.
 
-If a handoff describes an active feature, recall durable knowledge for that feature before coding. Treat seeded repo
-resources as canonical and personal memories as supplemental. Treat returned `viking://` URIs as pointers: read the
-relevant file or list the relevant directory. Skip proactive recall for tiny one-shot questions.
+For an active handoff, recall its durable feature knowledge before coding. Seeded repo resources are canonical;
+personal memories are supplemental. Treat returned `viking://` URIs as pointers: read the relevant file or list its
+directory. Skip proactive recall for tiny one-shot questions.
 
 ## Remember
 
-Store information when the user asks, and store durable workflow or feature facts that would help future agents when
-they do not belong in checked-in docs. Never store secrets, credentials, customer data, or raw production logs.
+Store user-requested information and durable workflow or feature facts useful to future agents when they do not belong
+in checked-in docs. Never store secrets, credentials, customer data, or raw production logs.
 
 Use `kind: durable` for reusable decisions, contracts, invariants, edge cases, and gotchas. Use `kind: handoff` for
-current status and next steps. Set stable `project` and `topic` values so each issue has one current durable memory and
-one current handoff. Update existing state with the same project/topic or `replaceUri`; do not create timestamped notes
-for routine progress. Shared durable replacements update the shared memory in place. Archived handoffs are provenance,
-not default working context.
+status and next steps. Set stable `project` and `topic` so each issue has one current durable memory and handoff. Update
+the same identity or `replaceUri`; avoid timestamped routine notes. Shared durable replacements update in place.
+Archived handoffs are provenance, not default working context.
 
 When several memories cover the same project/topic, first run a scoped `compact_context` or `threadnote compact`
 dry-run. Preserve unique facts and source URIs in one replacement. Forget only clearly redundant memories; archive
