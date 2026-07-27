@@ -90,10 +90,12 @@ with you. The walkthrough only loads when you ask, so it never sits in context o
 ```bash
 threadnote update         # latest stable release
 threadnote update --beta  # latest beta release
+threadnote update --stable # return from beta to the stable release
 ```
 
 Stable installs only report and install stable releases. After opting into a beta, ordinary `threadnote version` and
-`threadnote update` calls stay on the beta channel until a stable Threadnote version is installed again.
+`threadnote update` calls stay on the beta channel. Run `threadnote update --stable` to switch back, even when the
+stable release has a lower version than the installed beta.
 
 ## Why Not Just Markdown Files?
 

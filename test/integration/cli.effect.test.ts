@@ -19,9 +19,17 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('threadnote migrate-project-names [flags]');
   });
 
-  it('exposes beta updates as an explicit opt-in', async () => {
+  it('exposes explicit beta and stable update channels', async () => {
     const result = await runCli(['update', '--help']);
     expect(result.stdout).toContain('--beta');
+    expect(result.stdout).toContain('--stable');
+  });
+
+  it('rejects conflicting explicit update channels before checking npm', async () => {
+    await expect(runCli(['update', '--beta', '--stable', '--check'])).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('Choose either --beta or --stable'),
+    });
   });
 
   it('accepts shared runtime flags after the subcommand', async () => {

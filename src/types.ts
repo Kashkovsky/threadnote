@@ -129,6 +129,7 @@ export interface UpdateOptions {
   readonly registry?: string;
   readonly repair?: boolean;
   readonly runtime?: UpdateRuntime;
+  readonly stable?: boolean;
   readonly yes?: boolean;
 }
 

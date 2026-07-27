@@ -232,6 +232,7 @@ const update = Command.make(
     registry: optionalString('registry', 'npm registry URL'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
     runtime: defaultChoice('runtime', ['auto', 'npm', 'bun', 'deno'], 'auto, npm, bun, or deno', 'auto'),
+    stable: boolean('stable', 'Switch to the latest stable release'),
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runUpdate(config, options)),

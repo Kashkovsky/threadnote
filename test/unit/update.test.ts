@@ -24,6 +24,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 import {
   parseUpdateRuntime,
   readOpenVikingCliVersion as readOpenVikingCliVersionEffect,
+  requestedUpdateChannel,
   resolveUpdateRegistry,
   runPostUpdate,
   runUpdate,
@@ -125,6 +126,13 @@ describe('parseUpdateRuntime', () => {
   it('throws on anything else', () => {
     expect(() => parseUpdateRuntime('yarn')).toThrow(/Invalid update runtime/);
     expect(() => parseUpdateRuntime('')).toThrow(/Invalid update runtime/);
+  });
+
+  it('resolves explicit update channel requests', () => {
+    expect(requestedUpdateChannel({})).toBeUndefined();
+    expect(requestedUpdateChannel({beta: true})).toBe('beta');
+    expect(requestedUpdateChannel({stable: true})).toBe('latest');
+    expect(() => requestedUpdateChannel({beta: true, stable: true})).toThrow(/either --beta or --stable/);
   });
 });
 
@@ -337,6 +345,32 @@ describe('runUpdate', () => {
 
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/beta'))).toBe(true);
     expect(result.output).toContain('threadnote@beta');
+  });
+
+  it('switches an installed beta to stable even when npm latest is numerically lower', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.0-beta.2'));
+    const fetch = mockRegistryVersions('2.0.4', '3.0.0-beta.2');
+
+    const result = await runEffect(
+      captureConsole(runUpdate(config, {dryRun: true, repair: false, runtime: 'npm', stable: true})),
+    );
+
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/threadnote/latest'))).toBe(true);
+    expect(result.output).toContain('threadnote@latest');
+    expect(result.output).not.toContain('Threadnote is up to date.');
+  });
+
+  it('advertises the explicit stable switch when checking from a newer beta', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.0-beta.2'));
+    mockRegistryVersions('2.0.4', '3.0.0-beta.2');
+
+    const result = await runEffect(captureConsole(runUpdate(config, {check: true, stable: true})));
+
+    expect(result.output).toContain('Channel switch available. Run: threadnote update --stable');
   });
 
   it('shows beta versions in version output only for an installed beta', async () => {

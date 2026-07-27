@@ -42,7 +42,9 @@ const POST_UPDATE_STATE_FILE = 'post-update-state.json';
 interface UpdateInfo {
   readonly channel: UpdateChannel;
   readonly currentVersion: string;
+  readonly isChannelSwitch: boolean;
   readonly isUpdateAvailable: boolean;
+  readonly isVersionUpgrade: boolean;
   readonly latestVersion: string | undefined;
   readonly registry: string;
 }
@@ -89,9 +91,9 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
     );
     const info = yield* getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
-      betaRequested: false,
       preferFresh: false,
       registry,
+      requestedChannel: undefined,
     });
     if (info.isUpdateAvailable) {
       yield* Console.log('');
@@ -103,6 +105,7 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
 
 export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
   const system = yield* SystemInfo;
+  const requestedChannel = yield* fromSync('select update channel', () => requestedUpdateChannel(options));
   const registry = yield* fromSync('resolve update registry', () =>
     resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry, system.environment()),
   );
@@ -110,9 +113,9 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     'Checking npm for latest threadnote version',
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
-      betaRequested: options.beta === true,
       preferFresh: true,
       registry,
+      requestedChannel,
     }),
   );
 
@@ -133,8 +136,13 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 
   if (options.check === true) {
     if (info.isUpdateAvailable) {
-      const command = options.beta === true ? 'threadnote update --beta' : 'threadnote update';
-      yield* Console.log(warning(`Update available. Run: ${command}`));
+      const command =
+        requestedChannel === 'beta'
+          ? 'threadnote update --beta'
+          : requestedChannel === 'latest'
+            ? 'threadnote update --stable'
+            : 'threadnote update';
+      yield* Console.log(warning(`${info.isChannelSwitch ? 'Channel switch' : 'Update'} available. Run: ${command}`));
       yield* printWhatsNewIfAvailable(info);
     } else {
       yield* Console.log(
@@ -191,7 +199,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 });
 
 function printWhatsNewIfAvailable(info: UpdateInfo) {
-  if (!info.isUpdateAvailable || info.latestVersion === undefined) {
+  if (!info.isVersionUpgrade || info.latestVersion === undefined) {
     return Effect.void;
   }
   const latestVersion = info.latestVersion;
@@ -463,14 +471,15 @@ function getUpdateInfo(
   config: RuntimeConfig,
   options: {
     readonly allowCacheWrite: boolean;
-    readonly betaRequested: boolean;
     readonly preferFresh: boolean;
     readonly registry: string;
+    readonly requestedChannel: UpdateChannel | undefined;
   },
 ) {
   return Effect.gen(function* () {
     const currentVersion = yield* currentPackageVersion();
-    const channel = selectUpdateChannel(currentVersion, options.betaRequested);
+    const inferredChannel = selectUpdateChannel(currentVersion);
+    const channel = selectUpdateChannel(currentVersion, options.requestedChannel);
     const cached = options.preferFresh ? undefined : yield* readFreshCache(config, options.registry, channel);
     const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry, channel));
     if (!cached && latestVersion !== undefined && options.allowCacheWrite) {
@@ -481,14 +490,31 @@ function getUpdateInfo(
         registry: options.registry,
       });
     }
+    const isChannelSwitch = options.requestedChannel !== undefined && channel !== inferredChannel;
+    const isVersionUpgrade = latestVersion !== undefined && compareVersions(currentVersion, latestVersion) < 0;
     return {
       channel,
       currentVersion,
-      isUpdateAvailable: latestVersion !== undefined && compareVersions(currentVersion, latestVersion) < 0,
+      isChannelSwitch,
+      isUpdateAvailable: latestVersion !== undefined && (isChannelSwitch || isVersionUpgrade),
+      isVersionUpgrade,
       latestVersion,
       registry: options.registry,
     };
   });
+}
+
+export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'stable'>): UpdateChannel | undefined {
+  if (options.beta === true && options.stable === true) {
+    throw new Error('Choose either --beta or --stable, not both.');
+  }
+  if (options.beta === true) {
+    return 'beta';
+  }
+  if (options.stable === true) {
+    return 'latest';
+  }
+  return undefined;
 }
 
 export {currentPackageVersion};

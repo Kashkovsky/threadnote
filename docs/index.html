@@ -1626,7 +1626,8 @@ worksets:
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
                 <code>update --check</code> reports what's available. <code>update --dry-run</code> shows the plan.
                 <code>update --beta</code> opts into beta releases; after that, ordinary version and update checks stay
-                on the beta channel. Stable installs do not advertise betas. Releases may include post-update memory
+                on the beta channel. <code>update --stable</code> switches back to stable even when its version is lower
+                than the installed beta. Stable installs do not advertise betas. Releases may include post-update memory
                 migrations that prompt before applying.
               </p>
             </div>

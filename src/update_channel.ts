@@ -5,6 +5,6 @@ export function isBetaVersion(version: string): boolean {
   return /-beta(?:[.-]?\d+)?(?:[.-]|$)/i.test(normalized);
 }
 
-export function selectUpdateChannel(currentVersion: string, betaRequested = false): UpdateChannel {
-  return betaRequested || isBetaVersion(currentVersion) ? 'beta' : 'latest';
+export function selectUpdateChannel(currentVersion: string, requestedChannel?: UpdateChannel): UpdateChannel {
+  return requestedChannel ?? (isBetaVersion(currentVersion) ? 'beta' : 'latest');
 }
