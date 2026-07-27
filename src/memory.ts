@@ -23,6 +23,7 @@ import {SystemInfo} from './effect/system.js';
 import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
 import {runModelInstall, runModelSelect} from './models/commands.js';
 import {resolveSelectedLocalModel} from './models/inference.js';
+import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {
   inferProjectFromQuery,
@@ -1268,6 +1269,7 @@ function projectMemoryLocations(): readonly ProjectMemoryLocation[] {
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
+    yield* syncObsidianSourcesAndLog(config);
   }
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
@@ -1541,6 +1543,24 @@ const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function
   }
   if (syncResult.syncedTeams.length > 0) {
     yield* Console.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
+  }
+  for (const warning of syncResult.warnings) {
+    yield* Console.error(`Auto-sync warning: ${warning}`);
+  }
+});
+
+const syncObsidianSourcesAndLog = Effect.fn('memory.syncObsidianSourcesAndLog')(function* (config: RuntimeConfig) {
+  const syncResult = yield* syncObsidianSourcesBeforeRecall(config).pipe(
+    Effect.catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      return Console.error(`Auto-sync warning: Obsidian source refresh failed: ${message}`).pipe(Effect.as(undefined));
+    }),
+  );
+  if (!syncResult) {
+    return;
+  }
+  if (syncResult.syncedSources.length > 0) {
+    yield* Console.error(`Auto-synced Obsidian sources: ${syncResult.syncedSources.join(', ')}`);
   }
   for (const warning of syncResult.warnings) {
     yield* Console.error(`Auto-sync warning: ${warning}`);
