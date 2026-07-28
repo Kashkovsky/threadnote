@@ -1,6 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
+import {javascriptStringLiteral} from './effect/javascript.js';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -12,6 +13,8 @@ const RELEASE_DIRECTORIES = ['config', 'docs', 'manager'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
 const OPTIONAL_NATIVE_PACKAGE = /^@node-llama-cpp\//;
+const EXACT_PACKAGE_VERSION =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -21,7 +24,7 @@ const build = Effect.gen(function* () {
   const manifest = yield* readPackageManifest(fs, path.join(root, 'package.json'));
   const version = manifest.version;
   const nativeRuntimeVersion = manifest.dependencies?.[NATIVE_RUNTIME_PACKAGE];
-  if (!version || !nativeRuntimeVersion) {
+  if (!version || !nativeRuntimeVersion || !EXACT_PACKAGE_VERSION.test(nativeRuntimeVersion)) {
     return yield* Effect.fail(new Error('package.json must declare version and an exact node-llama-cpp dependency.'));
   }
 
@@ -157,7 +160,7 @@ function bundleNativeRuntime(entrypoint: string, outfile: string, nativePackage:
             path: 'getModuleVersion',
           }));
           builder.onLoad({filter: /.*/, namespace: 'threadnote-native-runtime-version'}, () => ({
-            contents: `export const getModuleVersion = async () => ${JSON.stringify(nativeRuntimeVersion)};`,
+            contents: `export const getModuleVersion = async () => ${javascriptStringLiteral(nativeRuntimeVersion)};`,
             loader: 'js',
           }));
           builder.onResolve({filter: OPTIONAL_NATIVE_PACKAGE}, args => ({
@@ -169,11 +172,9 @@ function bundleNativeRuntime(entrypoint: string, outfile: string, nativePackage:
               args.path === nativePackage
                 ? [
                     `const binsDir = Bun.fileURLToPath(new URL('./native', import.meta.url));`,
-                    `export const getBinsDir = () => ({binsDir, packageVersion: ${JSON.stringify(nativeRuntimeVersion)}});`,
+                    `export const getBinsDir = () => ({binsDir, packageVersion: ${javascriptStringLiteral(nativeRuntimeVersion)}});`,
                   ].join('\n')
-                : `export const getBinsDir = () => { throw new Error(${JSON.stringify(
-                    `${args.path} is not included in this ${nativePackage} Threadnote artifact.`,
-                  )}); };`,
+                : "export const getBinsDir = () => { throw new Error('Optional native package is not included in this Threadnote artifact.'); };",
             loader: 'js',
           }));
         },
