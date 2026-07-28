@@ -147,13 +147,12 @@ function Resolve-ThreadnoteVersion {
   }
   $release = $null
   $selectedVersion = $null
-  $candidates = Invoke-RestMethod -Uri $releaseSource -Headers $headers |
-    Where-Object {
-      -not $_.draft -and
-      $_.immutable -eq $true -and
-      ($requestedVersion -or [bool]$_.prerelease -eq $prerelease)
-    }
+  # Windows PowerShell 5.1 can emit a REST JSON array as one pipeline object.
+  # Materialize it so foreach consistently evaluates each release.
+  $candidates = @(Invoke-RestMethod -Uri $releaseSource -Headers $headers)
   foreach ($candidate in $candidates) {
+    if ($candidate.draft -or $candidate.immutable -ne $true) { continue }
+    if (-not $requestedVersion -and [bool]$candidate.prerelease -ne $prerelease) { continue }
     $candidateVersion = ([string]$candidate.tag_name).TrimStart('v')
     if (-not (ConvertTo-ThreadnoteSemver $candidateVersion)) { continue }
     if ($requestedVersion -and $candidateVersion -cne $requestedVersion) { continue }
