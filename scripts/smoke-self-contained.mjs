@@ -75,17 +75,10 @@ try {
     {length: 900},
     (_, index) => `QZ9-long-context-token-${String(index).padStart(4, '0')}`,
   ).join(' ');
-  run([
-    'remember',
-    '--kind',
-    'durable',
-    '--project',
-    'threadnote',
-    '--topic',
-    'self-contained-smoke',
-    '--text',
+  run(
+    ['remember', '--kind', 'durable', '--project', 'threadnote', '--topic', 'self-contained-smoke', '--stdin'],
     `QZ9 native canonical storage works without an external runtime.\n\n${longContext}`,
-  ]);
+  );
   const recall = run(['recall', '--query', 'QZ9 self contained native canonical storage']);
   if (!recall.includes('self-contained-smoke')) throw new Error(`Recall smoke missed stored memory:\n${recall}`);
   const refreshedGeneration = activeVectorGeneration();
@@ -125,11 +118,12 @@ try {
   rmSync(temporaryRoot, {force: true, recursive: true});
 }
 
-function run(args) {
+function run(args, input) {
   return execFileSync(cliShim, args, {
     cwd: runRoot,
     encoding: 'utf8',
     env: environment,
+    input,
     shell: process.platform === 'win32',
     timeout: realModelTimeoutMs,
   });
