@@ -87,11 +87,31 @@ describe('built self-contained distribution', () => {
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, 'active.json'));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);
+    const commandShim = join(userHome, '.local', 'bin', 'threadnote');
+    expect(installOutput).toContain(`Wrote command shim: ${commandShim}`);
+    expect(await readFile(commandShim, 'utf8')).toContain('Threadnote launcher target is missing');
   });
 
   it('stores memory, refreshes the vector generation, and recalls through built launchers', async () => {
     const recall = await runCli(['recall', '--query', 'QZ9 native recall background service']);
     expect(recall).toContain('native-e2e.md');
+    const shimRecall = await execute(
+      join(userHome, '.local', 'bin', 'threadnote'),
+      ['--home', home, 'recall', '--query', 'QZ9 native recall background service'],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          HOME: userHome,
+          NVM_DIR: '',
+          NVM_HOME: '',
+          THREADNOTE_USER: 'e2e-user',
+          USERPROFILE: userHome,
+        },
+        timeout: 180_000,
+      },
+    );
+    expect(`${shimRecall.stdout}${shimRecall.stderr}`).toContain('native-e2e.md');
     const refreshedVectorGeneration = await activeVectorGeneration();
     expect(refreshedVectorGeneration).not.toBe(initialVectorGeneration);
     await expect(

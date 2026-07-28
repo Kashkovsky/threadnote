@@ -5,6 +5,7 @@ import {
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
 import {startProgress} from './cli_ui.js';
+import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
@@ -92,6 +93,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       status: isSupportedNodeVersion(system.nodeVersion) ? 'ok' : 'fail',
     },
   ];
+  checks.push(yield* safeDoctorCheck('threadnote shim', commandShimCheck()));
   checks.push(
     yield* safeDoctorCheck(
       'Threadnote home',
@@ -168,6 +170,7 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   yield* assertSupportedNodeRuntime();
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  yield* installCommandShim(dryRun);
   const layoutMigration = yield* migrateThreadnoteStorageLayout({
     apply: !dryRun,
     home: config.agentContextHome,
@@ -351,6 +354,7 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
+  yield* removeCommandShim(dryRun);
   yield* removeUserAgentInstructions(dryRun);
   if (options.eraseMemories === true) {
     yield* eraseThreadnoteHome(config.agentContextHome, dryRun);
