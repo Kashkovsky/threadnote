@@ -31,6 +31,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Verify release tag matches package version
+        if: github.event_name == 'push'
         shell: bash
         run: |
           package_tag="v$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
@@ -47,6 +48,7 @@ jobs:
 
   linux:
     name: Linux · ${{ matrix.architecture }}
+    if: github.event_name == 'push'
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -186,6 +188,7 @@ jobs:
 
   windows-build:
     name: Windows build · ${{ matrix.architecture }}
+    if: github.event_name == 'push'
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -225,6 +228,7 @@ jobs:
 
   windows-sign:
     name: Windows sign · ${{ matrix.architecture }}
+    if: github.event_name == 'push'
     needs: windows-build
     runs-on: windows-2025
     strategy:
@@ -294,6 +298,7 @@ jobs:
 
   publish:
     name: Publish complete immutable release
+    if: github.event_name == 'push'
     needs: [linux, macos, windows-sign]
     runs-on: ubuntu-latest
     permissions:
