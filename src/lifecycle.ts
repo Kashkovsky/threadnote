@@ -9,6 +9,7 @@ import {commandShimCheck, installCommandShim, removeCommandShim} from './command
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
+import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstallationLock} from './installations.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {loadRecallIndexData, type RecallIndexProgress} from './recall/index.js';
@@ -20,12 +21,6 @@ import {provisionCoreEmbedding} from './models/core-embedding.js';
 import {LocalModelCatalog, type LocalModelManifest} from './models/catalog.js';
 import {readModelSelection} from './models/selection.js';
 import {LocalModelStore} from './models/store.js';
-import {
-  assertSupportedNodeRuntime,
-  cleanupStaleNvmThreadnoteInstallations,
-  isSupportedNodeVersion,
-  SUPPORTED_NODE_RANGE,
-} from './node-runtime.js';
 import {ensureVectorIndex, type VectorIndexProgress, vectorIndexStatus} from './search/vector-index.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
@@ -88,9 +83,9 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       status: ['darwin', 'linux', 'win32'].includes(platform) ? 'ok' : 'warn',
     },
     {
-      detail: `v${system.nodeVersion}; requires ${SUPPORTED_NODE_RANGE}`,
-      name: 'node',
-      status: isSupportedNodeVersion(system.nodeVersion) ? 'ok' : 'fail',
+      detail: `v${system.runtimeVersion}; embedded in the Threadnote executable`,
+      name: 'bun runtime',
+      status: 'ok',
     },
   ];
   checks.push(yield* safeDoctorCheck('threadnote shim', commandShimCheck()));
@@ -167,10 +162,16 @@ function safeDoctorChecks<R>(
 
 export const runInstall = Effect.fn('lifecycle.install')(function* (config: RuntimeConfig, options: RunInstallOptions) {
   const dryRun = options.dryRun === true;
-  yield* assertSupportedNodeRuntime();
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  yield* installCommandShim(dryRun);
+  const releaseRoot = yield* toolRoot();
+  yield* withStandaloneInstallationLock(
+    Effect.gen(function* () {
+      yield* installCommandShim(dryRun);
+      yield* activateStandaloneRelease(releaseRoot, dryRun);
+    }),
+    dryRun,
+  );
   const layoutMigration = yield* migrateThreadnoteStorageLayout({
     apply: !dryRun,
     home: config.agentContextHome,
@@ -230,7 +231,6 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     );
   }
   yield* installUserAgentInstructions(dryRun);
-  yield* cleanupStaleNvmThreadnoteInstallations({dryRun});
   if (options.start !== false) {
     yield* Console.log('Threadnote 4 uses in-process storage and inference; no background server is required.');
   }
@@ -241,6 +241,7 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
         : 'Install complete. Semantic recall is ready. Next: `threadnote seed` to add repository resources.',
     );
   }
+  yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   return embedding;
 });
 
@@ -361,7 +362,7 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   } else {
     yield* Console.log(`Preserving Threadnote home: ${config.agentContextHome}`);
   }
-  yield* Console.log('Uninstall complete. Remove the npm package separately if desired.');
+  yield* Console.log('Uninstall complete. Remove versioned standalone release directories separately if desired.');
 });
 
 export const memoryProjectConsistencyCheck = Effect.fn('lifecycle.memoryProjectConsistencyCheck')(function* (

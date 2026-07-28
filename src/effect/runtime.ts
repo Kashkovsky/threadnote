@@ -1,4 +1,4 @@
-import * as NodeServices from '@effect/platform-node/NodeServices';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {Layer} from 'effect';
 import {CommandExecutor} from './command.js';
 import {HttpService} from './http.js';
@@ -18,15 +18,17 @@ const localModelStoreLayer = LocalModelStore.layer.pipe(
 );
 const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 
+const localModelRuntimeLayer = LocalModelRuntime.nativeLayer.pipe(Layer.provideMerge(systemLayer));
+
 const ApplicationServicesLayer = Layer.mergeAll(
   commandLayer,
   localModelCatalogLayer,
-  LocalModelRuntime.nativeLayer,
+  localModelRuntimeLayer,
   localModelStoreLayer,
   resourceStoreLayer,
   systemLayer,
 );
 
-export const ApplicationLayer = ApplicationServicesLayer.pipe(Layer.provideMerge(NodeServices.layer));
+export const ApplicationLayer = ApplicationServicesLayer.pipe(Layer.provideMerge(BunServices.layer));
 
 export type ApplicationServices = Layer.Success<typeof ApplicationLayer>;

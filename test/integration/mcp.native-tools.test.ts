@@ -67,7 +67,7 @@ async function withMcpClient<T>(
     environment.THREADNOTE_MCP_TOOLSET = options.toolset ?? 'full';
   }
   const transport = new StdioClientTransport({
-    args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
+    args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
     command: process.execPath,
     cwd: repoRoot,
     env: environment,

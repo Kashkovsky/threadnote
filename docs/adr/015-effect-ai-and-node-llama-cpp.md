@@ -5,9 +5,10 @@ Date: 2026-07-27
 
 ## Decision
 
-Local inference runs inside the supported Node.js process through `node-llama-cpp` 3.19.1. Core embedding is required
-Threadnote functionality; reranking and structured generation are optional roles. The adapter requests prebuilt
-binaries with runtime builds and binary downloads disabled. No domain module imports the addon directly.
+Local inference runs inside the embedded Bun process through the N-API-compatible `node-llama-cpp` 3.19.1 package.
+Core embedding is required Threadnote functionality; reranking and structured generation are optional roles. Release
+archives include exactly one target-compatible prebuilt native payload; runtime builds and binary downloads remain
+disabled. No domain module imports the addon directly.
 
 Effect’s unstable `EmbeddingModel` is the embedding harness. Threadnote owns small typed services for reranking and
 JSON-schema generation, composed behind `LocalModelRuntime`. The application Layer lazily creates one llama engine,

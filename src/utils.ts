@@ -1,4 +1,4 @@
-import * as NodeSocket from '@effect/platform-node/NodeSocket';
+import * as BunSocket from '@effect/platform-bun/BunSocket';
 import {Console, Deferred, Effect, FileSystem, Option, Path, Stdio, Stream} from 'effect';
 import {failure, success, warning} from './cli_ui.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect, type CommandOptions} from './effect/command.js';
@@ -23,6 +23,7 @@ import {
 import {redactSensitiveText} from './scrubber.js';
 import {parseResourceId} from './storage/resource-id.js';
 import type {CommandStatus, JsonObject} from './types.js';
+import {getThreadnoteVersion} from './version.js';
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
 
@@ -453,7 +454,7 @@ export const isTcpPortOpen = Effect.fn('utils.isTcpPortOpen')((host: string, por
   Effect.scoped(
     Effect.gen(function* () {
       const connected = yield* Deferred.make<boolean>();
-      const socket = yield* NodeSocket.makeNet({host, port});
+      const socket = yield* BunSocket.makeNet({host, port});
       yield* socket
         .run(() => undefined, {onOpen: Deferred.succeed(connected, true)})
         .pipe(
@@ -1827,6 +1828,10 @@ export function formatStatus(status: CommandStatus): string {
 export const toolRoot = Effect.fn('utils.toolRoot')(function* () {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
+  if (typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE) {
+    const system = yield* SystemInfo;
+    return pathService.dirname(system.executablePath);
+  }
   const modulePath = yield* pathService.fromFileUrl(new URL(import.meta.url));
   const moduleDirectory = pathService.dirname(modulePath);
   return (yield* fs.exists(pathService.join(moduleDirectory, 'package.json')))
@@ -1835,17 +1840,7 @@ export const toolRoot = Effect.fn('utils.toolRoot')(function* () {
 });
 
 export const currentPackageVersion = Effect.fn('utils.currentPackageVersion')(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
-  const rawPackage = yield* fs.readFileString(pathService.join(yield* toolRoot(), 'package.json'));
-  const parsed = yield* Effect.try({
-    try: () => JSON.parse(rawPackage) as unknown,
-    catch: cause => new Error('Could not parse current threadnote package metadata.', {cause}),
-  });
-  if (!isJsonObject(parsed) || typeof parsed.version !== 'string') {
-    return yield* Effect.fail(new Error('Could not read current threadnote package version.'));
-  }
-  return parsed.version;
+  return yield* getThreadnoteVersion();
 });
 
 export function errorMessage(err: unknown): string {

@@ -129,7 +129,7 @@ describe('Threadnote MCP share_publish', () => {
     const fakeBin = await makeFakeBin(root);
     const repoRoot = process.cwd();
     const transport = new StdioClientTransport({
-      args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
+      args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
       command: process.execPath,
       cwd: repoRoot,
       env: {
@@ -192,7 +192,7 @@ describe('Threadnote MCP share_publish', () => {
       'bar.md',
     );
     const transport = new StdioClientTransport({
-      args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
+      args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
       command: process.execPath,
       cwd: repoRoot,
       env: {

@@ -1,4 +1,4 @@
-import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer';
+import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
 import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
@@ -54,7 +54,7 @@ import {
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
-import {currentPackageVersion, fetchLatestVersion, updateRegistry} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import type {
   AgentClient,
@@ -245,7 +245,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       }
       return yield* Effect.never;
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest));
+  ).pipe(Effect.provide(BunHttpServer.layerTest));
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
@@ -396,8 +396,8 @@ function handleRequestEffect(
       }
       const system = yield* SystemInfo;
       const [agents, version] = yield* Effect.all([detectConsolidationAgents(context.config), currentPackageVersion()]);
-      const latest = yield* Effect.succeed(updateRegistry(system.environment())).pipe(
-        Effect.flatMap(registry => fetchLatestVersion(registry, selectUpdateChannel(version))),
+      const latest = yield* Effect.succeed(releaseSource(system.environment())).pipe(
+        Effect.flatMap(source => fetchLatestVersion(source, selectUpdateChannel(version))),
         Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
       );
       writeJson(response, 200, {

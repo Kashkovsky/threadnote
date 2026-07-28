@@ -1,6 +1,3 @@
-#! /usr/bin/env node
-
-import * as NodeRuntime from '@effect/platform-node/NodeRuntime';
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Clock, Console, Effect, FileSystem, Path, Result} from 'effect';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
@@ -65,9 +62,9 @@ import {resolveEffectAiConfiguration} from './effect/ai/consolidator.js';
 import {enrichMemoryMetadataWithConfiguredLocalAi} from './effect/ai/enrichment.js';
 import {sha256Hex} from './effect/digest.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
-import {ApplicationLayer} from './effect/runtime.js';
 import {SystemInfo} from './effect/system.js';
 import {captureConsole} from './effect/console.js';
+import {activeInstalledVersion} from './installations.js';
 import {
   installSharedAgentArtifacts,
   listShareConflicts,
@@ -185,8 +182,8 @@ const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* (
   if (staleNoticeCache && nowMs - staleNoticeCache.checkedAtMs < STALE_NOTICE_TTL_MS) {
     return staleNoticeCache.notice;
   }
-  const notice = yield* currentPackageVersion().pipe(
-    Effect.map(version => formatStaleVersionNotice(mcpStartupVersion as string, version)),
+  const notice = yield* activeInstalledVersion().pipe(
+    Effect.map(version => (version ? formatStaleVersionNotice(mcpStartupVersion as string, version) : undefined)),
     Effect.catch(() => Effect.succeed(undefined)),
   );
   staleNoticeCache = {checkedAtMs: nowMs, notice};
@@ -201,7 +198,7 @@ const withStaleVersionNotice = Effect.fn('mcpServer.withStaleVersionNotice')(fun
   return {...result, content: [...(result.content ?? []), {type: 'text', text: `⚠ ${notice}`}]};
 });
 
-const mainEffect = Effect.gen(function* () {
+export const mcpServerEffect = Effect.gen(function* () {
   const system = yield* SystemInfo;
   const config = yield* getRuntimeConfig();
   const toolset = yield* Effect.try({
@@ -3650,5 +3647,3 @@ function shareArtifactToolHeader(team: string, syncedTeams: readonly string[], w
   }
   return lines;
 }
-
-NodeRuntime.runMain(Effect.scoped(mainEffect).pipe(Effect.provide(ApplicationLayer)), {disableErrorReporting: false});

@@ -9,7 +9,7 @@ import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 
 const execute = promisify(execFile);
 const root = process.cwd();
-const cli = join(root, 'bin', 'threadnote.cjs');
+const cli = join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
 const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
 const realModelTimeoutMs = 300_000;
 let home: string;
@@ -20,6 +20,13 @@ let installedModelModifiedAt: number;
 let initialVectorGeneration: string;
 let installOutput: string;
 let installedFiles: string[];
+
+function installedLauncher(mode: 'cli' | 'mcp' = 'cli'): string {
+  const command = mode === 'mcp' ? 'threadnote-mcp-server' : 'threadnote';
+  return process.platform === 'win32'
+    ? join(userHome, 'AppData', 'Local', 'Threadnote', 'bin', `${command}.cmd`)
+    : join(userHome, '.local', 'bin', command);
+}
 
 beforeAll(async () => {
   temporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-native-e2e-'));
@@ -88,16 +95,18 @@ describe('built self-contained distribution', () => {
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, 'active.json'));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);
-    const commandShim = join(userHome, '.local', 'bin', 'threadnote');
-    expect(installOutput).toContain(`Wrote command shim: ${commandShim}`);
-    expect(await readFile(commandShim, 'utf8')).toContain('Threadnote launcher target is missing');
+    const commandShim = installedLauncher();
+    expect(installOutput).toContain(`Wrote command launcher: ${commandShim}`);
+    expect(await readFile(commandShim, 'utf8')).toContain(
+      process.platform === 'win32' ? 'THREADNOTE_CALLER_CWD' : 'Threadnote standalone executable is missing',
+    );
   });
 
   it('stores memory, refreshes the vector generation, and recalls through built launchers', async () => {
     const recall = await runCli(['recall', '--query', 'QZ9 native recall background service']);
     expect(recall).toContain('native-e2e.md');
     const shimRecall = await execute(
-      join(userHome, '.local', 'bin', 'threadnote'),
+      installedLauncher(),
       ['--home', home, 'recall', '--query', 'QZ9 native recall background service'],
       {
         cwd: root,
@@ -358,8 +367,8 @@ describe('built self-contained distribution', () => {
     await runCli(['projection', 'add', '--apply', '--id', projectionId, '--vault', vault, '--folder', 'Threadnote']);
     await runCli(['source', 'add', '--apply', '--id', sourceId, '--vault', vault, '--include', 'Knowledge/**']);
     const transport = new StdioClientTransport({
-      args: [join(root, 'bin', 'threadnote-mcp-server.cjs')],
-      command: process.execPath,
+      args: ['mcp-server'],
+      command: cli,
       cwd: root,
       env: {
         ...process.env,
@@ -542,11 +551,12 @@ async function activeVectorGeneration(): Promise<string> {
 }
 
 async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}): Promise<string> {
-  const result = await execute(process.execPath, [cli, '--home', home, ...args], {
+  const result = await execute(cli, ['--home', home, ...args], {
     cwd: root,
     env: {
       ...process.env,
       HOME: userHome,
+      LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
       NVM_DIR: '',
       NVM_HOME: '',
       THREADNOTE_USER: 'e2e-user',

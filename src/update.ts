@@ -8,22 +8,28 @@ import {
   warning,
   withSpinnerEffect,
 } from './cli_ui.js';
-import {installCommandShim, installedThreadnoteRootFromLauncher} from './command-shim.js';
+import {installCommandShim} from './command-shim.js';
+import {extractGzipTar} from './effect/archive.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
-import {getJsonEffect} from './effect/http.js';
+import {getJsonEffect, HttpService} from './effect/http.js';
+import {sha256FileHex} from './effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
+import {
+  activateStandaloneRelease,
+  installationRoot,
+  pruneStandaloneReleases,
+  withStandaloneInstallationLock,
+} from './installations.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {isLegacyHomeMigrationPending} from './migration/home.js';
-import {assertSupportedNodeRuntime, cleanupStaleNvmThreadnoteInstallations} from './node-runtime.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
-import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
+import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {
   compareVersions,
   ensureDirectory,
   errorMessage,
-  findExecutable,
   currentPackageVersion,
   isJsonObject,
   readFileIfExists,
@@ -31,9 +37,10 @@ import {
   formatShellCommand,
 } from './utils.js';
 
-const NPM_PACKAGE_NAME = 'threadnote';
-const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
-const ALLOW_UNTRUSTED_REGISTRY_ENV = 'THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY';
+const THREADNOTE_COMMAND = 'threadnote';
+const DEFAULT_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
+const ALLOW_UNTRUSTED_SOURCE_ENV = 'THREADNOTE_ALLOW_UNTRUSTED_RELEASE_SOURCE';
+const RELEASE_SOURCE_ENV = 'THREADNOTE_RELEASE_SOURCE';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 const POST_UPDATE_MIGRATIONS_FILE = 'post-update-migrations.json';
 const POST_UPDATE_STATE_FILE = 'post-update-state.json';
@@ -45,14 +52,26 @@ interface UpdateInfo {
   readonly isUpdateAvailable: boolean;
   readonly isVersionUpgrade: boolean;
   readonly latestVersion: string | undefined;
-  readonly registry: string;
+  readonly source: string;
 }
 
 interface UpdateCache {
   readonly channel: UpdateChannel;
   readonly checkedAt: string;
   readonly latestVersion: string;
-  readonly registry: string;
+  readonly source: string;
+}
+
+interface ReleaseAsset {
+  readonly name: string;
+  readonly url: string;
+}
+
+interface AvailableRelease {
+  readonly assets: readonly ReleaseAsset[];
+  readonly immutable: true;
+  readonly prerelease: boolean;
+  readonly version: string;
 }
 
 interface PostUpdateMigration {
@@ -73,26 +92,19 @@ interface PostUpdateState {
   readonly handledMigrationIds: readonly string[];
 }
 
-export function parseUpdateRuntime(value: string): UpdateRuntime {
-  if (value === 'auto' || value === 'npm' || value === 'bun' || value === 'deno') {
-    return value;
-  }
-  throw new Error(`Invalid update runtime: ${value}. Expected auto, npm, bun, or deno.`);
-}
-
 export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryRun?: boolean} = {}) {
   return Effect.gen(function* () {
     const system = yield* SystemInfo;
     if (isUpdateNotificationDisabled(system.environment())) {
       return;
     }
-    const registry = yield* fromSync('resolve update registry', () =>
-      resolveUpdateRegistry(undefined, false, system.environment()),
+    const source = yield* fromSync('resolve release source', () =>
+      resolveReleaseSource(undefined, false, system.environment()),
     );
     const info = yield* getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: false,
-      registry,
+      source,
       requestedChannel: undefined,
     });
     if (info.isUpdateAvailable) {
@@ -104,18 +116,17 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
 }
 
 export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
-  yield* assertSupportedNodeRuntime();
   const system = yield* SystemInfo;
   const requestedChannel = yield* fromSync('select update channel', () => requestedUpdateChannel(options));
-  const registry = yield* fromSync('resolve update registry', () =>
-    resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry, system.environment()),
+  const source = yield* fromSync('resolve release source', () =>
+    resolveReleaseSource(options.source, options.allowUntrustedSource, system.environment()),
   );
   const info = yield* withSpinnerEffect(
-    'Checking npm for latest threadnote version',
+    'Checking GitHub for the latest standalone Threadnote release',
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: true,
-      registry,
+      source,
       requestedChannel,
     }),
   );
@@ -127,7 +138,14 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       info.latestVersion ? infoText(info.latestVersion) : warning('not published'),
     ),
   );
-  yield* Console.log(keyValue('Registry', info.registry));
+  yield* Console.log(keyValue('Release source', info.source));
+  if (requiresFreshStandaloneInstall(info.currentVersion)) {
+    return yield* Effect.fail(
+      new Error(
+        'Threadnote 3 cannot update across the standalone-runtime boundary. Install Threadnote 4 fresh from the GitHub release installer.',
+      ),
+    );
+  }
 
   if (info.latestVersion === undefined) {
     yield* Console.log('No beta release is currently published.');
@@ -148,7 +166,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     } else {
       yield* Console.log(
         compareVersions(info.currentVersion, latestVersion) > 0
-          ? warning(`Current version is newer than npm ${info.channel}.`)
+          ? warning(`Current version is newer than the published ${info.channel} release.`)
           : success('Threadnote is up to date.'),
       );
     }
@@ -160,22 +178,24 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     return;
   }
 
-  const runtime = yield* resolveUpdateRuntime(options.runtime ?? 'auto');
-  const runtimeExecutable = (yield* findExecutable([runtime])) ?? runtime;
-  const updateCommand = updatePackageCommand(runtime, registry, info.channel, runtimeExecutable, system.environment());
-  yield* runStreamingSubcommand(
-    options.dryRun === true,
-    updateCommand.executable,
-    updateCommand.args,
-    updateCommand.env,
-  );
-
   const shouldRepair = options.repair !== false;
-  const threadnoteCommand = yield* installedThreadnoteCommand(runtime, runtimeExecutable);
-  const installedPackageRoot = yield* installedThreadnoteRootFromLauncher(threadnoteCommand);
-  if (installedPackageRoot !== undefined) {
-    yield* installCommandShim(options.dryRun === true, installedPackageRoot);
-  }
+  const dryRun = options.dryRun === true;
+  const releaseRoot = yield* withStandaloneInstallationLock(
+    Effect.gen(function* () {
+      const installed = yield* installStandaloneRelease({
+        dryRun,
+        force: options.force === true,
+        source,
+        version: latestVersion,
+      });
+      yield* installCommandShim(dryRun, installed);
+      yield* activateStandaloneRelease(installed, dryRun);
+      return installed;
+    }),
+    dryRun,
+  );
+  const path = yield* Path.Path;
+  const threadnoteCommand = path.join(releaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
   const postUpdateArgs = [
     'post-update',
     '--from-version',
@@ -184,45 +204,234 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     latestVersion,
     ...(options.yes === true ? ['--yes'] : []),
   ];
-  const crossesSelfContainedHomeBoundary = crossesMajorVersion(info.currentVersion, latestVersion, 4);
-  if (crossesSelfContainedHomeBoundary) {
-    if (options.postUpdate !== false) {
-      yield* Console.log('');
-      yield* Console.log('Migrating the Threadnote home before repair initializes the 4.x layout.');
-      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
-    } else {
-      yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
-    }
-    if (shouldRepair && options.postUpdate !== false && options.yes === true) {
-      yield* Console.log('');
-      yield* Console.log('Repairing local Threadnote setup after home migration.');
-      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
-    } else if (shouldRepair) {
-      yield* Console.log('Repair was deferred so it cannot create ~/.threadnote before migration is accepted.');
-      yield* Console.log(`Run: ${threadnoteCommand} migrate --apply`);
-      yield* Console.log(`Then: ${threadnoteCommand} repair`);
-    } else {
-      yield* Console.log('Skipping repair because --no-repair was provided.');
-    }
+  if (options.postUpdate !== false) {
+    yield* runStreamingSubcommand(dryRun, threadnoteCommand, postUpdateArgs);
   } else {
-    if (shouldRepair) {
-      yield* Console.log('');
-      yield* Console.log('Repairing local Threadnote setup after package update.');
-      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, ['repair', '--no-post-update']);
-    } else {
-      yield* Console.log('Skipping repair because --no-repair was provided.');
-    }
-    if (options.postUpdate !== false) {
-      yield* runStreamingSubcommand(options.dryRun === true, threadnoteCommand, postUpdateArgs);
-    } else {
-      yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
-    }
+    yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
-  yield* cleanupStaleNvmThreadnoteInstallations({dryRun: options.dryRun === true});
+  if (shouldRepair) {
+    yield* Console.log('');
+    yield* Console.log('Repairing local Threadnote setup after standalone update.');
+    yield* runStreamingSubcommand(dryRun, threadnoteCommand, ['repair', '--no-post-update']);
+  } else {
+    yield* Console.log('Skipping repair because --no-repair was provided.');
+  }
   yield* Console.log(
     'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
   );
+  yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   yield* printWhatsNewIfAvailable(info);
+});
+
+const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(function* (options: {
+  readonly dryRun: boolean;
+  readonly force: boolean;
+  readonly source: string;
+  readonly version: string;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const releaseRoot = path.join(installationRoot(path, system), 'versions', options.version);
+  const artifactName = releaseArtifactName(system);
+  const releases = yield* fetchAvailableReleases(options.source);
+  const release = releases.find(candidate => compareVersions(candidate.version, options.version) === 0);
+  if (!release) {
+    return yield* Effect.fail(new Error(`GitHub release ${options.version} is no longer available.`));
+  }
+  const archiveAsset = release.assets.find(asset => asset.name === artifactName);
+  const checksumAsset = release.assets.find(asset => asset.name === `${artifactName}.sha256`);
+  if (!archiveAsset || !checksumAsset) {
+    return yield* Effect.fail(
+      new Error(
+        `Release ${options.version} does not publish ${artifactName} and ${artifactName}.sha256 for this platform.`,
+      ),
+    );
+  }
+  if (options.dryRun) {
+    yield* Console.log(`Would download verified release artifact: ${archiveAsset.url}`);
+    yield* Console.log(`Would install standalone Threadnote to: ${releaseRoot}`);
+    return releaseRoot;
+  }
+
+  yield* fs.makeDirectory(path.dirname(releaseRoot), {recursive: true, mode: 0o700});
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const temporaryRoot = yield* fs.makeTempDirectoryScoped({
+        directory: path.dirname(releaseRoot),
+        prefix: '.threadnote-update-',
+      });
+      const archivePath = path.join(temporaryRoot, artifactName);
+      const extractedRoot = path.join(temporaryRoot, 'release');
+      const http = yield* HttpService;
+      yield* Console.log(`Downloading ${artifactName}`);
+      yield* http.downloadToFile(archiveAsset.url, archivePath, {
+        headers: releaseRequestHeaders(),
+        timeoutMs: 10 * 60_000,
+      });
+      const checksumResponse = yield* http.getText(checksumAsset.url, {
+        headers: releaseRequestHeaders(),
+        timeoutMs: 30_000,
+      });
+      const expectedChecksum = yield* fromSync('parse release checksum', () =>
+        parseReleaseChecksum(checksumResponse.body, artifactName),
+      );
+      const actualChecksum = yield* sha256FileHex(archivePath);
+      if (actualChecksum !== expectedChecksum) {
+        return yield* Effect.fail(
+          new Error(`Checksum mismatch for ${artifactName}: expected ${expectedChecksum}, got ${actualChecksum}.`),
+        );
+      }
+      yield* extractGzipTar(archivePath, extractedRoot);
+      yield* validateExtractedRelease(fs, path, extractedRoot, options.version, system.platform);
+      yield* verifyOfficialPlatformSignature(fs, path, extractedRoot, options.source, system);
+      yield* promoteReleaseDirectory(fs, path, extractedRoot, releaseRoot, options.force, system.processId);
+      yield* Console.log(`Installed standalone Threadnote ${options.version}: ${releaseRoot}`);
+      return releaseRoot;
+    }),
+  );
+});
+
+export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialPlatformSignature')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  releaseRoot: string,
+  source: string,
+  system: SystemInfoShape,
+) {
+  if (source !== DEFAULT_RELEASE_SOURCE || system.platform === 'linux') return;
+  const executable = path.join(releaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
+  if (system.platform === 'darwin') {
+    for (const file of yield* findFilesRecursively(fs, path, path.join(releaseRoot, 'runtime'))) {
+      const type = yield* runCommandEffect('file', ['--brief', file]);
+      if (!type.stdout.includes('Mach-O')) continue;
+      yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', file]).pipe(
+        Effect.mapError(cause => new Error(`Release signature validation failed for ${file}.`, {cause})),
+      );
+    }
+    yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', executable]).pipe(
+      Effect.mapError(cause => new Error(`Release signature validation failed for ${executable}.`, {cause})),
+    );
+    yield* runCommandEffect('spctl', ['--assess', '--type', 'execute', '--verbose=4', executable]).pipe(
+      Effect.mapError(cause => new Error('Release notarization validation failed.', {cause})),
+    );
+    return;
+  }
+  const script = [
+    "$files=@((Get-Item -LiteralPath $env:THREADNOTE_SIGNED_EXECUTABLE)) + @(Get-ChildItem -LiteralPath $env:THREADNOTE_SIGNED_RUNTIME -Recurse -File | Where-Object { $_.Extension -in '.dll','.node' })",
+    'foreach($file in $files){',
+    '  $signature=Get-AuthenticodeSignature -LiteralPath $file.FullName',
+    '  if($signature.Status -ne \'Valid\'){ throw "Invalid Authenticode signature for $($file.FullName): $($signature.Status)" }',
+    '}',
+  ].join('; ');
+  yield* runCommandEffect('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    env: {
+      ...system.environment(),
+      THREADNOTE_SIGNED_EXECUTABLE: executable,
+      THREADNOTE_SIGNED_RUNTIME: path.join(releaseRoot, 'runtime'),
+    },
+  }).pipe(Effect.mapError(cause => new Error('Release Authenticode validation failed.', {cause})));
+});
+
+const findFilesRecursively = Effect.fn('update.findFilesRecursively')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+) {
+  if (!(yield* fs.exists(root))) return [] as readonly string[];
+  const files: string[] = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (!directory) continue;
+    for (const name of yield* fs.readDirectory(directory)) {
+      const entry = path.join(directory, name);
+      const info = yield* fs.stat(entry);
+      if (info.type === 'Directory') pending.push(entry);
+      else if (info.type === 'File') files.push(entry);
+    }
+  }
+  return files.sort();
+});
+
+export function releaseArtifactName(system: Pick<SystemInfoShape, 'architecture' | 'platform'>): string {
+  const platform = system.platform === 'win32' ? 'windows' : system.platform === 'darwin' ? 'darwin' : system.platform;
+  const architecture = system.architecture === 'aarch64' ? 'arm64' : system.architecture;
+  if (!['darwin', 'linux', 'windows'].includes(platform) || !['arm64', 'x64'].includes(architecture)) {
+    throw new Error(`No standalone Threadnote artifact is available for ${platform}-${architecture}.`);
+  }
+  return `threadnote-${platform}-${architecture}.tar.gz`;
+}
+
+function releaseRequestHeaders(): Readonly<Record<string, string>> {
+  return {
+    accept: 'application/octet-stream',
+    'user-agent': 'threadnote-cli',
+  };
+}
+
+export function parseReleaseChecksum(content: string, artifactName: string): string {
+  const line = content
+    .split(/\r?\n/)
+    .map(value => value.trim())
+    .find(value => value.length > 0);
+  const match = line ? /^([a-f0-9]{64})(?:\s+\*?(.+))?$/i.exec(line) : undefined;
+  if (!match || (match[2] !== undefined && match[2] !== artifactName)) {
+    throw new Error(`Invalid checksum document for ${artifactName}.`);
+  }
+  return match[1]!.toLowerCase();
+}
+
+const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  releaseRoot: string,
+  version: string,
+  platform: NodeJS.Platform,
+) {
+  const metadataContent = yield* fs.readFileString(path.join(releaseRoot, 'release.json'));
+  const metadata = yield* Effect.try({
+    try: () => JSON.parse(metadataContent) as unknown,
+    catch: cause => new Error('Release metadata is invalid.', {cause}),
+  });
+  const executable = platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+  if (
+    !isJsonObject(metadata) ||
+    metadata.version !== version ||
+    metadata.executable !== executable ||
+    !(yield* fs.exists(path.join(releaseRoot, executable))) ||
+    !(yield* fs.exists(path.join(releaseRoot, 'runtime', 'node-llama-cpp.js')))
+  ) {
+    return yield* Effect.fail(new Error(`Release artifact validation failed for Threadnote ${version}.`));
+  }
+  if (platform !== 'win32') {
+    yield* fs.chmod(path.join(releaseRoot, executable), 0o755);
+  }
+});
+
+export const promoteReleaseDirectory = Effect.fn('update.promoteReleaseDirectory')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  stagedRoot: string,
+  releaseRoot: string,
+  force: boolean,
+  processId: number,
+) {
+  const exists = yield* fs.exists(releaseRoot);
+  void force;
+  const backupRoot = path.join(path.dirname(releaseRoot), `.${path.basename(releaseRoot)}.${processId}.backup`);
+  yield* fs.remove(backupRoot, {force: true, recursive: true});
+  if (exists) {
+    yield* fs.rename(releaseRoot, backupRoot);
+  }
+  yield* fs
+    .rename(stagedRoot, releaseRoot)
+    .pipe(
+      Effect.catch(error =>
+        exists ? fs.rename(backupRoot, releaseRoot).pipe(Effect.andThen(Effect.fail(error))) : Effect.fail(error),
+      ),
+    );
+  yield* fs.remove(backupRoot, {force: true, recursive: true});
 });
 
 function printWhatsNewIfAvailable(info: UpdateInfo) {
@@ -336,7 +545,7 @@ function getUpdateInfo(
   options: {
     readonly allowCacheWrite: boolean;
     readonly preferFresh: boolean;
-    readonly registry: string;
+    readonly source: string;
     readonly requestedChannel: UpdateChannel | undefined;
   },
 ) {
@@ -344,14 +553,14 @@ function getUpdateInfo(
     const currentVersion = yield* currentPackageVersion();
     const inferredChannel = selectUpdateChannel(currentVersion);
     const channel = selectUpdateChannel(currentVersion, options.requestedChannel);
-    const cached = options.preferFresh ? undefined : yield* readFreshCache(config, options.registry, channel);
-    const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.registry, channel));
+    const cached = options.preferFresh ? undefined : yield* readFreshCache(config, options.source, channel);
+    const latestVersion = cached?.latestVersion ?? (yield* fetchLatestVersion(options.source, channel));
     if (!cached && latestVersion !== undefined && options.allowCacheWrite) {
       yield* writeUpdateCache(config, {
         channel,
         checkedAt: new Date().toISOString(),
         latestVersion,
-        registry: options.registry,
+        source: options.source,
       });
     }
     const isChannelSwitch = options.requestedChannel !== undefined && channel !== inferredChannel;
@@ -363,7 +572,7 @@ function getUpdateInfo(
       isUpdateAvailable: latestVersion !== undefined && (isChannelSwitch || isVersionUpgrade),
       isVersionUpgrade,
       latestVersion,
-      registry: options.registry,
+      source: options.source,
     };
   });
 }
@@ -381,41 +590,65 @@ export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'st
   return undefined;
 }
 
+export function requiresFreshStandaloneInstall(version: string): boolean {
+  const major = Number.parseInt(stableVersionCore(version).split('.', 1)[0] ?? '', 10);
+  return Number.isSafeInteger(major) && major < 4;
+}
+
 export {currentPackageVersion};
 
 export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
-  registry: string,
+  source: string = DEFAULT_RELEASE_SOURCE,
   channel: UpdateChannel = 'latest',
 ) {
-  const url = yield* fromSync(
-    'build npm registry URL',
-    () => new URL(`${NPM_PACKAGE_NAME}/${channel}`, normalizeRegistry(registry)),
-  );
-  const response = yield* getJsonEffect(url, {headers: {accept: 'application/json'}, timeoutMs: 2500}).pipe(
-    Effect.catchTag('HttpStatusError', cause =>
-      channel === 'beta' && cause.status === 404 ? Effect.succeed(undefined) : Effect.fail(cause),
-    ),
+  const releases = yield* fetchAvailableReleases(source);
+  const candidates = releases.filter(release => release.prerelease === (channel === 'beta'));
+  return candidates.sort((left, right) => compareVersions(right.version, left.version))[0]?.version;
+});
+
+const fetchAvailableReleases = Effect.fn('update.fetchAvailableReleases')(function* (source: string) {
+  const response = yield* getJsonEffect(source, {
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': 'threadnote-cli',
+    },
+    timeoutMs: 5000,
+  }).pipe(
     Effect.mapError(cause =>
       applicationError(
-        'check npm for updates',
-        new Error(`Could not check npm for updates: ${errorMessage(cause)}`, {cause}),
+        'check GitHub for updates',
+        new Error(`Could not check GitHub for updates: ${errorMessage(cause)}`, {cause}),
       ),
     ),
   );
-  if (response === undefined) {
-    return undefined;
-  }
-  if (!isJsonObject(response.body) || typeof response.body.version !== 'string') {
+  if (!Array.isArray(response.body)) {
     return yield* Effect.fail(
-      applicationError('check npm for updates', new Error('npm registry response did not include a version.')),
+      applicationError('check GitHub for updates', new Error('GitHub releases response was not an array.')),
     );
   }
-  return response.body.version;
+  return response.body.flatMap(parseAvailableRelease);
 });
+
+function parseAvailableRelease(value: unknown): readonly AvailableRelease[] {
+  if (!isJsonObject(value) || value.draft === true || value.immutable !== true || typeof value.tag_name !== 'string') {
+    return [];
+  }
+  const version = value.tag_name.trim().replace(/^v/, '');
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) || !Array.isArray(value.assets)) {
+    return [];
+  }
+  const assets = value.assets.flatMap(asset => {
+    if (!isJsonObject(asset) || typeof asset.name !== 'string' || typeof asset.browser_download_url !== 'string') {
+      return [];
+    }
+    return [{name: asset.name, url: asset.browser_download_url}];
+  });
+  return [{assets, immutable: true, prerelease: value.prerelease === true, version}];
+}
 
 const readFreshCache = Effect.fn('update.readFreshCache')(function* (
   config: RuntimeConfig,
-  registry: string,
+  source: string,
   channel: UpdateChannel,
 ) {
   const rawCache = yield* readFileIfExists(yield* updateCachePath(config));
@@ -432,7 +665,7 @@ const readFreshCache = Effect.fn('update.readFreshCache')(function* (
     parsed.channel !== channel ||
     typeof parsed.checkedAt !== 'string' ||
     typeof parsed.latestVersion !== 'string' ||
-    parsed.registry !== registry
+    parsed.source !== source
   ) {
     return undefined;
   }
@@ -440,7 +673,7 @@ const readFreshCache = Effect.fn('update.readFreshCache')(function* (
   if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
     return undefined;
   }
-  return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, registry};
+  return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, source};
 });
 
 const writeUpdateCache = Effect.fn('update.writeCache')(function* (config: RuntimeConfig, cache: UpdateCache) {
@@ -479,8 +712,7 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
 
   yield* Console.log('');
   yield* Console.log('Post-update actions are available.');
-  const threadnoteCommand =
-    currentThreadnoteCommand(system) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
+  const threadnoteCommand = currentThreadnoteCommand(system) ?? THREADNOTE_COMMAND;
   const handledMigrationIds = new Set(state.handledMigrationIds);
   for (const migration of migrations) {
     if (!(yield* migrationRequirementsSatisfied(config, migration))) {
@@ -634,16 +866,6 @@ function stableVersionCore(version: string): string {
   return version.trim().replace(/^v/, '').split(/[+-]/, 1)[0] ?? '';
 }
 
-function crossesMajorVersion(fromVersion: string, toVersion: string, major: number): boolean {
-  const versionMajor = (version: string): number | undefined => {
-    const parsed = /^(\d+)(?:\.|$)/.exec(stableVersionCore(version));
-    return parsed ? Number(parsed[1]) : undefined;
-  };
-  const fromMajor = versionMajor(fromVersion);
-  const toMajor = versionMajor(toVersion);
-  return fromMajor !== undefined && toMajor !== undefined && fromMajor < major && toMajor >= major;
-}
-
 function stringArray(value: JsonObject, key: string): readonly string[] {
   const raw = value[key];
   if (!Array.isArray(raw) || !raw.every(item => typeof item === 'string')) {
@@ -667,8 +889,8 @@ function formatMigrationCommand(executable: string, args: readonly string[]): st
 }
 
 function currentThreadnoteCommand(system: SystemInfoShape): string | undefined {
-  const entrypoint = system.processArguments[1]?.trim();
-  return entrypoint ? entrypoint : undefined;
+  const executable = system.executablePath.trim();
+  return executable || undefined;
 }
 
 const readPostUpdateState = Effect.fn('update.readPostUpdateState')(function* (config: RuntimeConfig) {
@@ -701,164 +923,45 @@ const postUpdateStatePath = Effect.fn('update.postUpdateStatePath')(function* (c
   return path.join(config.agentContextHome, POST_UPDATE_STATE_FILE);
 });
 
-const resolveUpdateRuntime = Effect.fn('update.resolveRuntime')(function* (runtime: UpdateRuntime) {
-  if (runtime !== 'auto') {
-    yield* requireRuntime(runtime);
-    return runtime;
-  }
-  for (const candidate of ['npm', 'bun', 'deno'] as const) {
-    if (yield* findExecutable([candidate])) {
-      return candidate;
-    }
-  }
-  return yield* Effect.fail(new Error('Install Node/npm, Bun, or Deno to update threadnote.'));
-});
-
-const requireRuntime = Effect.fn('update.requireRuntime')(function* (runtime: Exclude<UpdateRuntime, 'auto'>) {
-  if (!(yield* findExecutable([runtime]))) {
-    return yield* Effect.fail(new Error(`${runtime} was requested but was not found on PATH.`));
-  }
-});
-
-const installedThreadnoteCommand = Effect.fn('installedThreadnoteCommand')(function* (
-  runtime: Exclude<UpdateRuntime, 'auto'>,
-  runtimeExecutable: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const system = yield* SystemInfo;
-  const runtimeBin = yield* runtimeThreadnoteBin(runtime, runtimeExecutable);
-  if (runtimeBin && (yield* isExecutableFileEffect(fs, runtimeBin, system.platform))) {
-    return runtimeBin;
-  }
-  return (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
-});
-
-const runtimeThreadnoteBin = Effect.fn('runtimeThreadnoteBin')(function* (
-  runtime: Exclude<UpdateRuntime, 'auto'>,
-  runtimeExecutable: string,
-) {
-  const path = yield* Path.Path;
-  const system = yield* SystemInfo;
-  if (runtime === 'npm') {
-    const result = yield* runCommandEffect(runtimeExecutable, ['prefix', '--global'], {allowFailure: true});
-    const prefix = result.stdout.trim();
-    return prefix ? runtimeThreadnoteBinPath(runtime, prefix, system.platform) : undefined;
-  }
-  if (runtime === 'bun') {
-    const result = yield* runCommandEffect(runtimeExecutable, ['pm', 'bin', '-g'], {allowFailure: true});
-    const binDir = result.stdout.trim();
-    return binDir ? runtimeThreadnoteBinPath(runtime, binDir, system.platform) : undefined;
-  }
-  const environment = system.environment();
-  const denoRoot =
-    environment.DENO_INSTALL_ROOT ?? environment.DENO_INSTALL ?? path.join(system.homeDirectory, '.deno');
-  return runtimeThreadnoteBinPath(runtime, path.join(denoRoot, 'bin'), system.platform);
-});
-
-const isExecutableFileEffect = Effect.fn('isExecutableFile')(function* (
-  fs: FileSystem.FileSystem,
-  filePath: string,
-  currentPlatform: NodeJS.Platform,
-) {
-  const info = yield* fs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  return info?.type === 'File' && (currentPlatform === 'win32' || (info.mode & 0o111) !== 0);
-});
-
-export function runtimeThreadnoteBinPath(
-  runtime: Exclude<UpdateRuntime, 'auto'>,
-  root: string,
-  currentPlatform: NodeJS.Platform,
-): string {
-  const separator = currentPlatform === 'win32' ? '\\' : '/';
-  const append = (...segments: readonly string[]): string => {
-    const base = root.replace(/[\\/]+$/, '') || separator;
-    return `${base}${base.endsWith(separator) ? '' : separator}${segments.join(separator)}`;
-  };
-  if (currentPlatform === 'win32') {
-    return append(`${NPM_PACKAGE_NAME}.cmd`);
-  }
-  return runtime === 'npm' ? append('bin', NPM_PACKAGE_NAME) : append(NPM_PACKAGE_NAME);
+export function releaseSource(environment: NodeJS.ProcessEnv): string {
+  return resolveReleaseSource(undefined, false, environment);
 }
 
-function updatePackageCommand(
-  runtime: Exclude<UpdateRuntime, 'auto'>,
-  registry: string,
-  channel: UpdateChannel,
-  runtimeExecutable: string = runtime,
-  environment: NodeJS.ProcessEnv,
-): {
-  readonly args: readonly string[];
-  readonly env?: NodeJS.ProcessEnv;
-  readonly executable: string;
-} {
-  const packageSpec = `${NPM_PACKAGE_NAME}@${channel}`;
-  if (runtime === 'npm') {
-    return {
-      executable: runtimeExecutable,
-      args: ['install', '--global', packageSpec, `--registry=${registry}`, '--node-llama-cpp-postinstall=skip'],
-    };
-  }
-  if (runtime === 'bun') {
-    return {
-      executable: runtimeExecutable,
-      args: ['install', '--global', packageSpec, `--registry=${registry}`, '--node-llama-cpp-postinstall=skip'],
-    };
-  }
-  return {
-    executable: runtimeExecutable,
-    args: [
-      'install',
-      '--global',
-      '--force',
-      '--name',
-      NPM_PACKAGE_NAME,
-      '--allow-read',
-      '--allow-write',
-      '--allow-run',
-      '--allow-env',
-      '--allow-net',
-      `npm:${packageSpec}`,
-    ],
-    env: {
-      ...environment,
-      NODE_LLAMA_CPP_POSTINSTALL: 'skip',
-      NPM_CONFIG_REGISTRY: registry,
-    },
-  };
-}
-
-export function normalizeRegistry(registry: string): string {
-  const normalized = registry.endsWith('/') ? registry : `${registry}/`;
-  const url = new URL(normalized);
-  if (url.protocol !== 'https:') {
-    throw new Error(`npm registry must use https: ${normalized}`);
-  }
-  return url.toString();
-}
-
-export function updateRegistry(environment: NodeJS.ProcessEnv): string {
-  return resolveUpdateRegistry(undefined, false, environment);
-}
-
-export function resolveUpdateRegistry(
-  registry: string | undefined,
-  allowUntrustedRegistry: boolean | undefined,
+export function resolveReleaseSource(
+  source: string | undefined,
+  allowUntrustedSource: boolean | undefined,
   environment: NodeJS.ProcessEnv,
 ): string {
-  const normalized = normalizeRegistry(registry ?? environment.THREADNOTE_NPM_REGISTRY ?? DEFAULT_NPM_REGISTRY);
-  if (normalized !== DEFAULT_NPM_REGISTRY && !allowsUntrustedRegistry(allowUntrustedRegistry, environment)) {
+  const untrustedSourceAllowed = allowsUntrustedSource(allowUntrustedSource, environment);
+  const normalized = normalizeReleaseSource(
+    source ?? environment[RELEASE_SOURCE_ENV] ?? DEFAULT_RELEASE_SOURCE,
+    untrustedSourceAllowed,
+  );
+  if (normalized !== DEFAULT_RELEASE_SOURCE && !untrustedSourceAllowed) {
     throw new Error(
-      `Refusing custom npm registry ${normalized}: threadnote update does not verify package signatures from alternate registries. Use the default registry, pass --allow-untrusted-registry, or set ${ALLOW_UNTRUSTED_REGISTRY_ENV}=1 only for an approved mirror.`,
+      `Refusing custom release source ${normalized}. Use the official GitHub releases API, pass --allow-untrusted-source, or set ${ALLOW_UNTRUSTED_SOURCE_ENV}=1 only for an approved mirror.`,
     );
   }
   return normalized;
 }
 
-function allowsUntrustedRegistry(option: boolean | undefined, environment: NodeJS.ProcessEnv): boolean {
+function normalizeReleaseSource(source: string, untrustedSourceAllowed: boolean): string {
+  const url = new URL(source);
+  const localDevelopmentSource =
+    untrustedSourceAllowed &&
+    url.protocol === 'http:' &&
+    (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]');
+  if (url.protocol !== 'https:' && !localDevelopmentSource) {
+    throw new Error(`Release source must use https: ${source}`);
+  }
+  return url.toString();
+}
+
+function allowsUntrustedSource(option: boolean | undefined, environment: NodeJS.ProcessEnv): boolean {
   if (option === true) {
     return true;
   }
-  const envValue = environment[ALLOW_UNTRUSTED_REGISTRY_ENV]?.trim().toLowerCase();
+  const envValue = environment[ALLOW_UNTRUSTED_SOURCE_ENV]?.trim().toLowerCase();
   return envValue === '1' || envValue === 'true' || envValue === 'yes';
 }
 

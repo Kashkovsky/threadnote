@@ -1311,13 +1311,13 @@
       <section id="how" class="slide">
         <div class="slide-inner">
           <span class="slide-eyebrow">06 · How it works</span>
-          <h2>One Node runtime, one URI scheme, one local store.</h2>
+          <h2>One embedded runtime, one URI scheme, one local store.</h2>
 
           <div class="architecture reveal">
             <svg
               viewBox="0 0 880 380"
               role="img"
-              aria-label="Coding agents connect over stdio MCP to one Threadnote Node.js process, which owns canonical Markdown, SQLite lexical search, packed vector indexes, and in-process GGUF embeddings"
+              aria-label="Coding agents connect over stdio MCP to one standalone Threadnote process with an embedded Bun runtime, which owns canonical Markdown, SQLite lexical search, packed vector indexes, and in-process GGUF embeddings"
             >
               <defs>
                 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
@@ -1373,7 +1373,7 @@
               <!-- native runtime -->
               <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
                 <rect x="290" y="246" width="300" height="60" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
-                <text x="440" y="272" text-anchor="middle">Threadnote Node.js runtime</text>
+                <text x="440" y="272" text-anchor="middle">Threadnote embedded Bun runtime</text>
                 <text x="440" y="290" text-anchor="middle" fill="#8a8a96" font-size="11">
                   Effect · built-in SQLite · node-llama-cpp
                 </text>
@@ -1396,8 +1396,8 @@
             </svg>
             <div class="architecture-legend">
               <div>
-                <strong>Node.js is the sole runtime.</strong> No Python, Bun, Deno, memory server, or background daemon
-                participates in recall or writes.
+                <strong>The runtime ships inside Threadnote.</strong> No separate Bun, Node.js, Python, memory server,
+                or background daemon participates in recall or writes.
               </div>
               <div><strong>One adapter, one URI scheme.</strong> Every agent calls the same MCP tools.</div>
               <div>
@@ -1492,8 +1492,9 @@
           <span class="slide-eyebrow">08 · Install</span>
           <h2>One command. Then point your agents at it.</h2>
           <p class="lead">
-            The installer wires up one npm package, verifies the core embedding model, and builds both recall indexes.
-            After that, run <code>mcp-install</code> for each agent you use.
+            The installer downloads a standalone executable from an immutable GitHub Release, verifies its checksum and
+            the core embedding model, and builds both recall indexes. After that, run <code>mcp-install</code> for each
+            agent you use.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1503,15 +1504,15 @@
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</span>
 
-<span class="out">Wrote command shim: ~/.local/bin/threadnote</span>
+<span class="out">Wrote command launcher: ~/.local/bin/threadnote</span>
 <span class="out">bge-small-en-v1.5-q8: core model verified and selected</span>
 <span class="out">Recall indexes ready: SQLite lexical + packed vectors</span>
 <span class="out-strong">Install complete · no daemon required</span></pre>
               </div>
               <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
-                Node.js is the only supported runtime; Node 24 LTS is recommended. Supported:
-                <code>^22.22.2</code>, <code>^24.15.0</code>, or <code>&gt;=26.0.0</code>. Preflight runs before npm;
-                Bun and Deno are unsupported. Native Windows uses <code>scripts/install.ps1</code>.
+                No runtime installation is required: Threadnote embeds its pinned Bun runtime. Releases are immutable
+                and SHA-256 verified; macOS builds are signed and notarized, and Windows builds are Authenticode signed.
+                Native Windows uses <code>scripts/install.ps1</code>.
               </p>
             </div>
 
@@ -1634,8 +1635,9 @@ worksets:
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ threadnote update</span>
-<span class="out">Node preflight passed · beta channel selected</span>
-<span class="out">Installing the current threadnote@beta</span>
+<span class="out">Checking GitHub for the latest standalone release</span>
+<span class="out">Downloading and verifying threadnote-darwin-arm64.tar.gz</span>
+<span class="out">Promoting the versioned release and stable launchers</span>
 <span class="out">Repairing launcher, core model, indexes, and MCP</span>
 <span class="out-strong">Update complete. Restart agents to reload MCP.</span></pre>
               </div>
@@ -1643,9 +1645,9 @@ worksets:
                 <code>update --check</code> reports what's available. <code>update --dry-run</code> shows the plan.
                 <code>update --beta</code> opts into beta releases; after that, ordinary version and update checks stay
                 on the beta channel. <code>update --stable</code> switches back to stable even when its version is lower
-                than the installed beta. Stable installs do not advertise betas. Releases may include post-update memory
-                migrations that prompt before applying. A successful update also removes verified stale Threadnote
-                packages from other nvm-managed Node versions.
+                than the installed beta. Stable installs do not advertise betas. Updates keep the running rollback
+                release and prune older standalone payloads. Threadnote 3 cannot cross this runtime boundary with
+                <code>threadnote update</code>; install v4 fresh, then use this flow for later 4.x releases.
               </p>
             </div>
 
@@ -2070,8 +2072,13 @@ threadnote doctor --dry-run</code></pre>
 
           <div class="cta-row">
             <a class="cta" href="https://github.com/Kashkovsky/threadnote" target="_blank" rel="noopener"> GitHub → </a>
-            <a class="cta outline" href="https://www.npmjs.com/package/threadnote" target="_blank" rel="noopener">
-              npm
+            <a
+              class="cta outline"
+              href="https://github.com/Kashkovsky/threadnote/releases"
+              target="_blank"
+              rel="noopener"
+            >
+              releases
             </a>
             <a
               class="cta outline"
@@ -2100,7 +2107,7 @@ threadnote doctor --dry-run</code></pre>
           </div>
 
           <p class="colophon">
-            threadnote · AGPL-3.0-or-later · self-contained Node.js runtime · use <span class="kbd">↑</span>
+            threadnote · AGPL-3.0-or-later · self-contained Bun executable · use <span class="kbd">↑</span>
             <span class="kbd">↓</span> / <span class="kbd">j</span> <span class="kbd">k</span> to navigate
           </p>
         </div>
@@ -2202,20 +2209,23 @@ threadnote doctor --dry-run</code></pre>
       })();
 
       // Replace the hardcoded version pill with the current v4 beta. Fails
-      // silently and keeps the fallback text on any network or registry
+      // silently and keeps the fallback text on any network or API
       // error — the deck must render even offline.
       (async () => {
         const tag = document.getElementById('version-tag');
         if (!tag) return;
         try {
-          const response = await fetch('https://registry.npmjs.org/threadnote/beta', {
+          const response = await fetch('https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=20', {
             headers: {accept: 'application/json'},
             signal: AbortSignal.timeout(3000),
           });
           if (!response.ok) return;
-          const data = await response.json();
-          if (typeof data.version === 'string' && data.version.length > 0) {
-            tag.textContent = 'v' + data.version;
+          const releases = await response.json();
+          const release = Array.isArray(releases)
+            ? releases.find(item => item && item.draft === false && /^v?4\./.test(item.tag_name))
+            : undefined;
+          if (release && typeof release.tag_name === 'string') {
+            tag.textContent = release.tag_name.startsWith('v') ? release.tag_name : 'v' + release.tag_name;
           }
         } catch {
           // Keep the static fallback.

@@ -36,7 +36,7 @@ describe('Effect CLI', () => {
     expect(switching.stdout).toContain('--model string');
   });
 
-  it('rejects conflicting explicit update channels before checking npm', async () => {
+  it('rejects conflicting explicit update channels before checking GitHub', async () => {
     await expect(runCli(['update', '--beta', '--stable', '--check'])).rejects.toMatchObject({
       code: 1,
       stderr: expect.stringContaining('Choose either --beta or --stable'),
@@ -134,7 +134,7 @@ describe('Effect CLI', () => {
 });
 
 function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
-  return execFilePromise(process.execPath, ['--import', 'tsx', 'src/threadnote.ts', ...args], {
+  return execFilePromise(process.execPath, ['src/standalone.ts', ...args], {
     cwd: process.cwd(),
     env: {...process.env, ...environment, NO_COLOR: '1'},
   });

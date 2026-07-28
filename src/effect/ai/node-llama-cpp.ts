@@ -1,5 +1,6 @@
-import {Effect, Layer} from 'effect';
+import {Effect, Layer, Path} from 'effect';
 import {fromPromiseInterruptible} from '../errors.js';
+import {SystemInfo} from '../system.js';
 import {
   EmbeddingFailed,
   GenerationFailed,
@@ -120,15 +121,42 @@ export interface NodeLlamaCppLayerOptions {
   readonly loadModule?: () => Promise<NodeLlamaCppModule>;
 }
 
-const loadInstalledNodeLlamaCpp = async (): Promise<NodeLlamaCppModule> =>
-  (await import('node-llama-cpp')) as unknown as NodeLlamaCppModule;
+const loadInstalledNodeLlamaCpp = async (moduleSpecifier: string = 'node-llama-cpp'): Promise<NodeLlamaCppModule> =>
+  (await import(moduleSpecifier)) as unknown as NodeLlamaCppModule;
 
-export const nodeLlamaCppEngineLayer = (options: NodeLlamaCppLayerOptions = {}) =>
-  Layer.effect(
+export function nodeLlamaCppEngineLayer(options: {
+  readonly loadModule: () => Promise<NodeLlamaCppModule>;
+}): Layer.Layer<LlamaCppEngine, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
+export function nodeLlamaCppEngineLayer(
+  options?: NodeLlamaCppLayerOptions,
+): Layer.Layer<LlamaCppEngine, NativeRuntimeUnavailable | UnsupportedNativeRuntime, Path.Path | SystemInfo>;
+export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) {
+  return Layer.effect(
     LlamaCppEngine,
     Effect.gen(function* () {
+      let loadModule = options.loadModule;
+      if (!loadModule) {
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        let moduleSpecifier = 'node-llama-cpp';
+        if (typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE) {
+          const nativeModuleUrl = yield* path
+            .toFileUrl(path.join(path.dirname(system.executablePath), 'runtime', 'node-llama-cpp.js'))
+            .pipe(
+              Effect.mapError(
+                cause =>
+                  new NativeRuntimeUnavailable({
+                    cause,
+                    message: 'Could not resolve the bundled node-llama-cpp runtime.',
+                  }),
+              ),
+            );
+          moduleSpecifier = nativeModuleUrl.href;
+        }
+        loadModule = () => loadInstalledNodeLlamaCpp(moduleSpecifier);
+      }
       const module = yield* fromPromiseInterruptible(
-        () => (options.loadModule ?? loadInstalledNodeLlamaCpp)(),
+        () => loadModule(),
         cause =>
           new NativeRuntimeUnavailable({
             cause,
@@ -162,6 +190,7 @@ export const nodeLlamaCppEngineLayer = (options: NodeLlamaCppLayerOptions = {}) 
       return LlamaCppEngine.of(makeEngine(llama, module));
     }),
   );
+}
 
 function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEngineShape {
   return {

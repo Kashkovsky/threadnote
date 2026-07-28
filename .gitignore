@@ -6,6 +6,7 @@ out/
 coverage/
 artifacts/
 .artifacts/
+.target-builds/
 graphify-out/
 *.log
 manager/app.js

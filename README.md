@@ -4,7 +4,7 @@
 
 # Threadnote
 
-[![npm version](https://img.shields.io/npm/v/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/threadnote.svg)](https://www.npmjs.com/package/threadnote) [![license](https://img.shields.io/npm/l/threadnote.svg)](./LICENSE) ![node version](https://img.shields.io/node/v/threadnote.svg)
+[![release](https://img.shields.io/github/v/release/Kashkovsky/threadnote?include_prereleases&label=release)](https://github.com/Kashkovsky/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/Kashkovsky/threadnote/total?label=downloads)](https://github.com/Kashkovsky/threadnote/releases) [![license](https://img.shields.io/github/license/Kashkovsky/threadnote)](./LICENSE) [![Bun](https://img.shields.io/badge/runtime-Bun%201.3.14-f9f1e1?logo=bun)](https://bun.com/)
 
 > One engineer teaches it once. Every teammate's coding agent can use it.
 
@@ -16,9 +16,9 @@ Personal working state stays local. Only curated durable knowledge or reusable a
 enter the team's Git-backed memory, with a preview, secret scrubber, and history. Persistence across sessions is the
 foundation; the differentiator is useful context moving safely between **different users and different agents**.
 
-Threadnote 4 is self-contained and Node.js-only. Canonical content, local models, indexes, locks, logs, migration
-receipts, and sharing metadata are owned under `~/.threadnote`—no Python service, external memory platform, or
-background daemon required.
+Threadnote 4 is a self-contained native executable with an embedded Bun runtime. Canonical content, local models,
+indexes, locks, logs, migration receipts, and sharing metadata are owned under `~/.threadnote`—no separately installed
+runtime, Python service, external memory platform, or background daemon required.
 
 **Walkthrough:** https://kashkovsky.github.io/threadnote/
 
@@ -70,20 +70,18 @@ threadnote mcp-install codex --apply # or claude / cursor / copilot
 threadnote doctor
 ```
 
-Or install manually:
+Or install a specific release from the
+[GitHub Releases page](https://github.com/Kashkovsky/threadnote/releases) and run:
 
 ```sh
-npm install --global threadnote
 threadnote install
 threadnote doctor
 threadnote mcp-install codex --apply
 ```
 
-Threadnote requires Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. The installers and
-`threadnote update` check Node before invoking npm, so an incompatible runtime cannot leave a partial upgrade.
-Threadnote does not silently replace the system runtime. With nvm, use `nvm install 24 && nvm use 24`; on macOS with
-Homebrew, upgrade `node` or `node@24`; on Windows, use nvm-windows or
-`winget upgrade --id OpenJS.NodeJS.LTS -e`. Open a new terminal and rerun the installer afterward.
+The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept
+only immutable GitHub releases and SHA-256 verify archives before atomic promotion; macOS releases are Developer ID
+signed and notarized, and Windows releases are Authenticode signed.
 
 The CLI is the complete execution surface. MCP is a local stdio process with a focused default toolset; install
 `--toolset full` only when an agent needs maintenance and artifact-sharing tools.
@@ -115,6 +113,9 @@ threadnote update --stable # return to the stable channel
 Stable installs report and install stable releases only. After opting into beta, ordinary `threadnote version` and
 `threadnote update` calls stay on the beta channel. Run `threadnote update --stable` to switch back, even when the
 stable release has a lower version than the installed beta.
+
+Threadnote 3 cannot cross the new standalone-runtime boundary with `threadnote update`. Install v4 fresh using the
+installer above; after that, `threadnote update` manages all later 4.x releases.
 
 ## Why Not Just Markdown Files?
 
@@ -225,11 +226,11 @@ authority, time, graph, no-answer, adversarial, chunking, and multilingual categ
 performance baselines are checked in under `test/evaluation/baselines/threadnote-3.0.3/`.
 
 ```sh
-npm run eval:recall:v2 -- \
+bun run eval:recall:v2 -- \
   --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
   --fail-on-regression
-npm run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
-npm run bench:recall:micro -- --json
+bun run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
+bun run bench:recall:micro -- --json
 ```
 
 ## Development
@@ -238,10 +239,12 @@ Threadnote's infrastructure and orchestration run on Effect 4 beta. Each CLI, MC
 Effect runtime and scope; raw filesystem, process, HTTP, digest, SQLite, and native-addon access stay behind capability
 services and adapters.
 
+Contributors need Bun `1.3.14`. Run `bun install --frozen-lockfile`, then `bun run typecheck && bun run test`.
+
 See the [architecture](docs/architecture.md), [Effect boundaries](docs/effect.md),
 [evaluation contract](test/evaluation/README.md), [4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md),
-[Obsidian bridge](docs/obsidian.md), [sharing](docs/share.md), [troubleshooting](docs/troubleshooting.md), and
-[contribution guide](CONTRIBUTION.md).
+[Obsidian bridge](docs/obsidian.md), [sharing](docs/share.md), [release signing](docs/releasing.md),
+[troubleshooting](docs/troubleshooting.md), and [contribution guide](CONTRIBUTION.md).
 
 ## License
 

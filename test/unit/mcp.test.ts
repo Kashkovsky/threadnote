@@ -5,7 +5,8 @@ import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
-import {resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {parseMcpToolset} from '../../src/mcp_toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
@@ -57,9 +58,9 @@ describe('MCP toolsets', () => {
     await expect(dryRunOutput()).resolves.toContain('THREADNOTE_MCP_TOOLSET=core');
   });
 
-  it('uses the Node launcher instead of POSIX env', async () => {
+  it('uses the stable standalone launcher instead of POSIX env', async () => {
     const output = await dryRunOutput();
-    expect(output).toContain('-- node ');
+    expect(output).toContain('-- <local-path> mcp-server');
     expect(output).not.toContain('/usr/bin/env');
   });
 
@@ -69,6 +70,27 @@ describe('MCP toolsets', () => {
 
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow('Invalid MCP toolset: minimal. Expected core or full.');
+  });
+
+  it('launches the Windows MCP cmd adapter through ComSpec', async () => {
+    const command = await Effect.runPromise(
+      Effect.gen(function* () {
+        const baseSystem = yield* SystemInfo;
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+            THREADNOTE_BIN_DIR: 'C:\\Threadnote\\bin',
+          }),
+          platform: 'win32',
+        });
+        return yield* mcpAdapterCommand().pipe(Effect.provideService(SystemInfo, testSystem));
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(command.slice(0, 4)).toEqual(['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c']);
+    expect(command[4]).toMatch(/^"".*threadnote-mcp-server\.cmd""$/);
   });
 });
 

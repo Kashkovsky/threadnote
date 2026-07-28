@@ -1,8 +1,7 @@
 import {Console, Effect, Result} from 'effect';
 import {heading, info, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
-import {applicationError} from './effect/errors.js';
 import type {RuntimeConfig, VersionOptions} from './types.js';
-import {currentPackageVersion, fetchLatestVersion, resolveUpdateRegistry} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, resolveReleaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
@@ -12,13 +11,13 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
   const currentVersion = yield* currentPackageVersion();
   const channel = selectUpdateChannel(currentVersion);
   const system = yield* SystemInfo;
-  const registry = yield* Effect.try({
-    try: () => resolveUpdateRegistry(options.registry, options.allowUntrustedRegistry, system.environment()),
-    catch: cause => applicationError('resolve update registry', cause),
+  const source = yield* Effect.try({
+    try: () => resolveReleaseSource(options.source, options.allowUntrustedSource, system.environment()),
+    catch: cause => new Error('Could not resolve the release source.', {cause}),
   });
   const latest = yield* withSpinnerEffect(
-    'Checking npm for latest threadnote version',
-    fetchLatestVersion(registry, channel),
+    'Checking GitHub for the latest standalone Threadnote release',
+    fetchLatestVersion(source, channel),
   ).pipe(Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}));
   const latestVersion = Result.isSuccess(latest) ? latest.success : undefined;
   const latestWarning = Result.isFailure(latest) ? errorMessage(latest.failure) : undefined;
@@ -40,7 +39,11 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
   const comparison = compareVersions(currentVersion, latestVersion);
   if (comparison >= 0) {
     yield* Console.log(
-      success(comparison > 0 ? `Current version is newer than npm ${channel}.` : 'Threadnote is up to date.'),
+      success(
+        comparison > 0
+          ? `Current version is newer than the published ${channel} release.`
+          : 'Threadnote is up to date.',
+      ),
     );
     yield* Console.log('');
     const whatsNew = yield* withSpinnerEffect(

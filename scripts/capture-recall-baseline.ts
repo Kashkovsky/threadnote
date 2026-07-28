@@ -1,45 +1,47 @@
-import {createHash} from 'node:crypto';
-import {readFile, rename, writeFile} from 'node:fs/promises';
-import {dirname, resolve} from 'node:path';
-import {mkdir} from 'node:fs/promises';
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import {Effect, FileSystem} from 'effect';
+import {ApplicationLayer} from '../src/effect/runtime.js';
 import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
+import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const FIXTURE_PATH = 'test/evaluation/fixtures/recall-v1/fixture.json';
-const options = parseArguments(process.argv.slice(2));
-const raw = await readFile(FIXTURE_PATH, 'utf8');
-const fixture = parseRecallEvaluationFixture(JSON.parse(raw));
-const result = evaluateRecallFixture(fixture);
-const artifact = {
-  createdAt: options.createdAt,
-  fixture: {
-    hash: createHash('sha256').update(raw).digest('hex'),
-    path: FIXTURE_PATH,
-    version: fixture.version,
-  },
-  result,
-  source: {
-    openVikingVersion: '0.4.10',
-    rankerVersion: RECALL_RANKER_VERSION,
-    threadnoteVersion: '3.0.3',
-  },
-  version: 1,
-};
-const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
+const DEFAULT_CREATED_AT = '2026-07-27T00:00:00.000Z';
 
-if (options.outputPath) {
-  const target = resolve(options.outputPath);
-  const temporary = `${target}.tmp-${process.pid}`;
-  await mkdir(dirname(target), {recursive: true});
-  await writeFile(temporary, json, 'utf8');
-  await rename(temporary, target);
-}
-process.stdout.write(json);
+const captureBaseline = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const options = parseArguments(yield* scriptArguments());
+  const raw = yield* fs.readFileString(FIXTURE_PATH);
+  const fixture = yield* Effect.try({
+    try: () => parseRecallEvaluationFixture(JSON.parse(raw)),
+    catch: cause => new Error(`Could not parse ${FIXTURE_PATH}.`, {cause}),
+  });
+  const result = evaluateRecallFixture(fixture);
+  const artifact = {
+    createdAt: options.createdAt,
+    fixture: {
+      hash: yield* fixtureHash(raw),
+      path: FIXTURE_PATH,
+      version: fixture.version,
+    },
+    result,
+    source: {
+      openVikingVersion: '0.4.10',
+      rankerVersion: RECALL_RANKER_VERSION,
+      threadnoteVersion: '3.0.3',
+    },
+    version: 1,
+  };
+  const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
+  if (options.outputPath) {
+    yield* atomicWrite(options.outputPath, json);
+  }
+  yield* printJson(artifact);
+});
 
 function parseArguments(args: readonly string[]): {readonly createdAt: string; readonly outputPath?: string} {
-  let createdAt = process.env.SOURCE_DATE_EPOCH
-    ? new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1_000).toISOString()
-    : '2026-07-27T00:00:00.000Z';
+  const sourceDateEpoch = Bun.env.SOURCE_DATE_EPOCH;
+  let createdAt = sourceDateEpoch ? new Date(Number(sourceDateEpoch) * 1_000).toISOString() : DEFAULT_CREATED_AT;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -59,3 +61,5 @@ function parseArguments(args: readonly string[]): {readonly createdAt: string; r
   }
   return {createdAt, outputPath};
 }
+
+BunRuntime.runMain(captureBaseline.pipe(Effect.provide(ApplicationLayer)));

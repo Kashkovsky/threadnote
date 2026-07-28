@@ -1,48 +1,27 @@
 # Troubleshooting
 
-## Node is unsupported or npm reports EBADENGINE
+## The executable does not start
 
-Threadnote requires Node `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. The bootstrap installers
-and `threadnote update` stop before npm changes the package when the active Node is incompatible. A direct
-`npm install --global threadnote` can print npm's engine warning before Threadnote's package preflight runs, so prefer
-the bootstrap installer for recovery. Node.js is the only supported Threadnote 4 runtime; Bun and Deno are not in the
-release matrix.
+Threadnote releases are standalone executables with an embedded Bun runtime; users do not need Bun, Node, npm, or
+Python installed. Verify the immutable release and archive checksum, then run `threadnote doctor --dry-run`. On macOS,
+`codesign --verify --strict --verbose=2 "$(command -v threadnote)"` checks the Developer ID signature. On Windows,
+`Get-AuthenticodeSignature (Get-Command threadnote).Source` should report `Valid`.
 
-```sh
-# nvm on macOS/Linux
-nvm install 24
-nvm use 24
+If an older npm-based Threadnote command shadows the standalone launcher, compare every result from
+`command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. Remove the obsolete package with
+the package manager that installed it, then rerun the standalone installer. Threadnote does not automatically remove
+unverified third-party files. Threadnote 3 cannot install v4 through `threadnote update`; a fresh standalone install is
+the supported upgrade path.
 
-# Homebrew on macOS
-brew update
-brew upgrade node
-```
-
-```powershell
-# nvm-windows
-nvm install 24.18.0
-nvm use 24.18.0
-
-# Windows Package Manager
-winget upgrade --id OpenJS.NodeJS.LTS -e
-```
-
-Open a new terminal after changing Node, then rerun the same Threadnote bootstrap installer. Global npm packages are
-version-scoped under nvm, so the old command may no longer be on `PATH`; this is expected. After the new installation
-succeeds, Threadnote finds packages whose manifest name is exactly `threadnote` under other nvm Node versions and asks
-those versions' own npm to uninstall them. It does not recursively delete unverified directories and does not
-automatically modify Node itself.
-
-Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users should set the package
-selection explicitly:
+Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users select the beta channel:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh |
-  THREADNOTE_PACKAGE=threadnote@beta sh
+  THREADNOTE_CHANNEL=beta sh
 ```
 
 ```powershell
-$env:THREADNOTE_PACKAGE = 'threadnote@beta'
+$env:THREADNOTE_CHANNEL = 'beta'
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
 ```
 
@@ -100,7 +79,8 @@ and never activates it. Lexical recall remains available if native inference is 
 `threadnote doctor` reports the missing core capability as a failure.
 
 The runtime requests prebuilt `node-llama-cpp` binaries only. If `models runtime` reports that no compatible prebuilt
-binary exists, use a supported Node/platform combination; Threadnote will not silently compile one.
+binary exists, install the Threadnote archive matching your operating system and architecture; Threadnote will not
+silently compile one.
 
 Install and repair also retire the old 3.x Python local-AI daemon after migration. Threadnote signals a process only
 after its legacy receipt, loopback health response, PID, launch ID, model ID, and token-derived proof all agree.
@@ -133,7 +113,7 @@ there is no HTTP endpoint, bearer token, host, or port to configure.
 Run the frozen release gate before changing ranking weights, chunking, model manifests, or fixture judgments:
 
 ```sh
-npm run eval:recall:v2 -- \
+bun run eval:recall:v2 -- \
   --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
   --fail-on-regression --fail-on-contract
 ```

@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/4.0.0]
   pull_request:
-    branches: [main]
+    branches: [main, codex/4.0.0]
 
 permissions:
   contents: read
+
+env:
+  BUN_VERSION: 1.3.14
 
 jobs:
   test:
@@ -17,24 +20,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version-file: .nvmrc
-          cache: npm
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - run: npm ci
-
-      - run: npm run lint
-
-      - run: npm run prettier:check
-
-      - run: npm run typecheck
-
-      - run: npm run build
-
-      - run: npm run check:self-contained
-
-      - run: npm run test:coverage
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run prettier:check
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun run check:self-contained
+      - run: bun run test:coverage
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -51,42 +47,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version-file: .nvmrc
-          cache: npm
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - run: npm ci
+      - run: bun install --frozen-lockfile
 
       - name: Frozen v1 quality and indexed-recall smoke
-        run: npm run eval:recall
+        run: bun run eval:recall
 
       - name: Recall-v2 category and safety gate
         run: >-
-          npm run eval:recall:v2 --
+          bun run eval:recall:v2 --
           --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
           --fail-on-regression
           --max-failures 10
 
   windows-smoke:
-    name: No-Python unit smoke · windows · node 22
+    name: Bun unit smoke · Windows
     runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version-file: .nvmrc
-          cache: npm
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - run: npm ci
-
-      - run: npm run typecheck
-
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
       - run: >-
-          npm test -- --run
+          bun --bun vitest run
           test/unit/windows-support.test.ts
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
@@ -94,8 +86,36 @@ jobs:
           test/unit/update.test.ts
           test/unit/mcp.test.ts
 
+  standalone-targets:
+    name: Bytecode compile · ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - bun-darwin-arm64
+          - bun-darwin-x64
+          - bun-linux-arm64
+          - bun-linux-arm64-musl
+          - bun-linux-x64-baseline
+          - bun-linux-x64-musl-baseline
+          - bun-windows-arm64
+          - bun-windows-x64-baseline
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun run compile:targets
+        env:
+          THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+
   self-contained-distribution:
-    name: Self-contained package · ${{ matrix.os }}
+    name: Self-contained Bun release · ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -106,21 +126,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version-file: .nvmrc
-          cache: npm
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - run: npm ci
+      - run: bun install --frozen-lockfile
+      - run: bun run check:self-contained
+      - name: Platform process identity smoke
+        run: bun --bun vitest run test/unit/effect-system.test.ts
+      - run: bun run test:smoke:self-contained
 
-      - run: npm run check:self-contained
-
-      - run: npm run test:smoke:self-contained
-
-      - name: Installed package E2E
-        if: runner.os != 'Windows'
-        run: npm run test:e2e:local-bins
-
-      - name: PowerShell installer E2E
-        if: runner.os == 'Windows'
-        run: npm run test:e2e:windows
+      - name: Installed release E2E
+        run: bun run test:e2e:local-bins

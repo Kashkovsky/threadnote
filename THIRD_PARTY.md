@@ -1,14 +1,15 @@
 # Third-party software
 
-Threadnote 4 is a self-contained Node.js application. It does not install or invoke a Python runtime, OpenViking, or a
-separate memory server.
+Threadnote 4 is a self-contained application with an embedded Bun runtime. It does not install or invoke Node.js,
+Python, OpenViking, or a separate memory server.
 
-## Runtime and bundled npm software
+## Runtime and bundled software
 
 Direct runtime software and packages bundled into the published JavaScript retain their own licenses:
 
 - `node-llama-cpp` (MIT), used in-process with prebuilt `llama.cpp` binaries for local GGUF inference
-- `effect`, `@effect/platform-node`, `@effect/ai-openai-compat`, `@effect/sql-sqlite-node`, and `@effect/vitest` (MIT)
+- Bun (MIT), embedded into each compiled executable
+- `effect`, `@effect/platform-bun`, `@effect/ai-openai-compat`, `@effect/sql-sqlite-bun`, and `@effect/vitest` (MIT)
 - `@modelcontextprotocol/sdk` (MIT)
 - `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)

@@ -92,11 +92,9 @@ describe('share administration', () => {
     expect(teams.teams.friends?.name).toBe('friends');
     expect(teams.teams.friends?.worktree).toBe(join(config.agentContextHome, 'share', 'worktrees', 'friends'));
     expect(teams.teams.default).toBeUndefined();
-    await expect(access(join(config.agentContextHome, 'share', 'worktrees', 'friends'))).resolves.toBeUndefined();
-    await expect(
-      access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'friends')),
-    ).resolves.toBeUndefined();
-    await expect(access(join(config.agentContextHome, 'share', 'teams', 'friends.gitdir'))).resolves.toBeUndefined();
+    await access(join(config.agentContextHome, 'share', 'worktrees', 'friends'));
+    await access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'friends'));
+    await access(join(config.agentContextHome, 'share', 'teams', 'friends.gitdir'));
   });
 
   it('changes the configured remote URL and verifies it with fetch', async () => {

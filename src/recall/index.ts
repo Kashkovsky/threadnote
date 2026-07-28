@@ -1,5 +1,5 @@
 import {Cause, Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
-import * as SqliteClient from '@effect/sql-sqlite-node/SqliteClient';
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SEED_STATE_FILE} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';

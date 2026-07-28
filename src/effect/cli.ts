@@ -230,35 +230,28 @@ const install = Command.make(
 const version = Command.make(
   'version',
   {
-    allowUntrustedRegistry: boolean(
-      'allow-untrusted-registry',
-      'Allow a non-default npm registry without package signature verification',
-    ),
-    registry: optionalString('registry', 'npm registry URL'),
+    allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
+    source: optionalString('source', 'GitHub-compatible releases API URL'),
   },
   options => withRuntimeEffect(config => runVersion(config, options)),
-).pipe(Command.withDescription('Print the installed Threadnote version, latest npm version, and release notes'));
+).pipe(Command.withDescription('Print the installed Threadnote version, latest release, and release notes'));
 
 const update = Command.make(
   'update',
   {
-    allowUntrustedRegistry: boolean(
-      'allow-untrusted-registry',
-      'Allow a non-default npm registry without package signature verification',
-    ),
+    allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
     beta: boolean('beta', 'Update to the latest beta release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
-    force: boolean('force', 'Run package-manager update even if this version is already current'),
+    force: boolean('force', 'Reinstall the selected standalone release even if already current'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts'),
-    registry: optionalString('registry', 'npm registry URL'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
-    runtime: defaultChoice('runtime', ['auto', 'npm', 'bun', 'deno'], 'auto, npm, bun, or deno', 'auto'),
+    source: optionalString('source', 'GitHub-compatible releases API URL'),
     stable: boolean('stable', 'Switch to the latest stable release'),
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runUpdate(config, options)),
-).pipe(Command.withDescription('Update the published Threadnote package, then repair local shims and MCP config'));
+).pipe(Command.withDescription('Install a verified standalone Threadnote release, then repair local integrations'));
 
 const postUpdate = Command.make(
   'post-update',

@@ -1,9 +1,8 @@
-import {createHash} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
-import {mkdir, rename, writeFile} from 'node:fs/promises';
-import {arch, cpus, homedir, platform, release, totalmem} from 'node:os';
-import {dirname, resolve} from 'node:path';
-import {monitorEventLoopDelay, performance} from 'node:perf_hooks';
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import {Clock, Effect} from 'effect';
+import {runCommandEffect} from '../src/effect/command.js';
+import {ApplicationLayer} from '../src/effect/runtime.js';
+import {SystemInfo} from '../src/effect/system.js';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
@@ -16,92 +15,93 @@ import {
   serializeRecallEvaluationFixtureV2Identity,
 } from '../src/evaluation/recall-fixture.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
+import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
-const options = parseArguments(process.argv.slice(2));
-const fixture = expandRecallEvaluationFixtureV2(createRecallEvaluationFixtureV2(), options.documentCount, options.seed);
-const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
-const query = fixture.queries[0]!;
-const runQuery = () =>
-  rankRecallCandidates(query.query, fixture.documents, {
-    now: query.now ? new Date(query.now) : undefined,
-    project: query.project,
-    seedUris: query.seedUris,
-  });
+const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 
-for (let index = 0; index < options.warmups; index += 1) runQuery();
-const durations: number[] = [];
-const rss: number[] = [];
-const externalMemory: number[] = [];
-const heapUsed: number[] = [];
-const eventLoopDelay = monitorEventLoopDelay({resolution: 10});
-const cpuStartedAt = process.cpuUsage();
-eventLoopDelay.enable();
-for (let index = 0; index < options.samples; index += 1) {
-  const startedAt = performance.now();
-  const result = runQuery();
-  durations.push(performance.now() - startedAt);
-  if (!result.results[0]) throw new Error('Recall benchmark returned no result');
-  const memory = process.memoryUsage();
-  rss.push(memory.rss);
-  externalMemory.push(memory.external);
-  heapUsed.push(memory.heapUsed);
-  await new Promise<void>(resolveImmediate => setImmediate(resolveImmediate));
-}
-eventLoopDelay.disable();
-const cpu = process.cpuUsage(cpuStartedAt);
-const latency = benchmarkMeasurement('hybrid-rank-one-query', 'milliseconds', durations);
-const throughput = durations.map(duration => 1_000 / duration);
+const benchmarkRecall = Effect.gen(function* () {
+  const system = yield* SystemInfo;
+  const options = parseArguments(yield* scriptArguments());
+  const fixture = expandRecallEvaluationFixtureV2(
+    createRecallEvaluationFixtureV2(),
+    options.documentCount,
+    options.seed,
+  );
+  const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
+  const query = fixture.queries[0]!;
+  const runQuery = () =>
+    rankRecallCandidates(query.query, fixture.documents, {
+      now: query.now ? new Date(query.now) : undefined,
+      project: query.project,
+      seedUris: query.seedUris,
+    });
 
-const artifact: BenchmarkArtifactV1 = {
-  createdAt: new Date().toISOString(),
-  environment: {
-    architecture: arch(),
-    commit: git(['rev-parse', 'HEAD']),
-    cpu: cpus()[0]?.model ?? 'unknown',
-    dirty: git(['status', '--porcelain']).length > 0,
-    fixtureHash,
-    memoryBytes: totalmem(),
-    node: process.version,
-    operatingSystem: `${platform()} ${release()}`,
-    packageManager: `npm/${execFileSync('npm', ['--version'], {encoding: 'utf8'}).trim()}`,
-    runner: 'threadnote-recall-e2e',
-    runnerVersion: '1',
-  },
-  measurements: [
-    latency,
-    benchmarkMeasurement('hybrid-rank-throughput', 'operations_per_second', throughput),
-    benchmarkMeasurement('process-rss', 'bytes', rss),
-    benchmarkMeasurement('process-external-memory', 'bytes', externalMemory),
-    benchmarkMeasurement('process-heap-used', 'bytes', heapUsed),
-    benchmarkMeasurement('process-cpu-time-per-query', 'milliseconds', [
-      (cpu.user + cpu.system) / 1_000 / options.samples,
-    ]),
-    benchmarkMeasurement('event-loop-delay-p95', 'milliseconds', [
-      Number.isFinite(eventLoopDelay.percentile(95)) ? eventLoopDelay.percentile(95) / 1_000_000 : 0,
-    ]),
-  ],
-  metadata: {
-    documents: fixture.documents.length,
-    homeRedacted: homedir().length > 0,
-    queries: fixture.queries.length,
-    sampleProfile: options.samples < 10 ? 'scale-boundary' : 'standard',
-    seed: options.seed,
-    sourceVersion: 'threadnote-3.0.3',
-  },
-  suite: 'recall-v2',
-  version: BENCHMARK_ARTIFACT_VERSION,
-  warmups: options.warmups,
-};
-parseBenchmarkArtifactV1(artifact);
-const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
-if (options.outputPath) {
-  const target = resolve(options.outputPath);
-  const temporary = `${target}.tmp-${process.pid}`;
-  await mkdir(dirname(target), {recursive: true});
-  await writeFile(temporary, json, 'utf8');
-  await rename(temporary, target);
-}
-process.stdout.write(json);
+  for (let index = 0; index < options.warmups; index += 1) runQuery();
+  const durations: number[] = [];
+  const rss: number[] = [];
+  const externalMemory: number[] = [];
+  const heapUsed: number[] = [];
+  for (let index = 0; index < options.samples; index += 1) {
+    const startedAt = yield* Clock.currentTimeNanos;
+    const result = runQuery();
+    const finishedAt = yield* Clock.currentTimeNanos;
+    durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
+    if (!result.results[0]) return yield* Effect.fail(new Error('Recall benchmark returned no result'));
+    const memory = system.memoryUsage();
+    rss.push(memory.rss);
+    externalMemory.push(memory.external);
+    heapUsed.push(memory.heapUsed);
+    yield* Effect.yieldNow;
+  }
+  const latency = benchmarkMeasurement('hybrid-rank-one-query', 'milliseconds', durations);
+  const throughput = durations.map(duration => 1_000 / duration);
+  const [commit, status, hardware] = yield* Effect.all(
+    [git(['rev-parse', 'HEAD']), git(['status', '--porcelain']), system.hardwareInfo()],
+    {
+      concurrency: 'unbounded',
+    },
+  );
+
+  const artifact: BenchmarkArtifactV1 = {
+    createdAt: new Date().toISOString(),
+    environment: {
+      architecture: system.architecture,
+      commit,
+      cpu: hardware.cpuModel,
+      dirty: status.length > 0,
+      fixtureHash: hash,
+      memoryBytes: hardware.memoryBytes,
+      node: `bun/${system.runtimeVersion}`,
+      operatingSystem: hardware.operatingSystem,
+      packageManager: `bun/${system.runtimeVersion}`,
+      runner: 'threadnote-recall-e2e',
+      runnerVersion: '2',
+    },
+    measurements: [
+      latency,
+      benchmarkMeasurement('hybrid-rank-throughput', 'operations_per_second', throughput),
+      benchmarkMeasurement('process-rss', 'bytes', rss),
+      benchmarkMeasurement('process-external-memory', 'bytes', externalMemory),
+      benchmarkMeasurement('process-heap-used', 'bytes', heapUsed),
+    ],
+    metadata: {
+      documents: fixture.documents.length,
+      homeRedacted: system.homeDirectory.length > 0,
+      queries: fixture.queries.length,
+      sampleProfile: options.samples < 10 ? 'scale-boundary' : 'standard',
+      seed: options.seed,
+      sourceVersion: 'threadnote-3.0.3',
+    },
+    suite: 'recall-v2',
+    version: BENCHMARK_ARTIFACT_VERSION,
+    warmups: options.warmups,
+  };
+  parseBenchmarkArtifactV1(artifact);
+  if (options.outputPath) {
+    yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
+  }
+  yield* printJson(artifact);
+});
 
 interface BenchmarkOptions {
   readonly documentCount: number;
@@ -129,9 +129,9 @@ function parseArguments(args: readonly string[]): BenchmarkOptions {
   return {documentCount, outputPath, samples, seed, warmups};
 }
 
-function git(args: readonly string[]): string {
-  return execFileSync('git', args, {encoding: 'utf8'}).trim();
-}
+const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
+  runCommandEffect('git', arguments_, {timeoutMs: 30_000}).pipe(Effect.map(result => result.stdout.trim())),
+);
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
@@ -151,3 +151,5 @@ function requiredValue(value: string | undefined, option: string): string {
   if (!value?.trim()) throw new Error(`${option} requires a value`);
   return value;
 }
+
+BunRuntime.runMain(benchmarkRecall.pipe(Effect.provide(ApplicationLayer)));

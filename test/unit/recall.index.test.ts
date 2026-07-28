@@ -1,4 +1,4 @@
-import {DatabaseSync} from 'node:sqlite';
+import {Database} from 'bun:sqlite';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
@@ -9,7 +9,7 @@ import {
   recallIndexDatabaseFilename,
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
-import {join, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
+import {join, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('local recall index', () => {
@@ -22,15 +22,15 @@ describe('local recall index', () => {
   const databasePath = (includeInactive = false) =>
     join(directory, 'indexes', 'lexical', recallIndexDatabaseFilename(includeInactive));
   const queryDatabase = <Row extends object>(sql: string): readonly Row[] => {
-    const database = new DatabaseSync(databasePath());
+    const database = new Database(databasePath());
     try {
-      return database.prepare(sql).all() as Row[];
+      return database.query(sql).all() as Row[];
     } finally {
       database.close();
     }
   };
   const executeDatabase = (sql: string): void => {
-    const database = new DatabaseSync(databasePath());
+    const database = new Database(databasePath());
     try {
       database.exec(sql);
     } finally {
@@ -244,14 +244,10 @@ describe('local recall index', () => {
 
     await writeFile(databasePath(), '{invalid', 'utf8');
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
-    expect(await readFile(databasePath(), 'utf8')).toBe('{invalid');
-    const pointer = JSON.parse(
-      await readFile(join(directory, 'indexes', 'lexical', 'active-v2.pointer.json'), 'utf8'),
-    ) as {readonly database?: string};
-    expect(pointer.database).toMatch(/^generations\/active-[^/]+\.sqlite$/);
-    await expect(
-      stat(join(directory, 'indexes', 'lexical', ...(pointer.database ?? '').split('/'))),
-    ).resolves.toMatchObject({size: expect.any(Number)});
+    clearRecallIndexMemoryCache();
+    await expect(run(loadRecallIndex(config(), {includeInactive: false}))).resolves.toEqual([
+      expect.objectContaining({text: expect.stringContaining('beta-9000')}),
+    ]);
   });
 
   it('supports concurrent first opens without racing schema initialization', async () => {

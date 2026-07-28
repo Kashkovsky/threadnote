@@ -1,4 +1,4 @@
-import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
+import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import {Context, Effect, FileSystem, Layer, Schema, Stream} from 'effect';
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
@@ -35,7 +35,7 @@ export interface HttpDownloadOptions extends HttpGetOptions {
   readonly offset?: number;
 }
 
-const dynamicFetch: typeof globalThis.fetch = (...args) => globalThis.fetch(...args);
+const dynamicFetch = ((input, init) => globalThis.fetch(input, init)) as typeof globalThis.fetch;
 
 export interface HttpServiceShape {
   readonly downloadToFile: (
@@ -61,7 +61,7 @@ export class HttpService extends Context.Service<HttpService, HttpServiceShape>(
         getText: (url, options) => execute(client, url, options, response => response.text),
       });
     }),
-  ).pipe(Layer.provide(NodeHttpClient.layerFetch));
+  ).pipe(Layer.provide(BunHttpClient.layer));
 }
 
 const download = (
