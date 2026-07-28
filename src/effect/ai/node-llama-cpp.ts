@@ -373,9 +373,7 @@ function embeddingSession(
             void context.dispose();
           };
           signal.addEventListener('abort', disposeOnAbort, {once: true});
-          return Promise.all(
-            inputs.map(input => embeddingForInput(model, context, input, options.contextSize)),
-          ).finally(() => {
+          return embedInputsSequentially(model, context, inputs, options.contextSize).finally(() => {
             signal.removeEventListener('abort', disposeOnAbort);
           });
         },
@@ -422,7 +420,10 @@ async function embeddingForInput(
   if (windows.length === 1) {
     return context.getEmbeddingFor(windows[0]!.text);
   }
-  const embeddings = await Promise.all(windows.map(window => context.getEmbeddingFor(window.text)));
+  const embeddings: NativeEmbedding[] = [];
+  for (const window of windows) {
+    embeddings.push(await context.getEmbeddingFor(window.text));
+  }
   const dimensions = embeddings[0]?.vector.length ?? 0;
   const pooled = new Array<number>(dimensions).fill(0);
   let totalWeight = 0;
@@ -440,6 +441,19 @@ async function embeddingForInput(
   }
   const magnitude = Math.sqrt(pooled.reduce((sum, value) => sum + value * value, 0));
   return {vector: magnitude > 0 ? pooled.map(value => value / magnitude) : pooled};
+}
+
+async function embedInputsSequentially(
+  model: NativeModel,
+  context: NativeEmbeddingContext,
+  inputs: readonly string[],
+  contextSize: number | undefined,
+): Promise<readonly NativeEmbedding[]> {
+  const embeddings: NativeEmbedding[] = [];
+  for (const input of inputs) {
+    embeddings.push(await embeddingForInput(model, context, input, contextSize));
+  }
+  return embeddings;
 }
 
 function embeddingInputWindows(

@@ -165,6 +165,8 @@ describe('Effect AI native harness', () => {
   it.effect('tokenizes and pools overlong embedding inputs within the model context', () =>
     Effect.gen(function* () {
       const embeddedWindows: string[] = [];
+      let activeEmbeddings = 0;
+      let maximumActiveEmbeddings = 0;
       const input = String.fromCodePoint(...Array.from({length: 80}, (_, index) => 33 + index));
       const layer = nodeLlamaCppEngineLayer({
         loadModule: () =>
@@ -182,10 +184,14 @@ describe('Effect AI native harness', () => {
                       Promise.resolve({
                         disposed: false,
                         dispose: () => Promise.resolve(),
-                        getEmbeddingFor: (input: string) => {
+                        getEmbeddingFor: async (input: string) => {
+                          activeEmbeddings += 1;
+                          maximumActiveEmbeddings = Math.max(maximumActiveEmbeddings, activeEmbeddings);
                           embeddedWindows.push(input);
                           const index = embeddedWindows.length - 1;
-                          return Promise.resolve({vector: [index + 1, 6 - index]});
+                          await Promise.resolve();
+                          activeEmbeddings -= 1;
+                          return {vector: [index + 1, 6 - index]};
                         },
                       }),
                     createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
@@ -207,7 +213,7 @@ describe('Effect AI native harness', () => {
             modelId: 'fake',
             modelPath: '/models/fake.gguf',
           });
-          return (yield* session.embedMany([input]))[0];
+          return (yield* session.embedMany([input, 'tail']))[0];
         }),
       ).pipe(Effect.provide(layer));
 
@@ -218,7 +224,9 @@ describe('Effect AI native harness', () => {
         input.slice(42, 58),
         input.slice(56, 72),
         input.slice(70, 80),
+        'tail',
       ]);
+      expect(maximumActiveEmbeddings).toBe(1);
       const magnitude = Math.sqrt(300 ** 2 + 330 ** 2);
       expect(vector?.[0]).toBeCloseTo(300 / magnitude, 10);
       expect(vector?.[1]).toBeCloseTo(330 / magnitude, 10);
