@@ -53,4 +53,12 @@ describe('Windows platform contracts', () => {
     expect(installer).toContain('Microsoft.PowerShell.Utility\\Get-FileHash');
     expect(installer).toContain('[Security.Cryptography.SHA256]::Create()');
   });
+
+  it('downloads release archives as binary data on Windows PowerShell', async () => {
+    const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
+
+    expect(installer).toContain('[System.Net.WebClient]::new()');
+    expect(installer).toContain('$client.DownloadFile($Uri, $Path)');
+    expect(installer).not.toContain('Invoke-WebRequest');
+  });
 });
