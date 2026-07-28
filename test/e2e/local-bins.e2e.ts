@@ -102,6 +102,14 @@ describe('built self-contained distribution', () => {
     );
   });
 
+  it('ships the Manager UI as a classic browser bundle', async () => {
+    const html = await readFile(join(root, 'dist', 'manager', 'index.html'), 'utf8');
+    const script = await readFile(join(root, 'dist', 'manager', 'app.js'), 'utf8');
+
+    expect(html).toContain('<script src="/app.js"></script>');
+    expect(script).not.toMatch(/(?:^|[;}\n])export\s*\{/);
+  });
+
   it('stores memory, refreshes the vector generation, and recalls through built launchers', async () => {
     const recall = await runCli(['recall', '--query', 'QZ9 native recall background service']);
     expect(recall).toContain('native-e2e.md');

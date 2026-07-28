@@ -45,20 +45,17 @@ interface NativeModel {
     readonly contextSize?: number;
     readonly createSignal: AbortSignal;
     readonly ignoreMemorySafetyChecks: false;
-    readonly threads: number;
   }) => Promise<NativeEmbeddingContext>;
   readonly createRankingContext: (options: {
     readonly contextSize?: number;
     readonly createSignal: AbortSignal;
     readonly ignoreMemorySafetyChecks: false;
-    readonly threads: number;
   }) => Promise<NativeRankingContext>;
   readonly createContext?: (options: {
     readonly contextSize?: number;
     readonly createSignal: AbortSignal;
     readonly ignoreMemorySafetyChecks: false;
     readonly sequences: 1;
-    readonly threads: number;
   }) => Promise<NativeGenerationContext>;
   readonly detokenize: (tokens: readonly number[], specialTokens?: boolean, lastTokens?: readonly number[]) => string;
   readonly tokenize: (text: string, specialTokens?: boolean, options?: 'trimLeadingSpace') => readonly number[];
@@ -195,10 +192,6 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
   );
 }
 
-function nativeInferenceThreads(llama: NativeLlama): number {
-  return Math.max(1, llama.cpuMathCores);
-}
-
 function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEngineShape {
   return {
     diagnostics: {
@@ -216,7 +209,6 @@ function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEng
                 contextSize: options.contextSize,
                 createSignal: signal,
                 ignoreMemorySafetyChecks: false,
-                threads: nativeInferenceThreads(llama),
               }),
             cause => modelLoadError(options, cause, 'embedding context'),
           ),
@@ -246,7 +238,6 @@ function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEng
                 contextSize: options.contextSize,
                 createSignal: signal,
                 ignoreMemorySafetyChecks: false,
-                threads: nativeInferenceThreads(llama),
               }),
             cause => modelLoadError(options, cause, 'ranking context'),
           ),
@@ -284,7 +275,6 @@ function generationSession(
                   createSignal: signal,
                   ignoreMemorySafetyChecks: false,
                   sequences: 1,
-                  threads: nativeInferenceThreads(llama),
                 }),
               cause => modelLoadError(options, cause, 'generation context'),
             ),

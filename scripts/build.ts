@@ -68,6 +68,7 @@ const build = Effect.gen(function* () {
 
   yield* runBuild({
     entrypoints: [path.join(root, 'src', 'manager_ui.tsx')],
+    format: 'iife',
     minify: true,
     naming: 'app.js',
     outdir: path.join(outputRoot, 'manager'),
