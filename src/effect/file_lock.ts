@@ -4,6 +4,9 @@ import {SystemInfo} from './system.js';
 
 export interface ExclusiveFileLockOptions {
   readonly heartbeatIntervalMilliseconds?: number;
+  readonly onAcquired?: (lockPath: string) => Effect.Effect<void, never>;
+  readonly onCompleted?: (lockPath: string) => Effect.Effect<void, never>;
+  readonly onContention?: (lockPath: string) => Effect.Effect<void, never>;
   readonly retryIntervalMilliseconds: number;
   readonly staleAfterMilliseconds: number;
   readonly waitTimeoutMilliseconds: number;
@@ -39,7 +42,12 @@ export function withExclusiveFileLock<A, E, R>(
     const system = yield* SystemInfo;
     const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
     const startedAt = yield* Clock.currentTimeMillis;
+    let contentionReported = false;
     while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
+      if (!contentionReported) {
+        yield* options.onContention?.(lockPath) ?? Effect.void;
+        contentionReported = true;
+      }
       const now = yield* Clock.currentTimeMillis;
       if (now - startedAt >= options.waitTimeoutMilliseconds) {
         return yield* Effect.fail(new FileLockTimeout(lockPath));
@@ -51,7 +59,8 @@ export function withExclusiveFileLock<A, E, R>(
     const protectedEffect = Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.forkScoped(refreshFileLockLease(fs, lockPath, token, heartbeatIntervalMilliseconds));
-        return yield* effect;
+        yield* options.onAcquired?.(lockPath) ?? Effect.void;
+        return yield* effect.pipe(Effect.ensuring(options.onCompleted?.(lockPath) ?? Effect.void));
       }),
     );
     return yield* protectedEffect.pipe(Effect.ensuring(releaseFileLock(fs, lockPath, token)));

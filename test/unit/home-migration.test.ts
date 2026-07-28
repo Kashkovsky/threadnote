@@ -157,6 +157,89 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('does not treat generic Threadnote-like directory names as an owned target home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-generic-marker-conflict-'});
+        const legacyHome = path.join(root, '.openviking');
+        yield* fs.makeDirectory(legacyHome);
+        for (const marker of ['cache', 'data', 'indexes', 'models', 'share', 'threadnote']) {
+          const targetHome = path.join(root, `.threadnote-${marker}`);
+          const sentinel = path.join(targetHome, marker, 'sentinel.txt');
+          yield* fs.makeDirectory(path.dirname(sentinel), {recursive: true});
+          yield* fs.writeFileString(sentinel, `preserve-${marker}`);
+
+          const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
+
+          expect(error._tag).toBe('HomeMigrationConflict');
+          expect(yield* fs.readFileString(sentinel)).toBe(`preserve-${marker}`);
+          expect(yield* fs.readDirectory(targetHome)).toEqual([marker]);
+          expect(yield* fs.readDirectory(path.join(targetHome, marker))).toEqual(['sentinel.txt']);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('requires a strong ownership receipt before recovering into an existing target', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-weak-marker-conflict-'});
+        const legacyHome = path.join(root, '.openviking');
+        yield* fs.makeDirectory(legacyHome);
+        const cases = [
+          {content: '{"createdBy":', name: 'malformed-layout', relativePath: 'layout.json'},
+          {
+            content: '{"createdBy":"another-tool","version":2}',
+            name: 'unowned-layout',
+            relativePath: 'layout.json',
+          },
+          {
+            content: '{"id":',
+            name: 'malformed-storage-receipt',
+            relativePath: 'migration/threadnote-storage-layout-v2.json',
+          },
+          {
+            content: '{"id":"threadnote-storage-layout-v2","version":1}',
+            name: 'incomplete-storage-receipt',
+            relativePath: 'migration/threadnote-storage-layout-v2.json',
+          },
+          {
+            content: '{"version":1,"roles":{}}',
+            name: 'model-selection',
+            relativePath: 'models/selection.json',
+          },
+          {
+            content: '{"version":1,"teams":{}}',
+            name: 'share-config',
+            relativePath: 'share/teams.json',
+          },
+          {
+            content: 'unowned resource bytes',
+            name: 'canonical-looking-data',
+            relativePath: 'data/local/resources/sentinel.txt',
+          },
+        ] as const;
+
+        for (const fixture of cases) {
+          const targetHome = path.join(root, `.threadnote-${fixture.name}`);
+          const marker = path.join(targetHome, fixture.relativePath);
+          yield* fs.makeDirectory(path.dirname(marker), {recursive: true});
+          yield* fs.writeFileString(marker, fixture.content);
+          const before = yield* snapshotDirectory(fs, path, targetHome);
+
+          const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
+
+          expect(error._tag).toBe('HomeMigrationConflict');
+          expect(yield* snapshotDirectory(fs, path, targetHome)).toEqual(before);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('recovers into an empty beta home without copying server metadata or overwriting generated state', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -366,6 +449,7 @@ describe('OpenViking home migration', () => {
           )}\n`,
         );
         yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":1}\n');
 
         const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(result.action).toBe('recovered');
@@ -448,3 +532,26 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 });
+
+function snapshotDirectory(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+): Effect.Effect<readonly string[], unknown> {
+  const walk = (directory: string): Effect.Effect<readonly string[], unknown> =>
+    Effect.gen(function* () {
+      const snapshot: string[] = [];
+      for (const name of (yield* fs.readDirectory(directory)).sort()) {
+        const absolutePath = path.join(directory, name);
+        const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+        const info = yield* fs.stat(absolutePath);
+        if (info.type === 'Directory') {
+          snapshot.push(`directory:${relativePath}`, ...(yield* walk(absolutePath)));
+        } else {
+          snapshot.push(`file:${relativePath}:${yield* fs.readFileString(absolutePath)}`);
+        }
+      }
+      return snapshot;
+    });
+  return walk(root);
+}

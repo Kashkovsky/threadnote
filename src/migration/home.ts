@@ -1,8 +1,13 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
-import {LEGACY_OPENVIKING_HOME_DIRECTORY, THREADNOTE_HOME_DIRECTORY} from '../storage/layout.js';
+import {
+  LEGACY_OPENVIKING_HOME_DIRECTORY,
+  LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION,
+  THREADNOTE_HOME_DIRECTORY,
+  THREADNOTE_STORAGE_LAYOUT_VERSION,
+} from '../storage/layout.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import {migrateThreadnoteStorageLayout} from './layout.js';
+import {migrateThreadnoteStorageLayout, STORAGE_LAYOUT_MIGRATION_ID} from './layout.js';
 import {migrateLegacyLocalModels} from './models.js';
 
 export const HOME_MIGRATION_ID = 'openviking-home-v1';
@@ -305,12 +310,59 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
 
 function isRecoverableThreadnoteTarget(fs: FileSystem.FileSystem, path: Path.Path, targetHome: string) {
   return Effect.gen(function* () {
-    const structuralMarkers = ['cache', 'data', 'indexes', 'layout.json', 'migration', 'models', 'share', 'threadnote'];
-    for (const marker of structuralMarkers) {
-      if (yield* fs.exists(path.join(targetHome, marker))) return true;
+    const layout = yield* readJsonObject(fs, path.join(targetHome, LAYOUT_RELATIVE_PATH));
+    if (
+      layout?.createdBy === 'threadnote' &&
+      (layout.version === LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION ||
+        layout.version === THREADNOTE_STORAGE_LAYOUT_VERSION)
+    ) {
+      return true;
+    }
+    if (yield* isOwnedDirectory(fs, path.join(targetHome, 'data', 'viking'))) {
+      return true;
+    }
+    const storageMigration = yield* readJsonObject(
+      fs,
+      path.join(targetHome, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+    );
+    if (
+      storageMigration?.id === STORAGE_LAYOUT_MIGRATION_ID &&
+      storageMigration.targetLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION &&
+      storageMigration.version === 1
+    ) {
+      return true;
     }
     return false;
   });
+}
+
+function readJsonObject(
+  fs: FileSystem.FileSystem,
+  file: string,
+): Effect.Effect<Record<string, unknown> | undefined, never> {
+  return fs.readFileString(file).pipe(
+    Effect.map(content => {
+      try {
+        const value = JSON.parse(content) as unknown;
+        return isRecord(value) ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    }),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+}
+
+function isOwnedDirectory(fs: FileSystem.FileSystem, directory: string): Effect.Effect<boolean, never> {
+  return Effect.gen(function* () {
+    if (!(yield* fs.exists(directory))) return false;
+    if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) return false;
+    return (yield* fs.stat(directory)).type === 'Directory';
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function recoverIntoExistingTarget(

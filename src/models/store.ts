@@ -1,4 +1,4 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Path, Schema} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Path, Result, Schema} from 'effect';
 import {
   InsufficientDiskSpace,
   ModelChecksumMismatch,
@@ -23,6 +23,18 @@ export interface LocalModelInstallation {
 export interface LocalModelInstallResult extends LocalModelInstallation {
   readonly resumed: boolean;
   readonly sourceUrl: string;
+}
+
+export interface LocalModelLockEvent {
+  readonly lockPath: string;
+  readonly modelId: string;
+  readonly operation: string;
+}
+
+export interface LocalModelStoreLayerOptions {
+  readonly onModelLockAcquired?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
+  readonly onModelLockCompleted?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
+  readonly onModelLockContention?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
 }
 
 export class ModelStoreIoFailed extends Schema.TaggedErrorClass<ModelStoreIoFailed>()('ModelStoreIoFailed', {
@@ -56,24 +68,28 @@ export interface LocalModelStoreShape {
 export class LocalModelStore extends Context.Service<LocalModelStore, LocalModelStoreShape>()(
   'threadnote/models/LocalModelStore',
 ) {
-  static readonly layer = Layer.effect(
-    LocalModelStore,
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const fs = yield* FileSystem.FileSystem;
-      const http = yield* HttpService;
-      const path = yield* Path.Path;
-      const system = yield* SystemInfo;
-      const providePlatform = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        effect.pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(SystemInfo, system),
-        ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>>;
-      return LocalModelStore.of(makeLocalModelStore(fs, http, path, system, providePlatform));
-    }),
-  );
+  static layerWith(options: LocalModelStoreLayerOptions = {}) {
+    return Layer.effect(
+      LocalModelStore,
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto;
+        const fs = yield* FileSystem.FileSystem;
+        const http = yield* HttpService;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const providePlatform = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+          ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>>;
+        return LocalModelStore.of(makeLocalModelStore(fs, http, path, system, providePlatform, options));
+      }),
+    );
+  }
+
+  static readonly layer = LocalModelStore.layerWith();
 }
 
 function makeLocalModelStore(
@@ -84,6 +100,7 @@ function makeLocalModelStore(
   providePlatform: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>>,
+  layerOptions: LocalModelStoreLayerOptions,
 ): LocalModelStoreShape {
   const modelPath = (home: string, manifest: LocalModelManifest) =>
     path.join(modelDirectory(path, home, manifest), `${manifest.sha256}.gguf`);
@@ -105,7 +122,7 @@ function makeLocalModelStore(
         verified: false,
       };
     }).pipe(mapStoreIoError(manifest, 'status'));
-  const verify = (home: string, manifest: LocalModelManifest) =>
+  const verifyUnlocked = (home: string, manifest: LocalModelManifest) =>
     Effect.gen(function* () {
       const current = yield* status(home, manifest);
       if (!current.installed) {
@@ -124,97 +141,133 @@ function makeLocalModelStore(
       }
       return {...current, verified: true};
     }).pipe(mapStoreIoError(manifest, 'verify'));
+  const withModelLock = <A, E, R>(
+    home: string,
+    manifest: LocalModelManifest,
+    operation: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => {
+    const lockPath = path.join(home, 'locks', 'models', `${manifest.id}.lock`);
+    const event = {lockPath, modelId: manifest.id, operation};
+    return providePlatform(
+      withExclusiveFileLock(
+        fs,
+        lockPath,
+        {
+          heartbeatIntervalMilliseconds: 10_000,
+          ...(layerOptions.onModelLockAcquired ? {onAcquired: () => layerOptions.onModelLockAcquired!(event)} : {}),
+          ...(layerOptions.onModelLockCompleted ? {onCompleted: () => layerOptions.onModelLockCompleted!(event)} : {}),
+          ...(layerOptions.onModelLockContention
+            ? {onContention: () => layerOptions.onModelLockContention!(event)}
+            : {}),
+          retryIntervalMilliseconds: 100,
+          staleAfterMilliseconds: 60_000,
+          waitTimeoutMilliseconds: 60_000,
+        },
+        effect,
+      ).pipe(mapStoreIoError(manifest, operation)),
+    );
+  };
   return {
     install: (home, manifest, options) =>
-      providePlatform(
-        withExclusiveFileLock(
-          fs,
-          path.join(home, 'locks', 'models', `${manifest.id}.lock`),
-          {
-            heartbeatIntervalMilliseconds: 10_000,
-            retryIntervalMilliseconds: 100,
-            staleAfterMilliseconds: 60_000,
-            waitTimeoutMilliseconds: 60_000,
-          },
-          Effect.gen(function* () {
-            const current = yield* status(home, manifest);
-            const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
-            if (current.installed) {
-              const verified = yield* verify(home, manifest);
-              return {...verified, resumed: false, sourceUrl};
+      withModelLock(
+        home,
+        manifest,
+        'install',
+        Effect.gen(function* () {
+          const current = yield* status(home, manifest);
+          const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
+          const directory = modelDirectory(path, home, manifest);
+          if (current.installed) {
+            const verified = yield* verifyUnlocked(home, manifest).pipe(Effect.result);
+            if (Result.isSuccess(verified)) {
+              return {...verified.success, resumed: false, sourceUrl};
             }
-            const directory = modelDirectory(path, home, manifest);
-            const partial = partialPath(home, manifest);
-            yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
-            let offset = current.partialBytes;
-            if (offset > manifest.size) {
-              yield* fs.remove(partial, {force: true});
-              offset = 0;
+            if (!(verified.failure instanceof ModelChecksumMismatch)) {
+              return yield* Effect.fail(verified.failure);
             }
-            const availableBytes = yield* system.availableDiskBytes(directory).pipe(
-              Effect.mapError(
-                cause =>
-                  new ModelStoreIoFailed({
-                    cause,
-                    message: `Could not inspect free space before downloading ${manifest.id}.`,
-                    modelId: manifest.id,
-                    operation: 'disk-space-preflight',
-                  }),
-              ),
-            );
-            if (availableBytes !== undefined) {
-              yield* assertSufficientModelDiskSpace(manifest, availableBytes, manifest.size - offset);
-            }
-            const response = yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
-              Effect.mapError(
-                cause =>
-                  new ModelDownloadFailed({
-                    cause,
-                    message: `Could not download model ${manifest.id}: ${cause.message}`,
-                    modelId: manifest.id,
-                  }),
-              ),
-            );
-            const downloadedBytes = Number((yield* fs.stat(partial)).size);
-            if (downloadedBytes !== manifest.size) {
-              return yield* new ModelDownloadFailed({
-                cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
-                message: `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`,
-                modelId: manifest.id,
-              });
-            }
-            const digest = yield* providePlatform(sha256FileHex(partial));
-            if (digest !== manifest.sha256) {
-              yield* fs.remove(partial, {force: true});
-              return yield* checksumMismatch(manifest, digest);
-            }
-            const installedPath = modelPath(home, manifest);
-            yield* fs.rename(partial, installedPath);
-            yield* fs.chmod(installedPath, 0o600);
-            yield* writeManifestReceipt(fs, path, directory, manifest);
-            return {
-              bytes: downloadedBytes,
-              installed: true,
+            yield* fs.remove(modelPath(home, manifest), {force: true});
+            yield* fs.remove(path.join(directory, 'manifest.json'), {force: true});
+          }
+          const partial = partialPath(home, manifest);
+          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+          let offset = current.partialBytes;
+          if (offset > manifest.size) {
+            yield* fs.remove(partial, {force: true});
+            offset = 0;
+          }
+          const availableBytes = yield* system.availableDiskBytes(directory).pipe(
+            Effect.mapError(
+              cause =>
+                new ModelStoreIoFailed({
+                  cause,
+                  message: `Could not inspect free space before downloading ${manifest.id}.`,
+                  modelId: manifest.id,
+                  operation: 'disk-space-preflight',
+                }),
+            ),
+          );
+          if (availableBytes !== undefined) {
+            yield* assertSufficientModelDiskSpace(manifest, availableBytes, manifest.size - offset);
+          }
+          const response = yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
+            Effect.mapError(
+              cause =>
+                new ModelDownloadFailed({
+                  cause,
+                  message: `Could not download model ${manifest.id}: ${cause.message}`,
+                  modelId: manifest.id,
+                }),
+            ),
+          );
+          const downloadedBytes = Number((yield* fs.stat(partial)).size);
+          if (downloadedBytes !== manifest.size) {
+            return yield* new ModelDownloadFailed({
+              cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
+              message: `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`,
               modelId: manifest.id,
-              partialBytes: 0,
-              path: installedPath,
-              resumed: offset > 0 && response.resumed,
-              sourceUrl,
-              verified: true,
-            };
-          }),
-        ).pipe(mapStoreIoError(manifest, 'install')),
+            });
+          }
+          const digest = yield* providePlatform(sha256FileHex(partial));
+          if (digest !== manifest.sha256) {
+            yield* fs.remove(partial, {force: true});
+            return yield* checksumMismatch(manifest, digest);
+          }
+          const installedPath = modelPath(home, manifest);
+          yield* fs.rename(partial, installedPath);
+          yield* fs.chmod(installedPath, 0o600);
+          yield* writeManifestReceipt(fs, path, directory, manifest);
+          return {
+            bytes: downloadedBytes,
+            installed: true,
+            modelId: manifest.id,
+            partialBytes: 0,
+            path: installedPath,
+            resumed: offset > 0 && response.resumed,
+            sourceUrl,
+            verified: true,
+          };
+        }),
       ) as Effect.Effect<LocalModelInstallResult, LocalModelStoreError>,
     path: modelPath,
     remove: (home, manifest) =>
-      Effect.gen(function* () {
-        const directory = modelDirectory(path, home, manifest);
-        if (!(yield* fs.exists(directory))) return false;
-        yield* fs.remove(directory, {recursive: true});
-        return true;
-      }).pipe(mapStoreIoError(manifest, 'remove')),
+      withModelLock(
+        home,
+        manifest,
+        'remove',
+        Effect.gen(function* () {
+          const directory = modelDirectory(path, home, manifest);
+          if (!(yield* fs.exists(directory))) return false;
+          yield* fs.remove(directory, {recursive: true});
+          return true;
+        }),
+      ) as Effect.Effect<boolean, LocalModelStoreError>,
     status,
-    verify,
+    verify: (home, manifest) =>
+      withModelLock(home, manifest, 'verify', verifyUnlocked(home, manifest)) as Effect.Effect<
+        LocalModelInstallation,
+        LocalModelStoreError
+      >,
   };
 }
 

@@ -265,6 +265,76 @@ describe('native ResourceStore', () => {
     }
   });
 
+  it('serializes recursive parent removal with descendant writes across store instances', async () => {
+    const home = await mkdtemp('threadnote-resource-parent-lock-');
+    const parentUri = 'threadnote://resources/repos/threadnote/locked-parent';
+    const childUri = `${parentUri}/child.md`;
+    const lockPath = join(home, 'locks', 'resources', 'local', 'mutations.lock');
+    try {
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          yield* store.write(location(home), childUri, 'before', {mode: 'create'});
+        }),
+      );
+      const completionOrder: string[] = [];
+      let signalRemoveContention = () => {};
+      let signalWriteContention = () => {};
+      const removeContended = new Promise<void>(resolve => {
+        signalRemoveContention = resolve;
+      });
+      const writeContended = new Promise<void>(resolve => {
+        signalWriteContention = resolve;
+      });
+      const layer = ResourceStore.layerWith({
+        onMutationLockCompleted: event =>
+          Effect.sync(() => {
+            if (event.uri === parentUri) completionOrder.push('remove');
+            if (event.uri === childUri) completionOrder.push('write');
+          }),
+        onMutationLockContention: event =>
+          Effect.sync(() => {
+            if (event.uri === parentUri) signalRemoveContention();
+            if (event.uri === childUri) signalWriteContention();
+          }),
+      });
+      const [removeStore, writeStore] = await Promise.all([
+        runEffect(ResourceStore.pipe(Effect.provide(layer))),
+        runEffect(ResourceStore.pipe(Effect.provide(layer))),
+      ]);
+
+      await mkdir(join(home, 'locks', 'resources', 'local'), {recursive: true});
+      await writeFile(lockPath, `${process.pid}:test-barrier\n`);
+      const remove = runEffect(removeStore.remove(location(home), parentUri, {recursive: true}));
+      const write = runEffect(writeStore.write(location(home), childUri, 'after', {mode: 'upsert'}));
+
+      await Promise.all([removeContended, writeContended]);
+      await runEffect(
+        writeStore.write({account: 'other', home, user: 'test-user'}, 'threadnote://resources/independent.md', 'ok', {
+          mode: 'create',
+        }),
+      );
+      await rm(lockPath, {force: true});
+      await Promise.all([remove, write]);
+
+      const child = await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          return yield* Effect.option(store.read(location(home), childUri));
+        }),
+      );
+      expect(completionOrder).toHaveLength(2);
+      if (completionOrder.at(-1) === 'write') {
+        expect(child._tag).toBe('Some');
+        if (child._tag === 'Some') expect(child.value).toBe('after');
+      } else {
+        expect(child._tag).toBe('None');
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it.runIf(process.platform !== 'win32')('rejects a symlink escape inside the canonical tree', async () => {
     const home = await mkdtemp('threadnote-resource-symlink-');
     const outside = await mkdtemp('threadnote-resource-outside-');

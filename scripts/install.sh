@@ -19,6 +19,13 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+format_install_source_for_log() {
+  printf '%s' "$1" |
+    sed -E \
+      -e 's#([Hh][Tt][Tt][Pp][Ss]?://)[^/@[:space:]]+@#\1[REDACTED]@#g' \
+      -e 's#\?[^#[:space:]]+#?[REDACTED]#g'
+}
+
 require_supported_node() {
   have node || die "Node.js was not found on PATH. Install the current Node.js 24 LTS release, then rerun this installer."
   node_version="$(node -p 'process.versions.node' 2>/dev/null || true)"
@@ -141,10 +148,12 @@ install_package() {
 
 runtime="$(select_runtime)"
 require_supported_node
-say "Installing $PACKAGE with $runtime from $REGISTRY"
+logged_package="$(format_install_source_for_log "$PACKAGE")"
+logged_registry="$(format_install_source_for_log "$REGISTRY")"
+say "Installing $logged_package with $runtime from $logged_registry"
 install_package "$runtime"
 
-threadnote_bin="$(find_threadnote "$runtime")" || die "Installed $PACKAGE, but could not find the threadnote command."
+threadnote_bin="$(find_threadnote "$runtime")" || die "Installed $logged_package, but could not find the threadnote command."
 
 say "Running threadnote install"
 if { true </dev/tty; } 2>/dev/null; then

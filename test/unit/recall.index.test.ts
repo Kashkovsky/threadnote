@@ -7,6 +7,7 @@ import {
   loadRecallIndex,
   loadRecallIndexDataBatch,
   recallIndexDatabaseFilename,
+  recallUriMatchesScopes,
 } from '../../src/recall/index.js';
 import {join, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
@@ -162,6 +163,44 @@ describe('local recall index', () => {
     ]);
   });
 
+  it('uses persisted indexes for bounded recency and project samples', async () => {
+    const resourcesRoot = join(directory, 'data', 'local', 'resources', 'repos');
+    await mkdir(join(resourcesRoot, 'threadnote'), {recursive: true});
+    await mkdir(join(resourcesRoot, 'outside'), {recursive: true});
+    await writeFile(join(resourcesRoot, 'threadnote', 'inside.md'), '# Inside\n\nsample', 'utf8');
+    await writeFile(join(resourcesRoot, 'outside', 'outside.md'), '# Outside\n\nsample', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    const recentPlan = queryDatabase<{detail: string}>(
+      `EXPLAIN QUERY PLAN
+       SELECT d.id, d.uri, d.candidate_json
+       FROM documents AS d
+       ORDER BY d.source_modified_at DESC, d.uri
+       LIMIT 200`,
+    )
+      .map(row => row.detail)
+      .join('\n');
+    const projectPlan = queryDatabase<{detail: string}>(
+      `EXPLAIN QUERY PLAN
+       SELECT d.id, d.uri, d.candidate_json
+       FROM documents AS d
+       WHERE d.project = 'threadnote'
+       ORDER BY d.source_modified_at DESC, d.uri
+       LIMIT 200`,
+    )
+      .map(row => row.detail)
+      .join('\n');
+
+    expect(recentPlan).toContain('documents_modified_uri');
+    expect(recentPlan).not.toContain('USE TEMP B-TREE');
+    expect(projectPlan).toContain('documents_project_modified_uri');
+    expect(projectPlan).not.toContain('USE TEMP B-TREE');
+    expect(queryDatabase<{project: string}>('SELECT project FROM documents ORDER BY project')).toEqual([
+      {project: 'outside'},
+      {project: 'threadnote'},
+    ]);
+  });
+
   it('rebuilds after source changes and degrades safely from a corrupt cache', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});
@@ -177,7 +216,7 @@ describe('local recall index', () => {
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
     expect(await readFile(databasePath(), 'utf8')).toBe('{invalid');
     const pointer = JSON.parse(
-      await readFile(join(directory, 'indexes', 'lexical', 'active-v1.pointer.json'), 'utf8'),
+      await readFile(join(directory, 'indexes', 'lexical', 'active-v2.pointer.json'), 'utf8'),
     ) as {readonly database?: string};
     expect(pointer.database).toMatch(/^generations\/active-[^/]+\.sqlite$/);
     await expect(
@@ -407,15 +446,24 @@ describe('local recall index', () => {
       ),
     );
 
+    const diagnostics: Array<{postingRows: number; postingStatements: number; queryTerms: number}> = [];
     const selected = await run(
       loadRecallIndex(config(), {
         includeInactive: false,
         limit: 5,
+        onQueryDiagnostics: event =>
+          Effect.sync(() => {
+            diagnostics.push(event);
+          }),
         query: 'common rare-anchor-699',
       }),
     );
 
     expect(selected[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.postingStatements).toBe(1);
+    expect(diagnostics[0]?.queryTerms).toBeGreaterThan(1);
+    expect(diagnostics[0]?.postingRows).toBeLessThanOrEqual((diagnostics[0]?.queryTerms ?? 0) * 500);
   });
 
   it('applies URI scope before truncating each lexical posting pool', async () => {
@@ -441,6 +489,60 @@ describe('local recall index', () => {
     );
 
     expect(selected.map(candidate => candidate.uri)).toEqual(['threadnote://resources/repos/threadnote/target.md']);
+  });
+
+  it('normalizes URI scope anchors and trailing slashes and fails closed for invalid restrictions', async () => {
+    const resourcesRoot = join(directory, 'data', 'local', 'resources', 'repos');
+    await mkdir(join(resourcesRoot, 'threadnote'), {recursive: true});
+    await mkdir(join(resourcesRoot, 'outside'), {recursive: true});
+    await writeFile(join(resourcesRoot, 'threadnote', 'target.md'), '# Target\n\nnormalized-scope-anchor', 'utf8');
+    await writeFile(join(resourcesRoot, 'outside', 'other.md'), '# Other\n\nnormalized-scope-anchor', 'utf8');
+    const scope = 'threadnote://resources/repos/threadnote';
+
+    const selected = await run(
+      loadRecallIndex(config(), {
+        allowedUriScopes: [`${scope}///#ignored`],
+        includeInactive: false,
+        query: 'normalized-scope-anchor',
+      }),
+    );
+    const rejected = await run(
+      loadRecallIndex(config(), {
+        allowedUriScopes: ['///#invalid'],
+        includeInactive: false,
+        query: 'normalized-scope-anchor',
+      }),
+    );
+
+    expect(selected.map(candidate => candidate.uri)).toEqual([`${scope}/target.md`]);
+    expect(rejected).toEqual([]);
+    expect(recallUriMatchesScopes(`${scope}/target.md#heading`, [`${scope}/#ignored`])).toBe(true);
+    expect(recallUriMatchesScopes(`${scope}/target.md#heading`, [`${scope}/target.md/#ignored`])).toBe(true);
+    expect(recallUriMatchesScopes(`${scope}/other.md`, [`${scope}/target.md/#ignored`])).toBe(false);
+    expect(recallUriMatchesScopes(`${scope}/target.md`, ['#invalid'])).toBe(false);
+  });
+
+  it('uses the URI index for exact-or-prefix scope ranges', async () => {
+    const resource = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'target.md');
+    await mkdir(join(resource, '..'), {recursive: true});
+    await writeFile(resource, '# Target\n\nscope-plan-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    const plan = queryDatabase<{detail: string}>(
+      `EXPLAIN QUERY PLAN
+       SELECT d.id
+       FROM documents AS d INDEXED BY documents_uri
+       WHERE d.uri = 'threadnote://resources/repos/threadnote'
+          OR (
+            d.uri >= 'threadnote://resources/repos/threadnote/'
+            AND d.uri < 'threadnote://resources/repos/threadnote0'
+          )`,
+    )
+      .map(row => row.detail)
+      .join('\n');
+
+    expect(plan).toContain('documents_uri');
+    expect(plan).not.toContain('SCAN d');
   });
 
   it('selects capped query terms by corpus IDF independently of query order', async () => {

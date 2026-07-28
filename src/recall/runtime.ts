@@ -7,7 +7,7 @@ import {LocalModelCatalog} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore} from '../models/store.js';
 import {loadRecallFeedback} from './feedback.js';
-import {loadRecallIndexData, loadRecallIndexDataBatch} from './index.js';
+import {loadRecallIndexData, loadRecallIndexDataBatch, recallUriMatchesScopes} from './index.js';
 import type {RecallCandidate} from './rank.js';
 import {ensureVectorIndex, selectedSemanticScores, vectorIndexMatchesGeneration} from '../search/vector-index.js';
 
@@ -41,6 +41,7 @@ interface PrepareRecallSectionsInput<R> {
 const INDEX_CANDIDATE_MULTIPLIER = 10;
 const INDEX_CANDIDATE_MINIMUM = 100;
 const EXPANSION_VOCABULARY_LIMIT = 50;
+const EXPANSION_VOCABULARY_INDEX_SAMPLE_LIMIT = 200;
 const EXPANSION_VOCABULARY_RANKED_RESERVE = 25;
 const EXPANSION_DESCRIPTION_TERM_LIMIT = 6;
 const EXPANSION_DESCRIPTION_LENGTH_LIMIT = 80;
@@ -418,14 +419,20 @@ export const loadRecallExpansionVocabulary = Effect.fn('recall.loadExpansionVoca
   },
 ) {
   if (!input.project) return [];
-  const index = yield* loadRecallIndexData(config, {includeInactive: input.includeInactive});
-  const mergedCandidates = mergeRecallIndexCandidates([input.rankedCandidates ?? [], index.candidates]);
-  const candidates = input.allowedUriScopes?.length
-    ? mergedCandidates.filter(candidate =>
-        input.allowedUriScopes?.some(scope => candidate.uri === scope || candidate.uri.startsWith(`${scope}/`)),
-      )
-    : mergedCandidates;
-  return recallExpansionVocabulary(candidates, input.project);
+  const rankedCandidates = (input.rankedCandidates ?? []).filter(candidate =>
+    recallUriMatchesScopes(candidate.uri, input.allowedUriScopes),
+  );
+  const rankedVocabulary = recallExpansionVocabulary(rankedCandidates, input.project);
+  if (rankedVocabulary.length >= EXPANSION_VOCABULARY_LIMIT) {
+    return rankedVocabulary;
+  }
+  const index = yield* loadRecallIndexData(config, {
+    allowedUriScopes: input.allowedUriScopes,
+    includeInactive: input.includeInactive,
+    limit: EXPANSION_VOCABULARY_INDEX_SAMPLE_LIMIT,
+    project: input.project,
+  });
+  return recallExpansionVocabulary(mergeRecallIndexCandidates([rankedCandidates, index.candidates]), input.project);
 });
 
 export function mergeRecallIndexCandidates(

@@ -73,6 +73,12 @@ export type RecallIndexProgress =
       readonly phase: 'activating';
     };
 
+export interface RecallIndexQueryDiagnostics {
+  readonly postingRows: number;
+  readonly postingStatements: number;
+  readonly queryTerms: number;
+}
+
 interface RecallDocumentRow {
   readonly candidate_json: string;
   readonly id: number;
@@ -105,6 +111,11 @@ interface RecallTermStatisticRow {
   readonly term: string;
 }
 
+interface RecallQueryTermStatistics {
+  readonly documentCount: number;
+  readonly documentFrequency: Readonly<Record<string, number>>;
+}
+
 interface IndexedRecallSource {
   readonly candidate: RecallCandidate;
   readonly documentLength: number;
@@ -112,7 +123,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 1;
+const RECALL_INDEX_DATABASE_VERSION = 2;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -154,7 +165,9 @@ interface LoadRecallIndexOptions {
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly limit?: number;
+  readonly onQueryDiagnostics?: (diagnostics: RecallIndexQueryDiagnostics) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
+  readonly project?: string;
   readonly query?: string;
   readonly requiredUris?: readonly string[];
 }
@@ -342,7 +355,10 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   options: LoadRecallIndexOptions,
 ) {
   if (options.query === undefined) {
-    const rows = yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
+    const rows =
+      options.allowedUriScopes?.length || options.limit !== undefined || options.project !== undefined
+        ? yield* selectDocumentSample(sql, options.allowedUriScopes, options.project, options.limit)
+        : yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
     return {
       candidates: rows.map(decodeCandidateRow),
       corpusStatistics,
@@ -357,7 +373,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     const rowByUri = new Map(requiredRows.map(row => [row.uri, row]));
     for (const uri of requiredUris) {
       const row = rowByUri.get(uri);
-      if (row && uriMatchesScopes(row.uri, options.allowedUriScopes) && !selectedIds.has(row.id)) {
+      if (row && recallUriMatchesScopes(row.uri, options.allowedUriScopes) && !selectedIds.has(row.id)) {
         selectedIds.add(row.id);
         selected.push(decodeCandidateRow(row));
       }
@@ -365,52 +381,38 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   }
   const resultLimit = options.limit ?? DEFAULT_QUERY_RESULT_LIMIT;
   const postingPoolLimit = Math.max(MINIMUM_QUERY_POSTING_POOL, resultLimit * QUERY_POSTING_POOL_MULTIPLIER);
-  const scores = new Map<number, number>();
-  const postingRows = yield* selectPostingsByTerms(sql, [...new Set(indexTerms(options.query))]);
-  const queryTerms = selectQueryTerms(
-    indexTerms(options.query),
-    postingRows,
+  const indexedQueryTerms = [...new Set(indexTerms(options.query))];
+  const queryTermStatistics = yield* loadRecallQueryTermStatistics(
+    sql,
+    indexedQueryTerms,
     corpusStatistics,
     options.allowedUriScopes,
   );
-  for (const term of queryTerms) {
-    type TermCandidate = {
-      readonly documentId: number;
-      readonly posting: RecallPostingRow;
-      readonly score: number;
-    };
-    const compareTermCandidates = (left: TermCandidate, right: TermCandidate): number =>
-      right.score - left.score ||
-      right.posting.field_weight - left.posting.field_weight ||
-      left.posting.uri.localeCompare(right.posting.uri);
-    const termCandidates: TermCandidate[] = [];
-    for (const posting of postingRows) {
-      if (posting.term !== term || !uriMatchesScopes(posting.uri, options.allowedUriScopes)) {
-        continue;
-      }
-      offerBoundedBest(
-        termCandidates,
-        {
-          documentId: posting.document_id,
-          posting,
-          score: postingLexicalScore(
-            {
-              documentLength: posting.document_length,
-              fieldWeight: posting.field_weight,
-              termFrequency: posting.term_frequency,
-            },
-            term,
-            corpusStatistics,
-          ),
-        },
-        postingPoolLimit,
-        compareTermCandidates,
-      );
-    }
-    termCandidates.sort(compareTermCandidates);
-    for (const {documentId, score} of termCandidates) {
-      scores.set(documentId, (scores.get(documentId) ?? 0) + score);
-    }
+  const queryTerms = selectQueryTerms(indexedQueryTerms, queryTermStatistics);
+  const postingRows = yield* selectTopPostingsByTerms(
+    sql,
+    queryTerms,
+    options.allowedUriScopes,
+    postingPoolLimit,
+    corpusStatistics,
+  );
+  yield* options.onQueryDiagnostics?.({
+    postingRows: postingRows.length,
+    postingStatements: queryTerms.length === 0 ? 0 : 1,
+    queryTerms: queryTerms.length,
+  }) ?? Effect.void;
+  const scores = new Map<number, number>();
+  for (const posting of postingRows) {
+    const score = postingLexicalScore(
+      {
+        documentLength: posting.document_length,
+        fieldWeight: posting.field_weight,
+        termFrequency: posting.term_frequency,
+      },
+      posting.term,
+      corpusStatistics,
+    );
+    scores.set(posting.document_id, (scores.get(posting.document_id) ?? 0) + score);
   }
   const uriByDocumentId = new Map(postingRows.map(posting => [posting.document_id, posting.uri]));
   const rankedIds = [...scores]
@@ -471,13 +473,7 @@ function postingLexicalScore(
   term: string,
   corpusStatistics: RecallCorpusStatistics,
 ): number {
-  const documentCount = Math.max(1, corpusStatistics.documentCount);
-  const documentsWithTerm = ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0;
-  const inverseDocumentFrequency = Math.log(
-    1 +
-      (documentCount - documentsWithTerm + POSTING_BM25_IDF_SMOOTHING) /
-        (documentsWithTerm + POSTING_BM25_IDF_SMOOTHING),
-  );
+  const inverseDocumentFrequency = postingInverseDocumentFrequency(term, corpusStatistics);
   const denominator =
     posting.termFrequency +
     POSTING_BM25_SATURATION *
@@ -489,29 +485,20 @@ function postingLexicalScore(
   return bm25 + posting.fieldWeight / POSTING_IDENTIFIER_WEIGHT;
 }
 
-function selectQueryTerms(
-  terms: readonly string[],
-  postings: readonly RecallPostingRow[],
-  corpusStatistics: RecallCorpusStatistics,
-  allowedUriScopes: readonly string[] | undefined,
-): readonly string[] {
-  const scoped = allowedUriScopes !== undefined && allowedUriScopes.length > 0;
-  const documentCount = Math.max(
-    1,
-    scoped
-      ? new Set(
-          postings
-            .filter(posting => uriMatchesScopes(posting.uri, allowedUriScopes))
-            .map(posting => posting.document_id),
-        ).size
-      : corpusStatistics.documentCount,
+function postingInverseDocumentFrequency(term: string, corpusStatistics: RecallCorpusStatistics): number {
+  const documentCount = Math.max(1, corpusStatistics.documentCount);
+  const documentsWithTerm = ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0;
+  return Math.log(
+    1 +
+      (documentCount - documentsWithTerm + POSTING_BM25_IDF_SMOOTHING) /
+        (documentsWithTerm + POSTING_BM25_IDF_SMOOTHING),
   );
-  const documentFrequency = (term: string): number =>
-    scoped
-      ? postings.filter(posting => posting.term === term && uriMatchesScopes(posting.uri, allowedUriScopes)).length
-      : (ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0);
+}
+
+function selectQueryTerms(terms: readonly string[], statistics: RecallQueryTermStatistics): readonly string[] {
+  const documentCount = Math.max(1, statistics.documentCount);
   return [...new Set(terms)]
-    .map(term => ({frequency: documentFrequency(term), term}))
+    .map(term => ({frequency: ownRecordValue(statistics.documentFrequency, term) ?? 0, term}))
     .filter(item => item.frequency > 0)
     .sort((left, right) => {
       const leftIdf = Math.log(
@@ -529,19 +516,21 @@ function selectQueryTerms(
     .map(item => item.term);
 }
 
-function uriMatchesScopes(uri: string, scopes: readonly string[] | undefined): boolean {
-  if (!scopes || scopes.length === 0) {
+export function recallUriMatchesScopes(uri: string, scopes: readonly string[] | undefined): boolean {
+  if (scopes === undefined || scopes.length === 0) {
     return true;
   }
   const documentUri = stripRecallAnchor(uri);
-  return scopes.some(scope => {
-    const normalizedScope = stripRecallAnchor(scope).replace(/\/+$/, '');
-    return documentUri === normalizedScope || documentUri.startsWith(`${normalizedScope}/`);
-  });
+  const normalizedScopes = normalizeRecallUriScopes(scopes);
+  return normalizedScopes.some(scope => documentUri === scope || documentUri.startsWith(`${scope}/`));
 }
 
 function stripRecallAnchor(uri: string): string {
   return uri.replace(/#.*$/, '');
+}
+
+function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
+  return [...new Set(scopes.map(scope => stripRecallAnchor(scope).replace(/\/+$/, '').trim()).filter(Boolean))];
 }
 
 export function recallIndexDatabaseFilename(includeInactive: boolean): string {
@@ -638,6 +627,7 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
     CREATE TABLE IF NOT EXISTS documents (
       id INTEGER PRIMARY KEY,
       uri TEXT UNIQUE NOT NULL,
+      project TEXT,
       source_path TEXT NOT NULL,
       source_modified_at TEXT,
       source_size INTEGER NOT NULL CHECK (source_size >= 0),
@@ -661,6 +651,11 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
       document_frequency INTEGER NOT NULL CHECK (document_frequency > 0)
     ) WITHOUT ROWID
   `);
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_uri ON documents(uri)');
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_modified_uri ON documents(source_modified_at DESC, uri)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS documents_project_modified_uri ON documents(project, source_modified_at DESC, uri)',
+  );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS postings_document_id ON postings(document_id)');
   yield* sql`
     INSERT INTO metadata (key, value)
@@ -849,15 +844,17 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         yield* sql.unsafe(
           `INSERT INTO documents (
             uri,
+            project,
             source_path,
             source_modified_at,
             source_size,
             authority_policy_key,
             candidate_json,
             document_length
-          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
           batch.flatMap(indexed => [
             stripRecallAnchor(indexed.candidate.uri),
+            indexed.candidate.fields?.project?.trim().toLowerCase() || null,
             indexed.source.path,
             indexed.source.modifiedAt ?? null,
             indexed.source.size,
@@ -1047,6 +1044,32 @@ function selectDocumentsByIds(sql: SqlClient.SqlClient, ids: readonly number[]) 
   return selectDocumentRows(sql, 'id', ids);
 }
 
+function selectDocumentSample(
+  sql: SqlClient.SqlClient,
+  allowedUriScopes: readonly string[] | undefined,
+  project: string | undefined,
+  limit: number | undefined,
+) {
+  const normalizedLimit = limit === undefined ? undefined : Math.max(0, Math.floor(limit));
+  if (normalizedLimit === 0) return Effect.succeed<readonly RecallDocumentRow[]>([]);
+  const scope = recallUriScopePredicate('d', allowedUriScopes);
+  const normalizedProject = project?.trim().toLowerCase();
+  const projectPredicate = normalizedProject ? ' AND d.project = ?' : '';
+  const bounded = normalizedLimit === undefined ? '' : ' LIMIT ?';
+  const order = normalizedLimit === undefined ? 'd.uri' : 'd.source_modified_at DESC, d.uri';
+  return sql.unsafe<RecallDocumentRow>(
+    `SELECT d.id, d.uri, d.candidate_json
+     FROM documents AS d
+     WHERE ${scope.sql}${projectPredicate}
+     ORDER BY ${order}${bounded}`,
+    [
+      ...scope.params,
+      ...(normalizedProject ? [normalizedProject] : []),
+      ...(normalizedLimit === undefined ? [] : [normalizedLimit]),
+    ],
+  );
+}
+
 function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', values: readonly (number | string)[]) {
   return Effect.gen(function* () {
     const rows: RecallDocumentRow[] = [];
@@ -1061,27 +1084,143 @@ function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', valu
   });
 }
 
-function selectPostingsByTerms(sql: SqlClient.SqlClient, terms: readonly string[]) {
+function loadRecallQueryTermStatistics(
+  sql: SqlClient.SqlClient,
+  terms: readonly string[],
+  corpusStatistics: RecallCorpusStatistics,
+  allowedUriScopes: readonly string[] | undefined,
+) {
+  if (!allowedUriScopes || allowedUriScopes.length === 0) {
+    return Effect.succeed<RecallQueryTermStatistics>({
+      documentCount: corpusStatistics.documentCount,
+      documentFrequency: corpusStatistics.documentFrequency,
+    });
+  }
   return Effect.gen(function* () {
-    const rows: RecallPostingRow[] = [];
-    for (const batch of chunkValues(terms, 400)) {
-      rows.push(
-        ...(yield* sql<RecallPostingRow>`
-          SELECT
-            p.term,
-            p.document_id,
-            p.field_weight,
-            p.term_frequency,
-            d.document_length,
-            d.uri
-          FROM postings AS p
-          INNER JOIN documents AS d ON d.id = p.document_id
-          WHERE ${sql.in('p.term', batch)}
-        `),
+    const scope = recallUriScopePredicate('d', allowedUriScopes);
+    const documentCountRows = yield* sql.unsafe<{readonly document_count: number}>(
+      `SELECT COUNT(*) AS document_count FROM documents AS d INDEXED BY documents_uri WHERE ${scope.sql}`,
+      scope.params,
+    );
+    const frequencies: RecallTermStatisticRow[] = [];
+    for (const batch of chunkValues(terms, 300)) {
+      if (batch.length === 0) continue;
+      frequencies.push(
+        ...(yield* sql.unsafe<RecallTermStatisticRow>(
+          `SELECT p.term, COUNT(*) AS document_frequency
+           FROM documents AS d INDEXED BY documents_uri
+           INNER JOIN postings AS p ON p.document_id = d.id
+           WHERE p.term IN (${batch.map(() => '?').join(', ')})
+             AND ${scope.sql}
+           GROUP BY p.term`,
+          [...batch, ...scope.params],
+        )),
       );
     }
-    return rows;
+    return {
+      documentCount: documentCountRows[0]?.document_count ?? 0,
+      documentFrequency: Object.assign(
+        Object.create(null) as Record<string, number>,
+        Object.fromEntries(frequencies.map(row => [row.term, row.document_frequency])),
+      ),
+    } satisfies RecallQueryTermStatistics;
   });
+}
+
+function selectTopPostingsByTerms(
+  sql: SqlClient.SqlClient,
+  terms: readonly string[],
+  allowedUriScopes: readonly string[] | undefined,
+  postingPoolLimit: number,
+  corpusStatistics: RecallCorpusStatistics,
+) {
+  if (terms.length === 0) return Effect.succeed<readonly RecallPostingRow[]>([]);
+  const scope = recallUriScopePredicate('d', allowedUriScopes);
+  const queryTermValues = terms.map(() => '(?, ?)').join(', ');
+  const queryTermParameters = terms.flatMap(term => [term, postingInverseDocumentFrequency(term, corpusStatistics)]);
+  const fromClause = scope.restricted
+    ? `documents AS d INDEXED BY documents_uri
+       INNER JOIN postings AS p ON p.document_id = d.id
+       INNER JOIN query_terms AS q ON q.term = p.term`
+    : `query_terms AS q
+       INNER JOIN postings AS p ON p.term = q.term
+       INNER JOIN documents AS d ON d.id = p.document_id`;
+  return sql.unsafe<RecallPostingRow>(
+    `WITH query_terms(term, inverse_document_frequency) AS (
+       VALUES ${queryTermValues}
+     ),
+     scored AS (
+       SELECT
+         p.term,
+         p.document_id,
+         p.field_weight,
+         p.term_frequency,
+         d.document_length,
+         d.uri,
+         (
+           q.inverse_document_frequency * (
+             (CAST(p.term_frequency AS REAL) * ?)
+             / (
+               CAST(p.term_frequency AS REAL)
+               + ? * (
+                 ?
+                 + ? * (CAST(d.document_length AS REAL) / ?)
+               )
+             )
+           )
+           + CAST(p.field_weight AS REAL) / ?
+         ) AS score
+       FROM ${fromClause}
+       WHERE ${scope.sql}
+     ),
+     ranked AS (
+       SELECT
+         term,
+         document_id,
+         field_weight,
+         term_frequency,
+         document_length,
+         uri,
+         ROW_NUMBER() OVER (
+           PARTITION BY term
+           ORDER BY score DESC, field_weight DESC, uri ASC
+         ) AS term_rank
+       FROM scored
+     )
+     SELECT term, document_id, field_weight, term_frequency, document_length, uri
+     FROM ranked
+     WHERE term_rank <= ?
+     ORDER BY term ASC, term_rank ASC`,
+    [
+      ...queryTermParameters,
+      POSTING_BM25_SATURATION + 1,
+      POSTING_BM25_SATURATION,
+      1 - POSTING_BM25_LENGTH_NORMALIZATION,
+      POSTING_BM25_LENGTH_NORMALIZATION,
+      Math.max(1, corpusStatistics.averageDocumentLength),
+      POSTING_IDENTIFIER_WEIGHT,
+      ...scope.params,
+      postingPoolLimit,
+    ],
+  );
+}
+
+function recallUriScopePredicate(
+  alias: string,
+  allowedUriScopes: readonly string[] | undefined,
+): {readonly params: readonly string[]; readonly restricted: boolean; readonly sql: string} {
+  if (allowedUriScopes === undefined || allowedUriScopes.length === 0) {
+    return {params: [], restricted: false, sql: '1 = 1'};
+  }
+  const scopes = normalizeRecallUriScopes(allowedUriScopes);
+  if (scopes.length === 0) return {params: [], restricted: true, sql: '0 = 1'};
+  const params: string[] = [];
+  const clauses = scopes.map(scope => {
+    const prefix = `${scope}/`;
+    params.push(scope, prefix, `${scope}0`);
+    return `(${alias}.uri = ? OR (${alias}.uri >= ? AND ${alias}.uri < ?))`;
+  });
+  return {params, restricted: true, sql: `(${clauses.join(' OR ')})`};
 }
 
 function selectPostingTermsByDocumentIds(sql: SqlClient.SqlClient, documentIds: readonly number[]) {
@@ -1561,43 +1700,4 @@ function isStringArray(value: unknown): value is readonly string[] {
 
 function ownRecordValue<Value>(record: Readonly<Record<string, Value>>, key: string): Value | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined;
-}
-
-/**
- * Keep a max-heap whose root is the worst retained item. `compareBestFirst`
- * follows Array.sort semantics: negative means the left item is better.
- */
-function offerBoundedBest<T>(heap: T[], item: T, limit: number, compareBestFirst: (left: T, right: T) => number): void {
-  if (limit <= 0) return;
-  if (heap.length < limit) {
-    heap.push(item);
-    bubbleWorstUp(heap, heap.length - 1, compareBestFirst);
-    return;
-  }
-  if (compareBestFirst(item, heap[0]!) >= 0) return;
-  heap[0] = item;
-  sinkWorstDown(heap, 0, compareBestFirst);
-}
-
-function bubbleWorstUp<T>(heap: T[], start: number, compareBestFirst: (left: T, right: T) => number): void {
-  let index = start;
-  while (index > 0) {
-    const parent = Math.floor((index - 1) / 2);
-    if (compareBestFirst(heap[index]!, heap[parent]!) <= 0) break;
-    [heap[index], heap[parent]] = [heap[parent]!, heap[index]!];
-    index = parent;
-  }
-}
-
-function sinkWorstDown<T>(heap: T[], start: number, compareBestFirst: (left: T, right: T) => number): void {
-  let index = start;
-  for (;;) {
-    const left = index * 2 + 1;
-    if (left >= heap.length) return;
-    const right = left + 1;
-    const worse = right < heap.length && compareBestFirst(heap[right]!, heap[left]!) > 0 ? right : left;
-    if (compareBestFirst(heap[worse]!, heap[index]!) <= 0) return;
-    [heap[index], heap[worse]] = [heap[worse]!, heap[index]!];
-    index = worse;
-  }
 }
