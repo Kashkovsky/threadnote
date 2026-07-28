@@ -152,6 +152,21 @@ function Get-ThreadnoteSha256 {
   }
 }
 
+function Save-ThreadnoteDownload {
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  $client = [System.Net.WebClient]::new()
+  try {
+    $client.Headers[[System.Net.HttpRequestHeader]::UserAgent] = 'threadnote-installer'
+    $client.DownloadFile($Uri, $Path)
+  } finally {
+    $client.Dispose()
+  }
+}
+
 function Resolve-ThreadnoteVersion {
   $requestedVersion = if ($env:THREADNOTE_VERSION) { $env:THREADNOTE_VERSION.TrimStart('v') } else { $null }
   $prerelease = if ($requestedVersion) {
@@ -216,8 +231,8 @@ $checksumPath = "$archive.sha256"
 New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
   Write-Host "Downloading Threadnote $version for windows-$architecture"
-  Invoke-WebRequest -Uri "$downloadRoot/$artifact" -OutFile $archive
-  Invoke-WebRequest -Uri "$downloadRoot/$artifact.sha256" -OutFile $checksumPath
+  Save-ThreadnoteDownload "$downloadRoot/$artifact" $archive
+  Save-ThreadnoteDownload "$downloadRoot/$artifact.sha256" $checksumPath
   $checksumLine = (Get-Content -LiteralPath $checksumPath | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
   if ($checksumLine -notmatch '^([a-fA-F0-9]{64})(?:\s+\*?(.+))?$') {
     throw "Release checksum document is invalid for $artifact."
