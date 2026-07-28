@@ -58,6 +58,28 @@ Users can publish explicitly selected memory URIs into a generated, one-way Mark
 navigation; connecting a projection does not export the whole memory corpus. Only notes placed in a configured Inbox
 can form review candidates, and they are never applied silently.
 
+```sh
+# Vault → Threadnote: allowlist notes, then recall normally.
+threadnote source add --type obsidian --id engineering \
+  --vault "/path/to/Engineering Vault" \
+  --include "Engineering/**" \
+  --apply
+threadnote recall --query "mobile authentication"
+
+# Threadnote → vault: configure a generated view, then publish selected memories.
+threadnote projection add --type obsidian --id engineering-memory \
+  --vault "/path/to/Engineering Vault" \
+  --folder Threadnote \
+  --apply
+threadnote projection publish engineering-memory \
+  --uri threadnote://user/me/memories/durable/projects/mobile/authentication.md \
+  --apply
+```
+
+Recall automatically refreshes every enabled source before ranking, while failures warn and fall back to the last
+successful snapshot. Imported notes remain external and untrusted. Projection files are deterministic, scrubbed, and
+drift-protected; Threadnote never treats edits to generated files as memory updates.
+
 See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, drift handling, and removal.
 
 ## Recall
