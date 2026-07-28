@@ -4,6 +4,7 @@ set -eu
 PACKAGE="${THREADNOTE_PACKAGE:-threadnote@latest}"
 REGISTRY="${THREADNOTE_NPM_REGISTRY:-https://registry.npmjs.org/}"
 RUNTIME="${THREADNOTE_RUNTIME:-auto}"
+SUPPORTED_NODE_RANGE="^22.22.2 || ^24.15.0 || >=26.0.0"
 
 say() {
   printf '%s\n' "$*"
@@ -16,6 +17,35 @@ die() {
 
 have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+require_supported_node() {
+  have node || die "Node.js was not found on PATH. Install the current Node.js 24 LTS release, then rerun this installer."
+  node_version="$(node -p 'process.versions.node' 2>/dev/null || true)"
+  if node -e '
+    const [major, minor, patch] = process.versions.node.split(".").map(Number);
+    const supported =
+      (major === 22 && (minor > 22 || (minor === 22 && patch >= 2))) ||
+      (major === 24 && (minor > 15 || (minor === 15 && patch >= 0))) ||
+      major >= 26;
+    process.exit(supported ? 0 : 1);
+  '; then
+    return
+  fi
+
+  say "ERROR: Threadnote requires Node $SUPPORTED_NODE_RANGE; current runtime is ${node_version:-unknown}." >&2
+  say "Upgrade Node, open a new terminal, and rerun this installer on the same stable or beta channel." >&2
+  node_path="$(command -v node 2>/dev/null || true)"
+  if [ -n "${NVM_DIR:-}" ] || printf '%s' "$node_path" | grep -qi '/nvm/'; then
+    say "nvm: nvm install 24 && nvm use 24" >&2
+  elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && printf '%s' "$node_path" | grep -Eqi 'homebrew|Cellar'; then
+    say "Homebrew: brew update && brew upgrade node (or install/upgrade node@24)." >&2
+  else
+    say "Install the current Node.js 24 LTS release with your existing package or version manager." >&2
+  fi
+  say "For beta, rerun with THREADNOTE_PACKAGE=threadnote@beta." >&2
+  say "Threadnote does not change the system Node installation automatically." >&2
+  exit 1
 }
 
 select_runtime() {
@@ -110,6 +140,7 @@ install_package() {
 }
 
 runtime="$(select_runtime)"
+require_supported_node
 say "Installing $PACKAGE with $runtime from $REGISTRY"
 install_package "$runtime"
 

@@ -1491,7 +1491,8 @@
 <span class="out-strong">OK   native store ready · no daemon required</span></pre>
               </div>
               <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
-                On native Windows PowerShell, run
+                Requires Node <code>^22.22.2</code>, <code>^24.15.0</code>, or <code>&gt;=26.0.0</code>; Node 24 LTS is
+                recommended. The installer checks this before npm changes the package. On native Windows PowerShell, run
                 <code>irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex</code>.
                 Or manually: <code>npm install -g threadnote && threadnote install</code>.
               </p>
@@ -1626,7 +1627,8 @@ worksets:
                 <code>update --beta</code> opts into beta releases; after that, ordinary version and update checks stay
                 on the beta channel. <code>update --stable</code> switches back to stable even when its version is lower
                 than the installed beta. Stable installs do not advertise betas. Releases may include post-update memory
-                migrations that prompt before applying.
+                migrations that prompt before applying. A successful update also removes verified stale Threadnote
+                packages from other nvm-managed Node versions.
               </p>
             </div>
 

@@ -234,6 +234,35 @@ describe('vector index generations', () => {
       await rm(home, {force: true, recursive: true});
     }
   });
+
+  it('reports batch-level embedding and activation progress', async () => {
+    const home = await mkdtemp('threadnote-vector-progress-');
+    const candidates = Array.from({length: 300}, (_, index) => ({
+      text: `# Document ${index}\n\nCanonical content ${index}.`,
+      uri: `threadnote://resources/repos/doc-${index}.md`,
+    }));
+    try {
+      const progress: unknown[] = [];
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates, {
+          onProgress: event =>
+            Effect.sync(() => {
+              progress.push(event);
+            }),
+        }).pipe(Effect.provide(fakeRuntimeLayer(() => 0)), Effect.provide(modelStoreLayer)),
+      );
+
+      expect(rebuilt.chunkCount).toBe(300);
+      expect(progress).toEqual([
+        {completed: 0, phase: 'embedding', reused: 0, total: 300},
+        {completed: 256, phase: 'embedding', reused: 0, total: 300},
+        {completed: 300, phase: 'embedding', reused: 0, total: 300},
+        {chunkCount: 300, phase: 'activating'},
+      ]);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
 });
 
 function installation(home: string) {

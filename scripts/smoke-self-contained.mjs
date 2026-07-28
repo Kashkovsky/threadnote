@@ -51,6 +51,8 @@ const mcpShim = join(binRoot, process.platform === 'win32' ? 'threadnote-mcp-ser
 const environment = {
   ...process.env,
   HOME: userHome,
+  NVM_DIR: '',
+  NVM_HOME: '',
   PATH: dirname(process.execPath),
   THREADNOTE_HOME: home,
   THREADNOTE_USER: 'self-contained-smoke',

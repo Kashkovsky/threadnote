@@ -4,20 +4,28 @@ import {
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
+import {startProgress} from './cli_ui.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
-import {loadRecallIndexData} from './recall/index.js';
+import {loadRecallIndexData, type RecallIndexProgress} from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
+import {stopVerifiedLegacyLocalAi} from './migration/legacy-runtime.js';
 import {migrateLegacyLocalModels} from './migration/models.js';
 import {provisionCoreEmbedding} from './models/core-embedding.js';
-import {LocalModelCatalog} from './models/catalog.js';
+import {LocalModelCatalog, type LocalModelManifest} from './models/catalog.js';
 import {readModelSelection} from './models/selection.js';
 import {LocalModelStore} from './models/store.js';
-import {ensureVectorIndex, vectorIndexStatus} from './search/vector-index.js';
+import {
+  assertSupportedNodeRuntime,
+  cleanupStaleNvmThreadnoteInstallations,
+  isSupportedNodeVersion,
+  SUPPORTED_NODE_RANGE,
+} from './node-runtime.js';
+import {ensureVectorIndex, type VectorIndexProgress, vectorIndexStatus} from './search/vector-index.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
   DoctorCheck,
@@ -42,6 +50,9 @@ import {
 
 const LAYOUT_RECEIPT = 'layout.json';
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
+interface RunInstallOptions extends InstallOptions {
+  readonly skipRecallIndexes?: boolean;
+}
 
 export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
   const system = yield* SystemInfo;
@@ -76,9 +87,9 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       status: ['darwin', 'linux', 'win32'].includes(platform) ? 'ok' : 'warn',
     },
     {
-      detail: `v${system.nodeVersion}`,
+      detail: `v${system.nodeVersion}; requires ${SUPPORTED_NODE_RANGE}`,
       name: 'node',
-      status: nodeMajorVersion(system.nodeVersion) >= 22 ? 'ok' : 'fail',
+      status: isSupportedNodeVersion(system.nodeVersion) ? 'ok' : 'fail',
     },
   ];
   checks.push(
@@ -152,8 +163,9 @@ function safeDoctorChecks<R>(
   );
 }
 
-export const runInstall = Effect.fn('lifecycle.install')(function* (config: RuntimeConfig, options: InstallOptions) {
+export const runInstall = Effect.fn('lifecycle.install')(function* (config: RuntimeConfig, options: RunInstallOptions) {
   const dryRun = options.dryRun === true;
+  yield* assertSupportedNodeRuntime();
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const layoutMigration = yield* migrateThreadnoteStorageLayout({
@@ -178,6 +190,7 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   } else if (modelMigration.action === 'migrated' || modelMigration.action === 'resumed') {
     yield* Console.log(`Preserved installed local model(s): ${modelMigration.models.join(', ')}.`);
   }
+  yield* stopVerifiedLegacyLocalAi({dryRun});
   const layout = threadnoteStorageLayout(path, config.agentContextHome, config.account, uriSegment(config.user));
   const directories = [
     layout.home,
@@ -203,20 +216,18 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     yield* writeLayoutReceipt(fs, path, config.agentContextHome);
   }
   const embedding = yield* provisionCoreEmbedding(config, {dryRun});
-  if (dryRun) {
+  if (dryRun && options.skipRecallIndexes !== true) {
     yield* Console.log(
       `Would build the lexical SQLite index and ${embedding.manifest.id} vector index from canonical documents.`,
     );
-  } else {
-    const index = yield* loadRecallIndexData(config, {includeInactive: false});
-    const vectors = yield* ensureVectorIndex(config, embedding.manifest, index.candidates, {
-      corpusGeneration: index.generation,
-    });
+  } else if (!dryRun && options.skipRecallIndexes !== true) {
+    const {documentCount, vectors} = yield* maintainRecallIndexes(config, embedding.manifest, false);
     yield* Console.log(
-      `Recall indexes ready: ${index.candidates.length} lexical document(s), ${vectors.chunkCount} vector chunk(s).`,
+      `Recall indexes ready: ${documentCount} lexical document(s), ${vectors.chunkCount} vector chunk(s).`,
     );
   }
   yield* installUserAgentInstructions(dryRun);
+  yield* cleanupStaleNvmThreadnoteInstallations({dryRun});
   if (options.start !== false) {
     yield* Console.log('Threadnote 4 uses in-process storage and inference; no background server is required.');
   }
@@ -233,18 +244,17 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
 export const runRepair = Effect.fn('lifecycle.repair')(function* (config: RuntimeConfig, options: RepairOptions) {
   const dryRun = options.dryRun === true;
   yield* Console.log('Repairing the self-contained Threadnote home.');
-  const embedding = yield* runInstall(config, {dryRun, printNextSteps: false, start: false});
+  const embedding = yield* runInstall(config, {
+    dryRun,
+    printNextSteps: false,
+    skipRecallIndexes: true,
+    start: false,
+  });
   if (!dryRun) {
-    yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false}).pipe(
-      Effect.tap(index =>
-        ensureVectorIndex(config, embedding.manifest, index.candidates, {
-          corpusGeneration: index.generation,
-        }).pipe(
-          Effect.tap(vectors =>
-            Console.log(
-              `Rebuilt recall indexes for ${index.candidates.length} document(s) and ${vectors.chunkCount} vector chunk(s).`,
-            ),
-          ),
+    yield* maintainRecallIndexes(config, embedding.manifest, true).pipe(
+      Effect.tap(({documentCount, vectors}) =>
+        Console.log(
+          `Rebuilt recall indexes for ${documentCount} document(s) and ${vectors.chunkCount} vector chunk(s).`,
         ),
       ),
       Effect.catch(cause => Console.warn(`WARN recall index repair failed: ${errorMessage(cause)}`)),
@@ -264,6 +274,53 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
 });
+
+const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(function* (
+  config: RuntimeConfig,
+  manifest: LocalModelManifest,
+  forceRefresh: boolean,
+) {
+  return yield* Effect.acquireUseRelease(
+    startProgress(`${forceRefresh ? 'Rebuilding' : 'Building'} lexical recall index from canonical documents.`),
+    progress =>
+      Effect.gen(function* () {
+        const updateProgress = (message: string) => progress.update(message).pipe(Effect.catch(() => Effect.void));
+        const index = yield* loadRecallIndexData(config, {
+          forceRefresh,
+          includeInactive: false,
+          onProgress: state => updateProgress(recallProgressMessage(state)),
+        });
+        yield* updateProgress(
+          `Preparing vector recall index for ${index.candidates.length} lexical document(s) with ${manifest.id}.`,
+        );
+        const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
+          corpusGeneration: index.generation,
+          onProgress: state => updateProgress(vectorProgressMessage(state)),
+        });
+        return {documentCount: index.candidates.length, vectors};
+      }),
+    progress => progress.stop(),
+  );
+});
+
+function vectorProgressMessage(progress: VectorIndexProgress): string {
+  if (progress.phase === 'activating') {
+    return `Activating vector recall index with ${progress.chunkCount} chunk(s).`;
+  }
+  const percentage = progress.total === 0 ? 100 : Math.floor((progress.completed / progress.total) * 100);
+  return `Building vector recall index: ${progress.completed}/${progress.total} new chunk(s) embedded (${percentage}%), ${progress.reused} unchanged chunk(s) reused.`;
+}
+
+function recallProgressMessage(progress: RecallIndexProgress): string {
+  if (progress.phase === 'activating') {
+    return `Activating lexical recall index with ${progress.documentCount} document(s).`;
+  }
+  const percentage = progress.total === 0 ? 100 : Math.floor((progress.completed / progress.total) * 100);
+  if (progress.phase === 'indexing') {
+    return `Building lexical recall index: ${progress.completed}/${progress.total} changed document(s) indexed (${percentage}%; ${progress.scanned} canonical document(s) scanned).`;
+  }
+  return `Writing lexical recall postings: ${progress.completed}/${progress.total} changed document(s) (${percentage}%), ${progress.removed} stale document(s) removed.`;
+}
 
 export const runStart = Effect.fn('lifecycle.start')(function* (_config: RuntimeConfig, options: StartOptions) {
   yield* Console.log(
@@ -492,10 +549,6 @@ function eraseThreadnoteHome(home: string, dryRun: boolean) {
     yield* fs.remove(home, {recursive: true});
     yield* Console.log(`Erased Threadnote home: ${home}`);
   });
-}
-
-function nodeMajorVersion(nodeVersion: string): number {
-  return Number.parseInt(nodeVersion.split('.', 1)[0] ?? '0', 10);
 }
 
 export const userAgentInstructionsChecks = Effect.fn('lifecycle.userAgentInstructionsChecks')(function* () {

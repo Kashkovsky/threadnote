@@ -1,4 +1,4 @@
-import {Effect, Fiber, Result} from 'effect';
+import {Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
@@ -164,7 +164,7 @@ describe('Effect share transaction', () => {
     expect(events).toEqual(['first:start', 'first:end', 'second:start']);
   });
 
-  it('lets automatic reads abandon a busy share lock promptly', async () => {
+  it('lets automatic reads silently use the local snapshot when the share lock is busy', async () => {
     const agentContextHome = await mkdtemp('threadnote-effect-share-read-lock-');
     homes.push(agentContextHome);
     let markSyncStarted: (() => void) | undefined;
@@ -200,15 +200,12 @@ describe('Effect share transaction', () => {
         const explicitSync = yield* Effect.forkChild(runShareSync(config, {}));
         yield* Effect.promise(() => syncStarted);
         const startedAt = Date.now();
-        const automaticRead = yield* Effect.result(syncSharedReposBeforeAgentRead(config));
+        const automaticRead = yield* syncSharedReposBeforeAgentRead(config);
         const elapsed = Date.now() - startedAt;
         releaseSync?.();
         yield* Fiber.join(explicitSync);
 
-        expect(Result.isFailure(automaticRead)).toBe(true);
-        expect(String(Result.isFailure(automaticRead) ? automaticRead.failure : '')).toContain(
-          'Timed out waiting for local lock',
-        );
+        expect(automaticRead).toEqual({syncedTeams: [], warnings: []});
         expect(elapsed).toBeLessThan(2_000);
         expect(automaticReadEntered).toBe(false);
       }),

@@ -1,6 +1,6 @@
 import {Effect, FileSystem} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {join, mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -54,6 +54,25 @@ describe('Effect file lock', () => {
     );
 
     expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+  });
+
+  it('reports lock contention with a typed timeout', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(lockPath, `${process.pid}:live-owner\n`, {mode: 0o600});
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {...TEST_LOCK_OPTIONS, waitTimeoutMilliseconds: 10},
+            Effect.void,
+          );
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FileLockTimeout);
   });
 
   it('recovers a stale lock only when its recorded owner is not alive', async () => {

@@ -1,4 +1,5 @@
 import {Console, Effect, FileSystem} from 'effect';
+import {isFileLockTimeout} from './file_lock.js';
 import {withMemoryUriLocks} from './memory_lock.js';
 import {withSharedRepositoryLock} from './share_lock.js';
 import {
@@ -74,7 +75,11 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
   return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
     waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
-  });
+  }).pipe(
+    Effect.catchIf(isFileLockTimeout, () =>
+      Effect.succeed({syncedTeams: [] as readonly string[], warnings: [] as readonly string[]}),
+    ),
+  );
 });
 export const runShareConflicts = (config: ShareRuntime, options: ShareConflictOptions) =>
   withSharedRepositoryLock(config, runShareConflictsEffect(config, options));

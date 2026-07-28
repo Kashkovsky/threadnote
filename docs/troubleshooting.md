@@ -1,5 +1,50 @@
 # Troubleshooting
 
+## Node is unsupported or npm reports EBADENGINE
+
+Threadnote requires Node `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. The bootstrap installers
+and `threadnote update` stop before npm changes the package when the active Node is incompatible. A direct
+`npm install --global threadnote` can print npm's engine warning before Threadnote's package preflight runs, so prefer
+the bootstrap installer for recovery.
+
+```sh
+# nvm on macOS/Linux
+nvm install 24
+nvm use 24
+
+# Homebrew on macOS
+brew update
+brew upgrade node
+```
+
+```powershell
+# nvm-windows
+nvm install 24.18.0
+nvm use 24.18.0
+
+# Windows Package Manager
+winget upgrade --id OpenJS.NodeJS.LTS -e
+```
+
+Open a new terminal after changing Node, then rerun the same Threadnote bootstrap installer. Global npm packages are
+version-scoped under nvm, so the old command may no longer be on `PATH`; this is expected. After the new installation
+succeeds, Threadnote finds packages whose manifest name is exactly `threadnote` under other nvm Node versions and asks
+those versions' own npm to uninstall them. It does not recursively delete unverified directories and does not
+automatically modify Node itself.
+
+Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users should set the package
+selection explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh |
+  THREADNOTE_PACKAGE=threadnote@beta sh
+```
+
+```powershell
+$env:THREADNOTE_PACKAGE = 'threadnote@beta'
+irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
+```
+
 ## Start and stop do not launch a service
 
 Threadnote 4 owns no daemon. `threadnote start` verifies the on-demand runtime and `threadnote stop` is a compatibility
@@ -55,6 +100,10 @@ and never activates it. Lexical recall remains available if native inference is 
 
 The runtime requests prebuilt `node-llama-cpp` binaries only. If `models runtime` reports that no compatible prebuilt
 binary exists, use a supported Node/platform combination; Threadnote will not silently compile one.
+
+Install and repair also retire the old 3.x Python local-AI daemon after migration. Threadnote signals a process only
+after its legacy receipt, loopback health response, PID, launch ID, model ID, and token-derived proof all agree.
+Unverified or unresponsive PIDs are left untouched with a warning.
 
 ## An index rebuild was interrupted
 

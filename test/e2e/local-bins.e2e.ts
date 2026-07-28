@@ -65,7 +65,23 @@ afterAll(async () => {
 describe('built self-contained distribution', () => {
   it('initializes core lexical and vector recall without server or interpreter artifacts', async () => {
     expect(installOutput).toContain('Install complete');
+    expect(installOutput).not.toContain('SQLite is an experimental feature');
     expect(installOutput).toContain(`${coreEmbeddingModelId}: core embedding model verified`);
+    expect(installOutput).toContain('Building lexical recall index from canonical documents.');
+    expect(installOutput).toContain(
+      'Building lexical recall index: 0/0 changed document(s) indexed (100%; 0 canonical document(s) scanned).',
+    );
+    expect(installOutput).toContain(
+      'Writing lexical recall postings: 0/0 changed document(s) (100%), 0 stale document(s) removed.',
+    );
+    expect(installOutput).toContain('Activating lexical recall index with 0 document(s).');
+    expect(installOutput).toContain(
+      `Preparing vector recall index for 0 lexical document(s) with ${coreEmbeddingModelId}.`,
+    );
+    expect(installOutput).toContain(
+      'Building vector recall index: 0/0 new chunk(s) embedded (100%), 0 unchanged chunk(s) reused.',
+    );
+    expect(installOutput).toContain('Activating vector recall index with 0 chunk(s).');
     expect(installedFiles).toContain('layout.json');
     expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v1.sqlite'));
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, 'active.json'));
@@ -104,6 +120,25 @@ describe('built self-contained distribution', () => {
     expect(output).toContain(`${coreEmbeddingModelId}: core embedding model verified`);
     expect((await stat(installedModelPath)).mtimeMs).toBe(installedModelModifiedAt);
     expect(await activeVectorGeneration()).toBe(vectorGeneration);
+  });
+
+  it('streams index rebuild progress from the repair command used by update', async () => {
+    const output = await runCli(['repair', '--mcp', 'none', '--no-post-update']);
+
+    expect(output.match(/Rebuilding lexical recall index from canonical documents\./g)).toHaveLength(1);
+    expect(output).toMatch(
+      /Building lexical recall index: \d+\/\d+ changed document\(s\) indexed \(\d+%; \d+ canonical document\(s\) scanned\)\./,
+    );
+    expect(output).toMatch(
+      /Writing lexical recall postings: \d+\/\d+ changed document\(s\) \(\d+%\), \d+ stale document\(s\) removed\./,
+    );
+    expect(output).toMatch(/Activating lexical recall index with \d+ document\(s\)\./);
+    expect(output).toMatch(/Preparing vector recall index for \d+ lexical document\(s\)/);
+    expect(output).toMatch(
+      /Building vector recall index: \d+\/\d+ new chunk\(s\) embedded \(\d+%\), \d+ unchanged chunk\(s\) reused\./,
+    );
+    expect(output).toMatch(/Activating vector recall index with \d+ chunk\(s\)\./);
+    expect(output).toContain('Rebuilt recall indexes');
   });
 
   it('reports lexical, embedding, vector, MCP, and instruction checks through doctor', async () => {
@@ -333,6 +368,8 @@ async function runCli(args: readonly string[]): Promise<string> {
     env: {
       ...process.env,
       HOME: userHome,
+      NVM_DIR: '',
+      NVM_HOME: '',
       THREADNOTE_USER: 'e2e-user',
       USERPROFILE: userHome,
     },
