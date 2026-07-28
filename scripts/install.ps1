@@ -131,11 +131,19 @@ function Compare-ThreadnoteSemver {
 
 function Get-ThreadnoteSha256 {
   param([Parameter(Mandatory = $true)][string]$Path)
+  $utilityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+  if (Test-Path -LiteralPath $utilityModule) {
+    Import-Module $utilityModule -Force -ErrorAction Stop
+    return (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+
   $stream = [IO.File]::OpenRead($Path)
   try {
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {
-      return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+      $hashBytes = $hasher.ComputeHash($stream)
+      $hashText = [BitConverter]::ToString($hashBytes)
+      return $hashText.Replace('-', '').ToLowerInvariant()
     } finally {
       $hasher.Dispose()
     }
@@ -220,7 +228,7 @@ try {
   $expected = $Matches[1].ToLowerInvariant()
   $actual = Get-ThreadnoteSha256 $archive
   if ($actual -ne $expected) {
-    throw "Checksum verification failed for $artifact."
+    throw "Checksum verification failed for $artifact (expected $expected, received $actual)."
   }
 
   $installRoot = if ($env:THREADNOTE_INSTALL_ROOT) {

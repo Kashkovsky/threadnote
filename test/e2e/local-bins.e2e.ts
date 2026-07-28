@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFile} from 'node:child_process';
@@ -6,11 +6,13 @@ import {promisify} from 'node:util';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
+import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 
 const execute = promisify(execFile);
 const root = process.cwd();
 const cli = join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
-const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
+const coreEmbeddingModelId = CORE_EMBEDDING_MODEL_ID;
+const coreEmbeddingManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.id === coreEmbeddingModelId);
 const realModelTimeoutMs = 300_000;
 let home: string;
 let temporaryRoot: string;
@@ -34,6 +36,7 @@ beforeAll(async () => {
   userHome = join(temporaryRoot, 'user-home');
   await mkdir(join(home, 'cache'), {recursive: true});
   await mkdir(userHome, {recursive: true});
+  await seedCoreEmbeddingFixture();
   await writeFile(join(home, 'cache', 'recall-index-v6.json'), '{"legacy":true}\n', 'utf8');
   installOutput = await runCli(['install']);
   installedFiles = await readdir(home, {recursive: true});
@@ -574,6 +577,17 @@ async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = 
     timeout: realModelTimeoutMs,
   });
   return `${result.stdout}${result.stderr}`;
+}
+
+async function seedCoreEmbeddingFixture(): Promise<void> {
+  const fixture = process.env.THREADNOTE_E2E_MODEL_PATH;
+  if (!fixture) return;
+  if (!coreEmbeddingManifest) throw new Error(`Missing built-in model manifest: ${coreEmbeddingModelId}`);
+
+  const directory = join(home, 'models', coreEmbeddingManifest.role, coreEmbeddingManifest.id);
+  await mkdir(directory, {recursive: true});
+  await copyFile(fixture, join(directory, `${coreEmbeddingManifest.sha256}.gguf`));
+  await writeFile(join(directory, 'manifest.json'), `${JSON.stringify(coreEmbeddingManifest, undefined, 2)}\n`);
 }
 
 async function runGit(args: readonly string[], cwd: string): Promise<string> {
