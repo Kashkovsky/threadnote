@@ -5,6 +5,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   assertSufficientHomeMigrationDiskSpace,
   HomeMigrationInsufficientSpace,
+  isLegacyHomeMigrationPending,
   migrateOpenVikingHome,
 } from '../../src/migration/home.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -26,6 +27,7 @@ describe('OpenViking home migration', () => {
         const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-migration-'});
         const legacyHome = path.join(root, '.openviking');
         const targetHome = path.join(root, '.threadnote');
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
         const memory = path.join(
           legacyHome,
           'data',
@@ -58,6 +60,7 @@ describe('OpenViking home migration', () => {
         yield* fs.writeFileString(path.join(legacyHome, 'logs', 'server.log'), 'legacy runtime noise');
         yield* fs.writeFileString(path.join(legacyHome, 'ov.conf'), '{"legacy":true}');
 
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(true);
         const preview = yield* migrateOpenVikingHome({legacyHome, targetHome});
         expect(preview.action).toBe('dry_run');
         expect(preview.receipt).toMatchObject({files: 3, legacyHome, targetHome});
@@ -65,6 +68,7 @@ describe('OpenViking home migration', () => {
 
         const migrated = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(migrated.action).toBe('migrated');
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
         expect(
           yield* fs.readFileString(
             path.join(

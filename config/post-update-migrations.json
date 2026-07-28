@@ -52,6 +52,7 @@
         "Threadnote 4 uses in-process node-llama-cpp for optional embeddings, reranking, and generation; no Python or background OpenViking service is required."
       ],
       "commandArgs": ["migrate", "--apply"],
+      "requiresPendingHomeMigration": true,
       "instructions": [
         "Home migration finished. Run `threadnote doctor`, then `threadnote index status`.",
         "Optional semantic recall starts with `threadnote models list`; install and select a measured embedding model before rebuilding the vector index."
@@ -69,6 +70,7 @@
         "The legacy ~/.openviking home remains unchanged as the rollback source."
       ],
       "commandArgs": ["migrate", "--apply"],
+      "requiresPendingHomeMigration": true,
       "instructions": [
         "Recovery migration finished. Run `threadnote repair`, then verify memory/resource/share counts in `threadnote manager`.",
         "An already-installed verified 3.x generation model is adopted and selected without downloading it again."

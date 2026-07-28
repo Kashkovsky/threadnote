@@ -246,6 +246,29 @@ export const migrateOpenVikingHome = (options: HomeMigrationOptions = {}) =>
     Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
   >;
 
+export const isLegacyHomeMigrationPending = Effect.fn('homeMigration.isPending')(function* (
+  options: Pick<HomeMigrationOptions, 'legacyHome' | 'targetHome'> = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const legacyHome = resolveHomeInput(
+    path,
+    system.homeDirectory,
+    options.legacyHome ?? path.join(system.homeDirectory, LEGACY_OPENVIKING_HOME_DIRECTORY),
+  );
+  if (!(yield* fs.exists(legacyHome))) {
+    return false;
+  }
+  const targetHome = resolveHomeInput(
+    path,
+    system.homeDirectory,
+    options.targetHome ?? path.join(system.homeDirectory, THREADNOTE_HOME_DIRECTORY),
+  );
+  const receipt = yield* readReceipt(fs, path.join(targetHome, RECEIPT_RELATIVE_PATH));
+  return receipt?.legacyHome !== legacyHome || receipt.targetHome !== targetHome;
+});
+
 export const runHomeMigration = Effect.fn('homeMigration.run')(function* (options: HomeMigrationOptions) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
