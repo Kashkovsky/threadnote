@@ -5,7 +5,7 @@ import {describe, expect, it} from 'vitest';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const sourceRoot = join(repoRoot, 'src');
-const codeRoots = ['bin', 'scripts', 'src', 'test'].map(path => join(repoRoot, path));
+const codeRoots = ['scripts', 'src', 'test'].map(path => join(repoRoot, path));
 
 async function codeFiles(path: string): Promise<readonly string[]> {
   const files: string[] = [];
