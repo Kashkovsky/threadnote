@@ -283,7 +283,7 @@ export const mcpAdapterCommand = Effect.fn('mcp.adapterCommand')(function* () {
   if (system.platform === 'win32') {
     const launcher = yield* commandLauncherPath('mcp');
     const comSpec = system.environment().ComSpec ?? system.environment().COMSPEC ?? 'C:\\Windows\\System32\\cmd.exe';
-    return [comSpec, '/d', '/s', '/c', `""${launcher.replaceAll('"', '""')}""`];
+    return [comSpec, '/d', '/c', launcher];
   }
   return [yield* commandLauncherPath('cli'), 'mcp-server'];
 });

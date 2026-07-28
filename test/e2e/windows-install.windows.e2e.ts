@@ -11,7 +11,7 @@ const execute = promisify(execFile);
 const windowsIt = process.platform === 'win32' ? it : it.skip;
 
 windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'threadnote-windows-bootstrap-'));
+  const root = await mkdtemp(join(tmpdir(), 'threadnote windows bootstrap-'));
   const distribution = join(process.cwd(), 'dist');
   const packageManifest = (await Bun.file(join(process.cwd(), 'package.json')).json()) as {readonly version: string};
   const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -138,7 +138,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       });
       expect(launcherVersion.stdout).toContain(packageManifest.version);
       const transport = new StdioClientTransport({
-        args: ['/d', '/s', '/c', `""${join(binRoot, 'threadnote-mcp-server.cmd')}""`],
+        args: ['/d', '/c', join(binRoot, 'threadnote-mcp-server.cmd')],
         command: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'),
         cwd: process.cwd(),
         env: {
