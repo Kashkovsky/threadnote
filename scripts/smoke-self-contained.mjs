@@ -18,32 +18,38 @@ mkdirSync(installRoot, {recursive: true});
 mkdirSync(packRoot, {recursive: true});
 mkdirSync(runRoot, {recursive: true});
 const npmCli = process.env.npm_execpath;
-if (!npmCli) throw new Error('npm_execpath is required for the package smoke test.');
-const packOutput = runNpm(['pack', '--ignore-scripts', '--json', '--pack-destination', packRoot], root);
-const packResult = JSON.parse(packOutput);
-const filename = Array.isArray(packResult) ? packResult[0]?.filename : undefined;
-if (typeof filename !== 'string' || !filename.endsWith('.tgz')) {
-  throw new Error(`npm pack did not report a tarball filename:\n${packOutput}`);
-}
-const tarball = join(packRoot, filename);
-const installOutput = runNpm(
-  [
-    'install',
-    '--foreground-scripts',
-    '--loglevel=notice',
-    '--node-llama-cpp-postinstall=skip',
-    '--omit=dev',
-    '--no-audit',
-    '--no-fund',
-    '--prefix',
-    installRoot,
-    tarball,
-  ],
-  runRoot,
-  true,
-);
-if (!/Skipping node-llama-cpp postinstall.*skip.*configuration/i.test(installOutput)) {
-  throw new Error(`node-llama-cpp did not honor Threadnote's install-time skip policy:\n${installOutput}`);
+let installOutput;
+try {
+  if (!npmCli) throw new Error('npm_execpath is required for the package smoke test.');
+  const packOutput = runNpm(['pack', '--ignore-scripts', '--json', '--pack-destination', packRoot], root);
+  const packResult = JSON.parse(packOutput);
+  const filename = Array.isArray(packResult) ? packResult[0]?.filename : undefined;
+  if (typeof filename !== 'string' || !filename.endsWith('.tgz')) {
+    throw new Error(`npm pack did not report a tarball filename:\n${packOutput}`);
+  }
+  const tarball = join(packRoot, filename);
+  installOutput = runNpm(
+    [
+      'install',
+      '--foreground-scripts',
+      '--loglevel=notice',
+      '--node-llama-cpp-postinstall=skip',
+      '--omit=dev',
+      '--no-audit',
+      '--no-fund',
+      '--prefix',
+      installRoot,
+      tarball,
+    ],
+    runRoot,
+    {includeStderr: true, timeoutMs: 600_000},
+  );
+  if (!/Skipping node-llama-cpp postinstall.*skip.*configuration/i.test(installOutput)) {
+    throw new Error(`node-llama-cpp did not honor Threadnote's install-time skip policy:\n${installOutput}`);
+  }
+} catch (error) {
+  cleanupTemporaryRoot(error);
+  throw error;
 }
 const binRoot = join(installRoot, 'node_modules', '.bin');
 const cliShim = join(binRoot, process.platform === 'win32' ? 'threadnote.cmd' : 'threadnote');
@@ -130,12 +136,7 @@ try {
   smokeFailure = error;
   throw error;
 } finally {
-  try {
-    rmSync(temporaryRoot, {force: true, maxRetries: 10, recursive: true, retryDelay: 200});
-  } catch (cleanupError) {
-    if (!smokeFailure) throw cleanupError;
-    process.stderr.write(`Temporary smoke cleanup also failed: ${String(cleanupError)}\n`);
-  }
+  cleanupTemporaryRoot(smokeFailure);
 }
 
 function run(args, input) {
@@ -240,16 +241,30 @@ async function verifyInstalledMcp() {
   }
 }
 
-function runNpm(args, cwd, includeStderr = false) {
+function runNpm(args, cwd, options = {}) {
   const result = spawnSync(process.execPath, [npmCli, ...args], {
     cwd,
     encoding: 'utf8',
     env: process.env,
-    timeout: 180_000,
+    timeout: options.timeoutMs ?? 180_000,
   });
-  if (result.error) throw result.error;
+  if (result.error) {
+    throw new Error(
+      `npm ${args[0] ?? 'command'} failed: ${result.error.message}\n${result.stdout ?? ''}${result.stderr ?? ''}`,
+      {cause: result.error},
+    );
+  }
   if (result.status !== 0) {
     throw new Error(`npm ${args[0] ?? 'command'} failed with ${result.status}:\n${result.stdout}${result.stderr}`);
   }
-  return includeStderr ? `${result.stdout}${result.stderr}` : result.stdout;
+  return options.includeStderr ? `${result.stdout}${result.stderr}` : result.stdout;
+}
+
+function cleanupTemporaryRoot(primaryFailure) {
+  try {
+    rmSync(temporaryRoot, {force: true, maxRetries: 10, recursive: true, retryDelay: 200});
+  } catch (cleanupError) {
+    if (!primaryFailure) throw cleanupError;
+    process.stderr.write(`Temporary smoke cleanup also failed: ${String(cleanupError)}\n`);
+  }
 }
