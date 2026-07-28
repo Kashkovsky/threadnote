@@ -187,7 +187,7 @@ jobs:
             --key-id "$APPLE_NOTARY_KEY_ID" \
             --issuer "$APPLE_NOTARY_ISSUER_ID" \
             --wait
-          spctl --assess --type execute --verbose=4 dist/threadnote
+          codesign --verify --strict --verbose=2 dist/threadnote
 
       - run: bun run archive:release
         env:
