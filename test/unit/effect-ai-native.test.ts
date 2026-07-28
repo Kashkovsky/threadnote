@@ -166,7 +166,6 @@ describe('Effect AI native harness', () => {
           contextSize: undefined,
           createSignal: expect.any(AbortSignal),
           ignoreMemorySafetyChecks: false,
-          threads: 8,
         },
       ]);
       expect(events).toEqual(['context:dispose', 'model:dispose', 'llama:dispose']);
