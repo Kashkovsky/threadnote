@@ -48,6 +48,13 @@ if (!/Skipping node-llama-cpp postinstall.*skip.*configuration/i.test(installOut
 const binRoot = join(installRoot, 'node_modules', '.bin');
 const cliShim = join(binRoot, process.platform === 'win32' ? 'threadnote.cmd' : 'threadnote');
 const mcpShim = join(binRoot, process.platform === 'win32' ? 'threadnote-mcp-server.cmd' : 'threadnote-mcp-server');
+const mcpEntrypoint = join(
+  installRoot,
+  'node_modules',
+  'threadnote',
+  'bin',
+  'threadnote-mcp-server.cjs',
+);
 const environment = {
   ...process.env,
   HOME: userHome,
@@ -114,7 +121,10 @@ try {
   if (!/node-llama-cpp:\s+prebuilt/i.test(runtime)) {
     throw new Error(`Native runtime did not report a prebuilt binary:\n${runtime}`);
   }
-  await verifyMcpShim();
+  if (!existsSync(mcpShim) || !existsSync(mcpEntrypoint)) {
+    throw new Error('Installed package did not expose both the MCP command shim and Node entrypoint.');
+  }
+  await verifyInstalledMcp();
   process.stdout.write('Self-contained clean-home smoke passed with a restricted PATH.\n');
 } catch (error) {
   smokeFailure = error;
@@ -184,14 +194,17 @@ function assertActiveVectorSidecar(generation) {
   }
 }
 
-async function verifyMcpShim() {
-  const windows = process.platform === 'win32';
+async function verifyInstalledMcp() {
   const transport = new StdioClientTransport({
-    command: windows ? (process.env.ComSpec ?? 'cmd.exe') : mcpShim,
-    args: windows ? ['/d', '/s', '/c', `call "${mcpShim}"`] : [],
+    command: process.execPath,
+    args: [mcpEntrypoint],
     cwd: runRoot,
     env: environment,
     stderr: 'pipe',
+  });
+  let serverStderr = '';
+  transport.stderr?.on('data', chunk => {
+    serverStderr += String(chunk);
   });
   const client = new Client({name: 'threadnote-self-contained-smoke', version: '1.0.0'});
   try {
@@ -216,6 +229,12 @@ async function verifyMcpShim() {
     if (recalled.isError === true || !text.includes('self-contained-smoke.md')) {
       throw new Error(`Installed MCP recall did not find the canonical memory:\n${text}`);
     }
+  } catch (error) {
+    const details = serverStderr.trim();
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${details ? `\nMCP server stderr:\n${details}` : ''}`,
+      {cause: error},
+    );
   } finally {
     await client.close();
   }
