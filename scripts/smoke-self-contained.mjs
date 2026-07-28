@@ -59,6 +59,7 @@ const environment = {
   USERPROFILE: userHome,
 };
 const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
+const realModelTimeoutMs = 300_000;
 
 try {
   const version = run(['--version']);
@@ -130,7 +131,7 @@ function run(args) {
     encoding: 'utf8',
     env: environment,
     shell: process.platform === 'win32',
-    timeout: 180_000,
+    timeout: realModelTimeoutMs,
   });
 }
 
@@ -205,7 +206,7 @@ async function verifyMcpShim() {
         name: 'recall_context',
       },
       undefined,
-      {timeout: 180_000},
+      {timeout: realModelTimeoutMs},
     );
     const text = (recalled.content ?? []).map(item => ('text' in item ? item.text : '')).join('\n');
     if (recalled.isError === true || !text.includes('self-contained-smoke.md')) {
