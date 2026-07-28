@@ -46,6 +46,24 @@ describe('standalone release workflows', () => {
     expect(workflow).not.toContain('types: [published]');
   });
 
+  it('supports a manual Apple signing test without publishing a release', async () => {
+    const workflow = await readWorkflow('publish.yml');
+
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain(
+      "name: Verify release tag matches package version\n        if: github.event_name == 'push'",
+    );
+    for (const job of ['linux', 'windows-build', 'windows-sign', 'publish']) {
+      expect(workflow).toContain(`${job}:`);
+      expect(workflow.slice(workflow.indexOf(`${job}:`))).toMatch(
+        new RegExp(`^${job}:\\n {4}name: [^\\n]+\\n {4}if: github\\.event_name == 'push'`),
+      );
+    }
+    const macosJob = workflow.slice(workflow.indexOf('  macos:'), workflow.indexOf('  windows-build:'));
+    expect(macosJob).toContain('Notarize the exact release payload');
+    expect(macosJob).not.toContain("if: github.event_name == 'push'");
+  });
+
   it('produces a real embedding on every native release runner before signing or archiving', async () => {
     const workflow = await readWorkflow('publish.yml');
     expect(workflow.match(/Produce a real embedding with the release payload/g)).toHaveLength(3);

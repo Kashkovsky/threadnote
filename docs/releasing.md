@@ -46,6 +46,18 @@ artifacts are protected by the immutable GitHub release and checksums but are no
 4. Wait for `Publish standalone release`. Do not create a GitHub Release manually; the workflow creates it only after
    all six archives are ready.
 
+## Testing Apple signing without publishing
+
+Use the manual `workflow_dispatch` entry for `Publish standalone release` to exercise the release build on both macOS
+architectures. A manual run executes source verification, builds the exact standalone payloads, imports the Developer
+ID certificate, signs and verifies every Mach-O file, submits the payloads to Apple's notary service, assesses them
+with Gatekeeper, and uploads the signed archives as private workflow artifacts. Linux, Windows, and the GitHub Release
+job are tag-only and stay skipped, so the test cannot publish a release.
+
+The manual trigger must first exist on the repository's default branch. After it is merged, open **Actions**,
+select **Publish standalone release**, choose **Run workflow**, and select the branch to test. Do not create a version
+tag for a signing test.
+
 ## Moving users from Threadnote 3
 
 Do not publish an npm transition package. Threadnote 3 discovers updates through npm and cannot cross the standalone
