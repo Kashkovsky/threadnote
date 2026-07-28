@@ -97,6 +97,7 @@ describe('Effect AI native harness', () => {
     Effect.gen(function* () {
       const events: string[] = [];
       const calls: unknown[] = [];
+      const embeddingContextCalls: unknown[] = [];
       const layer = nodeLlamaCppEngineLayer({
         loadModule: () =>
           Promise.resolve({
@@ -113,15 +114,17 @@ describe('Effect AI native harness', () => {
                 gpu: 'metal',
                 loadModel: () =>
                   Promise.resolve({
-                    createEmbeddingContext: () =>
-                      Promise.resolve({
+                    createEmbeddingContext: options => {
+                      embeddingContextCalls.push(options);
+                      return Promise.resolve({
                         disposed: false,
                         dispose: () => {
                           events.push('context:dispose');
                           return Promise.resolve();
                         },
                         getEmbeddingFor: (input: string) => Promise.resolve({vector: [input.length, 1]}),
-                      }),
+                      });
+                    },
                     createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
                     detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
                     disposed: false,
@@ -156,6 +159,14 @@ describe('Effect AI native harness', () => {
           progressLogs: false,
           skipDownload: true,
           usePrebuiltBinaries: true,
+        },
+      ]);
+      expect(embeddingContextCalls).toEqual([
+        {
+          contextSize: undefined,
+          createSignal: expect.any(AbortSignal),
+          ignoreMemorySafetyChecks: false,
+          threads: 8,
         },
       ]);
       expect(events).toEqual(['context:dispose', 'model:dispose', 'llama:dispose']);
