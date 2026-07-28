@@ -73,10 +73,12 @@ macOS:
 - `APPLE_CERTIFICATE_P12_BASE64`
 - `APPLE_CERTIFICATE_PASSWORD`
 - `APPLE_KEYCHAIN_PASSWORD`
-- `APPLE_SIGNING_IDENTITY`
 - `APPLE_NOTARY_ISSUER_ID`
 - `APPLE_NOTARY_KEY_ID`
 - `APPLE_NOTARY_KEY_P8_BASE64`
+
+The workflow selects the single valid Developer ID Application identity imported from the PKCS#12 file and signs by
+its certificate fingerprint. An identity-name secret is not required.
 
 Windows:
 
