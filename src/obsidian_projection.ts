@@ -446,7 +446,7 @@ const readProjectionMemories = Effect.fn('obsidian.readProjectionMemories')(func
         entries
           .filter(entry => entry.type === 'file' && entry.uri.toLowerCase().endsWith('.md'))
           .map(entry => entry.uri),
-        ),
+      ),
     ));
   const records = yield* Effect.forEach(
     selectedUris,

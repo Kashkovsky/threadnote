@@ -210,7 +210,7 @@ const mainEffect = Effect.gen(function* () {
   });
   mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
   const instructions =
-    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` results. At closeout store durable knowledge and handoffs directly with `remember_context` without approval. Use `review_session_context` only for additional candidates; apply them only after explicit approval/edit/defer/reject. Use stable project/topic and replace duplicates. Do not store secrets, credentials, customer data, or raw logs. Confirm before `share_publish`; never publish handoffs/preferences. Use `obsidian_publish` only for user-selected memory URIs; preview first.';
+    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` pointers. Close out by writing durable knowledge and handoffs directly without approval via `remember_context`. Use `review_session_context` only for additional candidates; apply after explicit approval. Use stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use user-selected URIs.';
   const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
 
   registerTools(server, config, toolset);

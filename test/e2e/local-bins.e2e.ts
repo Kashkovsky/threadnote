@@ -380,6 +380,14 @@ describe('built self-contained distribution', () => {
       expect(names.some(name => name.startsWith('ov_'))).toBe(false);
       const health = await client.callTool({arguments: {}, name: 'health'});
       expect(health.structuredContent).toMatchObject({status: 'ok', storage: 'native'});
+      const recall = await client.callTool({
+        arguments: {query: 'MCP-OBSIDIAN-881'},
+        name: 'recall_context',
+      });
+      expect(JSON.stringify(recall.content)).toContain(`Auto-synced Obsidian sources: ${sourceId}`);
+      expect(JSON.stringify(recall.content)).toContain(
+        'threadnote://resources/external/obsidian/mcp-recall-source/Knowledge/Agent%20recall.md',
+      );
       const recalled = await client.callTool(
         {
           arguments: {
@@ -395,14 +403,6 @@ describe('built self-contained distribution', () => {
       const text = (recalled.content as Array<{readonly text?: string}>).map(item => item.text ?? '').join('\n');
       expect(recalled.isError, text).not.toBe(true);
       expect(text).toContain('native-e2e.md');
-      const recall = await client.callTool({
-        arguments: {query: 'MCP-OBSIDIAN-881'},
-        name: 'recall_context',
-      });
-      expect(JSON.stringify(recall.content)).toContain(`Auto-synced Obsidian sources: ${sourceId}`);
-      expect(JSON.stringify(recall.content)).toContain(
-        'threadnote://resources/external/obsidian/mcp-recall-source/Knowledge/Agent%20recall.md',
-      );
       const preview = await client.callTool({
         arguments: {projection: projectionId, uri: memoryUri},
         name: 'obsidian_publish',
