@@ -357,21 +357,24 @@ describe('standalone updater', () => {
 
   it('runs applicable post-update work before repairing the promoted release', async () => {
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
-    const release = releaseResponse(RELEASE_VERSION, false);
-    const http = HttpService.of({
-      downloadToFile: () => Effect.die('dry run does not download'),
-      getJson: () => Effect.succeed({body: [release], status: 200}),
-      getStatus: () => Effect.succeed(200),
-      getText: () => Effect.die('dry run does not download checksums'),
-    });
     const captured = await Effect.runPromise(
-      captureConsole(
-        runUpdate(runtimeConfig('/tmp/threadnote-update-order'), {
-          dryRun: true,
-          stable: true,
-          yes: true,
-        }).pipe(Effect.provideService(HttpService, http)),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        const release = releaseResponse(RELEASE_VERSION, false, releaseArtifactName(system));
+        const http = HttpService.of({
+          downloadToFile: () => Effect.die('dry run does not download'),
+          getJson: () => Effect.succeed({body: [release], status: 200}),
+          getStatus: () => Effect.succeed(200),
+          getText: () => Effect.die('dry run does not download checksums'),
+        });
+        return yield* captureConsole(
+          runUpdate(runtimeConfig('/tmp/threadnote-update-order'), {
+            dryRun: true,
+            stable: true,
+            yes: true,
+          }).pipe(Effect.provideService(HttpService, http)),
+        );
+      }).pipe(Effect.provide(ApplicationLayer)),
     );
 
     const postUpdate = captured.output.indexOf('post-update --from-version');

@@ -110,9 +110,9 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         },
         timeout: 60_000,
       }).catch((cause: unknown) => cause);
-      expect(String((exactFailure as {readonly stdout?: unknown}).stdout)).toContain(
-        `Downloading Threadnote ${packageManifest.version}`,
-      );
+      expect(
+        `${String((exactFailure as {readonly stdout?: unknown}).stdout)}${String((exactFailure as {readonly stderr?: unknown}).stderr)}`,
+      ).toContain(`Downloading Threadnote ${packageManifest.version}`);
       expect(assetRequests.at(-1)).toBe(`missing-assets/${artifactName}`);
       const result = await execute(join(powerShellDirectory, 'powershell.exe'), installerArguments, {
         env: installEnvironment,

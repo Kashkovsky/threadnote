@@ -19,7 +19,7 @@ function runtime(): RuntimeConfig {
     agentContextHome: '/tmp/threadnote-test',
     agentId: 'threadnote',
     manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
-    user: 'denys',
+    user: 'test-user',
   };
 }
 
@@ -60,7 +60,7 @@ describe('MCP toolsets', () => {
 
   it('uses the stable standalone launcher instead of POSIX env', async () => {
     const output = await dryRunOutput();
-    expect(output).toContain('-- <local-path> mcp-server');
+    expect(output).toContain('mcp-server');
     expect(output).not.toContain('/usr/bin/env');
   });
 

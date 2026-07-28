@@ -61,7 +61,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
-    "@vitest/coverage-v8": "^4.1.7",
+    "@vitest/coverage-istanbul": "^4.1.7",
     "effect": "4.0.0-beta.99",
     "husky": "^9.1.7",
     "js-yaml": "^4.2.0",
