@@ -45,4 +45,11 @@ describe('Windows platform contracts', () => {
     expect(() => validatePortableSegment('notes.', 'notes.')).toThrow();
     expect(() => validatePortableSegment('release-notes', 'release-notes')).not.toThrow();
   });
+
+  it('verifies installer checksums without PowerShell module discovery', async () => {
+    const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
+
+    expect(installer).toContain('[Security.Cryptography.SHA256]::Create()');
+    expect(installer).not.toContain('Get-FileHash');
+  });
 });
