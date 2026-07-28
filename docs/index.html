@@ -1003,7 +1003,7 @@
           <div class="cta-row">
             <span class="pill">cross-user · cross-agent · Git-backed</span>
             <span class="pill"
-              ><span id="version-tag">v4.0.0 beta</span> · local semantic recall · AGPL-3.0-or-later</span
+              ><span id="version-tag">v4.0.0 beta</span> · Node-native hybrid recall · AGPL-3.0-or-later</span
             >
           </div>
         </div>
@@ -1134,7 +1134,8 @@
                 <tr>
                   <th scope="row">Recall path</th>
                   <td class="threadnote-col">
-                    Local semantic index returns URI candidates; agents read selected records
+                    Local hybrid recall combines SQLite lexical and packed vector candidates; agents read selected
+                    records
                   </td>
                   <td>Provider-managed retrieval from available context</td>
                   <td>Provider-managed search and context</td>
@@ -1230,9 +1231,9 @@
               <span class="card-kicker">Local recall</span>
               <h3>Find the record, not the whole history</h3>
               <p>
-                Threadnote installs a compact local GGUF embedding model and runs it in-process through
-                <code>node-llama-cpp</code> to rank matches. Agents read only the selected
-                <code>threadnote://</code> records; Markdown remains canonical.
+                Install provisions a compact GGUF embedding model, a normalized SQLite lexical index, and packed vector
+                generations. The Node process combines semantic, lexical, field, scope, lifecycle, authority, graph,
+                time, and feedback signals. Agents read only selected <code>threadnote://</code> records.
               </p>
             </div>
           </div>
@@ -1302,10 +1303,14 @@
       <section id="how" class="slide">
         <div class="slide-inner">
           <span class="slide-eyebrow">06 · How it works</span>
-          <h2>One MCP adapter, one URI scheme, one local store.</h2>
+          <h2>One Node runtime, one URI scheme, one local store.</h2>
 
           <div class="architecture reveal">
-            <svg viewBox="0 0 880 380" role="img" aria-label="Threadnote architecture diagram">
+            <svg
+              viewBox="0 0 880 380"
+              role="img"
+              aria-label="Coding agents connect over stdio MCP to one Threadnote Node.js process, which owns canonical Markdown, SQLite lexical search, packed vector indexes, and in-process GGUF embeddings"
+            >
               <defs>
                 <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
                   <path d="M0,0 L10,5 L0,10 z" fill="#5ee0c5" />
@@ -1360,9 +1365,9 @@
               <!-- native runtime -->
               <g font-family="JetBrains Mono, monospace" font-size="13" fill="#ececf1">
                 <rect x="290" y="246" width="300" height="60" rx="10" fill="url(#agentGrad)" stroke="#2a2a35" />
-                <text x="440" y="272" text-anchor="middle">Threadnote native runtime</text>
+                <text x="440" y="272" text-anchor="middle">Threadnote Node.js runtime</text>
                 <text x="440" y="290" text-anchor="middle" fill="#8a8a96" font-size="11">
-                  Effect services · node-llama-cpp · in-process
+                  Effect · built-in SQLite · node-llama-cpp
                 </text>
               </g>
 
@@ -1382,6 +1387,10 @@
               </g>
             </svg>
             <div class="architecture-legend">
+              <div>
+                <strong>Node.js is the sole runtime.</strong> No Python, Bun, Deno, memory server, or background daemon
+                participates in recall or writes.
+              </div>
               <div><strong>One adapter, one URI scheme.</strong> Every agent calls the same MCP tools.</div>
               <div>
                 <strong>URIs are stable.</strong> A memory at <code>threadnote://user/&lt;you&gt;/...</code> is the same
@@ -1392,8 +1401,8 @@
                 regenerable; the source of truth is on disk.
               </div>
               <div>
-                <strong>Recall is local and targeted.</strong> A GGUF embedding model running through
-                <code>llama.cpp</code> ranks candidates before the agent reads selected records.
+                <strong>Recall is hybrid and targeted.</strong> SQLite lexical candidates and exact vector similarity
+                feed one explainable ranker before the agent reads selected records.
               </div>
             </div>
           </div>
@@ -1475,7 +1484,8 @@
           <span class="slide-eyebrow">08 · Install</span>
           <h2>One command. Then point your agents at it.</h2>
           <p class="lead">
-            The installer wires up one npm package. After that, run <code>mcp-install</code> for each agent you use.
+            The installer wires up one npm package, verifies the core embedding model, and builds both recall indexes.
+            After that, run <code>mcp-install</code> for each agent you use.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1485,16 +1495,15 @@
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</span>
 
-<span class="out">Installed threadnote@4.0.0</span>
-<span class="out">Already exists: ~/.local/bin/threadnote</span>
-<span class="out">Initialized ~/.threadnote</span>
-<span class="out-strong">OK   native store ready · no daemon required</span></pre>
+<span class="out">Wrote command shim: ~/.local/bin/threadnote</span>
+<span class="out">bge-small-en-v1.5-q8: core model verified and selected</span>
+<span class="out">Recall indexes ready: SQLite lexical + packed vectors</span>
+<span class="out-strong">Install complete · no daemon required</span></pre>
               </div>
               <p class="muted" style="margin-top: 0.75rem; font-size: 0.9rem">
-                Requires Node <code>^22.22.2</code>, <code>^24.15.0</code>, or <code>&gt;=26.0.0</code>; Node 24 LTS is
-                recommended. The installer checks this before npm changes the package. On native Windows PowerShell, run
-                <code>irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex</code>.
-                Or manually: <code>npm install -g threadnote && threadnote install</code>.
+                Node.js is the only supported runtime; Node 24 LTS is recommended. Supported:
+                <code>^22.22.2</code>, <code>^24.15.0</code>, or <code>&gt;=26.0.0</code>. Preflight runs before npm;
+                Bun and Deno are unsupported. Native Windows uses <code>scripts/install.ps1</code>.
               </p>
             </div>
 
@@ -1617,10 +1626,10 @@ worksets:
               <div class="terminal">
                 <div class="terminal-bar"><span></span><span></span><span></span></div>
                 <pre><span class="cmd">$ threadnote update</span>
-<span class="out">Latest: threadnote@1.0.0 (installed: 0.7.12)</span>
-<span class="out">Running: npm install -g threadnote@1.0.0</span>
-<span class="out">Running: threadnote repair</span>
-<span class="out-strong">All checks passed. Restart agents to reload MCP.</span></pre>
+<span class="out">Node preflight passed · beta channel selected</span>
+<span class="out">Installing the current threadnote@beta</span>
+<span class="out">Repairing launcher, core model, indexes, and MCP</span>
+<span class="out-strong">Update complete. Restart agents to reload MCP.</span></pre>
               </div>
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
                 <code>update --check</code> reports what's available. <code>update --dry-run</code> shows the plan.
@@ -1644,8 +1653,9 @@ worksets:
 <span class="out-strong">Summary: 0 failure(s), 0 warning(s)</span></pre>
               </div>
               <p class="muted" style="font-size: 0.9rem; margin-top: 0.75rem">
-                Rewrites the threadnote shim and every agent's MCP config to point at the current install. Run after
-                deleting an old npm prefix or moving the package between Node versions.
+                Rewrites the managed launcher and every agent's MCP config, verifies the core model, and rebuilds
+                disposable indexes. Completed home migrations are recognized from their receipt and are not advertised
+                again.
               </p>
             </div>
           </div>
@@ -1980,7 +1990,7 @@ Stored: threadnote://user/you/memories/durable/projects/&lt;repo&gt;/release-pro
       <section id="close" class="slide">
         <div class="slide-inner">
           <span class="slide-eyebrow">15 · Get started</span>
-          <h2>Try it on your machine in 90 seconds.</h2>
+          <h2>Install once. Recall locally.</h2>
 
           <pre style="margin-top: 1.5rem">
 <code>curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
@@ -1991,6 +2001,14 @@ threadnote doctor --dry-run</code></pre>
             <a class="cta" href="https://github.com/Kashkovsky/threadnote" target="_blank" rel="noopener"> GitHub → </a>
             <a class="cta outline" href="https://www.npmjs.com/package/threadnote" target="_blank" rel="noopener">
               npm
+            </a>
+            <a
+              class="cta outline"
+              href="https://github.com/Kashkovsky/threadnote/blob/main/docs/architecture.md"
+              target="_blank"
+              rel="noopener"
+            >
+              architecture
             </a>
             <a
               class="cta outline"
@@ -2104,14 +2122,14 @@ threadnote doctor --dry-run</code></pre>
         });
       })();
 
-      // Replace the hardcoded version pill with whatever npm currently
-      // serves as latest. Fails silently and keeps the fallback text on any
-      // network or registry error — the deck must render even offline.
+      // Replace the hardcoded version pill with the current v4 beta. Fails
+      // silently and keeps the fallback text on any network or registry
+      // error — the deck must render even offline.
       (async () => {
         const tag = document.getElementById('version-tag');
         if (!tag) return;
         try {
-          const response = await fetch('https://registry.npmjs.org/threadnote/latest', {
+          const response = await fetch('https://registry.npmjs.org/threadnote/beta', {
             headers: {accept: 'application/json'},
             signal: AbortSignal.timeout(3000),
           });

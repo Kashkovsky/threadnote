@@ -5,7 +5,8 @@
 Threadnote requires Node `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. The bootstrap installers
 and `threadnote update` stop before npm changes the package when the active Node is incompatible. A direct
 `npm install --global threadnote` can print npm's engine warning before Threadnote's package preflight runs, so prefer
-the bootstrap installer for recovery.
+the bootstrap installer for recovery. Node.js is the only supported Threadnote 4 runtime; Bun and Deno are not in the
+release matrix.
 
 ```sh
 # nvm on macOS/Linux
