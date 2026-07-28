@@ -11,8 +11,10 @@ Release gates are cumulative:
 6. Model bake-off artifacts record exact revisions, hashes, hardware, latency, memory, and recall deltas.
 7. Package scans prove no legacy executable, server config, interpreter bootstrap, or raw native-addon consumer ships.
 
-Semantic and reranker defaults are selected only from checked-in reviewed bake-off summaries. Models remain an explicit
-download even after selection; lexical recall is the zero-download default.
+Embedding and reranker defaults are selected only from checked-in reviewed bake-off summaries. The measured 36.7 MB
+BGE Small model is installed and selected automatically because semantic recall is core functionality. Additional
+embedding candidates, rerankers, and generation models remain explicit choices. Lexical recall is the deterministic
+fail-open path when native inference is temporarily unavailable.
 
 Rollback never deletes canonical data. Disable model selection or purge a derived index first. For a migration issue,
 point the previous release at the preserved legacy home while the 4.0 target is investigated.

@@ -4,8 +4,9 @@ Threadnote gives development agents durable local memory, branch handoffs, curat
 sharing. Version 4 is self-contained: canonical content, indexes, model files, locks, logs, migration receipts, and
 share metadata are owned under `~/.threadnote`.
 
-The installed product requires Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. It does not
-require Python, a second memory platform, or a background daemon.
+The installed product requires Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. Node is the
+only supported Threadnote 4 runtime. It does not require Python, Bun, Deno, a second memory platform, or a background
+daemon.
 
 ## Install
 
@@ -98,8 +99,8 @@ npm run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
 npm run bench:recall:micro -- --json
 ```
 
-See the [evaluation contract](test/evaluation/README.md), [4.0 plan](docs/4.0-plan.md),
-[migration](docs/migration.md), [sharing](docs/share.md), and
+See the [architecture](docs/architecture.md), [evaluation contract](test/evaluation/README.md),
+[4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md), [sharing](docs/share.md), and
 [troubleshooting](docs/troubleshooting.md).
 
 ## License

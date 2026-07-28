@@ -8,8 +8,9 @@ Writes use per-resource locks, compare-and-swap where replacement semantics requ
 file, durable close, and atomic rename. Derived index generations are activated by a checksummed pointer only after
 the full generation exists.
 
-Model downloads are explicit and pinned by immutable repository revision, byte count, SHA-256, role, runtime version,
-and license. Partial downloads are never loaded. The llama adapter requests prebuilt binaries and refuses runtime
+Model artifacts are pinned by immutable repository revision, byte count, SHA-256, role, runtime version, and license.
+Install and repair provision the core embedding model automatically; additional model roles require an explicit
+selection. Partial downloads are never loaded. The llama adapter requests prebuilt binaries and refuses runtime
 compilation or implicit binary download.
 
 Share publishing scrubs known credential and machine-local path patterns before writing or pushing. Handoffs and
