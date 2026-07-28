@@ -53,6 +53,7 @@
     "lint:fix": "oxlint --fix src test",
     "prepare": "husky",
     "precommit": "npm run lint && npm run prettier:write && npm run test",
+    "preinstall": "node scripts/check-node-version.cjs",
     "prepack": "npm run build",
     "prettier:check": "prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "prettier:write": "prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
@@ -76,7 +77,7 @@
     "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "devDependencies": {
     "@effect/ai-openai-compat": "4.0.0-beta.99",

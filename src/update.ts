@@ -13,6 +13,7 @@ import {applicationError, fromSync} from './effect/errors.js';
 import {getJsonEffect} from './effect/http.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
+import {assertSupportedNodeRuntime, cleanupStaleNvmThreadnoteInstallations} from './node-runtime.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
@@ -100,6 +101,7 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
 }
 
 export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig, options: UpdateOptions) {
+  yield* assertSupportedNodeRuntime();
   const system = yield* SystemInfo;
   const requestedChannel = yield* fromSync('select update channel', () => requestedUpdateChannel(options));
   const registry = yield* fromSync('resolve update registry', () =>
@@ -209,6 +211,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
     }
   }
+  yield* cleanupStaleNvmThreadnoteInstallations({dryRun: options.dryRun === true});
   yield* Console.log(
     'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
   );

@@ -18,6 +18,7 @@ const allowedLegacySources = new Set([
   'src/effect/cli.ts',
   'src/lifecycle.ts',
   'src/migration/home.ts',
+  'src/migration/legacy-runtime.ts',
   'src/storage/layout.ts',
 ]);
 const allowedLegacyIdentifierSources = new Set([
@@ -45,6 +46,17 @@ for (const file of files(join(root, 'src'))) {
 }
 
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const supportedNodeRange = '^22.22.2 || ^24.15.0 || >=26.0.0';
+const recommendedNodeVersion = '24.18.0';
+if (packageJson.engines?.node !== supportedNodeRange) {
+  failures.push(`Node engine must match ${supportedNodeRange}`);
+}
+if (packageJson.scripts?.preinstall !== 'node scripts/check-node-version.cjs') {
+  failures.push('npm installs must run the Node compatibility preflight');
+}
+if (readFileSync(join(root, '.nvmrc'), 'utf8').trim() !== recommendedNodeVersion) {
+  failures.push(`.nvmrc must recommend Node ${recommendedNodeVersion}`);
+}
 if (packageJson.dependencies?.['node-llama-cpp'] !== '3.19.1') {
   failures.push('node-llama-cpp must be an exact runtime dependency at 3.19.1');
 }
@@ -58,8 +70,17 @@ if (/\b(?:python|pipx|openviking)\b/i.test(JSON.stringify(packageJson.scripts ??
   failures.push('package scripts reference a legacy runtime');
 }
 for (const installer of ['scripts/install.sh', 'scripts/install.ps1']) {
-  if (!/NODE_LLAMA_CPP_POSTINSTALL[^\n\r]*skip/i.test(readFileSync(join(root, installer), 'utf8'))) {
+  const content = readFileSync(join(root, installer), 'utf8');
+  if (!/NODE_LLAMA_CPP_POSTINSTALL[^\n\r]*skip/i.test(content)) {
     failures.push(`installer does not suppress node-llama-cpp postinstall downloads: ${installer}`);
+  }
+  if (!content.includes(supportedNodeRange)) {
+    failures.push(`installer does not enforce the supported Node range: ${installer}`);
+  }
+}
+for (const launcher of ['bin/threadnote.cjs', 'bin/threadnote-mcp-server.cjs']) {
+  if (!readFileSync(join(root, launcher), 'utf8').includes("require('./node-warning-filter.cjs')")) {
+    failures.push(`launcher does not install the narrow SQLite warning filter: ${launcher}`);
   }
 }
 
@@ -74,6 +95,10 @@ for (const entry of pack[0]?.files ?? []) {
   if (path.endsWith('.py') || /(?:^|\/)(?:ov|ovcli)\.conf(?:\.|$)/i.test(path) || /openviking|launchd/i.test(path)) {
     failures.push(`legacy artifact would ship: ${path}`);
   }
+}
+const packedPaths = new Set((pack[0]?.files ?? []).map(entry => String(entry.path)));
+for (const required of ['bin/node-warning-filter.cjs', 'scripts/check-node-version.cjs']) {
+  if (!packedPaths.has(required)) failures.push(`required runtime preflight file would not ship: ${required}`);
 }
 
 if (failures.length > 0) {

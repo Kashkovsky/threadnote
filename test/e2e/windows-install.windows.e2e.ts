@@ -15,6 +15,7 @@ windowsIt('PowerShell bootstrap installs npm and forwards only native Threadnote
   const log = join(root, 'calls.log');
   await mkdir(fakeBin, {recursive: true});
   await mkdir(prefix, {recursive: true});
+  await writeFile(join(fakeBin, 'node.cmd'), '@ECHO off\r\n@if "%~1"=="-p" @ECHO 24.18.0\r\n');
   await writeFile(
     join(fakeBin, 'npm.cmd'),
     '@ECHO off\r\n@ECHO npm %* postinstall=%NODE_LLAMA_CPP_POSTINSTALL%>>"%THREADNOTE_TEST_LOG%"\r\n@if /I "%~1"=="prefix" @ECHO %THREADNOTE_TEST_PREFIX%\r\n',

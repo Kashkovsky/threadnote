@@ -49,8 +49,21 @@ export interface VectorIndexStatus {
   readonly reusedChunkCount?: number;
 }
 
+export type VectorIndexProgress =
+  | {
+      readonly completed: number;
+      readonly phase: 'embedding';
+      readonly reused: number;
+      readonly total: number;
+    }
+  | {
+      readonly chunkCount: number;
+      readonly phase: 'activating';
+    };
+
 interface VectorIndexBuildOptions {
   readonly corpusGeneration?: string;
+  readonly onProgress?: (progress: VectorIndexProgress) => Effect.Effect<void, unknown>;
 }
 
 export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
@@ -174,6 +187,12 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   ).length;
   let embeddedChunkCount = 0;
   const missing = chunks.filter(chunk => !vectorByChunk.has(chunkReuseKey(chunk.uri, chunk.fingerprint)));
+  yield* options.onProgress?.({
+    completed: embeddedChunkCount,
+    phase: 'embedding',
+    reused: reusableChunkCount,
+    total: missing.length,
+  }) ?? Effect.void;
   for (let start = 0; start < missing.length; start += VECTOR_INDEX_EMBED_BATCH_SIZE) {
     const batch = missing.slice(start, start + VECTOR_INDEX_EMBED_BATCH_SIZE);
     const vectors = yield* runtime.embedMany({
@@ -200,6 +219,12 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
       ),
       sidecarForEntries(manifest, manifest.dimensions, checkpointEntries),
     );
+    yield* options.onProgress?.({
+      completed: embeddedChunkCount,
+      phase: 'embedding',
+      reused: reusableChunkCount,
+      total: missing.length,
+    }) ?? Effect.void;
   }
   const entries: VectorSidecarEntry[] = chunks.map(chunk => ({
     fingerprint: chunk.fingerprint,
@@ -212,6 +237,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   const generation = `${yield* Clock.currentTimeMillis}-${(yield* crypto.randomUUIDv4).slice(0, 8)}`;
   const generationDirectory = path.join(root, 'generations', generation);
   const sidecarPath = path.join(generationDirectory, 'vectors.bin');
+  yield* options.onProgress?.({chunkCount: entries.length, phase: 'activating'}) ?? Effect.void;
   yield* fs.makeDirectory(generationDirectory, {recursive: true, mode: 0o700});
   yield* fs.writeFile(sidecarPath, encoded, {mode: 0o600});
   const pointer: VectorIndexPointer = {

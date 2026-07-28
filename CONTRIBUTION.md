@@ -10,9 +10,8 @@ open an issue first so the intended contract can be agreed before substantial im
 
 You need:
 
-- Node.js 22.19 or newer (the version in `.nvmrc` is recommended);
+- Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0` (the Node 24 LTS version in `.nvmrc` is recommended);
 - npm;
-- uv and Python 3.12 only when running the live OpenViking end-to-end suite.
 
 Install dependencies and run the fast validation set:
 
@@ -31,8 +30,8 @@ npm run dev -- --help
 npm run dev:mcp-server
 ```
 
-Do not commit credentials, API keys, private memories, customer data, raw production logs, or a local OpenViking
-datastore. Test fixtures must use synthetic data.
+Do not commit credentials, API keys, private memories, customer data, raw production logs, or a local Threadnote home.
+Test fixtures must use synthetic data.
 
 ## Architecture expectations
 
@@ -79,41 +78,24 @@ npm run pack:dry-run
 
 `typecheck` intentionally uses TypeScript 7 for both source and test code.
 
-### Live OpenViking end-to-end tests
+### Local distribution end-to-end tests
 
-Run the live suite when a change affects any of the following:
+Run the local-bin suite when a change affects any of the following:
 
-- the OpenViking version, configuration, installer, CLI arguments, URI semantics, or datastore behavior;
+- installation, CLI arguments, URI semantics, or datastore behavior;
 - Threadnote CLI launchers or argument parsing;
 - MCP schemas, forwarding, or native parity;
 - manager APIs, shutdown, or Effect AI consolidation;
-- sharing, memory lifecycle, OVPack import/export, packaging, or generated distribution bundles;
+- sharing, memory lifecycle, pack import/export, packaging, or generated distribution bundles;
 - Effect runtime, resource, interruption, or error-boundary behavior.
 
 ```bash
-npm run test:e2e:install-openviking
 npm run test:e2e:local-bins
 ```
 
-The installer selects the exact version pinned in `src/constants.ts`. If uv rejects a malformed prebuilt
-`llama-cpp-python` wheel, it retries with a bounded local source build, which can take several minutes.
-
-The suite starts a real OpenViking server on a random local port, uses a suite-scoped temporary datastore, exercises the
-built and npm-packed binaries, and removes the datastore after the run. It must never use or mutate the contributor's
-normal OpenViking store. Do not replace the live server with a mock merely to make an upgrade pass.
-
-## Updating OpenViking
-
-The OpenViking pin is a compatibility contract. For an upgrade:
-
-1. Read every official OpenViking release note between the current pin and the target version.
-2. Identify changes to URI rules, identity and tenancy, CLI output, MCP schemas, import/export, storage, and retrieval.
-3. Update `DEFAULT_OPENVIKING_VERSION` in `src/constants.ts` and any user-facing version examples.
-4. Install the new version with `npm run test:e2e:install-openviking`.
-5. Run the complete live suite and address behavioral incompatibilities in code and tests.
-6. Run all normal validation and packaging gates.
-
-Do not loosen version assertions or skip failing live scenarios without documenting a deliberate compatibility change.
+The suite uses a temporary Threadnote home, exercises the built and npm-packed launchers, native SQLite and vector
+indexes, the local model runtime, MCP stdio, and sharing, then removes the home. It must never use or mutate a
+contributor's normal `~/.threadnote` state.
 
 ## Changing MCP tools
 
@@ -122,7 +104,7 @@ Keep tool names and the default core toolset compact and backward-compatible. Wh
 - define it with Effect Schema through the MCP adapter;
 - preserve documented aliases when removing them would break existing agents;
 - test emitted JSON Schema and runtime rejection;
-- test forwarding to a real OpenViking MCP server when the parameter is native;
+- test the built native MCP server over stdio when the parameter affects runtime behavior;
 - consider the context cost before adding a tool to the six-tool core surface.
 
 ## Documentation and generated output

@@ -9,6 +9,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$supportedNodeRange = '^22.22.2 || ^24.15.0 || >=26.0.0'
+$recommendedNodeVersion = '24.18.0'
 $package = if ($env:THREADNOTE_PACKAGE) { $env:THREADNOTE_PACKAGE } else { 'threadnote@latest' }
 $registry = if ($env:THREADNOTE_NPM_REGISTRY) {
   $env:THREADNOTE_NPM_REGISTRY
@@ -23,12 +25,41 @@ function Format-InstallSourceForLog {
   return $redacted -replace '(\?)[^#\s]+', '$1[REDACTED]'
 }
 
+$node = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $node) {
+  $node = Get-Command node -ErrorAction SilentlyContinue
+}
+if (-not $node) {
+  throw 'Node.js was not found on PATH. Install the current Node.js 24 LTS release, then rerun this installer.'
+}
+$nodeVersion = (& $node.Source -p 'process.versions.node').Trim()
+$parts = $nodeVersion -split '\.'
+$supportedNode = $parts.Count -ge 3 -and (
+  ([int]$parts[0] -eq 22 -and ([int]$parts[1] -gt 22 -or ([int]$parts[1] -eq 22 -and [int]$parts[2] -ge 2))) -or
+  ([int]$parts[0] -eq 24 -and [int]$parts[1] -ge 15) -or
+  [int]$parts[0] -ge 26
+)
+if (-not $supportedNode) {
+  $guidance = if ($env:NVM_HOME -or $node.Source -match '(?i)[\\/]nvm[\\/]') {
+    "nvm-windows: nvm install $recommendedNodeVersion && nvm use $recommendedNodeVersion"
+  } else {
+    'Windows: winget upgrade --id OpenJS.NodeJS.LTS -e (or install the current Node.js LTS MSI).'
+  }
+  throw @"
+Threadnote requires Node $supportedNodeRange; current runtime is $nodeVersion.
+Upgrade Node, open a new terminal, and rerun this installer on the same stable or beta channel.
+$guidance
+For beta, set `$env:THREADNOTE_PACKAGE = 'threadnote@beta' before rerunning the installer.
+Threadnote does not change the system Node installation automatically.
+"@
+}
+
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npm) {
   $npm = Get-Command npm -ErrorAction SilentlyContinue
 }
 if (-not $npm) {
-  throw 'npm was not found on PATH. Install Node.js 22.19 or newer, then rerun this installer.'
+  throw "npm was not found on PATH. Install Node.js $supportedNodeRange, then rerun this installer."
 }
 
 $loggedPackage = Format-InstallSourceForLog $package

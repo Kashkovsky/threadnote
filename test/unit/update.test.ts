@@ -33,6 +33,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
@@ -115,10 +116,14 @@ describe('runUpdate', () => {
   const homes: string[] = [];
   const originalRegistry = process.env.THREADNOTE_NPM_REGISTRY;
   const originalAllowRegistry = process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
+  const originalNvmDir = process.env.NVM_DIR;
+  const originalNvmHome = process.env.NVM_HOME;
 
   beforeEach(() => {
     delete process.env.THREADNOTE_NPM_REGISTRY;
     delete process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY;
+    delete process.env.NVM_DIR;
+    delete process.env.NVM_HOME;
     vi.mocked(utils.findExecutable).mockReset();
     vi.mocked(utils.isExecutable).mockReset();
     vi.mocked(utils.isTcpPortOpen).mockReset();
@@ -159,8 +164,33 @@ describe('runUpdate', () => {
     } else {
       process.env.THREADNOTE_ALLOW_UNTRUSTED_NPM_REGISTRY = originalAllowRegistry;
     }
+    if (originalNvmDir === undefined) {
+      delete process.env.NVM_DIR;
+    } else {
+      process.env.NVM_DIR = originalNvmDir;
+    }
+    if (originalNvmHome === undefined) {
+      delete process.env.NVM_HOME;
+    } else {
+      process.env.NVM_HOME = originalNvmHome;
+    }
     vi.unstubAllGlobals();
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('rejects an unsupported Node before checking npm or changing packages', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const system = await Effect.runPromise(SystemInfo.pipe(Effect.provide(ApplicationLayer)));
+    const unsupportedSystem = SystemInfo.of({...system, nodeVersion: '22.21.1'});
+
+    await expect(
+      runEffect(runUpdate(config, {runtime: 'npm'}).pipe(Effect.provideService(SystemInfo, unsupportedSystem))),
+    ).rejects.toThrow(/requires Node \^22\.22\.2 \|\| \^24\.15\.0 \|\| >=26\.0\.0/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(utils.findExecutable)).not.toHaveBeenCalled();
   });
 
   it('streams the package update and repair output instead of buffering it', async () => {
@@ -196,6 +226,52 @@ describe('runUpdate', () => {
       inheritOutput: true,
     });
     expect(vi.mocked(utils.maybeRun)).not.toHaveBeenCalled();
+  });
+
+  it('cleans a verified Threadnote package from another nvm Node version even when repair is disabled', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0'));
+    mockRegistryVersions('99.0.0', '100.0.0-beta.1');
+    const nvmRoot = join(config.agentContextHome, 'nvm');
+    const versionRoot = join(nvmRoot, 'versions', 'node', 'v22.21.1');
+    const packageJson = join(versionRoot, 'lib', 'node_modules', 'threadnote', 'package.json');
+    const staleNode = join(versionRoot, 'bin', 'node');
+    const staleNpm = join(versionRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    await mkdir(dirname(packageJson), {recursive: true});
+    await mkdir(dirname(staleNode), {recursive: true});
+    await mkdir(dirname(staleNpm), {recursive: true});
+    await writeFile(packageJson, '{"name":"threadnote","version":"3.0.3"}\n');
+    await writeFile(staleNode, '');
+    await writeFile(staleNpm, '');
+    const executeStreaming = vi.fn(() => Effect.succeed(ok()));
+    const executor = CommandExecutor.of({
+      execute: (executable, args) =>
+        executable === staleNode
+          ? Effect.promise(async () => {
+              await rm(packageJson);
+              return ok();
+            })
+          : Effect.succeed(args[0] === 'prefix' ? ok('/tmp/npm-global\n') : ok()),
+      executeStreaming,
+    });
+    const system = await Effect.runPromise(SystemInfo.pipe(Effect.provide(ApplicationLayer)));
+    const nvmSystem = SystemInfo.of({
+      ...system,
+      environment: () => ({...system.environment(), NVM_DIR: nvmRoot}),
+    });
+
+    const result = await runEffect(
+      captureConsole(
+        runUpdate(config, {postUpdate: false, repair: false, runtime: 'npm'}).pipe(
+          Effect.provideService(CommandExecutor, executor),
+          Effect.provideService(SystemInfo, nvmSystem),
+        ),
+      ),
+    );
+
+    expect(result.output).toContain('Removed stale Threadnote 3.0.3 from nvm Node 22.21.1.');
+    await expect(readFile(packageJson, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
   });
 
   it('runs Deno directly with the registry in its environment', async () => {

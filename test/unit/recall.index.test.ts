@@ -1,4 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
+import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   clearRecallIndexMemoryCache,
@@ -132,6 +133,33 @@ describe('local recall index', () => {
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
+  });
+
+  it('reports determinate lexical indexing and posting progress', async () => {
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
+    await mkdir(resourceRoot, {recursive: true});
+    await writeFile(join(resourceRoot, 'alpha.md'), '# Alpha\n\nprogress-alpha', 'utf8');
+    await writeFile(join(resourceRoot, 'beta.md'), '# Beta\n\nprogress-beta', 'utf8');
+    const progress: unknown[] = [];
+
+    await run(
+      loadRecallIndex(config(), {
+        forceRefresh: true,
+        includeInactive: false,
+        onProgress: event =>
+          Effect.sync(() => {
+            progress.push(event);
+          }),
+      }),
+    );
+
+    expect(progress).toEqual([
+      {completed: 0, phase: 'indexing', scanned: 2, total: 2},
+      {completed: 2, phase: 'indexing', scanned: 2, total: 2},
+      {completed: 0, phase: 'writing', removed: 0, total: 2},
+      {completed: 2, phase: 'writing', removed: 0, total: 2},
+      {documentCount: 2, phase: 'activating'},
+    ]);
   });
 
   it('rebuilds after source changes and degrades safely from a corrupt cache', async () => {

@@ -29,7 +29,11 @@ describe('agent instruction lifecycle', () => {
           manifestPath: path.join(threadnoteHome, 'seed-manifest.yaml'),
           user: 'tester',
         };
-        const testSystem = SystemInfo.of({...system, homeDirectory: userHome});
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), NVM_DIR: undefined, NVM_HOME: undefined}),
+          homeDirectory: userHome,
+        });
         const modelPath = path.join(threadnoteHome, 'models', 'embedding', embeddingManifest.id, 'fixture.gguf');
         const installation = {
           bytes: embeddingManifest.size,
@@ -58,6 +62,21 @@ describe('agent instruction lifecycle', () => {
           Effect.provideService(LocalModelRuntime, modelRuntime),
         );
 
+        expect(installed.output).toContain('Building lexical recall index from canonical documents.');
+        expect(installed.output).toContain(
+          'Building lexical recall index: 0/0 changed document(s) indexed (100%; 0 canonical document(s) scanned).',
+        );
+        expect(installed.output).toContain(
+          'Writing lexical recall postings: 0/0 changed document(s) (100%), 0 stale document(s) removed.',
+        );
+        expect(installed.output).toContain('Activating lexical recall index with 0 document(s).');
+        expect(installed.output).toContain(
+          `Preparing vector recall index for 0 lexical document(s) with ${embeddingManifest.id}.`,
+        );
+        expect(installed.output).toContain(
+          'Building vector recall index: 0/0 new chunk(s) embedded (100%), 0 unchanged chunk(s) reused.',
+        );
+        expect(installed.output).toContain('Activating vector recall index with 0 chunk(s).');
         expect(installed.output).toContain(`Wrote agent instructions: ${path.join(userHome, '.codex', 'AGENTS.md')}`);
         expect(yield* fs.readFileString(path.join(userHome, '.codex', 'AGENTS.md'))).toContain(
           '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',

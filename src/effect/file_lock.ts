@@ -9,6 +9,18 @@ export interface ExclusiveFileLockOptions {
   readonly waitTimeoutMilliseconds: number;
 }
 
+export class FileLockTimeout extends Error {
+  override readonly name = 'FileLockTimeout';
+
+  constructor(readonly lockPath: string) {
+    super(`Timed out waiting for local lock ${lockPath}.`);
+  }
+}
+
+export function isFileLockTimeout(cause: unknown): cause is FileLockTimeout {
+  return cause instanceof FileLockTimeout;
+}
+
 /**
  * Serializes a small file-backed critical section across local processes.
  * Lock creation is atomic, stale locks are recoverable, and cleanup only
@@ -30,7 +42,7 @@ export function withExclusiveFileLock<A, E, R>(
     while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
       const now = yield* Clock.currentTimeMillis;
       if (now - startedAt >= options.waitTimeoutMilliseconds) {
-        return yield* Effect.fail(new Error(`Timed out waiting for local lock ${lockPath}.`));
+        return yield* Effect.fail(new FileLockTimeout(lockPath));
       }
       yield* Effect.sleep(options.retryIntervalMilliseconds);
     }

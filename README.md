@@ -4,10 +4,16 @@ Threadnote gives development agents durable local memory, branch handoffs, curat
 sharing. Version 4 is self-contained: canonical content, indexes, model files, locks, logs, migration receipts, and
 share metadata are owned under `~/.threadnote`.
 
-The installed product requires Node.js 22.19 or newer. It does not require Python, a second memory platform, or a
-background daemon.
+The installed product requires Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0`; Node 24 LTS is recommended. It does not
+require Python, a second memory platform, or a background daemon.
 
 ## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+```
+
+Or install manually:
 
 ```sh
 npm install --global threadnote
@@ -15,6 +21,12 @@ threadnote install
 threadnote doctor
 threadnote mcp-install codex --apply
 ```
+
+The bootstrap installers and `threadnote update` check Node before invoking npm, so an incompatible runtime cannot
+leave a partial upgrade. Threadnote does not silently replace the system runtime. With nvm, use `nvm install 24 &&
+nvm use 24`; on macOS with Homebrew, upgrade `node` or `node@24`; on Windows, use nvm-windows or
+`winget upgrade --id OpenJS.NodeJS.LTS -e`. Open a new terminal and rerun the installer afterward. A successful install
+or update removes verified stale Threadnote packages from other nvm-managed Node versions.
 
 Use `claude`, `cursor`, or `copilot` instead of `codex` for another supported client. MCP is a local stdio process.
 The default `core` toolset stays compact; install `--toolset full` for maintenance and artifact-sharing tools.

@@ -55,6 +55,24 @@ export interface RecallIndexData {
   readonly generation: string;
 }
 
+export type RecallIndexProgress =
+  | {
+      readonly completed: number;
+      readonly phase: 'indexing';
+      readonly scanned: number;
+      readonly total: number;
+    }
+  | {
+      readonly completed: number;
+      readonly phase: 'writing';
+      readonly removed: number;
+      readonly total: number;
+    }
+  | {
+      readonly documentCount: number;
+      readonly phase: 'activating';
+    };
+
 interface RecallDocumentRow {
   readonly candidate_json: string;
   readonly id: number;
@@ -136,6 +154,7 @@ interface LoadRecallIndexOptions {
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly limit?: number;
+  readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
   readonly query?: string;
   readonly requiredUris?: readonly string[];
 }
@@ -143,6 +162,7 @@ interface LoadRecallIndexOptions {
 interface LoadRecallIndexBatchOptions {
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
+  readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
   readonly selections: readonly Omit<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>[];
 }
 
@@ -678,7 +698,7 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
   databasePath: string,
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
-  options: Pick<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>,
+  options: Pick<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive' | 'onProgress'>,
   indexLockHeld = false,
 ) {
   const metadata = yield* loadRecallMetadata(sql);
@@ -717,6 +737,7 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
       config,
       options.includeInactive,
       options.forceRefresh === true || repairLogicalCorruption,
+      options.onProgress,
     );
   });
   yield* indexLockHeld
@@ -733,6 +754,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   config: RecallIndexConfig,
   includeInactive: boolean,
   forceRefresh: boolean,
+  onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>,
 ) {
   const staleGeneration = yield* readStaleGeneration(fs, staleMarkerBasePath);
   const canonicalResourcePolicy = yield* loadCanonicalResourcePolicy(config);
@@ -761,23 +783,36 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       stored.authority_policy_key !== (canonicalResourcePolicy.entryKeyByUri.get(source.uri) ?? null)
     );
   });
-  const indexedSources = yield* Effect.forEach(
-    changedSources,
-    source =>
-      Effect.gen(function* () {
-        const content = yield* fs.readFileString(source.path);
-        const canonicalResource = yield* verifyCanonicalResource(fs, source.uri, content, canonicalResourcePolicy);
-        const candidate = indexCandidate(source.uri, content, canonicalResource);
-        const postings = candidatePostings(candidate);
-        return {
-          candidate,
-          documentLength: recallDocumentTerms(candidate).length,
-          postings,
-          source,
-        } satisfies IndexedRecallSource;
-      }),
-    {concurrency: 16},
-  );
+  const indexedSources: IndexedRecallSource[] = [];
+  yield* onProgress?.({completed: 0, phase: 'indexing', scanned: sources.length, total: changedSources.length}) ??
+    Effect.void;
+  for (const batch of chunkValues(changedSources, 64)) {
+    indexedSources.push(
+      ...(yield* Effect.forEach(
+        batch,
+        source =>
+          Effect.gen(function* () {
+            const content = yield* fs.readFileString(source.path);
+            const canonicalResource = yield* verifyCanonicalResource(fs, source.uri, content, canonicalResourcePolicy);
+            const candidate = indexCandidate(source.uri, content, canonicalResource);
+            const postings = candidatePostings(candidate);
+            return {
+              candidate,
+              documentLength: recallDocumentTerms(candidate).length,
+              postings,
+              source,
+            } satisfies IndexedRecallSource;
+          }),
+        {concurrency: 16},
+      )),
+    );
+    yield* onProgress?.({
+      completed: indexedSources.length,
+      phase: 'indexing',
+      scanned: sources.length,
+      total: changedSources.length,
+    }) ?? Effect.void;
+  }
   const changedUris = new Set([...removedUris, ...changedSources.map(source => source.uri)]);
   const previousMetadata = yield* loadRecallMetadata(sql);
   const previousContentGeneration = previousMetadata.get('content_generation');
@@ -803,6 +838,8 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   }
   const previousValidatedAt = numericMetadata(previousMetadata, 'validated_at');
   const now = yield* Clock.currentTimeMillis;
+  yield* onProgress?.({completed: 0, phase: 'writing', removed: removedUris.length, total: indexedSources.length}) ??
+    Effect.void;
   yield* sql.withTransaction(
     Effect.gen(function* () {
       for (const uris of chunkValues([...removedUris, ...changedSources.map(source => source.uri)], 400)) {
@@ -851,6 +888,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           current.flat(),
         );
       };
+      let writtenDocuments = 0;
       for (const indexed of indexedSources) {
         const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
         if (documentId === undefined) {
@@ -859,6 +897,15 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         for (const [term, posting] of indexed.postings) {
           postingBatch.push([term, documentId, posting.fieldWeight, posting.termFrequency]);
           if (postingBatch.length >= 400) yield* flushPostings();
+        }
+        writtenDocuments += 1;
+        if (writtenDocuments % 50 === 0 || writtenDocuments === indexedSources.length) {
+          yield* onProgress?.({
+            completed: writtenDocuments,
+            phase: 'writing',
+            removed: removedUris.length,
+            total: indexedSources.length,
+          }) ?? Effect.void;
         }
       }
       yield* flushPostings();
@@ -899,6 +946,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         SELECT 'integrity_sequence', value FROM metadata WHERE key = 'mutation_sequence'
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `);
+      yield* onProgress?.({documentCount, phase: 'activating'}) ?? Effect.void;
     }),
   );
   yield* fs.chmod(databasePath, 0o600);
