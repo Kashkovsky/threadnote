@@ -11,6 +11,7 @@ const execute = promisify(execFile);
 const root = process.cwd();
 const cli = join(root, 'bin', 'threadnote.cjs');
 const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
+const realModelTimeoutMs = 300_000;
 let home: string;
 let temporaryRoot: string;
 let userHome: string;
@@ -108,7 +109,7 @@ describe('built self-contained distribution', () => {
           THREADNOTE_USER: 'e2e-user',
           USERPROFILE: userHome,
         },
-        timeout: 180_000,
+        timeout: realModelTimeoutMs,
       },
     );
     expect(`${shimRecall.stdout}${shimRecall.stderr}`).toContain('native-e2e.md');
@@ -398,7 +399,7 @@ describe('built self-contained distribution', () => {
           name: 'recall_context',
         },
         undefined,
-        {timeout: 180_000},
+        {timeout: realModelTimeoutMs},
       );
       const text = (recalled.content as Array<{readonly text?: string}>).map(item => item.text ?? '').join('\n');
       expect(recalled.isError, text).not.toBe(true);
@@ -552,7 +553,7 @@ async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = 
       USERPROFILE: userHome,
       ...environment,
     },
-    timeout: 180_000,
+    timeout: realModelTimeoutMs,
   });
   return `${result.stdout}${result.stderr}`;
 }

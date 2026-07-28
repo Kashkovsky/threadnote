@@ -4,6 +4,8 @@ import {join, relative, resolve} from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const failures = [];
+const npmCli = process.env.npm_execpath;
+if (!npmCli) throw new Error('npm_execpath is required for the self-contained package check.');
 const forbiddenFiles = [
   'config/ov.conf.template.json',
   'config/ovcli.conf.template.json',
@@ -85,7 +87,7 @@ for (const launcher of ['bin/threadnote.cjs', 'bin/threadnote-mcp-server.cjs']) 
 }
 
 const pack = JSON.parse(
-  execFileSync('npm', ['pack', '--ignore-scripts', '--dry-run', '--json'], {
+  execFileSync(process.execPath, [npmCli, 'pack', '--ignore-scripts', '--dry-run', '--json'], {
     cwd: root,
     encoding: 'utf8',
   }),
