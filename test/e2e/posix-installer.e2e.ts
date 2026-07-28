@@ -98,10 +98,6 @@ case "$1" in
   *) printf '%s\\n' 'data' ;;
 esac
 `,
-      spctl: `#!/bin/sh
-set -eu
-printf 'spctl %s\\n' "$*" >> "$THREADNOTE_TEST_SIGNATURE_LOG"
-`,
       uname: `#!/bin/sh
 set -eu
 case "$1" in
@@ -140,7 +136,7 @@ esac
     const signatureCommands = await readFile(signatureLog, 'utf8');
     expect(signatureCommands).toMatch(/codesign .*\.so(?:\s|$)/);
     expect(signatureCommands).toMatch(/codesign .*threadnote(?:\s|$)/);
-    expect(signatureCommands).toContain('spctl --assess --type execute');
+    expect(signatureCommands).not.toContain('spctl');
 
     const assetRequests: string[] = [];
     const server = Bun.serve({

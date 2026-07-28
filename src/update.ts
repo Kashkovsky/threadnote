@@ -312,9 +312,6 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
     yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', executable]).pipe(
       Effect.mapError(cause => new Error(`Release signature validation failed for ${executable}.`, {cause})),
     );
-    yield* runCommandEffect('spctl', ['--assess', '--type', 'execute', '--verbose=4', executable]).pipe(
-      Effect.mapError(cause => new Error('Release notarization validation failed.', {cause})),
-    );
     return;
   }
   const script = [

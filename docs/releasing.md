@@ -30,8 +30,9 @@ before signing or archiving.
 
 macOS builds sign each nested Mach-O native library first, then sign the Bun executable with hardened runtime and the
 minimal JIT entitlements in `scripts/macos-entitlements.plist`. CI verifies the signatures, submits a ZIP containing
-the exact `dist/` payload to Apple notarization, waits for acceptance, and assesses the executable. Only then does it
-create the release archive and checksum.
+the exact `dist/` payload to Apple notarization, waits for acceptance, and verifies the executable signature again.
+Only then does it create the release archive and checksum. `spctl` app assessment is not used because Threadnote is a
+standalone command-line executable rather than an application bundle.
 
 Windows arm64 payloads are assembled and smoke-tested on the native `windows-11-arm` runner, then transferred to the
 x64 signing job because the Azure signing action runs there. Azure Artifact Signing recursively signs every `.exe`,
@@ -51,8 +52,8 @@ artifacts are protected by the immutable GitHub release and checksums but are no
 Use the manual `workflow_dispatch` entry for `Publish standalone release` to exercise the release build on both macOS
 architectures. A manual run executes source verification, builds the exact standalone payloads, imports the Developer
 ID certificate, signs and verifies every Mach-O file, submits the payloads to Apple's notary service, assesses them
-with Gatekeeper, and uploads the signed archives as private workflow artifacts. Linux, Windows, and the GitHub Release
-job are tag-only and stay skipped, so the test cannot publish a release.
+through notarization acceptance, and uploads the signed archives as private workflow artifacts. Linux, Windows, and
+the GitHub Release job are tag-only and stay skipped, so the test cannot publish a release.
 
 The manual trigger must first exist on the repository's default branch. After it is merged, open **Actions**,
 select **Publish standalone release**, choose **Run workflow**, and select the branch to test. Do not create a version

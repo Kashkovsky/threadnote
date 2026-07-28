@@ -258,7 +258,6 @@ if [ "$platform" = "darwin" ] &&
   [ -z "${THREADNOTE_RELEASE_DOWNLOAD_ROOT:-}" ]; then
   require_command codesign
   require_command file
-  require_command spctl
   find "$staged_root/runtime" -type f -print |
     while IFS= read -r native_file; do
       if file "$native_file" | grep -q 'Mach-O'; then
@@ -268,8 +267,6 @@ if [ "$platform" = "darwin" ] &&
     done
   codesign --verify --strict --verbose=2 "$staged_root/threadnote" ||
     die "Release signature validation failed for the Threadnote executable."
-  spctl --assess --type execute --verbose=4 "$staged_root/threadnote" ||
-    die "Release notarization validation failed for the Threadnote executable."
 fi
 
 if [ -e "$release_root" ]; then

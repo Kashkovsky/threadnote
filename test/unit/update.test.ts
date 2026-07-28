@@ -151,7 +151,7 @@ describe('standalone release selection', () => {
     expect(codesignCommands.join('\n')).toContain('libfixture.so');
     expect(codesignCommands.join('\n')).toContain('threadnote');
     expect(codesignCommands.join('\n')).not.toContain('metadata.txt');
-    expect(commands.join('\n')).toContain('spctl --assess --type execute');
+    expect(commands.join('\n')).not.toContain('spctl');
   });
 });
 
@@ -244,7 +244,7 @@ describe('standalone updater', () => {
     if (result.platform === 'darwin') {
       expect(result.signatureCommands.join('\n')).toContain('codesign --verify --strict --verbose=2');
       expect(result.signatureCommands.join('\n')).toContain('libfixture.so');
-      expect(result.signatureCommands.join('\n')).toContain('spctl --assess');
+      expect(result.signatureCommands.join('\n')).not.toContain('spctl');
     }
     if (result.platform === 'win32') expect(result.signatureCommands.join('\n')).toContain('Get-AuthenticodeSignature');
     if (result.platform === 'linux') expect(result.signatureCommands).toHaveLength(0);
