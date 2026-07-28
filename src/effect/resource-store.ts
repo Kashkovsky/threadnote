@@ -21,6 +21,18 @@ export interface ResourceStoreLocation {
   readonly user: string;
 }
 
+export interface ResourceMutationLockEvent {
+  readonly account: string;
+  readonly lockPath: string;
+  readonly uri: string;
+}
+
+export interface ResourceStoreLayerOptions {
+  readonly onMutationLockAcquired?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
+  readonly onMutationLockCompleted?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
+  readonly onMutationLockContention?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
+}
+
 export interface ResourceStoreEntry {
   readonly modifiedAt?: string;
   readonly size: number;
@@ -151,23 +163,27 @@ export interface ResourceStoreShape {
 export class ResourceStore extends Context.Service<ResourceStore, ResourceStoreShape>()(
   'threadnote/effect/ResourceStore',
 ) {
-  static readonly layer = Layer.effect(
-    ResourceStore,
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const system = yield* SystemInfo;
-      const provideLockServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-        effect.pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(SystemInfo, system),
-        ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
-      const operation = createResourceStoreOperations(fs, path, provideLockServices);
-      return ResourceStore.of(operation);
-    }),
-  );
+  static layerWith(options: ResourceStoreLayerOptions = {}) {
+    return Layer.effect(
+      ResourceStore,
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const provideLockServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+          ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
+        const operation = createResourceStoreOperations(fs, path, provideLockServices, options);
+        return ResourceStore.of(operation);
+      }),
+    );
+  }
+
+  static readonly layer = ResourceStore.layerWith();
 }
 
 function createResourceStoreOperations(
@@ -176,6 +192,7 @@ function createResourceStoreOperations(
   provideLockServices: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>,
+  layerOptions: ResourceStoreLayerOptions,
 ): ResourceStoreShape {
   const resolve = (location: ResourceStoreLocation, uri: string) =>
     resolveResourcePath(fs, path, location, uri).pipe(mapIoError('resolve', uri));
@@ -194,20 +211,26 @@ function createResourceStoreOperations(
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>> => {
     const layout = threadnoteStorageLayout(path, location.home, location.account, uriSegment(location.user));
-    const lockEffect = Effect.gen(function* () {
-      const digest = yield* sha256Hex(resourceIdWithoutAnchor(id).canonicalUri);
-      return yield* withExclusiveFileLock(
-        fs,
-        path.join(layout.locksRoot, 'resources', `${digest}.lock`),
-        {
-          heartbeatIntervalMilliseconds: 10_000,
-          retryIntervalMilliseconds: 25,
-          staleAfterMilliseconds: 30_000,
-          waitTimeoutMilliseconds: 30_000,
-        },
-        effect,
-      );
-    });
+    const lockPath = path.join(layout.locksRoot, 'resources', location.account, 'mutations.lock');
+    const event = {account: location.account, lockPath, uri: id.canonicalUri};
+    const lockEffect = withExclusiveFileLock(
+      fs,
+      lockPath,
+      {
+        heartbeatIntervalMilliseconds: 10_000,
+        ...(layerOptions.onMutationLockAcquired ? {onAcquired: () => layerOptions.onMutationLockAcquired!(event)} : {}),
+        ...(layerOptions.onMutationLockCompleted
+          ? {onCompleted: () => layerOptions.onMutationLockCompleted!(event)}
+          : {}),
+        ...(layerOptions.onMutationLockContention
+          ? {onContention: () => layerOptions.onMutationLockContention!(event)}
+          : {}),
+        retryIntervalMilliseconds: 25,
+        staleAfterMilliseconds: 30_000,
+        waitTimeoutMilliseconds: 30_000,
+      },
+      effect,
+    );
     return provideLockServices(lockEffect).pipe(
       Effect.mapError(error =>
         isResourceStoreError(error)

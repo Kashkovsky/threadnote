@@ -90,6 +90,68 @@ describe('LocalModelStore', () => {
     await expect(readFile(installedPath)).rejects.toThrow();
     await expect(readFile(`${installedPath}.partial`)).rejects.toThrow();
   });
+
+  it('repairs a corrupt installed model inside the installation lock', async () => {
+    const bytes = Buffer.from('verified model replacement bytes');
+    const manifest = fixtureManifest(bytes);
+    const ranges: Array<string | undefined> = [];
+    const sourceUrl = await serve(bytes, ranges);
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-model-store-repair-'));
+    homes.push(home);
+    const store = await runEffect(
+      Effect.gen(function* () {
+        return yield* LocalModelStore;
+      }),
+    );
+    const installedPath = store.path(home, manifest);
+    await runEffect(store.install(home, manifest, {sourceUrl}));
+    await writeFile(installedPath, Buffer.from('x'.repeat(bytes.length)));
+
+    const repaired = await runEffect(store.install(home, manifest, {sourceUrl}));
+
+    expect(repaired.verified).toBe(true);
+    expect(await readFile(installedPath)).toEqual(bytes);
+    expect(ranges).toEqual([undefined, undefined]);
+  });
+
+  it('serializes removal behind an in-progress installation of the same model', async () => {
+    const bytes = Buffer.from('barrier-controlled model bytes');
+    const manifest = fixtureManifest(bytes);
+    const controlled = await serveControlled(bytes);
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-model-store-lock-'));
+    homes.push(home);
+    const completionOrder: string[] = [];
+    let signalRemoveContention = () => {};
+    const removeContended = new Promise<void>(resolve => {
+      signalRemoveContention = resolve;
+    });
+    const layer = LocalModelStore.layerWith({
+      onModelLockCompleted: event =>
+        Effect.sync(() => {
+          completionOrder.push(event.operation);
+        }),
+      onModelLockContention: event =>
+        Effect.sync(() => {
+          if (event.operation === 'remove') signalRemoveContention();
+        }),
+    });
+    const [installStore, removeStore] = await Promise.all([
+      runEffect(LocalModelStore.pipe(Effect.provide(layer))),
+      runEffect(LocalModelStore.pipe(Effect.provide(layer))),
+    ]);
+    const installedPath = installStore.path(home, manifest);
+
+    const install = runEffect(installStore.install(home, manifest, {sourceUrl: controlled.sourceUrl}));
+    await controlled.requestStarted;
+    const remove = runEffect(removeStore.remove(home, manifest));
+    await removeContended;
+    controlled.release();
+
+    await expect(install).resolves.toMatchObject({installed: true, verified: true});
+    await expect(remove).resolves.toBe(true);
+    expect(completionOrder).toEqual(['install', 'remove']);
+    await expect(readFile(installedPath)).rejects.toThrow();
+  });
 });
 
 function fixtureManifest(bytes: Uint8Array): LocalModelManifest {
@@ -133,4 +195,35 @@ async function serve(bytes: Buffer, ranges: Array<string | undefined>): Promise<
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Could not resolve test model server address.');
   return `http://127.0.0.1:${address.port}/model.gguf`;
+}
+
+async function serveControlled(bytes: Buffer): Promise<{
+  readonly release: () => void;
+  readonly requestStarted: Promise<void>;
+  readonly sourceUrl: string;
+}> {
+  let release = () => {};
+  let markStarted = () => {};
+  const requestStarted = new Promise<void>(resolve => {
+    markStarted = resolve;
+  });
+  const server = createServer((_request, response) => {
+    markStarted();
+    release = () => {
+      response.writeHead(200, {
+        'Content-Length': bytes.length,
+        'Content-Type': 'application/octet-stream',
+      });
+      response.end(bytes);
+    };
+  });
+  servers.push(server);
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Could not resolve test model server address.');
+  return {
+    release: () => release(),
+    requestStarted,
+    sourceUrl: `http://127.0.0.1:${address.port}/model.gguf`,
+  };
 }

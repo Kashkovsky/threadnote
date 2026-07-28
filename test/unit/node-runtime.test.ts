@@ -175,4 +175,109 @@ describe('Node runtime compatibility', () => {
     });
     await expect(readFile(calls, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
   });
+
+  posixIt('bootstrap redacts authenticated install sources without changing npm arguments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-node-bootstrap-redaction-'));
+    roots.push(root);
+    const bin = join(root, 'bin');
+    const prefix = join(root, 'prefix');
+    const calls = join(root, 'calls.log');
+    await mkdir(bin, {recursive: true});
+    await mkdir(join(prefix, 'bin'), {recursive: true});
+    await writeFile(
+      join(bin, 'node'),
+      '#!/bin/sh\nif [ "$1" = "-p" ]; then echo 24.18.0; exit 0; fi\nif [ "$1" = "-e" ]; then exit 0; fi\nexit 1\n',
+    );
+    await writeFile(
+      join(bin, 'npm'),
+      '#!/bin/sh\nif [ "$1" = "prefix" ]; then printf \'%s\\n\' "$THREADNOTE_TEST_PREFIX"; exit 0; fi\nprintf \'%s\\n\' "$*" > "$THREADNOTE_TEST_CALLS"\n',
+    );
+    await writeFile(join(prefix, 'bin', 'threadnote'), '#!/bin/sh\nexit 0\n');
+    await Promise.all(
+      [join(bin, 'node'), join(bin, 'npm'), join(prefix, 'bin', 'threadnote')].map(file => chmod(file, 0o755)),
+    );
+    const packageSource = 'https://package-user:package-pass@example.test/threadnote.tgz?auth=package-secret';
+    const registry = 'https://registry-user:registry-pass@registry.example.test/private?token=registry-secret';
+
+    const result = await execute('/bin/sh', [join(process.cwd(), 'scripts', 'install.sh')], {
+      env: {
+        ...process.env,
+        HOME: root,
+        PATH: [bin, '/usr/bin', '/bin'].join(delimiter),
+        THREADNOTE_NPM_REGISTRY: registry,
+        THREADNOTE_PACKAGE: packageSource,
+        THREADNOTE_RUNTIME: 'npm',
+        THREADNOTE_TEST_CALLS: calls,
+        THREADNOTE_TEST_PREFIX: prefix,
+      },
+    });
+
+    expect(result.stdout).toContain('https://[REDACTED]@example.test/threadnote.tgz?[REDACTED]');
+    expect(result.stdout).toContain('https://[REDACTED]@registry.example.test/private?[REDACTED]');
+    for (const secret of [
+      'package-user',
+      'package-pass',
+      'package-secret',
+      'registry-user',
+      'registry-pass',
+      'registry-secret',
+    ]) {
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain(secret);
+    }
+    expect(await readFile(calls, 'utf8')).toContain(packageSource);
+    expect(await readFile(calls, 'utf8')).toContain(`--registry=${registry}`);
+  });
+
+  posixIt('keeps authenticated install sources redacted when binary discovery fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-node-bootstrap-discovery-failure-'));
+    roots.push(root);
+    const bin = join(root, 'bin');
+    const prefix = join(root, 'prefix');
+    const calls = join(root, 'calls.log');
+    await mkdir(bin, {recursive: true});
+    await mkdir(join(prefix, 'bin'), {recursive: true});
+    await writeFile(
+      join(bin, 'node'),
+      '#!/bin/sh\nif [ "$1" = "-p" ]; then echo 24.18.0; exit 0; fi\nif [ "$1" = "-e" ]; then exit 0; fi\nexit 1\n',
+    );
+    await writeFile(
+      join(bin, 'npm'),
+      '#!/bin/sh\nif [ "$1" = "prefix" ]; then printf \'%s\\n\' "$THREADNOTE_TEST_PREFIX"; exit 0; fi\nprintf \'%s\\n\' "$*" >> "$THREADNOTE_TEST_CALLS"\n',
+    );
+    await Promise.all([join(bin, 'node'), join(bin, 'npm')].map(file => chmod(file, 0o755)));
+    const packageSource = 'https://package-user:package-pass@example.test/threadnote.tgz?auth=package-secret';
+    const registry = 'https://registry-user:registry-pass@registry.example.test/private?token=registry-secret';
+
+    const failure = await execute('/bin/sh', [join(process.cwd(), 'scripts', 'install.sh')], {
+      env: {
+        ...process.env,
+        HOME: root,
+        PATH: [bin, '/usr/bin', '/bin'].join(delimiter),
+        THREADNOTE_NPM_REGISTRY: registry,
+        THREADNOTE_PACKAGE: packageSource,
+        THREADNOTE_RUNTIME: 'npm',
+        THREADNOTE_TEST_CALLS: calls,
+        THREADNOTE_TEST_PREFIX: prefix,
+      },
+    }).then(
+      () => undefined,
+      error => error as {readonly stderr: string; readonly stdout: string},
+    );
+
+    expect(failure).toBeDefined();
+    const output = `${failure?.stdout ?? ''}\n${failure?.stderr ?? ''}`;
+    expect(output).toContain('Installed https://[REDACTED]@example.test/threadnote.tgz?[REDACTED]');
+    for (const secret of [
+      'package-user',
+      'package-pass',
+      'package-secret',
+      'registry-user',
+      'registry-pass',
+      'registry-secret',
+    ]) {
+      expect(output).not.toContain(secret);
+    }
+    expect(await readFile(calls, 'utf8')).toContain(packageSource);
+    expect(await readFile(calls, 'utf8')).toContain(`--registry=${registry}`);
+  });
 });

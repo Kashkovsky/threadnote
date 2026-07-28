@@ -135,7 +135,7 @@ function run(args) {
 }
 
 function assertCoreRecallArtifacts() {
-  const lexicalDatabase = join(home, 'indexes', 'lexical', 'active-v1.sqlite');
+  const lexicalDatabase = join(home, 'indexes', 'lexical', 'active-v2.sqlite');
   if (!existsSync(lexicalDatabase) || statSync(lexicalDatabase).size === 0) {
     throw new Error('Clean install did not create a populated lexical SQLite index.');
   }
