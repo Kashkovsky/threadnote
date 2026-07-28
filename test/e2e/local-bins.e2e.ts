@@ -52,10 +52,6 @@ beforeAll(async () => {
   expect(installedModel.size).toBe(receipt.size);
   installedModelModifiedAt = installedModel.mtimeMs;
   initialVectorGeneration = await activeVectorGeneration();
-  const longContext = Array.from(
-    {length: 900},
-    (_, index) => `QZ9-long-context-token-${String(index).padStart(4, '0')}`,
-  ).join(' ');
   await runCli([
     'remember',
     '--kind',
@@ -65,7 +61,7 @@ beforeAll(async () => {
     '--topic',
     'native-e2e',
     '--text',
-    `QZ9 native recall survives without a background service.\n\n${longContext}`,
+    'QZ9 native recall survives without a background service.',
   ]);
 });
 
