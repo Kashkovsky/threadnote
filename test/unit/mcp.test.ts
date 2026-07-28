@@ -89,8 +89,9 @@ describe('MCP toolsets', () => {
       }).pipe(Effect.provide(ApplicationLayer)),
     );
 
-    expect(command.slice(0, 4)).toEqual(['C:\\Windows\\System32\\cmd.exe', '/d', '/s', '/c']);
-    expect(command[4]).toMatch(/^"".*threadnote-mcp-server\.cmd""$/);
+    expect(command.slice(0, 3)).toEqual(['C:\\Windows\\System32\\cmd.exe', '/d', '/c']);
+    expect(command[3]).toMatch(/C:\\Threadnote\\bin[\\/]threadnote-mcp-server\.cmd$/);
+    expect(command[3]).not.toContain('"');
   });
 });
 
