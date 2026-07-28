@@ -49,7 +49,8 @@ describe('Windows platform contracts', () => {
   it('verifies installer checksums without PowerShell module discovery', async () => {
     const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
 
+    expect(installer).toContain("Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility");
+    expect(installer).toContain('Microsoft.PowerShell.Utility\\Get-FileHash');
     expect(installer).toContain('[Security.Cryptography.SHA256]::Create()');
-    expect(installer).not.toContain('Get-FileHash');
   });
 });
