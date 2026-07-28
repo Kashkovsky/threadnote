@@ -129,6 +129,21 @@ function Compare-ThreadnoteSemver {
   return $(if ($leftIdentifiers.Count -gt $rightIdentifiers.Count) { 1 } else { -1 })
 }
 
+function Get-ThreadnoteSha256 {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+      return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+      $hasher.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
+
 function Resolve-ThreadnoteVersion {
   $requestedVersion = if ($env:THREADNOTE_VERSION) { $env:THREADNOTE_VERSION.TrimStart('v') } else { $null }
   $prerelease = if ($requestedVersion) {
@@ -203,7 +218,7 @@ try {
     throw "Release checksum document names $($Matches[2]) instead of $artifact."
   }
   $expected = $Matches[1].ToLowerInvariant()
-  $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actual = Get-ThreadnoteSha256 $archive
   if ($actual -ne $expected) {
     throw "Checksum verification failed for $artifact."
   }
