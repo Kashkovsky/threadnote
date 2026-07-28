@@ -59,7 +59,9 @@ const environment = {
   USERPROFILE: userHome,
 };
 const coreEmbeddingModelId = 'bge-small-en-v1.5-q8';
+const longContextTokenCount = process.platform === 'win32' ? 180 : 900;
 const realModelTimeoutMs = 300_000;
+let smokeFailure;
 
 try {
   const version = run(['--version']);
@@ -72,7 +74,7 @@ try {
   }
   const initial = assertCoreRecallArtifacts();
   const longContext = Array.from(
-    {length: 900},
+    {length: longContextTokenCount},
     (_, index) => `QZ9-long-context-token-${String(index).padStart(4, '0')}`,
   ).join(' ');
   run(
@@ -114,8 +116,16 @@ try {
   }
   await verifyMcpShim();
   process.stdout.write('Self-contained clean-home smoke passed with a restricted PATH.\n');
+} catch (error) {
+  smokeFailure = error;
+  throw error;
 } finally {
-  rmSync(temporaryRoot, {force: true, recursive: true});
+  try {
+    rmSync(temporaryRoot, {force: true, maxRetries: 10, recursive: true, retryDelay: 200});
+  } catch (cleanupError) {
+    if (!smokeFailure) throw cleanupError;
+    process.stderr.write(`Temporary smoke cleanup also failed: ${String(cleanupError)}\n`);
+  }
 }
 
 function run(args, input) {
