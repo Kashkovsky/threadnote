@@ -93,10 +93,10 @@ describe('agent instruction lifecycle', () => {
         );
         expect(installed.output).toContain('Activating vector recall index with 0 chunk(s).');
         if (system.platform !== 'win32') {
-          expect(installed.output).toContain(`Wrote command shim: ${commandShim}`);
+          expect(installed.output).toContain(`Wrote command launcher: ${commandShim}`);
           const commandShimContent = yield* fs.readFileString(commandShim);
           expect(commandShimContent).not.toContain('/stale/nvm/versions/node/v22.21.1');
-          expect(commandShimContent).toContain('Threadnote launcher target is missing');
+          expect(commandShimContent).toContain('Threadnote standalone executable is missing');
           expect((yield* commandShimCheck().pipe(Effect.provideService(SystemInfo, testSystem))).status).toBe('ok');
         }
         expect(installed.output).toContain(`Wrote agent instructions: ${path.join(userHome, '.codex', 'AGENTS.md')}`);
@@ -131,7 +131,7 @@ describe('agent instruction lifecycle', () => {
             allowFailure: true,
           });
           expect(missingTarget.exitCode).toBe(127);
-          expect(missingTarget.stderr).toContain('Threadnote launcher target is missing');
+          expect(missingTarget.stderr).toContain('Threadnote standalone executable is missing');
           expect(missingTarget.stderr).not.toContain('Cannot find module');
         }
       }),
@@ -161,7 +161,7 @@ describe('agent instruction lifecycle', () => {
           Effect.provideService(SystemInfo, testSystem),
         );
 
-        expect(result.output).toContain(`WARN not overwriting unmanaged command shim: ${commandShim}`);
+        expect(result.output).toContain(`WARN not overwriting unmanaged command launcher: ${commandShim}`);
         expect(yield* fs.readFileString(commandShim)).toBe(content);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),

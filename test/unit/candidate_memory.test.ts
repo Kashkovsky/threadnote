@@ -1,4 +1,4 @@
-import {NodeCrypto, NodePath} from '@effect/platform-node';
+import {BunCrypto, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Layer, Option} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
@@ -217,7 +217,7 @@ describe('candidate-memory formation', () => {
           uid: Option.none(),
         } satisfies FileSystem.File.Info),
     });
-    const WindowsTestLayer = Layer.mergeAll(NodeCrypto.layer, NodePath.layerWin32, WindowsFileSystemLayer);
+    const WindowsTestLayer = Layer.mergeAll(BunCrypto.layer, BunPath.layerWin32, WindowsFileSystemLayer);
     const records = await Effect.runPromise(
       readActiveProjectMemories({account: 'local', agentContextHome, user: 'me'}, 'threadnote').pipe(
         Effect.provide(WindowsTestLayer),

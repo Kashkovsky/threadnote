@@ -1,7 +1,7 @@
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {NodeHttpServer} from '@effect/platform-node';
+import {BunHttpServer} from '@effect/platform-bun';
 import {Console, Effect, Fiber} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -114,7 +114,7 @@ async function startServer(
         return yield* Effect.never;
       }),
     ).pipe(
-      Effect.provide(NodeHttpServer.layerTest),
+      Effect.provide(BunHttpServer.layerTest),
       Effect.provide(ApplicationLayer),
       Effect.tapError(error => Effect.sync(() => rejectAddress?.(error))),
     ),

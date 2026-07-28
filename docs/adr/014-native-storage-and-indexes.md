@@ -11,7 +11,7 @@ segments and containment, rejects escaping links, serializes writers with heartb
 and commits same-directory temporary files with atomic rename.
 
 Lexical and vector indexes are derived, disposable data under `~/.threadnote/indexes/`. The lexical index is normalized
-SQLite, accessed through the exact-version `@effect/sql-sqlite-node` adapter over Node's built-in `node:sqlite`. It
+SQLite, accessed through the exact-version `@effect/sql-sqlite-bun` adapter over Bun's built-in `bun:sqlite`. It
 stores canonical-document metadata once, postings by integer document ID, and document frequency by term. Queries read
 only postings and statistics for their terms; refreshes transactionally update only changed documents and affected
 terms. WAL, bounded cross-process locks, generation invalidation, and rebuild-on-corruption keep the database
@@ -41,6 +41,6 @@ canonical Markdown and `threadnote://` identifiers untouched.
 ## Consequences
 
 - Canonical content is inspectable, recoverable, and independent of an index implementation.
-- Clean install has no database server or SQLite extension/native addon beyond Node itself.
+- Clean install has no database server or SQLite extension/native addon beyond the embedded Bun runtime.
 - Multi-process safety and crash consistency are explicit Threadnote contracts.
 - Index format changes can rebuild without migrating canonical data.

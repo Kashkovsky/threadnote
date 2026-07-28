@@ -42,6 +42,7 @@ describe('Effect architecture boundaries', () => {
 
   it('keeps raw Promise lifting primitives inside the shared adapters', async () => {
     const allowed = new Set([
+      'src/effect/archive.ts',
       'src/effect/console.ts',
       'src/effect/errors.ts',
       'src/effect/system.ts',
@@ -65,12 +66,8 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('keeps Node built-ins behind Effect platform services in production source', async () => {
-    const allowed = new Set(['src/effect/digest.ts', 'src/effect/system.ts']);
+  it('does not depend on Node built-ins in production source', async () => {
     for (const path of await sourceFiles()) {
-      if (allowed.has(relative(repoRoot, path))) {
-        continue;
-      }
       const source = await readFile(path, 'utf8');
       expect(source, relative(repoRoot, path)).not.toMatch(
         /(?:from\s+['"]node:|import\s*\(\s*['"]node:|require\s*\(\s*['"]node:)/,
@@ -78,10 +75,20 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('keeps process globals inside the SystemInfo service boundary', async () => {
+  it('uses only Bun Effect platform adapters in production source', async () => {
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      expect(source, relative(repoRoot, path)).not.toMatch(
+        /@effect\/(?:platform-node|sql-sqlite-node)|\bNode(?:Runtime|Services|HttpClient|HttpServer|Socket|Stdio)\b/,
+      );
+    }
+  });
+
+  it('keeps runtime globals inside the SystemInfo service boundary and executable entry point', async () => {
+    const allowed = new Set(['src/effect/system.ts', 'src/standalone.ts']);
     for (const path of await sourceFiles()) {
       const relativePath = relative(repoRoot, path);
-      if (relativePath === 'src/effect/system.ts') {
+      if (allowed.has(relativePath)) {
         continue;
       }
       const source = await readFile(path, 'utf8');

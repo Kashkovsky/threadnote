@@ -1,7 +1,5 @@
-import {createHash} from 'node:crypto';
-import {mkdir, readFile, rename, writeFile} from 'node:fs/promises';
-import {dirname, resolve} from 'node:path';
-import {Effect} from 'effect';
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import {Effect, Path} from 'effect';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {baselineResult, parseRecallEvaluationBaselineV1} from '../src/evaluation/recall-baseline.js';
@@ -20,24 +18,28 @@ import type {LocalModelManifest} from '../src/models/catalog.js';
 import {LocalModelStore} from '../src/models/store.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
 import {normalizeVector} from '../src/search/vector-search.js';
+import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const options = parseArguments(process.argv.slice(2));
-const fixture = createRecallEvaluationFixtureV2();
-const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
-const baseline = parseRecallEvaluationBaselineV1(JSON.parse(await readFile(options.baseline, 'utf8')));
-if (baseline.fixture.hash !== fixtureHash) {
-  throw new Error(
-    `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${fixtureHash}.`,
-  );
-}
-const manifests = [
-  options.embedding ? manifest(options.embedding, 'embedding') : undefined,
-  options.reranker ? manifest(options.reranker, 'reranker') : undefined,
-].filter((value): value is LocalModelManifest => value !== undefined);
-if (manifests.length === 0) throw new Error('Pass --embedding <model-id>, --reranker <model-id>, or both.');
+const evaluateModels = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const options = parseArguments(yield* scriptArguments(), path.resolve);
+  const fixture = createRecallEvaluationFixtureV2();
+  const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
+  const baseline = parseRecallEvaluationBaselineV1(yield* readJsonFile(options.baseline));
+  if (baseline.fixture.hash !== hash) {
+    return yield* Effect.fail(
+      new Error(`Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}.`),
+    );
+  }
+  const manifests = [
+    options.embedding ? manifest(options.embedding, 'embedding') : undefined,
+    options.reranker ? manifest(options.reranker, 'reranker') : undefined,
+  ].filter((value): value is LocalModelManifest => value !== undefined);
+  if (manifests.length === 0) {
+    return yield* Effect.fail(new Error('Pass --embedding <model-id>, --reranker <model-id>, or both.'));
+  }
 
-const evaluationArtifact = await Effect.runPromise(
-  Effect.scoped(
+  const evaluationArtifact = yield* Effect.scoped(
     Effect.gen(function* () {
       const store = yield* LocalModelStore;
       const runtime = yield* LocalModelRuntime;
@@ -108,7 +110,7 @@ const evaluationArtifact = await Effect.runPromise(
 
       const modelIds = manifests.map(candidate => candidate.id).join('+');
       const run = runScoredRecallEvaluationV2(fixture, scoresByQuery, {
-        fixtureHash,
+        fixtureHash: hash,
         model: modelIds,
         pipelineName: options.reranker ? 'threadnote-4-native-hybrid-reranked' : 'threadnote-4-native-hybrid',
         revision: manifests.map(candidate => candidate.revision).join('+'),
@@ -116,7 +118,7 @@ const evaluationArtifact = await Effect.runPromise(
       return {
         fixture: {
           documents: fixture.documents.length,
-          hash: fixtureHash,
+          hash,
           queries: fixture.queries.length,
           version: fixture.version,
         },
@@ -126,37 +128,39 @@ const evaluationArtifact = await Effect.runPromise(
         version: 1,
       };
     }),
-  ).pipe(Effect.provide(ApplicationLayer)),
-);
-const gate = evaluateRecallNonInferiority(baselineResult(baseline), evaluationArtifact.result);
-const artifact = {...evaluationArtifact, gate};
+  );
+  const gate = evaluateRecallNonInferiority(baselineResult(baseline), evaluationArtifact.result);
+  const artifact = {...evaluationArtifact, gate};
 
-if (options.output) await atomicWrite(options.output, `${JSON.stringify(artifact, undefined, 2)}\n`);
-const summary = {
-  baseline: {
-    fixtureHash: baseline.fixture.hash,
-    pipeline: baseline.result.pipeline,
-    version: baseline.version,
-  },
-  fixture: artifact.fixture,
-  gate,
-  models: artifact.models.map(candidate => ({
-    id: candidate.id,
-    revision: candidate.revision,
-    role: candidate.role,
-    sha256: candidate.sha256,
-  })),
-  result: {
-    categories: artifact.result.categories,
-    failureCount: artifact.result.failures.length,
-    metrics: artifact.result.metrics,
-    pipeline: artifact.result.pipeline,
-  },
-  version: artifact.version,
-};
-if (options.summaryOutput) await atomicWrite(options.summaryOutput, `${JSON.stringify(summary, undefined, 2)}\n`);
-process.stdout.write(`${JSON.stringify(summary, undefined, 2)}\n`);
-if (options.failOnRegression && !gate.passed) process.exitCode = 1;
+  if (options.output) yield* atomicWrite(options.output, `${JSON.stringify(artifact, undefined, 2)}\n`);
+  const summary = {
+    baseline: {
+      fixtureHash: baseline.fixture.hash,
+      pipeline: baseline.result.pipeline,
+      version: baseline.version,
+    },
+    fixture: artifact.fixture,
+    gate,
+    models: artifact.models.map(candidate => ({
+      id: candidate.id,
+      revision: candidate.revision,
+      role: candidate.role,
+      sha256: candidate.sha256,
+    })),
+    result: {
+      categories: artifact.result.categories,
+      failureCount: artifact.result.failures.length,
+      metrics: artifact.result.metrics,
+      pipeline: artifact.result.pipeline,
+    },
+    version: artifact.version,
+  };
+  if (options.summaryOutput) {
+    yield* atomicWrite(options.summaryOutput, `${JSON.stringify(summary, undefined, 2)}\n`);
+  }
+  yield* printJson(summary);
+  if (options.failOnRegression && !gate.passed) yield* markFailure();
+});
 
 function manifest(id: string, role: 'embedding' | 'reranker'): LocalModelManifest {
   const candidate = BUILTIN_MODEL_MANIFESTS.find(value => value.id === id);
@@ -186,7 +190,7 @@ interface Options {
   readonly summaryOutput?: string;
 }
 
-function parseArguments(args: readonly string[]): Options {
+function parseArguments(args: readonly string[], resolve: (value: string) => string): Options {
   let baseline = resolve('test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json');
   let embedding: string | undefined;
   let failOnRegression = false;
@@ -224,10 +228,4 @@ function required(value: string | undefined, option: string): string {
   return value;
 }
 
-async function atomicWrite(path: string, content: string): Promise<void> {
-  const target = resolve(path);
-  const temporary = `${target}.tmp-${process.pid}`;
-  await mkdir(dirname(target), {recursive: true});
-  await writeFile(temporary, content, 'utf8');
-  await rename(temporary, target);
-}
+BunRuntime.runMain(evaluateModels.pipe(Effect.provide(ApplicationLayer)));

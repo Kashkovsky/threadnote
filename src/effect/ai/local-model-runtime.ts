@@ -1,4 +1,4 @@
-import {Context, Effect, Exit, Layer, Scope, Semaphore} from 'effect';
+import {Context, Effect, Exit, Layer, Path, Scope, Semaphore} from 'effect';
 import * as AiError from 'effect/unstable/ai/AiError';
 import * as EmbeddingModel from 'effect/unstable/ai/EmbeddingModel';
 import type {LocalModelManifest} from '../../models/catalog.js';
@@ -14,6 +14,7 @@ import {
   type StructuredGeneratorShape,
 } from './structured-generator.js';
 import type {InferenceInterrupted, ModelSessionError, NativeRuntimeError, RerankingFailed} from './errors.js';
+import type {SystemInfo} from '../system.js';
 
 const EMBEDDING_BATCH_SIZE = 32;
 
@@ -57,14 +58,19 @@ export class LocalModelRuntime extends Context.Service<LocalModelRuntime, LocalM
   static readonly nativeLayer = localModelRuntimeLayer();
 }
 
-export function localModelRuntimeLayer(
-  engineLayer: Layer.Layer<LlamaCppEngine, NativeRuntimeError> = nodeLlamaCppEngineLayer(),
+export function localModelRuntimeLayer<R = Path.Path | SystemInfo>(
+  engineLayer: Layer.Layer<LlamaCppEngine, NativeRuntimeError, R> = nodeLlamaCppEngineLayer() as Layer.Layer<
+    LlamaCppEngine,
+    NativeRuntimeError,
+    R
+  >,
 ) {
   return Layer.fromBuild((_memoMap, scope) =>
     Effect.gen(function* () {
       const inferencePermits = yield* Semaphore.make(1);
+      const engineRequirements = yield* Effect.context<R>();
       const engineContext: Effect.Effect<Context.Context<LlamaCppEngine>, NativeRuntimeError> = yield* Effect.cached(
-        Layer.buildWithScope(engineLayer, scope),
+        Layer.buildWithScope(engineLayer, scope).pipe(Effect.provide(engineRequirements)),
       );
       const embeddingModels = new Map<string, Effect.Effect<EmbeddingModel.Service, LocalEmbeddingError>>();
       const rerankers = new Map<

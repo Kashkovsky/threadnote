@@ -1,8 +1,8 @@
 # Effect architecture
 
-Threadnote 4 has one supported application runtime: Node.js. Each CLI, stdio MCP, or foreground manager process owns
-one root Effect runtime and scope; no service creates a daemon or hidden localhost dependency. Effect services form
-the capability boundaries:
+Threadnote 4 has one supported application runtime: the Bun runtime embedded into each release executable. Each CLI,
+stdio MCP, or foreground manager process owns one root Effect runtime and scope; no service creates a nested runtime,
+daemon, or hidden localhost dependency. Effect services form the capability boundaries:
 
 - `ResourceStore` owns canonical URI operations, containment, locking, atomic replacement, and compare-and-swap.
 - Obsidian source synchronization commits sanitized external resources through `ResourceStore`; configuration,
@@ -10,7 +10,7 @@ the capability boundaries:
   through the shared filesystem, path, crypto, clock, command, lock, and system services.
 - `LocalModelStore` owns resumable downloads, free-space checks, verification, and atomic model promotion.
 - `LocalModelRuntime` owns core embedding plus optional reranking and structured generation.
-- `@effect/sql-sqlite-node` owns scoped lexical-index connections over Node's built-in SQLite runtime.
+- `@effect/sql-sqlite-bun` owns scoped lexical-index connections over Bun's built-in SQLite runtime.
 - `SystemInfo`, `HttpService`, `CommandExecutor`, and digest services isolate platform effects.
 
 Domain code does not import `node-llama-cpp`. The single native adapter requests a prebuilt binary with downloads and
@@ -27,5 +27,7 @@ lexical recall and produces a failing doctor diagnostic. A complete vector gener
 one. Reranking and structured generation remain optional roles.
 
 Architecture tests enforce that raw filesystem, process, HTTP, crypto, and native-addon access stays inside adapters.
+Application modules and build scripts do not import `node:*` modules; Effect's Bun filesystem, path, command, HTTP,
+socket, server, terminal, and SQLite adapters provide those capabilities.
 See [architecture.md](architecture.md) for the complete storage and recall data flow.
 Obsidian workflows do not create an internal runtime or shell through a second memory platform.

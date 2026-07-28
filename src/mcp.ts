@@ -1,4 +1,5 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
+import {commandLauncherPath} from './command-shim.js';
 import {THREADNOTE_MCP_NAME} from './constants.js';
 import {maybeRunEffect, runCommandEffect} from './effect/command.js';
 import {SystemInfo} from './effect/system.js';
@@ -16,7 +17,6 @@ import {
   parseJsonConfigObject,
   readFileIfExists,
   removePathIfExists,
-  toolRoot,
 } from './utils.js';
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
@@ -278,9 +278,14 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
   };
 });
 
-const mcpAdapterCommand = Effect.fn('mcp.adapterCommand')(function* () {
-  const path = yield* Path.Path;
-  return ['node', path.join(yield* toolRoot(), 'bin', 'threadnote-mcp-server.cjs')];
+export const mcpAdapterCommand = Effect.fn('mcp.adapterCommand')(function* () {
+  const system = yield* SystemInfo;
+  if (system.platform === 'win32') {
+    const launcher = yield* commandLauncherPath('mcp');
+    const comSpec = system.environment().ComSpec ?? system.environment().COMSPEC ?? 'C:\\Windows\\System32\\cmd.exe';
+    return [comSpec, '/d', '/s', '/c', `""${launcher.replaceAll('"', '""')}""`];
+  }
+  return [yield* commandLauncherPath('cli'), 'mcp-server'];
 });
 
 const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (

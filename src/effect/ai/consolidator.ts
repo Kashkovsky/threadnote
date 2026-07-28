@@ -1,4 +1,4 @@
-import * as NodeHttpClient from '@effect/platform-node/NodeHttpClient';
+import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import {OpenAiClient, OpenAiLanguageModel} from '@effect/ai-openai-compat';
 import {Context, Effect, Layer, pipe, Redacted, Schema} from 'effect';
 import {LanguageModel} from 'effect/unstable/ai';
@@ -122,7 +122,7 @@ export function effectAiLanguageModelLayer(
   const clientLayer = OpenAiClient.layer({
     apiKey: config.apiKey ? Redacted.make(config.apiKey) : undefined,
     apiUrl: config.apiUrl,
-  }).pipe(Layer.provide(NodeHttpClient.layerFetch));
+  }).pipe(Layer.provide(BunHttpClient.layer));
   return OpenAiLanguageModel.layer({
     config: {max_output_tokens: maxOutputTokens, strictJsonSchema: true, ...generationConfig},
     model: config.model,

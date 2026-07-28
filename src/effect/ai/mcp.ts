@@ -1,4 +1,4 @@
-import * as NodeStdio from '@effect/platform-node/NodeStdio';
+import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {fromPromiseError} from '../errors.js';
@@ -229,7 +229,7 @@ const stdioWithInstructionsLayer = (instructions: string): Layer.Layer<Stdio.Std
             .pipe(Sink.mapInput((input: string | Uint8Array) => addInitializeInstructions(input, instructions))),
       });
     }),
-  ).pipe(Layer.provide(NodeStdio.layer));
+  ).pipe(Layer.provide(BunStdio.layer));
 
 function addInitializeInstructions(input: string | Uint8Array, instructions: string): string | Uint8Array {
   const text = typeof input === 'string' ? input : new TextDecoder().decode(input);

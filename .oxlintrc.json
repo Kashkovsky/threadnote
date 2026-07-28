@@ -5,7 +5,15 @@
     "correctness": "off"
   },
   "env": {
-    "builtin": true
+    "builtin": true,
+    "browser": true
+  },
+  "globals": {
+    "Bun": "readonly",
+    "Buffer": "readonly",
+    "THREADNOTE_STANDALONE": "readonly",
+    "THREADNOTE_VERSION": "readonly",
+    "process": "readonly"
   },
   "ignorePatterns": ["build/**", "coverage/**", "dist/**", "node_modules/**", "out/**"],
   "rules": {
@@ -128,9 +136,6 @@
             "varsIgnorePattern": "^_"
           }
         ]
-      },
-      "env": {
-        "node": true
       }
     },
     {

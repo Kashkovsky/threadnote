@@ -1,6 +1,6 @@
-import {createHash} from 'node:crypto';
-import {mkdir, rename, writeFile} from 'node:fs/promises';
-import {dirname, resolve} from 'node:path';
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import {Effect} from 'effect';
+import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   RECALL_BASELINE_VERSION,
   parseRecallEvaluationBaselineV1,
@@ -12,43 +12,48 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
+import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
-const options = parseArguments(process.argv.slice(2));
-const fixture = createRecallEvaluationFixtureV2();
-const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
-const result = evaluateRecallRunV2(
-  fixture,
-  runLexicalRecallEvaluationV2(fixture, {
+const DEFAULT_CREATED_AT = '2026-07-27T00:00:00.000Z';
+
+const captureBaseline = Effect.gen(function* () {
+  const options = parseArguments(yield* scriptArguments());
+  const fixture = createRecallEvaluationFixtureV2();
+  const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
+  const result = evaluateRecallRunV2(
+    fixture,
+    runLexicalRecallEvaluationV2(fixture, {
+      createdAt: options.createdAt,
+      fixtureHash: hash,
+      pipelineName: 'threadnote-3.0.3-lexical-only',
+    }),
+  );
+  const artifact: RecallEvaluationBaselineV1 = {
     createdAt: options.createdAt,
-    fixtureHash,
-    pipelineName: 'threadnote-3.0.3-lexical-only',
-  }),
-);
-const artifact: RecallEvaluationBaselineV1 = {
-  createdAt: options.createdAt,
-  fixture: {
-    documents: fixture.documents.length,
-    hash: fixtureHash,
-    queries: fixture.queries.length,
-    version: fixture.version,
-  },
-  knownContractFailures: result.failures.length,
-  result: {
-    categories: result.categories,
-    metrics: result.metrics,
-    pipeline: result.pipeline,
-  },
-  source: {
-    openVikingVersion: '0.4.10',
-    rankerVersion: RECALL_RANKER_VERSION,
-    threadnoteVersion: '3.0.3',
-  },
-  version: RECALL_BASELINE_VERSION,
-};
-parseRecallEvaluationBaselineV1(artifact);
-const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
-if (options.outputPath) await atomicWrite(options.outputPath, json);
-process.stdout.write(json);
+    fixture: {
+      documents: fixture.documents.length,
+      hash,
+      queries: fixture.queries.length,
+      version: fixture.version,
+    },
+    knownContractFailures: result.failures.length,
+    result: {
+      categories: result.categories,
+      metrics: result.metrics,
+      pipeline: result.pipeline,
+    },
+    source: {
+      openVikingVersion: '0.4.10',
+      rankerVersion: RECALL_RANKER_VERSION,
+      threadnoteVersion: '3.0.3',
+    },
+    version: RECALL_BASELINE_VERSION,
+  };
+  parseRecallEvaluationBaselineV1(artifact);
+  const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
+  if (options.outputPath) yield* atomicWrite(options.outputPath, json);
+  yield* printJson(artifact);
+});
 
 interface Options {
   readonly createdAt: string;
@@ -68,8 +73,8 @@ function parseArguments(args: readonly string[]): Options {
 }
 
 function sourceDate(): string {
-  const epoch = process.env.SOURCE_DATE_EPOCH;
-  return epoch ? isoDate(new Date(Number(epoch) * 1_000).toISOString()) : '2026-07-27T00:00:00.000Z';
+  const epoch = Bun.env.SOURCE_DATE_EPOCH;
+  return epoch ? isoDate(new Date(Number(epoch) * 1_000).toISOString()) : DEFAULT_CREATED_AT;
 }
 
 function isoDate(value: string): string {
@@ -83,10 +88,4 @@ function requiredValue(value: string | undefined, option: string): string {
   return value;
 }
 
-async function atomicWrite(path: string, content: string): Promise<void> {
-  const target = resolve(path);
-  const temporary = `${target}.tmp-${process.pid}`;
-  await mkdir(dirname(target), {recursive: true});
-  await writeFile(temporary, content, 'utf8');
-  await rename(temporary, target);
-}
+BunRuntime.runMain(captureBaseline.pipe(Effect.provide(ApplicationLayer)));

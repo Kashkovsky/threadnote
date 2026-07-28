@@ -2,18 +2,16 @@ import {Effect, FileSystem, Path} from 'effect';
 
 let cachedVersion: string | undefined;
 
-/**
- * Returns the threadnote package version baked into this build. The bundled
- * ESM lives under `<install>/dist/`,
- * and the package's `files:` list ships `package.json` alongside `dist/`, so a
- * relative read from this module resolves the same metadata that npm sees.
- *
- * Returns `'unknown'` if the read fails (dev runs via tsx, or a damaged
- * install). Callers should treat `'unknown'` as a signal to skip whatever they
- * were about to do — there's no actionable comparison to make.
- */
+export function isStandaloneThreadnoteBuild(): boolean {
+  return typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE;
+}
+
 export const getThreadnoteVersion = Effect.fn('version.getThreadnoteVersion')(function* () {
   if (cachedVersion !== undefined) {
+    return cachedVersion;
+  }
+  if (typeof THREADNOTE_VERSION !== 'undefined') {
+    cachedVersion = THREADNOTE_VERSION;
     return cachedVersion;
   }
   const fs = yield* FileSystem.FileSystem;

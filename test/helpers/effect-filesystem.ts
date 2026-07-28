@@ -1,12 +1,12 @@
-import {NodeFileSystem, NodePath} from '@effect/platform-node';
+import {BunFileSystem, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Option, Path} from 'effect';
 
-const FileSystemLayer = NodeFileSystem.layer;
+const FileSystemLayer = BunFileSystem.layer;
 
 const runFileSystem = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
   Effect.runPromise(effect.pipe(Effect.provide(FileSystemLayer)));
 
-const pathService = Effect.runSync(Path.Path.pipe(Effect.provide(NodePath.layer)));
+const pathService = Effect.runSync(Path.Path.pipe(Effect.provide(BunPath.layer)));
 
 export const join = pathService.join;
 

@@ -1,13 +1,17 @@
 # Threadnote 4 architecture
 
-Threadnote 4 is a self-contained, Node.js-only application. Canonical storage, recall indexes, local inference,
-sharing, migration, the manager, and MCP all run in the Threadnote process. A normal operation does not start or
-contact a Python service, a memory-platform server, a database server, or a background daemon.
+Threadnote 4 is a self-contained executable with an embedded Bun runtime. Canonical storage, recall indexes, local
+inference, sharing, migration, the manager, and MCP all run in the Threadnote process. A normal operation does not
+start or contact a separately installed runtime, Python service, memory-platform server, database server, or
+background daemon.
 
 ## Runtime contract
 
-- Node.js `^22.22.2`, `^24.15.0`, or `>=26.0.0` is the supported runtime; Node 24 LTS is recommended.
-- Bun and Deno are not part of the Threadnote 4 support contract or release matrix.
+- Bun `1.3.14` is pinned for builds and embedded into every release executable; users do not install a runtime.
+- Release compilation gates cover every base target supported by Bun: macOS arm64/x64, Linux arm64/x64 with glibc and
+  musl, and Windows arm64/x64. Shipped local-AI archives are limited to the six targets with a compatible prebuilt
+  `node-llama-cpp` payload.
+- Bun bytecode compilation, minification, and linked source maps are enabled for standalone executables.
 - Each CLI, MCP, or manager process owns one root Effect runtime and one root scope.
 - MCP uses stdio. The manager starts a temporary loopback HTTP server only for the foreground manager session.
 - `node-llama-cpp` is isolated behind one Threadnote adapter and may load only a compatible prebuilt binary.
@@ -16,7 +20,7 @@ contact a Python service, a memory-platform server, a database server, or a back
 ```mermaid
 flowchart TD
     Agents["Codex · Claude Code · Cursor · Copilot"] --> MCP["stdio MCP"]
-    CLI["threadnote CLI"] --> Runtime["Node.js process<br/>one Effect runtime and scope"]
+    CLI["threadnote CLI"] --> Runtime["embedded Bun process<br/>one Effect runtime and scope"]
     MCP --> Runtime
     Manager["foreground manager session"] --> Runtime
     Runtime --> Store["ResourceStore<br/>canonical Markdown"]

@@ -1,0 +1,191 @@
+import {Effect, FileSystem, Path} from 'effect';
+import {describe, expect, it} from 'vitest';
+import {extractGzipTar, type ArchiveExtractionLimits} from '../../src/effect/archive.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const TAR_BLOCK_BYTES = 512;
+
+describe('bounded streaming release extraction', () => {
+  it('applies local PAX path and size overrides', async () => {
+    const pax = paxRecords({path: './nested/local.txt', size: '5'});
+    const result = await extractFixture(
+      tarArchive([
+        tarEntry('./PaxHeader/local.txt', pax, {type: 'x'}),
+        tarEntry('./fallback.txt', bytes('hello'), {headerSize: 0}),
+      ]),
+    );
+
+    expect(result.failure).toBeUndefined();
+    expect(result.files.get('nested/local.txt')).toBe('hello');
+    expect(result.files.has('fallback.txt')).toBe(false);
+  });
+
+  it('applies global PAX metadata and lets an empty local value clear it', async () => {
+    const globalArchive = tarArchive([
+      tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
+      tarEntry('./fallback.txt', bytes('global')),
+    ]);
+    const clearedArchive = tarArchive([
+      tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
+      tarEntry('./PaxHeader/local.txt', paxRecords({path: ''}), {type: 'x'}),
+      tarEntry('./fallback.txt', bytes('fallback')),
+    ]);
+    const [global, cleared] = await Promise.all([extractFixture(globalArchive), extractFixture(clearedArchive)]);
+
+    expect(global.failure).toBeUndefined();
+    expect(global.files.get('global.txt')).toBe('global');
+    expect(cleared.failure).toBeUndefined();
+    expect(cleared.files.get('fallback.txt')).toBe('fallback');
+  });
+
+  it('rejects malformed or truncated PAX records', async () => {
+    const malformed = await extractFixture(
+      tarArchive([
+        tarEntry('./PaxHeader/broken', bytes('99 path=broken.txt\n'), {type: 'x'}),
+        tarEntry('./fallback.txt', bytes('content')),
+      ]),
+    );
+
+    expect(String(malformed.failure)).toMatch(/truncated PAX metadata record/);
+    expect(malformed.files.has('fallback.txt')).toBe(false);
+  });
+
+  it.each([
+    {
+      label: 'cumulative decompressed bytes',
+      limits: {decompressedBytes: TAR_BLOCK_BYTES * 2},
+      pattern: /decompressed tar bytes/,
+    },
+    {
+      label: 'tar entry count',
+      limits: {entries: 1},
+      pattern: /tar entries/,
+    },
+    {
+      label: 'end padding',
+      limits: {endPaddingBytes: TAR_BLOCK_BYTES / 2},
+      pattern: /end-padding bytes/,
+    },
+  ])('bounds $label independently of file payload sizes', async ({limits, pattern}) => {
+    const result = await extractFixture(
+      tarArchive([tarEntry('./first.txt', new Uint8Array()), tarEntry('./second.txt', new Uint8Array())]),
+      limits,
+    );
+
+    expect(String(result.failure)).toMatch(pattern);
+  });
+
+  it('counts effective PAX sizes against the expanded payload budget', async () => {
+    const pax = paxRecords({size: '5'});
+    const result = await extractFixture(
+      tarArchive([
+        tarEntry('./PaxHeader/size', pax, {type: 'x'}),
+        tarEntry('./payload.txt', bytes('hello'), {headerSize: 0}),
+      ]),
+      {expandedBytes: pax.length + 4},
+    );
+
+    expect(String(result.failure)).toMatch(/expanded bytes/);
+    expect(result.files.has('payload.txt')).toBe(false);
+  });
+});
+
+async function extractFixture(tar: Uint8Array, limits: ArchiveExtractionLimits = {}) {
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-archive-test-'});
+        const archive = path.join(root, 'release.tar.gz');
+        const destination = path.join(root, 'release');
+        yield* fs.writeFile(archive, Bun.gzipSync(new Uint8Array(tar)));
+        const failure = yield* extractGzipTar(archive, destination, limits).pipe(
+          Effect.as(undefined),
+          Effect.catch(cause => Effect.succeed(cause)),
+        );
+        const files = new Map<string, string>();
+        if (yield* fs.exists(destination)) {
+          for (const relative of yield* fs.readDirectory(destination, {recursive: true})) {
+            const file = path.join(destination, relative);
+            if ((yield* fs.stat(file)).type === 'File')
+              files.set(relative.replaceAll('\\', '/'), yield* fs.readFileString(file));
+          }
+        }
+        return {failure, files};
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+}
+
+function tarArchive(entries: readonly Uint8Array[]): Uint8Array {
+  return joinBytes([...entries, new Uint8Array(TAR_BLOCK_BYTES * 2)]);
+}
+
+function tarEntry(
+  name: string,
+  content: Uint8Array,
+  options: {
+    readonly headerSize?: number;
+    readonly mode?: number;
+    readonly type?: '0' | '5' | 'g' | 'x';
+  } = {},
+): Uint8Array {
+  const header = new Uint8Array(TAR_BLOCK_BYTES);
+  writeText(header, 0, 100, name);
+  writeOctal(header, 100, 8, options.mode ?? 0o644);
+  writeOctal(header, 108, 8, 0);
+  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 124, 12, options.headerSize ?? content.length);
+  writeOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  writeText(header, 156, 1, options.type ?? '0');
+  writeText(header, 257, 6, 'ustar');
+  writeText(header, 263, 2, '00');
+  const checksum = header.reduce((total, byte) => total + byte, 0);
+  writeText(header, 148, 8, `${checksum.toString(8).padStart(6, '0')}\0 `);
+  return joinBytes([header, content, new Uint8Array(tarPadding(content.length))]);
+}
+
+function paxRecords(values: Readonly<Record<string, string>>): Uint8Array {
+  return bytes(
+    Object.entries(values)
+      .map(([key, value]) => {
+        const body = `${key}=${value}\n`;
+        let length = new TextEncoder().encode(body).length + 2;
+        while (true) {
+          const record = `${length} ${body}`;
+          const actual = new TextEncoder().encode(record).length;
+          if (actual === length) return record;
+          length = actual;
+        }
+      })
+      .join(''),
+  );
+}
+
+function writeText(target: Uint8Array, offset: number, length: number, value: string): void {
+  target.set(bytes(value).slice(0, length), offset);
+}
+
+function writeOctal(target: Uint8Array, offset: number, length: number, value: number): void {
+  writeText(target, offset, length, `${value.toString(8).padStart(length - 1, '0')}\0`);
+}
+
+function tarPadding(size: number): number {
+  return (TAR_BLOCK_BYTES - (size % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
+}
+
+function bytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+function joinBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
+}

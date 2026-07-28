@@ -1,4 +1,4 @@
-import {NodeRuntime} from '@effect/platform-node';
+import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Console, Effect, FileSystem, Option, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
@@ -234,6 +234,6 @@ function percentile(sorted: readonly number[], quantile: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
 }
 
-NodeRuntime.runMain(program.pipe(Effect.provide(ApplicationLayer)), {
+BunRuntime.runMain(program.pipe(Effect.provide(ApplicationLayer)), {
   disableErrorReporting: false,
 });

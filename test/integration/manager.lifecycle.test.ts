@@ -15,11 +15,11 @@ describe('Effect manager lifecycle', () => {
   it('serves the manager and closes its scoped server on SIGINT', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-manager-lifecycle-'));
     try {
-      child = spawn(
-        process.execPath,
-        ['--import', 'tsx', 'src/threadnote.ts', '--home', home, 'manage', '--ui-port', '0', '--no-open'],
-        {cwd: process.cwd(), env: {...process.env, NO_COLOR: '1'}, stdio: ['ignore', 'pipe', 'pipe']},
-      );
+      child = spawn(process.execPath, ['src/standalone.ts', '--home', home, 'manage', '--ui-port', '0', '--no-open'], {
+        cwd: process.cwd(),
+        env: {...process.env, NO_COLOR: '1'},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       const url = await managerUrl(child);
       const response = await fetch(url);
       expect(response.status).toBe(200);

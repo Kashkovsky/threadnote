@@ -6,7 +6,6 @@ export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type MemoryStatus = 'active' | 'archived' | 'superseded';
-export type UpdateRuntime = 'auto' | 'bun' | 'deno' | 'npm';
 
 export interface RuntimeConfig {
   readonly account: string;
@@ -111,22 +110,21 @@ export interface UninstallOptions {
 }
 
 export interface UpdateOptions {
-  readonly allowUntrustedRegistry?: boolean;
+  readonly allowUntrustedSource?: boolean;
   readonly beta?: boolean;
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
   readonly postUpdate?: boolean;
-  readonly registry?: string;
   readonly repair?: boolean;
-  readonly runtime?: UpdateRuntime;
+  readonly source?: string;
   readonly stable?: boolean;
   readonly yes?: boolean;
 }
 
 export interface VersionOptions {
-  readonly allowUntrustedRegistry?: boolean;
-  readonly registry?: string;
+  readonly allowUntrustedSource?: boolean;
+  readonly source?: string;
 }
 
 export interface PostUpdateOptions {
