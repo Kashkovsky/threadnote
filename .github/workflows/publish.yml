@@ -118,7 +118,7 @@ jobs:
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
 
-      - name: Import Developer ID certificate
+      - name: Import and select Developer ID certificate
         shell: bash
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -135,11 +135,24 @@ jobs:
           security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
           security list-keychain -d user -s "$keychain_path"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          identity_output="$(security find-identity -v -p codesigning "$keychain_path")"
+          identity_hashes="$(
+            printf '%s\n' "$identity_output" |
+              awk '/"Developer ID Application:/ { print $2 }'
+          )"
+          identity_count="$(
+            printf '%s\n' "$identity_hashes" |
+              awk 'NF { count += 1 } END { print count + 0 }'
+          )"
+          if [[ "$identity_count" -ne 1 ]]; then
+            printf '%s\n' "$identity_output"
+            echo "::error::Expected exactly one valid Developer ID Application identity, found $identity_count."
+            exit 1
+          fi
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$identity_hashes" >> "$GITHUB_ENV"
 
       - name: Sign nested native code and Bun executable
         shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           while IFS= read -r -d '' native_file; do
