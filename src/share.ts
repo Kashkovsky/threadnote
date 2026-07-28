@@ -1889,7 +1889,8 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         : undefined;
     if (
       existingTarget !== undefined &&
-      canonicalMemoryDocumentContent(existingTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)
+      canonicalMemoryDocumentContent(setMemoryVisibility(existingTarget, 'shared')) !==
+        canonicalMemoryDocumentContent(currentScrub.cleaned)
     ) {
       throw new Error(
         `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
