@@ -8,6 +8,7 @@ import {
   warning,
   withSpinnerEffect,
 } from './cli_ui.js';
+import {installCommandShim, installedThreadnoteRootFromLauncher} from './command-shim.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
 import {getJsonEffect} from './effect/http.js';
@@ -169,6 +170,10 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 
   const shouldRepair = options.repair !== false;
   const threadnoteCommand = yield* installedThreadnoteCommand(runtime, runtimeExecutable);
+  const installedPackageRoot = yield* installedThreadnoteRootFromLauncher(threadnoteCommand);
+  if (installedPackageRoot !== undefined) {
+    yield* installCommandShim(options.dryRun === true, installedPackageRoot);
+  }
   const postUpdateArgs = [
     'post-update',
     '--from-version',
