@@ -21,6 +21,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 });
 
 import {
+  maybeRunPostUpdateAfterRepair,
   parseUpdateRuntime,
   requestedUpdateChannel,
   resolveUpdateRegistry,
@@ -34,6 +35,7 @@ import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {migrateOpenVikingHome} from '../../src/migration/home.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
@@ -49,6 +51,16 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     manifestPath: join(home, 'seed-manifest.yaml'),
     user: 'denys',
   };
+}
+
+async function systemWithHomeDirectory(homeDirectory: string) {
+  const system = await runTestEffect(SystemInfo.pipe(Effect.provide(ApplicationLayer)));
+  return SystemInfo.of({...system, homeDirectory});
+}
+
+async function pendingHomeMigrationSystem(config: RuntimeConfig) {
+  await mkdir(join(config.agentContextHome, '.openviking'), {recursive: true});
+  return systemWithHomeDirectory(config.agentContextHome);
 }
 
 function mockRegistryVersions(latest: string, beta: string) {
@@ -404,6 +416,7 @@ describe('runUpdate', () => {
   it('migrates the legacy home before repair when crossing into 4.x', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    const migrationSystem = await pendingHomeMigrationSystem(config);
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
     mockRegistryVersions('4.0.0', '4.0.0-beta.1');
     const prefix = join(config.agentContextHome, 'npm-global');
@@ -421,7 +434,10 @@ describe('runUpdate', () => {
     });
 
     await runEffect(
-      runUpdate(config, {runtime: 'npm', yes: true}).pipe(Effect.provideService(CommandExecutor, executor)),
+      runUpdate(config, {runtime: 'npm', yes: true}).pipe(
+        Effect.provideService(CommandExecutor, executor),
+        Effect.provideService(SystemInfo, migrationSystem),
+      ),
     );
 
     const threadnoteCalls = executeStreaming.mock.calls
@@ -436,6 +452,7 @@ describe('runUpdate', () => {
   it('defers repair when a 4.x home migration is not accepted automatically', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    const migrationSystem = await pendingHomeMigrationSystem(config);
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
     mockRegistryVersions('4.0.0', '4.0.0-beta.1');
     const prefix = join(config.agentContextHome, 'npm-global');
@@ -454,7 +471,10 @@ describe('runUpdate', () => {
 
     const result = await runEffect(
       captureConsole(
-        runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(Effect.provideService(CommandExecutor, executor)),
+        runUpdate(config, {postUpdate: false, runtime: 'npm'}).pipe(
+          Effect.provideService(CommandExecutor, executor),
+          Effect.provideService(SystemInfo, migrationSystem),
+        ),
       ),
     );
 
@@ -466,6 +486,7 @@ describe('runUpdate', () => {
   it('still runs the 4.x post-update migration when repair is disabled', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    const migrationSystem = await pendingHomeMigrationSystem(config);
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.3'));
     mockRegistryVersions('4.0.0', '4.0.0-beta.1');
     const prefix = join(config.agentContextHome, 'npm-global');
@@ -482,6 +503,7 @@ describe('runUpdate', () => {
     await runEffect(
       runUpdate(config, {repair: false, runtime: 'npm', yes: true}).pipe(
         Effect.provideService(CommandExecutor, executor),
+        Effect.provideService(SystemInfo, migrationSystem),
       ),
     );
 
@@ -651,6 +673,7 @@ describe('runPostUpdate', () => {
   it('offers the self-contained home migration during the 4.0.0 beta cycle', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    const migrationSystem = await pendingHomeMigrationSystem(config);
     const executeStreaming = vi.fn(() => Effect.succeed(ok()));
     const executor = CommandExecutor.of({
       execute: () => Effect.succeed(ok()),
@@ -660,6 +683,7 @@ describe('runPostUpdate', () => {
     await runEffect(
       runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
         Effect.provideService(CommandExecutor, executor),
+        Effect.provideService(SystemInfo, migrationSystem),
       ),
     );
 
@@ -674,14 +698,50 @@ describe('runPostUpdate', () => {
     await runEffect(
       runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
         Effect.provideService(CommandExecutor, executor),
+        Effect.provideService(SystemInfo, migrationSystem),
       ),
     );
     expect(executeStreaming).not.toHaveBeenCalled();
   });
 
+  it('does not advertise a completed home migration during repair when post-update bookkeeping is absent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-repair-migration-receipt-'));
+    homes.push(root);
+    const legacyHome = join(root, '.openviking');
+    const targetHome = join(root, '.threadnote');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: targetHome,
+      agentId: 'threadnote',
+      manifestPath: join(targetHome, 'seed-manifest.yaml'),
+      user: 'denys',
+    };
+    await mkdir(legacyHome);
+    await writeFile(join(legacyHome, 'seed-manifest.yaml'), 'version: 1\nprojects: []\n');
+    const migrationSystem = await systemWithHomeDirectory(root);
+    await runEffect(
+      migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(
+        Effect.provideService(SystemInfo, migrationSystem),
+      ),
+    );
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.6'));
+
+    const result = await runEffect(
+      captureConsole(
+        maybeRunPostUpdateAfterRepair(config, {dryRun: false}).pipe(Effect.provideService(SystemInfo, migrationSystem)),
+      ),
+    );
+
+    expect(result.output).not.toContain('Repair found package post-update actions.');
+    expect(result.output).not.toContain('Migrate to the self-contained Threadnote home');
+    expect(result.output).not.toContain('Recover canonical data into the final Threadnote 4 layout');
+    await expect(readFile(join(targetHome, 'post-update-state.json'), 'utf8')).rejects.toThrow();
+  });
+
   it('does not mark a failed post-update migration as handled', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
+    const migrationSystem = await pendingHomeMigrationSystem(config);
     const executor = CommandExecutor.of({
       execute: () => Effect.succeed(ok()),
       executeStreaming: () => Effect.succeed({...ok(), exitCode: 1}),
@@ -691,6 +751,7 @@ describe('runPostUpdate', () => {
       runEffect(
         runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0-beta.1', yes: true}).pipe(
           Effect.provideService(CommandExecutor, executor),
+          Effect.provideService(SystemInfo, migrationSystem),
         ),
       ),
     ).rejects.toThrow(/exited with 1/);
@@ -712,10 +773,13 @@ describe('runPostUpdate', () => {
       execute: () => Effect.succeed(ok()),
       executeStreaming,
     });
+    await mkdir(join(parent, '.openviking'));
+    const migrationSystem = await systemWithHomeDirectory(parent);
 
     await runEffect(
       runPostUpdate(config, {fromVersion: '3.0.3', toVersion: '4.0.0'}).pipe(
         Effect.provideService(CommandExecutor, executor),
+        Effect.provideService(SystemInfo, migrationSystem),
       ),
     );
 

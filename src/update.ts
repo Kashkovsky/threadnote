@@ -14,6 +14,7 @@ import {applicationError, fromSync} from './effect/errors.js';
 import {getJsonEffect} from './effect/http.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
+import {isLegacyHomeMigrationPending} from './migration/home.js';
 import {assertSupportedNodeRuntime, cleanupStaleNvmThreadnoteInstallations} from './node-runtime.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions, UpdateRuntime} from './types.js';
@@ -63,6 +64,7 @@ interface PostUpdateMigration {
   readonly introducedIn: string;
   readonly markHandledWhenSkipped?: boolean;
   readonly requiresLegacyHandoffs?: boolean;
+  readonly requiresPendingHomeMigration?: boolean;
   readonly requiresProjectNameConsolidation?: boolean;
   readonly title: string;
 }
@@ -481,6 +483,12 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
     currentThreadnoteCommand(system) ?? (yield* findExecutable([NPM_PACKAGE_NAME])) ?? NPM_PACKAGE_NAME;
   const handledMigrationIds = new Set(state.handledMigrationIds);
   for (const migration of migrations) {
+    if (!(yield* migrationRequirementsSatisfied(config, migration))) {
+      if (!options.dryRun) {
+        handledMigrationIds.add(migration.id);
+      }
+      continue;
+    }
     yield* printPostUpdateMigration(migration);
     const accepted =
       options.dryRun ||
@@ -536,15 +544,31 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
     if (!postUpdateMigrationReached(migration, options.fromVersion, options.toVersion)) {
       continue;
     }
-    if (migration.requiresLegacyHandoffs === true && !(yield* hasLegacyLifecycleHandoffCandidates(config))) {
-      continue;
-    }
-    if (migration.requiresProjectNameConsolidation === true && !(yield* hasProjectNameMigrationCandidates(config))) {
+    if (!(yield* migrationRequirementsSatisfied(config, migration))) {
       continue;
     }
     applicable.push(migration);
   }
   return applicable;
+});
+
+const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSatisfied')(function* (
+  config: RuntimeConfig,
+  migration: PostUpdateMigration,
+) {
+  if (migration.requiresLegacyHandoffs === true && !(yield* hasLegacyLifecycleHandoffCandidates(config))) {
+    return false;
+  }
+  if (
+    migration.requiresPendingHomeMigration === true &&
+    !(yield* isLegacyHomeMigrationPending({targetHome: config.agentContextHome}))
+  ) {
+    return false;
+  }
+  if (migration.requiresProjectNameConsolidation === true && !(yield* hasProjectNameMigrationCandidates(config))) {
+    return false;
+  }
+  return true;
 });
 
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
@@ -588,6 +612,7 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     introducedIn: value.introducedIn,
     markHandledWhenSkipped: value.markHandledWhenSkipped === true,
     requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
+    requiresPendingHomeMigration: value.requiresPendingHomeMigration === true,
     requiresProjectNameConsolidation: value.requiresProjectNameConsolidation === true,
     title: value.title,
   };

@@ -142,6 +142,37 @@ describe('built self-contained distribution', () => {
     expect(await activeVectorGeneration()).toBe(vectorGeneration);
   });
 
+  it('does not advertise a completed legacy-home migration during repair', async () => {
+    const legacyHome = join(userHome, '.openviking');
+    await mkdir(legacyHome);
+    await writeFile(
+      join(home, 'migration', 'openviking-home-v1.json'),
+      `${JSON.stringify(
+        {
+          bytes: 0,
+          completedAt: '2026-07-28T00:00:00.000Z',
+          directories: 0,
+          files: 0,
+          id: 'openviking-home-v1',
+          legacyHome,
+          sourceTreeSha256: '0'.repeat(64),
+          symlinks: 0,
+          targetHome: home,
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    const output = await runCli(['repair', '--dry-run', '--mcp', 'none']);
+
+    expect(output).not.toContain('Repair found package post-update actions.');
+    expect(output).not.toContain('Migrate to the self-contained Threadnote home');
+    expect(output).not.toContain('Recover canonical data into the final Threadnote 4 layout');
+  });
+
   it('streams index rebuild progress from the repair command used by update', async () => {
     const output = await runCli(['repair', '--mcp', 'none', '--no-post-update']);
 
