@@ -20,10 +20,18 @@ export function withSharedRepositoryLock<A, E, R>(
   criticalSection: Effect.Effect<A, E, R>,
   options: SharedRepositoryLockOptions = {},
 ) {
+  return withSharedRepositoryHomeLock(config.agentContextHome, criticalSection, options);
+}
+
+export function withSharedRepositoryHomeLock<A, E, R>(
+  agentContextHome: string,
+  criticalSection: Effect.Effect<A, E, R>,
+  options: SharedRepositoryLockOptions = {},
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
-    const lockPath = pathService.join(config.agentContextHome, 'threadnote', 'shared-repository.lock');
+    const lockPath = pathService.join(agentContextHome, 'threadnote', 'shared-repository.lock');
     const lockOptions =
       options.waitTimeoutMilliseconds === undefined
         ? SHARED_REPOSITORY_LOCK_OPTIONS

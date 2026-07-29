@@ -1,4 +1,5 @@
 import {Context, Effect, Layer} from 'effect';
+import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
 
 export interface SystemInfoShape {
   readonly architecture: string;
@@ -214,39 +215,7 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
     });
   }
   if (platform === 'win32') {
-    return Effect.try({
-      try: () => {
-        const script =
-          '$cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name; ' +
-          '$system=Get-CimInstance Win32_ComputerSystem; ' +
-          '$os=Get-CimInstance Win32_OperatingSystem; ' +
-          '@{cpuModel=$cpu;memoryBytes=[int64]$system.TotalPhysicalMemory;' +
-          "operatingSystem=($os.Caption+' '+$os.Version)} | ConvertTo-Json -Compress";
-        const value = JSON.parse(
-          spawnText(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], environment),
-        ) as unknown;
-        if (
-          typeof value !== 'object' ||
-          value === null ||
-          !('cpuModel' in value) ||
-          !('memoryBytes' in value) ||
-          !('operatingSystem' in value) ||
-          typeof value.cpuModel !== 'string' ||
-          typeof value.memoryBytes !== 'number' ||
-          typeof value.operatingSystem !== 'string' ||
-          !Number.isSafeInteger(value.memoryBytes) ||
-          value.memoryBytes <= 0
-        ) {
-          throw new Error('Windows hardware metadata is invalid.');
-        }
-        return {
-          cpuModel: value.cpuModel.trim(),
-          memoryBytes: value.memoryBytes,
-          operatingSystem: value.operatingSystem.trim(),
-        };
-      },
-      catch: cause => new Error('Could not read Windows hardware metadata.', {cause}),
-    });
+    return readWindowsHardwareInfo(environment);
   }
   return Effect.fail(new Error(`Hardware metadata is not supported on ${platform}.`));
 }
@@ -282,26 +251,16 @@ function readProcessStartIdentity(
       Effect.catch(() => Effect.succeed(undefined)),
     );
   }
+  if (platform === 'win32') {
+    return readWindowsProcessStartIdentity(processId);
+  }
   return Effect.sync(() => {
     try {
-      const command =
-        platform === 'darwin'
-          ? ['ps', '-o', 'lstart=', '-p', String(processId)]
-          : platform === 'win32'
-            ? [
-                'powershell.exe',
-                '-NoProfile',
-                '-NonInteractive',
-                '-Command',
-                '$process=Get-CimInstance Win32_Process -Filter "ProcessId=$env:THREADNOTE_PROCESS_ID"; ' +
-                  'if (-not $process) { exit 3 }; ' +
-                  '[Console]::Out.Write($process.CreationDate.ToUniversalTime().Ticks)',
-              ]
-            : undefined;
+      const command = platform === 'darwin' ? ['ps', '-o', 'lstart=', '-p', String(processId)] : undefined;
       if (!command) return undefined;
       const result = Bun.spawnSync({
         cmd: command,
-        env: {...environment, THREADNOTE_PROCESS_ID: String(processId)},
+        env: environment,
         stderr: 'pipe',
         stdout: 'pipe',
         timeout: PROCESS_IDENTITY_QUERY_TIMEOUT_MS,

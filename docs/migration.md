@@ -36,11 +36,16 @@ worktree points at its owned Git directory, recovery preserves the entire curren
 individual legacy Git files. This covers the index and split indexes, refs and packed refs, objects and packs, reflogs,
 configuration, hooks, in-progress operation state, linked-worktree administration, and future Git repository entries
 without relying on a filename allowlist. The complete legacy repository remains byte-for-byte available under
-`~/.openviking`. If either half of the current gitdir/worktree pair is missing, unsafe, or points elsewhere, recovery
-stops before copying; when neither half exists, the eligible legacy checkout is migrated using the normal transient-file
-exclusions. Disjoint account trees are merged, identical overlaps are verified, and different non-canonical settings or
-metadata outside managed repositories still stop the migration instead of being overwritten. The source is never
-automatically removed.
+`~/.openviking`. A partial gitdir/worktree pair left by an interrupted earlier beta is recoverable only when every
+existing entry is a byte-for-byte subset of that preserved legacy repository (allowing only Threadnote's deterministic
+Git-pointer and worktree-path rewrites). Known transient Git operation files and locks do not establish authority and are
+removed from a legacy-derived partial copy. The owner-executable bit must also match the deterministic legacy copy.
+Recovery holds the same cross-process share lock used by agents, stages and verifies missing files outside the repository,
+and atomically installs them before rechecking the legacy source. Any other current-only or different file, unsafe entry
+type, or unrelated Git pointer still stops recovery before copying.
+When neither half exists, the eligible legacy checkout is migrated using the normal transient-file exclusions. Disjoint
+account trees are merged, identical overlaps are verified, and different non-canonical settings or metadata outside
+managed repositories still stop the migration instead of being overwritten. The source is never automatically removed.
 
 The standalone installer separately retires verified executable dependencies after activating the new release. It can
 stop and uninstall a detected npm-distributed Threadnote package, including an early Node-based 4.0 beta, remove a

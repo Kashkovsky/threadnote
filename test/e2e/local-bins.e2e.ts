@@ -441,6 +441,97 @@ describe('built self-contained distribution', () => {
     ).toBe('# Disjoint legacy memory\n');
   });
 
+  it('completes a managed-share checkout partially copied by an earlier beta', async () => {
+    const migrationHome = join(temporaryRoot, 'migration-partial-share-home');
+    const legacyHome = join(temporaryRoot, 'migration-partial-share-legacy');
+    const currentGitdir = join(migrationHome, 'share', 'teams', 'default.gitdir');
+    const currentWorktree = join(migrationHome, 'share', 'worktrees', 'default');
+    const legacyGitdir = join(legacyHome, 'share', 'teams', 'default.gitdir');
+    const legacyWorktree = join(
+      legacyHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'shared',
+      'default',
+    );
+    const memoryRelative = join('durable', 'projects', 'threadnote', 'partial-beta-share.md');
+    const unpublishedCommit = '0123456789abcdef0123456789abcdef01234567';
+    const legacyShareState = new Map<string, string>([
+      ['HEAD', 'ref: refs/heads/main\n'],
+      ['config', `[core]\n\tworktree = ${legacyWorktree}\n`],
+      ['FETCH_HEAD', 'legacy transient fetch state\n'],
+      ['index', 'legacy staged state'],
+      ['logs/HEAD', 'legacy HEAD reflog\n'],
+      ['refs/heads/main', `${unpublishedCommit}\n`],
+      [`objects/${unpublishedCommit.slice(0, 2)}/${unpublishedCommit.slice(2)}`, 'legacy unpublished object'],
+    ]);
+
+    await mkdir(join(legacyWorktree, dirname(memoryRelative)), {recursive: true});
+    await writeFile(join(legacyWorktree, memoryRelative), '# Partial beta recovery\n', 'utf8');
+    await writeFile(join(legacyWorktree, '.git'), `gitdir: ${legacyGitdir}\n`, 'utf8');
+    for (const [relativePath, content] of legacyShareState) {
+      const file = join(legacyGitdir, relativePath);
+      await mkdir(dirname(file), {recursive: true});
+      await writeFile(file, content, 'utf8');
+    }
+    await mkdir(join(legacyHome, 'share'), {recursive: true});
+    await writeFile(
+      join(legacyHome, 'share', 'teams.json'),
+      `${JSON.stringify(
+        {
+          defaultTeam: 'default',
+          teams: {
+            default: {
+              addedAt: new Date(0).toISOString(),
+              gitdir: legacyGitdir,
+              name: 'default',
+              remote: 'git@example.invalid:team/memories.git',
+              worktree: legacyWorktree,
+            },
+          },
+          version: 1,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await mkdir(currentGitdir, {recursive: true});
+    for (const relativePath of ['HEAD', 'config', 'logs/HEAD'] as const) {
+      const file = join(currentGitdir, relativePath);
+      await mkdir(dirname(file), {recursive: true});
+      await writeFile(file, legacyShareState.get(relativePath) as string, 'utf8');
+    }
+    await writeFile(join(currentGitdir, 'FETCH_HEAD'), 'different current transient fetch state\n', 'utf8');
+    await writeFile(join(migrationHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n', 'utf8');
+
+    const migration = await execute(cli, ['--home', migrationHome, 'migrate', '--apply', '--legacy-home', legacyHome], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        THREADNOTE_USER: 'e2e-user',
+        USERPROFILE: userHome,
+      },
+      timeout: realModelTimeoutMs,
+    });
+
+    expect(`${migration.stdout}${migration.stderr}`).toContain('Recovered legacy memories, resources');
+    expect(await readFile(join(currentWorktree, '.git'), 'utf8')).toBe(`gitdir: ${currentGitdir}\n`);
+    expect(await readFile(join(currentWorktree, memoryRelative), 'utf8')).toBe('# Partial beta recovery\n');
+    expect(await readFile(join(currentGitdir, 'index'), 'utf8')).toBe('legacy staged state');
+    await expect(readFile(join(currentGitdir, 'FETCH_HEAD'), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    expect(
+      await readFile(join(currentGitdir, 'objects', unpublishedCommit.slice(0, 2), unpublishedCommit.slice(2)), 'utf8'),
+    ).toBe('legacy unpublished object');
+    expect(await readFile(join(legacyGitdir, 'logs', 'HEAD'), 'utf8')).toBe('legacy HEAD reflog\n');
+  });
+
   it('does not advertise a completed legacy-home migration during repair', async () => {
     const legacyHome = join(userHome, '.openviking');
     await mkdir(legacyHome);
