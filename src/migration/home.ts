@@ -317,7 +317,7 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       );
       if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
         yield* Console.log(
-          `Would preserve ${result.receipt?.preservedCurrentEntries} current Threadnote canonical entries where the legacy copy differs.`,
+          `Would preserve ${result.receipt?.preservedCurrentEntries} current Threadnote entries where the legacy copy differs.`,
         );
       }
       yield* Console.log('Rerun with --apply to stage, validate, and atomically promote the new home.');
@@ -335,7 +335,7 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       );
       if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
         yield* Console.log(
-          `Preserved ${result.receipt?.preservedCurrentEntries} current Threadnote canonical entries; their legacy versions remain in the unchanged legacy home.`,
+          `Preserved ${result.receipt?.preservedCurrentEntries} current Threadnote entries; their legacy versions remain in the unchanged legacy home.`,
         );
       }
       yield* Console.log(`Legacy home was preserved unchanged: ${result.receipt?.legacyHome}`);
@@ -497,7 +497,7 @@ function preflightMappedInventory(
         if (
           info.type === 'File' &&
           Option.isNone(yield* fs.readLink(target).pipe(Effect.option)) &&
-          isCanonicalDataPath(mappedRelativePath)
+          shouldPreserveCurrentRecoveryFile(mappedRelativePath)
         ) {
           preservedCurrentEntries.add(entry.relativePath);
           continue;
@@ -592,8 +592,17 @@ function mappedLegacyRelative(relativePath: string): string {
       : portable;
 }
 
-function isCanonicalDataPath(relativePath: string): boolean {
-  return portableInput(relativePath).startsWith('data/');
+function shouldPreserveCurrentRecoveryFile(relativePath: string): boolean {
+  const portable = portableInput(relativePath);
+  if (portable.startsWith('data/')) return true;
+  const segments = portable.split('/');
+  return (
+    segments.length === 4 &&
+    segments[0] === 'share' &&
+    segments[1] === 'teams' &&
+    segments[2]?.endsWith('.gitdir') === true &&
+    segments[3] === 'index'
+  );
 }
 
 function hasCurrentBetaEntry(

@@ -450,6 +450,32 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('still rejects different managed-share Git state other than the current index', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-share-config-conflict-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const relativeConfig = path.join('share', 'teams', 'default.gitdir', 'config');
+        const legacyConfig = path.join(legacyHome, relativeConfig);
+        const currentConfig = path.join(targetHome, relativeConfig);
+        yield* fs.makeDirectory(path.dirname(legacyConfig), {recursive: true});
+        yield* fs.makeDirectory(path.dirname(currentConfig), {recursive: true});
+        yield* fs.writeFileString(legacyConfig, '[remote "origin"]\n\turl = legacy\n');
+        yield* fs.writeFileString(currentConfig, '[remote "origin"]\n\turl = current\n');
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
+
+        expect(error._tag).toBe('HomeMigrationConflict');
+        expect(error.message).toContain('share/teams/default.gitdir/config');
+        expect(yield* fs.readFileString(currentConfig)).toContain('url = current');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('ignores mutable operating-system metadata while recovering into an existing beta home', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -537,6 +563,8 @@ describe('OpenViking home migration', () => {
           path.join(legacyGitdir, 'config'),
           `[core]\n\tworktree = ${legacyWorktree}\n[remote "origin"]\n\turl = git@example.invalid:team/memories.git\n`,
         );
+        const legacyIndex = 'legacy staged share state';
+        yield* fs.writeFileString(path.join(legacyGitdir, 'index'), legacyIndex);
         const unpublishedCommit = '0123456789abcdef0123456789abcdef01234567';
         const unpublishedObject = path.join(legacyGitdir, 'objects', '01', unpublishedCommit.slice(2));
         yield* fs.makeDirectory(path.dirname(unpublishedObject), {recursive: true});
@@ -576,14 +604,19 @@ describe('OpenViking home migration', () => {
         yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
         yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":1}\n');
         const currentCommitMessage = 'Current beta share operation\n';
-        yield* fs.makeDirectory(path.join(targetHome, 'share', 'teams', 'default.gitdir'), {recursive: true});
-        yield* fs.writeFileString(
-          path.join(targetHome, 'share', 'teams', 'default.gitdir', 'COMMIT_EDITMSG'),
-          currentCommitMessage,
-        );
+        const currentIndex = 'current beta staged share state';
+        const currentGitdir = path.join(targetHome, 'share', 'teams', 'default.gitdir');
+        const currentWorktree = path.join(targetHome, 'share', 'worktrees', 'default');
+        yield* fs.makeDirectory(currentGitdir, {recursive: true});
+        yield* fs.makeDirectory(path.dirname(path.join(currentWorktree, memoryRelative)), {recursive: true});
+        yield* fs.writeFileString(path.join(currentWorktree, memoryRelative), '# Shared storage contract\n');
+        yield* fs.writeFileString(path.join(currentWorktree, '.git'), `gitdir: ${currentGitdir}\n`);
+        yield* fs.writeFileString(path.join(currentGitdir, 'COMMIT_EDITMSG'), currentCommitMessage);
+        yield* fs.writeFileString(path.join(currentGitdir, 'index'), currentIndex);
 
         const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(result.action).toBe('recovered');
+        expect(result.receipt?.preservedCurrentEntries).toBe(1);
         expect(result.receipt?.stagedTreeSha256).toMatch(/^[0-9a-f]{64}$/);
 
         const canonicalMemory = path.join(
@@ -617,6 +650,7 @@ describe('OpenViking home migration', () => {
         );
         expect(yield* fs.exists(path.join(migratedGitdir, 'FETCH_HEAD'))).toBe(false);
         expect(yield* fs.readFileString(path.join(migratedGitdir, 'COMMIT_EDITMSG'))).toBe(currentCommitMessage);
+        expect(yield* fs.readFileString(path.join(migratedGitdir, 'index'))).toBe(currentIndex);
         expect(yield* fs.exists(path.join(migratedGitdir, 'gc.log'))).toBe(false);
         expect(yield* fs.exists(path.join(migratedGitdir, 'index.lock'))).toBe(false);
         expect(yield* fs.exists(path.join(migratedGitdir, 'refs', 'heads', 'main.lock'))).toBe(false);
@@ -631,6 +665,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.readFileString(path.join(legacyWorktree, '.git'))).toBe(`gitdir: ${legacyGitdir}\n`);
         expect(yield* fs.exists(path.join(legacyGitdir, 'FETCH_HEAD'))).toBe(true);
         expect(yield* fs.readFileString(path.join(legacyGitdir, 'COMMIT_EDITMSG'))).toBe('Unpublished shared memory\n');
+        expect(yield* fs.readFileString(path.join(legacyGitdir, 'index'))).toBe(legacyIndex);
         expect(yield* fs.exists(path.join(legacyGitdir, 'gc.log'))).toBe(true);
         expect(yield* fs.exists(path.join(legacyGitdir, 'index.lock'))).toBe(true);
         expect(yield* fs.exists(path.join(legacyGitdir, 'refs', 'heads', 'main.lock'))).toBe(true);
