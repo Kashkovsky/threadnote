@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: publish-${{ github.ref_name }}
@@ -200,8 +199,9 @@ jobs:
           if-no-files-found: error
 
   windows-build:
-    name: Windows build · ${{ matrix.architecture }}
-    if: github.event_name == 'push'
+    name: Windows build · ${{ matrix.architecture }} · disabled
+    # Windows 4 release artifacts stay unavailable until Authenticode signing is approved and verified.
+    if: ${{ false }}
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -240,8 +240,9 @@ jobs:
           if-no-files-found: error
 
   windows-sign:
-    name: Windows sign · ${{ matrix.architecture }}
-    if: github.event_name == 'push'
+    name: Windows sign · ${{ matrix.architecture }} · disabled
+    # Keep the implementation ready for the Authenticode work without publishing unsigned artifacts.
+    if: ${{ false }}
     needs: windows-build
     runs-on: windows-2025
     strategy:
@@ -312,7 +313,7 @@ jobs:
   publish:
     name: Publish complete immutable release
     if: github.event_name == 'push'
-    needs: [linux, macos, windows-sign]
+    needs: [linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

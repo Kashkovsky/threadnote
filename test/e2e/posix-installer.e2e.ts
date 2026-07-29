@@ -114,22 +114,25 @@ esac
         await chmod(file, 0o755);
       }),
     );
-    const officialInstall = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--no-start'], {
-      env: {
-        HOME: officialUserHome,
-        PATH: `${officialToolsRoot}:/usr/bin:/bin:/usr/sbin:/sbin`,
-        THREADNOTE_BIN_DIR: officialBinRoot,
-        THREADNOTE_CHANNEL: 'beta',
-        THREADNOTE_INSTALL_ROOT: officialInstallRoot,
-        THREADNOTE_TEST_ARTIFACT: artifact,
-        THREADNOTE_TEST_CHECKSUM: officialChecksum,
-        THREADNOTE_TEST_RELEASES: officialReleases,
-        THREADNOTE_TEST_SIGNATURE_LOG: signatureLog,
-        USER: 'standalone-installer-e2e',
-        USERPROFILE: officialUserHome,
+    const officialInstall = await execute(
+      'sh',
+      [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+      {
+        env: {
+          HOME: officialUserHome,
+          PATH: `${officialToolsRoot}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          THREADNOTE_BIN_DIR: officialBinRoot,
+          THREADNOTE_INSTALL_ROOT: officialInstallRoot,
+          THREADNOTE_TEST_ARTIFACT: artifact,
+          THREADNOTE_TEST_CHECKSUM: officialChecksum,
+          THREADNOTE_TEST_RELEASES: officialReleases,
+          THREADNOTE_TEST_SIGNATURE_LOG: signatureLog,
+          USER: 'standalone-installer-e2e',
+          USERPROFILE: officialUserHome,
+        },
+        timeout: 600_000,
       },
-      timeout: 600_000,
-    });
+    );
     expect(`${officialInstall.stdout}${officialInstall.stderr}`).toContain(
       `Installed standalone Threadnote ${packageManifest.version}`,
     );
@@ -201,7 +204,6 @@ esac
         HOME: userHome,
         PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
         THREADNOTE_BIN_DIR: binRoot,
-        THREADNOTE_CHANNEL: 'beta',
         THREADNOTE_INSTALL_ROOT: installRoot,
         THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}`,
         THREADNOTE_RELEASE_SOURCE: `http://127.0.0.1:${server.port}/releases`,
@@ -231,7 +233,7 @@ esac
         `Downloading Threadnote ${packageManifest.version}`,
       );
       expect(assetRequests.at(-1)).toBe(`missing-assets/${artifactName}`);
-      const result = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--no-start'], {
+      const result = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'], {
         env: installEnvironment,
         timeout: 600_000,
       }).catch((cause: unknown) => {

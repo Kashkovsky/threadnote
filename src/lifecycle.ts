@@ -15,6 +15,7 @@ import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {loadRecallIndexData, type RecallIndexProgress} from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
+import {applyLegacyInstallationCleanup, planLegacyInstallationCleanup} from './migration/legacy-installations.js';
 import {stopVerifiedLegacyLocalAi} from './migration/legacy-runtime.js';
 import {migrateLegacyLocalModels} from './migration/models.js';
 import {provisionCoreEmbedding} from './models/core-embedding.js';
@@ -165,10 +166,12 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const releaseRoot = yield* toolRoot();
+  const legacyCleanup = yield* planLegacyInstallationCleanup();
   yield* withStandaloneInstallationLock(
     Effect.gen(function* () {
-      yield* installCommandShim(dryRun);
       yield* activateStandaloneRelease(releaseRoot, dryRun);
+      yield* applyLegacyInstallationCleanup(legacyCleanup, dryRun);
+      yield* installCommandShim(dryRun);
     }),
     dryRun,
   );

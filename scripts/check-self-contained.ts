@@ -27,6 +27,7 @@ const ALLOWED_LEGACY_RUNTIME_SOURCES = new Set([
   'src/effect/cli.ts',
   'src/lifecycle.ts',
   'src/migration/home.ts',
+  'src/migration/legacy-installations.ts',
   'src/migration/legacy-runtime.ts',
   'src/storage/layout.ts',
 ]);

@@ -16,7 +16,11 @@ the canonical shared Markdown copy has no Git metadata. An unrelated target is a
 
 ## Consequences
 
-- The untouched source is the rollback source; cleanup is always a separate, explicitly confirmed operation.
+- The untouched source is the rollback source; deleting or mutating that home is always a separate, explicitly
+  confirmed operation.
+- The standalone installer may retire verified npm-distributed Threadnote and OpenViking executable packages, but it
+  never treats runtime removal as authority to delete the legacy home. Executable rollback may require reinstalling the
+  3.x runtime.
 - Re-running is safe after interruption or success.
 - Derived vector indexes are rebuilt after cutover instead of treated as canonical migration input.
 - Migration logic is the only production area allowed to recognize the legacy home name or legacy runtime filenames.

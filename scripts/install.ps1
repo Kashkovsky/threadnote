@@ -1,5 +1,6 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
+  [switch]$Beta,
   [switch]$DryRun,
   [switch]$Force,
   [switch]$NoStart,
@@ -10,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repository = if ($env:THREADNOTE_REPOSITORY) { $env:THREADNOTE_REPOSITORY } else { 'Kashkovsky/threadnote' }
-$channel = if ($env:THREADNOTE_CHANNEL) { $env:THREADNOTE_CHANNEL } else { 'latest' }
+$channel = if ($Beta) { 'beta' } elseif ($env:THREADNOTE_CHANNEL) { $env:THREADNOTE_CHANNEL } else { 'latest' }
 $releaseSource = if ($env:THREADNOTE_RELEASE_SOURCE) {
   $env:THREADNOTE_RELEASE_SOURCE
 } else {
