@@ -54,6 +54,7 @@ export interface HomeMigrationReceipt {
   readonly files: number;
   readonly id: typeof HOME_MIGRATION_ID;
   readonly legacyHome: string;
+  readonly preservedCurrentEntries?: number;
   readonly sourceTreeSha256: string;
   readonly stagedTreeSha256?: string;
   readonly symlinks: number;
@@ -313,6 +314,11 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       yield* Console.log(
         `Would migrate ${result.receipt?.files ?? 0} files (${result.receipt?.bytes ?? 0} bytes) from ${result.receipt?.legacyHome} to ${result.receipt?.targetHome}.`,
       );
+      if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
+        yield* Console.log(
+          `Would preserve ${result.receipt?.preservedCurrentEntries} current Threadnote canonical entries where the legacy copy differs.`,
+        );
+      }
       yield* Console.log('Rerun with --apply to stage, validate, and atomically promote the new home.');
       return;
     case 'migrated':
@@ -326,6 +332,11 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       yield* Console.log(
         `Recovered legacy memories, resources, and share configuration into ${result.receipt?.targetHome}.`,
       );
+      if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
+        yield* Console.log(
+          `Preserved ${result.receipt?.preservedCurrentEntries} current Threadnote canonical entries; their legacy versions remain in the unchanged legacy home.`,
+        );
+      }
       yield* Console.log(`Legacy home was preserved unchanged: ${result.receipt?.legacyHome}`);
       return;
     case 'resumed':
@@ -410,7 +421,7 @@ function recoverIntoExistingTarget(
         availableBytes,
       );
     }
-    yield* preflightMappedInventory(fs, path, targetHome, inventory);
+    const preservedCurrentEntries = yield* preflightMappedInventory(fs, path, targetHome, inventory);
     const receipt: HomeMigrationReceipt = {
       bytes: inventory.bytes,
       completedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
@@ -418,6 +429,7 @@ function recoverIntoExistingTarget(
       files: inventory.files,
       id: HOME_MIGRATION_ID,
       legacyHome,
+      ...(preservedCurrentEntries.size > 0 ? {preservedCurrentEntries: preservedCurrentEntries.size} : {}),
       sourceTreeSha256: inventory.treeSha256,
       symlinks: inventory.symlinks,
       targetHome,
@@ -427,8 +439,8 @@ function recoverIntoExistingTarget(
       return {action: 'dry_run', receipt} satisfies HomeMigrationResult;
     }
 
-    yield* copyMappedInventory(fs, path, legacyHome, targetHome, inventory);
-    yield* verifyMappedInventory(fs, path, targetHome, inventory);
+    yield* copyMappedInventory(fs, path, legacyHome, targetHome, inventory, preservedCurrentEntries);
+    yield* verifyMappedInventory(fs, path, targetHome, inventory, preservedCurrentEntries);
     const sourceAfterCopy = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
     if (sourceAfterCopy.treeSha256 !== inventory.treeSha256) {
       return yield* new HomeMigrationConflict({
@@ -460,11 +472,14 @@ function preflightMappedInventory(
   inventory: HomeInventory,
 ) {
   return Effect.gen(function* () {
+    const preservedCurrentEntries = new Set<string>();
     for (const entry of inventory.entries) {
       if (entry.type !== 'directory' && (yield* hasCurrentBetaEntry(fs, path, targetHome, entry.relativePath))) {
+        preservedCurrentEntries.add(entry.relativePath);
         continue;
       }
-      const target = path.join(targetHome, mappedLegacyRelative(entry.relativePath));
+      const mappedRelativePath = mappedLegacyRelative(entry.relativePath);
+      const target = path.join(targetHome, mappedRelativePath);
       if (!(yield* fs.exists(target))) continue;
       if (entry.type === 'directory') {
         const info = yield* fs.stat(target);
@@ -478,6 +493,14 @@ function preflightMappedInventory(
         ) {
           continue;
         }
+        if (
+          info.type === 'File' &&
+          Option.isNone(yield* fs.readLink(target).pipe(Effect.option)) &&
+          isCanonicalDataPath(mappedRelativePath)
+        ) {
+          preservedCurrentEntries.add(entry.relativePath);
+          continue;
+        }
       } else {
         const link = yield* fs.readLink(target).pipe(Effect.option);
         if (Option.isSome(link) && (yield* sha256Hex(link.value)) === entry.digest) continue;
@@ -487,6 +510,7 @@ function preflightMappedInventory(
         path: target,
       });
     }
+    return preservedCurrentEntries;
   });
 }
 
@@ -496,14 +520,13 @@ function copyMappedInventory(
   sourceRoot: string,
   targetRoot: string,
   inventory: HomeInventory,
+  preservedCurrentEntries: ReadonlySet<string>,
 ) {
   return Effect.gen(function* () {
     for (const entry of inventory.entries) {
       const source = path.join(sourceRoot, entry.relativePath);
       const target = path.join(targetRoot, mappedLegacyRelative(entry.relativePath));
-      if (entry.type !== 'directory' && (yield* hasCurrentBetaEntry(fs, path, targetRoot, entry.relativePath))) {
-        continue;
-      }
+      if (preservedCurrentEntries.has(entry.relativePath)) continue;
       if (yield* fs.exists(target)) continue;
       if (entry.type === 'directory') {
         yield* fs.makeDirectory(target, {recursive: true, mode: 0o700});
@@ -526,11 +549,12 @@ function verifyMappedInventory(
   path: Path.Path,
   targetRoot: string,
   inventory: HomeInventory,
+  preservedCurrentEntries: ReadonlySet<string>,
 ) {
   return Effect.gen(function* () {
     for (const entry of inventory.entries) {
       if (entry.type === 'directory') continue;
-      if (yield* hasCurrentBetaEntry(fs, path, targetRoot, entry.relativePath)) continue;
+      if (preservedCurrentEntries.has(entry.relativePath)) continue;
       const target = path.join(targetRoot, mappedLegacyRelative(entry.relativePath));
       if (entry.type === 'file') {
         const info = yield* fs.stat(target);
@@ -565,6 +589,10 @@ function mappedLegacyRelative(relativePath: string): string {
     : portable.startsWith(`${legacyPrefix}/`)
       ? `data/${portable.slice(legacyPrefix.length + 1)}`
       : portable;
+}
+
+function isCanonicalDataPath(relativePath: string): boolean {
+  return portableInput(relativePath).startsWith('data/');
 }
 
 function hasCurrentBetaEntry(
@@ -839,6 +867,8 @@ function parseReceipt(value: unknown): HomeMigrationReceipt {
     !Number.isInteger(receipt.directories) ||
     !Number.isInteger(receipt.symlinks) ||
     !Number.isFinite(receipt.bytes) ||
+    (receipt.preservedCurrentEntries !== undefined &&
+      (!Number.isInteger(receipt.preservedCurrentEntries) || receipt.preservedCurrentEntries < 0)) ||
     !/^[0-9a-f]{64}$/.test(receipt.sourceTreeSha256) ||
     (receipt.stagedTreeSha256 !== undefined && !/^[0-9a-f]{64}$/.test(receipt.stagedTreeSha256)) ||
     !receipt.legacyHome ||

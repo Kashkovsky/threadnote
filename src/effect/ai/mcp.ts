@@ -3,6 +3,9 @@ import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {fromPromiseError} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
+import {withProductionLogging} from '../production_log.js';
+
+const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 50;
 
 interface ToolAnnotations {
   readonly destructiveHint?: boolean;
@@ -43,6 +46,7 @@ export class EffectMcpServerAdapter {
     readonly name: string,
     readonly version: string,
     readonly instructions: string,
+    readonly productionLogHome?: string,
   ) {}
 
   registerTool<const Fields extends ToolFields>(
@@ -59,6 +63,7 @@ export class EffectMcpServerAdapter {
 
   private registrationLayer(): Layer.Layer<never, never, McpServer.McpServer | ApplicationServices> {
     const registrations = [...this.#tools];
+    const productionLogHome = this.productionLogHome;
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
@@ -78,7 +83,7 @@ export class EffectMcpServerAdapter {
               name: registration.name,
             }),
             handle: payload => {
-              return Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
+              const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
                 Effect.flatMap(parsed =>
                   toolHandlerEffect(() => registration.handle(parsed), applicationServices).pipe(
                     Effect.matchCause({
@@ -100,6 +105,19 @@ export class EffectMcpServerAdapter {
                   ),
                 ),
               );
+              return productionLogHome === undefined
+                ? handling
+                : withProductionLogging(
+                    productionLogHome,
+                    {
+                      component: 'mcp',
+                      operation: registration.name,
+                      reportedFailure: result => result.isError === true,
+                      reportedFailureType: 'McpToolError',
+                      writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                    },
+                    handling,
+                  ).pipe(Effect.provideContext(applicationServices));
             },
           });
         }

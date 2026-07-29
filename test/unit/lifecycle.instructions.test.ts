@@ -114,7 +114,7 @@ describe('agent instruction lifecycle', () => {
         expect(generatedInstructions[3]).toContain('applyTo: "**"');
         expect(
           generatedInstructions.every(content =>
-            /offer to open a GitHub issue in `Kashkovsky\/threadnote` without sensitive\s+information/.test(content),
+            /use `threadnote report-issue .*` to prepare the\s+public GitHub issue preview/.test(content),
           ),
         ).toBe(true);
 

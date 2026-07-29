@@ -351,6 +351,105 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('preserves newer canonical content when recovering into a current-layout beta home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-current-content-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const relativeMemory = path.join(
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'front-end-web-monorepo',
+          'aspect-checkout-mvp-api.md',
+        );
+        const legacyMemory = path.join(legacyHome, 'data', 'viking', relativeMemory);
+        const targetMemory = path.join(targetHome, 'data', relativeMemory);
+        const legacyOnly = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'legacy-only.md',
+        );
+        yield* fs.makeDirectory(path.dirname(legacyMemory), {recursive: true});
+        yield* fs.writeFileString(legacyMemory, '# Older legacy memory\n');
+        yield* fs.makeDirectory(path.dirname(legacyOnly), {recursive: true});
+        yield* fs.writeFileString(legacyOnly, '# Legacy-only memory\n');
+        yield* fs.makeDirectory(path.dirname(targetMemory), {recursive: true});
+        yield* fs.writeFileString(targetMemory, '# Newer beta memory\n');
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const preview = yield* migrateOpenVikingHome({legacyHome, targetHome});
+        expect(preview.action).toBe('dry_run');
+        expect(preview.receipt?.preservedCurrentEntries).toBe(1);
+        expect(yield* fs.readFileString(targetMemory)).toBe('# Newer beta memory\n');
+        expect(yield* fs.exists(path.join(targetHome, 'migration', 'openviking-home-v1.json'))).toBe(false);
+
+        const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
+
+        expect(result.action).toBe('recovered');
+        expect(result.receipt?.preservedCurrentEntries).toBe(1);
+        expect(yield* fs.readFileString(targetMemory)).toBe('# Newer beta memory\n');
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              targetHome,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'legacy-only.md',
+            ),
+          ),
+        ).toBe('# Legacy-only memory\n');
+        expect(yield* fs.readFileString(legacyMemory)).toBe('# Older legacy memory\n');
+        expect((yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome})).action).toBe('already_migrated');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('still rejects different non-canonical content in a recoverable target home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-config-conflict-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        yield* fs.makeDirectory(legacyHome);
+        yield* fs.makeDirectory(targetHome);
+        yield* fs.writeFileString(path.join(legacyHome, 'seed-manifest.yaml'), 'version: 1\nprojects: []\n');
+        yield* fs.writeFileString(
+          path.join(targetHome, 'seed-manifest.yaml'),
+          'version: 1\nprojects:\n  - root: current\n',
+        );
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
+
+        expect(error._tag).toBe('HomeMigrationConflict');
+        expect(yield* fs.readFileString(path.join(targetHome, 'seed-manifest.yaml'))).toContain('root: current');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('ignores mutable operating-system metadata while recovering into an existing beta home', () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -105,6 +105,7 @@ import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
+import {withProductionLogging} from './effect/production_log.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
@@ -201,19 +202,30 @@ const withStaleVersionNotice = Effect.fn('mcpServer.withStaleVersionNotice')(fun
 export const mcpServerEffect = Effect.gen(function* () {
   const system = yield* SystemInfo;
   const config = yield* getRuntimeConfig();
-  const toolset = yield* Effect.try({
-    try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-  });
-  mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
-  const instructions =
-    'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` pointers. Close out by writing durable knowledge and handoffs directly without approval via `remember_context`. Use `review_session_context` only for additional candidates; apply after explicit approval. Use stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use user-selected URIs.';
-  const server = new EffectMcpServerAdapter('threadnote-local-adapter', '0.2.0', instructions);
+  return yield* withProductionLogging(
+    config.agentContextHome,
+    {component: 'mcp', operation: 'mcp-server'},
+    Effect.gen(function* () {
+      const toolset = yield* Effect.try({
+        try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
+        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+      mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const instructions =
+        'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` pointers. Close out by writing durable knowledge and handoffs directly without approval via `remember_context`. Use `review_session_context` only for additional candidates; apply after explicit approval. Use stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use user-selected URIs.';
+      const server = new EffectMcpServerAdapter(
+        'threadnote-local-adapter',
+        '0.2.0',
+        instructions,
+        config.agentContextHome,
+      );
 
-  registerTools(server, config, toolset);
-  yield* Effect.forkScoped(monitorSharedRepositories(config));
-  yield* Console.error('Threadnote local MCP adapter running');
-  return yield* server.run();
+      registerTools(server, config, toolset);
+      yield* Effect.forkScoped(monitorSharedRepositories(config));
+      yield* Console.error('Threadnote local MCP adapter running');
+      return yield* server.run();
+    }),
+  );
 });
 
 const getRuntimeConfig = Effect.fn('mcpServer.getRuntimeConfig')(function* () {

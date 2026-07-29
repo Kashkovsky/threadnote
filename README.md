@@ -51,6 +51,9 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   have distinct lifecycles instead of becoming an undifferentiated chat summary.
 - **Optional Obsidian bridge.** Allowlisted vault notes can join recall, and explicitly selected Threadnote memories can
   appear as generated, drift-protected Markdown in a vault without installing a plugin.
+- **Shareable diagnostics without transcripts.** Bounded rotating logs capture versions, platform, command or MCP tool
+  names, timings, and typed failures—never arguments, memory content, recall results, or MCP payloads. Preview and
+  explicitly submit a support report with `threadnote report-issue`.
 
 ## Quickstart
 

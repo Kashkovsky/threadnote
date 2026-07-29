@@ -28,11 +28,12 @@ The migration:
 14. installs and selects the core BGE embedding model if no valid embedding selection already exists;
 15. rebuilds the derived lexical SQLite and vector indexes from the migrated canonical content.
 
-Interrupted staging and beta-home recovery are resumable. Re-running after success is idempotent. If beta.1 already
-wrote a resource at the same logical path, that current Threadnote copy wins while the older copy remains available in
-the untouched legacy home. Disjoint account trees are merged, identical overlaps are verified, and any other different
-canonical destination stops the migration instead of being overwritten. The source remains byte-for-byte untouched
-and is never automatically removed.
+Interrupted staging and beta-home recovery are resumable. Re-running after success is idempotent. If an earlier beta
+already wrote or subsequently updated a resource at the same logical canonical `data/` path, that current Threadnote
+copy wins while the older copy remains available in the untouched legacy home. The recovery receipt records how many
+current entries were preserved. Disjoint account trees are merged, identical overlaps are verified, and different
+non-canonical settings or metadata still stop the migration instead of being overwritten. The source remains
+byte-for-byte untouched and is never automatically removed.
 
 The standalone installer separately retires verified executable dependencies after activating the new release. It can
 stop and uninstall a detected npm-distributed Threadnote package, including an early Node-based 4.0 beta, remove a

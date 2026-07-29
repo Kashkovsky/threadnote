@@ -1,6 +1,6 @@
-import {copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
@@ -151,12 +151,205 @@ describe('built self-contained distribution', () => {
     await expect(readFile(canonical, 'utf8')).resolves.toContain('QZ9 native recall');
   });
 
+  it('writes privacy-safe production logs across concurrent standalone processes', async () => {
+    const logPath = join(home, 'logs', 'threadnote.log');
+    const privateQuery = 'PRIVATE-QUERY-99173 must never enter production logs';
+    await runCli(['recall', '--query', privateQuery]);
+
+    const entriesAfterRecall = parseProductionLog(await readFile(logPath, 'utf8'));
+    expect(entriesAfterRecall).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({event: 'invocation.started', operation: 'recall'}),
+        expect.objectContaining({event: 'invocation.finished', operation: 'recall', outcome: 'success'}),
+      ]),
+    );
+    expect(await readFile(logPath, 'utf8')).not.toContain(privateQuery);
+
+    await expect(
+      runCli(['read', 'threadnote://user/e2e-user/memories/durable/projects/threadnote/missing.md']),
+    ).rejects.toThrow();
+    const entriesBeforeDryRun = parseProductionLog(await readFile(logPath, 'utf8'));
+    expect(entriesBeforeDryRun.slice(entriesAfterRecall.length)).toEqual([
+      expect.objectContaining({event: 'invocation.started', operation: 'read'}),
+      expect.objectContaining({
+        errorType: expect.any(String),
+        event: 'invocation.finished',
+        operation: 'read',
+        outcome: 'failure',
+      }),
+    ]);
+
+    await runCli(['seed', '--dry-run']);
+    expect(parseProductionLog(await readFile(logPath, 'utf8'))).toHaveLength(entriesBeforeDryRun.length);
+
+    const concurrentProcessCount = 8;
+    await Promise.all(Array.from({length: concurrentProcessCount}, () => runCli(['logs'])));
+    const entriesAfterConcurrentWrites = parseProductionLog(await readFile(logPath, 'utf8'));
+    const newEntries = entriesAfterConcurrentWrites.slice(entriesBeforeDryRun.length);
+    expect(newEntries).toHaveLength(concurrentProcessCount * 2);
+    expect(new Set(newEntries.map(entry => entry.invocationId)).size).toBe(concurrentProcessCount);
+    expect(newEntries.every(entry => entry.operation === 'logs')).toBe(true);
+    expect(await runCli(['logs'])).toContain(join(home, 'logs'));
+  });
+
+  it('previews an issue with production logs without requiring or invoking gh', async () => {
+    const logPath = join(home, 'logs', 'threadnote.log');
+    const logBeforePreview = await readFile(logPath, 'utf8');
+    const output = await runCli(
+      [
+        '--log-level',
+        'info',
+        'report-issue',
+        '--title',
+        'Packaged report preview',
+        '--body',
+        'The packaged command should show the exact public issue before applying it.',
+        '--include-logs',
+      ],
+      {PATH: ''},
+    );
+
+    expect(output).toContain('GitHub issue preview: Kashkovsky/threadnote');
+    expect(output).toContain('Production logs included: yes');
+    expect(output).toContain('Privacy-safe Threadnote production logs');
+    expect(output).toContain('No issue created.');
+    expect(output).not.toContain('Created GitHub issue:');
+    expect(await readFile(logPath, 'utf8')).toBe(logBeforePreview);
+  });
+
+  it.skipIf(process.platform === 'win32')('creates an approved issue through gh api with the log excerpt', async () => {
+    const fakeBin = join(temporaryRoot, 'report-issue-bin');
+    const fakeGh = join(fakeBin, 'gh');
+    const capturedRequest = join(temporaryRoot, 'captured-issue-request.json');
+    await mkdir(fakeBin, {recursive: true});
+    await writeFile(
+      fakeGh,
+      [
+        '#!/bin/sh',
+        'request_path=',
+        'while [ "$#" -gt 0 ]; do',
+        '  if [ "$1" = "--input" ]; then',
+        '    request_path=$2',
+        '    shift 2',
+        '  else',
+        '    shift',
+        '  fi',
+        'done',
+        'cp "$request_path" "$THREADNOTE_TEST_ISSUE_CAPTURE"',
+        'printf "%s\\n" "https://github.com/Kashkovsky/threadnote/issues/987"',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await chmod(fakeGh, 0o755);
+
+    const reportArguments = [
+      'report-issue',
+      '--title',
+      'Approved packaged report',
+      '--body',
+      'The approved packaged report uses an authenticated GitHub CLI transport.',
+      '--include-logs',
+    ] as const;
+    const preview = await runCli(reportArguments, {PATH: ''});
+    const approval = /Approval digest: (sha256:[a-f0-9]{64})/.exec(preview)?.[1];
+    expect(approval).toBeDefined();
+    const output = await runCli([...reportArguments, '--apply', '--approval', approval as string], {
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      THREADNOTE_TEST_ISSUE_CAPTURE: capturedRequest,
+    });
+    const request = JSON.parse(await readFile(capturedRequest, 'utf8')) as {
+      readonly body?: string;
+      readonly title?: string;
+    };
+
+    expect(output).toContain('Created GitHub issue: https://github.com/Kashkovsky/threadnote/issues/987');
+    expect(request.title).toBe('Approved packaged report');
+    expect(request.body).toContain('The approved packaged report uses an authenticated GitHub CLI transport.');
+    expect(request.body).toContain('Production logs included: yes');
+    expect(request.body).not.toContain('"operation":"report-issue"');
+  });
+
   it('preserves the installed core model and current indexes on repeat install', async () => {
     const vectorGeneration = await activeVectorGeneration();
     const output = await runCli(['install']);
     expect(output).toContain(`${coreEmbeddingModelId}: core embedding model verified`);
     expect((await stat(installedModelPath)).mtimeMs).toBe(installedModelModifiedAt);
     expect(await activeVectorGeneration()).toBe(vectorGeneration);
+  });
+
+  it('recovers legacy data without overwriting newer canonical beta content', async () => {
+    const migrationHome = join(temporaryRoot, 'migration-current-home');
+    const legacyHome = join(temporaryRoot, 'migration-legacy-home');
+    const relativeMemory = join(
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'durable',
+      'projects',
+      'front-end-web-monorepo',
+      'aspect-checkout-mvp-api.md',
+    );
+    const currentMemory = join(migrationHome, 'data', relativeMemory);
+    const legacyMemory = join(legacyHome, 'data', 'viking', relativeMemory);
+    const legacyOnly = join(
+      legacyHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'legacy-only.md',
+    );
+    await mkdir(dirname(currentMemory), {recursive: true});
+    await mkdir(dirname(legacyMemory), {recursive: true});
+    await mkdir(dirname(legacyOnly), {recursive: true});
+    await writeFile(currentMemory, '# Newer canonical beta memory\n', 'utf8');
+    await writeFile(legacyMemory, '# Older preserved legacy memory\n', 'utf8');
+    await writeFile(legacyOnly, '# Disjoint legacy memory\n', 'utf8');
+    await writeFile(join(migrationHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n', 'utf8');
+
+    const migration = await execute(cli, ['--home', migrationHome, 'migrate', '--apply', '--legacy-home', legacyHome], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        THREADNOTE_USER: 'e2e-user',
+        USERPROFILE: userHome,
+      },
+      timeout: realModelTimeoutMs,
+    });
+    const output = `${migration.stdout}${migration.stderr}`;
+    const receipt = JSON.parse(await readFile(join(migrationHome, 'migration', 'openviking-home-v1.json'), 'utf8')) as {
+      readonly preservedCurrentEntries?: number;
+    };
+
+    expect(output).toContain('Preserved 1 current Threadnote canonical entries');
+    expect(receipt.preservedCurrentEntries).toBe(1);
+    expect(await readFile(currentMemory, 'utf8')).toBe('# Newer canonical beta memory\n');
+    expect(await readFile(legacyMemory, 'utf8')).toBe('# Older preserved legacy memory\n');
+    expect(
+      await readFile(
+        join(
+          migrationHome,
+          'data',
+          'local',
+          'user',
+          'e2e-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'legacy-only.md',
+        ),
+        'utf8',
+      ),
+    ).toBe('# Disjoint legacy memory\n');
   });
 
   it('does not advertise a completed legacy-home migration during repair', async () => {
@@ -397,6 +590,26 @@ describe('built self-contained distribution', () => {
       expect(names.some(name => name.startsWith('ov_'))).toBe(false);
       const health = await client.callTool({arguments: {}, name: 'health'});
       expect(health.structuredContent).toMatchObject({status: 'ok', storage: 'native'});
+      const privatePayloadMarker = 'MCP-PRIVATE-PAYLOAD-7719';
+      const invalidRecall = await client.callTool({
+        arguments: {query: {marker: privatePayloadMarker}},
+        name: 'recall_context',
+      });
+      expect(invalidRecall.isError).toBe(true);
+      const productionLog = await readFile(join(home, 'logs', 'threadnote.log'), 'utf8');
+      const mcpLogEntries = parseProductionLog(productionLog).filter(entry => entry.component === 'mcp');
+      expect(mcpLogEntries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({event: 'invocation.finished', operation: 'health', outcome: 'success'}),
+          expect.objectContaining({
+            errorType: 'McpToolError',
+            event: 'invocation.finished',
+            operation: 'recall_context',
+            outcome: 'failure',
+          }),
+        ]),
+      );
+      expect(productionLog).not.toContain(privatePayloadMarker);
       const recall = await client.callTool({
         arguments: {query: 'MCP-OBSIDIAN-881'},
         name: 'recall_context',
@@ -598,4 +811,19 @@ async function runGit(args: readonly string[], cwd: string): Promise<string> {
     timeout: 60_000,
   });
   return `${result.stdout}${result.stderr}`;
+}
+
+function parseProductionLog(content: string): ReadonlyArray<{
+  readonly component: string;
+  readonly errorType?: string;
+  readonly event: string;
+  readonly invocationId: string;
+  readonly operation: string;
+  readonly outcome?: string;
+}> {
+  return content
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
 }
