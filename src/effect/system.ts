@@ -217,11 +217,13 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
     return Effect.try({
       try: () => {
         const script =
-          '$cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1).Name; ' +
-          '$system=Get-CimInstance Win32_ComputerSystem; ' +
-          '$os=Get-CimInstance Win32_OperatingSystem; ' +
-          '@{cpuModel=$cpu;memoryBytes=[int64]$system.TotalPhysicalMemory;' +
-          "operatingSystem=($os.Caption+' '+$os.Version)} | ConvertTo-Json -Compress";
+          'Add-Type -AssemblyName Microsoft.VisualBasic; ' +
+          '$computer=[Microsoft.VisualBasic.Devices.ComputerInfo]::new(); ' +
+          "$cpuKey=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0'); " +
+          '$cpu=$env:PROCESSOR_IDENTIFIER; ' +
+          "if ($cpuKey) { try { $cpu=[string]$cpuKey.GetValue('ProcessorNameString') } finally { $cpuKey.Dispose() } }; " +
+          '@{cpuModel=$cpu;memoryBytes=[uint64]$computer.TotalPhysicalMemory;' +
+          "operatingSystem=($computer.OSFullName+' '+$computer.OSVersion)} | ConvertTo-Json -Compress";
         const value = JSON.parse(
           spawnText(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], environment),
         ) as unknown;
