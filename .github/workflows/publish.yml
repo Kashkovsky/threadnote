@@ -40,6 +40,22 @@ jobs:
             exit 1
           fi
 
+      - name: Verify versioned release notes
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_notes_file=".github/release-notes/${{ github.ref_name }}.md"
+          if [[ ! -s "$release_notes_file" ]]; then
+            echo "::error::Add non-empty release notes at $release_notes_file before tagging the release."
+            exit 1
+          fi
+          first_non_empty_line="$(sed -n '/[^[:space:]]/{p;q;}' "$release_notes_file")"
+          if [[ "$first_non_empty_line" != "## What's new" ]]; then
+            echo "::error::$release_notes_file must begin with the heading: ## What's new"
+            exit 1
+          fi
+
       - run: bun run lint
       - run: bun run prettier:check
       - run: bun run typecheck
@@ -334,11 +350,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_notes_file=".github/release-notes/${RELEASE_TAG}.md"
+          release_notes="$(<"$release_notes_file")"
           release_flags=(--verify-tag --generate-notes)
           if [[ "$RELEASE_TAG" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          gh release create "$RELEASE_TAG" artifacts/* "${release_flags[@]}"
+          gh release create "$RELEASE_TAG" artifacts/* "${release_flags[@]}" --notes "$release_notes"
 
       - name: Verify release immutability
         env:

@@ -43,11 +43,19 @@ checksums but are not OS code-signed.
 
 ## Publishing
 
-1. Merge the release source and ensure ordinary CI is green.
-2. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
-3. Create and push the version tag matching `package.json`, for example `v4.0.0-beta.9`.
-4. Wait for `Publish standalone release`. Do not create a GitHub Release manually; the workflow creates it only after
+1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, describe
+   user-visible value rather than implementation history, include concrete commands when useful, and do not add a
+   validation/checks section.
+2. Merge the release source and ensure ordinary CI is green.
+3. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
+4. Create and push the version tag matching both `package.json` and the release-notes filename, for example
+   `v4.0.0-beta.9`.
+5. Wait for `Publish standalone release`. Do not create a GitHub Release manually; the workflow creates it only after
    all four enabled archives are ready.
+
+The tag workflow fails before building or signing when its versioned release-notes file is absent, empty, or does not
+start with the required heading. It prepends this checked-in copy to GitHub's automatically generated changelog, so
+every release preserves a curated summary even when the release branch has no merged pull requests.
 
 ## Testing Apple signing without publishing
 
