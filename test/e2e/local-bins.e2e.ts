@@ -1,6 +1,6 @@
 import {chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
@@ -276,6 +276,80 @@ describe('built self-contained distribution', () => {
     expect(output).toContain(`${coreEmbeddingModelId}: core embedding model verified`);
     expect((await stat(installedModelPath)).mtimeMs).toBe(installedModelModifiedAt);
     expect(await activeVectorGeneration()).toBe(vectorGeneration);
+  });
+
+  it('recovers legacy data without overwriting newer canonical beta content', async () => {
+    const migrationHome = join(temporaryRoot, 'migration-current-home');
+    const legacyHome = join(temporaryRoot, 'migration-legacy-home');
+    const relativeMemory = join(
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'durable',
+      'projects',
+      'front-end-web-monorepo',
+      'aspect-checkout-mvp-api.md',
+    );
+    const currentMemory = join(migrationHome, 'data', relativeMemory);
+    const legacyMemory = join(legacyHome, 'data', 'viking', relativeMemory);
+    const legacyOnly = join(
+      legacyHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'legacy-only.md',
+    );
+    await mkdir(dirname(currentMemory), {recursive: true});
+    await mkdir(dirname(legacyMemory), {recursive: true});
+    await mkdir(dirname(legacyOnly), {recursive: true});
+    await writeFile(currentMemory, '# Newer canonical beta memory\n', 'utf8');
+    await writeFile(legacyMemory, '# Older preserved legacy memory\n', 'utf8');
+    await writeFile(legacyOnly, '# Disjoint legacy memory\n', 'utf8');
+    await writeFile(join(migrationHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n', 'utf8');
+
+    const migration = await execute(cli, ['--home', migrationHome, 'migrate', '--apply', '--legacy-home', legacyHome], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        THREADNOTE_USER: 'e2e-user',
+        USERPROFILE: userHome,
+      },
+      timeout: realModelTimeoutMs,
+    });
+    const output = `${migration.stdout}${migration.stderr}`;
+    const receipt = JSON.parse(await readFile(join(migrationHome, 'migration', 'openviking-home-v1.json'), 'utf8')) as {
+      readonly preservedCurrentEntries?: number;
+    };
+
+    expect(output).toContain('Preserved 1 current Threadnote canonical entries');
+    expect(receipt.preservedCurrentEntries).toBe(1);
+    expect(await readFile(currentMemory, 'utf8')).toBe('# Newer canonical beta memory\n');
+    expect(await readFile(legacyMemory, 'utf8')).toBe('# Older preserved legacy memory\n');
+    expect(
+      await readFile(
+        join(
+          migrationHome,
+          'data',
+          'local',
+          'user',
+          'e2e-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'legacy-only.md',
+        ),
+        'utf8',
+      ),
+    ).toBe('# Disjoint legacy memory\n');
   });
 
   it('does not advertise a completed legacy-home migration during repair', async () => {
