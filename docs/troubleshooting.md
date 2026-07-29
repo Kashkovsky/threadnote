@@ -32,6 +32,39 @@ signing is re-enabled.
 Threadnote 4 owns no daemon. `threadnote start` verifies the on-demand runtime and `threadnote stop` is a compatibility
 no-op. Use `threadnote doctor` for storage, index, and model diagnostics.
 
+## Collect production logs for support
+
+Run `threadnote logs` to list the available files. Threadnote writes JSON Lines operational diagnostics under
+`~/.threadnote/logs/threadnote.log`, rotates at 1 MiB, and retains five rotated files (`threadnote.log.1` through
+`threadnote.log.5`). Appends and rotation are serialized both within one process and across concurrent agent
+processes.
+
+The log schema is intentionally narrower than console output: it includes the Threadnote and embedded Bun versions,
+operating system and architecture, CLI command or MCP tool name, duration, outcome, and typed failure name. It never
+records command arguments, environment values, memory content, recall queries or results, MCP request/response
+payloads, or exception messages. Help, dry-run, implicit preview, and `report-issue` commands do not write logs.
+Logging starts only after Threadnote owns a valid home, never creates a home before migration, and is best-effort so a
+logging failure cannot fail the command.
+
+Review the files before attaching them to a support report. The active file is newest; numbered files are progressively
+older.
+
+Create a Threadnote GitHub issue through an exact public preview:
+
+```sh
+threadnote report-issue \
+  --title "Short failure summary" \
+  --body "What happened, what was expected, and how to reproduce it"
+```
+
+Preview does not require GitHub CLI. For submission, install it from [cli.github.com](https://cli.github.com/) (or use
+`brew install gh` on macOS / `winget install --id GitHub.cli` on Windows), authenticate with `gh auth login`, and rerun
+with `--apply --approval sha256:...` using the approval digest printed by the preview. Threadnote refuses submission if
+the title, body, diagnostics, or selected log excerpt changed after review. Add `--include-logs` only when you want the
+newest valid production-log entries embedded in the issue. Threadnote re-parses those JSONL entries through a strict
+field allowlist, omits older entries beyond the issue-body budget, and never posts raw command output. The request body
+is passed to `gh api` through an owner-only temporary file rather than process arguments.
+
 ## Home or migration problems
 
 The owned home defaults to `~/.threadnote`. Check for an accidental override:

@@ -16,8 +16,11 @@ Use MCP tools when available and the `threadnote` CLI as fallback. If native sto
 `threadnote doctor --dry-run`, report the diagnostic, and continue independent work when possible. The 4.0 runtime has
 no daemon to start.
 
-If Threadnote itself causes an issue, offer to open a GitHub issue in `Kashkovsky/threadnote` without sensitive
-information, and create it only after the user explicitly approves.
+If Threadnote itself returns an error, use `threadnote report-issue --title <title> --body <description>` to prepare the
+public GitHub issue preview without sensitive information. Create it only after explicit user approval by rerunning
+with `--apply --approval <preview-digest>`; add `--include-logs` only when the user approves posting the bounded
+privacy-safe production logs. If GitHub CLI is missing or signed out, ask before helping the user install it or run
+`gh auth login`.
 
 Before publishing safe durable memory, confirm with the user. Never publish handoffs or preferences. Resolve dirty git
 or share conflicts before syncing, and never overwrite local modifications with force without explicit approval.

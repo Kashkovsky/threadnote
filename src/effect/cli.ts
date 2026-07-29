@@ -87,12 +87,19 @@ import {
   runModelVerify,
 } from '../models/commands.js';
 import {runIndexPurge, runIndexRebuild, runIndexStatus, runIndexVerify} from '../search/commands.js';
+import {runProductionLogs} from './production_log.js';
+import {runReportIssue} from '../report_issue.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
 
 const encodedStringPrefix = '\u{f0000}threadnote:';
 const valueFlagKinds = new Map<string, 'other' | 'string'>();
+const booleanFlagNames = new Set<string>();
+const cliRuntimeValueFlagKinds = new Map<string, 'other' | 'string'>([
+  ['--completions', 'other'],
+  ['--log-level', 'other'],
+]);
 
 const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
   valueFlagKinds.set(`--${name}`, kind);
@@ -123,11 +130,15 @@ const requiredString = (name: string, description: string): Flag.Flag<string> =>
 const defaultString = (name: string, description: string, value: string): Flag.Flag<string> =>
   describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
 
-const boolean = (name: string, description: string): Flag.Flag<boolean> =>
-  describeFlag(Flag.boolean(name), description);
+const boolean = (name: string, description: string): Flag.Flag<boolean> => {
+  booleanFlagNames.add(`--${name}`);
+  return describeFlag(Flag.boolean(name), description);
+};
 
-const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> =>
-  describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
+const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
+  booleanFlagNames.add(`--no-${name}`);
+  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
+};
 
 const optionalChoice = <const Choices extends readonly string[]>(
   name: string,
@@ -235,6 +246,22 @@ const version = Command.make(
   },
   options => withRuntimeEffect(config => runVersion(config, options)),
 ).pipe(Command.withDescription('Print the installed Threadnote version, latest release, and release notes'));
+
+const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)).pipe(
+  Command.withDescription('Show privacy-safe rotating production log files for support'),
+);
+
+const reportIssue = Command.make(
+  'report-issue',
+  {
+    approval: optionalString('approval', 'Digest printed by the exact issue preview'),
+    apply: boolean('apply', 'Create the GitHub issue after reviewing the preview'),
+    body: requiredString('body', 'Public issue description'),
+    includeLogs: boolean('include-logs', 'Include bounded privacy-safe production logs in the issue body'),
+    title: requiredString('title', 'Public issue title'),
+  },
+  options => withRuntimeEffect(config => runReportIssue(config, options)),
+).pipe(Command.withDescription('Preview or create a support issue in Kashkovsky/threadnote'));
 
 const update = Command.make(
   'update',
@@ -1121,53 +1148,210 @@ const importPack = Command.make(
   options => withRuntimeEffect(config => runImportPack(config, options)),
 ).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));
 
-export const threadnoteCommand = root.pipe(
-  Command.withDescription('Threadnote shared context workflow for development agents'),
-  Command.withSubcommands([
-    manage,
-    doctor,
-    install,
-    version,
-    update,
-    postUpdate,
-    repair,
-    start,
-    stop,
-    uninstall,
-    models,
-    indexCommand,
-    localAi,
-    source,
-    projection,
-    openMemory,
-    inbox,
-    seed,
-    initManifest,
-    seedSkills,
-    mcpInstall,
-    installHooks,
-    preCompactHook,
-    sessionStartHook,
-    remember,
-    migrateHome,
-    migrateMemories,
-    migrateLifecycle,
-    migrateProjectNames,
-    migrateProjectNamesCompatibility,
-    enrichMemories,
-    recall,
-    workset,
-    compact,
-    read,
-    list,
-    handoff,
-    archive,
-    forget,
-    share,
-    exportPack,
-    importPack,
+type ProductionLogMode = 'always' | 'never' | 'requires-apply' | 'skips-on-preview';
+
+interface TopLevelCommandMetadata {
+  readonly aliases?: readonly string[];
+  readonly productionLog?: {
+    readonly mode?: ProductionLogMode;
+    readonly subcommands?: Readonly<Record<string, ProductionLogMode>>;
+  };
+}
+
+const registerTopLevelCommand = <const Name extends string, CommandType>(
+  canonicalName: Name,
+  command: CommandType,
+  metadata: TopLevelCommandMetadata = {},
+) => ({
+  aliases: metadata.aliases ?? [],
+  canonicalName,
+  command,
+  productionLog: metadata.productionLog ?? {},
+});
+
+const topLevelCommandRegistrations = [
+  registerTopLevelCommand('manage', manage),
+  registerTopLevelCommand('doctor', doctor),
+  registerTopLevelCommand('install', install),
+  registerTopLevelCommand('version', version),
+  registerTopLevelCommand('logs', logs),
+  registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
+  registerTopLevelCommand('update', update),
+  registerTopLevelCommand('post-update', postUpdate),
+  registerTopLevelCommand('repair', repair),
+  registerTopLevelCommand('start', start),
+  registerTopLevelCommand('stop', stop),
+  registerTopLevelCommand('uninstall', uninstall),
+  registerTopLevelCommand('models', models),
+  registerTopLevelCommand('index', indexCommand),
+  registerTopLevelCommand('local-ai', localAi),
+  registerTopLevelCommand('source', source, {
+    productionLog: {
+      subcommands: {add: 'requires-apply', remove: 'requires-apply', sync: 'requires-apply'},
+    },
+  }),
+  registerTopLevelCommand('projection', projection, {
+    productionLog: {
+      subcommands: {
+        add: 'requires-apply',
+        publish: 'requires-apply',
+        remove: 'requires-apply',
+        sync: 'requires-apply',
+      },
+    },
+  }),
+  registerTopLevelCommand('open', openMemory),
+  registerTopLevelCommand('inbox', inbox, {
+    productionLog: {subcommands: {scan: 'requires-apply'}},
+  }),
+  registerTopLevelCommand('seed', seed),
+  registerTopLevelCommand('init-manifest', initManifest),
+  registerTopLevelCommand('seed-skills', seedSkills),
+  registerTopLevelCommand('mcp-install', mcpInstall, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('install-hooks', installHooks, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('pre-compact-hook', preCompactHook),
+  registerTopLevelCommand('session-start-hook', sessionStartHook),
+  registerTopLevelCommand('remember', remember),
+  registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('migrate-memories', migrateMemories),
+  registerTopLevelCommand('migrate-lifecycle', migrateLifecycle, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('migrate-projects', migrateProjectNames, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('migrate-project-names', migrateProjectNamesCompatibility, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('enrich-memories', enrichMemories, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('recall', recall),
+  registerTopLevelCommand('workset', workset),
+  registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('read', read),
+  registerTopLevelCommand('list', list, {aliases: ['ls']}),
+  registerTopLevelCommand('handoff', handoff),
+  registerTopLevelCommand('archive', archive),
+  registerTopLevelCommand('forget', forget),
+  registerTopLevelCommand('share', share, {
+    productionLog: {
+      subcommands: {
+        'install-artifacts': 'requires-apply',
+        publish: 'skips-on-preview',
+        'publish-artifact': 'skips-on-preview',
+        'publish-bundle': 'skips-on-preview',
+      },
+    },
+  }),
+  registerTopLevelCommand('export-pack', exportPack),
+  registerTopLevelCommand('import-pack', importPack),
+] as const;
+
+const topLevelOperationByName = new Map(
+  topLevelCommandRegistrations.flatMap(registration => [
+    [registration.canonicalName, registration.canonicalName] as const,
+    ...registration.aliases.map(alias => [alias, registration.canonicalName] as const),
   ]),
 );
+
+const topLevelRegistrationByName = new Map(
+  topLevelCommandRegistrations.map(registration => [registration.canonicalName, registration] as const),
+);
+
+export const threadnoteCommand = root.pipe(
+  Command.withDescription('Threadnote shared context workflow for development agents'),
+  Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
+);
+
+export interface CliInvocationInspection {
+  readonly homeOverride?: string;
+  readonly operation?: string;
+  readonly writeProductionLog: boolean;
+}
+
+export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
+  const scanned = scanCliArguments(arguments_);
+  const selectedName = scanned.positionals[0];
+  const operation = selectedName === undefined ? undefined : (topLevelOperationByName.get(selectedName) ?? 'unknown');
+  const registration =
+    operation === undefined || operation === 'unknown' ? undefined : topLevelRegistrationByName.get(operation);
+  const mode =
+    registration?.productionLog.subcommands?.[scanned.positionals[1] ?? ''] ??
+    registration?.productionLog.mode ??
+    'always';
+  const writeProductionLog =
+    operation !== undefined &&
+    mode !== 'never' &&
+    scanned.booleanValues.get('--dry-run') !== true &&
+    !scanned.flags.has('--help') &&
+    !scanned.flags.has('-h') &&
+    !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
+    !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
+  return {
+    ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
+    ...(operation === undefined ? {} : {operation}),
+    writeProductionLog,
+  };
+}
+
+function scanCliArguments(arguments_: readonly string[]) {
+  const booleanValues = new Map<string, boolean>();
+  const flags = new Set<string>();
+  const positionals: string[] = [];
+  let homeOverride: string | undefined;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index] ?? '';
+    const equalsIndex = argument.indexOf('=');
+    const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
+    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
+    if (valueKind !== undefined) {
+      const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
+      if (flagName === '--home') {
+        homeOverride = value;
+      }
+      if (equalsIndex < 0 && value !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (booleanFlagNames.has(flagName)) {
+      const inlineValue = equalsIndex > 0 ? parseCliBoolean(argument.slice(equalsIndex + 1)) : undefined;
+      const followingValue = equalsIndex < 0 ? parseCliBoolean(arguments_[index + 1]) : undefined;
+      booleanValues.set(flagName, inlineValue ?? followingValue ?? true);
+      if (followingValue !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (argument.startsWith('-')) {
+      flags.add(flagName);
+    } else {
+      positionals.push(argument);
+    }
+  }
+  return {booleanValues, flags, homeOverride, positionals};
+}
+
+function parseCliBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  switch (value.toLowerCase()) {
+    case '1':
+    case 'on':
+    case 'true':
+    case 'yes':
+      return true;
+    case '0':
+    case 'false':
+    case 'no':
+    case 'off':
+      return false;
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Preserve Commander-compatible string values while Effect 4's beta lexer
