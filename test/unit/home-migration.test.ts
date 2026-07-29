@@ -508,7 +508,7 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
-  it.effect('isolates legacy share worktrees while preserving canonical shared memories and git metadata', () =>
+  it.effect('isolates legacy shares while preserving unpublished state and ignoring transient Git files', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -543,10 +543,15 @@ describe('OpenViking home migration', () => {
         yield* fs.writeFileString(unpublishedObject, 'unpublished commit object');
         yield* fs.makeDirectory(path.join(legacyGitdir, 'refs', 'heads'), {recursive: true});
         yield* fs.writeFileString(path.join(legacyGitdir, 'refs', 'heads', 'main'), `${unpublishedCommit}\n`);
+        yield* fs.writeFileString(path.join(legacyGitdir, 'ORIG_HEAD'), `${unpublishedCommit}\n`);
         yield* fs.writeFileString(
           path.join(legacyGitdir, 'FETCH_HEAD'),
           `${unpublishedCommit}\tnot-for-merge\tbranch 'main' of git@example.invalid:team/memories.git\n`,
         );
+        yield* fs.writeFileString(path.join(legacyGitdir, 'COMMIT_EDITMSG'), 'Unpublished shared memory\n');
+        yield* fs.writeFileString(path.join(legacyGitdir, 'gc.log'), 'Background maintenance output\n');
+        yield* fs.writeFileString(path.join(legacyGitdir, 'index.lock'), 'transient index lock');
+        yield* fs.writeFileString(path.join(legacyGitdir, 'refs', 'heads', 'main.lock'), 'transient ref lock');
         yield* fs.makeDirectory(path.join(legacyHome, 'share'), {recursive: true});
         yield* fs.writeFileString(
           path.join(legacyHome, 'share', 'teams.json'),
@@ -570,6 +575,12 @@ describe('OpenViking home migration', () => {
         );
         yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
         yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":1}\n');
+        const currentCommitMessage = 'Current beta share operation\n';
+        yield* fs.makeDirectory(path.join(targetHome, 'share', 'teams', 'default.gitdir'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(targetHome, 'share', 'teams', 'default.gitdir', 'COMMIT_EDITMSG'),
+          currentCommitMessage,
+        );
 
         const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(result.action).toBe('recovered');
@@ -600,10 +611,15 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.readFileString(path.join(migratedGitdir, 'refs', 'heads', 'main'))).toBe(
           `${unpublishedCommit}\n`,
         );
+        expect(yield* fs.readFileString(path.join(migratedGitdir, 'ORIG_HEAD'))).toBe(`${unpublishedCommit}\n`);
         expect(yield* fs.readFileString(path.join(migratedGitdir, 'objects', '01', unpublishedCommit.slice(2)))).toBe(
           'unpublished commit object',
         );
         expect(yield* fs.exists(path.join(migratedGitdir, 'FETCH_HEAD'))).toBe(false);
+        expect(yield* fs.readFileString(path.join(migratedGitdir, 'COMMIT_EDITMSG'))).toBe(currentCommitMessage);
+        expect(yield* fs.exists(path.join(migratedGitdir, 'gc.log'))).toBe(false);
+        expect(yield* fs.exists(path.join(migratedGitdir, 'index.lock'))).toBe(false);
+        expect(yield* fs.exists(path.join(migratedGitdir, 'refs', 'heads', 'main.lock'))).toBe(false);
         const migratedTeams = JSON.parse(yield* fs.readFileString(path.join(targetHome, 'share', 'teams.json'))) as {
           readonly teams: {readonly default: {readonly gitdir: string; readonly worktree: string}};
         };
@@ -614,6 +630,10 @@ describe('OpenViking home migration', () => {
 
         expect(yield* fs.readFileString(path.join(legacyWorktree, '.git'))).toBe(`gitdir: ${legacyGitdir}\n`);
         expect(yield* fs.exists(path.join(legacyGitdir, 'FETCH_HEAD'))).toBe(true);
+        expect(yield* fs.readFileString(path.join(legacyGitdir, 'COMMIT_EDITMSG'))).toBe('Unpublished shared memory\n');
+        expect(yield* fs.exists(path.join(legacyGitdir, 'gc.log'))).toBe(true);
+        expect(yield* fs.exists(path.join(legacyGitdir, 'index.lock'))).toBe(true);
+        expect(yield* fs.exists(path.join(legacyGitdir, 'refs', 'heads', 'main.lock'))).toBe(true);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
