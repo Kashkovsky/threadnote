@@ -219,6 +219,27 @@ describe('production log writer', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('does not replace existing log history when Windows reports non-POSIX file modes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const {fs, home, path} = yield* ownedTestHome('windows-file-mode');
+        const nativeSystem = yield* SystemInfo;
+        const windowsSystem = SystemInfo.of({...nativeSystem, platform: 'win32'});
+        const runAsWindows = <A, E, R>(effect: Effect.Effect<A, E, R | SystemInfo>) =>
+          effect.pipe(Effect.provideService(SystemInfo, windowsSystem));
+
+        yield* runAsWindows(withProductionLogging(home, {component: 'cli', operation: 'version'}, Effect.void));
+        const active = productionLogPath(path, home);
+        yield* fs.chmod(active, 0o644);
+        yield* runAsWindows(withProductionLogging(home, {component: 'cli', operation: 'doctor'}, Effect.void));
+
+        const entries = parseEntries(yield* fs.readFileString(active));
+        expect(entries).toHaveLength(4);
+        expect(entries.map(entry => entry.operation)).toEqual(['version', 'version', 'doctor', 'doctor']);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('rotates at the configured size and prunes files beyond retention', () =>
     Effect.scoped(
       Effect.gen(function* () {

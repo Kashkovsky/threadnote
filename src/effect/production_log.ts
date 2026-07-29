@@ -284,6 +284,7 @@ function appendProductionLogs(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const system = yield* SystemInfo;
     if (!(yield* isOwnedThreadnoteHome(fs, path, home))) {
       return;
     }
@@ -311,7 +312,14 @@ function appendProductionLogs(
           if ((yield* productionLogPathEntryKind(fs, logsRoot)) !== 'directory') {
             return;
           }
-          yield* writeProductionLogBatch(fs, activePath, serialized, serializedBytes, policy);
+          yield* writeProductionLogBatch(
+            fs,
+            activePath,
+            serialized,
+            serializedBytes,
+            policy,
+            system.platform !== 'win32',
+          );
           yield* fs.chmod(logsRoot, PRODUCTION_LOG_DIRECTORY_MODE);
         }),
       ),
@@ -337,12 +345,20 @@ function writeProductionLogBatch(
   serialized: string,
   serializedBytes: bigint,
   policy: ProductionLogPolicy,
+  enforcePosixFileMode: boolean,
 ) {
   return Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
     const suffix = yield* crypto.randomUUIDv4;
     const activeTemporaryPath = `${activePath}.temporary-${suffix}`;
-    const disposition = yield* appendToExistingProductionLog(fs, activePath, serialized, serializedBytes, policy);
+    const disposition = yield* appendToExistingProductionLog(
+      fs,
+      activePath,
+      serialized,
+      serializedBytes,
+      policy,
+      enforcePosixFileMode,
+    );
     if (disposition === 'appended' || disposition === 'rejected') {
       return;
     }
@@ -366,6 +382,7 @@ function appendToExistingProductionLog(
   serialized: string,
   serializedBytes: bigint,
   policy: ProductionLogPolicy,
+  enforcePosixFileMode: boolean,
 ) {
   return Effect.gen(function* () {
     const activeKind = yield* productionLogPathEntryKind(fs, activePath);
@@ -386,7 +403,7 @@ function appendToExistingProductionLog(
         ) {
           return 'replace' as const;
         }
-        if ((fileInfo.mode & 0o777) !== PRODUCTION_LOG_FILE_MODE) {
+        if (enforcePosixFileMode && (fileInfo.mode & 0o777) !== PRODUCTION_LOG_FILE_MODE) {
           return 'replace' as const;
         }
         if (fileInfo.size > 0n && fileInfo.size + serializedBytes > BigInt(policy.maxBytes)) {
