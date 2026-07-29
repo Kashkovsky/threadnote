@@ -34,6 +34,12 @@ the untouched legacy home. Disjoint account trees are merged, identical overlaps
 canonical destination stops the migration instead of being overwritten. The source remains byte-for-byte untouched
 and is never automatically removed.
 
+The standalone installer separately retires verified executable dependencies after activating the new release. It can
+stop and uninstall a detected npm-distributed Threadnote package, including an early Node-based 4.0 beta, remove a
+Threadnote-owned OpenViking uv/pipx/user-local pip tool, and unload the `io.threadnote.openviking` LaunchAgent. This
+cleanup does not remove `~/.openviking`, its models, canonical resources, memories, or migration receipts. A rollback
+that needs the old executable runtime must reinstall Threadnote 3/OpenViking and point it at the preserved home.
+
 After promotion:
 
 ```sh

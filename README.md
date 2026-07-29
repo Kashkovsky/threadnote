@@ -62,7 +62,13 @@ threadnote mcp-install codex --apply # or claude / cursor / copilot
 threadnote doctor
 ```
 
-Windows PowerShell:
+Install the current Threadnote 4 beta on macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
+```
+
+Windows PowerShell, once Threadnote 4 Windows publishing is re-enabled:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
@@ -80,8 +86,15 @@ threadnote mcp-install codex --apply
 ```
 
 The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept
-only immutable GitHub releases and SHA-256 verify archives before atomic promotion; macOS releases are Developer ID
-signed and notarized, and Windows releases are Authenticode signed.
+only immutable GitHub releases and SHA-256 verify archives before atomic promotion. Current Threadnote 4 betas publish
+Developer ID signed and notarized macOS builds plus checksum-verified Linux builds. Windows 4 publishing is temporarily
+disabled until Authenticode signing is approved and verified; Threadnote will not ship an unsigned official Windows
+archive.
+
+After the standalone payload is active, installation removes only verified global npm-distributed Threadnote packages,
+including early Node-based 4.0 betas, and Threadnote-owned OpenViking tools found through uv, pipx, or a user-local pip
+installation. It unloads the legacy Threadnote OpenViking LaunchAgent on macOS, then writes the new standalone launcher.
+Canonical rollback and migration data under `~/.openviking` is always preserved.
 
 The CLI is the complete execution surface. MCP is a local stdio process with a focused default toolset; install
 `--toolset full` only when an agent needs maintenance and artifact-sharing tools.

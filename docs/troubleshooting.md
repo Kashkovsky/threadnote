@@ -8,22 +8,24 @@ Python installed. Verify the immutable release and archive checksum, then run `t
 `Get-AuthenticodeSignature (Get-Command threadnote).Source` should report `Valid`.
 
 If an older npm-based Threadnote command shadows the standalone launcher, compare every result from
-`command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. Remove the obsolete package with
-the package manager that installed it, then rerun the standalone installer. Threadnote does not automatically remove
-unverified third-party files. Threadnote 3 cannot install v4 through `threadnote update`; a fresh standalone install is
-the supported upgrade path.
+`command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. The standalone installer removes
+verified npm-distributed Threadnote installations automatically, including early Node-based 4.0 betas. If it warns
+that a package manager could not remove one, run the exact printed uninstall command and rerun the installer. Threadnote
+does not remove unverified third-party files. Threadnote 3 cannot install v4 through `threadnote update`; a fresh
+standalone install is the supported upgrade path.
 
 Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users select the beta channel:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh |
-  THREADNOTE_CHANNEL=beta sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
 ```
 
 ```powershell
-$env:THREADNOTE_CHANNEL = 'beta'
-irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1))) -Beta
 ```
+
+The PowerShell beta path is available for testing but no official Windows 4 beta asset is published until Authenticode
+signing is re-enabled.
 
 ## Start and stop do not launch a service
 
@@ -43,6 +45,11 @@ threadnote migrate
 `migrate` is a dry run unless `--apply` is present. It never deletes the legacy source. An interrupted copy can be
 resumed; a promoted target has a checksummed receipt. If the target is unrelated or free space is insufficient,
 migration stops before promotion.
+
+The standalone installer removes verified obsolete runtimes, not legacy data. It may uninstall the old global
+Threadnote package, the Threadnote-owned OpenViking uv/pipx/user-pip tool, and the macOS
+`io.threadnote.openviking` LaunchAgent. It never deletes `~/.openviking`; run `threadnote migrate --apply` to import
+that source into the native Threadnote 4 home.
 
 ## Seed is slow or skips files
 

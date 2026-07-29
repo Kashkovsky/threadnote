@@ -11,7 +11,7 @@ const readWorkflow = (name: string) =>
   );
 
 describe('standalone release workflows', () => {
-  it('builds six native release artifacts with Bun and never publishes an npm package', async () => {
+  it('publishes macOS and Linux while retaining disabled Windows release definitions', async () => {
     const workflow = await readWorkflow('publish.yml');
 
     expect(workflow).toContain('oven-sh/setup-bun@v2');
@@ -22,10 +22,13 @@ describe('standalone release workflows', () => {
     expect(workflow).toContain('bun-windows-x64-baseline');
     expect(workflow).toContain('bun-windows-arm64');
     expect(workflow).toContain('windows-11-arm');
+    expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
+    expect(workflow).toContain('needs: [linux, macos]');
+    expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
     expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
   });
 
-  it('signs and notarizes before creating checksums and uploading artifacts', async () => {
+  it('signs and notarizes Apple artifacts and keeps the deferred Authenticode sequence intact', async () => {
     const workflow = await readWorkflow('publish.yml');
     const signing = workflow.indexOf('Sign nested native code and Bun executable');
     const notarization = workflow.indexOf('Notarize the exact release payload');

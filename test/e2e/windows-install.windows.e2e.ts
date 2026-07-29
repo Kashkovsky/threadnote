@@ -76,6 +76,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         'Bypass',
         '-File',
         join(process.cwd(), 'scripts', 'install.ps1'),
+        '-Beta',
         '-NoStart',
         '-WithHooks',
       ];
@@ -86,7 +87,6 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         PATH: [powerShellDirectory, join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(delimiter),
         THREADNOTE_BIN_DIR: binRoot,
         THREADNOTE_INSTALL_ROOT: installRoot,
-        THREADNOTE_CHANNEL: 'beta',
         THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}`,
         THREADNOTE_RELEASE_SOURCE: `http://127.0.0.1:${server.port}/releases`,
         USERPROFILE: userHome,

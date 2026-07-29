@@ -8,6 +8,17 @@ INSTALL_LOCK_WAIT_SECONDS=600
 installation_lock_path=""
 installation_lock_token=""
 
+argument_count=$#
+while [ "$argument_count" -gt 0 ]; do
+  argument="$1"
+  shift
+  case "$argument" in
+    --beta) CHANNEL=beta ;;
+    *) set -- "$@" "$argument" ;;
+  esac
+  argument_count=$((argument_count - 1))
+done
+
 say() {
   printf '%s\n' "$*"
 }

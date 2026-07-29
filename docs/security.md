@@ -30,8 +30,8 @@ stdio. Threadnote has no background daemon, listening storage port, or native HT
 
 Official standalone installs and updates accept only immutable GitHub releases and verify the archive SHA-256 before
 extraction. macOS additionally requires valid code signatures during installation and Apple notarization acceptance
-before publication; Windows requires valid Authenticode signatures for the executable and native payload. Linux relies
-on GitHub's immutable-release attestation as the publisher trust root. The repository's release authority is
-intentionally trusted: this model detects corrupted, substituted, mutable, or unsigned delivery, but it does not claim
-to survive compromise of the repository publisher itself. Custom release APIs require an explicit untrusted-source
-opt-in.
+before publication. Windows 4 beta publication is disabled until valid Authenticode signing and clean-machine
+verification are available; unsigned official Windows archives are never published. Linux relies on GitHub's
+immutable-release attestation as the publisher trust root. The repository's release authority is intentionally trusted:
+this model detects corrupted, substituted, mutable, or unsigned delivery, but it does not claim to survive compromise
+of the repository publisher itself. Custom release APIs require an explicit untrusted-source opt-in.

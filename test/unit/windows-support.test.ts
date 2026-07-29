@@ -61,4 +61,11 @@ describe('Windows platform contracts', () => {
     expect(installer).toContain('$client.DownloadFile($Uri, $Path)');
     expect(installer).not.toContain('Invoke-WebRequest');
   });
+
+  it('selects the beta release channel from an explicit bootstrap flag', async () => {
+    const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
+
+    expect(installer).toContain('[switch]$Beta');
+    expect(installer).toContain("$channel = if ($Beta) { 'beta' }");
+  });
 });
