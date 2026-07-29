@@ -49,6 +49,8 @@
     "eval:recall:models": "bun scripts/evaluate-recall-models.ts",
     "bench:recall": "bun scripts/benchmark-recall-v2.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
+    "bench:code-graph": "bun scripts/benchmark-code-graph.ts",
+    "eval:code-graph": "bun scripts/evaluate-code-graph.ts",
     "mcp-server": "bun src/standalone.ts mcp-server",
     "typecheck": "bun --bun tsc --noEmit && bun --bun tsc -p test/tsconfig.json --noEmit"
   },
@@ -77,7 +79,8 @@
     "@effect/sql-sqlite-bun": "4.0.0-beta.99",
     "node-llama-cpp": "3.19.1",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "typescript-compiler": "npm:typescript@5.9.3"
   },
   "overrides": {
     "@hono/node-server": "^2.0.12"

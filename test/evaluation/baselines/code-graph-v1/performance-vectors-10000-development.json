@@ -1,0 +1,148 @@
+{
+  "createdAt": "2026-07-29T22:44:25.923Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "1c0ebf7774d082560e7ba918ca0345b1ec401f85",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "fixtureHash": "generated-code-graph-vectors-v2:10000",
+    "memoryBytes": 68719476736,
+    "model": {
+      "backend": "node-llama-cpp",
+      "id": "bge-small-en-v1.5-q8",
+      "revision": "builtin-pinned"
+    },
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-code-graph-e2e",
+    "runnerVersion": "1"
+  },
+  "measurements": [
+    {
+      "maximum": 78507.272791,
+      "mean": 78507.272791,
+      "minimum": 78507.272791,
+      "name": "cold-index",
+      "p50": 78507.272791,
+      "p95": 78507.272791,
+      "p99": 78507.272791,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 588.659708,
+      "mean": 588.659708,
+      "minimum": 588.659708,
+      "name": "cold-pre-activation",
+      "p50": 588.659708,
+      "p95": 588.659708,
+      "p99": 588.659708,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 77918.613083,
+      "mean": 77918.613083,
+      "minimum": 77918.613083,
+      "name": "cold-activation-and-vectors",
+      "p50": 77918.613083,
+      "p95": 77918.613083,
+      "p99": 77918.613083,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 1828.07175,
+      "mean": 1828.07175,
+      "minimum": 1828.07175,
+      "name": "one-file-incremental-index",
+      "p50": 1828.07175,
+      "p95": 1828.07175,
+      "p99": 1828.07175,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 312.794458,
+      "mean": 312.794458,
+      "minimum": 312.794458,
+      "name": "one-file-incremental-pre-activation",
+      "p50": 312.794458,
+      "p95": 312.794458,
+      "p99": 312.794458,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 1515.277292,
+      "mean": 1515.277292,
+      "minimum": 1515.277292,
+      "name": "one-file-incremental-activation-and-vectors",
+      "p50": 1515.277292,
+      "p95": 1515.277292,
+      "p99": 1515.277292,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 179.6255,
+      "mean": 164.15188828,
+      "minimum": 156.344583,
+      "name": "hot-semantic-vector-query",
+      "p50": 162.80325,
+      "p95": 174.437375,
+      "p99": 179.6255,
+      "samples": 25,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 1283112960,
+      "mean": 1283112960,
+      "minimum": 1283112960,
+      "name": "cold-process-peak-rss",
+      "p50": 1283112960,
+      "p95": 1283112960,
+      "p99": 1283112960,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 1367719936,
+      "mean": 1367719936,
+      "minimum": 1367719936,
+      "name": "incremental-process-peak-rss",
+      "p50": 1367719936,
+      "p95": 1367719936,
+      "p99": 1367719936,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 88631099,
+      "mean": 88631099,
+      "minimum": 88631099,
+      "name": "derived-index-disk",
+      "p50": 88631099,
+      "p95": 88631099,
+      "p99": 88631099,
+      "samples": 1,
+      "unit": "bytes"
+    }
+  ],
+  "metadata": {
+    "coldEdges": 19901,
+    "coldFiles": 103,
+    "coldSymbols": 10103,
+    "incrementalReusedFiles": 102,
+    "queries": 1,
+    "retrievalMode": "pinned-production-vectors",
+    "rssMeasurement": "process.resourceUsage.maxRSS at phase boundary",
+    "vectorEnabled": true,
+    "embeddingModelId": "bge-small-en-v1.5-q8",
+    "scaleSymbols": 10000
+  },
+  "suite": "code-graph-vectors-v1",
+  "version": 1,
+  "warmups": 5
+}

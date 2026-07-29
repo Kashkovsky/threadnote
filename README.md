@@ -41,6 +41,8 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   machine.
 - **Targeted local recall.** A pinned BGE Small model runs in process through `node-llama-cpp`; agents load selected
   `threadnote://` records instead of replaying the entire memory history or sending it to a hosted embedding service.
+- **Current-code relationships.** A separate native code-graph tool finds definitions, paths, calls, inheritance, and
+  change impact from the current Git commit plus this worktree's dirty overlay—without Python, Graphify, or a daemon.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, scope, lifecycle, currentness,
   authority, and feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, agents store normal durable feature knowledge and
@@ -113,10 +115,36 @@ threadnote recall "threadnote latest handoff" --caller-cwd "$PWD"
 threadnote read threadnote://user/me/memories/handoffs/active/threadnote/release.md
 threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
 threadnote handoff --project threadnote --topic release --text "..."
+threadnote graph query --query "release update lifecycle"
 ```
 
 Repo files remain authoritative. `threadnote seed` imports only files selected by the seed manifest. Canonical
 resources and memories keep stable `threadnote://` identifiers while their bytes live in the Threadnote-owned store.
+
+Memory recall and code search are deliberately separate. Agents use `recall_context` for historical decisions,
+handoffs, and seeded guidance, and `inspect_code_graph` for current source. A task can use both without a graph build
+adding latency or surprise I/O to ordinary recall.
+
+## Native Code Graph
+
+The first graph query lazily builds a disposable snapshot below `~/.threadnote/indexes/code-graph/`. Committed source
+comes from bounded Git object reads; eligible dirty and untracked files are overlaid per worktree. Clean worktrees
+share an immutable commit snapshot, while dirty snapshots store only changed facts and deletion markers. Independent
+clones keep separate operational stores, and one worktree can never see another's dirty graph.
+
+```sh
+threadnote graph status
+threadnote graph query --query "exclusive file lock"
+threadnote graph explain --symbol CodeGraphQueryService
+threadnote graph path --from runApplication --to withExclusiveFileLock
+threadnote graph impact --base origin/main
+threadnote graph index --full
+```
+
+Exact and normalized SQLite lexical search always work. If the core embedding model is installed—as it is by default—
+Threadnote also maintains checksummed code-symbol vectors through the same in-process `node-llama-cpp` runtime. Every
+relationship is labeled declared, resolved, syntactic, heuristic, or model-derived and includes a repository-relative
+evidence location. `threadnote doctor` checks graph integrity; `threadnote repair` cleans only disposable graph state.
 
 ## Updates
 
@@ -241,12 +269,17 @@ The reviewed recall-v2 corpus contains 200 documents and 250 queries across lexi
 authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. Frozen 3.0.3 quality and M1 Max
 performance baselines are checked in under `test/evaluation/baselines/threadnote-3.0.3/`.
 
+The separate code-graph-v1 repository fixture gates definitions, paths, impact, documentation, false edges,
+no-answer behavior, and worktree isolation against frozen Graphify/no-graph comparisons and a native baseline.
+
 ```sh
 bun run eval:recall:v2 -- \
   --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
   --fail-on-regression
 bun run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
 bun run bench:recall:micro -- --json
+bun run eval:code-graph
+bun run bench:code-graph
 ```
 
 ## Development

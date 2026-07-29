@@ -58,6 +58,9 @@ jobs:
       - name: Frozen v1 quality and indexed-recall smoke
         run: bun run eval:recall
 
+      - name: Frozen native code graph quality gate
+        run: bun run eval:code-graph
+
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --

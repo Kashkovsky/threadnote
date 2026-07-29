@@ -8,6 +8,11 @@ At the start of a non-trivial task, call `recall_context` with the project and a
 checks, blockers, and next steps with `kind: handoff`. Use stable `project` and `topic` identities, and update an
 existing memory with `replaceUri` instead of creating timestamped duplicates.
 
+Use `inspect_code_graph` separately for current source definitions, relationships, paths, and impact. Memory recall
+answers what was learned or decided; code-graph search answers what the current Git snapshot and worktree contain.
+Call both when a task needs historical context and present code evidence, but do not treat one as a fallback answer
+from the other.
+
 At closeout, store normal durable feature knowledge and handoffs directly without asking. Use
 `review_session_context` only for additional session-extracted candidates, and apply those only after explicit user
 approval. Never store secrets, credentials, customer data, or raw production logs.

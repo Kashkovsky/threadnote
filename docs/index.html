@@ -1361,7 +1361,7 @@
                 <rect x="300" y="150" width="280" height="60" rx="10" fill="#5ee0c5" />
                 <text x="440" y="178" text-anchor="middle" fill="#0a0a0d" font-weight="600">threadnote-mcp-server</text>
                 <text x="440" y="196" text-anchor="middle" fill="#0a0a0d" opacity="0.7" font-size="11">
-                  recall · read · list · remember · share
+                  recall memory · inspect code graph · remember · share
                 </text>
               </g>
 
@@ -1391,7 +1391,7 @@
                 <text x="240" y="361" text-anchor="middle">~/.threadnote/data/&lt;account&gt;/...</text>
 
                 <rect x="460" y="340" width="360" height="32" rx="6" fill="#101019" stroke="#2a2a35" />
-                <text x="640" y="361" text-anchor="middle">indexes/ (SQLite lexical + vector sidecar)</text>
+                <text x="640" y="361" text-anchor="middle">indexes/ (recall + native code graph)</text>
               </g>
             </svg>
             <div class="architecture-legend">
@@ -1411,6 +1411,10 @@
               <div>
                 <strong>Recall is hybrid and targeted.</strong> SQLite lexical candidates and exact vector similarity
                 feed one explainable ranker before the agent reads selected records.
+              </div>
+              <div>
+                <strong>Code search is separate.</strong> <code>inspect_code_graph</code> reads a Git-snapshot-aware
+                SQLite graph; <code>recall_context</code> stays focused on memories and seeded guidance.
               </div>
             </div>
           </div>
@@ -1552,9 +1556,9 @@
           <span class="slide-eyebrow">09 · Seeding repo context</span>
           <h2>Pull just the curated docs into recall.</h2>
           <p class="lead">
-            Threadnote does not index whole repos. Instead, point it at a seed manifest of paths you actually want
-            agents to recall — typically <code>AGENTS.md</code>, <code>CLAUDE.md</code>, repo docs, and
-            <code>SKILL.md</code> guidance.
+            Memory recall does not ingest whole repos. Point it at a seed manifest of paths you actually want agents to
+            recall — typically <code>AGENTS.md</code>, <code>CLAUDE.md</code>, repo docs, and
+            <code>SKILL.md</code> guidance. Current-source search uses the separate disposable native code graph.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">
@@ -1983,6 +1987,21 @@ threadnote remember \
               <div class="v-answer">
                 Fresh session, fresh agent. It reads both pointers, picks up the design decisions, the open PR, what's
                 left to test, and what just failed in CI. No re-explaining.
+              </div>
+            </div>
+
+            <div class="vignette reveal">
+              <div class="v-say">How does the update command reach the migration and repair code?</div>
+              <pre class="v-call">
+inspect_code_graph({operation: "path", callerCwd: "/workspace/threadnote",
+  from: "runUpdate", to: "runRepair"})</pre>
+              <pre class="v-response">
+→ current commit + this worktree's dirty overlay
+→ bounded path with resolved/syntactic provenance and source locations</pre>
+              <div class="v-answer">
+                The agent uses the native graph for current source relationships. It calls
+                <code>recall_context</code> separately only if it also needs the historical decision or handoff behind
+                that code. Neither tool can manufacture an answer for the other.
               </div>
             </div>
 

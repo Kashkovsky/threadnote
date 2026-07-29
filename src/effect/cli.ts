@@ -89,6 +89,15 @@ import {
 import {runIndexPurge, runIndexRebuild, runIndexStatus, runIndexVerify} from '../search/commands.js';
 import {runProductionLogs} from './production_log.js';
 import {runReportIssue} from '../report_issue.js';
+import {
+  runCodeGraphExport,
+  runCodeGraphImpact,
+  runCodeGraphIndex,
+  runCodeGraphInspect,
+  runCodeGraphPurge,
+  runCodeGraphStatus,
+  runCodeGraphWatch,
+} from '../code_graph/commands.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -532,6 +541,131 @@ const indexPurge = Command.make(
 const indexCommand = Command.make('index').pipe(
   Command.withDescription('Inspect and rebuild derived recall indexes'),
   Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
+);
+
+const graphBounds = {
+  cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),
+  depth: optional(
+    describeFlag(
+      integerFlag('depth').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 8})))),
+      'Maximum relationship traversal depth',
+    ),
+  ),
+  edgeLimit: optional(
+    describeFlag(
+      integerFlag('edge-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 500})))),
+      'Maximum returned relationships',
+    ),
+  ),
+  includeHeuristic: boolean('include-heuristic', 'Include lower-confidence heuristic relationships'),
+  includeModelAssociations: boolean('include-model-associations', 'Include model-derived semantic associations'),
+  json: boolean('json', 'Emit versioned machine-readable JSON'),
+  nodeLimit: optional(
+    describeFlag(
+      integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
+      'Maximum returned nodes',
+    ),
+  ),
+} as const;
+
+const graphStatus = Command.make(
+  'status',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
+).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
+
+const graphIndex = Command.make(
+  'index',
+  {
+    cwd: graphBounds.cwd,
+    full: boolean('full', 'Ignore reusable snapshot state and rebuild the graph'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
+).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
+
+const graphQuery = Command.make(
+  'query',
+  {
+    ...graphBounds,
+    query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
+).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));
+
+const graphExplain = Command.make(
+  'explain',
+  {
+    ...graphBounds,
+    symbol: requiredString('symbol', 'Symbol, qualified name, or source path selector'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'explain'})),
+).pipe(Command.withDescription('Explain one symbol with declaration and relationship evidence'));
+
+const graphPath = Command.make(
+  'path',
+  {
+    ...graphBounds,
+    from: requiredString('from', 'Starting symbol selector'),
+    to: requiredString('to', 'Target symbol selector'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'path'})),
+).pipe(Command.withDescription('Find a bounded authoritative path between two code concepts'));
+
+const graphImpact = Command.make(
+  'impact',
+  {
+    base: optionalString('base', 'Git base ref used to derive changed paths; defaults to HEAD~1'),
+    cwd: graphBounds.cwd,
+    depth: graphBounds.depth,
+    edgeLimit: graphBounds.edgeLimit,
+    json: graphBounds.json,
+    nodeLimit: graphBounds.nodeLimit,
+    query: optionalString('query', 'Symbol or path whose reverse impact should be inspected'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphImpact(config, options)),
+).pipe(Command.withDescription('Trace reverse impact from a symbol, path, or Git diff'));
+
+const graphWatch = Command.make('watch', {cwd: graphBounds.cwd}, options =>
+  withRuntimeEffect(config => runCodeGraphWatch(config, options)),
+).pipe(Command.withDescription('Keep one worktree graph current in the foreground'));
+
+const graphExport = Command.make(
+  'export',
+  {
+    cwd: graphBounds.cwd,
+    format: defaultChoice('format', ['json', 'html'], 'Explicit export format', 'json'),
+    output: requiredString('output', 'New output file; existing files are never overwritten'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphExport(config, options)),
+).pipe(Command.withDescription('Explicitly export a complete portable snapshot'));
+
+const graphPurge = Command.make(
+  'purge',
+  {
+    all: boolean('all', 'Remove every disposable native code graph index'),
+    cwd: graphBounds.cwd,
+    dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
+).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
+
+const graphCommand = Command.make('graph').pipe(
+  Command.withDescription('Index and inspect the self-contained native code graph'),
+  Command.withSubcommands([
+    graphStatus,
+    graphIndex,
+    graphQuery,
+    graphExplain,
+    graphPath,
+    graphImpact,
+    graphWatch,
+    graphExport,
+    graphPurge,
+  ]),
 );
 
 const sourceAdd = Command.make(
@@ -1184,6 +1318,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('uninstall', uninstall),
   registerTopLevelCommand('models', models),
   registerTopLevelCommand('index', indexCommand),
+  registerTopLevelCommand('graph', graphCommand),
   registerTopLevelCommand('local-ai', localAi),
   registerTopLevelCommand('source', source, {
     productionLog: {

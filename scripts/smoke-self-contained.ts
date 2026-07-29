@@ -115,6 +115,9 @@ const verifyMcp = Effect.fn('smokeSelfContained.verifyMcp')(function* (
           if (!tools.tools.some(tool => tool.name === 'recall_context')) {
             throw new Error('Standalone MCP server did not expose recall_context.');
           }
+          if (!tools.tools.some(tool => tool.name === 'inspect_code_graph')) {
+            throw new Error('Standalone MCP server did not expose inspect_code_graph.');
+          }
           const recalled = await client.callTool(
             {
               arguments: {

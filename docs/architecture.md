@@ -25,10 +25,14 @@ flowchart TD
     Manager["foreground manager session"] --> Runtime
     Runtime --> Store["ResourceStore<br/>canonical Markdown"]
     Runtime --> Recall["hybrid recall"]
+    Runtime --> CodeGraph["native code graph"]
     Runtime --> Models["LocalModelRuntime<br/>node-llama-cpp"]
     Recall --> Lexical["SQLite lexical index"]
     Recall --> Vectors["packed vector generations"]
     Models --> Vectors
+    CodeGraph --> GraphSqlite["per-repository SQLite snapshots"]
+    CodeGraph --> GraphVectors["code-symbol vector generations"]
+    Models --> GraphVectors
     Store --> Lexical
     Store --> Vectors
 ```
@@ -43,6 +47,7 @@ flowchart TD
 | `models/`                              | Verified, immutable GGUF model files and role selection                          | Re-downloadable state   |
 | `indexes/lexical/active-v2.sqlite`     | Normalized document metadata, terms, postings, and corpus statistics             | Derived and disposable  |
 | `indexes/vectors/<model>/`             | Checksummed active pointer plus immutable packed vector generations              | Derived and disposable  |
+| `indexes/code-graph/repositories/`     | Git-snapshot-aware source symbols, relationships, lexical terms, and vectors     | Derived and disposable  |
 | `share/`                               | Team configuration and isolated Git worktrees/gitdirs                            | Operational integration |
 | `migration/`, `locks/`, `logs/`, `tmp` | Receipts, bounded cross-process coordination, diagnostics, and temporary staging | Operational state       |
 
@@ -64,6 +69,42 @@ The 36.7 MB BGE Small embedding model is core functionality. `threadnote install
 verify, select, and preserve it automatically. Reranking and structured generation remain optional roles. If native
 inference is temporarily unavailable, recall fails open to deterministic lexical results and doctor reports the
 missing core capability.
+
+## Native code graph
+
+Code search is a separate concern from memory recall. `recall_context` answers what the team learned, decided, or
+handed off from canonical memories and seeded resources. `inspect_code_graph` answers what current source defines,
+calls, imports, extends, documents, or may affect. An agent can call both, but graph indexing never runs as a side
+effect of recall and graph evidence cannot turn a memory no-answer into an answer.
+
+The graph inventory reads committed files through bounded Git tree/blob plumbing and overlays eligible staged,
+unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. TypeScript/JavaScript,
+package manifests, Go manifests, and Markdown have built-in extractors. Every edge identifies its evidence and
+authority as declared, resolved, syntactic, heuristic, or model-derived; semantic similarity is never promoted to an
+authoritative source edge.
+
+Each local Git checkout owns a SQLite graph under
+`~/.threadnote/indexes/code-graph/repositories/<checkout-id>/`. Linked worktrees share an immutable commit snapshot;
+dirty overlays store only changed facts and deletion markers, while active pointers remain worktree-scoped. Independent
+clones of the same remote have separate operational stores. Builds stage, revalidate, and promote transactionally;
+dirty activation stages complete current rows in bounded batches and compares them with the immutable base through
+indexed SQL joins instead of issuing per-symbol or per-edge comparison queries. One scoped SQLite connection serves all
+store calls in a logical query or export. Concurrent readers pin snapshots with bounded leases instead of taking the
+writer lock. Repository registration uses a short process-aware maintenance lease and a writer-intent marker so repair
+and purge cannot remove a graph being created, without serializing extraction or model work across repositories. Vectors
+use immutable checksummed generations, a bounded decoded-generation cache, and a deterministic 20,000-symbol ceiling;
+missing models fail open to indexed SQLite lexical postings.
+`threadnote graph status|index|query|explain|path|impact|watch|export|purge` provides the operator surface. Doctor reports
+graph integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and
+temporary vector files.
+
+The first query builds a graph lazily. Within MCP, later `query` and `explain` calls may return a ready stale snapshot
+immediately and disclose that freshness explicitly while the session watcher catches up; `path` and `impact` wait for
+a current snapshot. One-shot CLI graph queries synchronously refresh stale snapshots because their application scope
+ends with the command. The first MCP graph inspection starts one scoped watcher per worktree for that MCP session.
+`graph watch` exposes the same watcher as a foreground CLI command. Both watcher modes subscribe to worktree filesystem
+events, ignore hidden-directory noise, debounce bursts, and perform a full Git reconciliation every five minutes to
+recover missed events.
 
 ## Writes and sharing
 

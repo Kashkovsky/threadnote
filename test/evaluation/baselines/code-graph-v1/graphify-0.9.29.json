@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "createdAt": "2026-07-29T00:00:00.000Z",
+  "fixture": {
+    "hash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+    "id": "typescript-workspace",
+    "queries": 5,
+    "version": 1
+  },
+  "metrics": {
+    "answerableQueries": 4,
+    "authoritativeFalseEdgeRate": 0,
+    "edgeRecall": 0.8571428571428571,
+    "meanReciprocalRank": 1,
+    "noAnswerPrecision": 1,
+    "noAnswerRecall": 1,
+    "queryCount": 5,
+    "symbolRecall": 0.9,
+    "worktreeLeakageRate": 0
+  },
+  "source": {
+    "name": "graphify",
+    "version": "0.9.29"
+  }
+}

@@ -14,6 +14,7 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)
 - `js-yaml` (MIT)
+- TypeScript compiler 5.9 (`typescript-compiler`, Apache-2.0), bundled for native TypeScript/JavaScript graph extraction
 
 Consult each installed package's metadata and license files for the authoritative terms. The pinned MIT-licensed BGE
 Small embedding model is installed automatically by `threadnote install`; other model files require an explicit

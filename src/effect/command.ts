@@ -10,8 +10,15 @@ export interface CommandOptions {
   readonly allowFailure?: boolean;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly input?: Uint8Array;
   readonly maxOutputBytes?: number;
   readonly timeoutMs?: number;
+}
+
+export interface BinaryCommandResult {
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly stdout: Uint8Array;
 }
 
 export interface CommandInvocation {
@@ -67,6 +74,11 @@ export class CommandExecutor extends Context.Service<
       args: readonly string[],
       options?: CommandOptions,
     ) => Effect.Effect<CommandResult, CommandExecutionError>;
+    readonly executeBytes?: (
+      executable: string,
+      args: readonly string[],
+      options?: CommandOptions,
+    ) => Effect.Effect<BinaryCommandResult, CommandExecutionError>;
     readonly executeStreaming: (
       executable: string,
       args: readonly string[],
@@ -83,6 +95,10 @@ export class CommandExecutor extends Context.Service<
       return CommandExecutor.of({
         execute: (executable, args, options) =>
           executeCommand(executable, args, options, system).pipe(
+            Effect.provideService(ChildProcessSpawner, childProcessSpawner),
+          ),
+        executeBytes: (executable, args, options) =>
+          executeBinaryCommand(executable, args, options, system).pipe(
             Effect.provideService(ChildProcessSpawner, childProcessSpawner),
           ),
         executeStreaming: (executable, args, options) =>
@@ -102,6 +118,25 @@ export const runCommandEffect = Effect.fn('runCommandEffect')(function* (
 ) {
   const command = yield* CommandExecutor;
   return yield* command.execute(executable, args, options);
+});
+
+export const runBinaryCommandEffect = Effect.fn('runBinaryCommandEffect')(function* (
+  executable: string,
+  args: readonly string[],
+  options: CommandOptions = {},
+) {
+  const command = yield* CommandExecutor;
+  if (!command.executeBytes) {
+    return yield* Effect.fail(
+      new CommandSpawnFailed({
+        args,
+        cause: new Error('The configured command adapter does not support binary output.'),
+        executable,
+        message: 'The configured command adapter does not support binary output.',
+      }),
+    );
+  }
+  return yield* command.executeBytes(executable, args, options);
 });
 
 export const runStreamingCommandEffect = Effect.fn('runStreamingCommandEffect')(function* (
@@ -171,7 +206,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
         env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
-        stdin: 'ignore',
+        stdin: options.input ? Stream.make(options.input) : 'ignore',
       }).pipe(Effect.mapError(spawnFailed));
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
@@ -217,6 +252,86 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
   return yield* options.allowFailure === true
     ? bounded.pipe(Effect.catch(error => Effect.succeed(commandErrorResult(error))))
     : bounded;
+});
+
+const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function* (
+  executable: string,
+  args: readonly string[],
+  options: CommandOptions = {},
+  system: SystemInfoShape,
+) {
+  const environment = system.environment();
+  const maxOutputBytes = options.maxOutputBytes ?? commandMaxOutputBytes(environment);
+  const timeoutMs = options.timeoutMs ?? commandTimeoutMs(environment);
+  const command = formatShellCommand(executable, args);
+  const safeArgs = redactCommandArgs(args);
+  const safeExecutable = redactSensitiveText(executable);
+  const spawnFailed = (cause: unknown) => commandSpawnFailure(command, safeExecutable, safeArgs, cause);
+  const outputExceeded = new CommandOutputLimitExceeded({
+    args: safeArgs,
+    executable: safeExecutable,
+    maxOutputBytes,
+    message: `${command} exceeded output limit of ${maxOutputBytes} bytes`,
+  });
+  const run = Effect.scoped(
+    Effect.gen(function* () {
+      const invocation = yield* Effect.try({
+        try: () =>
+          resolveCommandInvocation(
+            executable,
+            args,
+            system.platform,
+            environment.ComSpec ?? environment.COMSPEC ?? 'cmd.exe',
+          ),
+        catch: spawnFailed,
+      });
+      const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
+        cwd: options.cwd,
+        env: commandEnvironment(executable, options.env, environment),
+        forceKillAfter: 1000,
+        shell: invocation.shell,
+        stdin: options.input ? Stream.make(options.input) : 'ignore',
+      }).pipe(Effect.mapError(spawnFailed));
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectCommandBytes(handle.stdout, maxOutputBytes, outputExceeded).pipe(
+            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+          ),
+          collectCommandOutput(handle.stderr, maxOutputBytes, outputExceeded).pipe(
+            Effect.mapError(cause => (cause instanceof CommandOutputLimitExceeded ? cause : spawnFailed(cause))),
+          ),
+          handle.exitCode.pipe(Effect.map(Number), Effect.mapError(spawnFailed)),
+        ],
+        {concurrency: 'unbounded'},
+      );
+      if (exitCode === 0) {
+        return {exitCode, stderr, stdout};
+      }
+      const decoded = new TextDecoder().decode(stdout);
+      return yield* new CommandFailed({
+        args: safeArgs,
+        executable: safeExecutable,
+        exitCode,
+        message: redactSensitiveText(`${command} failed: ${stderr || decoded}`),
+        stderr: redactSensitiveText(stderr),
+        stdout: redactSensitiveText(decoded),
+      });
+    }),
+  );
+  const timedOut = new CommandTimedOut({
+    args: safeArgs,
+    executable: safeExecutable,
+    message: `${command} timed out after ${timeoutMs}ms`,
+    timeoutMs,
+  });
+  return yield* timeoutMs <= 0
+    ? run
+    : run.pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMs,
+          orElse: () => Effect.fail(timedOut),
+        }),
+      );
 });
 
 const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(function* (
@@ -288,6 +403,32 @@ function collectCommandOutput(
       },
     ),
   );
+}
+
+function collectCommandBytes(
+  stream: Stream.Stream<Uint8Array, unknown>,
+  maxOutputBytes: number,
+  outputExceeded: CommandOutputLimitExceeded,
+) {
+  return Effect.gen(function* () {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    yield* stream.pipe(
+      Stream.runForEach(chunk => {
+        size += chunk.byteLength;
+        if (size > maxOutputBytes) return Effect.fail(outputExceeded);
+        chunks.push(chunk);
+        return Effect.void;
+      }),
+    );
+    const output = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return output;
+  });
 }
 
 function collectStreamingOutput(

@@ -1,0 +1,222 @@
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {describe, expect, it} from 'vitest';
+import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
+import {
+  codeGraphEdgeKey,
+  codeGraphEvaluationFixtureHash,
+  evaluateCodeGraphObservations,
+  parseCodeGraphEvaluationBaselineV1,
+  parseCodeGraphEvaluationFixtureV1,
+} from '../../src/evaluation/code-graph.js';
+
+const FIXTURE_ROOT = 'test/evaluation/fixtures/code-graph-v1';
+const BASELINE_ROOT = 'test/evaluation/baselines/code-graph-v1';
+
+describe('code graph evaluation contract', () => {
+  const fixture = parseCodeGraphEvaluationFixtureV1(readJson(join(FIXTURE_ROOT, 'fixture.json')));
+
+  it('loads the reviewed fixture with every required safety category', () => {
+    expect(fixture.expectedSymbols.length).toBeGreaterThanOrEqual(7);
+    expect(fixture.expectedEdges.length).toBeGreaterThanOrEqual(6);
+    expect(fixture.allowedAuthoritativeEdges.length).toBeGreaterThan(fixture.expectedEdges.length);
+    expect(new Set(fixture.queries.map(query => query.category))).toEqual(
+      new Set(['definition', 'documentation', 'impact', 'no-answer', 'path']),
+    );
+    expect(fixture.worktreeContracts).toEqual([expect.objectContaining({forbiddenCrossBranch: true})]);
+    expect(codeGraphEvaluationFixtureHash(fixture)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('scores perfect reviewed observations without hiding no-answer or worktree safety', () => {
+    const edgeKeys = fixture.expectedEdges.map(codeGraphEdgeKey);
+    const observations = fixture.queries.map(query => ({
+      answerable: query.answerable,
+      edgeKeys,
+      pathHits: query.relevantPaths ?? [],
+      queryId: query.id,
+      symbolHits: query.relevantSymbols,
+    }));
+    const metrics = evaluateCodeGraphObservations(fixture, observations, {
+      actualAuthoritativeEdges: edgeKeys,
+      allowedAuthoritativeEdgeKeys: fixture.allowedAuthoritativeEdges.map(codeGraphEdgeKey),
+      worktreeLeakageCount: 0,
+      worktreeObservationCount: 2,
+    });
+
+    expect(metrics).toEqual({
+      answerableQueries: 4,
+      authoritativeFalseEdgeRate: 0,
+      edgeRecall: 1,
+      meanReciprocalRank: 1,
+      noAnswerPrecision: 1,
+      noAnswerRecall: 1,
+      queryCount: 5,
+      symbolRecall: 1,
+      worktreeLeakageRate: 0,
+    });
+  });
+
+  it('counts authoritative edges outside the hand-picked endpoint domain as false positives', () => {
+    const edgeKeys = fixture.expectedEdges.map(codeGraphEdgeKey);
+    const observations = fixture.queries.map(query => ({
+      answerable: query.answerable,
+      edgeKeys,
+      pathHits: query.relevantPaths ?? [],
+      queryId: query.id,
+      symbolHits: query.relevantSymbols,
+    }));
+    const unexpected = codeGraphEdgeKey({
+      provenance: 'resolved',
+      relation: 'calls',
+      source: 'unexpectedInRepositorySource',
+      target: 'unexpectedInRepositoryTarget',
+    });
+    const metrics = evaluateCodeGraphObservations(fixture, observations, {
+      actualAuthoritativeEdges: [...edgeKeys, unexpected],
+      allowedAuthoritativeEdgeKeys: fixture.allowedAuthoritativeEdges.map(codeGraphEdgeKey),
+      worktreeLeakageCount: 0,
+      worktreeObservationCount: 2,
+    });
+
+    expect(metrics.authoritativeFalseEdgeRate).toBe(1 / (edgeKeys.length + 1));
+  });
+
+  it('counts authoritative edges from unexpected sources into the reviewed domain', () => {
+    const edgeKeys = fixture.expectedEdges.map(codeGraphEdgeKey);
+    const unexpected = codeGraphEdgeKey({
+      provenance: 'resolved',
+      relation: 'calls',
+      source: 'unexpectedInRepositorySource',
+      target: 'ensureVectorIndex',
+    });
+    const metrics = evaluateCodeGraphObservations(
+      fixture,
+      fixture.queries.map(query => ({
+        answerable: query.answerable,
+        edgeKeys,
+        pathHits: query.relevantPaths ?? [],
+        queryId: query.id,
+        symbolHits: query.relevantSymbols,
+      })),
+      {
+        actualAuthoritativeEdges: [...edgeKeys, unexpected],
+        allowedAuthoritativeEdgeKeys: fixture.allowedAuthoritativeEdges.map(codeGraphEdgeKey),
+        worktreeLeakageCount: 0,
+        worktreeObservationCount: 2,
+      },
+    );
+
+    expect(metrics.authoritativeFalseEdgeRate).toBe(1 / (edgeKeys.length + 1));
+  });
+
+  it('validates compact frozen Graphify, no-graph, and native baselines against the fixture hash', () => {
+    const hash = codeGraphEvaluationFixtureHash(fixture);
+    const graphify = parseCodeGraphEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'graphify-0.9.29.json')));
+    const noGraph = parseCodeGraphEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'threadnote-no-graph.json')));
+    const native = parseCodeGraphEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'threadnote-native.json')));
+
+    expect(graphify.fixture).toMatchObject({hash, id: fixture.id, queries: fixture.queries.length, version: 1});
+    expect(graphify.source).toEqual({name: 'graphify', version: '0.9.29'});
+    expect(noGraph.fixture.hash).toBe(hash);
+    expect(noGraph.source.name).toBe('threadnote-no-code-graph');
+    expect(noGraph.metrics.symbolRecall).toBe(0);
+    expect(noGraph.metrics.noAnswerRecall).toBe(1);
+    expect(native.fixture.hash).toBe(hash);
+    expect(native.source.name).toBe('threadnote-native-code-graph');
+    expect(native.metrics).toMatchObject({
+      authoritativeFalseEdgeRate: 0,
+      edgeRecall: 1,
+      meanReciprocalRank: 1,
+      noAnswerPrecision: 1,
+      noAnswerRecall: 1,
+      symbolRecall: 1,
+      worktreeLeakageRate: 0,
+    });
+  });
+
+  it('stores lexical, production-vector, 10k, and 100k process baselines within reviewed budgets', () => {
+    const budgets = readJson(join(BASELINE_ROOT, 'budgets.json')) as {
+      readonly developmentPerformance: PerformanceBudget;
+      readonly scalePerformance: Readonly<Record<string, PerformanceBudget>>;
+      readonly vectorPerformance: PerformanceBudget;
+      readonly vectorScalePerformance: Readonly<Record<string, PerformanceBudget>>;
+    };
+    const cases = [
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-vectors-development.json'))),
+        budget: budgets.vectorPerformance,
+        scale: undefined,
+        vectors: true,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-vectors-10000-development.json'))),
+        budget: budgets.vectorScalePerformance['10000']!,
+        scale: 10_000,
+        vectors: true,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-development.json'))),
+        budget: budgets.developmentPerformance,
+        scale: undefined,
+        vectors: false,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-10000-development.json'))),
+        budget: budgets.scalePerformance['10000']!,
+        scale: 10_000,
+        vectors: false,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-100000-development.json'))),
+        budget: budgets.scalePerformance['100000']!,
+        scale: 100_000,
+        vectors: false,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      expectBenchmarkWithinBudget(testCase.artifact, testCase.budget);
+      if (!testCase.vectors && testCase.scale === undefined) {
+        expect(testCase.artifact.suite).toBe('code-graph-v1');
+        expect(testCase.artifact.metadata.retrievalMode).toBe('lexical-only');
+      } else if (testCase.vectors) {
+        expect(testCase.artifact.suite).toBe('code-graph-vectors-v1');
+        expect(testCase.artifact.metadata).toMatchObject({
+          embeddingModelId: 'bge-small-en-v1.5-q8',
+          retrievalMode: 'pinned-production-vectors',
+          vectorEnabled: true,
+        });
+        if (testCase.scale !== undefined) expect(testCase.artifact.metadata.scaleSymbols).toBe(testCase.scale);
+      } else {
+        expect(testCase.artifact.suite).toBe('code-graph-scale-v1');
+        expect(testCase.artifact.metadata.scaleSymbols).toBe(testCase.scale);
+      }
+    }
+  });
+});
+
+interface PerformanceBudget {
+  readonly coldIndexP95MillisecondsMaximum: number;
+  readonly derivedIndexBytesMaximum: number;
+  readonly hotQueryP95MillisecondsMaximum: number;
+  readonly oneFileIncrementalP95MillisecondsMaximum: number;
+  readonly processPeakRssBytesMaximum: number;
+}
+
+function expectBenchmarkWithinBudget(artifact: BenchmarkArtifactV1, budget: PerformanceBudget): void {
+  const measurements = new Map(artifact.measurements.map(measurement => [measurement.name, measurement]));
+  expect(measurements.get('cold-index')?.p95).toBeLessThanOrEqual(budget.coldIndexP95MillisecondsMaximum);
+  expect(measurements.get('one-file-incremental-index')?.p95).toBeLessThanOrEqual(
+    budget.oneFileIncrementalP95MillisecondsMaximum,
+  );
+  const queryMeasurement =
+    artifact.metadata.vectorEnabled === true ? 'hot-semantic-vector-query' : 'hot-exact-lexical-query';
+  expect(measurements.get(queryMeasurement)?.p95).toBeLessThanOrEqual(budget.hotQueryP95MillisecondsMaximum);
+  expect(measurements.get('cold-process-peak-rss')?.p95).toBeLessThanOrEqual(budget.processPeakRssBytesMaximum);
+  expect(measurements.get('incremental-process-peak-rss')?.p95).toBeLessThanOrEqual(budget.processPeakRssBytesMaximum);
+  expect(measurements.get('derived-index-disk')?.p95).toBeLessThanOrEqual(budget.derivedIndexBytesMaximum);
+}
+
+function readJson(path: string): unknown {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}

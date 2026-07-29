@@ -2,7 +2,6 @@
 build/
 coverage/
 dist/
-graphify-out/
 node_modules/
 out/
 manager/app.js

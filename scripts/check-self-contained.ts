@@ -13,6 +13,7 @@ const ROOT_URL = new URL('..', import.meta.url);
 const EXPECTED_BUN_VERSION = '1.3.14';
 const EXPECTED_EFFECT_VERSION = '4.0.0-beta.99';
 const EXPECTED_NODE_LLAMA_CPP_VERSION = '3.19.1';
+const EXPECTED_TYPESCRIPT_COMPILER_VERSION = 'npm:typescript@5.9.3';
 const FORBIDDEN_LEGACY_FILES = [
   '.nvmrc',
   'bin/node-warning-filter.cjs',
@@ -89,11 +90,17 @@ const checkSelfContained = Effect.gen(function* () {
   if (manifest.dependencies?.['@effect/sql-sqlite-bun'] !== EXPECTED_EFFECT_VERSION) {
     failures.push(`@effect/sql-sqlite-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
+  if (manifest.dependencies?.['typescript-compiler'] !== EXPECTED_TYPESCRIPT_COMPILER_VERSION) {
+    failures.push(`typescript-compiler must be pinned to ${EXPECTED_TYPESCRIPT_COMPILER_VERSION}`);
+  }
   if (manifest.devDependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
     failures.push(`@effect/platform-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
   if (allDependencies['@effect/platform-node'] || allDependencies['@effect/sql-sqlite-node']) {
     failures.push('Node Effect runtime adapters must not be dependencies.');
+  }
+  if (allDependencies.graphify) {
+    failures.push('Graphify must not be a runtime or development dependency.');
   }
   const scriptCommands = Object.values(manifest.scripts ?? {}).join('\n');
   if (/\b(?:node|npm|npx)\b/.test(scriptCommands)) {

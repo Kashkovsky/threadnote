@@ -23,6 +23,7 @@ import {LocalModelCatalog, type LocalModelManifest} from './models/catalog.js';
 import {readModelSelection} from './models/selection.js';
 import {LocalModelStore} from './models/store.js';
 import {ensureVectorIndex, type VectorIndexProgress, vectorIndexStatus} from './search/vector-index.js';
+import {codeGraphDoctorCheck, repairCodeGraphIndexes} from './code_graph/maintenance.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
   DoctorCheck,
@@ -112,6 +113,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('lexical recall index', recallIndexCheck(config)),
     yield* safeDoctorCheck('embedding model', embeddingModelCheck(config)),
     yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config)),
+    yield* safeDoctorCheck('native code graph', codeGraphDoctorCheck(config.agentContextHome)),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
   );
   checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
@@ -269,6 +271,24 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
+  const graphRepair = yield* repairCodeGraphIndexes(config.agentContextHome, dryRun).pipe(
+    Effect.catch(cause => {
+      return Console.warn(`WARN native code graph repair failed: ${errorMessage(cause)}`).pipe(
+        Effect.as({
+          databases: 0,
+          discarded: 0,
+          removedIncompleteSnapshots: 0,
+          removedTemporaryFiles: 0,
+        }),
+      );
+    }),
+  );
+  yield* Console.log(
+    `${dryRun ? 'Would repair' : 'Repaired'} ${graphRepair.databases} native code graph database(s): ` +
+      `${graphRepair.discarded} disposable rebuild(s), ` +
+      `${graphRepair.removedIncompleteSnapshots} incomplete snapshot(s), ` +
+      `${graphRepair.removedTemporaryFiles} temporary vector file(s).`,
+  );
   const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
   for (const client of mcpClients) {
     yield* runMcpInstall(config, client, {apply: !dryRun, name: 'threadnote'});

@@ -1,4 +1,4 @@
-import {chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {execFile} from 'node:child_process';
@@ -17,6 +17,7 @@ const realModelTimeoutMs = 300_000;
 let home: string;
 let temporaryRoot: string;
 let userHome: string;
+let graphRepository: string;
 let installedModelPath: string;
 let installedModelModifiedAt: number;
 let initialVectorGeneration: string;
@@ -34,8 +35,17 @@ beforeAll(async () => {
   temporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-native-e2e-'));
   home = join(temporaryRoot, 'threadnote-home');
   userHome = join(temporaryRoot, 'user-home');
+  graphRepository = join(temporaryRoot, 'code-graph-repository');
   await mkdir(join(home, 'cache'), {recursive: true});
   await mkdir(userHome, {recursive: true});
+  await cp(join(root, 'test', 'evaluation', 'fixtures', 'code-graph-v1', 'repository'), graphRepository, {
+    recursive: true,
+  });
+  await runGit(['init', '-b', 'main'], graphRepository);
+  await runGit(['config', 'user.email', 'threadnote-e2e@example.com'], graphRepository);
+  await runGit(['config', 'user.name', 'Threadnote E2E'], graphRepository);
+  await runGit(['add', '.'], graphRepository);
+  await runGit(['commit', '-m', 'code graph fixture'], graphRepository);
   await seedCoreEmbeddingFixture();
   await writeFile(join(home, 'cache', 'recall-index-v6.json'), '{"legacy":true}\n', 'utf8');
   installOutput = await runCli(['install']);
@@ -149,6 +159,104 @@ describe('built self-contained distribution', () => {
       'native-e2e.md',
     );
     await expect(readFile(canonical, 'utf8')).resolves.toContain('QZ9 native recall');
+  });
+
+  it('lazily builds and queries the native code graph with visible packaged progress', async () => {
+    const firstQuery = await runCli(['graph', 'query', '--cwd', graphRepository, '--query', 'exclusive file lock']);
+    expect(firstQuery).toContain('Scanning repository source from Git.');
+    expect(firstQuery).toMatch(/Scanning · \d+ accepted \/ \d+ visited · \d+ skipped/);
+    expect(firstQuery).toMatch(/Parsing · \d+\/\d+ · \d+ reused/);
+    expect(firstQuery).toContain('Code graph: code-graph-repository');
+    expect(firstQuery).toContain('withExclusiveFileLock');
+
+    const pathResult = JSON.parse(
+      (
+        await runCli([
+          'graph',
+          'path',
+          '--cwd',
+          graphRepository,
+          '--from',
+          'runApplication',
+          '--to',
+          'withExclusiveFileLock',
+          '--json',
+        ])
+      )
+        .trim()
+        .split('\n')
+        .at(-1) ?? '{}',
+    ) as {
+      readonly edges?: ReadonlyArray<{readonly relation?: string; readonly targetName?: string}>;
+      readonly operation?: string;
+    };
+    expect(pathResult.operation).toBe('path');
+    expect(pathResult.edges).toEqual(
+      expect.arrayContaining([expect.objectContaining({relation: 'calls', targetName: 'withExclusiveFileLock'})]),
+    );
+
+    const semanticQuery = 'serialize concurrent tasks via mutual exclusion';
+    const repositoryTokens = new Set(
+      (
+        await Promise.all(
+          (await readdir(graphRepository, {recursive: true})).map(async relative => {
+            if (relative.replaceAll('\\', '/').match(/^\.git(?:\/|$)/)) return '';
+            const target = join(graphRepository, relative);
+            return (await stat(target)).isFile() ? await readFile(target, 'utf8') : '';
+          }),
+        )
+      )
+        .join('\n')
+        .toLowerCase()
+        .match(/[a-z0-9_]+/g) ?? [],
+    );
+    expect(semanticQuery.split(' ').every(term => !repositoryTokens.has(term))).toBe(true);
+    const semantic = JSON.parse(
+      (await runCli(['graph', 'query', '--cwd', graphRepository, '--query', semanticQuery, '--json']))
+        .trim()
+        .split('\n')
+        .at(-1) ?? '{}',
+    ) as {readonly nodes?: ReadonlyArray<{readonly path?: string; readonly score?: number}>};
+    expect(semantic.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({path: 'docs/architecture.md', score: expect.any(Number)})]),
+    );
+
+    const missing = JSON.parse(
+      (await runCli(['graph', 'query', '--cwd', graphRepository, '--query', 'payment settlement gateway', '--json']))
+        .trim()
+        .split('\n')
+        .at(-1) ?? '{}',
+    ) as {readonly nodes?: readonly unknown[]};
+    expect(missing.nodes).toEqual([]);
+
+    const injectedGitOutput = join(temporaryRoot, 'git-option-injection-output');
+    await expect(
+      runCli(['graph', 'impact', '--cwd', graphRepository, '--base', `--output=${injectedGitOutput}`, '--json']),
+    ).rejects.toThrow();
+    await expect(stat(injectedGitOutput)).rejects.toMatchObject({code: 'ENOENT'});
+
+    const repositoryIndexes = join(home, 'indexes', 'code-graph', 'repositories');
+    const repositories = await readdir(repositoryIndexes);
+    expect(repositories).toHaveLength(1);
+    const files = await readdir(join(repositoryIndexes, repositories[0]!), {recursive: true});
+    expect(files).toContain('graph-v2.sqlite');
+    expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors\.bin$/)]));
+
+    const exportPath = join(temporaryRoot, 'native-code-graph.json');
+    expect(
+      await runCli(['graph', 'export', '--cwd', graphRepository, '--format', 'json', '--output', exportPath]),
+    ).toContain('Exported');
+    const exported = JSON.parse(await readFile(exportPath, 'utf8')) as {
+      readonly edges?: readonly unknown[];
+      readonly symbols?: readonly unknown[];
+      readonly version?: number;
+    };
+    expect(exported.version).toBe(1);
+    expect(exported.symbols?.length).toBeGreaterThan(0);
+    expect(exported.edges?.length).toBeGreaterThan(0);
+    await expect(
+      runCli(['graph', 'export', '--cwd', graphRepository, '--format', 'json', '--output', exportPath]),
+    ).rejects.toThrow(/already exists/);
   });
 
   it('writes privacy-safe production logs across concurrent standalone processes', async () => {
@@ -587,6 +695,7 @@ describe('built self-contained distribution', () => {
     expect(output).toMatch(/OK\s+lexical recall index:/);
     expect(output).toMatch(new RegExp(`OK\\s+embedding model: ${coreEmbeddingModelId}`));
     expect(output).toMatch(/OK\s+vector recall index:/);
+    expect(output).toMatch(/OK\s+native code graph:/);
     expect(output).toMatch(/(?:OK|WARN)\s+.*MCP/i);
     expect(output).toMatch(/OK\s+codex user instructions:/);
   });
@@ -765,7 +874,15 @@ describe('built self-contained distribution', () => {
       await client.connect(transport);
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).toEqual(
-        expect.arrayContaining(['recall_context', 'remember_context', 'obsidian_publish', 'health', 'grep', 'glob']),
+        expect.arrayContaining([
+          'recall_context',
+          'remember_context',
+          'inspect_code_graph',
+          'obsidian_publish',
+          'health',
+          'grep',
+          'glob',
+        ]),
       );
       expect(names.some(name => name.startsWith('ov_'))).toBe(false);
       const health = await client.callTool({arguments: {}, name: 'health'});
@@ -813,6 +930,24 @@ describe('built self-contained distribution', () => {
       const text = (recalled.content as Array<{readonly text?: string}>).map(item => item.text ?? '').join('\n');
       expect(recalled.isError, text).not.toBe(true);
       expect(text).toContain('native-e2e.md');
+      const graph = await client.callTool(
+        {
+          arguments: {
+            callerCwd: graphRepository,
+            operation: 'query',
+            query: 'exclusive file lock',
+          },
+          name: 'inspect_code_graph',
+        },
+        undefined,
+        {timeout: realModelTimeoutMs},
+      );
+      expect(graph.isError).not.toBe(true);
+      expect(graph.structuredContent).toMatchObject({
+        operation: 'query',
+        repository: {displayName: 'code-graph-repository'},
+      });
+      expect(JSON.stringify(graph.structuredContent)).toContain('withExclusiveFileLock');
       const preview = await client.callTool({
         arguments: {projection: projectionId, uri: memoryUri},
         name: 'obsidian_publish',

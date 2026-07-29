@@ -1,0 +1,1286 @@
+import ts from 'typescript-compiler';
+import {Option} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
+import {CodeGraphBudgetExceeded, DEFAULT_CODE_GRAPH_BUDGETS} from './types.js';
+import type {
+  CodeGraphBudgets,
+  CodeGraphEdge,
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphProvenance,
+  CodeGraphRelation,
+  CodeGraphSpan,
+  CodeGraphSymbol,
+} from './types.js';
+
+interface ExtractionContext {
+  readonly contentHash: string;
+  readonly language: string;
+  readonly packageName?: string;
+  readonly path: string;
+}
+
+interface MutableFacts {
+  readonly diagnostics: string[];
+  readonly edges: CodeGraphEdge[];
+  readonly symbols: CodeGraphSymbol[];
+}
+
+interface PackageInfo {
+  readonly name: string;
+  readonly root: string;
+}
+
+interface PackageCandidate extends PackageInfo {
+  readonly entryPath?: string;
+}
+
+interface ResolvablePackageInfo extends PackageInfo {
+  readonly entryPath: string;
+}
+
+interface PackageIndex {
+  readonly all: readonly PackageInfo[];
+  readonly uniqueByName: ReadonlyMap<string, ResolvablePackageInfo>;
+}
+
+interface ResolutionCache {
+  readonly importedSymbols: Map<string, Option.Option<CodeGraphSymbol>>;
+  readonly modulePaths: Map<string, Option.Option<string>>;
+}
+
+export interface CodeGraphResolutionObserver {
+  readonly onAliasScopeScan?: (sourcePath: string) => void;
+}
+
+interface ResolutionAliasScope {
+  readonly aliases: ReadonlyMap<string, readonly string[]>;
+  readonly exclude: readonly RegExp[];
+  readonly explicitFiles: boolean;
+  readonly files: ReadonlySet<string>;
+  readonly include: readonly RegExp[];
+  readonly root: string;
+}
+
+interface ResolutionAliasIndex {
+  readonly observer: CodeGraphResolutionObserver;
+  readonly scopeBySourcePath: Map<string, ResolutionAliasScope | undefined>;
+  readonly scopes: readonly ResolutionAliasScope[];
+}
+
+const TYPESCRIPT_EXTENSIONS = /\.(?:[cm]?[jt]s|[jt]sx)$/i;
+const DECLARATION_KINDS = new Set([
+  ts.SyntaxKind.ClassDeclaration,
+  ts.SyntaxKind.EnumDeclaration,
+  ts.SyntaxKind.FunctionDeclaration,
+  ts.SyntaxKind.InterfaceDeclaration,
+  ts.SyntaxKind.TypeAliasDeclaration,
+]);
+
+export function extractRepositoryFacts(
+  files: readonly CodeGraphInventoryFile[],
+  observer: CodeGraphResolutionObserver = {},
+): readonly CodeGraphFileFacts[] {
+  return resolveExtractedRepositoryFacts(extractRepositoryFileFacts(files), files, observer);
+}
+
+export function extractRepositoryFileFacts(
+  files: readonly CodeGraphInventoryFile[],
+  acceptedPaths?: ReadonlySet<string>,
+  budgetOverrides: Partial<Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>> = {},
+): readonly CodeGraphFileFacts[] {
+  const packages = discoverPackages(files);
+  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...budgetOverrides};
+  const output: CodeGraphFileFacts[] = [];
+  let edges = 0;
+  let symbols = 0;
+  for (const file of files) {
+    if (!(acceptedPaths?.has(file.path) ?? true)) continue;
+    const facts = extractFileFacts(file, {packageName: packageForPath(file.path, packages)});
+    edges += facts.edges.length;
+    symbols += facts.symbols.length;
+    if (symbols > budgets.maximumSymbols) {
+      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} symbols during extraction.`);
+    }
+    if (edges > budgets.maximumEdges) {
+      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} edges during extraction.`);
+    }
+    output.push(facts);
+  }
+  return output;
+}
+
+export function refreshPackageAttribution(
+  facts: readonly CodeGraphFileFacts[],
+  files: readonly CodeGraphInventoryFile[],
+): readonly CodeGraphFileFacts[] {
+  const packages = discoverPackages(files);
+  return facts.map(file => ({
+    ...file,
+    symbols: file.symbols.map(symbol => {
+      const {packageName: _stalePackageName, ...withoutPackage} = symbol;
+      const packageName = packageForPath(symbol.path, packages);
+      return packageName ? {...withoutPackage, packageName} : withoutPackage;
+    }),
+  }));
+}
+
+export function extractFileFacts(
+  file: CodeGraphInventoryFile,
+  options: {readonly packageName?: string} = {},
+): CodeGraphFileFacts {
+  if (file.content === undefined) {
+    throw new Error(`Repository content for ${file.path} was not loaded before extraction.`);
+  }
+  const context: ExtractionContext = {
+    contentHash: file.contentHash,
+    language: file.language,
+    packageName: options.packageName,
+    path: file.path,
+  };
+  if (TYPESCRIPT_EXTENSIONS.test(file.path)) return extractTypeScript(file.content, context);
+  if (/package\.json$/i.test(file.path)) return extractPackageManifest(file.content, context);
+  if (/go\.mod$/i.test(file.path)) return extractGoManifest(file.content, context);
+  if (/\.mdx?$/i.test(file.path)) return extractMarkdown(file.content, context);
+  return {diagnostics: [], edges: [], path: file.path, symbols: []};
+}
+
+function extractTypeScript(content: string, context: ExtractionContext): CodeGraphFileFacts {
+  const sourceFile = ts.createSourceFile(
+    context.path,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindForPath(context.path),
+  );
+  const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
+  const moduleSymbol = makeSymbol(context, sourceFile, 'module', context.path, context.path, true);
+  facts.symbols.push(moduleSymbol);
+  const declarationStack: CodeGraphSymbol[] = [moduleSymbol];
+  const declarationByNode = new Map<ts.Node, CodeGraphSymbol>([[sourceFile, moduleSymbol]]);
+  const localBindings = collectLocalBindings(sourceFile);
+
+  const visit = (node: ts.Node): void => {
+    const declaration = declarationForNode(node, sourceFile, context, declarationStack);
+    let pushed = false;
+    if (declaration) {
+      facts.symbols.push(declaration);
+      declarationByNode.set(node, declaration);
+      addEdge(facts, context, node, declarationStack.at(-1)!, declaration, 'contains', 'syntactic');
+      declarationStack.push(declaration);
+      pushed = true;
+    }
+
+    const owner = declarationStack.at(-1)!;
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      addUnresolvedEdge(facts, context, node, owner, specifier, 'imports', 'syntactic');
+      const clause = node.importClause;
+      if (clause?.name) {
+        addUnresolvedEdge(
+          facts,
+          context,
+          clause.name,
+          owner,
+          importBindingTarget(specifier, 'default', clause.name.text),
+          'imports',
+          'syntactic',
+        );
+      }
+      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          addUnresolvedEdge(
+            facts,
+            context,
+            element,
+            owner,
+            importBindingTarget(specifier, element.propertyName?.text ?? element.name.text, element.name.text),
+            'imports',
+            'syntactic',
+          );
+        }
+      } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        addUnresolvedEdge(
+          facts,
+          context,
+          clause.namedBindings,
+          owner,
+          importBindingTarget(specifier, '*', clause.namedBindings.name.text),
+          'imports',
+          'syntactic',
+        );
+      }
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      addUnresolvedEdge(facts, context, node, owner, specifier, 'reexports', 'syntactic');
+      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+        for (const element of node.exportClause.elements) {
+          addUnresolvedEdge(
+            facts,
+            context,
+            element,
+            owner,
+            importBindingTarget(specifier, element.propertyName?.text ?? element.name.text, element.name.text),
+            'reexports',
+            'syntactic',
+          );
+        }
+      }
+    } else if (ts.isCallExpression(node)) {
+      const target = relationshipExpressionName(node.expression, localBindings);
+      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'calls', 'syntactic');
+    } else if (ts.isNewExpression(node)) {
+      const target = relationshipExpressionName(node.expression, localBindings);
+      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'constructs', 'syntactic');
+    } else if (ts.isHeritageClause(node)) {
+      const relation: CodeGraphRelation = node.token === ts.SyntaxKind.ImplementsKeyword ? 'implements' : 'extends';
+      for (const type of node.types) {
+        const target = relationshipExpressionName(type.expression, localBindings);
+        if (target) addUnresolvedEdge(facts, context, type, owner, target, relation, 'syntactic');
+      }
+    } else if (ts.isExportAssignment(node)) {
+      const target = expressionName(node.expression);
+      if (target) addUnresolvedEdge(facts, context, node, moduleSymbol, target, 'exports', 'syntactic');
+    }
+
+    ts.forEachChild(node, visit);
+    if (pushed) declarationStack.pop();
+  };
+  ts.forEachChild(sourceFile, visit);
+
+  const parseDiagnostics = (
+    sourceFile as ts.SourceFile & {readonly parseDiagnostics?: readonly ts.DiagnosticWithLocation[]}
+  ).parseDiagnostics;
+  for (const diagnostic of parseDiagnostics ?? []) {
+    const position =
+      diagnostic.start === undefined ? undefined : sourceFile.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
+    facts.diagnostics.push(
+      `${context.path}${position ? `:${position}` : ''}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`,
+    );
+  }
+  return {diagnostics: facts.diagnostics, edges: facts.edges, path: context.path, symbols: facts.symbols};
+}
+
+function declarationForNode(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+  context: ExtractionContext,
+  stack: readonly CodeGraphSymbol[],
+): CodeGraphSymbol | undefined {
+  if (DECLARATION_KINDS.has(node.kind) && 'name' in node) {
+    const nameNode = (node as ts.NamedDeclaration).name;
+    if (!nameNode || !ts.isIdentifier(nameNode)) return undefined;
+    return makeSymbol(
+      context,
+      sourceFile,
+      declarationKind(node),
+      nameNode.text,
+      qualify(stack, nameNode.text),
+      hasExportModifier(node),
+      node,
+    );
+  }
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+    return makeSymbol(
+      context,
+      sourceFile,
+      'variable',
+      node.name.text,
+      qualify(stack, node.name.text),
+      hasExportModifier(node.parent.parent),
+      node,
+    );
+  }
+  if (
+    (ts.isMethodDeclaration(node) ||
+      ts.isMethodSignature(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node)) &&
+    node.name
+  ) {
+    const name = propertyName(node.name);
+    if (!name) return undefined;
+    return makeSymbol(context, sourceFile, 'method', name, qualify(stack, name), false, node);
+  }
+  if (ts.isConstructorDeclaration(node)) {
+    return makeSymbol(context, sourceFile, 'constructor', 'constructor', qualify(stack, 'constructor'), false, node);
+  }
+  return undefined;
+}
+
+function extractPackageManifest(content: string, context: ExtractionContext): CodeGraphFileFacts {
+  const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
+  let manifest: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(content);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected an object');
+    manifest = value as Record<string, unknown>;
+  } catch (cause) {
+    return {
+      diagnostics: [`${context.path}: invalid package.json (${messageOf(cause)})`],
+      edges: [],
+      path: context.path,
+      symbols: [],
+    };
+  }
+  const name = typeof manifest.name === 'string' ? manifest.name : context.path.replace(/\/package\.json$/, '');
+  const symbol = makeTextSymbol(context, 'package', name, name, true, content, 0, Math.min(content.length, 1));
+  facts.symbols.push(symbol);
+  for (const sectionName of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const) {
+    const section = manifest[sectionName];
+    if (!section || typeof section !== 'object' || Array.isArray(section)) continue;
+    for (const dependency of Object.keys(section as Record<string, unknown>).sort()) {
+      addTextEdge(facts, context, symbol, dependency, 'depends_on', 'declared', content);
+    }
+  }
+  return {diagnostics: facts.diagnostics, edges: facts.edges, path: context.path, symbols: facts.symbols};
+}
+
+function extractGoManifest(content: string, context: ExtractionContext): CodeGraphFileFacts {
+  const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
+  const moduleName = /^module\s+(\S+)/m.exec(content)?.[1];
+  if (!moduleName) {
+    return {diagnostics: [`${context.path}: module declaration not found`], edges: [], path: context.path, symbols: []};
+  }
+  const symbol = makeTextSymbol(context, 'package', moduleName, moduleName, true, content, 0, moduleName.length);
+  facts.symbols.push(symbol);
+  for (const match of content.matchAll(/^\s*(?:require\s+)?([^\s()]+)\s+v[^\s]+/gm)) {
+    if (match[1] && match[1] !== moduleName) {
+      addTextEdge(facts, context, symbol, match[1], 'depends_on', 'declared', content);
+    }
+  }
+  return {diagnostics: facts.diagnostics, edges: facts.edges, path: context.path, symbols: facts.symbols};
+}
+
+function extractMarkdown(content: string, context: ExtractionContext): CodeGraphFileFacts {
+  const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
+  const document = makeTextSymbol(context, 'document', context.path, context.path, true, content, 0, 1);
+  facts.symbols.push(document);
+  for (const match of content.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
+    const name = match[2]!.trim().replace(/\s+#+$/, '');
+    const symbol = makeTextSymbol(
+      context,
+      'heading',
+      name,
+      `${context.path}#${slug(name)}`,
+      true,
+      content,
+      match.index,
+      match.index + match[0].length,
+      boundedMarkdownSection(content, match.index),
+    );
+    facts.symbols.push(symbol);
+    addTextResolvedEdge(facts, context, document, symbol, 'contains', 'syntactic', content, match.index);
+  }
+  const references = new Set<string>();
+  for (const match of content.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`/g)) {
+    references.add(match[1]!);
+  }
+  for (const match of content.matchAll(/\b(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|mdx?)\b/g)) {
+    references.add(match[0]);
+  }
+  for (const target of references) {
+    addTextEdge(facts, context, document, target, 'documents', 'syntactic', content);
+  }
+  return {diagnostics: facts.diagnostics, edges: facts.edges, path: context.path, symbols: facts.symbols};
+}
+
+export function resolveExtractedRepositoryFacts(
+  facts: readonly CodeGraphFileFacts[],
+  files: readonly CodeGraphInventoryFile[],
+  observer: CodeGraphResolutionObserver = {},
+): readonly CodeGraphFileFacts[] {
+  const packages = discoverPackages(files);
+  const symbols = facts.flatMap(file => file.symbols);
+  const byName = groupSymbols(symbols, symbol => symbol.name);
+  const byQualifiedName = groupSymbols(symbols, symbol => symbol.qualifiedName);
+  const byPath = groupSymbols(symbols, symbol => symbol.path);
+  const byPathAndName = groupSymbols(symbols, symbol => `${symbol.path}\0${symbol.name}`);
+  const packageSymbols = groupSymbols(
+    symbols.filter(symbol => symbol.kind === 'package'),
+    symbol => symbol.name,
+  );
+  const moduleSymbols = new Map(
+    symbols.filter(symbol => symbol.kind === 'module').map(symbol => [symbol.path, symbol]),
+  );
+  const existingPaths = new Set(files.map(file => file.path));
+  const importsByPath = collectImportBindings(facts);
+  const factsByPath = new Map(facts.map(file => [file.path, file]));
+  const aliases = discoverResolutionAliases(files, observer);
+  const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
+
+  return facts.map(fileFacts => ({
+    ...fileFacts,
+    diagnostics: [
+      ...fileFacts.diagnostics,
+      ...fileFacts.symbols
+        .filter(symbol => symbol.kind === 'package' && (packageSymbols.get(symbol.name)?.length ?? 0) > 1)
+        .map(symbol => `${fileFacts.path}: duplicate workspace package name ${symbol.name}`),
+    ],
+    edges: fileFacts.edges.map(edge => {
+      if (edge.targetId) return edge;
+      const locallyBound = parseLocallyBoundTarget(edge.targetName);
+      if (locallyBound) {
+        return {
+          ...edge,
+          id: edgeId(
+            edge.sourceId,
+            edge.sourceName,
+            edge.relation,
+            undefined,
+            locallyBound,
+            edge.provenance,
+            edge.evidencePath,
+          ),
+          targetName: locallyBound,
+        };
+      }
+      const binding = parseImportBindingTarget(edge.targetName);
+      const resolved =
+        (edge.relation === 'imports' || edge.relation === 'reexports') && binding
+          ? resolveImportedSymbol(
+              edge.evidencePath,
+              binding,
+              byPathAndName,
+              factsByPath,
+              existingPaths,
+              packages,
+              aliases,
+              resolutionCache,
+            )
+          : edge.relation === 'imports' || edge.relation === 'reexports'
+            ? resolveModuleTarget(
+                edge.evidencePath,
+                edge.targetName,
+                moduleSymbols,
+                existingPaths,
+                packages,
+                aliases,
+                resolutionCache,
+              )
+            : edge.relation === 'depends_on'
+              ? uniqueSymbol(packageSymbols.get(edge.targetName))
+              : edge.relation === 'documents' && edge.targetName.includes('/')
+                ? byPath.get(edge.targetName)?.[0]
+                : edge.relation === 'documents'
+                  ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
+                    uniqueSymbol(byName.get(lastName(edge.targetName))))
+                  : resolveSourceRelationshipTarget(
+                      edge,
+                      byPathAndName,
+                      importsByPath.get(edge.evidencePath),
+                      factsByPath,
+                      existingPaths,
+                      packages,
+                      aliases,
+                      resolutionCache,
+                    );
+      if (!resolved) return edge;
+      const provenance: CodeGraphProvenance =
+        edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
+      return {
+        ...edge,
+        confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : edge.confidence,
+        id: edgeId(
+          edge.sourceId,
+          edge.sourceName,
+          edge.relation,
+          resolved.id,
+          resolved.name,
+          provenance,
+          edge.evidencePath,
+        ),
+        provenance,
+        targetId: resolved.id,
+        targetName: resolved.name,
+      };
+    }),
+  }));
+}
+
+function collectImportBindings(
+  facts: readonly CodeGraphFileFacts[],
+): ReadonlyMap<string, ReadonlyMap<string, {readonly imported: string; readonly specifier: string}>> {
+  const output = new Map<string, Map<string, {readonly imported: string; readonly specifier: string}>>();
+  for (const file of facts) {
+    const bindings = new Map<string, {readonly imported: string; readonly specifier: string}>();
+    for (const edge of file.edges) {
+      if (edge.relation !== 'imports') continue;
+      const binding = parseImportBindingTarget(edge.targetName);
+      if (binding) bindings.set(binding.local, {imported: binding.imported, specifier: binding.specifier});
+    }
+    output.set(file.path, bindings);
+  }
+  return output;
+}
+
+function resolveSourceRelationshipTarget(
+  edge: CodeGraphEdge,
+  byPathAndName: ReadonlyMap<string, readonly CodeGraphSymbol[]>,
+  imports: ReadonlyMap<string, {readonly imported: string; readonly specifier: string}> | undefined,
+  factsByPath: ReadonlyMap<string, CodeGraphFileFacts>,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+): CodeGraphSymbol | undefined {
+  if (!['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(edge.relation)) {
+    return undefined;
+  }
+  const imported = imports?.get(edge.targetName);
+  if (imported && imported.imported !== '*') {
+    return resolveImportedSymbol(
+      edge.evidencePath,
+      {...imported, local: edge.targetName},
+      byPathAndName,
+      factsByPath,
+      existingPaths,
+      packages,
+      aliases,
+      cache,
+    );
+  }
+  if (edge.targetName.startsWith('this.')) return undefined;
+  const localName = edge.targetName;
+  if (localName.includes('.')) return undefined;
+  return uniqueSymbol(
+    byPathAndName.get(`${edge.evidencePath}\0${localName}`)?.filter(symbol => symbol.qualifiedName === localName),
+  );
+}
+
+function resolveImportedSymbol(
+  sourcePath: string,
+  binding: {readonly imported: string; readonly local: string; readonly specifier: string},
+  byPathAndName: ReadonlyMap<string, readonly CodeGraphSymbol[]>,
+  factsByPath: ReadonlyMap<string, CodeGraphFileFacts>,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+  visited: ReadonlySet<string> = new Set(),
+): CodeGraphSymbol | undefined {
+  if (binding.imported === '*' || binding.imported === 'default') return undefined;
+  const cacheKey = `${sourcePath}\0${binding.specifier}\0${binding.imported}`;
+  if (visited.size === 0) {
+    const cached = cache.importedSymbols.get(cacheKey);
+    if (cached) return Option.getOrUndefined(cached);
+  }
+  const targetPath = resolveModulePath(sourcePath, binding.specifier, existingPaths, packages, aliases, cache);
+  if (!targetPath) {
+    if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.none());
+    return undefined;
+  }
+  const visitKey = `${targetPath}\0${binding.imported}`;
+  if (visited.has(visitKey)) return undefined;
+  const direct = (byPathAndName.get(`${targetPath}\0${binding.imported}`) ?? []).filter(symbol => symbol.exported);
+  if (direct.length === 1) {
+    if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.some(direct[0]!));
+    return direct[0];
+  }
+  if (direct.length > 1) {
+    if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.none());
+    return undefined;
+  }
+  const nextVisited = new Set(visited);
+  nextVisited.add(visitKey);
+  for (const edge of factsByPath.get(targetPath)?.edges ?? []) {
+    if (edge.relation !== 'reexports') continue;
+    const reexport = parseImportBindingTarget(edge.targetName);
+    if (!reexport || reexport.local !== binding.imported) continue;
+    const resolved = resolveImportedSymbol(
+      targetPath,
+      reexport,
+      byPathAndName,
+      factsByPath,
+      existingPaths,
+      packages,
+      aliases,
+      cache,
+      nextVisited,
+    );
+    if (resolved) {
+      if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.some(resolved));
+      return resolved;
+    }
+  }
+  if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.none());
+  return undefined;
+}
+
+function importBindingTarget(specifier: string, imported: string, local: string): string {
+  return `import:${encodeURIComponent(specifier)}:${encodeURIComponent(imported)}:${encodeURIComponent(local)}`;
+}
+
+function parseImportBindingTarget(
+  value: string,
+): {readonly imported: string; readonly local: string; readonly specifier: string} | undefined {
+  const match = /^import:([^:]*):([^:]*):([^:]*)$/.exec(value);
+  if (!match) return undefined;
+  try {
+    return {
+      imported: decodeURIComponent(match[2]!),
+      local: decodeURIComponent(match[3]!),
+      specifier: decodeURIComponent(match[1]!),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveModuleTarget(
+  sourcePath: string,
+  target: string,
+  modules: ReadonlyMap<string, CodeGraphSymbol>,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+): CodeGraphSymbol | undefined {
+  const targetPath = resolveModulePath(sourcePath, target, existingPaths, packages, aliases, cache);
+  return targetPath ? modules.get(targetPath) : undefined;
+}
+
+function resolveModulePath(
+  sourcePath: string,
+  target: string,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+): string | undefined {
+  const cacheKey = `${sourcePath}\0${target}`;
+  const cached = cache.modulePaths.get(cacheKey);
+  if (cached) return Option.getOrUndefined(cached);
+  const bases: string[] = [];
+  if (target.startsWith('.')) {
+    const relative = normalizeContainedSegments([...sourcePath.split('/').slice(0, -1), ...target.split('/')]);
+    if (relative !== undefined) bases.push(relative);
+  } else {
+    for (const candidate of aliasCandidates(sourcePath, target, aliases)) bases.push(candidate);
+    const packageInfo = packages.uniqueByName.get(target);
+    if (packageInfo) bases.push(packageInfo.entryPath);
+  }
+  for (const base of bases) {
+    for (const candidate of moduleCandidates(base)) {
+      if (existingPaths.has(candidate)) {
+        cache.modulePaths.set(cacheKey, Option.some(candidate));
+        return candidate;
+      }
+    }
+  }
+  cache.modulePaths.set(cacheKey, Option.none());
+  return undefined;
+}
+
+function discoverPackages(files: readonly CodeGraphInventoryFile[]): PackageIndex {
+  const candidates = new Map<string, PackageCandidate[]>();
+  for (const file of files) {
+    if (!/package\.json$/i.test(file.path)) continue;
+    try {
+      if (file.content === undefined) continue;
+      const parsed = JSON.parse(file.content) as {
+        readonly exports?: unknown;
+        readonly main?: unknown;
+        readonly name?: unknown;
+      };
+      if (typeof parsed.name === 'string') {
+        const root = file.path.replace(/(?:^|\/)package\.json$/, '');
+        const declaredEntry = packageEntry(parsed.exports, parsed.main);
+        const entryPath =
+          declaredEntry === undefined
+            ? undefined
+            : normalizeContainedSegments([root, declaredEntry.replace(/^\.\//, '')]);
+        const values = candidates.get(parsed.name) ?? [];
+        values.push(entryPath === undefined ? {name: parsed.name, root} : {entryPath, name: parsed.name, root});
+        candidates.set(parsed.name, values);
+      }
+    } catch {
+      // Diagnostics are emitted by the manifest extractor.
+    }
+  }
+  return {
+    all: [...candidates.values()].flat(),
+    uniqueByName: new Map(
+      [...candidates].flatMap(([name, values]) => {
+        const value = values[0];
+        return values.length === 1 && value?.entryPath !== undefined
+          ? [[name, value as ResolvablePackageInfo] as const]
+          : [];
+      }),
+    ),
+  };
+}
+
+function packageForPath(path: string, packages: PackageIndex): string | undefined {
+  let best: {readonly name: string; readonly root: string} | undefined;
+  for (const info of packages.all) {
+    const root = info.root;
+    if ((root === '' || path.startsWith(`${root}/`)) && (!best || root.length > best.root.length)) {
+      best = {name: info.name, root};
+    }
+  }
+  return best?.name;
+}
+
+function discoverResolutionAliases(
+  files: readonly CodeGraphInventoryFile[],
+  observer: CodeGraphResolutionObserver,
+): ResolutionAliasIndex {
+  const scopes: ResolutionAliasScope[] = [];
+  for (const file of files.filter(candidate => /(?:^|\/)tsconfig\.json$/i.test(candidate.path))) {
+    try {
+      if (file.content === undefined) continue;
+      const parsed = JSON.parse(file.content) as {
+        readonly compilerOptions?: {readonly baseUrl?: unknown; readonly outDir?: unknown; readonly paths?: unknown};
+        readonly exclude?: unknown;
+        readonly files?: unknown;
+        readonly include?: unknown;
+      };
+      const configRoot = file.path.replace(/(?:^|\/)tsconfig\.json$/, '');
+      const baseUrl = typeof parsed.compilerOptions?.baseUrl === 'string' ? parsed.compilerOptions.baseUrl : '.';
+      const base = normalizeContainedSegments([configRoot, baseUrl]);
+      if (base === undefined) continue;
+      const aliases = new Map<string, string[]>();
+      const paths = parsed.compilerOptions?.paths;
+      if (paths && typeof paths === 'object' && !Array.isArray(paths)) {
+        for (const [alias, targets] of Object.entries(paths as Record<string, unknown>)) {
+          if (!Array.isArray(targets)) continue;
+          const safeTargets = targets
+            .filter((target): target is string => typeof target === 'string')
+            .flatMap(target => {
+              const candidate = normalizeContainedSegments([base, target]);
+              return candidate === undefined ? [] : [candidate];
+            });
+          if (safeTargets.length > 0) aliases.set(alias, safeTargets);
+        }
+      }
+      const explicitFiles = Object.prototype.hasOwnProperty.call(parsed, 'files');
+      const projectFiles = normalizedProjectPaths(configRoot, parsed.files);
+      const include = explicitFiles
+        ? []
+        : compileProjectPatterns(
+            normalizedProjectPatterns(configRoot, Array.isArray(parsed.include) ? parsed.include : ['**/*']),
+          );
+      const exclude = compileProjectPatterns(
+        normalizedProjectPatterns(configRoot, [
+          ...(Array.isArray(parsed.exclude) ? parsed.exclude : []),
+          ...(typeof parsed.compilerOptions?.outDir === 'string' ? [parsed.compilerOptions.outDir] : []),
+        ]),
+      );
+      scopes.push({aliases, exclude, explicitFiles, files: projectFiles, include, root: configRoot});
+    } catch {
+      // The manifest extractor records invalid JSON diagnostics.
+    }
+  }
+  return {
+    observer,
+    scopeBySourcePath: new Map(),
+    scopes: scopes.sort((left, right) => right.root.length - left.root.length || left.root.localeCompare(right.root)),
+  };
+}
+
+function aliasCandidates(sourcePath: string, target: string, index: ResolutionAliasIndex): readonly string[] {
+  const scope = index.scopeBySourcePath.has(sourcePath)
+    ? index.scopeBySourcePath.get(sourcePath)
+    : index.scopes.find(candidate => projectIncludes(candidate, sourcePath));
+  if (!index.scopeBySourcePath.has(sourcePath)) {
+    index.observer.onAliasScopeScan?.(sourcePath);
+    index.scopeBySourcePath.set(sourcePath, scope);
+  }
+  if (!scope) return [];
+  const matches: Array<{
+    readonly candidates: readonly string[];
+    readonly exact: boolean;
+    readonly specificity: number;
+  }> = [];
+  for (const [alias, candidates] of scope.aliases) {
+    const wildcard = alias.indexOf('*');
+    if (wildcard < 0) {
+      if (alias === target) matches.push({candidates, exact: true, specificity: alias.length});
+      continue;
+    }
+    const prefix = alias.slice(0, wildcard);
+    const suffix = alias.slice(wildcard + 1);
+    if (!target.startsWith(prefix) || !target.endsWith(suffix)) continue;
+    const substitution = target.slice(prefix.length, target.length - suffix.length);
+    matches.push({
+      candidates: candidates.map(candidate => candidate.replaceAll('*', substitution)),
+      exact: false,
+      specificity: prefix.length + suffix.length,
+    });
+  }
+  if (matches.length === 0) return [];
+  const bestSpecificity = Math.max(
+    ...matches.map(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity)),
+  );
+  const best = matches.filter(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity) === bestSpecificity);
+  return best.length === 1 ? best[0]!.candidates : [];
+}
+
+function packageEntry(exportsValue: unknown, mainValue: unknown): string | undefined {
+  if (exportsValue === undefined) return typeof mainValue === 'string' ? mainValue : undefined;
+  const root =
+    typeof exportsValue === 'object' &&
+    exportsValue !== null &&
+    !Array.isArray(exportsValue) &&
+    Object.keys(exportsValue).some(key => key.startsWith('.'))
+      ? (exportsValue as Record<string, unknown>)['.']
+      : exportsValue;
+  const targets = new Set(collectExportTargets(root));
+  return targets.size === 1 ? [...targets][0] : undefined;
+}
+
+function collectExportTargets(value: unknown): readonly string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(collectExportTargets);
+  if (typeof value !== 'object' || value === null) return [];
+  return Object.values(value as Record<string, unknown>).flatMap(collectExportTargets);
+}
+
+function normalizedProjectPaths(root: string, value: unknown): ReadonlySet<string> {
+  if (!Array.isArray(value)) return new Set();
+  return new Set(
+    value.flatMap(entry => {
+      if (typeof entry !== 'string') return [];
+      const normalized = normalizeContainedSegments([root, entry]);
+      return normalized === undefined ? [] : [normalized];
+    }),
+  );
+}
+
+function normalizedProjectPatterns(root: string, values: readonly unknown[]): readonly string[] {
+  return values.flatMap(value => {
+    if (typeof value !== 'string') return [];
+    const normalized = normalizeContainedSegments([root, value]);
+    return normalized === undefined ? [] : [normalized];
+  });
+}
+
+function projectIncludes(scope: ResolutionAliasScope, sourcePath: string): boolean {
+  if (scope.root !== '' && !sourcePath.startsWith(`${scope.root}/`)) return false;
+  const included = scope.explicitFiles
+    ? scope.files.has(sourcePath)
+    : scope.include.some(pattern => pattern.test(sourcePath));
+  return included && !scope.exclude.some(pattern => pattern.test(sourcePath));
+}
+
+function compileProjectPatterns(patterns: readonly string[]): readonly RegExp[] {
+  return patterns.map(compileProjectPattern);
+}
+
+function compileProjectPattern(pattern: string): RegExp {
+  if (!/[*?]/.test(pattern)) {
+    const exact = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^${exact}(?:/|$)`);
+  }
+  const expression = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replaceAll('**/', '\u0000')
+    .replaceAll('**', '\u0001')
+    .replaceAll('*', '[^/]*')
+    .replaceAll('?', '[^/]')
+    .replaceAll('\u0000', '(?:.*/)?')
+    .replaceAll('\u0001', '.*');
+  return new RegExp(`^${expression}$`);
+}
+
+function makeSymbol(
+  context: ExtractionContext,
+  sourceFile: ts.SourceFile,
+  kind: string,
+  name: string,
+  qualifiedName: string,
+  exported: boolean,
+  node: ts.Node = sourceFile,
+): CodeGraphSymbol {
+  const start = node.getStart(sourceFile, false);
+  const end = node.getEnd();
+  const signature = sourceFile.text
+    .slice(start, Math.min(end, start + 300))
+    .split(/[{\n]/, 1)[0]
+    ?.trim();
+  return {
+    contentHash: context.contentHash,
+    documentation: leadingDocumentation(sourceFile, node),
+    exported,
+    id: symbolId(context.path, context.language, kind, qualifiedName),
+    kind,
+    language: context.language,
+    name,
+    packageName: context.packageName,
+    path: context.path,
+    qualifiedName,
+    signature: signature || undefined,
+    span: spanFor(sourceFile, start, end),
+  };
+}
+
+function makeTextSymbol(
+  context: ExtractionContext,
+  kind: string,
+  name: string,
+  qualifiedName: string,
+  exported: boolean,
+  content: string,
+  start: number,
+  end: number,
+  documentation?: string,
+): CodeGraphSymbol {
+  return {
+    contentHash: context.contentHash,
+    documentation,
+    exported,
+    id: symbolId(context.path, context.language, kind, qualifiedName),
+    kind,
+    language: context.language,
+    name,
+    packageName: context.packageName,
+    path: context.path,
+    qualifiedName,
+    span: textSpan(content, start, end),
+  };
+}
+
+function addEdge(
+  facts: MutableFacts,
+  context: ExtractionContext,
+  node: ts.Node,
+  source: CodeGraphSymbol,
+  target: CodeGraphSymbol,
+  relation: CodeGraphRelation,
+  provenance: CodeGraphProvenance,
+): void {
+  const sourceFile = node.getSourceFile();
+  const evidenceSpan = spanFor(sourceFile, node.getStart(sourceFile, false), node.getEnd());
+  facts.edges.push({
+    confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : 0.75,
+    evidencePath: context.path,
+    evidenceSpan,
+    id: edgeId(source.id, source.name, relation, target.id, target.name, provenance, context.path),
+    provenance,
+    relation,
+    sourceId: source.id,
+    sourceName: source.name,
+    targetId: target.id,
+    targetName: target.name,
+  });
+}
+
+function addUnresolvedEdge(
+  facts: MutableFacts,
+  context: ExtractionContext,
+  node: ts.Node,
+  source: CodeGraphSymbol,
+  targetName: string,
+  relation: CodeGraphRelation,
+  provenance: CodeGraphProvenance,
+): void {
+  const sourceFile = node.getSourceFile();
+  const evidenceSpan = spanFor(sourceFile, node.getStart(sourceFile, false), node.getEnd());
+  facts.edges.push({
+    confidence: 0.75,
+    evidencePath: context.path,
+    evidenceSpan,
+    id: edgeId(source.id, source.name, relation, undefined, targetName, provenance, context.path),
+    provenance,
+    relation,
+    sourceId: source.id,
+    sourceName: source.name,
+    targetName,
+  });
+}
+
+function addTextEdge(
+  facts: MutableFacts,
+  context: ExtractionContext,
+  source: CodeGraphSymbol,
+  targetName: string,
+  relation: CodeGraphRelation,
+  provenance: CodeGraphProvenance,
+  content: string,
+): void {
+  facts.edges.push({
+    confidence: provenance === 'declared' ? 1 : 0.75,
+    evidencePath: context.path,
+    evidenceSpan: textSpan(content, 0, Math.min(content.length, 1)),
+    id: edgeId(source.id, source.name, relation, undefined, targetName, provenance, context.path),
+    provenance,
+    relation,
+    sourceId: source.id,
+    sourceName: source.name,
+    targetName,
+  });
+}
+
+function addTextResolvedEdge(
+  facts: MutableFacts,
+  context: ExtractionContext,
+  source: CodeGraphSymbol,
+  target: CodeGraphSymbol,
+  relation: CodeGraphRelation,
+  provenance: CodeGraphProvenance,
+  content: string,
+  start: number,
+): void {
+  facts.edges.push({
+    confidence: 0.75,
+    evidencePath: context.path,
+    evidenceSpan: textSpan(content, start, start + 1),
+    id: edgeId(source.id, source.name, relation, target.id, target.name, provenance, context.path),
+    provenance,
+    relation,
+    sourceId: source.id,
+    sourceName: source.name,
+    targetId: target.id,
+    targetName: target.name,
+  });
+}
+
+function symbolId(path: string, language: string, kind: string, qualifiedName: string): string {
+  return `cgs_${sha256HexSync(`symbol-v1\n${path}\n${language}\n${kind}\n${qualifiedName}`).slice(0, 32)}`;
+}
+
+function edgeId(
+  sourceId: string | undefined,
+  sourceName: string,
+  relation: string,
+  targetId: string | undefined,
+  targetName: string,
+  provenance: string,
+  path: string,
+): string {
+  return `cge_${sha256HexSync(
+    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}`,
+  ).slice(0, 32)}`;
+}
+
+function declarationKind(node: ts.Node): string {
+  if (ts.isClassDeclaration(node)) return 'class';
+  if (ts.isInterfaceDeclaration(node)) return 'interface';
+  if (ts.isTypeAliasDeclaration(node)) return 'type';
+  if (ts.isEnumDeclaration(node)) return 'enum';
+  return 'function';
+}
+
+function hasExportModifier(node: ts.Node): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    (ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false)
+  );
+}
+
+function qualify(stack: readonly CodeGraphSymbol[], name: string): string {
+  const parent = stack.at(-1);
+  return parent?.kind === 'module' ? name : `${parent?.qualifiedName ?? ''}.${name}`.replace(/^\./, '');
+}
+
+function propertyName(name: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name) ? name.text : undefined;
+}
+
+function relationshipExpressionName(
+  expression: ts.Expression,
+  localBindings: ReadonlyMap<ts.Node, ReadonlySet<string>>,
+): string | undefined {
+  const name = expressionName(expression);
+  if (!name || !ts.isIdentifier(expression)) return name;
+  for (let scope: ts.Node | undefined = expression.parent; scope; scope = scope.parent) {
+    if (localBindings.get(scope)?.has(expression.text)) return locallyBoundTarget(expression.text);
+    if (ts.isSourceFile(scope)) break;
+  }
+  return name;
+}
+
+function collectLocalBindings(sourceFile: ts.SourceFile): ReadonlyMap<ts.Node, ReadonlySet<string>> {
+  const bindings = new Map<ts.Node, Set<string>>();
+  const add = (scope: ts.Node | undefined, name: ts.BindingName | undefined) => {
+    if (!scope || !name) return;
+    const values = bindings.get(scope) ?? new Set<string>();
+    collectBindingNames(name, values);
+    bindings.set(scope, values);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isParameter(node)) {
+      add(nearestFunctionScope(node.parent), node.name);
+    } else if (ts.isVariableDeclaration(node) && !ts.isCatchClause(node.parent)) {
+      const list = ts.isVariableDeclarationList(node.parent) ? node.parent : undefined;
+      const blockScoped = (list?.flags ?? 0) & ts.NodeFlags.BlockScoped;
+      add(blockScoped ? nearestBlockScope(node.parent) : nearestFunctionScope(node.parent), node.name);
+    } else if (
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isEnumDeclaration(node)) &&
+      node.name &&
+      !ts.isSourceFile(node.parent)
+    ) {
+      add(nearestBlockScope(node.parent) ?? nearestFunctionScope(node.parent), node.name);
+    } else if ((ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name) {
+      add(node, node.name);
+    } else if (ts.isCatchClause(node)) {
+      add(node, node.variableDeclaration?.name);
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return bindings;
+}
+
+function collectBindingNames(name: ts.BindingName, output: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    output.add(name.text);
+    return;
+  }
+  for (const element of name.elements) {
+    if (!ts.isOmittedExpression(element)) collectBindingNames(element.name, output);
+  }
+}
+
+function nearestFunctionScope(node: ts.Node | undefined): ts.Node | undefined {
+  for (let current = node; current && !ts.isSourceFile(current); current = current.parent) {
+    if (ts.isFunctionLike(current)) return current;
+  }
+  return undefined;
+}
+
+function nearestBlockScope(node: ts.Node | undefined): ts.Node | undefined {
+  for (let current = node; current && !ts.isSourceFile(current); current = current.parent) {
+    if (ts.isBlock(current) || ts.isCatchClause(current) || ts.isFunctionLike(current)) return current;
+  }
+  return undefined;
+}
+
+function locallyBoundTarget(name: string): string {
+  return `local:${encodeURIComponent(name)}`;
+}
+
+function parseLocallyBoundTarget(value: string): string | undefined {
+  const match = /^local:(.+)$/.exec(value);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return undefined;
+  }
+}
+
+function expressionName(expression: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression)) {
+    if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) return `this.${expression.name.text}`;
+    if (ts.isIdentifier(expression.expression)) return `${expression.expression.text}.${expression.name.text}`;
+    return `property.${expression.name.text}`;
+  }
+  if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
+    return expressionName(expression.argumentExpression);
+  }
+  return undefined;
+}
+
+function lastName(value: string): string {
+  return value.split('.').at(-1) ?? value;
+}
+
+function groupSymbols(
+  symbols: readonly CodeGraphSymbol[],
+  key: (symbol: CodeGraphSymbol) => string,
+): ReadonlyMap<string, readonly CodeGraphSymbol[]> {
+  const result = new Map<string, CodeGraphSymbol[]>();
+  for (const symbol of symbols) {
+    const value = key(symbol);
+    const existing = result.get(value);
+    if (existing) existing.push(symbol);
+    else result.set(value, [symbol]);
+  }
+  return result;
+}
+
+function uniqueSymbol(symbols: readonly CodeGraphSymbol[] | undefined): CodeGraphSymbol | undefined {
+  return symbols?.length === 1 ? symbols[0] : undefined;
+}
+
+function moduleCandidates(base: string): readonly string[] {
+  const withoutRuntimeExtension = base.replace(/\.(?:mjs|cjs|js|jsx)$/i, '');
+  return [
+    base,
+    withoutRuntimeExtension,
+    `${withoutRuntimeExtension}.ts`,
+    `${withoutRuntimeExtension}.tsx`,
+    `${withoutRuntimeExtension}.mts`,
+    `${withoutRuntimeExtension}.cts`,
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.js`,
+    `${base}.jsx`,
+    `${base}.mts`,
+    `${base}.cts`,
+    `${base}/index.ts`,
+    `${base}/index.tsx`,
+    `${base}/index.js`,
+  ];
+}
+
+function normalizeContainedSegments(segments: readonly string[]): string | undefined {
+  const output: string[] = [];
+  for (const segment of segments.flatMap(value => value.split('/'))) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (output.length === 0) return undefined;
+      output.pop();
+    } else output.push(segment);
+  }
+  return output.join('/');
+}
+
+function spanFor(sourceFile: ts.SourceFile, start: number, end: number): CodeGraphSpan {
+  const from = sourceFile.getLineAndCharacterOfPosition(start);
+  const to = sourceFile.getLineAndCharacterOfPosition(Math.max(start, end));
+  return {column: from.character + 1, endColumn: to.character + 1, endLine: to.line + 1, line: from.line + 1};
+}
+
+function textSpan(content: string, start: number, end: number): CodeGraphSpan {
+  const before = content.slice(0, start).split('\n');
+  const through = content.slice(0, end).split('\n');
+  return {
+    column: before.at(-1)!.length + 1,
+    endColumn: through.at(-1)!.length + 1,
+    endLine: through.length,
+    line: before.length,
+  };
+}
+
+function leadingDocumentation(sourceFile: ts.SourceFile, node: ts.Node): string | undefined {
+  const ranges = ts.getLeadingCommentRanges(sourceFile.text, node.getFullStart()) ?? [];
+  const comments = ranges
+    .map(range => sourceFile.text.slice(range.pos, range.end))
+    .filter(value => value.startsWith('/**'))
+    .map(value =>
+      value
+        .replace(/^\/\*\*|\*\/$/g, '')
+        .replace(/^\s*\*\s?/gm, '')
+        .trim(),
+    );
+  const value = comments.at(-1);
+  return value ? value.slice(0, 1_024) : undefined;
+}
+
+function boundedMarkdownSection(content: string, start: number): string {
+  const rest = content.slice(start);
+  const nextHeading = rest.slice(1).search(/^#{1,6}\s+/m);
+  return rest.slice(0, nextHeading < 0 ? 1_024 : Math.min(1_024, nextHeading + 1)).trim();
+}
+
+function scriptKindForPath(path: string): ts.ScriptKind {
+  if (/\.tsx$/i.test(path)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/i.test(path)) return ts.ScriptKind.JSX;
+  if (/\.(?:js|mjs|cjs)$/i.test(path)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function slug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}

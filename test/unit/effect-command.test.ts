@@ -1,6 +1,6 @@
 import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
+import {runBinaryCommandEffect, runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
@@ -8,6 +8,20 @@ describe('Effect CommandExecutor', () => {
     const result = await run(runCommandEffect(process.execPath, ['-e', 'process.stdout.write("ok")']));
 
     expect(result).toEqual({exitCode: 0, stderr: '', stdout: 'ok'});
+  });
+
+  it('collects chunked binary output without changing byte order', async () => {
+    const result = await run(
+      runBinaryCommandEffect(process.execPath, [
+        '-e',
+        'for (let index = 0; index < 1024; index += 1) process.stdout.write(Buffer.alloc(4096, index % 251))',
+      ]),
+    );
+
+    expect(result.stdout.byteLength).toBe(4 * 1_048_576);
+    expect(result.stdout[0]).toBe(0);
+    expect(result.stdout[4096]).toBe(1);
+    expect(result.stdout.at(-1)).toBe(1023 % 251);
   });
 
   it('models non-zero exits in the typed error channel', async () => {

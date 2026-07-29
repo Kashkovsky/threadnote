@@ -3,6 +3,38 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## Native code graph contract
+
+`fixtures/code-graph-v1/` is the reviewed repository and query contract for native source navigation. It covers
+definitions, authoritative calls and dependencies, paths, reverse impact, documentation, no-answer behavior, and
+linked-worktree dirty-overlay isolation. The fixture identity is frozen; changing the repository or judgments requires
+reviewing every baseline with the new hash.
+
+```sh
+bun run eval:code-graph
+bun run bench:code-graph -- --output artifacts/code-graph-local.json
+bun run bench:code-graph -- --vectors --model-home ~/.threadnote --output artifacts/code-graph-vectors-local.json
+bun run bench:code-graph -- --scale-symbols 10000 --fail-on-budget
+bun run bench:code-graph -- --scale-symbols 100000 --fail-on-budget
+bun run bench:code-graph -- --vectors --scale-symbols 10000 --model-home ~/.threadnote --fail-on-budget
+```
+
+The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. It gates zero
+authoritative false edges, zero worktree leakage, perfect no-answer precision/recall, perfect reviewed symbol/edge
+recall, and MRR 1. The checked Graphify 0.9.29 result remains a frozen historical comparison, not the native release
+floor. `threadnote-native.json` is the native baseline; `budgets.json` records quality and
+development and scale performance limits. The default development and scale artifacts are explicitly lexical-only.
+`performance-vectors-development.json` separately records activation and a lexically disjoint semantic query with the
+pinned production embedding model. Reviewed local lexical 10k/100k results and a production-model 10k vector result
+are stored as `performance-10000-development.json`, `performance-100000-development.json`, and
+`performance-vectors-10000-development.json`. Scheduled 10k/100k production-vector jobs gate bounded sidecar decoding,
+exact scans, RSS, and disk. The platform workflow retains full artifacts rather than pretending shared-runner latency
+is machine-independent.
+
+Graph code search is intentionally separate from memory recall. `recall_context` evaluates durable memories and
+resources; `inspect_code_graph` evaluates current source evidence. Agents may call both, but one subsystem failing or
+returning no answer cannot silently change the other's answer contract.
+
 ## Fixture contract
 
 `createRecallEvaluationFixtureV2()` in `src/evaluation/recall-fixture.ts` creates the reviewed base corpus:
@@ -35,8 +67,8 @@ counts. Validate that:
 Any intentional fixture change requires regenerating both checked-in baselines and reviewing the metric deltas:
 
 ```sh
-npm run eval:recall:baseline -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v1.json
-npm run eval:recall:baseline:v2 -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
+bun run eval:recall:baseline -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v1.json
+bun run eval:recall:baseline:v2 -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
 ```
 
 The default timestamp is fixed. `SOURCE_DATE_EPOCH` or `--created-at` may record a reviewed replacement baseline.
@@ -70,15 +102,15 @@ failure count may not increase. Tight platform latency gates are not applied on 
 
 ```sh
 # Existing v1 quality and 10k production-shaped checks
-npm run eval:recall
+bun run eval:recall
 
 # v2 current-pipeline non-inferiority check
-npm run eval:recall:v2 -- \
+bun run eval:recall:v2 -- \
   --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
   --fail-on-regression
 
 # Keep the full query run as an untracked CI artifact
-npm run eval:recall:v2 -- --documents 10000 --full --output artifacts/recall-v2-10k.json
+bun run eval:recall:v2 -- --documents 10000 --full --output artifacts/recall-v2-10k.json
 ```
 
 The frozen 3.0.3 lexical baseline has known failures. These are evidence of behavior to improve, not waived release
@@ -90,9 +122,9 @@ criteria. A candidate passes only when it does not add failures or regress safet
 mode omits raw sample arrays:
 
 ```sh
-npm run bench:recall:micro
-npm run bench:recall:micro -- --json
-THREADNOTE_BENCHMARK_100K=1 npm run bench:recall:micro -- --json
+bun run bench:recall:micro
+bun run bench:recall:micro -- --json
+THREADNOTE_BENCHMARK_100K=1 bun run bench:recall:micro -- --json
 ```
 
 `bench:recall` is the explicit end-to-end orchestrator. It records p50/p95/p99, throughput, CPU time, RSS, heap,
@@ -100,7 +132,7 @@ external memory, and event-loop delay together with commit/dirty state, fixture 
 RAM, warmups, and samples:
 
 ```sh
-npm run bench:recall -- --documents 10000 --samples 25 --warmups 5 \
+bun run bench:recall -- --documents 10000 --samples 25 --warmups 5 \
   --output artifacts/recall-10k.json
 ```
 
@@ -115,7 +147,7 @@ Reviewed compact gate summaries live under `candidates/<release>/` so failed can
 rediscovered or accidentally promoted later.
 
 ```sh
-npm run eval:recall:models -- \
+bun run eval:recall:models -- \
   --embedding bge-small-en-v1.5-q8 \
   --install \
   --output .artifacts/bge-small-full.json \

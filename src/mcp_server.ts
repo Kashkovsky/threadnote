@@ -117,6 +117,9 @@ import {
   recallSelectionQueries,
   selectedRecallCandidateUris,
 } from './recall/runtime.js';
+import {CodeGraphQueryService, renderCodeGraphResult} from './code_graph/query.js';
+import {resolveRepositoryIdentity} from './code_graph/repository.js';
+import {CodeGraphWatcher} from './code_graph/watcher.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -212,7 +215,7 @@ export const mcpServerEffect = Effect.gen(function* () {
       });
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
-        'For non-trivial work call `recall_context` with repo + absolute `callerCwd`; read `threadnote://` pointers. Close out by writing durable knowledge and handoffs directly without approval via `remember_context`. Use `review_session_context` only for additional candidates; apply after explicit approval. Use stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use user-selected URIs.';
+        'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `threadnote://` pointers. Inspect source via `inspect_code_graph`. Write durable knowledge and handoffs directly via `remember_context`. Use `review_session_context` only for additional candidates; apply after approval. Keep stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use selected URIs.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -247,6 +250,8 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       'Compatibility alias for recall_context. Searches both personal memories and seeded project resources; see recall_context for the query conventions.',
     );
   }
+
+  registerCodeGraphTool(server, config);
 
   registerReadTool(
     server,
@@ -712,6 +717,91 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
         return checkedName.error;
       }
       return runInstallSharedSkillTool(config, checkedName.value, {agent, dryRun, force, kind, team});
+    },
+  );
+}
+
+function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerTool(
+    'inspect_code_graph',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
+      description:
+        'Inspect Threadnote’s local, snapshot-aware native code graph. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
+      inputSchema: {
+        callerCwd: McpInput.string('Required absolute repository or worktree path'),
+        depth: McpInput.integer('Maximum traversal depth', {minimum: 0, maximum: 8}),
+        edgeLimit: McpInput.integer('Maximum returned relationships', {minimum: 1, maximum: 500}),
+        from: McpInput.string('Starting symbol for operation=path'),
+        includeHeuristic: McpInput.boolean('Include lower-confidence heuristic relationships; defaults to false'),
+        includeModelAssociations: McpInput.boolean('Include model-derived semantic associations; defaults to false'),
+        nodeLimit: McpInput.integer('Maximum returned nodes', {minimum: 1, maximum: 200}),
+        operation: McpInput.literals(['query', 'explain', 'path', 'impact'], 'Required graph operation'),
+        query: McpInput.string('Concept, symbol, module, path, or impact selector'),
+        symbol: McpInput.string('Symbol selector for operation=explain'),
+        to: McpInput.string('Target symbol for operation=path'),
+      },
+    },
+    ({
+      callerCwd,
+      depth,
+      edgeLimit,
+      from,
+      includeHeuristic,
+      includeModelAssociations,
+      nodeLimit,
+      operation,
+      query,
+      symbol,
+      to,
+    }) => {
+      const checkedCwd = requiredText(callerCwd, 'inspect_code_graph', 'callerCwd', {
+        callerCwd: '/workspace/project',
+        operation: 'query',
+        query: 'exclusive file lock',
+      });
+      if (!checkedCwd.ok) return checkedCwd.error;
+      if (!operation) {
+        return argumentError(
+          'inspect_code_graph requires operation. Example: {"operation":"query","callerCwd":"/workspace/project","query":"exclusive file lock"}',
+        );
+      }
+      return Effect.gen(function* () {
+        const path = yield* Path.Path;
+        if (!path.isAbsolute(checkedCwd.value)) {
+          return argumentError('inspect_code_graph callerCwd must be an absolute workspace path.');
+        }
+        const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
+        const watcher = yield* CodeGraphWatcher;
+        yield* watcher.ensure({
+          cwd: identity.repoRoot,
+          key: identity.worktreeId,
+          threadnoteHome: config.agentContextHome,
+        });
+        const service = yield* CodeGraphQueryService;
+        const result = yield* service.inspect({
+          cwd: checkedCwd.value,
+          depth,
+          edgeLimit,
+          from,
+          includeHeuristic,
+          includeModelAssociations,
+          nodeLimit,
+          operation,
+          query,
+          symbol,
+          threadnoteHome: config.agentContextHome,
+          to,
+        });
+        return {
+          content: [{type: 'text' as const, text: renderCodeGraphResult(result)}],
+          structuredContent: result,
+        };
+      }).pipe(
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
     },
   );
 }
