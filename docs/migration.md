@@ -31,10 +31,16 @@ The migration:
 Interrupted staging and beta-home recovery are resumable. Re-running after success is idempotent. If an earlier beta
 already wrote or subsequently updated a resource at the same logical canonical `data/` path, that current Threadnote
 copy wins while the older copy remains available in the untouched legacy home. The recovery receipt records how many
-current entries were preserved. An existing managed-share Git index also wins because it can contain the current
-staging state; its legacy version remains in the untouched legacy home. Disjoint account trees are merged, identical
-overlaps are verified, and different non-canonical settings or metadata still stop the migration instead of being
-overwritten. The source remains byte-for-byte untouched and is never automatically removed.
+current entries were preserved. An existing managed-share checkout is one atomic authority boundary: when its owned
+worktree points at its owned Git directory, recovery preserves the entire current repository rather than overlaying
+individual legacy Git files. This covers the index and split indexes, refs and packed refs, objects and packs, reflogs,
+configuration, hooks, in-progress operation state, linked-worktree administration, and future Git repository entries
+without relying on a filename allowlist. The complete legacy repository remains byte-for-byte available under
+`~/.openviking`. If either half of the current gitdir/worktree pair is missing, unsafe, or points elsewhere, recovery
+stops before copying; when neither half exists, the eligible legacy checkout is migrated using the normal transient-file
+exclusions. Disjoint account trees are merged, identical overlaps are verified, and different non-canonical settings or
+metadata outside managed repositories still stop the migration instead of being overwritten. The source is never
+automatically removed.
 
 The standalone installer separately retires verified executable dependencies after activating the new release. It can
 stop and uninstall a detected npm-distributed Threadnote package, including an early Node-based 4.0 beta, remove a
