@@ -298,12 +298,17 @@ describe('OpenViking home migration', () => {
         yield* fs.makeDirectory(path.dirname(betaCurrent), {recursive: true});
         yield* fs.writeFileString(betaCurrent, '# Current beta handoff\n');
         yield* fs.writeFileString(path.join(legacyHome, 'data', 'viking', 'backend_meta.json'), '{"server":true}');
+        const legacyUpdateCache = '{"channel":"stable","latestVersion":"3.0.3"}';
+        const betaUpdateCache = '{"channel":"beta","latestVersion":"4.0.0-beta.9"}';
+        yield* fs.writeFileString(path.join(legacyHome, 'update-check.json'), legacyUpdateCache);
         yield* fs.makeDirectory(path.join(targetHome, 'cache'), {recursive: true});
         yield* fs.makeDirectory(path.join(targetHome, 'data', 'local'), {recursive: true});
         yield* fs.writeFileString(path.join(targetHome, 'cache', 'recall.json'), 'derived beta state');
+        yield* fs.writeFileString(path.join(targetHome, 'update-check.json'), betaUpdateCache);
 
         const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
         expect(result.action).toBe('recovered');
+        expect(result.receipt?.files).toBe(2);
         expect(
           yield* fs.readFileString(
             path.join(
@@ -321,6 +326,7 @@ describe('OpenViking home migration', () => {
           ),
         ).toContain('Recovered memory');
         expect(yield* fs.readFileString(path.join(targetHome, 'cache', 'recall.json'))).toBe('derived beta state');
+        expect(yield* fs.readFileString(path.join(targetHome, 'update-check.json'))).toBe(betaUpdateCache);
         expect(
           yield* fs.readFileString(
             path.join(
@@ -340,6 +346,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.exists(path.join(targetHome, 'data', 'backend_meta.json'))).toBe(false);
         expect(yield* fs.exists(path.join(targetHome, 'data', 'viking'))).toBe(false);
         expect(yield* fs.readFileString(source)).toContain('Recovered memory');
+        expect(yield* fs.readFileString(path.join(legacyHome, 'update-check.json'))).toBe(legacyUpdateCache);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
@@ -431,6 +438,16 @@ describe('OpenViking home migration', () => {
           path.join(legacyGitdir, 'config'),
           `[core]\n\tworktree = ${legacyWorktree}\n[remote "origin"]\n\turl = git@example.invalid:team/memories.git\n`,
         );
+        const unpublishedCommit = '0123456789abcdef0123456789abcdef01234567';
+        const unpublishedObject = path.join(legacyGitdir, 'objects', '01', unpublishedCommit.slice(2));
+        yield* fs.makeDirectory(path.dirname(unpublishedObject), {recursive: true});
+        yield* fs.writeFileString(unpublishedObject, 'unpublished commit object');
+        yield* fs.makeDirectory(path.join(legacyGitdir, 'refs', 'heads'), {recursive: true});
+        yield* fs.writeFileString(path.join(legacyGitdir, 'refs', 'heads', 'main'), `${unpublishedCommit}\n`);
+        yield* fs.writeFileString(
+          path.join(legacyGitdir, 'FETCH_HEAD'),
+          `${unpublishedCommit}\tnot-for-merge\tbranch 'main' of git@example.invalid:team/memories.git\n`,
+        );
         yield* fs.makeDirectory(path.join(legacyHome, 'share'), {recursive: true});
         yield* fs.writeFileString(
           path.join(legacyHome, 'share', 'teams.json'),
@@ -481,6 +498,13 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.readFileString(path.join(migratedGitdir, 'config'))).toContain(
           `worktree = ${migratedWorktree}`,
         );
+        expect(yield* fs.readFileString(path.join(migratedGitdir, 'refs', 'heads', 'main'))).toBe(
+          `${unpublishedCommit}\n`,
+        );
+        expect(yield* fs.readFileString(path.join(migratedGitdir, 'objects', '01', unpublishedCommit.slice(2)))).toBe(
+          'unpublished commit object',
+        );
+        expect(yield* fs.exists(path.join(migratedGitdir, 'FETCH_HEAD'))).toBe(false);
         const migratedTeams = JSON.parse(yield* fs.readFileString(path.join(targetHome, 'share', 'teams.json'))) as {
           readonly teams: {readonly default: {readonly gitdir: string; readonly worktree: string}};
         };
@@ -490,6 +514,7 @@ describe('OpenViking home migration', () => {
         });
 
         expect(yield* fs.readFileString(path.join(legacyWorktree, '.git'))).toBe(`gitdir: ${legacyGitdir}\n`);
+        expect(yield* fs.exists(path.join(legacyGitdir, 'FETCH_HEAD'))).toBe(true);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

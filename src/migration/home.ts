@@ -26,6 +26,7 @@ const EXCLUDED_LEGACY_PATHS = new Set([
   'openviking-server.lock',
   'ov.conf',
   'ovcli.conf',
+  'update-check.json',
   'venv',
 ]);
 
@@ -38,6 +39,7 @@ const EXCLUDED_LEGACY_THREADNOTE_PATHS = new Set([
 ]);
 
 const EXCLUDED_OS_METADATA_FILENAMES = new Set(['.ds_store', 'desktop.ini', 'thumbs.db']);
+const TRANSIENT_SHARE_GIT_FILENAMES = new Set(['FETCH_HEAD']);
 
 export interface HomeMigrationOptions {
   readonly apply?: boolean;
@@ -1006,7 +1008,19 @@ function shouldIncludeLegacyPath(relativePath: string): boolean {
     !EXCLUDED_LEGACY_PATHS.has(top) &&
     !EXCLUDED_LEGACY_THREADNOTE_PATHS.has(portable) &&
     !EXCLUDED_OS_METADATA_FILENAMES.has(basename.toLowerCase()) &&
+    !isTransientShareGitPath(portable) &&
     !basename.startsWith('._')
+  );
+}
+
+function isTransientShareGitPath(relativePath: string): boolean {
+  const segments = relativePath.split('/');
+  return (
+    segments.length === 4 &&
+    segments[0] === 'share' &&
+    segments[1] === 'teams' &&
+    segments[2]?.endsWith('.gitdir') === true &&
+    TRANSIENT_SHARE_GIT_FILENAMES.has(segments[3] ?? '')
   );
 }
 
