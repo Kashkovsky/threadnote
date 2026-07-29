@@ -501,6 +501,240 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('recovers every provable legacy-derived partial managed-share checkout shape', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-partial-share-recovery-'});
+
+        for (const scenario of [
+          'gitdir-prefix-without-head',
+          'gitdir-with-head-without-worktree',
+          'worktree-with-current-marker',
+          'worktree-with-legacy-marker',
+          'worktree-already-standard',
+          'nonstandard-source-gitdir',
+          'rewritten-config-and-partial-worktree',
+        ] as const) {
+          const legacyHome = path.join(root, scenario, '.openviking');
+          const targetHome = path.join(root, scenario, '.threadnote');
+          const legacyGitdir = path.join(
+            legacyHome,
+            'share',
+            'teams',
+            scenario === 'nonstandard-source-gitdir' ? 'legacy.gitdir' : 'default.gitdir',
+          );
+          const legacyWorktree =
+            scenario === 'worktree-already-standard'
+              ? path.join(legacyHome, 'share', 'worktrees', 'default')
+              : path.join(legacyHome, 'data', 'viking', 'local', 'user', 'tester', 'memories', 'shared', 'default');
+          const currentGitdir = path.join(targetHome, 'share', 'teams', 'default.gitdir');
+          const currentWorktree = path.join(targetHome, 'share', 'worktrees', 'default');
+          const memoryRelative = path.join('durable', 'projects', 'threadnote', 'legacy-unpublished.md');
+          const unpublishedCommit = '0123456789abcdef0123456789abcdef01234567';
+          const legacyConfig = `[core]\n\tworktree = ${legacyWorktree}\n[remote "origin"]\n\turl = git@example.invalid:team/memories.git\n`;
+
+          yield* fs.makeDirectory(path.dirname(path.join(legacyWorktree, memoryRelative)), {recursive: true});
+          yield* fs.writeFileString(path.join(legacyWorktree, memoryRelative), '# Legacy unpublished memory\n');
+          yield* fs.writeFileString(path.join(legacyWorktree, '.git'), `gitdir: ${legacyGitdir}\n`);
+          const legacyGitState = new Map<string, string>([
+            ['HEAD', 'ref: refs/heads/main\n'],
+            ['config', legacyConfig],
+            ['FETCH_HEAD', 'legacy transient fetch state\n'],
+            ['index', 'legacy staged state'],
+            ['refs/heads/main', `${unpublishedCommit}\n`],
+            [`objects/${unpublishedCommit.slice(0, 2)}/${unpublishedCommit.slice(2)}`, 'unpublished object'],
+          ]);
+          for (const [relativePath, content] of legacyGitState) {
+            const file = path.join(legacyGitdir, relativePath);
+            yield* fs.makeDirectory(path.dirname(file), {recursive: true});
+            yield* fs.writeFileString(file, content);
+          }
+          yield* fs.makeDirectory(path.join(legacyHome, 'share'), {recursive: true});
+          yield* fs.writeFileString(
+            path.join(legacyHome, 'share', 'teams.json'),
+            `${JSON.stringify(
+              {
+                defaultTeam: 'default',
+                teams: {
+                  default: {
+                    addedAt: new Date(0).toISOString(),
+                    gitdir: legacyGitdir,
+                    name: 'default',
+                    remote: 'git@example.invalid:team/memories.git',
+                    worktree: legacyWorktree,
+                  },
+                },
+                version: 1,
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          yield* fs.makeDirectory(targetHome, {recursive: true});
+          yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+          if (
+            scenario === 'gitdir-prefix-without-head' ||
+            scenario === 'gitdir-with-head-without-worktree' ||
+            scenario === 'nonstandard-source-gitdir' ||
+            scenario === 'rewritten-config-and-partial-worktree'
+          ) {
+            yield* fs.makeDirectory(currentGitdir, {recursive: true});
+            yield* fs.writeFileString(
+              path.join(currentGitdir, 'config'),
+              scenario === 'rewritten-config-and-partial-worktree'
+                ? legacyConfig.replaceAll(legacyWorktree, currentWorktree).replaceAll(legacyGitdir, currentGitdir)
+                : legacyConfig,
+            );
+          }
+          if (scenario === 'gitdir-with-head-without-worktree') {
+            yield* fs.writeFileString(path.join(currentGitdir, 'HEAD'), 'ref: refs/heads/main\n');
+            yield* fs.writeFileString(path.join(currentGitdir, 'FETCH_HEAD'), 'different current transient state\n');
+            yield* fs.makeDirectory(path.join(currentGitdir, 'reftable'), {recursive: true});
+            yield* fs.writeFileString(
+              path.join(currentGitdir, 'reftable', 'tables.list.lock'),
+              'nested transient lock state\n',
+            );
+          }
+          if (
+            scenario === 'worktree-with-current-marker' ||
+            scenario === 'worktree-with-legacy-marker' ||
+            scenario === 'worktree-already-standard' ||
+            scenario === 'rewritten-config-and-partial-worktree'
+          ) {
+            yield* fs.makeDirectory(path.dirname(path.join(currentWorktree, memoryRelative)), {recursive: true});
+            yield* fs.writeFileString(path.join(currentWorktree, memoryRelative), '# Legacy unpublished memory\n');
+            yield* fs.writeFileString(
+              path.join(currentWorktree, '.git'),
+              `gitdir: ${scenario === 'worktree-with-legacy-marker' ? legacyGitdir : currentGitdir}\n`,
+            );
+          }
+          if (scenario === 'gitdir-prefix-without-head') {
+            const staleCopy = path.join(targetHome, 'migration', '.openviking-home-v1-share-copy', 'stale-copy');
+            yield* fs.makeDirectory(path.dirname(staleCopy), {recursive: true});
+            yield* fs.writeFileString(staleCopy, 'interrupted prior copy');
+          }
+
+          const result = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome});
+
+          expect(result.action).toBe('recovered');
+          expect(yield* fs.readFileString(path.join(currentWorktree, '.git'))).toBe(`gitdir: ${currentGitdir}\n`);
+          expect(yield* fs.readFileString(path.join(currentWorktree, memoryRelative))).toBe(
+            '# Legacy unpublished memory\n',
+          );
+          expect(yield* fs.readFileString(path.join(currentGitdir, 'HEAD'))).toBe('ref: refs/heads/main\n');
+          expect(yield* fs.readFileString(path.join(currentGitdir, 'index'))).toBe('legacy staged state');
+          expect(yield* fs.exists(path.join(currentGitdir, 'FETCH_HEAD'))).toBe(false);
+          expect(yield* fs.exists(path.join(currentGitdir, 'reftable'))).toBe(false);
+          expect(yield* fs.exists(path.join(targetHome, 'migration', '.openviking-home-v1-share-copy'))).toBe(false);
+          expect(
+            yield* fs.readFileString(
+              path.join(currentGitdir, 'objects', unpublishedCommit.slice(0, 2), unpublishedCommit.slice(2)),
+            ),
+          ).toBe('unpublished object');
+          expect(yield* fs.readFileString(path.join(currentGitdir, 'config'))).toContain(
+            `worktree = ${currentWorktree}`,
+          );
+          const teams = JSON.parse(yield* fs.readFileString(path.join(targetHome, 'share', 'teams.json'))) as {
+            readonly teams: {readonly default: {readonly gitdir: string; readonly worktree: string}};
+          };
+          expect(teams.teams.default).toMatchObject({gitdir: currentGitdir, worktree: currentWorktree});
+          expect(yield* fs.readFileString(path.join(legacyGitdir, 'config'))).toBe(legacyConfig);
+          expect(yield* fs.readFileString(path.join(legacyGitdir, 'FETCH_HEAD'))).toBe(
+            'legacy transient fetch state\n',
+          );
+          expect(yield* fs.readFileString(path.join(legacyWorktree, '.git'))).toBe(`gitdir: ${legacyGitdir}\n`);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects partial managed-share state that is not a subset of the preserved legacy repository', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-divergent-partial-share-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const legacyGitdir = path.join(legacyHome, 'share', 'teams', 'default.gitdir');
+        const legacyWorktree = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'shared',
+          'default',
+        );
+        const currentGitdir = path.join(targetHome, 'share', 'teams', 'default.gitdir');
+        const currentOnlyObject = path.join(currentGitdir, 'objects', 'ff', 'current-only');
+        yield* fs.makeDirectory(legacyGitdir, {recursive: true});
+        yield* fs.makeDirectory(legacyWorktree, {recursive: true});
+        yield* fs.writeFileString(path.join(legacyGitdir, 'HEAD'), 'ref: refs/heads/main\n');
+        yield* fs.writeFileString(path.join(legacyGitdir, 'config'), `[core]\n\tworktree = ${legacyWorktree}\n`);
+        yield* fs.makeDirectory(path.join(legacyGitdir, 'hooks'), {recursive: true});
+        yield* fs.writeFileString(path.join(legacyGitdir, 'hooks', 'pre-commit'), '#!/bin/sh\nexit 0\n', {mode: 0o600});
+        yield* fs.writeFileString(path.join(legacyWorktree, '.git'), `gitdir: ${legacyGitdir}\n`);
+        yield* fs.makeDirectory(path.join(legacyHome, 'share'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(legacyHome, 'share', 'teams.json'),
+          `${JSON.stringify({
+            defaultTeam: 'default',
+            teams: {
+              default: {
+                gitdir: legacyGitdir,
+                name: 'default',
+                remote: 'git@example.invalid:team/memories.git',
+                worktree: legacyWorktree,
+              },
+            },
+            version: 1,
+          })}\n`,
+        );
+        yield* fs.makeDirectory(path.dirname(currentOnlyObject), {recursive: true});
+        yield* fs.writeFileString(path.join(currentGitdir, 'config'), `[core]\n\tworktree = ${legacyWorktree}\n`);
+        yield* fs.writeFileString(currentOnlyObject, 'possibly unpublished current state');
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
+
+        expect(error._tag).toBe('HomeMigrationConflict');
+        expect(error.message).toContain('does not match the preserved legacy repository');
+        expect(yield* fs.readFileString(currentOnlyObject)).toBe('possibly unpublished current state');
+        expect(yield* fs.exists(path.join(targetHome, 'migration', 'openviking-home-v1.json'))).toBe(false);
+
+        if (system.platform !== 'win32') {
+          const modeTargetHome = path.join(root, '.threadnote-mode-divergence');
+          const modeCurrentGitdir = path.join(modeTargetHome, 'share', 'teams', 'default.gitdir');
+          const currentHook = path.join(modeCurrentGitdir, 'hooks', 'pre-commit');
+          yield* fs.makeDirectory(path.dirname(currentHook), {recursive: true});
+          yield* fs.writeFileString(path.join(modeCurrentGitdir, 'config'), `[core]\n\tworktree = ${legacyWorktree}\n`);
+          yield* fs.writeFileString(currentHook, '#!/bin/sh\nexit 0\n', {mode: 0o700});
+          yield* fs.writeFileString(
+            path.join(modeTargetHome, 'layout.json'),
+            '{"createdBy":"threadnote","version":2}\n',
+          );
+
+          const modeError = yield* migrateOpenVikingHome({
+            apply: true,
+            legacyHome,
+            targetHome: modeTargetHome,
+          }).pipe(Effect.flip);
+
+          expect(modeError._tag).toBe('HomeMigrationConflict');
+          expect(modeError.message).toContain('does not match the preserved legacy repository');
+          expect((yield* fs.stat(currentHook)).mode & 0o100).toBe(0o100);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('rejects a current share worktree that points at a different Git directory', () =>
     Effect.scoped(
       Effect.gen(function* () {
