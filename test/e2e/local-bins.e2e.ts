@@ -169,27 +169,20 @@ describe('built self-contained distribution', () => {
     expect(firstQuery).toContain('Code graph: code-graph-repository');
     expect(firstQuery).toContain('withExclusiveFileLock');
 
-    const pathResult = JSON.parse(
-      (
-        await runCli([
-          'graph',
-          'path',
-          '--cwd',
-          graphRepository,
-          '--from',
-          'runApplication',
-          '--to',
-          'withExclusiveFileLock',
-          '--json',
-        ])
-      )
-        .trim()
-        .split('\n')
-        .at(-1) ?? '{}',
-    ) as {
+    const pathResult = await runCliJson<{
       readonly edges?: ReadonlyArray<{readonly relation?: string; readonly targetName?: string}>;
       readonly operation?: string;
-    };
+    }>([
+      'graph',
+      'path',
+      '--cwd',
+      graphRepository,
+      '--from',
+      'runApplication',
+      '--to',
+      'withExclusiveFileLock',
+      '--json',
+    ]);
     expect(pathResult.operation).toBe('path');
     expect(pathResult.edges).toEqual(
       expect.arrayContaining([expect.objectContaining({relation: 'calls', targetName: 'withExclusiveFileLock'})]),
@@ -211,22 +204,22 @@ describe('built self-contained distribution', () => {
         .match(/[a-z0-9_]+/g) ?? [],
     );
     expect(semanticQuery.split(' ').every(term => !repositoryTokens.has(term))).toBe(true);
-    const semantic = JSON.parse(
-      (await runCli(['graph', 'query', '--cwd', graphRepository, '--query', semanticQuery, '--json']))
-        .trim()
-        .split('\n')
-        .at(-1) ?? '{}',
-    ) as {readonly nodes?: ReadonlyArray<{readonly path?: string; readonly score?: number}>};
+    const semantic = await runCliJson<{
+      readonly nodes?: ReadonlyArray<{readonly path?: string; readonly score?: number}>;
+    }>(['graph', 'query', '--cwd', graphRepository, '--query', semanticQuery, '--json']);
     expect(semantic.nodes).toEqual(
       expect.arrayContaining([expect.objectContaining({path: 'docs/architecture.md', score: expect.any(Number)})]),
     );
 
-    const missing = JSON.parse(
-      (await runCli(['graph', 'query', '--cwd', graphRepository, '--query', 'payment settlement gateway', '--json']))
-        .trim()
-        .split('\n')
-        .at(-1) ?? '{}',
-    ) as {readonly nodes?: readonly unknown[]};
+    const missing = await runCliJson<{readonly nodes?: readonly unknown[]}>([
+      'graph',
+      'query',
+      '--cwd',
+      graphRepository,
+      '--query',
+      'payment settlement gateway',
+      '--json',
+    ]);
     expect(missing.nodes).toEqual([]);
 
     const injectedGitOutput = join(temporaryRoot, 'git-option-injection-output');
@@ -1086,6 +1079,20 @@ async function activeVectorGeneration(): Promise<string> {
 }
 
 async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}): Promise<string> {
+  const result = await runCliOutput(args, environment);
+  return `${result.stdout}${result.stderr}`;
+}
+
+async function runCliJson<T>(args: readonly string[], environment: NodeJS.ProcessEnv = {}): Promise<T> {
+  const result = await runCliOutput(args, environment);
+  expect(result.stdout).not.toContain('[node-llama-cpp]');
+  return JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}') as T;
+}
+
+async function runCliOutput(
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv = {},
+): Promise<{readonly stderr: string; readonly stdout: string}> {
   const result = await execute(cli, ['--home', home, ...args], {
     cwd: root,
     env: {
@@ -1100,7 +1107,7 @@ async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = 
     },
     timeout: realModelTimeoutMs,
   });
-  return `${result.stdout}${result.stderr}`;
+  return {stderr: result.stderr, stdout: result.stdout};
 }
 
 async function seedCoreEmbeddingFixture(): Promise<void> {
