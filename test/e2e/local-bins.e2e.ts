@@ -306,12 +306,18 @@ describe('built self-contained distribution', () => {
       'threadnote',
       'legacy-only.md',
     );
+    const currentShareIndex = join(migrationHome, 'share', 'teams', 'default.gitdir', 'index');
+    const legacyShareIndex = join(legacyHome, 'share', 'teams', 'default.gitdir', 'index');
     await mkdir(dirname(currentMemory), {recursive: true});
     await mkdir(dirname(legacyMemory), {recursive: true});
     await mkdir(dirname(legacyOnly), {recursive: true});
+    await mkdir(dirname(currentShareIndex), {recursive: true});
+    await mkdir(dirname(legacyShareIndex), {recursive: true});
     await writeFile(currentMemory, '# Newer canonical beta memory\n', 'utf8');
     await writeFile(legacyMemory, '# Older preserved legacy memory\n', 'utf8');
     await writeFile(legacyOnly, '# Disjoint legacy memory\n', 'utf8');
+    await writeFile(currentShareIndex, 'current beta staged share state', 'utf8');
+    await writeFile(legacyShareIndex, 'legacy staged share state', 'utf8');
     await writeFile(join(migrationHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n', 'utf8');
 
     const migration = await execute(cli, ['--home', migrationHome, 'migrate', '--apply', '--legacy-home', legacyHome], {
@@ -329,10 +335,12 @@ describe('built self-contained distribution', () => {
       readonly preservedCurrentEntries?: number;
     };
 
-    expect(output).toContain('Preserved 1 current Threadnote canonical entries');
-    expect(receipt.preservedCurrentEntries).toBe(1);
+    expect(output).toContain('Preserved 2 current Threadnote entries');
+    expect(receipt.preservedCurrentEntries).toBe(2);
     expect(await readFile(currentMemory, 'utf8')).toBe('# Newer canonical beta memory\n');
     expect(await readFile(legacyMemory, 'utf8')).toBe('# Older preserved legacy memory\n');
+    expect(await readFile(currentShareIndex, 'utf8')).toBe('current beta staged share state');
+    expect(await readFile(legacyShareIndex, 'utf8')).toBe('legacy staged share state');
     expect(
       await readFile(
         join(
