@@ -39,7 +39,8 @@ const EXCLUDED_LEGACY_THREADNOTE_PATHS = new Set([
 ]);
 
 const EXCLUDED_OS_METADATA_FILENAMES = new Set(['.ds_store', 'desktop.ini', 'thumbs.db']);
-const TRANSIENT_SHARE_GIT_FILENAMES = new Set(['FETCH_HEAD']);
+const TRANSIENT_SHARE_GIT_ROOT_FILENAMES = new Set(['COMMIT_EDITMSG', 'FETCH_HEAD', 'gc.log']);
+const TRANSIENT_SHARE_GIT_LOCK_ROOTS = new Set(['info', 'logs', 'objects', 'refs', 'reftable', 'worktrees']);
 
 export interface HomeMigrationOptions {
   readonly apply?: boolean;
@@ -1045,13 +1046,19 @@ function shouldIncludeLegacyPath(relativePath: string): boolean {
 
 function isTransientShareGitPath(relativePath: string): boolean {
   const segments = relativePath.split('/');
-  return (
-    segments.length === 4 &&
-    segments[0] === 'share' &&
-    segments[1] === 'teams' &&
-    segments[2]?.endsWith('.gitdir') === true &&
-    TRANSIENT_SHARE_GIT_FILENAMES.has(segments[3] ?? '')
-  );
+  if (
+    segments.length < 4 ||
+    segments[0] !== 'share' ||
+    segments[1] !== 'teams' ||
+    segments[2]?.endsWith('.gitdir') !== true
+  ) {
+    return false;
+  }
+  const gitSegments = segments.slice(3);
+  const filename = gitSegments.at(-1) ?? '';
+  if (gitSegments.length === 1 && TRANSIENT_SHARE_GIT_ROOT_FILENAMES.has(filename)) return true;
+  if (!filename.endsWith('.lock')) return false;
+  return gitSegments.length === 1 || TRANSIENT_SHARE_GIT_LOCK_ROOTS.has(gitSegments[0] ?? '');
 }
 
 function portableRelative(path: Path.Path, value: string): string {
