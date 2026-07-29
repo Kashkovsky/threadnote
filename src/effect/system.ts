@@ -293,9 +293,9 @@ function readProcessStartIdentity(
                 '-NoProfile',
                 '-NonInteractive',
                 '-Command',
-                '$process=Get-CimInstance Win32_Process -Filter "ProcessId=$env:THREADNOTE_PROCESS_ID"; ' +
+                '$process=Get-Process -Id $env:THREADNOTE_PROCESS_ID -ErrorAction SilentlyContinue; ' +
                   'if (-not $process) { exit 3 }; ' +
-                  '[Console]::Out.Write($process.CreationDate.ToUniversalTime().Ticks)',
+                  '[Console]::Out.Write($process.StartTime.ToUniversalTime().Ticks)',
               ]
             : undefined;
       if (!command) return undefined;
