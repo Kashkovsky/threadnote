@@ -155,12 +155,16 @@ describe('Effect AI native harness', () => {
       expect(calls).toEqual([
         {
           build: 'never',
-          logLevel: 'error',
+          debug: false,
+          logger: expect.any(Function),
+          logLevel: 'disabled',
           progressLogs: false,
           skipDownload: true,
           usePrebuiltBinaries: true,
         },
       ]);
+      const nativeLogger = (calls[0] as {readonly logger: (level: string, message: string) => void}).logger;
+      expect(nativeLogger('error', '[node-llama-cpp] load warning')).toBeUndefined();
       expect(embeddingContextCalls).toEqual([
         {
           contextSize: undefined,

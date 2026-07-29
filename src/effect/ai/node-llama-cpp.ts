@@ -107,7 +107,9 @@ interface NodeLlamaCppModule {
   }) => NativeChatSession;
   readonly getLlama: (options: {
     readonly build: 'never';
-    readonly logLevel: 'error';
+    readonly debug: false;
+    readonly logger: (_level: string, _message: string) => void;
+    readonly logLevel: 'disabled';
     readonly progressLogs: false;
     readonly skipDownload: true;
     readonly usePrebuiltBinaries: true;
@@ -116,6 +118,7 @@ interface NodeLlamaCppModule {
 
 const EMBEDDING_CONTEXT_TOKEN_RESERVE = 16;
 const EMBEDDING_WINDOW_OVERLAP_TOKENS = 32;
+const discardNativeLog = (_level: string, _message: string): void => undefined;
 
 export interface NodeLlamaCppLayerOptions {
   readonly loadModule?: () => Promise<NodeLlamaCppModule>;
@@ -168,7 +171,9 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
           () =>
             module.getLlama({
               build: 'never',
-              logLevel: 'error',
+              debug: false,
+              logger: discardNativeLog,
+              logLevel: 'disabled',
               progressLogs: false,
               skipDownload: true,
               usePrebuiltBinaries: true,
