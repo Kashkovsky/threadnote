@@ -306,18 +306,90 @@ describe('built self-contained distribution', () => {
       'threadnote',
       'legacy-only.md',
     );
-    const currentShareIndex = join(migrationHome, 'share', 'teams', 'default.gitdir', 'index');
-    const legacyShareIndex = join(legacyHome, 'share', 'teams', 'default.gitdir', 'index');
+    const currentGitdir = join(migrationHome, 'share', 'teams', 'default.gitdir');
+    const currentWorktree = join(migrationHome, 'share', 'worktrees', 'default');
+    const legacyGitdir = join(legacyHome, 'share', 'teams', 'default.gitdir');
+    const legacyWorktree = join(
+      legacyHome,
+      'data',
+      'viking',
+      'local',
+      'user',
+      'e2e-user',
+      'memories',
+      'shared',
+      'default',
+    );
+    const currentShareIndex = join(currentGitdir, 'index');
+    const legacyShareIndex = join(legacyGitdir, 'index');
     await mkdir(dirname(currentMemory), {recursive: true});
     await mkdir(dirname(legacyMemory), {recursive: true});
     await mkdir(dirname(legacyOnly), {recursive: true});
-    await mkdir(dirname(currentShareIndex), {recursive: true});
-    await mkdir(dirname(legacyShareIndex), {recursive: true});
+    await mkdir(currentGitdir, {recursive: true});
+    await mkdir(currentWorktree, {recursive: true});
+    await mkdir(legacyGitdir, {recursive: true});
+    await mkdir(legacyWorktree, {recursive: true});
     await writeFile(currentMemory, '# Newer canonical beta memory\n', 'utf8');
     await writeFile(legacyMemory, '# Older preserved legacy memory\n', 'utf8');
     await writeFile(legacyOnly, '# Disjoint legacy memory\n', 'utf8');
-    await writeFile(currentShareIndex, 'current beta staged share state', 'utf8');
-    await writeFile(legacyShareIndex, 'legacy staged share state', 'utf8');
+    await writeFile(join(currentWorktree, '.git'), `gitdir: ${currentGitdir}\n`, 'utf8');
+    await writeFile(join(legacyWorktree, '.git'), `gitdir: ${legacyGitdir}\n`, 'utf8');
+    await writeFile(join(legacyWorktree, 'legacy-share.md'), '# Legacy share worktree\n', 'utf8');
+    const currentCommit = 'fedcba9876543210fedcba9876543210fedcba98';
+    const legacyCommit = '0123456789abcdef0123456789abcdef01234567';
+    const currentShareState = new Map<string, string>([
+      ['HEAD', 'ref: refs/heads/current\n'],
+      ['config', `[core]\n\tworktree = ${currentWorktree}\n`],
+      ['index', 'current beta staged share state'],
+      ['refs/heads/main', `${currentCommit}\n`],
+      ['logs/HEAD', 'current HEAD reflog\n'],
+      ['packed-refs', `${currentCommit} refs/tags/current\n`],
+      ['rebase-merge/done', 'pick current\n'],
+      ['future-git-extension/state', 'current extension state\n'],
+    ]);
+    const legacyShareState = new Map<string, string>([
+      ['HEAD', 'ref: refs/heads/main\n'],
+      ['config', `[core]\n\tworktree = ${legacyWorktree}\n`],
+      ['index', 'legacy staged share state'],
+      ['refs/heads/main', `${legacyCommit}\n`],
+      ['logs/HEAD', 'legacy HEAD reflog\n'],
+      ['packed-refs', `${legacyCommit} refs/tags/legacy\n`],
+      ['rebase-merge/done', 'pick legacy\n'],
+      ['future-git-extension/state', 'legacy extension state\n'],
+      ['legacy-only-extension', 'must remain only in the legacy home\n'],
+    ]);
+    for (const [relativePath, content] of currentShareState) {
+      const file = join(currentGitdir, relativePath);
+      await mkdir(dirname(file), {recursive: true});
+      await writeFile(file, content, 'utf8');
+    }
+    for (const [relativePath, content] of legacyShareState) {
+      const file = join(legacyGitdir, relativePath);
+      await mkdir(dirname(file), {recursive: true});
+      await writeFile(file, content, 'utf8');
+    }
+    await mkdir(join(legacyHome, 'share'), {recursive: true});
+    await writeFile(
+      join(legacyHome, 'share', 'teams.json'),
+      `${JSON.stringify(
+        {
+          defaultTeam: 'default',
+          teams: {
+            default: {
+              addedAt: new Date(0).toISOString(),
+              gitdir: legacyGitdir,
+              name: 'default',
+              remote: 'git@example.invalid:team/memories.git',
+              worktree: legacyWorktree,
+            },
+          },
+          version: 1,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     await writeFile(join(migrationHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n', 'utf8');
 
     const migration = await execute(cli, ['--home', migrationHome, 'migrate', '--apply', '--legacy-home', legacyHome], {
@@ -339,8 +411,17 @@ describe('built self-contained distribution', () => {
     expect(receipt.preservedCurrentEntries).toBe(2);
     expect(await readFile(currentMemory, 'utf8')).toBe('# Newer canonical beta memory\n');
     expect(await readFile(legacyMemory, 'utf8')).toBe('# Older preserved legacy memory\n');
+    for (const [relativePath, content] of currentShareState) {
+      expect(await readFile(join(currentGitdir, relativePath), 'utf8')).toBe(content);
+    }
+    for (const [relativePath, content] of legacyShareState) {
+      expect(await readFile(join(legacyGitdir, relativePath), 'utf8')).toBe(content);
+    }
     expect(await readFile(currentShareIndex, 'utf8')).toBe('current beta staged share state');
     expect(await readFile(legacyShareIndex, 'utf8')).toBe('legacy staged share state');
+    await expect(readFile(join(currentGitdir, 'legacy-only-extension'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(
       await readFile(
         join(

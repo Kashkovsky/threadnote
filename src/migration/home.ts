@@ -85,6 +85,12 @@ interface HomeInventory {
   readonly treeSha256: string;
 }
 
+interface ManagedShareRecoveryRoot {
+  readonly currentGitdir: string;
+  readonly currentWorktree: string;
+  readonly sourceGitdirRelative: string;
+}
+
 interface LegacyShareMigration {
   readonly finalGitdir: string;
   readonly finalWorktree: string;
@@ -95,6 +101,12 @@ interface LegacyShareMigration {
   readonly sourceWorktreeRelative: string;
   readonly stageGitdirRelative: string;
   readonly stageWorktreeRelative: string;
+}
+
+interface RecoveryPreflight {
+  readonly authoritativeCurrentShareGitdirs: ReadonlySet<string>;
+  readonly preservedCurrentEntries: number;
+  readonly skippedLegacyEntries: ReadonlySet<string>;
 }
 
 export class HomeMigrationConflict extends Schema.TaggedErrorClass<HomeMigrationConflict>()('HomeMigrationConflict', {
@@ -317,7 +329,7 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       );
       if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
         yield* Console.log(
-          `Would preserve ${result.receipt?.preservedCurrentEntries} current Threadnote entries where the legacy copy differs.`,
+          `Would preserve ${result.receipt?.preservedCurrentEntries} current Threadnote entries or managed repositories instead of overlaying their legacy versions.`,
         );
       }
       yield* Console.log('Rerun with --apply to stage, validate, and atomically promote the new home.');
@@ -335,7 +347,7 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       );
       if ((result.receipt?.preservedCurrentEntries ?? 0) > 0) {
         yield* Console.log(
-          `Preserved ${result.receipt?.preservedCurrentEntries} current Threadnote entries; their legacy versions remain in the unchanged legacy home.`,
+          `Preserved ${result.receipt?.preservedCurrentEntries} current Threadnote entries or managed repositories; their legacy versions remain in the unchanged legacy home.`,
         );
       }
       yield* Console.log(`Legacy home was preserved unchanged: ${result.receipt?.legacyHome}`);
@@ -392,10 +404,25 @@ function readJsonObject(
 
 function isOwnedDirectory(fs: FileSystem.FileSystem, directory: string): Effect.Effect<boolean, never> {
   return Effect.gen(function* () {
-    if (!(yield* fs.exists(directory))) return false;
+    if (!(yield* pathEntryExists(fs, directory))) return false;
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) return false;
     return (yield* fs.stat(directory)).type === 'Directory';
   }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
+function isOwnedFile(fs: FileSystem.FileSystem, file: string): Effect.Effect<boolean, never> {
+  return Effect.gen(function* () {
+    if (!(yield* pathEntryExists(fs, file))) return false;
+    if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return false;
+    return (yield* fs.stat(file)).type === 'File';
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+}
+
+function pathEntryExists(fs: FileSystem.FileSystem, target: string): Effect.Effect<boolean, never> {
+  return Effect.all([fs.stat(target).pipe(Effect.option), fs.readLink(target).pipe(Effect.option)]).pipe(
+    Effect.map(([info, link]) => Option.isSome(info) || Option.isSome(link)),
+    Effect.catch(() => Effect.succeed(false)),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -422,7 +449,7 @@ function recoverIntoExistingTarget(
         availableBytes,
       );
     }
-    const preservedCurrentEntries = yield* preflightMappedInventory(fs, path, targetHome, inventory);
+    const preflight = yield* preflightMappedInventory(fs, path, targetHome, inventory, shareMigrations);
     const receipt: HomeMigrationReceipt = {
       bytes: inventory.bytes,
       completedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
@@ -430,7 +457,7 @@ function recoverIntoExistingTarget(
       files: inventory.files,
       id: HOME_MIGRATION_ID,
       legacyHome,
-      ...(preservedCurrentEntries.size > 0 ? {preservedCurrentEntries: preservedCurrentEntries.size} : {}),
+      ...(preflight.preservedCurrentEntries > 0 ? {preservedCurrentEntries: preflight.preservedCurrentEntries} : {}),
       sourceTreeSha256: inventory.treeSha256,
       symlinks: inventory.symlinks,
       targetHome,
@@ -440,8 +467,8 @@ function recoverIntoExistingTarget(
       return {action: 'dry_run', receipt} satisfies HomeMigrationResult;
     }
 
-    yield* copyMappedInventory(fs, path, legacyHome, targetHome, inventory, preservedCurrentEntries);
-    yield* verifyMappedInventory(fs, path, targetHome, inventory, preservedCurrentEntries);
+    yield* copyMappedInventory(fs, path, legacyHome, targetHome, inventory, preflight.skippedLegacyEntries);
+    yield* verifyMappedInventory(fs, path, targetHome, inventory, preflight.skippedLegacyEntries);
     const sourceAfterCopy = yield* inventoryHome(fs, path, legacyHome, shouldIncludeLegacyPath);
     if (sourceAfterCopy.treeSha256 !== inventory.treeSha256) {
       return yield* new HomeMigrationConflict({
@@ -449,7 +476,13 @@ function recoverIntoExistingTarget(
         path: legacyHome,
       });
     }
-    yield* migrateLegacySharesIntoExisting(fs, path, targetHome, shareMigrations);
+    yield* migrateLegacySharesIntoExisting(
+      fs,
+      path,
+      targetHome,
+      shareMigrations,
+      preflight.authoritativeCurrentShareGitdirs,
+    );
     yield* migrateThreadnoteStorageLayout({apply: true, home: targetHome});
     yield* migrateLegacyLocalModels({apply: true, home: targetHome});
     const targetInventory = yield* inventoryHome(
@@ -471,12 +504,29 @@ function preflightMappedInventory(
   path: Path.Path,
   targetHome: string,
   inventory: HomeInventory,
+  shareMigrations: readonly LegacyShareMigration[],
 ) {
   return Effect.gen(function* () {
-    const preservedCurrentEntries = new Set<string>();
+    const authoritativeShareGitdirs = yield* findAuthoritativeCurrentShareGitdirs(
+      fs,
+      path,
+      targetHome,
+      inventory,
+      shareMigrations,
+    );
+    const skippedLegacyEntries = new Set<string>(
+      inventory.entries
+        .filter(entry =>
+          [...authoritativeShareGitdirs.keys()].some(root => isRelativePathWithin(root, entry.relativePath)),
+        )
+        .map(entry => entry.relativePath),
+    );
+    let preservedCurrentEntries = authoritativeShareGitdirs.size;
     for (const entry of inventory.entries) {
+      if (skippedLegacyEntries.has(entry.relativePath)) continue;
       if (entry.type !== 'directory' && (yield* hasCurrentBetaEntry(fs, path, targetHome, entry.relativePath))) {
-        preservedCurrentEntries.add(entry.relativePath);
+        skippedLegacyEntries.add(entry.relativePath);
+        preservedCurrentEntries += 1;
         continue;
       }
       const mappedRelativePath = mappedLegacyRelative(entry.relativePath);
@@ -499,7 +549,8 @@ function preflightMappedInventory(
           Option.isNone(yield* fs.readLink(target).pipe(Effect.option)) &&
           shouldPreserveCurrentRecoveryFile(mappedRelativePath)
         ) {
-          preservedCurrentEntries.add(entry.relativePath);
+          skippedLegacyEntries.add(entry.relativePath);
+          preservedCurrentEntries += 1;
           continue;
         }
       } else {
@@ -511,8 +562,117 @@ function preflightMappedInventory(
         path: target,
       });
     }
-    return preservedCurrentEntries;
+    return {
+      authoritativeCurrentShareGitdirs: new Set(authoritativeShareGitdirs.values()),
+      preservedCurrentEntries,
+      skippedLegacyEntries,
+    } satisfies RecoveryPreflight;
   });
+}
+
+function findAuthoritativeCurrentShareGitdirs(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  targetHome: string,
+  inventory: HomeInventory,
+  shareMigrations: readonly LegacyShareMigration[],
+) {
+  return Effect.gen(function* () {
+    const roots = managedShareRecoveryRoots(path, targetHome, inventory, shareMigrations);
+    const authoritative = new Map<string, string>();
+    for (const root of roots) {
+      const gitdirExists = yield* pathEntryExists(fs, root.currentGitdir);
+      const worktreeExists = yield* pathEntryExists(fs, root.currentWorktree);
+      if (!gitdirExists && !worktreeExists) continue;
+      if (
+        !gitdirExists ||
+        !worktreeExists ||
+        !(yield* isOwnedDirectory(fs, root.currentGitdir)) ||
+        !(yield* isOwnedDirectory(fs, root.currentWorktree)) ||
+        !(yield* isOwnedFile(fs, path.join(root.currentGitdir, 'HEAD')))
+      ) {
+        return yield* new HomeMigrationConflict({
+          message:
+            'Current managed share checkout is incomplete or unsafe; recovery will not combine it with legacy Git state.',
+          path: gitdirExists ? root.currentGitdir : root.currentWorktree,
+        });
+      }
+      const marker = path.join(root.currentWorktree, '.git');
+      const markerTarget = yield* readGitdirMarker(fs, path, marker);
+      if (markerTarget !== path.resolve(root.currentGitdir)) {
+        return yield* new HomeMigrationConflict({
+          message:
+            'Current managed share worktree does not point at its registered Git directory; recovery stopped without changing either copy.',
+          path: marker,
+        });
+      }
+      authoritative.set(portableInput(root.sourceGitdirRelative), path.resolve(root.currentGitdir));
+    }
+    return authoritative;
+  });
+}
+
+function managedShareRecoveryRoots(
+  path: Path.Path,
+  targetHome: string,
+  inventory: HomeInventory,
+  shareMigrations: readonly LegacyShareMigration[],
+): readonly ManagedShareRecoveryRoot[] {
+  const roots = new Map<string, ManagedShareRecoveryRoot>();
+  for (const migration of shareMigrations) {
+    const sourceGitdirRelative = portableInput(migration.sourceGitdirRelative);
+    roots.set(sourceGitdirRelative, {
+      currentGitdir: migration.finalGitdir,
+      currentWorktree: migration.finalWorktree,
+      sourceGitdirRelative,
+    });
+  }
+  for (const entry of inventory.entries) {
+    const standardRoot = managedShareGitdirRoot(entry.relativePath);
+    if (!standardRoot || roots.has(standardRoot)) continue;
+    const gitdirName = standardRoot.split('/').at(-1);
+    const teamName = gitdirName?.slice(0, -'.gitdir'.length);
+    if (!teamName) continue;
+    roots.set(standardRoot, {
+      currentGitdir: path.join(targetHome, standardRoot),
+      currentWorktree: path.join(targetHome, 'share', 'worktrees', teamName),
+      sourceGitdirRelative: standardRoot,
+    });
+  }
+  return [...roots.values()];
+}
+
+function managedShareGitdirRoot(relativePath: string): string | undefined {
+  const segments = portableInput(relativePath).split('/');
+  const gitdirName = segments[2];
+  if (segments.length < 3 || segments[0] !== 'share' || segments[1] !== 'teams' || !gitdirName?.endsWith('.gitdir')) {
+    return undefined;
+  }
+  const teamName = gitdirName.slice(0, -'.gitdir'.length);
+  return /^[a-z0-9][a-z0-9._-]*$/.test(teamName) && !/^\.+$/.test(teamName)
+    ? segments.slice(0, 3).join('/')
+    : undefined;
+}
+
+function readGitdirMarker(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  marker: string,
+): Effect.Effect<string | undefined, never> {
+  return Effect.gen(function* () {
+    if (!(yield* fs.exists(marker))) return undefined;
+    if (Option.isSome(yield* fs.readLink(marker).pipe(Effect.option))) return undefined;
+    if ((yield* fs.stat(marker)).type !== 'File') return undefined;
+    const value = (yield* fs.readFileString(marker)).trim();
+    const gitdir = /^gitdir:\s*(.+)$/i.exec(value)?.[1]?.trim();
+    return gitdir ? path.resolve(path.dirname(marker), gitdir) : undefined;
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+}
+
+function isRelativePathWithin(root: string, candidate: string): boolean {
+  const portableRoot = portableInput(root);
+  const portableCandidate = portableInput(candidate);
+  return portableCandidate === portableRoot || portableCandidate.startsWith(`${portableRoot}/`);
 }
 
 function copyMappedInventory(
@@ -593,16 +753,7 @@ function mappedLegacyRelative(relativePath: string): string {
 }
 
 function shouldPreserveCurrentRecoveryFile(relativePath: string): boolean {
-  const portable = portableInput(relativePath);
-  if (portable.startsWith('data/')) return true;
-  const segments = portable.split('/');
-  return (
-    segments.length === 4 &&
-    segments[0] === 'share' &&
-    segments[1] === 'teams' &&
-    segments[2]?.endsWith('.gitdir') === true &&
-    segments[3] === 'index'
-  );
+  return portableInput(relativePath).startsWith('data/');
 }
 
 function hasCurrentBetaEntry(
@@ -621,6 +772,7 @@ function migrateLegacySharesIntoExisting(
   path: Path.Path,
   targetHome: string,
   migrations: readonly LegacyShareMigration[],
+  authoritativeCurrentShareGitdirs: ReadonlySet<string>,
 ) {
   return Effect.gen(function* () {
     if (migrations.length === 0) return;
@@ -656,7 +808,10 @@ function migrateLegacySharesIntoExisting(
         yield* fs.copy(migration.sourceGitdir, migration.finalGitdir, {preserveTimestamps: true});
       }
       const gitConfigPath = path.join(migration.finalGitdir, 'config');
-      if (yield* fs.exists(gitConfigPath)) {
+      if (
+        !authoritativeCurrentShareGitdirs.has(path.resolve(migration.finalGitdir)) &&
+        (yield* fs.exists(gitConfigPath))
+      ) {
         const gitConfig = yield* fs.readFileString(gitConfigPath);
         yield* fs.writeFileString(
           gitConfigPath,
