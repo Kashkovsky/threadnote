@@ -69,6 +69,10 @@ describe('Windows platform contracts', () => {
     const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
 
     expect(installer).toContain('Get-ThreadnoteLockOwner');
+    expect(installer).toContain('Read-ThreadnoteInstallationLock');
+    expect(installer).toContain('[AllowEmptyString()][string]$Token');
+    expect(installer).toContain('$script:installationLockAcquired = $true');
+    expect(installer).toContain('-not $script:installationLockAcquired');
     expect(installer).toContain('processStartIdentity');
     expect(installer).toContain('$installationLockStaleAge');
     expect(installer).toContain('$lockInfo.LastWriteTimeUtc');

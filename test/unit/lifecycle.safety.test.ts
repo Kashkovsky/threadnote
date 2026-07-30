@@ -80,17 +80,25 @@ describe('read-only doctor', () => {
     expect(await filesystemSnapshot(root)).toEqual(before);
   });
 
-  it('inspects an existing lexical SQLite index without mutating its files', async () => {
+  it('inspects an existing lexical SQLite index without changing logical content or unrelated home artifacts', async () => {
     const root = await temporaryRoot('threadnote-doctor-read-only-indexed-');
     const config = runtimeConfig(root);
     await writeLayoutReceipt(root);
     await runEffect(loadRecallIndexData(config, {includeInactive: false}));
-    const before = await filesystemSnapshot(root);
+    const databasePath = join(root, 'indexes', 'lexical', 'active-v3.sqlite');
+    const sqliteArtifacts = new Set([
+      'indexes/lexical/active-v3.sqlite',
+      'indexes/lexical/active-v3.sqlite-shm',
+      'indexes/lexical/active-v3.sqlite-wal',
+    ]);
+    const logicalBefore = recallDatabaseLogicalSnapshot(databasePath);
+    const before = await filesystemSnapshot(root, sqliteArtifacts);
 
     const report = await runEffect(captureConsole(runDoctor(config, {dryRun: true})));
 
     expect(report.output).toContain('lexical recall index: 0 canonical document(s)');
-    expect(await filesystemSnapshot(root)).toEqual(before);
+    expect(recallDatabaseLogicalSnapshot(databasePath)).toEqual(logicalBefore);
+    expect(await filesystemSnapshot(root, sqliteArtifacts)).toEqual(before);
   });
 
   it('verifies an installed embedding model without creating a model lock', async () => {
@@ -268,9 +276,13 @@ async function writeLayoutReceipt(home: string): Promise<void> {
   );
 }
 
-async function filesystemSnapshot(root: string): Promise<readonly string[]> {
+async function filesystemSnapshot(
+  root: string,
+  ignoredRelativePaths: ReadonlySet<string> = new Set(),
+): Promise<readonly string[]> {
   const output: string[] = [];
   const visit = async (current: string, relative: string): Promise<void> => {
+    if (ignoredRelativePaths.has(relative.replaceAll('\\', '/'))) return;
     const info = await lstat(current);
     const mode = (info.mode & 0o777).toString(8);
     if (info.isSymbolicLink()) {
@@ -290,6 +302,28 @@ async function filesystemSnapshot(root: string): Promise<readonly string[]> {
   };
   await visit(root, '.');
   return output;
+}
+
+function recallDatabaseLogicalSnapshot(databasePath: string): unknown {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    return {
+      documents: database.query('SELECT * FROM documents ORDER BY id').all(),
+      metadata: database.query('SELECT key, value FROM metadata ORDER BY key').all(),
+      postings: database.query('SELECT * FROM postings ORDER BY term, document_id').all(),
+      schema: database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_schema
+           WHERE name NOT LIKE 'sqlite_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+      termStatistics: database.query('SELECT * FROM term_statistics ORDER BY term').all(),
+    };
+  } finally {
+    database.close();
+  }
 }
 
 function fixtureEmbeddingManifest(content: Uint8Array): LocalModelManifest {

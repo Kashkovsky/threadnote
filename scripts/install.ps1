@@ -20,20 +20,32 @@ $releaseSource = if ($env:THREADNOTE_RELEASE_SOURCE) {
 $installationLockWait = [TimeSpan]::FromMinutes(10)
 $installationLockStaleAge = [TimeSpan]::FromMinutes(1)
 $downloadTimeout = [TimeSpan]::FromMinutes(15)
+$installationLockAcquired = $false
 $installationLockPath = $null
 $installationLockToken = $null
 
+function Read-ThreadnoteInstallationLock {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  return ([string](Get-Content -LiteralPath $Path -Raw -ErrorAction Stop)).Trim()
+}
+
 function Release-ThreadnoteInstallationLock {
-  if (-not $script:installationLockPath -or -not $script:installationLockToken) { return }
+  if (
+    -not $script:installationLockAcquired -or
+    -not $script:installationLockPath -or
+    -not $script:installationLockToken
+  ) { return }
   try {
-    $observed = (Get-Content -LiteralPath $script:installationLockPath -Raw -ErrorAction Stop).Trim()
+    $observed = Read-ThreadnoteInstallationLock $script:installationLockPath
     if ($observed -ceq $script:installationLockToken) {
       Remove-Item -LiteralPath $script:installationLockPath -Force -ErrorAction Stop
     }
   } catch [System.IO.FileNotFoundException], [System.Management.Automation.ItemNotFoundException] {
+  } finally {
+    $script:installationLockAcquired = $false
+    $script:installationLockPath = $null
+    $script:installationLockToken = $null
   }
-  $script:installationLockPath = $null
-  $script:installationLockToken = $null
 }
 
 function Get-ThreadnoteProcessStartIdentity {
@@ -46,7 +58,8 @@ function Get-ThreadnoteProcessStartIdentity {
 }
 
 function Get-ThreadnoteLockOwner {
-  param([Parameter(Mandatory = $true)][string]$Token)
+  param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Token)
+  if (-not $Token) { return $null }
   if ($Token.StartsWith('{')) {
     try {
       $parsed = $Token | ConvertFrom-Json
@@ -106,10 +119,11 @@ function Enter-ThreadnoteInstallationLock {
       } finally {
         $stream.Dispose()
       }
+      $script:installationLockAcquired = $true
       return
     } catch [System.IO.IOException] {
       $observed = try {
-        (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
+        Read-ThreadnoteInstallationLock $Path
       } catch {
         ''
       }
@@ -128,7 +142,7 @@ function Enter-ThreadnoteInstallationLock {
         }
         if ($ownerIsStale) {
           $current = try {
-            (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
+            Read-ThreadnoteInstallationLock $Path
           } catch {
             ''
           }
@@ -143,7 +157,7 @@ function Enter-ThreadnoteInstallationLock {
           $observedLastWriteTimeTicks = $lockInfo.LastWriteTimeUtc.Ticks
           $observedLength = $lockInfo.Length
           $current = try {
-            (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
+            Read-ThreadnoteInstallationLock $Path
           } catch {
             ''
           }
@@ -480,7 +494,12 @@ try {
   Write-Host "Downloading Threadnote $version for windows-$architecture"
   Save-ThreadnoteDownload "$downloadRoot/$artifact" $archive
   Save-ThreadnoteDownload "$downloadRoot/$artifact.sha256" $checksumPath
-  $checksumLine = (Get-Content -LiteralPath $checksumPath | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+  $checksumLine = [string](
+    Get-Content -LiteralPath $checksumPath |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+      Select-Object -First 1
+  )
+  $checksumLine = $checksumLine.Trim()
   if ($checksumLine -notmatch '^([a-fA-F0-9]{64})(?:\s+\*?(.+))?$') {
     throw "Release checksum document is invalid for $artifact."
   }
