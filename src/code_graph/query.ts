@@ -208,7 +208,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   seedQueries?: readonly string[],
   baseSnapshotId?: string,
 ) {
-  const deadline = (yield* Clock.currentTimeMillis) + QUERY_TIME_BUDGET_MILLISECONDS;
+  let deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
   const requestedSeedQueries = (seedQueries?.length ? seedQueries : [query]).slice(0, MAX_IMPACT_SEED_QUERIES);
   const seedLimit = impact ? MAX_IMPACT_SEED_SYMBOLS : Math.min(nodeLimit, 12);
   const perSeedLimit = impact
@@ -250,29 +250,25 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     : [...lexicalById.values()]
         .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
         .slice(0, seedLimit);
-  const semanticResult =
-    timedOut || (impact && seedQueries?.length)
-      ? {scores: new Map<string, number>(), timedOut: false}
-      : yield* Effect.gen(function* () {
-          const remainingMilliseconds = deadline - (yield* Clock.currentTimeMillis);
-          if (remainingMilliseconds <= 0) {
-            return {scores: new Map<string, number>(), timedOut: true};
-          }
-          return yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(
-            Effect.map(scores => ({scores, timedOut: false as const})),
-            Effect.catch(() => Effect.succeed({scores: new Map<string, number>(), timedOut: false as const})),
-            Effect.timeoutOrElse({
-              duration: remainingMilliseconds,
-              orElse: () =>
-                Effect.succeed({
-                  scores: new Map<string, number>(),
-                  timedOut: true as const,
-                }),
+  const semanticEligible = !timedOut && !(impact && seedQueries?.length);
+  const semanticResult = !semanticEligible
+    ? {scores: new Map<string, number>(), timedOut: false}
+    : yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(
+        Effect.map(scores => ({scores, timedOut: false as const})),
+        Effect.catch(() => Effect.succeed({scores: new Map<string, number>(), timedOut: false as const})),
+        Effect.timeoutOrElse({
+          duration: QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+          orElse: () =>
+            Effect.succeed({
+              scores: new Map<string, number>(),
+              timedOut: true as const,
             }),
-          );
-        });
+        }),
+      );
+  if (semanticEligible) {
+    deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
+  }
   const semantic = semanticResult.scores;
-  timedOut ||= semanticResult.timedOut || (yield* deadlineReached(deadline));
   const semanticOnlyIds = [...semantic.keys()]
     .filter(id => !lexicalById.has(id))
     .slice(0, Math.max(0, nodeLimit - lexicalSeeds.length));
@@ -381,7 +377,8 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     warnings.push('Impact analysis reached its internal relationship budget; results are partial.');
   if (semanticResult.timedOut) {
     warnings.push('Semantic graph search reached its elapsed-time budget; lexical graph results were returned.');
-  } else if (timedOut) {
+  }
+  if (timedOut) {
     warnings.push('Graph traversal reached its elapsed-time budget; results are partial.');
   } else if (edges.size >= edgeLimit || nodes.size >= nodeLimit) {
     warnings.push('Graph traversal reached a configured result limit.');
@@ -779,7 +776,7 @@ const pathQuery = Effect.fn('codeGraph.pathQuery')(function* (
   depth: number,
   allowedProvenances: readonly CodeGraphProvenance[],
 ) {
-  const deadline = (yield* Clock.currentTimeMillis) + QUERY_TIME_BUDGET_MILLISECONDS;
+  const deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
   const fromSelector = parseEndpointSelector(from);
   const toSelector = parseEndpointSelector(to);
   const fromMatches = yield* endpointMatches(store, databasePath, snapshotId, fromSelector);
@@ -1096,7 +1093,8 @@ function shortCommit(value: string): string {
   return value.slice(0, 12);
 }
 
-const QUERY_TIME_BUDGET_MILLISECONDS = 2_000;
+const QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS = 2_000;
+const QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 10_000;
 const CODE_GRAPH_RESULT_MAX_BYTES = 256 * 1_024;
 const MAX_IMPACT_ANALYSIS_EDGES = 5_000;
 const MAX_IMPACT_SEED_QUERIES = 200;

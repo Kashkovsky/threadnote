@@ -67,7 +67,7 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
-  it.effect('returns lexical evidence when semantic search does not finish within the traversal deadline', () =>
+  it.effect('returns lexical evidence when semantic search does not finish within its dedicated deadline', () =>
     Effect.gen(function* () {
       const calls: string[] = [];
       const store = {
@@ -84,7 +84,7 @@ describe('code graph query budgets', () => {
         symbolsByIds: () =>
           Effect.sync(() => {
             calls.push('hydration');
-            return [semanticMatch];
+            return [];
           }),
       } as unknown as CodeGraphStoreShape;
       const delayedEmbedding = {
@@ -109,14 +109,67 @@ describe('code graph query budgets', () => {
         layout,
         false,
       ).pipe(Effect.forkChild);
-      yield* TestClock.adjust(2_001);
+      yield* TestClock.adjust(10_001);
       const result = yield* Fiber.join(fiber);
 
       expect(result.nodes).toEqual([expect.objectContaining({id: seed.id, score: 1})]);
       expect(result.warnings).toContain(
         'Semantic graph search reached its elapsed-time budget; lexical graph results were returned.',
       );
-      expect(calls).toEqual(['search', 'semantic']);
+      expect(calls).toEqual(['search', 'semantic', 'adjacency', 'hydration']);
+    }),
+  );
+
+  it.effect('accepts semantic evidence that takes longer than the traversal budget', () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const store = {
+        edgesForNodes: () =>
+          Effect.sync(() => {
+            calls.push('adjacency');
+            return [];
+          }),
+        searchSymbolsMany: () =>
+          Effect.sync(() => {
+            calls.push('search');
+            return [[]];
+          }),
+        symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.sync(() => {
+            if (ids.length > 0) calls.push('hydration');
+            return ids.includes(semanticMatch.id) ? [semanticMatch] : [];
+          }),
+      } as unknown as CodeGraphStoreShape;
+      const delayedEmbedding = {
+        search: () =>
+          Effect.sync(() => {
+            calls.push('semantic');
+          }).pipe(Effect.andThen(Effect.sleep(5_000)), Effect.as(new Map([[semanticMatch.id, 0.9]]))),
+      } as unknown as CodeGraphEmbeddingIndexShape;
+
+      const fiber = yield* traversalQuery(
+        store,
+        layout.databasePath,
+        'snapshot',
+        'architecture overview',
+        'both',
+        20,
+        40,
+        2,
+        ['resolved'],
+        delayedEmbedding,
+        '/fixture/home',
+        layout,
+        false,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(5_001);
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.nodes).toEqual([expect.objectContaining({id: semanticMatch.id, score: 0.9})]);
+      expect(result.warnings).not.toContain(
+        'Semantic graph search reached its elapsed-time budget; lexical graph results were returned.',
+      );
+      expect(calls).toEqual(['search', 'semantic', 'hydration', 'adjacency']);
     }),
   );
 
