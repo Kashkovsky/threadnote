@@ -13,10 +13,32 @@ export interface CodeGraphRepairSummary {
   readonly removedTemporaryFiles: number;
 }
 
-export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function* (threadnoteHome: string) {
+export interface CodeGraphRepairCompletion {
+  readonly doctorCheck: DoctorCheck;
+  readonly summary: CodeGraphRepairSummary;
+}
+
+export interface CodeGraphMaintenanceProgress {
+  readonly current: number;
+  readonly phase: 'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'discarding';
+  readonly snapshots?: number;
+  readonly total: number;
+}
+
+type CodeGraphProgressHandler = (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
+type CodeGraphRepairCompletionHandler<R> = (
+  completion: CodeGraphRepairCompletion,
+) => Effect.Effect<void, unknown, R>;
+
+export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function* (
+  threadnoteHome: string,
+  onProgress?: CodeGraphProgressHandler,
+  precomputed?: DoctorCheck,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
+  if (precomputed) return precomputed;
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   if (databases.length === 0) {
     return {
@@ -28,7 +50,8 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   let ready = 0;
   let incomplete = 0;
   let unhealthy = 0;
-  for (const database of databases) {
+  for (const [index, database] of databases.entries()) {
+    yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
     const health = yield* withDatabaseLock(
       fs,
       path,
@@ -43,18 +66,14 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
     ready += health.value.readySnapshots;
     incomplete += health.value.buildingSnapshots + health.value.failedSnapshots;
   }
-  return {
-    detail:
-      `${databases.length} database(s); ${ready} ready snapshot(s); ${incomplete} incomplete snapshot(s)` +
-      (unhealthy > 0 ? `; ${unhealthy} database(s) need a disposable rebuild` : ''),
-    name: 'native code graph',
-    status: unhealthy > 0 ? 'fail' : incomplete > 0 ? 'warn' : 'ok',
-  } satisfies DoctorCheck;
+  return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy);
 });
 
-export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(function* (
+export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(function* <R = never>(
   threadnoteHome: string,
   dryRun: boolean,
+  onProgress?: CodeGraphProgressHandler,
+  onComplete?: CodeGraphRepairCompletionHandler<R>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -70,7 +89,11 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         let discarded = 0;
         let removedIncompleteSnapshots = 0;
         let removedTemporaryFiles = 0;
-        for (const database of databases) {
+        let readySnapshots = 0;
+        for (const [index, database] of databases.entries()) {
+          const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
+            onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void;
+          yield* progress({phase: 'checking'});
           yield* withDatabaseLock(
             fs,
             path,
@@ -81,12 +104,18 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
               const diagnosed = yield* store.diagnose(database).pipe(Effect.option);
               if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
                 discarded += 1;
+                yield* progress({phase: 'discarding'});
                 if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
                 return;
               }
               const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
+              readySnapshots += diagnosed.value.readySnapshots;
               removedIncompleteSnapshots += incomplete;
-              if (!dryRun && incomplete > 0) yield* store.repair(database);
+              if (incomplete > 0) {
+                yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
+                if (!dryRun) yield* store.repair(database);
+              }
+              yield* progress({phase: 'cleaning-vectors'});
               removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
                 fs,
                 path,
@@ -96,16 +125,49 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
             }),
           );
         }
-        return {
+        const currentDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
+        const summary = {
           databases: databases.length,
           discarded,
           removedIncompleteSnapshots,
           removedTemporaryFiles,
         } satisfies CodeGraphRepairSummary;
+        yield* onComplete?.({
+          doctorCheck: codeGraphDoctorResult(
+            currentDatabases.length,
+            readySnapshots,
+            dryRun ? removedIncompleteSnapshots : 0,
+            dryRun ? discarded : 0,
+          ),
+          summary,
+        }) ?? Effect.void;
+        return summary;
       }),
     ),
   );
 });
+
+function codeGraphDoctorResult(
+  databases: number,
+  readySnapshots: number,
+  incompleteSnapshots: number,
+  unhealthyDatabases: number,
+): DoctorCheck {
+  if (databases === 0) {
+    return {
+      detail: 'no repository graph built yet; `threadnote graph query` builds one lazily',
+      name: 'native code graph',
+      status: 'ok',
+    };
+  }
+  return {
+    detail:
+      `${databases} database(s); ${readySnapshots} ready snapshot(s); ${incompleteSnapshots} incomplete snapshot(s)` +
+      (unhealthyDatabases > 0 ? `; ${unhealthyDatabases} database(s) need a disposable rebuild` : ''),
+    name: 'native code graph',
+    status: unhealthyDatabases > 0 ? 'fail' : incompleteSnapshots > 0 ? 'warn' : 'ok',
+  };
+}
 
 export const codeGraphDatabasePaths = Effect.fn('codeGraph.databasePaths')(function* (threadnoteHome: string) {
   const fs = yield* FileSystem.FileSystem;

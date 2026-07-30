@@ -23,7 +23,11 @@ import {LocalModelCatalog, type LocalModelManifest} from './models/catalog.js';
 import {readModelSelection} from './models/selection.js';
 import {LocalModelStore} from './models/store.js';
 import {ensureVectorIndex, type VectorIndexProgress, vectorIndexStatus} from './search/vector-index.js';
-import {codeGraphDoctorCheck, repairCodeGraphIndexes} from './code_graph/maintenance.js';
+import {
+  codeGraphDoctorCheck,
+  type CodeGraphMaintenanceProgress,
+  repairCodeGraphIndexes,
+} from './code_graph/maintenance.js';
 import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
 import type {
   DoctorCheck,
@@ -52,10 +56,25 @@ interface RunInstallOptions extends InstallOptions {
   readonly skipRecallIndexes?: boolean;
 }
 
-export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: DoctorOptions) {
+interface RunDoctorOptions extends DoctorOptions {
+  readonly codeGraphCheck?: DoctorCheck;
+}
+
+interface CollectDoctorOptions extends RunDoctorOptions {
+  readonly onCodeGraphProgress?: (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
+}
+
+export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: RuntimeConfig, options: RunDoctorOptions) {
   const system = yield* SystemInfo;
   yield* Console.log('Running Threadnote doctor checks.');
-  const checks = yield* collectDoctorChecks(config, options, system.platform);
+  const checks = yield* collectDoctorChecks(
+    config,
+    {
+      ...options,
+      onCodeGraphProgress: progress => Console.log(codeGraphMaintenanceProgressMessage(progress)),
+    },
+    system.platform,
+  );
   for (const check of checks) {
     yield* Console.log(`${formatStatus(check.status)} ${check.name}: ${check.detail}`);
   }
@@ -69,7 +88,7 @@ export const runDoctor = Effect.fn('lifecycle.doctor')(function* (config: Runtim
 
 export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(function* (
   config: RuntimeConfig,
-  options: DoctorOptions = {},
+  options: CollectDoctorOptions = {},
   currentPlatform?: NodeJS.Platform,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -113,7 +132,10 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('lexical recall index', recallIndexCheck(config)),
     yield* safeDoctorCheck('embedding model', embeddingModelCheck(config)),
     yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config)),
-    yield* safeDoctorCheck('native code graph', codeGraphDoctorCheck(config.agentContextHome)),
+    yield* safeDoctorCheck(
+      'native code graph',
+      codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
+    ),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
   );
   checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
@@ -271,24 +293,6 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
-  const graphRepair = yield* repairCodeGraphIndexes(config.agentContextHome, dryRun).pipe(
-    Effect.catch(cause => {
-      return Console.warn(`WARN native code graph repair failed: ${errorMessage(cause)}`).pipe(
-        Effect.as({
-          databases: 0,
-          discarded: 0,
-          removedIncompleteSnapshots: 0,
-          removedTemporaryFiles: 0,
-        }),
-      );
-    }),
-  );
-  yield* Console.log(
-    `${dryRun ? 'Would repair' : 'Repaired'} ${graphRepair.databases} native code graph database(s): ` +
-      `${graphRepair.discarded} disposable rebuild(s), ` +
-      `${graphRepair.removedIncompleteSnapshots} incomplete snapshot(s), ` +
-      `${graphRepair.removedTemporaryFiles} temporary vector file(s).`,
-  );
   const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
   for (const client of mcpClients) {
     yield* runMcpInstall(config, client, {apply: !dryRun, name: 'threadnote'});
@@ -296,7 +300,34 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
   }
-  yield* runDoctor(config, {dryRun, strict: false});
+  const graphRepair = yield* repairCodeGraphIndexes(
+    config.agentContextHome,
+    dryRun,
+    progress => Console.log(codeGraphMaintenanceProgressMessage(progress, dryRun)),
+    completion =>
+      Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
+        Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
+      ),
+  ).pipe(
+    Effect.map(summary => ({doctorReported: true, summary})),
+    Effect.catch(cause => {
+      return Console.warn(`WARN native code graph repair failed: ${errorMessage(cause)}`).pipe(
+        Effect.as({
+          doctorReported: false,
+          summary: {
+            databases: 0,
+            discarded: 0,
+            removedIncompleteSnapshots: 0,
+            removedTemporaryFiles: 0,
+          },
+        }),
+      );
+    }),
+  );
+  if (!graphRepair.doctorReported) {
+    yield* Console.log(codeGraphRepairSummaryMessage(graphRepair.summary, dryRun));
+    yield* runDoctor(config, {dryRun, strict: false});
+  }
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
@@ -347,6 +378,37 @@ function recallProgressMessage(progress: RecallIndexProgress): string {
     return `Building lexical recall index: ${progress.completed}/${progress.total} changed document(s) indexed (${percentage}%; ${progress.scanned} canonical document(s) scanned).`;
   }
   return `Writing lexical recall postings: ${progress.completed}/${progress.total} changed document(s) (${percentage}%), ${progress.removed} stale document(s) removed.`;
+}
+
+function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgress, dryRun = false): string {
+  const database = `native code graph database ${progress.current}/${progress.total}`;
+  switch (progress.phase) {
+    case 'checking':
+      return `Checking ${database}.`;
+    case 'cleaning-snapshots':
+      return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
+    case 'cleaning-vectors':
+      return `Checking temporary vector state for ${database}.`;
+    case 'discarding':
+      return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
+  }
+}
+
+function codeGraphRepairSummaryMessage(
+  summary: {
+    readonly databases: number;
+    readonly discarded: number;
+    readonly removedIncompleteSnapshots: number;
+    readonly removedTemporaryFiles: number;
+  },
+  dryRun: boolean,
+): string {
+  return (
+    `${dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
+    `${summary.discarded} disposable rebuild(s), ` +
+    `${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
+    `${summary.removedTemporaryFiles} temporary vector file(s).`
+  );
 }
 
 export const runStart = Effect.fn('lifecycle.start')(function* (_config: RuntimeConfig, options: StartOptions) {

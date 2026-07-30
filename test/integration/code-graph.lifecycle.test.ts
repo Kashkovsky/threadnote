@@ -23,11 +23,17 @@ import {
   worktreeOverlayState,
 } from '../../src/code_graph/inventory.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
-import {purgeAllCodeGraphIndexes, repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
+import {
+  codeGraphDoctorCheck,
+  purgeAllCodeGraphIndexes,
+  repairCodeGraphIndexes,
+} from '../../src/code_graph/maintenance.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import {runDoctor, runRepair} from '../../src/lifecycle.js';
+import type {DoctorCheck, RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const FIXTURE_REPOSITORY = join(import.meta.dirname, '../evaluation/fixtures/code-graph-v1/repository');
@@ -1522,6 +1528,7 @@ describe('native code graph lifecycle', () => {
   it('keeps status read-only and repairs only disposable incomplete graph state', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
+    const progress: string[] = [];
     const before = await runEffect(
       Effect.gen(function* () {
         const query = yield* CodeGraphQueryService;
@@ -1575,7 +1582,13 @@ describe('native code graph lifecycle', () => {
             database.close();
           }
         });
-        const repair = yield* repairCodeGraphIndexes(home, false);
+        const repair = yield* repairCodeGraphIndexes(home, false, state =>
+          Effect.sync(() =>
+            progress.push(
+              `${state.phase}:${state.current}/${state.total}${state.snapshots ? `:${state.snapshots}` : ''}`,
+            ),
+          ),
+        );
         return {
           health: yield* store.diagnose(before.databasePath),
           indexed,
@@ -1590,6 +1603,7 @@ describe('native code graph lifecycle', () => {
       discarded: 0,
       removedIncompleteSnapshots: 1,
     });
+    expect(progress).toEqual(['checking:1/1', 'cleaning-snapshots:1/1:1', 'cleaning-vectors:1/1']);
     expect(result.stale.stale).toBe(true);
     expect(result.health).toMatchObject({
       buildingSnapshots: 0,
@@ -1597,6 +1611,159 @@ describe('native code graph lifecycle', () => {
       integrity: 'ok',
       readySnapshots: 1,
     });
+  });
+
+  it('streams progress while doctor and repair inspect graph databases', async () => {
+    const root = createFixtureRepository();
+    const secondRoot = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const doctorProgress: string[] = [];
+    const repairProgress: string[] = [];
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+        yield* indexer.index({cwd: secondRoot, threadnoteHome: home});
+        const doctor = yield* codeGraphDoctorCheck(home, progress =>
+          Effect.sync(() => doctorProgress.push(`${progress.phase}:${progress.current}/${progress.total}`)),
+        );
+        const repair = yield* repairCodeGraphIndexes(home, false, progress =>
+          Effect.sync(() => repairProgress.push(`${progress.phase}:${progress.current}/${progress.total}`)),
+        );
+        return {doctor, repair};
+      }),
+    );
+
+    expect(result.doctor).toMatchObject({status: 'ok'});
+    expect(result.repair).toMatchObject({databases: 2, discarded: 0});
+    expect(doctorProgress).toEqual(['checking:1/2', 'checking:2/2']);
+    expect(repairProgress).toEqual(['checking:1/2', 'cleaning-vectors:1/2', 'checking:2/2', 'cleaning-vectors:2/2']);
+  });
+
+  it('streams progress before discarding an incompatible derived database', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const progress: string[] = [];
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const query = yield* CodeGraphQueryService;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+        const status = yield* query.status(home, root);
+        yield* Effect.sync(() => setGraphSchemaVersion(status.databasePath, '999'));
+        const repair = yield* repairCodeGraphIndexes(home, false, state =>
+          Effect.sync(() => progress.push(`${state.phase}:${state.current}/${state.total}`)),
+        );
+        return {databasePath: status.databasePath, repair};
+      }),
+    );
+
+    expect(result.repair).toMatchObject({
+      databases: 1,
+      discarded: 1,
+    });
+    expect(progress).toEqual(['checking:1/1', 'discarding:1/1']);
+    expect(existsSync(result.databasePath)).toBe(false);
+  });
+
+  it('prints lifecycle progress with truthful dry-run wording and reuses the repair diagnosis', async () => {
+    const root = createFixtureRepository();
+    const secondRoot = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+    const output = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const query = yield* CodeGraphQueryService;
+        const store = yield* CodeGraphStore;
+        const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+        yield* indexer.index({cwd: secondRoot, threadnoteHome: home});
+        const firstStatus = yield* query.status(home, root);
+        const secondStatus = yield* query.status(home, secondRoot);
+        yield* store.markBuilding(firstStatus.databasePath, first.identity, {
+          ...first.snapshot,
+          id: `${first.snapshot.id}-interrupted`,
+          state: 'building',
+        });
+        yield* Effect.sync(() => setGraphSchemaVersion(secondStatus.databasePath, '999'));
+        const doctor = yield* captureConsole(runDoctor(config, {dryRun: true}));
+        const repair = yield* captureConsole(runRepair(config, {dryRun: true, mcp: 'none', postUpdate: false}));
+        return {doctor: doctor.output, repair: repair.output};
+      }),
+    );
+
+    expect(output.doctor.match(/Checking native code graph database [12]\/2\./g)).toHaveLength(2);
+    expect(output.doctor).toContain(
+      'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
+        '1 database(s) need a disposable rebuild',
+    );
+    expect(output.repair.match(/Checking native code graph database [12]\/2\./g)).toHaveLength(2);
+    expect(output.repair).toMatch(/Would clean 1 incomplete snapshot\(s\) from native code graph database [12]\/2\./);
+    expect(output.repair).toMatch(/Would discard unreadable derived native code graph database [12]\/2\./);
+    expect(output.repair).toContain(
+      'Would repair 2 native code graph database(s): 1 disposable rebuild(s), 1 incomplete snapshot(s), ' +
+        '0 temporary vector file(s).',
+    );
+    expect(output.repair).toContain(
+      'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
+        '1 database(s) need a disposable rebuild',
+    );
+  });
+
+  it('holds the maintenance gate while the repair diagnosis is consumed', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+        const diagnosed = yield* Deferred.make<DoctorCheck>();
+        const releaseDiagnosis = yield* Deferred.make<void>();
+        const registered = yield* Deferred.make<void>();
+        const repairing = yield* Effect.forkChild(
+          repairCodeGraphIndexes(home, false, undefined, completion =>
+            Deferred.succeed(diagnosed, completion.doctorCheck).pipe(
+              Effect.andThen(Deferred.await(releaseDiagnosis)),
+              Effect.asVoid,
+            ),
+          ),
+        );
+        const check = yield* Deferred.await(diagnosed);
+        replaceFunction(root, 'ensureVectorIndex', 'ensureAfterRepairVectorIndex');
+        const indexing = yield* Effect.forkChild(
+          indexer.index({
+            cwd: root,
+            onProgress: progress =>
+              progress.phase === 'registering'
+                ? Deferred.succeed(registered, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+            threadnoteHome: home,
+          }),
+        );
+        yield* Effect.yieldNow;
+        const registeredBeforeRelease = yield* Deferred.isDone(registered);
+        yield* Deferred.succeed(releaseDiagnosis, undefined);
+        const repair = yield* Fiber.join(repairing);
+        yield* Fiber.join(indexing);
+        return {
+          check,
+          registeredAfterRelease: yield* Deferred.isDone(registered),
+          registeredBeforeRelease,
+          repair,
+        };
+      }),
+    );
+
+    expect(result.check.status).toBe('ok');
+    expect(result.registeredBeforeRelease).toBe(false);
+    expect(result.registeredAfterRelease).toBe(true);
+    expect(result.repair).toMatchObject({databases: 1, discarded: 0});
   });
 
   it('does not follow vector cleanup symlinks outside the derived index root', async () => {
@@ -1712,6 +1879,15 @@ function snapshotFileHash(databasePath: string, snapshotId: string, sourcePath: 
       .get(snapshotId, sourcePath);
     if (!row) throw new Error(`Snapshot ${snapshotId} has no row for ${sourcePath}.`);
     return row.content_hash;
+  } finally {
+    database.close();
+  }
+}
+
+function setGraphSchemaVersion(databasePath: string, version: string): void {
+  const database = new Database(databasePath);
+  try {
+    database.query("UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'").run(version);
   } finally {
     database.close();
   }

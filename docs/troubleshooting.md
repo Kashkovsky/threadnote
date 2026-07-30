@@ -133,6 +133,11 @@ canonical Markdown after corruption. Vector checkpoints contain a checksum and r
 from both the active generation and an interrupted staging generation. Activation occurs only after the complete
 sidecar and pointer are durably written.
 
+Repair and doctor also run a full SQLite integrity check over each derived native code graph. Large monorepo graphs can
+take time to scan; both commands print the current graph database and cleanup phase while they work. If a graph is
+reported as corrupt, run `threadnote repair`; repair discards unreadable derived graph databases, and the next graph
+query rebuilds them.
+
 ```sh
 threadnote index verify
 threadnote index rebuild
