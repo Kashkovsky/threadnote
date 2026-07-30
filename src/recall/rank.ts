@@ -238,7 +238,7 @@ export function rankRecallCandidates(
   const corpusStatistics = context.corpusStatistics ?? buildRecallCorpusStatistics(candidates);
   const semanticAnchors = candidates
     .filter(candidate => (candidate.semantic ?? 0) >= GRAPH_SEMANTIC_ANCHOR_MINIMUM)
-    .sort((left, right) => (right.semantic ?? 0) - (left.semantic ?? 0))
+    .sort((left, right) => (right.semantic ?? 0) - (left.semantic ?? 0) || compareCodeUnits(left.uri, right.uri))
     .slice(0, MAX_GRAPH_SEMANTIC_ANCHORS)
     .map(candidate => candidate.uri);
   const explicitSeedUris = [...new Set(context.seedUris ?? [])];
@@ -273,7 +273,7 @@ export function rankRecallCandidates(
         right.finalScore - left.finalScore ||
         right.signals.reranker - left.signals.reranker ||
         right.signals.semantic - left.signals.semantic ||
-        left.candidate.uri.localeCompare(right.candidate.uri),
+        compareCodeUnits(left.candidate.uri, right.candidate.uri),
     );
   return {
     confidence: assessConfidence(ranked),
@@ -870,4 +870,8 @@ function clamp(value: number): number {
 
 function clampSigned(value: number): number {
   return Math.max(-1, Math.min(1, value));
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

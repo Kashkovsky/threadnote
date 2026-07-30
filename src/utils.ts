@@ -1112,8 +1112,9 @@ function stripAnchor(uri: string): string {
 /**
  * Merge recall hits from several search passes into one ranked list, deduped to
  * one entry per document (chunk anchors stripped), keeping the highest-scoring
- * chunk. Lets the scoped project/seeded passes contribute only documents the
- * global pass missed, and collapses multiple chunks of the same document.
+ * chunk and resolving equal scores by source chunk URI. Lets the scoped
+ * project/seeded passes contribute only documents the global pass missed, and
+ * collapses multiple chunks of the same document.
  *
  * Ranking is category-first (memories, then resources, then skills per
  * `RECALL_CATEGORY_ORDER`), then by score within each category, so personal
@@ -1127,14 +1128,23 @@ export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): re
     for (const hit of pass) {
       const documentUri = stripAnchor(hit.uri);
       const existing = byDocument.get(documentUri);
-      if (!existing || hit.score > existing.score) {
-        byDocument.set(documentUri, {...hit, uri: documentUri});
+      if (
+        !existing ||
+        hit.score > existing.score ||
+        (hit.score === existing.score && compareCodeUnits(hit.uri, existing.uri) < 0)
+      ) {
+        byDocument.set(documentUri, hit);
       }
     }
   }
-  return [...byDocument.values()].sort(
-    (left, right) => recallCategoryRank(left.category) - recallCategoryRank(right.category) || right.score - left.score,
-  );
+  return [...byDocument.entries()]
+    .map(([documentUri, hit]) => ({...hit, uri: documentUri}))
+    .sort(
+      (left, right) =>
+        recallCategoryRank(left.category) - recallCategoryRank(right.category) ||
+        right.score - left.score ||
+        compareCodeUnits(left.uri, right.uri),
+    );
 }
 
 /**
@@ -1144,6 +1154,10 @@ export function mergeRecallHits(passes: ReadonlyArray<readonly RecallHit[]>): re
 function recallCategoryRank(category: RecallCategory): number {
   const index = RECALL_CATEGORY_ORDER.indexOf(category);
   return index === -1 ? RECALL_CATEGORY_ORDER.length : index;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

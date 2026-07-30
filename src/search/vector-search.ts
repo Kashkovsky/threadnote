@@ -68,7 +68,7 @@ export function searchExactVectors(
   const seen = new Set<string>();
   const results: VectorSearchResult[] = [];
   const compareBestFirst = (left: VectorSearchResult, right: VectorSearchResult): number =>
-    right.score - left.score || left.id.localeCompare(right.id);
+    right.score - left.score || compareCodeUnits(left.id, right.id);
   for (const record of records) {
     if (seen.has(record.id)) {
       throw new Error(`Duplicate vector record ID: ${record.id}.`);
@@ -100,6 +100,10 @@ function assertFiniteVector(vector: readonly number[]): void {
 
 function invalidVector(cause: unknown): VectorInvalid {
   return new VectorInvalid({message: cause instanceof Error ? cause.message : String(cause)});
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function offerBoundedBest<T>(heap: T[], item: T, limit: number, compareBestFirst: (left: T, right: T) => number): void {

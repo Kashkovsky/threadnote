@@ -19,7 +19,7 @@ export class InvalidResourceId extends Schema.TaggedErrorClass<InvalidResourceId
 
 const RESOURCE_ID_PATTERN = /^(threadnote|viking):\/\/([^/?#]+)([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/i;
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
-const PORTABLE_UNSAFE_CHARACTERS = /[<>:"|?*\\]/;
+const PORTABLE_UNSAFE_CHARACTERS = /[<>:"|?*\\/]/;
 
 export function parseResourceId(input: string): ResourceId {
   const trimmed = input.trim();
@@ -48,7 +48,7 @@ export function canonicalResourceUri(namespace: string, segments: readonly strin
   validatePortableSegment(namespace, namespace);
   for (const segment of segments) validatePortableSegment(segment, segment);
   const path = segments.length > 0 ? `/${segments.map(encodeURIComponent).join('/')}` : '';
-  const fragment = anchor ? `#${encodeURIComponent(anchor)}` : '';
+  const fragment = anchor ? `#${encodeURIComponent(validateAnchor(anchor, anchor))}` : '';
   return `threadnote://${encodeURIComponent(namespace)}${path}${fragment}`;
 }
 
@@ -101,8 +101,12 @@ function decodeAnchor(raw: string, input: string): string {
   } catch {
     return invalid(input, 'anchor has invalid percent encoding');
   }
-  if (!decoded || hasControlCharacter(decoded)) return invalid(input, 'anchor is empty or contains control characters');
-  return decoded;
+  return validateAnchor(decoded, input);
+}
+
+function validateAnchor(value: string, input: string): string {
+  if (!value || hasControlCharacter(value)) return invalid(input, 'anchor is empty or contains control characters');
+  return value;
 }
 
 function hasControlCharacter(value: string): boolean {

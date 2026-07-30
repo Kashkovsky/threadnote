@@ -1280,7 +1280,11 @@ function searchEncodedVectorRows(
 }
 
 function compareVectorMatches(left: VectorSearchResult, right: VectorSearchResult): number {
-  return right.score - left.score || left.id.localeCompare(right.id);
+  return right.score - left.score || compareCodeUnits(left.id, right.id);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function generationMatchesCorpus(
