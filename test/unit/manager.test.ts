@@ -2,7 +2,7 @@ import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {BunHttpServer} from '@effect/platform-bun';
-import {Console, Effect, Fiber} from 'effect';
+import {Console, Effect, Fiber, Path} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
@@ -19,6 +19,16 @@ import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {
+  CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  type CodeGraphEdge,
+  type CodeGraphInventoryFile,
+  type CodeGraphSnapshot,
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
+} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 vi.mock('../../src/lifecycle.js', async importOriginal => {
@@ -77,6 +87,119 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     agentId: 'threadnote',
     manifestPath: join(home, 'manifest.yaml'),
     user: 'denys',
+  };
+}
+
+async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
+  const checkoutId = 'a'.repeat(64);
+  const identity: RepositoryIdentity = {
+    caseMode: 'sensitive',
+    checkoutId,
+    displayName: 'acme/platform',
+    gitCommonDirectory: join(config.agentContextHome, 'repository', '.git'),
+    headCommit: '1'.repeat(40),
+    objectFormat: 'sha1',
+    remoteIdentity: 'github.com/acme/platform',
+    repoRoot: join(config.agentContextHome, 'repository'),
+    repositoryId: 'b'.repeat(64),
+    worktreeId: 'c'.repeat(64),
+  };
+  const files: readonly CodeGraphInventoryFile[] = [
+    graphFile('packages/app/src/index.ts', 'app-index'),
+    graphFile('packages/app/src/view.ts', 'app-view'),
+    graphFile('packages/core/src/api.ts', 'core-api'),
+  ];
+  const symbols: readonly CodeGraphSymbol[] = [
+    graphSymbol('app', 'App', 'packages/app/src/index.ts', '@acme/app', 'class'),
+    graphSymbol('view', 'renderView', 'packages/app/src/view.ts', '@acme/app', 'function'),
+    graphSymbol('api', 'createApi', 'packages/core/src/api.ts', '@acme/core', 'function'),
+  ];
+  const edges: readonly CodeGraphEdge[] = [
+    graphEdge('app-view', 'app', 'App', 'view', 'renderView', 'calls'),
+    graphEdge('app-api', 'app', 'App', 'api', 'createApi', 'imports'),
+  ];
+  const snapshot: CodeGraphSnapshot = {
+    commit: identity.headCommit,
+    completedAt: new Date().toISOString(),
+    dirty: false,
+    edgeCount: edges.length,
+    extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
+    fileCount: files.length,
+    id: 'manager-graph-snapshot',
+    repositoryId: identity.repositoryId,
+    state: 'ready',
+    symbolCount: symbols.length,
+    worktreeId: identity.worktreeId,
+  };
+  await runEffect(
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+      yield* store.activate(
+        layout.databasePath,
+        identity,
+        snapshot,
+        files,
+        symbols,
+        edges,
+        CODE_GRAPH_EXTRACTOR_SET_VERSION,
+        false,
+      );
+      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+    }),
+  );
+  return checkoutId;
+}
+
+function graphFile(path: string, hash: string): CodeGraphInventoryFile {
+  return {
+    blobId: hash,
+    contentHash: hash.padEnd(64, '0'),
+    language: 'typescript',
+    mode: '100644',
+    path,
+    size: 100,
+    source: 'commit',
+  };
+}
+
+function graphSymbol(id: string, name: string, path: string, packageName: string, kind: string): CodeGraphSymbol {
+  return {
+    contentHash: id.padEnd(64, '0'),
+    documentation: `Documentation for ${name}.`,
+    exported: true,
+    id,
+    kind,
+    language: 'typescript',
+    name,
+    packageName,
+    path,
+    qualifiedName: name,
+    signature: `export ${kind} ${name}`,
+    span: {column: 3, endColumn: 12, endLine: 9, line: 7},
+  };
+}
+
+function graphEdge(
+  id: string,
+  sourceId: string,
+  sourceName: string,
+  targetId: string,
+  targetName: string,
+  relation: CodeGraphEdge['relation'],
+): CodeGraphEdge {
+  return {
+    confidence: 1,
+    evidencePath: 'packages/app/src/index.ts',
+    evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    id,
+    provenance: 'resolved',
+    relation,
+    sourceId,
+    sourceName,
+    targetId,
+    targetName,
   };
 }
 
@@ -277,6 +400,129 @@ describe('manager http API', () => {
       expect(accepted.status).toBe(200);
       expect(body.tree?.uri).toBe('threadnote://user/denys/memories');
       expect(body.resourcesTree?.uri).toBe('threadnote://resources');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves bounded repository and project graph visualizations', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const repositoryId = await seedManagerGraph(config);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret'};
+      const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalog = (await catalogResponse.json()) as {
+        readonly repositories: readonly {
+          readonly displayName: string;
+          readonly id: string;
+          readonly projects: readonly {readonly id: string; readonly symbolCount: number}[];
+        }[];
+      };
+      expect(catalogResponse.status).toBe(200);
+      expect(catalog.repositories).toHaveLength(1);
+      expect(catalog.repositories[0]).toMatchObject({displayName: 'acme/platform', id: repositoryId});
+      expect(catalog.repositories[0]?.projects).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({id: 'package:@acme/app', symbolCount: 2}),
+          expect.objectContaining({id: 'package:@acme/core', symbolCount: 1}),
+        ]),
+      );
+
+      const overviewResponse = await fetch(`${server.url}/api/graph?repository=${repositoryId}&project=all`, {headers});
+      const overview = (await overviewResponse.json()) as {
+        readonly edges: readonly {readonly count: number; readonly relation: string}[];
+        readonly mode: string;
+        readonly nodes: readonly {readonly id: string; readonly type: string}[];
+      };
+      expect(overviewResponse.status).toBe(200);
+      expect(overview.mode).toBe('overview');
+      expect(overview.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({id: 'package:@acme/app', type: 'project'}),
+          expect.objectContaining({id: 'package:@acme/core', type: 'project'}),
+        ]),
+      );
+      expect(overview.edges).toEqual(
+        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'cross-project'})]),
+      );
+
+      const detailResponse = await fetch(
+        `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('package:@acme/app')}`,
+        {headers},
+      );
+      const detail = (await detailResponse.json()) as {
+        readonly edges: readonly {readonly relation: string}[];
+        readonly mode: string;
+        readonly nodes: readonly {readonly degree: number; readonly id: string; readonly type: string}[];
+      };
+      expect(detailResponse.status).toBe(200);
+      expect(detail.mode).toBe('detail');
+      expect(detail.nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({degree: 2, id: 'app', type: 'symbol'}),
+          expect.objectContaining({degree: 1, id: 'view', type: 'symbol'}),
+          expect.objectContaining({degree: 1, id: 'api', type: 'symbol'}),
+        ]),
+      );
+      expect(detail.edges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({relation: 'calls'}),
+          expect.objectContaining({relation: 'imports'}),
+        ]),
+      );
+      expect(detail.nodes.length).toBeLessThanOrEqual(900);
+      expect(detail.edges.length).toBeLessThanOrEqual(3_000);
+
+      const nodeResponse = await fetch(
+        `${server.url}/api/graph/node?repository=${repositoryId}&node=${encodeURIComponent('app')}`,
+        {headers},
+      );
+      const node = (await nodeResponse.json()) as {
+        readonly node: {
+          readonly documentation?: string;
+          readonly path: string;
+          readonly span: {readonly column: number; readonly line: number};
+        };
+        readonly relationships: readonly {
+          readonly direction: string;
+          readonly evidencePath: string;
+          readonly provenance: string;
+          readonly related: {readonly id?: string; readonly label: string};
+          readonly relation: string;
+        }[];
+        readonly stats: {
+          readonly incoming: number;
+          readonly outgoing: number;
+          readonly relations: readonly {readonly count: number; readonly relation: string}[];
+          readonly truncated: boolean;
+        };
+      };
+      expect(nodeResponse.status).toBe(200);
+      expect(node.node).toMatchObject({
+        documentation: 'Documentation for App.',
+        path: 'packages/app/src/index.ts',
+        span: {column: 3, line: 7},
+      });
+      expect(node.stats).toMatchObject({incoming: 0, outgoing: 2, truncated: false});
+      expect(node.stats.relations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({count: 1, relation: 'calls'}),
+          expect.objectContaining({count: 1, relation: 'imports'}),
+        ]),
+      );
+      expect(node.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            direction: 'outgoing',
+            evidencePath: 'packages/app/src/index.ts',
+            provenance: 'resolved',
+            related: expect.objectContaining({id: 'view', label: 'renderView'}),
+            relation: 'calls',
+          }),
+        ]),
+      );
     } finally {
       await server.close();
     }

@@ -13,6 +13,7 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `@modelcontextprotocol/sdk` (MIT)
 - `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)
+- `three` (MIT), used for GPU-accelerated manager graph rendering
 - `js-yaml` (MIT)
 - TypeScript compiler 5.9 (`typescript-compiler`, Apache-2.0), bundled for native TypeScript/JavaScript graph extraction
 

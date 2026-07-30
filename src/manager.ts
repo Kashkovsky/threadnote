@@ -56,6 +56,7 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
+import {managerGraphCatalog, managerGraphNodeDetail, managerGraphVisualization} from './code_graph/visualization.js';
 import type {
   AgentClient,
   ConsolidationAgent,
@@ -452,6 +453,34 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   if (request.method === 'GET' && url.pathname === '/api/tree') {
     const [tree, resourceTree] = yield* Effect.all([memoryTree(context.config), resourcesTree(context.config)]);
     writeJson(response, 200, {resourcesTree: resourceTree, tree});
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs') {
+    writeJson(response, 200, yield* managerGraphCatalog(context.config.agentContextHome));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphVisualization(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        url.searchParams.get('project') ?? 'all',
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/node') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphNodeDetail(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        requiredQuery(url, 'node'),
+      ),
+    );
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/memory') {

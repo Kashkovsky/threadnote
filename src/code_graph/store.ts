@@ -98,6 +98,42 @@ export interface CodeGraphDatabaseRepair {
   readonly removedSnapshots: number;
 }
 
+export interface CodeGraphVisualizationProject {
+  readonly fileCount: number;
+  readonly id: string;
+  readonly label: string;
+  readonly symbolCount: number;
+}
+
+export interface CodeGraphVisualizationCatalog {
+  readonly projects: readonly CodeGraphVisualizationProject[];
+  readonly repository: {
+    readonly displayName: string;
+    readonly repositoryId: string;
+  };
+  readonly snapshot: CodeGraphSnapshot;
+}
+
+export interface CodeGraphVisualizationRelationshipSummary {
+  readonly incoming: number;
+  readonly outgoing: number;
+  readonly provenances: readonly {
+    readonly count: number;
+    readonly provenance: CodeGraphProvenance;
+  }[];
+  readonly relations: readonly {
+    readonly count: number;
+    readonly incoming: number;
+    readonly outgoing: number;
+    readonly relation: CodeGraphEdge['relation'];
+  }[];
+}
+
+export type CodeGraphVisualizationScope =
+  | {readonly type: 'all'}
+  | {readonly type: 'package'; readonly value: string}
+  | {readonly type: 'path'; readonly value: string};
+
 export interface CodeGraphStoreShape {
   readonly withSession: <A, E, R>(
     databasePath: string,
@@ -169,6 +205,15 @@ export interface CodeGraphStoreShape {
     cursor: CodeGraphSymbolCursor | undefined,
     limit: number,
   ) => Effect.Effect<readonly CodeGraphSymbol[], CodeGraphStoreError>;
+  readonly loadVisualizationCatalog: (
+    databasePath: string,
+  ) => Effect.Effect<CodeGraphVisualizationCatalog | undefined, CodeGraphStoreError>;
+  readonly loadVisualizationSymbols: (
+    databasePath: string,
+    snapshotId: string,
+    scope: CodeGraphVisualizationScope,
+    limit: number,
+  ) => Effect.Effect<readonly CodeGraphSymbol[], CodeGraphStoreError>;
   readonly edgesForNodes: (
     databasePath: string,
     snapshotId: string,
@@ -177,6 +222,12 @@ export interface CodeGraphStoreShape {
     limit: number,
     allowedProvenances: readonly CodeGraphProvenance[],
   ) => Effect.Effect<readonly CodeGraphEdge[], CodeGraphStoreError>;
+  readonly relationshipSummaryForNode: (
+    databasePath: string,
+    snapshotId: string,
+    nodeId: string,
+    allowedProvenances: readonly CodeGraphProvenance[],
+  ) => Effect.Effect<CodeGraphVisualizationRelationshipSummary, CodeGraphStoreError>;
   readonly findSymbolsByPathAndName: (
     databasePath: string,
     snapshotId: string,
@@ -426,6 +477,18 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(useDatabase(databasePath, selectSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph symbol page', cause)),
           ),
+        loadVisualizationCatalog: databasePath =>
+          fs.exists(databasePath).pipe(
+            Effect.flatMap(exists =>
+              exists ? useDatabase(databasePath, selectVisualizationCatalog()) : Effect.succeed(undefined),
+            ),
+            Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
+          ),
+        loadVisualizationSymbols: (databasePath, snapshotId, scope, limit) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(useDatabase(databasePath, selectVisualizationSymbols(snapshotId, scope, limit))),
+            Effect.mapError(cause => storeError('load code graph visualization symbols', cause)),
+          ),
         markBuilding: (databasePath, identity, snapshot) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -493,6 +556,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
+          ),
+        relationshipSummaryForNode: (databasePath, snapshotId, nodeId, allowedProvenances) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(databasePath, selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances)),
+            ),
+            Effect.mapError(cause => storeError('summarize code graph relationships', cause)),
           ),
         reconcileWorktrees: (databasePath, activeWorktreeIds) =>
           fs.exists(databasePath).pipe(
@@ -1638,6 +1708,110 @@ const selectSymbolPage = Effect.fn('codeGraph.selectSymbolPage')(function* (
   return rows.map(symbolFromRow);
 });
 
+const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatalog')(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const rows = yield* sql.unsafe<SnapshotRow & {readonly display_name: string}>(
+    `SELECT snapshots.*, repositories.display_name
+     FROM snapshots
+     JOIN repositories ON repositories.id = snapshots.repository_id
+     LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
+     WHERE snapshots.state = 'ready'
+     ORDER BY
+       CASE WHEN active_snapshots.snapshot_id IS NULL THEN 1 ELSE 0 END,
+       active_snapshots.activated_at DESC,
+       snapshots.completed_at DESC,
+       snapshots.id
+     LIMIT 1`,
+  );
+  const row = rows[0];
+  if (!row) return undefined;
+  const baseSnapshotId = Option.getOrUndefined(sqlTextOption(row.base_snapshot_id));
+  const projects = yield* sql.unsafe<{
+    readonly file_count: number;
+    readonly scope_type: 'package' | 'path';
+    readonly scope_value: string;
+    readonly symbol_count: number;
+  }>(
+    `${effectiveSymbolsCte()}
+     SELECT
+       CASE
+         WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN 'package'
+         ELSE 'path'
+       END AS scope_type,
+       CASE
+         WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN package_name
+         WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1)
+         ELSE '(root)'
+       END AS scope_value,
+       COUNT(*) AS symbol_count,
+       COUNT(DISTINCT path) AS file_count
+     FROM effective_symbols
+     GROUP BY 1, 2
+     ORDER BY symbol_count DESC, scope_value
+     LIMIT 200`,
+    effectiveSnapshotParameters(row.id, baseSnapshotId),
+  );
+  return {
+    projects: projects.map(project => ({
+      fileCount: Number(project.file_count),
+      id: `${project.scope_type}:${project.scope_value}`,
+      label: project.scope_value,
+      symbolCount: Number(project.symbol_count),
+    })),
+    repository: {
+      displayName: row.display_name,
+      repositoryId: row.repository_id,
+    },
+    snapshot: snapshotFromRow(row),
+  } satisfies CodeGraphVisualizationCatalog;
+});
+
+const selectVisualizationSymbols = Effect.fn('codeGraph.selectVisualizationSymbols')(function* (
+  snapshotId: string,
+  scope: CodeGraphVisualizationScope,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const pathScope = "CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE '(root)' END";
+  const predicate =
+    scope.type === 'package'
+      ? 'package_name = ?'
+      : scope.type === 'path'
+        ? `(package_name IS NULL OR trim(package_name) = '') AND ${pathScope} = ?`
+        : '1 = 1';
+  const scopeParameters = scope.type === 'all' ? [] : [scope.value];
+  const rows = yield* sql.unsafe<SymbolRow>(
+    `${effectiveSymbolsCte()}
+     SELECT *
+     FROM effective_symbols
+     WHERE ${predicate}
+     ORDER BY
+       exported DESC,
+       CASE kind
+         WHEN 'package' THEN 0
+         WHEN 'module' THEN 1
+         WHEN 'class' THEN 2
+         WHEN 'interface' THEN 3
+         WHEN 'function' THEN 4
+         WHEN 'method' THEN 5
+         ELSE 6
+       END,
+       path,
+       qualified_name,
+       id
+     LIMIT ?`,
+    [
+      ...effectiveSnapshotParameters(snapshotId, baseSnapshotId),
+      ...scopeParameters,
+      Math.max(1, Math.min(500, Math.floor(limit))),
+    ],
+  );
+  return rows.map(symbolFromRow);
+});
+
 const selectEdgePage = Effect.fn('codeGraph.selectEdgePage')(function* (
   snapshotId: string,
   cursor: CodeGraphEdgeCursor | undefined,
@@ -1899,6 +2073,61 @@ const selectEdgesForNodes = Effect.fn('codeGraph.selectEdgesForNodes')(function*
     ],
   );
   return rows.map(edgeFromRow);
+});
+
+const selectRelationshipSummaryForNode = Effect.fn('codeGraph.selectRelationshipSummaryForNode')(function* (
+  snapshotId: string,
+  nodeId: string,
+  allowedProvenances: readonly CodeGraphProvenance[],
+) {
+  if (allowedProvenances.length === 0) {
+    return {incoming: 0, outgoing: 0, provenances: [], relations: []};
+  }
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const rows = yield* sql.unsafe<{
+    readonly count: number;
+    readonly incoming: number;
+    readonly outgoing: number;
+    readonly provenance: CodeGraphProvenance;
+    readonly relation: CodeGraphEdge['relation'];
+  }>(
+    `${effectiveEdgesCte()}
+     SELECT relation, provenance, COUNT(*) AS count,
+       SUM(CASE WHEN target_id = ? THEN 1 ELSE 0 END) AS incoming,
+       SUM(CASE WHEN source_id = ? THEN 1 ELSE 0 END) AS outgoing
+     FROM effective_edges
+     WHERE (source_id = ? OR target_id = ?)
+       AND provenance IN (${allowedProvenances.map(() => '?').join(', ')})
+     GROUP BY relation, provenance
+     ORDER BY count DESC, relation, provenance`,
+    [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), nodeId, nodeId, nodeId, nodeId, ...allowedProvenances],
+  );
+  const relationCounts = new Map<CodeGraphEdge['relation'], {count: number; incoming: number; outgoing: number}>();
+  const provenanceCounts = new Map<CodeGraphProvenance, number>();
+  let incoming = 0;
+  let outgoing = 0;
+  for (const row of rows) {
+    const relation = relationCounts.get(row.relation) ?? {count: 0, incoming: 0, outgoing: 0};
+    relation.count += row.count;
+    relation.incoming += row.incoming;
+    relation.outgoing += row.outgoing;
+    relationCounts.set(row.relation, relation);
+    provenanceCounts.set(row.provenance, (provenanceCounts.get(row.provenance) ?? 0) + row.count);
+    incoming += row.incoming;
+    outgoing += row.outgoing;
+  }
+  return {
+    incoming,
+    outgoing,
+    provenances: [...provenanceCounts]
+      .map(([provenance, count]) => ({count, provenance}))
+      .sort((left, right) => right.count - left.count || left.provenance.localeCompare(right.provenance)),
+    relations: [...relationCounts]
+      .map(([relation, counts]) => ({...counts, relation}))
+      .sort((left, right) => right.count - left.count || left.relation.localeCompare(right.relation)),
+  };
 });
 
 const upsertRepository = Effect.fn('codeGraph.upsertRepository')(function* (

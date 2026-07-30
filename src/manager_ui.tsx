@@ -2,8 +2,9 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {GraphWorkspace, type GraphCatalog, type GraphNodeDetail, type GraphVisualization} from './manager_graph.js';
 
-type PanelName = 'doctor' | 'memory' | 'shares' | 'tools';
+type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools';
 type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
@@ -13,9 +14,9 @@ type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
 
 const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
-const SIDEBAR_WIDTH_DEFAULT = 340;
+const SIDEBAR_WIDTH_DEFAULT = 300;
 const SIDEBAR_WIDTH_MIN = 260;
-const SIDEBAR_WIDTH_MAX = 560;
+const SIDEBAR_WIDTH_MAX = 440;
 
 interface MemoryMetadata {
   readonly archivedFrom?: string;
@@ -145,8 +146,9 @@ function loadSidebarWidth(): number {
 }
 
 function App(): React.ReactElement {
-  const [panel, setPanel] = useState<PanelName>('doctor');
+  const [panel, setPanel] = useState<PanelName>('graph');
   const [state, setState] = useState<StateResponse | undefined>();
+  const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
   const [tree, setTree] = useState<TreeNode | undefined>();
   const [resourceTree, setResourceTree] = useState<TreeNode | undefined>();
   const [shares, setShares] = useState<readonly ShareSummary[]>([]);
@@ -253,16 +255,27 @@ function App(): React.ReactElement {
   const outputUris = useMemo(() => resourceUrisFromText(output), [output]);
 
   async function refreshAll(): Promise<void> {
-    const [nextState, nextTree, nextShares] = await Promise.all([
+    const [nextState, nextTree, nextShares, nextGraphs] = await Promise.all([
       api<StateResponse>('/api/state'),
       api<TreeResponse>('/api/tree'),
       api<{shares: readonly ShareSummary[]}>('/api/shares'),
+      api<GraphCatalog>('/api/graphs'),
     ]);
     setState(nextState);
     setTree(nextTree.tree);
     setResourceTree(nextTree.resourcesTree);
     setShares(nextShares.shares);
+    setGraphCatalog(nextGraphs);
     toastMessage('Refreshed');
+  }
+
+  async function refreshGraphCatalog(): Promise<void> {
+    try {
+      setGraphCatalog(await api<GraphCatalog>('/api/graphs'));
+      toastMessage('Graph indexes refreshed');
+    } catch (cause) {
+      toastMessage(errorMessage(cause));
+    }
   }
 
   async function loadMemory(uri: string): Promise<void> {
@@ -742,100 +755,144 @@ function App(): React.ReactElement {
 
   return (
     <div className="app" style={appStyle}>
-      <aside className="sidebar">
+      <aside className={`sidebar ${panel === 'memory' ? 'has-context' : ''}`}>
         <div className="brand">
           <div className="brand-title">
             <img alt="" className="brand-logo" src="/threadnote-logo-inverted.svg" />
             <div>
               <h1>Threadnote</h1>
-              <p>{state ? `${state.config.user} · ${state.config.account} · v${state.version}` : 'Loading manager'}</p>
+              <p>{state ? `${state.config.user} · ${state.config.account}` : 'Loading manager'}</p>
             </div>
           </div>
-          <button
-            className="icon-button"
-            disabled={controlsBlocked}
-            onClick={() => void refreshAll()}
-            title="Refresh"
-            aria-label="Refresh"
-          >
-            ↻
-          </button>
         </div>
-        <input
-          disabled={controlsBlocked}
-          value={filter}
-          onChange={event => setFilter(event.target.value)}
-          placeholder="Filter memories and resources"
-          type="search"
-        />
-        <label className="check-row">
-          <input
-            checked={showSystem}
-            disabled={controlsBlocked}
-            onChange={event => setShowSystem(event.target.checked)}
-            type="checkbox"
-          />
-          <span>Show system files</span>
-        </label>
-        <div className="nav-tree-tabs" aria-label="Navigation tree">
-          <button
-            className={navTreeTab === 'memories' ? 'is-active' : undefined}
-            disabled={controlsBlocked}
-            onClick={() => setNavTreeTab('memories')}
-            type="button"
-          >
-            Memories
-          </button>
-          <button
-            className={navTreeTab === 'resources' ? 'is-active' : undefined}
-            disabled={controlsBlocked}
-            onClick={() => setNavTreeTab('resources')}
-            type="button"
-          >
-            Resources
-          </button>
-        </div>
-        <nav className="tree" aria-label="Context tree">
-          {navTreeTab === 'resources' ? (
-            resourceTree ? (
-              <Tree
-                filter={filter}
-                node={resourceTree}
-                onSelect={selectTreeUri}
-                selectable={false}
-                selectedUri={selectedUri}
-                showSystem={showSystem}
-              />
-            ) : (
-              <p className="tree-empty">No resources</p>
-            )
-          ) : tree ? (
-            <Tree
-              filter={filter}
-              node={tree}
-              onSelect={selectTreeUri}
-              onToggleSelection={(node, checked) =>
-                setSelectedUris(current => {
-                  const next = new Set(current);
-                  for (const uri of selectableMemoryUris(node, {filter, showSystem})) {
-                    if (checked) {
-                      next.add(uri);
-                    } else {
-                      next.delete(uri);
-                    }
-                  }
-                  return next;
-                })
-              }
-              selectedUri={selectedUri}
-              selectedUris={selectedUris}
-              selectionDisabled={bulkAction !== undefined}
-              showSystem={showSystem}
-            />
-          ) : (
-            <p className="tree-empty">No memories</p>
-          )}
+        <p className="sidebar-label">Workspace</p>
+        <nav className="primary-nav" aria-label="Manager sections">
+          {(['graph', 'memory', 'shares', 'doctor', 'tools'] as const).map(name => (
+            <button
+              aria-current={panel === name ? 'page' : undefined}
+              className={panel === name ? 'is-active' : undefined}
+              disabled={controlsBlocked}
+              key={name}
+              onClick={() => setPanel(name)}
+              type="button"
+            >
+              <span aria-hidden="true" className="nav-icon">
+                {panelIcon(name)}
+              </span>
+              <span>
+                <strong>{tabTitle(name)}</strong>
+                <small>{panelNavDescription(name)}</small>
+              </span>
+            </button>
+          ))}
         </nav>
+
+        {panel === 'memory' ? (
+          <section className="sidebar-context" aria-label="Memory browser">
+            <div className="sidebar-context-head">
+              <p className="sidebar-label">Library</p>
+              <button
+                aria-label="Refresh memory library"
+                className="icon-button"
+                disabled={controlsBlocked}
+                onClick={() => void refreshAll()}
+                title="Refresh"
+                type="button"
+              >
+                ↻
+              </button>
+            </div>
+            <input
+              disabled={controlsBlocked}
+              value={filter}
+              onChange={event => setFilter(event.target.value)}
+              placeholder="Filter context"
+              type="search"
+            />
+            <div className="nav-tree-tabs" aria-label="Navigation tree">
+              <button
+                className={navTreeTab === 'memories' ? 'is-active' : undefined}
+                disabled={controlsBlocked}
+                onClick={() => setNavTreeTab('memories')}
+                type="button"
+              >
+                Memories
+              </button>
+              <button
+                className={navTreeTab === 'resources' ? 'is-active' : undefined}
+                disabled={controlsBlocked}
+                onClick={() => setNavTreeTab('resources')}
+                type="button"
+              >
+                Resources
+              </button>
+            </div>
+            <label className="check-row">
+              <input
+                checked={showSystem}
+                disabled={controlsBlocked}
+                onChange={event => setShowSystem(event.target.checked)}
+                type="checkbox"
+              />
+              <span>Show system files</span>
+            </label>
+            <nav className="tree" aria-label="Context tree">
+              {navTreeTab === 'resources' ? (
+                resourceTree ? (
+                  <Tree
+                    filter={filter}
+                    node={resourceTree}
+                    onSelect={selectTreeUri}
+                    selectable={false}
+                    selectedUri={selectedUri}
+                    showSystem={showSystem}
+                  />
+                ) : (
+                  <p className="tree-empty">No resources</p>
+                )
+              ) : tree ? (
+                <Tree
+                  filter={filter}
+                  node={tree}
+                  onSelect={selectTreeUri}
+                  onToggleSelection={(node, checked) =>
+                    setSelectedUris(current => {
+                      const next = new Set(current);
+                      for (const uri of selectableMemoryUris(node, {filter, showSystem})) {
+                        if (checked) {
+                          next.add(uri);
+                        } else {
+                          next.delete(uri);
+                        }
+                      }
+                      return next;
+                    })
+                  }
+                  selectedUri={selectedUri}
+                  selectedUris={selectedUris}
+                  selectionDisabled={bulkAction !== undefined}
+                  showSystem={showSystem}
+                />
+              ) : (
+                <p className="tree-empty">No memories</p>
+              )}
+            </nav>
+          </section>
+        ) : (
+          <div className="sidebar-product-note">
+            <span className="status-pulse" />
+            <div>
+              <strong>Local runtime</strong>
+              <p>{state ? `v${state.version} · private by default` : 'Connecting…'}</p>
+            </div>
+          </div>
+        )}
+        {state?.latestVersion && state.latestVersion !== state.version ? (
+          <div className="sidebar-update">
+            <span>Update available</span>
+            <strong>v{state.latestVersion}</strong>
+          </div>
+        ) : null}
       </aside>
       <div
         aria-label="Resize navigation panel"
@@ -853,19 +910,11 @@ function App(): React.ReactElement {
 
       <main className="main">
         <header className="topbar">
-          <div className="tabs">
-            {(['memory', 'shares', 'doctor', 'tools'] as const).map(name => (
-              <button
-                className={`tab ${panel === name ? 'is-active' : ''}`}
-                disabled={controlsBlocked}
-                key={name}
-                onClick={() => setPanel(name)}
-              >
-                {tabTitle(name)}
-              </button>
-            ))}
+          <div className="page-title">
+            <span>{tabTitle(panel)}</span>
+            <small>{panelDescription(panel)}</small>
           </div>
-          {selectedList.length > 0 ? (
+          {panel === 'memory' && selectedList.length > 0 ? (
             <div className="selection-bar">
               <span>{selectedList.length} selected</span>
               <button disabled={controlsBlocked} onClick={() => void bulk('archive')}>
@@ -878,8 +927,30 @@ function App(): React.ReactElement {
                 {bulkAction === 'forget' ? 'Forgetting...' : 'Forget'}
               </button>
             </div>
-          ) : null}
+          ) : (
+            <button
+              aria-label="Refresh manager"
+              className="topbar-refresh"
+              disabled={controlsBlocked}
+              onClick={() => void refreshAll()}
+              title="Refresh manager"
+              type="button"
+            >
+              ↻
+            </button>
+          )}
         </header>
+
+        {panel === 'graph' ? (
+          <section className="panel graph-panel is-active">
+            <GraphWorkspace
+              catalog={graphCatalog}
+              loadGraph={loadManagerGraph}
+              loadNodeDetail={loadManagerGraphNodeDetail}
+              onRefresh={() => void refreshGraphCatalog()}
+            />
+          </section>
+        ) : null}
 
         {panel === 'memory' ? (
           <section className="panel is-active">
@@ -1645,6 +1716,18 @@ async function api<T>(path: string, body?: Record<string, unknown>): Promise<T> 
   return data as T;
 }
 
+function loadManagerGraph(repositoryId: string, projectId: string): Promise<GraphVisualization> {
+  return api<GraphVisualization>(
+    `/api/graph?repository=${encodeURIComponent(repositoryId)}&project=${encodeURIComponent(projectId)}`,
+  );
+}
+
+function loadManagerGraphNodeDetail(repositoryId: string, nodeId: string): Promise<GraphNodeDetail> {
+  return api<GraphNodeDetail>(
+    `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&node=${encodeURIComponent(nodeId)}`,
+  );
+}
+
 function findNode(node: TreeNode, uri: string): TreeNode | undefined {
   if (node.uri === uri) {
     return node;
@@ -1777,12 +1860,59 @@ function tabTitle(name: PanelName): string {
   switch (name) {
     case 'doctor':
       return 'Health';
+    case 'graph':
+      return 'Graph';
     case 'memory':
-      return 'Memory';
+      return 'Library';
     case 'shares':
       return 'Sharing';
     case 'tools':
       return 'Tools';
+  }
+}
+
+function panelIcon(name: PanelName): string {
+  switch (name) {
+    case 'doctor':
+      return '✓';
+    case 'graph':
+      return '◉';
+    case 'memory':
+      return '◇';
+    case 'shares':
+      return '⇄';
+    case 'tools':
+      return '··';
+  }
+}
+
+function panelNavDescription(name: PanelName): string {
+  switch (name) {
+    case 'doctor':
+      return 'Runtime diagnostics';
+    case 'graph':
+      return 'Explore architecture';
+    case 'memory':
+      return 'Memories and resources';
+    case 'shares':
+      return 'Team repositories';
+    case 'tools':
+      return 'Recall and maintenance';
+  }
+}
+
+function panelDescription(name: PanelName): string {
+  switch (name) {
+    case 'doctor':
+      return 'Diagnostics and runtime repair';
+    case 'graph':
+      return 'Repository architecture explorer';
+    case 'memory':
+      return 'Browse, edit, and consolidate context';
+    case 'shares':
+      return 'Manage synchronized team context';
+    case 'tools':
+      return 'Recall, compact, import, export, and seed';
   }
 }
 

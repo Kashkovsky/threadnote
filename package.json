@@ -63,6 +63,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.185.1",
     "@vitest/coverage-istanbul": "^4.1.7",
     "effect": "4.0.0-beta.99",
     "husky": "^9.1.7",
@@ -80,6 +81,7 @@
     "node-llama-cpp": "3.19.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "three": "^0.185.1",
     "typescript-compiler": "npm:typescript@5.9.3"
   },
   "overrides": {
