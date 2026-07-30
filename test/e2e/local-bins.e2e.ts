@@ -169,6 +169,10 @@ describe('built self-contained distribution', () => {
     expect(firstQuery).toContain('Code graph: code-graph-repository');
     expect(firstQuery).toContain('withExclusiveFileLock');
 
+    const rebuilt = await runCli(['graph', 'index', '--cwd', graphRepository]);
+    expect(rebuilt).toContain('Indexing code graph: code-graph-repository');
+    expect(rebuilt).toContain('Code graph ready for code-graph-repository:');
+
     const pathResult = await runCliJson<{
       readonly edges?: ReadonlyArray<{readonly relation?: string; readonly targetName?: string}>;
       readonly operation?: string;

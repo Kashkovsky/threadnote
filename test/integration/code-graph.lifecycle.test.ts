@@ -1335,6 +1335,35 @@ describe('native code graph lifecycle', () => {
     expect(existsSync(join(home, 'indexes', 'code-graph'))).toBe(false);
   });
 
+  it('reports repository lock contention and resumes after the active graph build releases it', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    const lock = join(home, 'locks', 'indexes', 'code-graph', `${identity.checkoutId}.lock`);
+    mkdirSync(join(home, 'locks', 'indexes', 'code-graph'), {recursive: true});
+    writeFileSync(lock, `${process.pid}:active-code-graph-build\n`, {mode: 0o600});
+
+    const summary = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const waiting = yield* Deferred.make<void>();
+        const indexing = yield* Effect.forkChild(
+          indexer.index({
+            cwd: root,
+            onProgress: progress =>
+              progress.phase === 'waiting' ? Deferred.succeed(waiting, undefined).pipe(Effect.asVoid) : Effect.void,
+            threadnoteHome: home,
+          }),
+        );
+        yield* Deferred.await(waiting);
+        rmSync(lock, {force: true});
+        return yield* Fiber.join(indexing);
+      }),
+    );
+
+    expect(summary.snapshot.state).toBe('ready');
+  });
+
   it('rejects a derived repository symlink before opening SQLite', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');

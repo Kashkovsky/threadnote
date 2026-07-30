@@ -53,16 +53,29 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
 ) {
   const indexer = yield* CodeGraphIndexer;
   const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
   if (options.json) {
     const summary = yield* indexer.index({
       cwd,
       force: options.full,
-      onProgress: progress => Console.log(JSON.stringify({type: 'code-graph-progress', version: 1, ...progress})),
+      onProgress: progress =>
+        Console.log(
+          JSON.stringify({
+            type: 'code-graph-progress',
+            version: 1,
+            repository: {
+              displayName: identity.displayName,
+              repositoryId: identity.repositoryId,
+            },
+            ...progress,
+          }),
+        ),
       threadnoteHome: config.agentContextHome,
     });
     yield* Console.log(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
     return;
   }
+  yield* Console.log(`Indexing code graph: ${identity.displayName}`);
   yield* Effect.acquireUseRelease(
     startProgress('Scanning repository source from Git.'),
     progress =>
@@ -87,8 +100,9 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
   ).pipe(
     Effect.flatMap(summary =>
       Console.log(
-        `Code graph ready: ${summary.snapshot.fileCount} file(s), ${summary.snapshot.symbolCount} symbol(s), ` +
-          `${summary.snapshot.edgeCount} relationship(s); ${summary.reusedFiles} file(s) reused.`,
+        `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
+          `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +
+          `${summary.reusedFiles} file(s) reused.`,
       ),
     ),
   );
@@ -345,6 +359,8 @@ function progressMessage(progress: CodeGraphProgress): string {
   switch (progress.phase) {
     case 'registering':
       return 'Registering repository index';
+    case 'waiting':
+      return 'Waiting for another code graph build to finish';
     case 'scanning':
       return `Scanning · ${progress.accepted} accepted / ${progress.visited} visited · ${progress.skipped} skipped`;
     case 'parsing':

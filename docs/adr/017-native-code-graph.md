@@ -52,8 +52,11 @@ module resolution prove the target; local shadowing remains syntactic evidence.
 
 Normal users and agents do not run an indexing setup workflow. The first graph inspection builds a snapshot lazily.
 Within MCP, `query` and `explain` prefer bounded latency and may briefly return the latest ready snapshot with explicit
-stale metadata while the session watcher catches up; `path` and `impact` require a current snapshot. One-shot CLI graph
-queries synchronously refresh stale snapshots because they have no persistent session scope. The first MCP graph
+stale metadata while the session watcher catches up. A cold build or stale strict `path`/`impact` operation gets only a
+short foreground opportunity; if it is still running, MCP returns structured indexing phase and retry timing while the
+deduplicated session refresh continues. One-shot CLI graph queries synchronously refresh stale snapshots because they
+have no persistent session scope. Concurrent CLI writers report that another build is active and wait interruptibly;
+dead owners are recovered, but repository scale is not converted into a fixed lock-wait failure. The first MCP graph
 inspection starts one deduplicated, scoped watcher for that worktree; it is interrupted when the MCP process exits.
 The optional foreground CLI watcher provides the same debounced incremental indexing and periodic reconciliation.
 Memory/resource recall never invokes code-graph indexing or retrieval.

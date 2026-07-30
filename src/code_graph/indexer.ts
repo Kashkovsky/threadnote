@@ -78,7 +78,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           return yield* withExclusiveFileLock(
             fs,
             layout.lockPath,
-            CODE_GRAPH_LOCK_OPTIONS,
+            {
+              ...CODE_GRAPH_LOCK_OPTIONS,
+              onContention: () =>
+                (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+            },
             Effect.gen(function* () {
               if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                 return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
@@ -252,7 +256,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           return yield* withExclusiveFileLock(
             fs,
             layout.lockPath,
-            CODE_GRAPH_LOCK_OPTIONS,
+            {
+              ...CODE_GRAPH_LOCK_OPTIONS,
+              onContention: () =>
+                (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+            },
             Effect.gen(function* () {
               if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                 return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
@@ -609,7 +617,7 @@ function messageOf(cause: unknown): string {
 const CODE_GRAPH_LOCK_OPTIONS = {
   retryIntervalMilliseconds: 100,
   staleAfterMilliseconds: 120_000,
-  waitTimeoutMilliseconds: 10 * 60_000,
+  waitTimeoutMilliseconds: Number.POSITIVE_INFINITY,
 } as const;
 
 const FACT_MATERIALIZATION_BATCH_FILES = 128;

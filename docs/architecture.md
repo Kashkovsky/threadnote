@@ -109,13 +109,17 @@ Nested Git repositories and submodules keep separate graph identities and are no
 graph integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and
 temporary vector files.
 
-The first query builds a graph lazily. Within MCP, later `query` and `explain` calls may return a ready stale snapshot
-immediately and disclose that freshness explicitly while the session watcher catches up; `path` and `impact` wait for
-a current snapshot. One-shot CLI graph queries synchronously refresh stale snapshots because their application scope
-ends with the command. The first MCP graph inspection starts one scoped watcher per worktree for that MCP session.
-`graph watch` exposes the same watcher as a foreground CLI command. Both watcher modes subscribe to worktree filesystem
-events, ignore hidden-directory noise, debounce bursts, and perform a full Git reconciliation every five minutes to
-recover missed events.
+The first query builds a graph lazily. MCP gives a cold or strict-freshness build a short bounded opportunity to
+complete; a large monorepo then receives a structured `indexing` result with phase and retry timing while a deduplicated
+session-scoped build continues. A retry uses the newly activated snapshot without tying tool latency to repository
+size. Later `query` and `explain` calls may return a ready stale snapshot immediately and disclose that freshness while
+the watcher catches up; stale `path` and `impact` return the same retryable indexing state until a current snapshot is
+ready. One-shot CLI graph queries synchronously refresh stale snapshots because their application scope ends with the
+command. A CLI writer that encounters an active build reports a waiting phase and waits interruptibly, with dead-owner
+recovery but no arbitrary graph-lock deadline. The first MCP graph inspection starts one scoped watcher per worktree
+for that MCP session. `graph watch` exposes the same watcher as a foreground CLI command. Both watcher modes subscribe
+to worktree filesystem events, ignore hidden-directory noise, debounce bursts, and perform a full Git reconciliation
+every five minutes to recover missed events.
 
 ## Writes and sharing
 

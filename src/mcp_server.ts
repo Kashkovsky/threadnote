@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Console, Effect, FileSystem, Path, Result} from 'effect';
+import {Clock, Console, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from './manifest.js';
 import {buildOnboardingGuide, gatherOnboardingContext} from './onboarding.js';
@@ -119,7 +119,7 @@ import {
 } from './recall/runtime.js';
 import {CodeGraphQueryService, renderCodeGraphResult} from './code_graph/query.js';
 import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
-import {CodeGraphWatcher} from './code_graph/watcher.js';
+import {CodeGraphWatcher, type CodeGraphRefreshStatus, type CodeGraphWatcherShape} from './code_graph/watcher.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -177,6 +177,8 @@ type CheckedOptionalTextArray =
 let mcpStartupVersion: string | undefined;
 let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
 const STALE_NOTICE_TTL_MS = 60_000;
+const MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS = 5_000;
+const MCP_CODE_GRAPH_POLL_MILLISECONDS = 100;
 
 const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
   if (mcpStartupVersion === undefined) {
@@ -215,7 +217,7 @@ export const mcpServerEffect = Effect.gen(function* () {
       });
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
-        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. For non-trivial source investigation call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals, unsupported files, verification, or graph failure. Write durable knowledge and handoffs directly; keep stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
+        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. For non-trivial source investigation call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals, unsupported files, verification, or graph failure. Retry `state=indexing` graph calls after the requested delay. Write durable knowledge and handoffs directly; keep stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -727,7 +729,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, or fallback. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
+        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, or fallback. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance. A cold large-repository call may return state=indexing with progress instead of blocking; retry the same call after retryAfterMilliseconds.',
       inputSchema: {
         base: McpInput.string('Git base ref for operation=impact when query is omitted; defaults to HEAD~1'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
@@ -789,6 +791,23 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           threadnoteHome: config.agentContextHome,
         });
         const service = yield* CodeGraphQueryService;
+        let status = yield* service.status(config.agentContextHome, checkedCwd.value);
+        if (status.stale) {
+          yield* watcher.refresh({
+            cwd: identity.repoRoot,
+            key: identity.worktreeId,
+            threadnoteHome: config.agentContextHome,
+          });
+        }
+        const strictFreshness = operation === 'impact' || operation === 'path';
+        if (!status.readySnapshot || (status.stale && strictFreshness)) {
+          yield* waitForCodeGraphRefresh(watcher, identity.worktreeId);
+          status = yield* service.status(config.agentContextHome, checkedCwd.value);
+          if (!status.readySnapshot || (status.stale && strictFreshness)) {
+            const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId));
+            return codeGraphRefreshResult(operation, refreshStatus);
+          }
+        }
         const result = yield* service.inspect({
           baseCommit: changes?.baseCommit,
           cwd: checkedCwd.value,
@@ -800,6 +819,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           nodeLimit,
           operation,
           query: requestedQuery || changes?.paths.join(' '),
+          refresh: false,
           seedQueries: changes?.paths,
           symbol,
           threadnoteHome: config.agentContextHome,
@@ -816,6 +836,67 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
       );
     },
   );
+}
+
+const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(function* (
+  watcher: CodeGraphWatcherShape,
+  key: string,
+) {
+  const attempts = Math.ceil(MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS / MCP_CODE_GRAPH_POLL_MILLISECONDS);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const status = yield* watcher.status(key);
+    if (Option.isSome(status) && status.value.state !== 'indexing') return;
+    yield* Effect.sleep(MCP_CODE_GRAPH_POLL_MILLISECONDS);
+  }
+});
+
+function codeGraphRefreshResult(
+  operation: 'explain' | 'impact' | 'path' | 'query',
+  status: CodeGraphRefreshStatus | undefined,
+): CallToolResult {
+  if (status?.state === 'failed') {
+    const message = status.message.slice(0, 1_000);
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Code graph background indexing failed: ${message}\n` +
+            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry inspect_code_graph.',
+        },
+      ],
+      isError: true,
+      structuredContent: {
+        message,
+        operation,
+        state: 'failed',
+        type: 'code-graph-index-state',
+        version: 1,
+      },
+    };
+  }
+  const progress = status?.state === 'indexing' ? status.progress : undefined;
+  const phase = progress?.phase ?? 'queued';
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          `Code graph indexing is continuing in the background (phase: ${phase}). ` +
+          `Retry this same inspect_code_graph call in about ${MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS / 1_000} seconds. ` +
+          'Do not replace graph-capable investigation with broad rg/grep while the graph is building.',
+      },
+    ],
+    structuredContent: {
+      operation,
+      phase,
+      ...(progress ? {progress} : {}),
+      retryAfterMilliseconds: MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS,
+      state: 'indexing',
+      type: 'code-graph-index-state',
+      version: 1,
+    },
+  };
 }
 
 function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {

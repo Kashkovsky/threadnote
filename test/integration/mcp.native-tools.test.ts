@@ -1,4 +1,5 @@
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -100,6 +101,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('Do not store');
         expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
         expect(instructions).toContain('exact literals, unsupported files, verification, or graph failure');
+        expect(instructions).toContain('Retry `state=indexing` graph calls');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -179,6 +181,7 @@ describe('Threadnote MCP toolsets', () => {
         });
         expect(graphTool?.description).toContain('use this before broad rg/grep');
         expect(graphTool?.description).toContain('exact literals, unsupported files, verification, or fallback');
+        expect(graphTool?.description).toContain('state=indexing with progress');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
@@ -270,6 +273,88 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   }, 90_000);
+
+  it('returns bounded cold-build progress while a large repository graph continues in the background', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repository = join(fixture.root, 'cold-repository');
+        await mkdir(join(repository, 'src'), {recursive: true});
+        await writeFile(join(repository, 'package.json'), '{"name":"cold-repository"}\n', 'utf8');
+        await writeFile(
+          join(repository, 'src', 'index.ts'),
+          'export function coldGraphSymbol(): string { return "cold"; }\n',
+          'utf8',
+        );
+        execFileSync('git', ['init', '-q'], {cwd: repository});
+        execFileSync('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+        execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+        execFileSync('git', ['add', '.'], {cwd: repository});
+        execFileSync('git', ['commit', '-qm', 'fixture'], {cwd: repository});
+
+        const gitCommonDirectory = await realpath(
+          execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+            cwd: repository,
+            encoding: 'utf8',
+          }).trim(),
+        );
+        const checkoutId = createHash('sha256').update(`checkout-v1\n${gitCommonDirectory}`).digest('hex');
+        const graphLock = join(fixture.home, 'locks', 'indexes', 'code-graph', `${checkoutId}.lock`);
+        await mkdir(join(fixture.home, 'locks', 'indexes', 'code-graph'), {recursive: true});
+        await writeFile(graphLock, `${process.pid}:cold-build-test\n`, {encoding: 'utf8', mode: 0o600});
+
+        const startedAt = Date.now();
+        const pending = await (async () => {
+          try {
+            return await client.callTool(
+              {
+                arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+                name: 'inspect_code_graph',
+              },
+              undefined,
+              {timeout: 10_000},
+            );
+          } finally {
+            await rm(graphLock, {force: true});
+          }
+        })();
+        expect(Date.now() - startedAt).toBeLessThan(8_000);
+        expect(pending.isError).not.toBe(true);
+        expect(pending.structuredContent).toMatchObject({
+          operation: 'query',
+          phase: 'waiting',
+          retryAfterMilliseconds: 5_000,
+          state: 'indexing',
+          type: 'code-graph-index-state',
+          version: 1,
+        });
+        expect(JSON.stringify(pending.content)).toContain('Retry this same inspect_code_graph call');
+
+        let ready: typeof pending | undefined;
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          const candidate = await client.callTool(
+            {
+              arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 10_000},
+          );
+          if ((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state !== 'indexing') {
+            ready = candidate;
+            break;
+          }
+        }
+        expect(ready?.isError).not.toBe(true);
+        expect(ready?.structuredContent).toMatchObject({
+          freshness: 'current',
+          nodes: expect.arrayContaining([expect.objectContaining({name: 'coldGraphSymbol'})]),
+          operation: 'query',
+        });
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
 
   it('keeps inspected repositories fresh with one MCP-session watcher', async () => {
     await withMcpClient(

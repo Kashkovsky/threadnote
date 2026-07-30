@@ -135,6 +135,12 @@ clones keep separate operational stores, and one worktree can never see another'
 symbol, edge, lexical-term, and vector counts are not capped by repository size; fixed-size processing batches bound
 transient work without truncating the stored graph.
 
+Small cold graphs normally finish inside the first MCP call. If a large monorepo needs longer, `inspect_code_graph`
+returns a structured `state: "indexing"` response with the current phase and `retryAfterMilliseconds` while the
+session-scoped build continues. Agents retry the same graph call instead of waiting for the MCP transport timeout or
+falling back to broad text search. Concurrent `threadnote graph index` commands show that they are waiting for the
+active build and remain interruptible; they do not fail after a fixed graph-lock deadline.
+
 ```sh
 threadnote graph status
 threadnote graph query --query "exclusive file lock"

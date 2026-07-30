@@ -109,6 +109,9 @@ export type CodeGraphProgress =
       readonly phase: 'registering';
     }
   | {
+      readonly phase: 'waiting';
+    }
+  | {
       readonly accepted: number;
       readonly phase: 'scanning';
       readonly skipped: number;

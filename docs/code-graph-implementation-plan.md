@@ -439,8 +439,10 @@ monkey-patching or nested runtimes.
 
 - **Require fresh:** explicit index, path, and impact commands wait for a complete current snapshot and show progress.
 - **MCP latency bounded:** MCP `query` and `explain` use the newest compatible ready snapshot without synchronously
-  rebuilding a stale graph. The response reports the snapshot commit and any stale or dirty-overlay limitation. The
-  first MCP graph inspection starts a deduplicated worktree watcher scoped to that MCP process.
+  rebuilding a stale graph. A cold build gets a short bounded foreground opportunity, then returns structured
+  `state: "indexing"` progress and retry timing while a deduplicated session refresh continues. Stale `path` and
+  `impact` use that same retryable state until a current snapshot is ready. The response reports the snapshot commit
+  and any stale or dirty-overlay limitation.
 - **One-shot CLI fresh:** `graph query`, `graph explain`, `graph path`, and `graph impact` synchronously refresh a stale
   graph because a short-lived CLI process has no session scope in which a watcher could remain alive. The foreground
   CLI watcher is available when continuous indexing is useful outside MCP.
@@ -453,7 +455,8 @@ command owns one subscription for the command lifetime. Neither is a daemon.
 
 - one writer lock per repository;
 - concurrent readers continue using ready snapshots;
-- a second writer rechecks freshness after acquiring the lock;
+- a second writer reports a waiting phase, waits interruptibly without an arbitrary graph-build deadline, and rechecks
+  freshness after acquiring the lock;
 - extraction checkpoints are keyed by content hash and extractor version;
 - graph snapshot activation is transactional;
 - an immutable vector sidecar is associated with a snapshot in a later transaction only after checksum verification;
@@ -531,6 +534,8 @@ threadnote graph purge [--cwd <path>] [--all] [--dry-run]
 Interactive builds show phase and count progress:
 
 ```text
+Indexing code graph: organization/repository
+Waiting         another code graph build is active
 Scanning        1,842 files
 Parsing         128/231 changed files · 1,611 reused
 Resolving       14/14 TypeScript projects
@@ -552,8 +557,10 @@ Expose one read-only `inspect_code_graph` tool rather than a tool per operation.
 - `includeHeuristic` and `includeModelAssociations`, both false by default.
 
 The response includes repository identity, snapshot commit, dirty-overlay state, freshness, warnings, nodes, edges,
-evidence, and compact rendered text. Write/build behavior remains behind CLI commands or a separately annotated
-mutation tool if MCP indexing is later required.
+evidence, and compact rendered text. A cold large-repository build returns a non-error `code-graph-index-state`
+payload with `state: "indexing"`, current `phase`, and `retryAfterMilliseconds`; the agent retries the same request
+while the MCP-session build continues. The tool remains annotated as non-read-only because starting that disposable
+derived build mutates graph index state.
 
 ### Manager
 
