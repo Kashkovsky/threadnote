@@ -1,4 +1,5 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Path} from 'effect';
+import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {compareVersions} from './utils.js';
@@ -96,7 +97,7 @@ export const activateStandaloneRelease = Effect.fn('installations.activateReleas
     flag: 'wx',
     mode: 0o600,
   });
-  yield* syncFile(fs, temporaryPath);
+  yield* syncWritableFile(fs, temporaryPath);
   yield* writePrivateJsonAtomically(fs, path, journalPath, {
     activePath,
     backupPath,
@@ -584,24 +585,11 @@ const writePrivateJsonAtomically = Effect.fn('installations.writePrivateJsonAtom
   yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
   yield* Effect.gen(function* () {
     yield* fs.writeFileString(temporary, `${JSON.stringify(value, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
-    yield* syncFile(fs, temporary);
+    yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
     yield* syncDirectoryBestEffort(fs, directory);
   }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
 });
-
-function syncFile(fs: FileSystem.FileSystem, target: string) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const file = yield* fs.open(target, {flag: 'r'});
-      yield* file.sync;
-    }),
-  );
-}
-
-function syncDirectoryBestEffort(fs: FileSystem.FileSystem, directory: string) {
-  return syncFile(fs, directory).pipe(Effect.catch(() => Effect.void));
-}
 
 const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersions')(function* (
   fs: FileSystem.FileSystem,

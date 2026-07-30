@@ -12,6 +12,7 @@ import {installCommandShim} from './command-shim.js';
 import {extractGzipTar} from './effect/archive.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
+import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {getJsonEffect, HttpService} from './effect/http.js';
 import {sha256FileHex} from './effect/digest.js';
@@ -1008,9 +1009,9 @@ const writePostUpdateState = Effect.fn('update.writePostUpdateState')(function* 
   yield* ensureDirectory(config.agentContextHome, false);
   yield* Effect.gen(function* () {
     yield* fs.writeFileString(temporary, `${JSON.stringify(state, null, 2)}\n`, {flag: 'wx', mode: 0o600});
-    yield* syncPath(fs, temporary);
+    yield* syncWritableFile(fs, temporary);
     yield* fs.rename(temporary, target);
-    yield* syncPath(fs, path.dirname(target)).pipe(Effect.catch(() => Effect.void));
+    yield* syncDirectoryBestEffort(fs, path.dirname(target));
   }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
 });
 
@@ -1018,15 +1019,6 @@ const postUpdateStatePath = Effect.fn('update.postUpdateStatePath')(function* (c
   const path = yield* Path.Path;
   return path.join(config.agentContextHome, POST_UPDATE_STATE_FILE);
 });
-
-function syncPath(fs: FileSystem.FileSystem, target: string) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const file = yield* fs.open(target, {flag: 'r'});
-      yield* file.sync;
-    }),
-  );
-}
 
 export function releaseSource(environment: NodeJS.ProcessEnv): string {
   return resolveReleaseSource(undefined, false, environment);
