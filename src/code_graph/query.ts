@@ -247,9 +247,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     .filter(id => !lexicalById.has(id))
     .slice(0, Math.max(0, nodeLimit - lexicalSeeds.length));
   const semanticOnly =
-    timedOut || semanticOnlyIds.length === 0
-      ? []
-      : yield* store.symbolsByIds(databasePath, snapshotId, semanticOnlyIds);
+    semanticOnlyIds.length === 0 ? [] : yield* store.symbolsByIds(databasePath, snapshotId, semanticOnlyIds);
   timedOut ||= yield* deadlineReached(deadline);
   const rankedSeeds = [
     ...lexicalSeeds.map(node => ({...node, score: Math.max(node.score, semantic.get(node.id) ?? 0)})),

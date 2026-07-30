@@ -30,6 +30,16 @@ const dependent: CodeGraphQueryNode = {
   qualifiedName: 'dependent',
 };
 
+const semanticMatch: CodeGraphQueryNode = {
+  ...seed,
+  contentHash: 'semantic-hash',
+  id: 'semantic',
+  kind: 'document',
+  name: 'architecture.md',
+  path: 'docs/architecture.md',
+  qualifiedName: 'docs/architecture.md',
+};
+
 const edge: CodeGraphEdge = {
   confidence: 1,
   evidencePath: dependent.path,
@@ -57,6 +67,57 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
+  it.effect('preserves semantic evidence that completes after the traversal deadline', () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const store = {
+        edgesForNodes: () =>
+          Effect.sync(() => {
+            calls.push('adjacency');
+            return [];
+          }),
+        searchSymbolsMany: () =>
+          Effect.sync(() => {
+            calls.push('search');
+            return [[]];
+          }),
+        symbolsByIds: () =>
+          Effect.sync(() => {
+            calls.push('hydration');
+            return [semanticMatch];
+          }),
+      } as unknown as CodeGraphStoreShape;
+      const delayedEmbedding = {
+        search: () =>
+          Effect.gen(function* () {
+            calls.push('semantic');
+            yield* TestClock.adjust(2_001);
+            return new Map([[semanticMatch.id, 0.8]]);
+          }),
+      } as unknown as CodeGraphEmbeddingIndexShape;
+
+      const result = yield* traversalQuery(
+        store,
+        layout.databasePath,
+        'snapshot',
+        'serialize concurrent tasks via mutual exclusion',
+        'both',
+        20,
+        40,
+        2,
+        ['resolved'],
+        delayedEmbedding,
+        '/fixture/home',
+        layout,
+        false,
+      );
+
+      expect(result.nodes).toEqual([expect.objectContaining({id: semanticMatch.id, score: 0.8})]);
+      expect(result.warnings).toContain('Graph traversal reached its elapsed-time budget; results are partial.');
+      expect(calls).toEqual(['search', 'semantic', 'hydration']);
+    }),
+  );
+
   for (const phase of ['search', 'adjacency', 'hydration'] as const) {
     it.effect(`enforces the absolute deadline after ${phase}`, () =>
       Effect.gen(function* () {
