@@ -1,4 +1,4 @@
-import {Cause, Clock, Effect} from 'effect';
+import {Cause, Clock, Console, Effect, Option} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import type {MemoryRecord} from '../memory_document.js';
 import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
@@ -183,7 +183,12 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   return {...sections, expansionCandidates};
 });
 
-export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(function* (
+export interface RecallSemanticScoresResult {
+  readonly scores: Option.Option<ReadonlyMap<string, number>>;
+  readonly warning: Option.Option<string>;
+}
+
+export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScoresResult')(function* (
   config: RecallRuntimeConfig,
   query: string,
   limit: number,
@@ -219,9 +224,69 @@ export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(f
       ),
     );
   }).pipe(
-    Effect.catchCause(cause => (Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
+    Effect.map(
+      scores =>
+        ({
+          scores: Option.fromNullishOr(scores),
+          warning: Option.none(),
+        }) satisfies RecallSemanticScoresResult,
+    ),
+    Effect.catchCause(cause =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.succeed({
+            scores: Option.none(),
+            warning: Option.some(semanticRecallFailureWarning(cause)),
+          } satisfies RecallSemanticScoresResult),
+    ),
   );
 });
+
+export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(function* (
+  config: RecallRuntimeConfig,
+  query: string,
+  limit: number,
+) {
+  const result = yield* loadRecallSemanticScoresResult(config, query, limit);
+  if (Option.isSome(result.warning)) yield* Console.warn(result.warning.value);
+  return Option.getOrUndefined(result.scores);
+});
+
+function semanticRecallFailureWarning(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause);
+  const failureType =
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    error._tag === 'EmbeddingFailed' &&
+    'message' in error &&
+    typeof error.message === 'string' &&
+    error.message.includes('isolated worker retry was exhausted')
+      ? 'LocalModelWorkerRetryExhausted'
+      : semanticRecallFailureType(error);
+  return (
+    `Local AI recall warning: semantic retrieval failed (${failureType}); deterministic lexical recall continued. ` +
+    'Run threadnote doctor --dry-run if this repeats.'
+  );
+}
+
+function semanticRecallFailureType(error: unknown): string {
+  if (typeof error !== 'object' || error === null || !('_tag' in error) || typeof error._tag !== 'string') {
+    return 'SemanticRecallUnavailable';
+  }
+  return [
+    'EmbeddingFailed',
+    'InferenceInterrupted',
+    'InsufficientMemory',
+    'ModelLoadFailed',
+    'ModelNotInstalled',
+    'NativeRuntimeUnavailable',
+    'UnsupportedNativeRuntime',
+    'VectorIndexCorrupt',
+  ].includes(error._tag)
+    ? error._tag
+    : 'SemanticRecallUnavailable';
+}
 
 const applySelectedNativeReranker = Effect.fn('recall.applySelectedNativeReranker')(function* (
   home: string,

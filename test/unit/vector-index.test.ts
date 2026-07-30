@@ -316,6 +316,7 @@ describe('vector index generations', () => {
             Layer.succeed(
               LocalModelRuntime,
               LocalModelRuntime.of({
+                diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
                 embedMany: () =>
                   Effect.fail(
                     new InferenceInterrupted({
@@ -468,6 +469,7 @@ describe('vector index generations', () => {
       const interruptedLayer = Layer.succeed(
         LocalModelRuntime,
         LocalModelRuntime.of({
+          diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
           embedMany: ({inputs, manifest: requested}) => {
             call += 1;
             if (call === 2) {
@@ -554,6 +556,7 @@ describe('vector index generations', () => {
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: ({inputs, manifest: requested}) =>
           Effect.promise(
             () =>
@@ -609,6 +612,7 @@ function fakeRuntimeLayer(
   return Layer.succeed(
     LocalModelRuntime,
     LocalModelRuntime.of({
+      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
       embedMany: ({inputs, manifest: requested}) =>
         Effect.sync(() => {
           onInputs(inputs);

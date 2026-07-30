@@ -169,6 +169,7 @@ function testEmbeddingLayer(embeddedBatches: number[]) {
   const runtimeLayer = Layer.succeed(
     LocalModelRuntime,
     LocalModelRuntime.of({
+      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
       embedMany: ({inputs, manifest: requested}) => {
         embeddedBatches.push(inputs.length);
         return Effect.succeed(

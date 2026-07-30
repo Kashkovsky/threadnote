@@ -108,6 +108,7 @@ describe('recall runtime orchestration', () => {
     const failingRuntimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: () => Effect.die(new Error('synthetic semantic runtime failure')),
         generate: () => Effect.die(new Error('Unexpected generation')),
         rerank: () => Effect.die(new Error('Unexpected reranking')),
@@ -130,6 +131,7 @@ describe('recall runtime orchestration', () => {
 
     expect(recalled.output).toContain('fallback.md');
     expect(recalled.output).toContain('lexical-fallback-anchor');
+    expect(recalled.output).toContain('Local AI recall warning: semantic retrieval failed (SemanticRecallUnavailable)');
   });
 
   it('uses a complete ranked expansion vocabulary without opening the lexical index', async () => {

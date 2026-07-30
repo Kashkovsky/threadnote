@@ -1,0 +1,1050 @@
+import {Cause, Effect, Exit, Layer, Option, Schema, Semaphore} from 'effect';
+import type {LocalModelManifest} from '../../models/catalog.js';
+import {parseLocalModelManifest} from '../../models/catalog.js';
+import {
+  EmbeddingFailed,
+  GenerationFailed,
+  InferenceInterrupted,
+  InsufficientMemory,
+  InvalidModelOutput,
+  ModelLoadFailed,
+  ModelNotInstalled,
+  NativeRuntimeUnavailable,
+  RerankingFailed,
+  UnsupportedNativeRuntime,
+} from './errors.js';
+import {
+  localModelRuntimeLayer,
+  LocalModelRuntime,
+  type LocalEmbeddingRequest,
+  type LocalGenerationRequest,
+  type LocalModelRuntimeShape,
+  type LocalRerankingRequest,
+} from './local-model-runtime.js';
+import type {LlamaCppDiagnostics} from './llama-cpp-engine.js';
+import {SystemInfo, type SystemInfoShape} from '../system.js';
+
+export const LOCAL_MODEL_WORKER_ARGUMENT = '--threadnote-local-model-worker';
+
+const DEFAULT_REQUEST_DEADLINE_MS = 120_000;
+const DEFAULT_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;
+const DEFAULT_STDERR_LIMIT_BYTES = 32 * 1024;
+const WORKER_SHUTDOWN_DEADLINE_MS = 1_000;
+const EMBEDDING_BATCH_SIZE = 32;
+const PROTOCOL_VERSION = 1;
+const WORKER_CRASH_PATTERN =
+  /(?:bun has crashed|panic(?:\([^)]*\))?:|segmentation fault|fatal error:|reached heap limit|allocation failed)/i;
+
+type WorkerOperation = 'diagnostics' | 'embedMany' | 'generate' | 'rerank';
+type WorkerFailureReason = 'crash' | 'exit' | 'protocol' | 'spawn' | 'timeout' | 'write';
+
+interface WorkerRequest {
+  readonly id: string;
+  readonly operation: WorkerOperation;
+  readonly payload: unknown;
+  readonly protocol: typeof PROTOCOL_VERSION;
+}
+
+interface WorkerSuccess {
+  readonly id: string;
+  readonly ok: true;
+  readonly protocol: typeof PROTOCOL_VERSION;
+  readonly result: unknown;
+}
+
+interface WorkerFailure {
+  readonly error: {
+    readonly tag: string;
+  };
+  readonly id: string;
+  readonly ok: false;
+  readonly protocol: typeof PROTOCOL_VERSION;
+}
+
+type WorkerResponse = WorkerFailure | WorkerSuccess;
+
+export class LocalModelWorkerTransportError extends Schema.TaggedErrorClass<LocalModelWorkerTransportError>()(
+  'LocalModelWorkerTransportError',
+  {
+    message: Schema.String,
+    operation: Schema.String,
+    reason: Schema.Literals(['crash', 'exit', 'protocol', 'spawn', 'timeout', 'write']),
+  },
+) {}
+
+export interface LocalModelWorkerProcess {
+  readonly closeInput: () => Promise<void> | void;
+  readonly exited: Promise<number>;
+  readonly kill: () => void;
+  readonly stderr: AsyncIterable<string | Uint8Array>;
+  readonly stdout: AsyncIterable<string | Uint8Array>;
+  readonly write: (line: string) => Promise<void> | void;
+}
+
+export interface LocalModelWorkerSpawnOptions {
+  readonly arguments: readonly string[];
+  readonly environment: Readonly<NodeJS.ProcessEnv>;
+  readonly executable: string;
+}
+
+export type LocalModelWorkerSpawner = (
+  options: LocalModelWorkerSpawnOptions,
+) => LocalModelWorkerProcess | Promise<LocalModelWorkerProcess>;
+
+export interface IsolatedLocalModelRuntimeOptions {
+  readonly maxStderrBytes?: number;
+  readonly responseLimitBytes?: number;
+  readonly requestDeadlineMs?: number;
+  readonly spawnWorker?: LocalModelWorkerSpawner;
+}
+
+interface LocalModelRuntimeWithDiagnostics extends LocalModelRuntimeShape {
+  readonly diagnostics: () => Effect.Effect<LlamaCppDiagnostics, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
+}
+
+interface PendingResponse {
+  readonly id: string;
+  readonly operation: WorkerOperation;
+  readonly reject: (error: LocalModelWorkerTransportError) => void;
+  readonly resolve: (response: WorkerResponse) => void;
+}
+
+interface DecodedOperationError {
+  readonly tag: string;
+}
+
+/**
+ * Runs local inference in one persistent child process. A native crash can take
+ * down the worker, but not the Threadnote CLI or MCP server that owns this
+ * layer.
+ */
+export function isolatedLocalModelRuntimeLayer(
+  options: IsolatedLocalModelRuntimeOptions = {},
+): Layer.Layer<LocalModelRuntime, never, SystemInfo> {
+  return Layer.effect(
+    LocalModelRuntime,
+    Effect.acquireRelease(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        const permits = yield* Semaphore.make(1);
+        const pool = new LocalModelWorkerPool(system, options);
+
+        const request = <A>(
+          operation: WorkerOperation,
+          payload: unknown,
+          decode: (result: unknown) => Option.Option<A>,
+        ): Effect.Effect<A, DecodedOperationError | LocalModelWorkerTransportError> => {
+          const transmitted: Effect.Effect<WorkerResponse, LocalModelWorkerTransportError> = Effect.tryPromise({
+            try: signal => pool.request(operation, payload, signal),
+            catch: (cause): LocalModelWorkerTransportError =>
+              cause instanceof LocalModelWorkerTransportError ? cause : transportError(operation, 'protocol'),
+          });
+          return Effect.gen(function* () {
+            const response = yield* transmitted;
+            if (!response.ok) return yield* Effect.fail<DecodedOperationError>(response.error);
+            const result = decode(response.result);
+            return Option.isSome(result)
+              ? result.value
+              : yield* Effect.fail<LocalModelWorkerTransportError>(transportError(operation, 'protocol'));
+          });
+        };
+
+        const service: LocalModelRuntimeWithDiagnostics = {
+          diagnostics: () =>
+            permits.withPermit(
+              request('diagnostics', {}, decodeDiagnostics).pipe(
+                Effect.mapError(error =>
+                  error instanceof LocalModelWorkerTransportError
+                    ? new NativeRuntimeUnavailable({
+                        cause: genericWorkerCause(error.reason),
+                        message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
+                      })
+                    : remoteNativeRuntimeError(error),
+                ),
+              ),
+            ),
+          embedMany: input =>
+            permits.withPermit(
+              Effect.gen(function* () {
+                const vectors: (readonly number[])[] = [];
+                for (let start = 0; start < input.inputs.length; start += EMBEDDING_BATCH_SIZE) {
+                  const batch = input.inputs.slice(start, start + EMBEDDING_BATCH_SIZE);
+                  const response = yield* request('embedMany', {...input, inputs: batch}, result =>
+                    decodeVectors(result, batch.length, input.manifest.dimensions),
+                  ).pipe(
+                    Effect.mapError(error =>
+                      error instanceof LocalModelWorkerTransportError
+                        ? workerEmbeddingFailure(input, error)
+                        : remoteEmbeddingFailure(input, error),
+                    ),
+                  );
+                  vectors.push(...response);
+                }
+                return vectors;
+              }),
+            ),
+          generate: input =>
+            permits.withPermit(
+              request('generate', input, result => Option.some(result)).pipe(
+                Effect.mapError(error =>
+                  error instanceof LocalModelWorkerTransportError
+                    ? workerGenerationFailure(input, error)
+                    : remoteGenerationFailure(input, error),
+                ),
+              ),
+            ),
+          rerank: input =>
+            permits.withPermit(
+              request('rerank', input, result => decodeScores(result, input.documents.length)).pipe(
+                Effect.mapError(error =>
+                  error instanceof LocalModelWorkerTransportError
+                    ? workerRerankingFailure(input, error)
+                    : remoteRerankingFailure(input, error),
+                ),
+              ),
+            ),
+        };
+        return {pool, service};
+      }),
+      ({pool}) => Effect.promise(() => pool.close()),
+    ).pipe(Effect.map(({service}) => service)),
+  );
+}
+
+/**
+ * JSON-lines worker server. The caller normally supplies
+ * `LocalModelRuntime.nativeLayer`, which keeps native model sessions warm for
+ * the lifetime of this effect.
+ */
+export const localModelWorkerServer: Effect.Effect<void, never, LocalModelRuntime> = Effect.gen(function* () {
+  const runtime = yield* LocalModelRuntime;
+  yield* Effect.callback<void>(resume => {
+    void serveWorker(runtime, {
+      input: process.stdin as AsyncIterable<string | Uint8Array>,
+      writeLine: line =>
+        new Promise<void>((resolve, reject) => {
+          process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+        }),
+    }).then(
+      () => resume(Effect.void),
+      () => resume(Effect.void),
+    );
+    return Effect.sync(() => {
+      if (!process.stdin.destroyed) process.stdin.pause();
+    });
+  });
+});
+
+export const nativeLocalModelWorkerServer = localModelWorkerServer.pipe(Effect.provide(localModelRuntimeLayer()));
+
+export interface LocalModelWorkerServerIo {
+  readonly input: AsyncIterable<string | Uint8Array>;
+  readonly writeLine: (line: string) => Promise<void>;
+}
+
+export async function serveWorker(runtime: LocalModelRuntimeShape, io: LocalModelWorkerServerIo): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffered = '';
+  for await (const chunk of io.input) {
+    buffered += typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true});
+    for (;;) {
+      const newline = buffered.indexOf('\n');
+      if (newline < 0) break;
+      const line = buffered.slice(0, newline).replace(/\r$/, '');
+      buffered = buffered.slice(newline + 1);
+      if (!line) continue;
+      await io.writeLine(JSON.stringify(await handleWorkerLine(runtime, line)));
+    }
+  }
+  buffered += decoder.decode();
+  const finalLine = buffered.trim();
+  if (finalLine) await io.writeLine(JSON.stringify(await handleWorkerLine(runtime, finalLine)));
+}
+
+class LocalModelWorkerPool {
+  private connection = Option.none<LocalModelWorkerConnection>();
+  private readonly deadlineMs: number;
+  private readonly maxStderrBytes: number;
+  private readonly responseLimitBytes: number;
+  private readonly spawnWorker: LocalModelWorkerSpawner;
+  private sequence = 0;
+
+  constructor(
+    private readonly system: SystemInfoShape,
+    options: IsolatedLocalModelRuntimeOptions,
+  ) {
+    this.deadlineMs = positiveInteger(options.requestDeadlineMs, DEFAULT_REQUEST_DEADLINE_MS);
+    this.maxStderrBytes = positiveInteger(options.maxStderrBytes, DEFAULT_STDERR_LIMIT_BYTES);
+    this.responseLimitBytes = positiveInteger(options.responseLimitBytes, DEFAULT_RESPONSE_LIMIT_BYTES);
+    this.spawnWorker = options.spawnWorker ?? spawnBunWorker;
+  }
+
+  async close(): Promise<void> {
+    if (Option.isNone(this.connection)) return;
+    const connection = this.connection.value;
+    this.connection = Option.none();
+    await connection.close();
+  }
+
+  async request(operation: WorkerOperation, payload: unknown, signal: AbortSignal): Promise<WorkerResponse> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let connection = Option.none<LocalModelWorkerConnection>();
+      try {
+        const activeConnection = await this.activeConnection(operation);
+        connection = Option.some(activeConnection);
+        const id = `${this.system.processId}-${++this.sequence}`;
+        return await activeConnection.request(
+          {
+            id,
+            operation,
+            payload,
+            protocol: PROTOCOL_VERSION,
+          },
+          this.deadlineMs,
+          signal,
+        );
+      } catch (cause: unknown) {
+        if (Option.isSome(connection)) await this.discard(connection.value);
+        if (!(cause instanceof LocalModelWorkerTransportError) || attempt === 1 || signal.aborted) throw cause;
+      }
+    }
+    throw transportError(operation, 'exit');
+  }
+
+  private async activeConnection(operation: WorkerOperation): Promise<LocalModelWorkerConnection> {
+    if (Option.isSome(this.connection) && !this.connection.value.isClosed) return this.connection.value;
+    try {
+      const process = await this.spawnWorker(workerSpawnOptions(this.system));
+      const connection = new LocalModelWorkerConnection(process, this.maxStderrBytes, this.responseLimitBytes);
+      this.connection = Option.some(connection);
+      return connection;
+    } catch {
+      throw transportError(operation, 'spawn');
+    }
+  }
+
+  private async discard(connection: LocalModelWorkerConnection): Promise<void> {
+    if (Option.isSome(this.connection) && this.connection.value === connection) this.connection = Option.none();
+    await connection.close();
+  }
+}
+
+class LocalModelWorkerConnection {
+  private closed = false;
+  private pending = Option.none<PendingResponse>();
+  private stderrTail = new Uint8Array();
+  private stdoutBuffer = '';
+  private stdoutBufferBytes = 0;
+  private readonly decoder = new TextDecoder();
+  private readonly encoder = new TextEncoder();
+
+  constructor(
+    private readonly process: LocalModelWorkerProcess,
+    private readonly maxStderrBytes: number,
+    private readonly responseLimitBytes: number,
+  ) {
+    void this.consumeStdout();
+    void this.consumeStderr();
+    void process.exited.then(
+      () => this.fail('exit'),
+      () => this.fail('exit'),
+    );
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      this.kill();
+      void Promise.resolve()
+        .then(() => this.process.closeInput())
+        .catch(() => undefined);
+      return;
+    }
+    this.closed = true;
+    this.rejectPending('exit');
+    const closedGracefully = await completesBeforeDeadline(
+      Promise.resolve()
+        .then(() => this.process.closeInput())
+        .then(() => this.process.exited),
+      WORKER_SHUTDOWN_DEADLINE_MS,
+    );
+    if (!closedGracefully) this.kill();
+  }
+
+  async request(request: WorkerRequest, deadlineMs: number, signal: AbortSignal): Promise<WorkerResponse> {
+    if (this.closed) throw transportError(request.operation, 'exit');
+    if (Option.isSome(this.pending)) throw transportError(request.operation, 'protocol');
+    if (signal.aborted) {
+      this.fail('exit');
+      throw transportError(request.operation, 'exit');
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeAbortListener = () => {};
+    const response = new Promise<WorkerResponse>((resolve, reject) => {
+      this.pending = Option.some({
+        id: request.id,
+        operation: request.operation,
+        reject,
+        resolve,
+      });
+      timeout = setTimeout(() => this.fail('timeout'), deadlineMs);
+      const onAbort = () => this.fail('exit');
+      signal.addEventListener('abort', onAbort, {once: true});
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+    });
+
+    try {
+      void Promise.resolve(this.process.write(`${JSON.stringify(request)}\n`)).catch(() => this.fail('write'));
+    } catch {
+      this.fail('write');
+    }
+
+    return response.finally(() => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeAbortListener();
+    });
+  }
+
+  private async consumeStderr(): Promise<void> {
+    try {
+      for await (const chunk of this.process.stderr) {
+        const bytes = typeof chunk === 'string' ? this.encoder.encode(chunk) : chunk;
+        const currentText = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+        this.appendStderr(bytes);
+        if (
+          WORKER_CRASH_PATTERN.test(currentText) ||
+          WORKER_CRASH_PATTERN.test(new TextDecoder().decode(this.stderrTail))
+        ) {
+          this.fail('crash');
+          return;
+        }
+      }
+    } catch {
+      this.fail('exit');
+    }
+  }
+
+  private async consumeStdout(): Promise<void> {
+    try {
+      for await (const chunk of this.process.stdout) {
+        const decoded = typeof chunk === 'string' ? chunk : this.decoder.decode(chunk, {stream: true});
+        this.stdoutBuffer += decoded;
+        this.stdoutBufferBytes += typeof chunk === 'string' ? this.encoder.encode(chunk).byteLength : chunk.byteLength;
+        if (this.stdoutBufferBytes > this.responseLimitBytes) {
+          this.fail('protocol');
+          return;
+        }
+        this.consumeStdoutLines();
+        if (decoded.includes('\n')) {
+          this.stdoutBufferBytes = this.encoder.encode(this.stdoutBuffer).byteLength;
+        }
+      }
+      this.stdoutBuffer += this.decoder.decode();
+      this.consumeStdoutLines();
+      if (this.stdoutBuffer.trim()) this.fail('protocol');
+      else this.fail('exit');
+    } catch {
+      this.fail('exit');
+    }
+  }
+
+  private consumeStdoutLines(): void {
+    for (;;) {
+      const newline = this.stdoutBuffer.indexOf('\n');
+      if (newline < 0) return;
+      const line = this.stdoutBuffer.slice(0, newline).replace(/\r$/, '');
+      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      if (!line) continue;
+      const pending = this.pending;
+      if (Option.isNone(pending)) {
+        this.fail('protocol');
+        return;
+      }
+      const response = decodeWorkerResponse(line);
+      if (Option.isNone(response) || response.value.id !== pending.value.id) {
+        this.fail(WORKER_CRASH_PATTERN.test(line) ? 'crash' : 'protocol');
+        return;
+      }
+      this.pending = Option.none();
+      pending.value.resolve(response.value);
+    }
+  }
+
+  private appendStderr(chunk: Uint8Array): void {
+    if (this.maxStderrBytes <= 0) {
+      this.stderrTail = new Uint8Array();
+      return;
+    }
+    if (chunk.byteLength >= this.maxStderrBytes) {
+      this.stderrTail = chunk.slice(chunk.byteLength - this.maxStderrBytes);
+      return;
+    }
+    const retained = Math.min(this.stderrTail.byteLength, this.maxStderrBytes - chunk.byteLength);
+    const merged = new Uint8Array(retained + chunk.byteLength);
+    merged.set(this.stderrTail.slice(this.stderrTail.byteLength - retained), 0);
+    merged.set(chunk, retained);
+    this.stderrTail = merged;
+  }
+
+  private fail(reason: WorkerFailureReason): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.rejectPending(reason);
+      this.kill();
+    }
+  }
+
+  private kill(): void {
+    try {
+      this.process.kill();
+    } catch {
+      // A native crash can close the process before its pipes settle.
+    }
+  }
+
+  private rejectPending(reason: WorkerFailureReason): void {
+    if (Option.isNone(this.pending)) return;
+    const pending = this.pending.value;
+    this.pending = Option.none();
+    pending.reject(transportError(pending.operation, reason));
+  }
+}
+
+function spawnBunWorker(options: LocalModelWorkerSpawnOptions): LocalModelWorkerProcess {
+  const child = Bun.spawn({
+    cmd: [options.executable, ...options.arguments],
+    env: {...options.environment},
+    stdin: 'pipe',
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const input = child.stdin;
+  return {
+    closeInput: async () => {
+      await input.end();
+    },
+    exited: child.exited,
+    kill: () => child.kill('SIGKILL'),
+    stderr: child.stderr as ReadableStream<Uint8Array>,
+    stdout: child.stdout as ReadableStream<Uint8Array>,
+    write: async line => {
+      input.write(line);
+      await input.flush();
+    },
+  };
+}
+
+function workerSpawnOptions(system: SystemInfoShape): LocalModelWorkerSpawnOptions {
+  const script = developmentStandaloneScript(system);
+  return {
+    arguments: [...Option.toArray(script), LOCAL_MODEL_WORKER_ARGUMENT],
+    environment: {
+      ...system.environment(),
+      THREADNOTE_LOCAL_MODEL_WORKER: '1',
+    },
+    executable: system.executablePath,
+  };
+}
+
+function developmentStandaloneScript(system: SystemInfoShape): Option.Option<string> {
+  const executableName = system.executablePath.replaceAll('\\', '/').split('/').at(-1);
+  if (executableName !== 'bun' && executableName !== 'bun.exe') return Option.none();
+  const candidate = system.processArguments[1];
+  if (
+    candidate &&
+    /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/i.test(candidate) &&
+    candidate !== LOCAL_MODEL_WORKER_ARGUMENT
+  ) {
+    return Option.some(candidate);
+  }
+  return Option.none();
+}
+
+async function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Promise<WorkerResponse> {
+  const request = decodeWorkerRequest(line);
+  if (Option.isNone(request)) return protocolFailure('invalid');
+  const effect = dispatchWorkerRequest(runtime, request.value);
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) {
+    return {
+      id: request.value.id,
+      ok: true,
+      protocol: PROTOCOL_VERSION,
+      result: exit.value,
+    };
+  }
+  const failure = Cause.findErrorOption(exit.cause);
+  return {
+    error: {
+      tag: Option.isSome(failure) ? operationErrorTag(failure.value) : 'WorkerOperationFailed',
+    },
+    id: request.value.id,
+    ok: false,
+    protocol: PROTOCOL_VERSION,
+  };
+}
+
+function dispatchWorkerRequest(
+  runtime: LocalModelRuntimeShape,
+  request: WorkerRequest,
+): Effect.Effect<unknown, unknown> {
+  if (request.operation === 'diagnostics') {
+    const diagnostics = (runtime as Partial<LocalModelRuntimeWithDiagnostics>).diagnostics;
+    return diagnostics ? diagnostics() : Effect.fail({_tag: 'NativeRuntimeUnavailable'});
+  }
+  if (request.operation === 'embedMany') {
+    const decoded = decodeEmbeddingRequest(request.payload);
+    return Option.isSome(decoded) ? runtime.embedMany(decoded.value) : Effect.fail({_tag: 'WorkerProtocolInvalid'});
+  }
+  if (request.operation === 'generate') {
+    const decoded = decodeGenerationRequest(request.payload);
+    return Option.isSome(decoded) ? runtime.generate(decoded.value) : Effect.fail({_tag: 'WorkerProtocolInvalid'});
+  }
+  const decoded = decodeRerankingRequest(request.payload);
+  return Option.isSome(decoded) ? runtime.rerank(decoded.value) : Effect.fail({_tag: 'WorkerProtocolInvalid'});
+}
+
+function decodeWorkerRequest(line: string): Option.Option<WorkerRequest> {
+  const parsedOption = parseJson(line);
+  if (Option.isNone(parsedOption)) return Option.none();
+  const parsed = parsedOption.value;
+  if (
+    !isRecord(parsed) ||
+    parsed.protocol !== PROTOCOL_VERSION ||
+    typeof parsed.id !== 'string' ||
+    !/^[a-zA-Z0-9-]{1,80}$/.test(parsed.id) ||
+    !isWorkerOperation(parsed.operation) ||
+    !('payload' in parsed)
+  ) {
+    return Option.none();
+  }
+  return Option.some({
+    id: parsed.id,
+    operation: parsed.operation,
+    payload: parsed.payload,
+    protocol: PROTOCOL_VERSION,
+  });
+}
+
+function decodeWorkerResponse(line: string): Option.Option<WorkerResponse> {
+  const parsedOption = parseJson(line);
+  if (Option.isNone(parsedOption)) return Option.none();
+  const parsed = parsedOption.value;
+  if (
+    !isRecord(parsed) ||
+    parsed.protocol !== PROTOCOL_VERSION ||
+    typeof parsed.id !== 'string' ||
+    typeof parsed.ok !== 'boolean'
+  ) {
+    return Option.none();
+  }
+  if (parsed.ok) {
+    return 'result' in parsed
+      ? Option.some({
+          id: parsed.id,
+          ok: true,
+          protocol: PROTOCOL_VERSION,
+          result: parsed.result,
+        })
+      : Option.none();
+  }
+  if (!isRecord(parsed.error) || typeof parsed.error.tag !== 'string') return Option.none();
+  return Option.some({
+    error: {tag: parsed.error.tag},
+    id: parsed.id,
+    ok: false,
+    protocol: PROTOCOL_VERSION,
+  });
+}
+
+function decodeEmbeddingRequest(value: unknown): Option.Option<LocalEmbeddingRequest> {
+  if (!isRecord(value) || !isStringArray(value.inputs) || typeof value.modelPath !== 'string') return Option.none();
+  const manifest = decodeManifest(value.manifest);
+  return Option.isSome(manifest)
+    ? Option.some({
+        inputs: value.inputs,
+        manifest: manifest.value,
+        modelPath: value.modelPath,
+      })
+    : Option.none();
+}
+
+function decodeGenerationRequest(value: unknown): Option.Option<LocalGenerationRequest> {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.jsonSchema) ||
+    typeof value.maxTokens !== 'number' ||
+    !Number.isSafeInteger(value.maxTokens) ||
+    value.maxTokens <= 0 ||
+    typeof value.modelPath !== 'string' ||
+    typeof value.prompt !== 'string' ||
+    (value.seed !== undefined && (typeof value.seed !== 'number' || !Number.isSafeInteger(value.seed))) ||
+    (value.system !== undefined && typeof value.system !== 'string')
+  ) {
+    return Option.none();
+  }
+  const manifest = decodeManifest(value.manifest);
+  return Option.isSome(manifest)
+    ? Option.some({
+        jsonSchema: value.jsonSchema,
+        manifest: manifest.value,
+        maxTokens: value.maxTokens,
+        modelPath: value.modelPath,
+        prompt: value.prompt,
+        ...(typeof value.seed === 'number' ? {seed: value.seed} : {}),
+        ...(typeof value.system === 'string' ? {system: value.system} : {}),
+      })
+    : Option.none();
+}
+
+function decodeRerankingRequest(value: unknown): Option.Option<LocalRerankingRequest> {
+  if (
+    !isRecord(value) ||
+    !isStringArray(value.documents) ||
+    typeof value.modelPath !== 'string' ||
+    typeof value.query !== 'string'
+  ) {
+    return Option.none();
+  }
+  const manifest = decodeManifest(value.manifest);
+  return Option.isSome(manifest)
+    ? Option.some({
+        documents: value.documents,
+        manifest: manifest.value,
+        modelPath: value.modelPath,
+        query: value.query,
+      })
+    : Option.none();
+}
+
+function decodeManifest(value: unknown): Option.Option<LocalModelManifest> {
+  try {
+    return Option.some(parseLocalModelManifest(value));
+  } catch {
+    return Option.none();
+  }
+}
+
+function decodeVectors(
+  value: unknown,
+  expectedCount: number,
+  expectedDimensions: number | undefined,
+): Option.Option<readonly (readonly number[])[]> {
+  if (
+    !Array.isArray(value) ||
+    value.length !== expectedCount ||
+    !value.every(
+      vector =>
+        Array.isArray(vector) &&
+        (expectedDimensions === undefined || vector.length === expectedDimensions) &&
+        vector.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate)),
+    )
+  ) {
+    return Option.none();
+  }
+  return Option.some(value as number[][]);
+}
+
+function decodeScores(value: unknown, expectedCount: number): Option.Option<readonly number[]> {
+  return Array.isArray(value) &&
+    value.length === expectedCount &&
+    value.every(score => typeof score === 'number' && Number.isFinite(score))
+    ? Option.some(value as number[])
+    : Option.none();
+}
+
+function decodeDiagnostics(value: unknown): Option.Option<LlamaCppDiagnostics> {
+  if (
+    !isRecord(value) ||
+    typeof value.backend !== 'string' ||
+    (value.buildType !== 'prebuilt' && value.buildType !== 'localBuild') ||
+    typeof value.cpuMathCores !== 'number' ||
+    !Number.isSafeInteger(value.cpuMathCores) ||
+    value.cpuMathCores <= 0
+  ) {
+    return Option.none();
+  }
+  return Option.some({
+    backend: value.backend,
+    buildType: value.buildType,
+    cpuMathCores: value.cpuMathCores,
+  });
+}
+
+function remoteEmbeddingFailure(
+  request: LocalEmbeddingRequest,
+  error: DecodedOperationError,
+):
+  | EmbeddingFailed
+  | InferenceInterrupted
+  | InsufficientMemory
+  | ModelLoadFailed
+  | ModelNotInstalled
+  | NativeRuntimeUnavailable
+  | UnsupportedNativeRuntime {
+  const common = remoteModelError(request.manifest.id, request.modelPath, 'embedding', error);
+  return Option.isSome(common)
+    ? common.value
+    : new EmbeddingFailed({
+        cause: genericWorkerCause('protocol'),
+        message: 'Local AI embedding failed in the isolated worker.',
+        modelId: request.manifest.id,
+      });
+}
+
+function remoteGenerationFailure(
+  request: LocalGenerationRequest,
+  error: DecodedOperationError,
+):
+  | GenerationFailed
+  | InferenceInterrupted
+  | InsufficientMemory
+  | InvalidModelOutput
+  | ModelLoadFailed
+  | ModelNotInstalled
+  | NativeRuntimeUnavailable
+  | UnsupportedNativeRuntime {
+  const common = remoteModelError(request.manifest.id, request.modelPath, 'generation', error);
+  if (Option.isSome(common)) return common.value;
+  if (error.tag === 'InvalidModelOutput') {
+    return new InvalidModelOutput({
+      message: 'The isolated local AI worker returned invalid structured output.',
+      modelId: request.manifest.id,
+    });
+  }
+  return new GenerationFailed({
+    cause: genericWorkerCause('protocol'),
+    message: 'Local AI generation failed in the isolated worker.',
+    modelId: request.manifest.id,
+  });
+}
+
+function remoteRerankingFailure(
+  request: LocalRerankingRequest,
+  error: DecodedOperationError,
+):
+  | InferenceInterrupted
+  | InsufficientMemory
+  | ModelLoadFailed
+  | ModelNotInstalled
+  | NativeRuntimeUnavailable
+  | RerankingFailed
+  | UnsupportedNativeRuntime {
+  const common = remoteModelError(request.manifest.id, request.modelPath, 'reranking', error);
+  return Option.isSome(common)
+    ? common.value
+    : new RerankingFailed({
+        cause: genericWorkerCause('protocol'),
+        message: 'Local AI reranking failed in the isolated worker.',
+        modelId: request.manifest.id,
+      });
+}
+
+function remoteModelError(
+  modelId: string,
+  modelPath: string,
+  operation: string,
+  error: DecodedOperationError,
+): Option.Option<
+  | InferenceInterrupted
+  | InsufficientMemory
+  | ModelLoadFailed
+  | ModelNotInstalled
+  | NativeRuntimeUnavailable
+  | UnsupportedNativeRuntime
+> {
+  if (error.tag === 'InferenceInterrupted') {
+    return Option.some(
+      new InferenceInterrupted({
+        message: `Local AI ${operation} was interrupted in the isolated worker.`,
+        modelId,
+        operation,
+      }),
+    );
+  }
+  if (error.tag === 'InsufficientMemory') {
+    return Option.some(
+      new InsufficientMemory({
+        cause: genericWorkerCause('protocol'),
+        message: `The isolated local AI worker did not have enough memory for ${operation}.`,
+        modelId,
+      }),
+    );
+  }
+  if (error.tag === 'ModelLoadFailed') {
+    return Option.some(
+      new ModelLoadFailed({
+        cause: genericWorkerCause('protocol'),
+        message: `The isolated local AI worker could not load the model for ${operation}.`,
+        modelId,
+      }),
+    );
+  }
+  if (error.tag === 'ModelNotInstalled') {
+    return Option.some(
+      new ModelNotInstalled({
+        message: `The local AI model required for ${operation} is not installed.`,
+        modelId,
+        path: modelPath,
+      }),
+    );
+  }
+  if (error.tag === 'NativeRuntimeUnavailable') {
+    return Option.some(
+      new NativeRuntimeUnavailable({
+        cause: genericWorkerCause('protocol'),
+        message: 'The isolated local AI native runtime is unavailable.',
+      }),
+    );
+  }
+  if (error.tag === 'UnsupportedNativeRuntime') {
+    return Option.some(
+      new UnsupportedNativeRuntime({
+        cause: genericWorkerCause('protocol'),
+        message: 'The isolated local AI native runtime is unsupported.',
+      }),
+    );
+  }
+  return Option.none();
+}
+
+function remoteNativeRuntimeError(error: DecodedOperationError): NativeRuntimeUnavailable | UnsupportedNativeRuntime {
+  return error.tag === 'UnsupportedNativeRuntime'
+    ? new UnsupportedNativeRuntime({
+        cause: genericWorkerCause('protocol'),
+        message: 'The isolated local AI native runtime is unsupported.',
+      })
+    : new NativeRuntimeUnavailable({
+        cause: genericWorkerCause('protocol'),
+        message: 'The isolated local AI native runtime is unavailable.',
+      });
+}
+
+function workerEmbeddingFailure(
+  request: LocalEmbeddingRequest,
+  error: LocalModelWorkerTransportError,
+): EmbeddingFailed {
+  return new EmbeddingFailed({
+    cause: genericWorkerCause(error.reason),
+    message: `Local AI embedding failed after the isolated worker retry was exhausted: ${error.message}`,
+    modelId: request.manifest.id,
+  });
+}
+
+function workerGenerationFailure(
+  request: LocalGenerationRequest,
+  error: LocalModelWorkerTransportError,
+): GenerationFailed {
+  return new GenerationFailed({
+    cause: genericWorkerCause(error.reason),
+    message: `Local AI generation failed after the isolated worker retry was exhausted: ${error.message}`,
+    modelId: request.manifest.id,
+  });
+}
+
+function workerRerankingFailure(
+  request: LocalRerankingRequest,
+  error: LocalModelWorkerTransportError,
+): RerankingFailed {
+  return new RerankingFailed({
+    cause: genericWorkerCause(error.reason),
+    message: `Local AI reranking failed after the isolated worker retry was exhausted: ${error.message}`,
+    modelId: request.manifest.id,
+  });
+}
+
+function operationErrorTag(error: unknown): string {
+  return isRecord(error) && isKnownOperationErrorTag(error._tag) ? error._tag : 'WorkerOperationFailed';
+}
+
+function protocolFailure(id: string): WorkerFailure {
+  return {
+    error: {tag: 'WorkerProtocolInvalid'},
+    id,
+    ok: false,
+    protocol: PROTOCOL_VERSION,
+  };
+}
+
+function transportError(operation: WorkerOperation, reason: WorkerFailureReason): LocalModelWorkerTransportError {
+  return new LocalModelWorkerTransportError({
+    message: workerTransportMessage(operation, reason),
+    operation,
+    reason,
+  });
+}
+
+function workerTransportMessage(operation: WorkerOperation, reason: WorkerFailureReason): string {
+  if (reason === 'timeout') return `The isolated local AI worker timed out during ${operation}.`;
+  if (reason === 'crash') return `The isolated local AI worker crashed during ${operation}.`;
+  if (reason === 'spawn') return `The isolated local AI worker could not start for ${operation}.`;
+  if (reason === 'write') return `The isolated local AI worker input closed during ${operation}.`;
+  if (reason === 'protocol') return `The isolated local AI worker returned an invalid ${operation} response.`;
+  return `The isolated local AI worker exited during ${operation}.`;
+}
+
+function genericWorkerCause(reason: WorkerFailureReason): Error {
+  return new Error(`Isolated local AI worker ${reason}.`);
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function completesBeforeDeadline(promise: Promise<unknown>, deadlineMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), deadlineMs);
+    timer.unref?.();
+    void promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve(true);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(false);
+      },
+    );
+  });
+}
+
+function parseJson(value: string): Option.Option<unknown> {
+  try {
+    return Option.some(JSON.parse(value) as unknown);
+  } catch {
+    return Option.none();
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+function isWorkerOperation(value: unknown): value is WorkerOperation {
+  return value === 'diagnostics' || value === 'embedMany' || value === 'generate' || value === 'rerank';
+}
+
+function isKnownOperationErrorTag(value: unknown): value is string {
+  return (
+    value === 'AiError' ||
+    value === 'EmbeddingFailed' ||
+    value === 'GenerationFailed' ||
+    value === 'InferenceInterrupted' ||
+    value === 'InsufficientMemory' ||
+    value === 'InvalidModelOutput' ||
+    value === 'ModelLoadFailed' ||
+    value === 'ModelNotInstalled' ||
+    value === 'NativeRuntimeUnavailable' ||
+    value === 'RerankingFailed' ||
+    value === 'UnsupportedNativeRuntime' ||
+    value === 'WorkerProtocolInvalid'
+  );
+}

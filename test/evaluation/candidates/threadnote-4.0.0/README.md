@@ -41,3 +41,9 @@ for bounded memory, atomic availability, and fast incremental/cold-query behavio
 `code-graph-performance-audit-2026-07-30.json` preserves the matched 10k and 100k graph runs before and after the
 set-based activation/resolution work. At 100k symbols, cold indexing falls from 133.36 s to 36.29 s and a one-file
 incremental update falls from 127.70 s to 24.99 s.
+
+`embedding-backend-compatibility.json` records the Darwin arm64 BGE comparison used to preserve existing vector
+generations when switching the built-in model to `gpuLayers=0`. Across 35 frozen recall/code-graph texts, the minimum
+same-text cosine was 0.999879, the largest mixed-backend query/document score delta was 0.002503, and all 12 query
+top-1 results agreed. The runtime policy therefore does not participate in the embedding-space recipe; model,
+dimensions, normalization, and prompt changes still invalidate stored vectors.

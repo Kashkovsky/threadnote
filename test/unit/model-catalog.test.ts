@@ -28,11 +28,31 @@ const embedding = {
 describe('local model catalog', () => {
   it('requires immutable supply-chain and embedding-space metadata', () => {
     expect(parseLocalModelManifest(embedding)).toEqual(embedding);
+    expect(
+      parseLocalModelManifest({
+        ...embedding,
+        runtime: {...embedding.runtime, darwinArm64EmbeddingGpuLayers: 0},
+      }).runtime.darwinArm64EmbeddingGpuLayers,
+    ).toBe(0);
     expect(() => parseLocalModelManifest({...embedding, sha256: 'latest'})).toThrow('SHA-256');
     expect(() => parseLocalModelManifest({...embedding, normalization: 'none'})).toThrow('l2 normalization');
     expect(() => parseLocalModelManifest({...embedding, promptPrefixes: {query: 'query: '}})).toThrow(
       'query and document prefixes',
     );
+    expect(() =>
+      parseLocalModelManifest({
+        ...embedding,
+        runtime: {...embedding.runtime, darwinArm64EmbeddingGpuLayers: -1},
+      }),
+    ).toThrow('invalid macOS arm64 embedding GPU-layer policy');
+
+    const reranker = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'reranker')!;
+    expect(() =>
+      parseLocalModelManifest({
+        ...reranker,
+        runtime: {...reranker.runtime, darwinArm64EmbeddingGpuLayers: 0},
+      }),
+    ).toThrow('embedding-only metadata or runtime policy');
   });
 
   it('keeps every measured candidate pinned and valid without selecting a default', () => {

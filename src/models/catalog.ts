@@ -25,6 +25,7 @@ const LocalModelManifestSchema = Schema.Struct({
   revision: Schema.String,
   role: Schema.Literals(LOCAL_MODEL_ROLES),
   runtime: Schema.Struct({
+    darwinArm64EmbeddingGpuLayers: Schema.optionalKey(Schema.Int),
     nodeLlamaCpp: Schema.String,
   }),
   sha256: Schema.String,
@@ -153,6 +154,12 @@ function validateManifest(manifest: LocalModelManifest): string | undefined {
   if (manifest.size <= 0 || manifest.minimumRamBytes <= 0 || manifest.contextLimit <= 0) {
     return `Model ${manifest.id} has invalid size, RAM, or context limits.`;
   }
+  if (
+    manifest.runtime.darwinArm64EmbeddingGpuLayers !== undefined &&
+    manifest.runtime.darwinArm64EmbeddingGpuLayers < 0
+  ) {
+    return `Model ${manifest.id} has an invalid macOS arm64 embedding GPU-layer policy.`;
+  }
   if (manifest.role === 'embedding') {
     if (!manifest.dimensions || manifest.dimensions <= 0) {
       return `Embedding model ${manifest.id} must declare positive dimensions.`;
@@ -163,8 +170,12 @@ function validateManifest(manifest: LocalModelManifest): string | undefined {
     if (manifest.promptPrefixes?.query === undefined || manifest.promptPrefixes.document === undefined) {
       return `Embedding model ${manifest.id} must declare query and document prefixes, including explicit empty prefixes.`;
     }
-  } else if (manifest.dimensions !== undefined || manifest.normalization !== undefined) {
-    return `Non-embedding model ${manifest.id} cannot declare embedding dimensions or normalization.`;
+  } else if (
+    manifest.dimensions !== undefined ||
+    manifest.normalization !== undefined ||
+    manifest.runtime.darwinArm64EmbeddingGpuLayers !== undefined
+  ) {
+    return `Non-embedding model ${manifest.id} cannot declare embedding-only metadata or runtime policy.`;
   }
   return undefined;
 }

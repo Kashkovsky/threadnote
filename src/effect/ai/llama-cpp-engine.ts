@@ -13,6 +13,7 @@ import type {
 
 export interface LocalModelLoadOptions {
   readonly contextSize?: number;
+  readonly darwinArm64EmbeddingGpuLayers?: number;
   readonly modelId: string;
   readonly modelPath: string;
 }

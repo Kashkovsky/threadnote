@@ -113,7 +113,7 @@ import {
   buildRecallSelectionCandidates,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
-  loadRecallSemanticScores,
+  loadRecallSemanticScoresResult,
   prepareRecallSections,
   recallSelectionAnchorIds,
   recallSelectionQueries,
@@ -1597,7 +1597,9 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold), params.threshold !== undefined);
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
-    const semanticScores = (yield* loadRecallSemanticScores(config, query, recallLimit)) ?? null;
+    const semanticResult = yield* loadRecallSemanticScoresResult(config, query, recallLimit);
+    if (Option.isSome(semanticResult.warning)) sections.push(semanticResult.warning.value);
+    const semanticScores = Option.getOrNull(semanticResult.scores);
     const rerankerCache = createRecallRerankerCache();
     const prepareSections = (candidateUris?: readonly string[]) =>
       prepareRecallSections(config, {

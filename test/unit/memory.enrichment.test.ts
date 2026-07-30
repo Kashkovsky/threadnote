@@ -66,6 +66,7 @@ describe('native memory enrichment', () => {
 const fakeRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
+    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
     embedMany: () => Effect.die(new Error('Unexpected embedding')),
     generate: () =>
       Effect.succeed({
@@ -78,6 +79,7 @@ const fakeRuntimeLayer = Layer.succeed(
 const failingRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
+    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
     embedMany: () => Effect.die(new Error('Unexpected embedding')),
     generate: request =>
       Effect.fail(

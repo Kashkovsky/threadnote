@@ -1,7 +1,6 @@
 import {Console, Effect} from 'effect';
 import type {RuntimeConfig} from '../types.js';
-import {LlamaCppEngine} from '../effect/ai/llama-cpp-engine.js';
-import {nodeLlamaCppEngineLayer} from '../effect/ai/node-llama-cpp.js';
+import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelRole} from './catalog.js';
 import {LocalModelStore, modelDownloadUrl} from './store.js';
 import {readModelSelection, selectLocalModel} from './selection.js';
@@ -97,12 +96,8 @@ export const runModelSelect = Effect.fn('models.command.select')(function* (
 });
 
 export const runModelRuntimeStatus = Effect.fn('models.command.runtime')(function* () {
-  const diagnostics = yield* Effect.scoped(
-    Effect.gen(function* () {
-      const engine = yield* LlamaCppEngine;
-      return engine.diagnostics;
-    }).pipe(Effect.provide(nodeLlamaCppEngineLayer())),
-  );
+  const runtime = yield* LocalModelRuntime;
+  const diagnostics = yield* runtime.diagnostics();
   yield* Console.log(`node-llama-cpp: ${diagnostics.buildType}`);
   yield* Console.log(`Backend: ${diagnostics.backend}`);
   yield* Console.log(`CPU math cores: ${diagnostics.cpuMathCores}`);

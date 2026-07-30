@@ -8,6 +8,7 @@ import {LocalModelStore} from '../models/store.js';
 import {LocalModelCatalog} from '../models/catalog.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
 import {LocalModelRuntime} from './ai/local-model-runtime.js';
+import {isolatedLocalModelRuntimeLayer} from './ai/isolated-local-model-runtime.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import {CodeGraphIndexer} from '../code_graph/indexer.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
@@ -25,7 +26,11 @@ const localModelStoreLayer = LocalModelStore.layer.pipe(
 );
 const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 
-const localModelRuntimeLayer = LocalModelRuntime.nativeLayer.pipe(Layer.provideMerge(systemLayer));
+const localModelRuntimeLayer = (
+  typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
+    ? isolatedLocalModelRuntimeLayer()
+    : LocalModelRuntime.nativeLayer
+).pipe(Layer.provideMerge(systemLayer));
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
 const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));
 const codeGraphLanguagePackLayer = CodeGraphLanguagePackRegistry.layer;

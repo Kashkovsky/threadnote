@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import {Clock, Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {
   expandWeakRecallQueryEffect,
   limitRecallRewritesForConfidence,
@@ -59,7 +59,7 @@ import {
   buildRecallSelectionCandidates,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
-  loadRecallSemanticScores,
+  loadRecallSemanticScoresResult,
   prepareRecallSections,
   recallSelectionQueries,
   recallSelectionAnchorIds,
@@ -1364,7 +1364,11 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
   const expansionQueries: string[] = [];
   const recallLimit = nodeLimit ?? 12;
-  const semanticScores = dryRun ? null : ((yield* loadRecallSemanticScores(config, query, recallLimit)) ?? null);
+  const semanticResult = dryRun ? undefined : yield* loadRecallSemanticScoresResult(config, query, recallLimit);
+  if (semanticResult && Option.isSome(semanticResult.warning)) {
+    yield* Console.warn(semanticResult.warning.value);
+  }
+  const semanticScores = semanticResult ? Option.getOrNull(semanticResult.scores) : null;
   const rerankerCache = createRecallRerankerCache();
   const prepareSections = (candidateUris?: readonly string[]) =>
     prepareRecallSections(config, {

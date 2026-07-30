@@ -43,6 +43,7 @@ describe('Effect architecture boundaries', () => {
   it('keeps raw Promise lifting primitives inside the shared adapters', async () => {
     const allowed = new Set([
       'src/effect/archive.ts',
+      'src/effect/ai/isolated-local-model-runtime.ts',
       'src/effect/console.ts',
       'src/effect/errors.ts',
       'src/effect/system.ts',
@@ -84,8 +85,12 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('keeps runtime globals inside the SystemInfo service boundary and executable entry point', async () => {
-    const allowed = new Set(['src/effect/system.ts', 'src/standalone.ts']);
+  it('keeps runtime globals inside the SystemInfo, process-adapter, and executable boundaries', async () => {
+    const allowed = new Set([
+      'src/effect/ai/isolated-local-model-runtime.ts',
+      'src/effect/system.ts',
+      'src/standalone.ts',
+    ]);
     for (const path of await sourceFiles()) {
       const relativePath = relative(repoRoot, path);
       if (allowed.has(relativePath)) {

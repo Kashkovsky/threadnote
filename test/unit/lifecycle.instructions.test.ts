@@ -55,6 +55,7 @@ describe('agent instruction lifecycle', () => {
             verify: () => Effect.succeed(installation),
           } satisfies LocalModelStoreShape);
           const modelRuntime = LocalModelRuntime.of({
+            diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
             embedMany: ({inputs, manifest}) =>
               Effect.succeed(inputs.map(() => [1, ...new Array<number>((manifest.dimensions ?? 1) - 1).fill(0)])),
             generate: () => Effect.die(new Error('Unexpected generation')),

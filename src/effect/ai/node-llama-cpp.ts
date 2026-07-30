@@ -93,6 +93,7 @@ interface NativeLlama {
   readonly gpu: string | false;
   readonly dispose: () => Promise<void>;
   readonly loadModel: (options: {
+    readonly gpuLayers?: number;
     readonly ignoreMemorySafetyChecks: false;
     readonly loadSignal: AbortSignal;
     readonly modelPath: string;
@@ -121,15 +122,24 @@ const EMBEDDING_WINDOW_OVERLAP_TOKENS = 32;
 const discardNativeLog = (_level: string, _message: string): void => undefined;
 
 export interface NodeLlamaCppLayerOptions {
+  readonly embeddingGpuLayers?: number;
   readonly loadModule?: () => Promise<NodeLlamaCppModule>;
+}
+
+interface NativeEmbeddingPolicy {
+  readonly architecture?: string;
+  readonly gpuLayers?: number;
+  readonly platform?: string;
 }
 
 const loadInstalledNodeLlamaCpp = async (moduleSpecifier: string = 'node-llama-cpp'): Promise<NodeLlamaCppModule> =>
   (await import(moduleSpecifier)) as unknown as NodeLlamaCppModule;
 
-export function nodeLlamaCppEngineLayer(options: {
-  readonly loadModule: () => Promise<NodeLlamaCppModule>;
-}): Layer.Layer<LlamaCppEngine, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
+export function nodeLlamaCppEngineLayer(
+  options: NodeLlamaCppLayerOptions & {
+    readonly loadModule: () => Promise<NodeLlamaCppModule>;
+  },
+): Layer.Layer<LlamaCppEngine, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
 export function nodeLlamaCppEngineLayer(
   options?: NodeLlamaCppLayerOptions,
 ): Layer.Layer<LlamaCppEngine, NativeRuntimeUnavailable | UnsupportedNativeRuntime, Path.Path | SystemInfo>;
@@ -138,9 +148,17 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
     LlamaCppEngine,
     Effect.gen(function* () {
       let loadModule = options.loadModule;
+      let embeddingPolicy: NativeEmbeddingPolicy = {
+        gpuLayers: options.embeddingGpuLayers,
+      };
       if (!loadModule) {
         const path = yield* Path.Path;
         const system = yield* SystemInfo;
+        embeddingPolicy = {
+          architecture: system.architecture,
+          gpuLayers: options.embeddingGpuLayers,
+          platform: system.platform,
+        };
         let moduleSpecifier = 'node-llama-cpp';
         if (typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE) {
           const nativeModuleUrl = yield* path
@@ -192,12 +210,16 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
         ),
         native => disposeIgnoringFailure(native),
       );
-      return LlamaCppEngine.of(makeEngine(llama, module));
+      return LlamaCppEngine.of(makeEngine(llama, module, embeddingPolicy));
     }),
   );
 }
 
-function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEngineShape {
+function makeEngine(
+  llama: NativeLlama,
+  module: NodeLlamaCppModule,
+  embeddingPolicy: NativeEmbeddingPolicy,
+): LlamaCppEngineShape {
   return {
     diagnostics: {
       backend: llama.gpu === false ? 'cpu' : llama.gpu,
@@ -206,7 +228,13 @@ function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEng
     },
     loadEmbeddingSession: options =>
       Effect.gen(function* () {
-        const model = yield* acquireModel(llama, options);
+        const gpuLayers = resolveNativeEmbeddingGpuLayers({
+          architecture: embeddingPolicy.architecture,
+          layerGpuLayers: embeddingPolicy.gpuLayers,
+          modelDarwinArm64GpuLayers: options.darwinArm64EmbeddingGpuLayers,
+          platform: embeddingPolicy.platform,
+        });
+        const model = yield* acquireModel(llama, options, gpuLayers);
         const context = yield* Effect.acquireRelease(
           fromPromiseInterruptible(
             signal =>
@@ -251,6 +279,18 @@ function makeEngine(llama: NativeLlama, module: NodeLlamaCppModule): LlamaCppEng
         return rankingSession(options, context);
       }),
   };
+}
+
+export function resolveNativeEmbeddingGpuLayers(options: {
+  readonly architecture?: string;
+  readonly layerGpuLayers?: number;
+  readonly modelDarwinArm64GpuLayers?: number;
+  readonly platform?: string;
+}): number | undefined {
+  return (
+    options.layerGpuLayers ??
+    (options.platform === 'darwin' && options.architecture === 'arm64' ? options.modelDarwinArm64GpuLayers : undefined)
+  );
 }
 
 function generationSession(
@@ -349,11 +389,12 @@ function generationSession(
   };
 }
 
-function acquireModel(llama: NativeLlama, options: LocalModelLoadOptions) {
+function acquireModel(llama: NativeLlama, options: LocalModelLoadOptions, gpuLayers?: number) {
   return Effect.acquireRelease(
     fromPromiseInterruptible(
       signal =>
         llama.loadModel({
+          ...(gpuLayers === undefined ? {} : {gpuLayers}),
           ignoreMemorySafetyChecks: false,
           loadSignal: signal,
           modelPath: options.modelPath,

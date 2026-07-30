@@ -29,6 +29,11 @@ archiving. The same payload must contain the pinned Tree-sitter runtime, Java/Ko
 version/checksum manifest, and all four parser licenses. Source checks, archive smoke tests, and updater validation each
 reject missing or altered code-graph assets.
 
+Pull-request distribution CI retains the broad `ubuntu-latest`, `macos-latest`, and `windows-latest` lanes and adds an
+explicit `macos-15` Apple Silicon lane. `macos-15` is the exact runner label used to build the published macOS arm64
+archive, so its real-model installed-release E2E—including the supervised local-model worker—is a pre-tag gate rather
+than being exercised for the first time after a tag is pushed.
+
 ## Signing order
 
 macOS builds sign each nested Mach-O native library first, then sign the Bun executable with hardened runtime and the

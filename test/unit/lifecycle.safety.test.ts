@@ -208,6 +208,7 @@ describe('repair failure propagation', () => {
       verify: () => Effect.succeed(installation),
     } satisfies LocalModelStoreShape);
     const modelRuntime = LocalModelRuntime.of({
+      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
       embedMany: () => Effect.die(new Error('Embedding must not start when lexical index setup fails.')),
       generate: () => Effect.die(new Error('Unexpected generation.')),
       rerank: () => Effect.die(new Error('Unexpected reranking.')),

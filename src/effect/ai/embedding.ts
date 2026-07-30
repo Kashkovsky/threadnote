@@ -5,6 +5,7 @@ import {LlamaCppEngine} from './llama-cpp-engine.js';
 
 export interface LlamaEmbeddingLayerOptions {
   readonly contextSize?: number;
+  readonly darwinArm64EmbeddingGpuLayers?: number;
   readonly dimensions: number;
   readonly modelId: string;
   readonly modelPath: string;

@@ -2,7 +2,7 @@ import {Context, Effect, Exit, Layer, Path, Scope, Semaphore} from 'effect';
 import * as AiError from 'effect/unstable/ai/AiError';
 import * as EmbeddingModel from 'effect/unstable/ai/EmbeddingModel';
 import type {LocalModelManifest} from '../../models/catalog.js';
-import type {LlamaCppEngine} from './llama-cpp-engine.js';
+import {LlamaCppEngine, type LlamaCppDiagnostics} from './llama-cpp-engine.js';
 import {llamaEmbeddingModelLayer} from './embedding.js';
 import {nodeLlamaCppEngineLayer} from './node-llama-cpp.js';
 import {llamaRerankerLayer, Reranker, type RerankerShape} from './reranker.js';
@@ -38,6 +38,7 @@ export interface LocalGenerationRequest extends StructuredGenerationRequest {
 }
 
 export interface LocalModelRuntimeShape {
+  readonly diagnostics: () => Effect.Effect<LlamaCppDiagnostics, NativeRuntimeError>;
   readonly embedMany: (
     request: LocalEmbeddingRequest,
   ) => Effect.Effect<readonly (readonly number[])[], LocalEmbeddingError>;
@@ -77,6 +78,7 @@ export function localModelRuntimeLayer<R = Path.Path | SystemInfo>(
         Effect.Effect<RerankerShape, InferenceInterrupted | RerankingFailed | ModelSessionError>
       >();
       return Context.make(LocalModelRuntime, {
+        diagnostics: () => engineContext.pipe(Effect.map(context => Context.get(context, LlamaCppEngine).diagnostics)),
         embedMany: request =>
           inferencePermits.withPermit(embedManyNative(request, scope, engineContext, embeddingModels)),
         generate: request => inferencePermits.withPermit(generateNative(request, engineContext)),
@@ -106,6 +108,7 @@ function embedManyNative(
           const services = yield* Layer.buildWithScope(
             llamaEmbeddingModelLayer({
               contextSize: request.manifest.contextLimit,
+              darwinArm64EmbeddingGpuLayers: request.manifest.runtime.darwinArm64EmbeddingGpuLayers,
               dimensions,
               modelId: request.manifest.id,
               modelPath: request.modelPath,

@@ -1303,6 +1303,8 @@ function generationIsCompatible(generation: VectorGenerationRow, manifest: Local
 }
 
 function embeddingRecipe(manifest: LocalModelManifest): string {
+  // Native backend/offload policy is intentionally excluded: the frozen Darwin
+  // compatibility fixture verifies that it preserves this embedding space.
   return sha256HexSync(
     [
       'threadnote-recall-embedding-v1',

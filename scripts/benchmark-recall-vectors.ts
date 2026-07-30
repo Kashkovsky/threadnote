@@ -38,6 +38,7 @@ const modelStoreLayer = Layer.succeed(
 const runtimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
+    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
     embedMany: ({inputs, manifest: requested}) =>
       Effect.sync(() => inputs.map(input => deterministicVector(requested.dimensions ?? 0, input))),
     generate: () => Effect.die(new Error('Unexpected generation')),

@@ -5,12 +5,42 @@ import {describe} from 'vitest';
 import {llamaEmbeddingModelLayer} from '../../src/effect/ai/embedding.js';
 import {InferenceInterrupted} from '../../src/effect/ai/errors.js';
 import {LlamaCppEngine} from '../../src/effect/ai/llama-cpp-engine.js';
-import {nodeLlamaCppEngineLayer} from '../../src/effect/ai/node-llama-cpp.js';
+import {nodeLlamaCppEngineLayer, resolveNativeEmbeddingGpuLayers} from '../../src/effect/ai/node-llama-cpp.js';
 import {llamaStructuredGeneratorLayer, StructuredGenerator} from '../../src/effect/ai/structured-generator.js';
 import {localModelRuntimeLayer, LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 
 describe('Effect AI native harness', () => {
+  it('limits the built-in embedding model to zero GPU layers only on Darwin arm64', () => {
+    const embedding = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!;
+    const modelDarwinArm64GpuLayers =
+      'darwinArm64EmbeddingGpuLayers' in embedding.runtime
+        ? embedding.runtime.darwinArm64EmbeddingGpuLayers
+        : undefined;
+    expect(modelDarwinArm64GpuLayers).toBe(0);
+    expect(
+      resolveNativeEmbeddingGpuLayers({
+        architecture: 'arm64',
+        modelDarwinArm64GpuLayers,
+        platform: 'darwin',
+      }),
+    ).toBe(0);
+    expect(
+      resolveNativeEmbeddingGpuLayers({
+        architecture: 'x64',
+        modelDarwinArm64GpuLayers,
+        platform: 'darwin',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveNativeEmbeddingGpuLayers({
+        architecture: 'arm64',
+        modelDarwinArm64GpuLayers,
+        platform: 'linux',
+      }),
+    ).toBeUndefined();
+  });
+
   it.effect('adapts ordered batches without loading a native module', () =>
     Effect.gen(function* () {
       const batches: string[][] = [];
@@ -98,7 +128,9 @@ describe('Effect AI native harness', () => {
       const events: string[] = [];
       const calls: unknown[] = [];
       const embeddingContextCalls: unknown[] = [];
+      const modelLoadCalls: unknown[] = [];
       const layer = nodeLlamaCppEngineLayer({
+        embeddingGpuLayers: 0,
         loadModule: () =>
           Promise.resolve({
             getLlama: options => {
@@ -112,8 +144,9 @@ describe('Effect AI native harness', () => {
                   return Promise.resolve();
                 },
                 gpu: 'metal',
-                loadModel: () =>
-                  Promise.resolve({
+                loadModel: options => {
+                  modelLoadCalls.push(options);
+                  return Promise.resolve({
                     createEmbeddingContext: options => {
                       embeddingContextCalls.push(options);
                       return Promise.resolve({
@@ -133,7 +166,8 @@ describe('Effect AI native harness', () => {
                       return Promise.resolve();
                     },
                     tokenize: (text: string) => [...text].map(character => character.codePointAt(0)!),
-                  }),
+                  });
+                },
               });
             },
           }),
@@ -165,6 +199,14 @@ describe('Effect AI native harness', () => {
       ]);
       const nativeLogger = (calls[0] as {readonly logger: (level: string, message: string) => void}).logger;
       expect(nativeLogger('error', '[node-llama-cpp] load warning')).toBeUndefined();
+      expect(modelLoadCalls).toEqual([
+        {
+          gpuLayers: 0,
+          ignoreMemorySafetyChecks: false,
+          loadSignal: expect.any(AbortSignal),
+          modelPath: '/models/fake.gguf',
+        },
+      ]);
       expect(embeddingContextCalls).toEqual([
         {
           contextSize: undefined,
@@ -367,6 +409,7 @@ describe('Effect AI native harness', () => {
 
   it.effect('keeps retrieval sessions warm and releases heavyweight generation sessions after each request', () => {
     const loads = {embedding: 0, generation: 0, reranker: 0};
+    const embeddingLoadOptions: unknown[] = [];
     let releasedGenerationSessions = 0;
     const engine = Layer.succeed(
       LlamaCppEngine,
@@ -375,6 +418,7 @@ describe('Effect AI native harness', () => {
         loadEmbeddingSession: options =>
           Effect.sync(() => {
             loads.embedding += 1;
+            embeddingLoadOptions.push(options);
             return {
               dimensions: options.dimensions,
               embedMany: inputs => Effect.succeed(inputs.map(input => Array(options.dimensions).fill(input.length))),
@@ -426,6 +470,9 @@ describe('Effect AI native harness', () => {
           });
         }
         expect(loads).toEqual({embedding: 1, generation: 2, reranker: 1});
+        expect(embeddingLoadOptions).toEqual([
+          expect.objectContaining({darwinArm64EmbeddingGpuLayers: 0, modelId: embedding.id}),
+        ]);
         expect(releasedGenerationSessions).toBe(2);
       }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
     );

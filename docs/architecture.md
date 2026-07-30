@@ -1,9 +1,10 @@
 # Threadnote 4 architecture
 
-Threadnote 4 is a self-contained executable with an embedded Bun runtime. Canonical storage, recall indexes, local
-inference, sharing, migration, the manager, and MCP all run in the Threadnote process. A normal operation does not
-start or contact a separately installed runtime, Python service, memory-platform server, database server, or
-background daemon.
+Threadnote 4 is a self-contained executable with an embedded Bun runtime. Canonical storage, recall indexes, sharing,
+migration, the manager, and MCP run in the foreground Threadnote process. Local inference runs in one supervised child
+of that process, launched from the same standalone executable so a native-addon crash cannot take down the CLI or MCP
+server. A normal operation does not start or contact a separately installed runtime, Python service, memory-platform
+server, database server, or background daemon.
 
 ## Runtime contract
 
@@ -13,9 +14,11 @@ background daemon.
   `node-llama-cpp` payload.
 - Bun bytecode compilation, minification, and linked source maps are enabled for standalone executables.
 - Each CLI, MCP, or manager process owns one root Effect runtime and one root scope.
+- The parent lazily starts one persistent local-model worker. The worker owns a minimal Effect runtime, keeps model
+  sessions warm, serves serialized stdio requests, and exits with its parent.
 - MCP uses stdio. The manager starts a temporary loopback HTTP server only for the foreground manager session.
 - `node-llama-cpp` is isolated behind one Threadnote adapter and may load only a compatible prebuilt binary.
-  Threadnote does not silently compile llama.cpp or invoke Python.
+  Only the local-model worker loads that adapter; Threadnote does not silently compile llama.cpp or invoke Python.
 
 ```mermaid
 flowchart TD
@@ -26,13 +29,14 @@ flowchart TD
     Runtime --> Store["ResourceStore<br/>canonical Markdown"]
     Runtime --> Recall["hybrid recall"]
     Runtime --> CodeGraph["native code graph"]
-    Runtime --> Models["LocalModelRuntime<br/>node-llama-cpp"]
+    Runtime --> Supervisor["LocalModelRuntime<br/>worker supervisor"]
+    Supervisor --> Worker["persistent local-model worker<br/>node-llama-cpp"]
+    Recall --> Supervisor
+    CodeGraph --> Supervisor
     Recall --> Lexical["SQLite lexical index"]
     Recall --> Vectors["paged SQLite vector index"]
-    Models --> Vectors
     CodeGraph --> GraphSqlite["per-repository SQLite snapshots"]
     CodeGraph --> GraphVectors["paged code-symbol vector SQLite"]
-    Models --> GraphVectors
     Store --> Lexical
     Store --> Vectors
 ```
@@ -58,8 +62,8 @@ or rebuilt without migrating canonical content.
 
 1. Share repositories auto-sync only when their worktrees are clean.
 2. The SQLite index returns bounded lexical candidates and corpus statistics without loading a monolithic JSON cache.
-3. The automatically installed BGE Small model embeds the query in process. Exact cosine search pages the active
-   SQLite vector rows without decoding or caching the corpus as a JavaScript array.
+3. The automatically installed BGE Small model embeds the query in the supervised local-model worker. Exact cosine
+   search pages the active SQLite vector rows without decoding or caching the corpus as a JavaScript array.
 4. The hybrid ranker combines lexical, exact-term, field, semantic, scope, lifecycle, authority, time, graph, feedback,
    and—only when explicitly selected—reranker signals.
 5. Confidence and no-answer gates prevent weak semantic-only matches from becoming answers.
@@ -69,6 +73,12 @@ The 36.7 MB BGE Small embedding model is core functionality. `threadnote install
 verify, select, and preserve it automatically. Reranking and structured generation remain optional roles. If native
 inference is temporarily unavailable, recall fails open to deterministic lexical results and doctor reports the
 missing core capability.
+
+The worker is lazy and remains alive for its parent process to reuse loaded models. A transport crash, exit, protocol
+fault, closed input, or request deadline causes the parent to discard it and retry the operation once with a fresh
+worker. A repeated fault is returned as a typed bounded failure. On Darwin arm64, the built-in BGE Small manifest
+requests zero GPU layers. The packaged Metal addon still initializes its backend, so this is a targeted mitigation for
+the observed release-runner failure, not root-cause proof and not a policy applied to optional models.
 
 ## Native code graph
 
@@ -151,4 +161,6 @@ prompt bookkeeping is absent. The legacy source remains untouched as a rollback 
 
 Effect provides capability services, scopes, typed failures, interruption, concurrency, and test substitution. Domain
 modules depend on Threadnote-owned ports. Raw filesystem, process, HTTP, digest, SQLite, and native-addon access stays
-inside adapters, and tests replace those services with Layers instead of starting hidden local servers.
+inside adapters, and tests replace those services with Layers instead of starting hidden local servers. Native
+inference additionally crosses the bounded worker protocol so a memory-safety failure remains outside the long-lived
+CLI, MCP, or manager parent.
