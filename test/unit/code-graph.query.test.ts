@@ -1,5 +1,5 @@
 import {expect, it} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
@@ -67,7 +67,7 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
-  it.effect('preserves semantic evidence that completes after the traversal deadline', () =>
+  it.effect('returns lexical evidence when semantic search does not finish within the traversal deadline', () =>
     Effect.gen(function* () {
       const calls: string[] = [];
       const store = {
@@ -79,7 +79,7 @@ describe('code graph query budgets', () => {
         searchSymbolsMany: () =>
           Effect.sync(() => {
             calls.push('search');
-            return [[]];
+            return [[seed]];
           }),
         symbolsByIds: () =>
           Effect.sync(() => {
@@ -89,14 +89,12 @@ describe('code graph query budgets', () => {
       } as unknown as CodeGraphStoreShape;
       const delayedEmbedding = {
         search: () =>
-          Effect.gen(function* () {
+          Effect.sync(() => {
             calls.push('semantic');
-            yield* TestClock.adjust(2_001);
-            return new Map([[semanticMatch.id, 0.8]]);
-          }),
+          }).pipe(Effect.andThen(Effect.never)),
       } as unknown as CodeGraphEmbeddingIndexShape;
 
-      const result = yield* traversalQuery(
+      const fiber = yield* traversalQuery(
         store,
         layout.databasePath,
         'snapshot',
@@ -110,11 +108,15 @@ describe('code graph query budgets', () => {
         '/fixture/home',
         layout,
         false,
-      );
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(2_001);
+      const result = yield* Fiber.join(fiber);
 
-      expect(result.nodes).toEqual([expect.objectContaining({id: semanticMatch.id, score: 0.8})]);
-      expect(result.warnings).toContain('Graph traversal reached its elapsed-time budget; results are partial.');
-      expect(calls).toEqual(['search', 'semantic', 'hydration']);
+      expect(result.nodes).toEqual([expect.objectContaining({id: seed.id, score: 1})]);
+      expect(result.warnings).toContain(
+        'Semantic graph search reached its elapsed-time budget; lexical graph results were returned.',
+      );
+      expect(calls).toEqual(['search', 'semantic']);
     }),
   );
 

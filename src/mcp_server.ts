@@ -179,6 +179,7 @@ let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | u
 const STALE_NOTICE_TTL_MS = 60_000;
 const MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_POLL_MILLISECONDS = 100;
+const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 30_000;
 
 const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
   if (mcpStartupVersion === undefined) {
@@ -830,6 +831,10 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           structuredContent: result,
         };
       }).pipe(
+        Effect.timeoutOrElse({
+          duration: MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS,
+          orElse: () => Effect.succeed(codeGraphQueryTimeoutResult(operation)),
+        }),
         Effect.catch(error =>
           Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
         ),
@@ -894,6 +899,28 @@ function codeGraphRefreshResult(
       retryAfterMilliseconds: MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS,
       state: 'indexing',
       type: 'code-graph-index-state',
+      version: 1,
+    },
+  };
+}
+
+function codeGraphQueryTimeoutResult(operation: 'explain' | 'impact' | 'path' | 'query'): CallToolResult {
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS / 1_000}-second ` +
+          'server budget and was stopped before the MCP client timeout. Retry the same request once. If it repeats, ' +
+          'run `threadnote graph status`, then `threadnote doctor --dry-run`, and report the bounded diagnostic.',
+      },
+    ],
+    isError: true,
+    structuredContent: {
+      operation,
+      retryAfterMilliseconds: MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS,
+      state: 'timed_out',
+      type: 'code-graph-query-state',
       version: 1,
     },
   };

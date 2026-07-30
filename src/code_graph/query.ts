@@ -250,13 +250,29 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     : [...lexicalById.values()]
         .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
         .slice(0, seedLimit);
-  const semantic =
+  const semanticResult =
     timedOut || (impact && seedQueries?.length)
-      ? new Map<string, number>()
-      : yield* embedding
-          .search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12))
-          .pipe(Effect.catch(() => Effect.succeed(new Map<string, number>())));
-  timedOut ||= yield* deadlineReached(deadline);
+      ? {scores: new Map<string, number>(), timedOut: false}
+      : yield* Effect.gen(function* () {
+          const remainingMilliseconds = deadline - (yield* Clock.currentTimeMillis);
+          if (remainingMilliseconds <= 0) {
+            return {scores: new Map<string, number>(), timedOut: true};
+          }
+          return yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(
+            Effect.map(scores => ({scores, timedOut: false as const})),
+            Effect.catch(() => Effect.succeed({scores: new Map<string, number>(), timedOut: false as const})),
+            Effect.timeoutOrElse({
+              duration: remainingMilliseconds,
+              orElse: () =>
+                Effect.succeed({
+                  scores: new Map<string, number>(),
+                  timedOut: true as const,
+                }),
+            }),
+          );
+        });
+  const semantic = semanticResult.scores;
+  timedOut ||= semanticResult.timedOut || (yield* deadlineReached(deadline));
   const semanticOnlyIds = [...semantic.keys()]
     .filter(id => !lexicalById.has(id))
     .slice(0, Math.max(0, nodeLimit - lexicalSeeds.length));
@@ -363,8 +379,11 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   }
   if (analysisTruncated)
     warnings.push('Impact analysis reached its internal relationship budget; results are partial.');
-  if (timedOut) warnings.push('Graph traversal reached its elapsed-time budget; results are partial.');
-  else if (edges.size >= edgeLimit || nodes.size >= nodeLimit) {
+  if (semanticResult.timedOut) {
+    warnings.push('Semantic graph search reached its elapsed-time budget; lexical graph results were returned.');
+  } else if (timedOut) {
+    warnings.push('Graph traversal reached its elapsed-time budget; results are partial.');
+  } else if (edges.size >= edgeLimit || nodes.size >= nodeLimit) {
     warnings.push('Graph traversal reached a configured result limit.');
   }
   return {
