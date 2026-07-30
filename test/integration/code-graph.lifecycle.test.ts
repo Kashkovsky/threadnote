@@ -635,6 +635,21 @@ describe('native code graph lifecycle', () => {
     expect(inventory.files.every(file => file.content === undefined)).toBe(true);
   }, 30_000);
 
+  it('indexes an eligible tracked file above the former per-file byte cap', async () => {
+    const root = createLargeInventoryRepository(1, 2 * 1_048_576);
+
+    const inventory = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity);
+      }),
+    );
+
+    expect(inventory.files).toHaveLength(1);
+    expect(inventory.files[0]?.size).toBe(2 * 1_048_576);
+    expect(inventory.parsedFiles).toBe(1);
+  });
+
   it('counts a forced dirty path once when the commit and worktree versions are both parsed', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
@@ -651,25 +666,7 @@ describe('native code graph lifecycle', () => {
     expect(result.snapshot.fileCount).toBeGreaterThan(0);
   });
 
-  it('enforces caller symbol and edge budgets during extraction', async () => {
-    const root = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-
-    await expect(
-      runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({
-            budgets: {maximumEdges: 1, maximumSymbols: 1},
-            cwd: root,
-            threadnoteHome: home,
-          });
-        }),
-      ),
-    ).rejects.toThrow(/exceeds 1 (?:symbols|edges)/);
-  });
-
-  it('enforces aggregate symbol budgets across successful parser batches', async () => {
+  it('indexes aggregate symbols across parser batches without a repository-scale cap', async () => {
     const root = createManySourceRepository(129);
     const home = join(root, '.threadnote-test-home');
     const first = await runEffect(
@@ -678,50 +675,7 @@ describe('native code graph lifecycle', () => {
         return yield* indexer.index({cwd: root, threadnoteHome: home});
       }),
     );
-    writeFileSync(join(root, '.threadnoteignore'), '# change only the overlay fingerprint\n');
-    await expect(
-      runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({
-            budgets: {maximumSymbols: 256},
-            cwd: root,
-            threadnoteHome: home,
-          });
-        }),
-      ),
-    ).rejects.toThrow(/exceeds 256 raw symbols before cache materialization/);
-    rmSync(join(root, '.threadnoteignore'));
-    for (let index = 0; index < 129; index += 1) {
-      writeFileSync(
-        join(root, `src/file-${String(index).padStart(3, '0')}.ts`),
-        `export function revised${index}(): number { return ${index}; }\n`,
-      );
-    }
-
-    await expect(
-      runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({
-            budgets: {maximumSymbols: 256},
-            cwd: root,
-            threadnoteHome: home,
-          });
-        }),
-      ),
-    ).rejects.toThrow(/exceeds 256 raw symbols while extracting worktree files/);
-
-    const ready = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.readySnapshot(
-          join(home, 'indexes', 'code-graph', 'repositories', first.identity.checkoutId, 'graph-v2.sqlite'),
-          first.identity.worktreeId,
-        );
-      }),
-    );
-    expect(ready?.id).toBe(first.snapshot.id);
+    expect(first.snapshot.symbolCount).toBeGreaterThan(256);
     const database = new Database(
       join(home, 'indexes', 'code-graph', 'repositories', first.identity.checkoutId, 'graph-v2.sqlite'),
       {readonly: true},
@@ -922,7 +876,7 @@ describe('native code graph lifecycle', () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const repositoryRoot = yield* fs.realPath(root);
-        return yield* readContainedStableRegularFile(fs, path, repositoryRoot, relative, 1_048_576, {
+        return yield* readContainedStableRegularFile(fs, path, repositoryRoot, relative, {
           afterOpen: Effect.sync(() => {
             rmSync(sourceRoot);
             renameSync(originalSourceRoot, sourceRoot);
@@ -1671,11 +1625,11 @@ function createManySourceRepository(count: number): string {
   return root;
 }
 
-function createLargeInventoryRepository(count: number): string {
+function createLargeInventoryRepository(count: number, bytes = 1_048_576): string {
   const root = temporaryDirectory('threadnote-code-graph-large-inventory-');
   git(root, ['init', '-q']);
   const prefix = '# large inventory fixture\n';
-  const content = `${prefix}${' '.repeat(1_048_576 - Buffer.byteLength(prefix))}`;
+  const content = `${prefix}${' '.repeat(bytes - Buffer.byteLength(prefix))}`;
   const blob = execFileSync('git', ['-C', root, 'hash-object', '-w', '--stdin'], {
     encoding: 'utf8',
     input: content,

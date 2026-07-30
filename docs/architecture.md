@@ -80,9 +80,10 @@ effect of recall and graph evidence cannot turn a memory no-answer into an answe
 The graph inventory reads committed files through bounded Git tree/blob plumbing and overlays eligible staged,
 unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. Uncached source is parsed
 into the SQLite-backed content-addressed fact cache in bounded batches, and ordinary source text is released before the
-next batch. Package and TypeScript configuration is retained only as compact, bounded resolution metadata. Repository
-admission is not capped by aggregate source bytes; individual files, resolution metadata, and graph cardinality remain
-bounded, and completed parser batches are reusable after interruption. TypeScript/JavaScript, package manifests, Go
+next batch. Package and TypeScript configuration is retained only as compact resolution metadata. Repository admission
+and graph coverage are not capped by file bytes, file count, resolution metadata, symbols, edges, lexical terms, or
+vectors. Fixed-size parser and SQLite batches bound transient work without truncating the stored graph, and completed
+parser batches are reusable after interruption. TypeScript/JavaScript, package manifests, Go
 manifests, and Markdown have built-in extractors. Every edge identifies its evidence and authority as declared,
 resolved, syntactic, heuristic, or model-derived; semantic similarity is never promoted to an authoritative source edge.
 
@@ -95,8 +96,8 @@ indexed SQL joins instead of issuing per-symbol or per-edge comparison queries. 
 store calls in a logical query or export. Concurrent readers pin snapshots with bounded leases instead of taking the
 writer lock. Repository registration uses a short process-aware maintenance lease and a writer-intent marker so repair
 and purge cannot remove a graph being created, without serializing extraction or model work across repositories. Vectors
-use immutable checksummed generations, a bounded decoded-generation cache, and a deterministic 20,000-symbol ceiling;
-missing models fail open to indexed SQLite lexical postings.
+use immutable checksummed generations, a bounded decoded-generation cache, and fixed-size embedding batches over every
+eligible high-value symbol; missing models fail open to indexed SQLite lexical postings.
 
 One Git checkout is one graph scope, including monorepos. Nested package manifests assign symbols to the deepest
 containing package, and the most specific matching TypeScript project supplies path aliases. These scopes disambiguate

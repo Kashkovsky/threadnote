@@ -1,9 +1,7 @@
 import ts from 'typescript-compiler';
 import {Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {CodeGraphBudgetExceeded, DEFAULT_CODE_GRAPH_BUDGETS} from './types.js';
 import type {
-  CodeGraphBudgets,
   CodeGraphEdge,
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
@@ -87,24 +85,12 @@ export function extractRepositoryFacts(
 export function extractRepositoryFileFacts(
   files: readonly CodeGraphInventoryFile[],
   acceptedPaths?: ReadonlySet<string>,
-  budgetOverrides: Partial<Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>> = {},
 ): readonly CodeGraphFileFacts[] {
   const packages = discoverPackages(files);
-  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...budgetOverrides};
   const output: CodeGraphFileFacts[] = [];
-  let edges = 0;
-  let symbols = 0;
   for (const file of files) {
     if (!(acceptedPaths?.has(file.path) ?? true)) continue;
     const facts = extractFileFacts(file, {packageName: packageForPath(file.path, packages)});
-    edges += facts.edges.length;
-    symbols += facts.symbols.length;
-    if (symbols > budgets.maximumSymbols) {
-      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} symbols during extraction.`);
-    }
-    if (edges > budgets.maximumEdges) {
-      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} edges during extraction.`);
-    }
     output.push(facts);
   }
   return output;
@@ -115,14 +101,25 @@ export function refreshPackageAttribution(
   files: readonly CodeGraphInventoryFile[],
 ): readonly CodeGraphFileFacts[] {
   const packages = discoverPackages(files);
-  return facts.map(file => ({
+  return facts.map(file => refreshFilePackageAttribution(file, packages));
+}
+
+export function createPackageAttributor(
+  files: readonly CodeGraphInventoryFile[],
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
+  const packages = discoverPackages(files);
+  return facts => facts.map(file => refreshFilePackageAttribution(file, packages));
+}
+
+function refreshFilePackageAttribution(file: CodeGraphFileFacts, packages: PackageIndex): CodeGraphFileFacts {
+  return {
     ...file,
     symbols: file.symbols.map(symbol => {
       const {packageName: _stalePackageName, ...withoutPackage} = symbol;
       const packageName = packageForPath(symbol.path, packages);
       return packageName ? {...withoutPackage, packageName} : withoutPackage;
     }),
-  }));
+  };
 }
 
 export function extractFileFacts(
@@ -390,8 +387,21 @@ export function resolveExtractedRepositoryFacts(
   files: readonly CodeGraphInventoryFile[],
   observer: CodeGraphResolutionObserver = {},
 ): readonly CodeGraphFileFacts[] {
+  return createRepositoryFactResolver(facts, files, observer).resolve(facts);
+}
+
+export interface RepositoryFactResolver {
+  readonly resolve: (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[];
+  readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export function createRepositoryFactResolver(
+  indexFacts: readonly CodeGraphFileFacts[],
+  files: readonly CodeGraphInventoryFile[],
+  observer: CodeGraphResolutionObserver = {},
+): RepositoryFactResolver {
   const packages = discoverPackages(files);
-  const symbols = facts.flatMap(file => file.symbols);
+  const symbols = uniqueSymbols(indexFacts.flatMap(file => file.symbols));
   const byName = groupSymbols(symbols, symbol => symbol.name);
   const byQualifiedName = groupSymbols(symbols, symbol => symbol.qualifiedName);
   const byPath = groupSymbols(symbols, symbol => symbol.path);
@@ -404,98 +414,111 @@ export function resolveExtractedRepositoryFacts(
     symbols.filter(symbol => symbol.kind === 'module').map(symbol => [symbol.path, symbol]),
   );
   const existingPaths = new Set(files.map(file => file.path));
-  const importsByPath = collectImportBindings(facts);
-  const factsByPath = new Map(facts.map(file => [file.path, file]));
+  const factsByPath = new Map(indexFacts.map(file => [file.path, file]));
   const aliases = discoverResolutionAliases(files, observer);
   const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
 
-  return facts.map(fileFacts => ({
-    ...fileFacts,
-    diagnostics: [
-      ...fileFacts.diagnostics,
-      ...fileFacts.symbols
-        .filter(symbol => symbol.kind === 'package' && (packageSymbols.get(symbol.name)?.length ?? 0) > 1)
-        .map(symbol => `${fileFacts.path}: duplicate workspace package name ${symbol.name}`),
-    ],
-    edges: fileFacts.edges.map(edge => {
-      if (edge.targetId) return edge;
-      const locallyBound = parseLocallyBoundTarget(edge.targetName);
-      if (locallyBound) {
-        return {
-          ...edge,
-          id: edgeId(
-            edge.sourceId,
-            edge.sourceName,
-            edge.relation,
-            undefined,
-            locallyBound,
-            edge.provenance,
-            edge.evidencePath,
-          ),
-          targetName: locallyBound,
-        };
-      }
-      const binding = parseImportBindingTarget(edge.targetName);
-      const resolved =
-        (edge.relation === 'imports' || edge.relation === 'reexports') && binding
-          ? resolveImportedSymbol(
-              edge.evidencePath,
-              binding,
-              byPathAndName,
-              factsByPath,
-              existingPaths,
-              packages,
-              aliases,
-              resolutionCache,
-            )
-          : edge.relation === 'imports' || edge.relation === 'reexports'
-            ? resolveModuleTarget(
+  return {
+    resolve: facts => {
+      const importsByPath = collectImportBindings(facts);
+      return facts.map(fileFacts => ({
+        ...fileFacts,
+        diagnostics: [
+          ...fileFacts.diagnostics,
+          ...fileFacts.symbols
+            .filter(symbol => symbol.kind === 'package' && (packageSymbols.get(symbol.name)?.length ?? 0) > 1)
+            .map(symbol => `${fileFacts.path}: duplicate workspace package name ${symbol.name}`),
+        ],
+        edges: fileFacts.edges.map(edge => {
+          if (edge.targetId) return edge;
+          const locallyBound = parseLocallyBoundTarget(edge.targetName);
+          if (locallyBound) {
+            return {
+              ...edge,
+              id: edgeId(
+                edge.sourceId,
+                edge.sourceName,
+                edge.relation,
+                undefined,
+                locallyBound,
+                edge.provenance,
                 edge.evidencePath,
-                edge.targetName,
-                moduleSymbols,
-                existingPaths,
-                packages,
-                aliases,
-                resolutionCache,
-              )
-            : edge.relation === 'depends_on'
-              ? uniqueSymbol(packageSymbols.get(edge.targetName))
-              : edge.relation === 'documents' && edge.targetName.includes('/')
-                ? byPath.get(edge.targetName)?.[0]
-                : edge.relation === 'documents'
-                  ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
-                    uniqueSymbol(byName.get(lastName(edge.targetName))))
-                  : resolveSourceRelationshipTarget(
-                      edge,
-                      byPathAndName,
-                      importsByPath.get(edge.evidencePath),
-                      factsByPath,
-                      existingPaths,
-                      packages,
-                      aliases,
-                      resolutionCache,
-                    );
-      if (!resolved) return edge;
-      const provenance: CodeGraphProvenance =
-        edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
-      return {
-        ...edge,
-        confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : edge.confidence,
-        id: edgeId(
-          edge.sourceId,
-          edge.sourceName,
-          edge.relation,
-          resolved.id,
-          resolved.name,
-          provenance,
-          edge.evidencePath,
-        ),
-        provenance,
-        targetId: resolved.id,
-        targetName: resolved.name,
-      };
-    }),
-  }));
+              ),
+              targetName: locallyBound,
+            };
+          }
+          const binding = parseImportBindingTarget(edge.targetName);
+          const resolved =
+            (edge.relation === 'imports' || edge.relation === 'reexports') && binding
+              ? resolveImportedSymbol(
+                  edge.evidencePath,
+                  binding,
+                  byPathAndName,
+                  factsByPath,
+                  existingPaths,
+                  packages,
+                  aliases,
+                  resolutionCache,
+                )
+              : edge.relation === 'imports' || edge.relation === 'reexports'
+                ? resolveModuleTarget(
+                    edge.evidencePath,
+                    edge.targetName,
+                    moduleSymbols,
+                    existingPaths,
+                    packages,
+                    aliases,
+                    resolutionCache,
+                  )
+                : edge.relation === 'depends_on'
+                  ? uniqueSymbol(packageSymbols.get(edge.targetName))
+                  : edge.relation === 'documents' && edge.targetName.includes('/')
+                    ? byPath.get(edge.targetName)?.[0]
+                    : edge.relation === 'documents'
+                      ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
+                        uniqueSymbol(byName.get(lastName(edge.targetName))))
+                      : resolveSourceRelationshipTarget(
+                          edge,
+                          byPathAndName,
+                          importsByPath.get(edge.evidencePath),
+                          factsByPath,
+                          existingPaths,
+                          packages,
+                          aliases,
+                          resolutionCache,
+                        );
+          if (!resolved) return edge;
+          const provenance: CodeGraphProvenance =
+            edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
+          return {
+            ...edge,
+            confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : edge.confidence,
+            id: edgeId(
+              edge.sourceId,
+              edge.sourceName,
+              edge.relation,
+              resolved.id,
+              resolved.name,
+              provenance,
+              edge.evidencePath,
+            ),
+            provenance,
+            targetId: resolved.id,
+            targetName: resolved.name,
+          };
+        }),
+      }));
+    },
+    symbols,
+  };
+}
+
+function uniqueSymbols(symbols: readonly CodeGraphSymbol[]): readonly CodeGraphSymbol[] {
+  const unique = new Map<string, CodeGraphSymbol>();
+  for (const symbol of symbols) {
+    if (!unique.has(symbol.id)) unique.set(symbol.id, symbol);
+  }
+  return [...unique.values()];
 }
 
 function collectImportBindings(

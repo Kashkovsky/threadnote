@@ -13,9 +13,7 @@ import type {
   CodeGraphQueryNode,
   RepositoryIdentity,
 } from './types.js';
-import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphBudgetExceeded, CodeGraphStoreError} from './types.js';
-
-const MAX_CODE_GRAPH_LEXICAL_TERMS = 4_000_000;
+import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 
 interface SnapshotRow {
   readonly base_snapshot_id: unknown;
@@ -115,17 +113,19 @@ export interface CodeGraphStoreShape {
     cacheExtractorSet: string,
     pruneCache: boolean,
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly activateStaged: (
+    databasePath: string,
+    identity: RepositoryIdentity,
+    snapshot: CodeGraphSnapshot,
+    cacheExtractorSet: string,
+    pruneCache: boolean,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
     databasePath: string,
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphFileFacts[],
     extractorSet: string,
   ) => Effect.Effect<void, CodeGraphStoreError>;
-  readonly cachedFactCounts: (
-    databasePath: string,
-    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
-    extractorSet: string,
-  ) => Effect.Effect<{readonly edges: number; readonly files: number; readonly symbols: number}, CodeGraphStoreError>;
   readonly acquireSnapshotLease: (
     databasePath: string,
     snapshotId: string,
@@ -138,6 +138,10 @@ export interface CodeGraphStoreShape {
     activeWorktreeIds: ReadonlySet<string>,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly prepareActivation: (
+    databasePath: string,
+    files: readonly CodeGraphInventoryFile[],
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly diagnose: (databasePath: string) => Effect.Effect<CodeGraphDatabaseHealth | undefined, CodeGraphStoreError>;
   readonly cachedCommittedFileKeys: (
     databasePath: string,
@@ -233,6 +237,14 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     ids: readonly string[],
   ) => Effect.Effect<readonly CodeGraphSymbol[], CodeGraphStoreError>;
+  readonly stageActivationFacts: (
+    databasePath: string,
+    symbols: readonly CodeGraphSymbol[],
+    edges: readonly CodeGraphEdge[],
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly stagedFactCounts: (
+    databasePath: string,
+  ) => Effect.Effect<{readonly edges: number; readonly symbols: number}, CodeGraphStoreError>;
 }
 
 interface CodeGraphDatabaseSessionShape {
@@ -288,20 +300,29 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 Effect.gen(function* () {
                   const sql = yield* SqlClient.SqlClient;
                   yield* initializeSchema(sql);
-                  yield* activateSnapshot(
-                    sql,
-                    identity,
-                    snapshot,
-                    files,
-                    symbols,
-                    edges,
-                    cacheExtractorSet,
-                    pruneCache,
-                  );
+                  yield* prepareActivationTables(sql);
+                  yield* stageActivationFiles(sql, files);
+                  yield* stageActivationSymbols(sql, symbols);
+                  yield* stageActivationSymbolTerms(sql, symbols);
+                  yield* stageActivationEdges(sql, edges);
+                  yield* activateStagedSnapshot(sql, identity, snapshot, cacheExtractorSet, pruneCache);
                 }),
               ),
             ),
             Effect.mapError(cause => storeError('activate code graph snapshot', cause)),
+          ),
+        activateStaged: (databasePath, identity, snapshot, cacheExtractorSet, pruneCache) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* activateStagedSnapshot(sql, identity, snapshot, cacheExtractorSet, pruneCache);
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('activate staged code graph snapshot', cause)),
           ),
         cacheFacts: (databasePath, files, facts, extractorSet) =>
           prepare(databasePath).pipe(
@@ -320,11 +341,6 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('cache code graph file facts', cause)),
           ),
-        cachedFactCounts: (databasePath, files, extractorSet) =>
-          prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectCachedFactCounts(files, extractorSet))),
-            Effect.mapError(cause => storeError('count cached code graph facts', cause)),
-          ),
         promote: (databasePath, identity, snapshotId, activeWorktreeIds) =>
           prepare(databasePath).pipe(
             Effect.andThen(useDatabase(databasePath, promoteSnapshot(identity, snapshotId, activeWorktreeIds))),
@@ -341,6 +357,21 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               ),
             ),
             Effect.mapError(cause => storeError('initialize code graph database', cause)),
+          ),
+        prepareActivation: (databasePath, files) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* initializeSchema(sql);
+                  yield* prepareActivationTables(sql);
+                  yield* stageActivationFiles(sql, files);
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('prepare staged code graph activation', cause)),
           ),
         diagnose: databasePath =>
           fs.exists(databasePath).pipe(
@@ -527,6 +558,45 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           prepare(databasePath).pipe(
             Effect.andThen(useDatabase(databasePath, selectSymbolsByIds(snapshotId, ids))),
             Effect.mapError(cause => storeError('load code graph symbols', cause)),
+          ),
+        stageActivationFacts: (databasePath, symbols, edges) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.withTransaction(
+                    Effect.gen(function* () {
+                      yield* stageActivationSymbols(sql, symbols);
+                      yield* stageActivationSymbolTerms(sql, symbols);
+                      yield* stageActivationEdges(sql, edges);
+                    }),
+                  );
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('stage code graph facts', cause)),
+          ),
+        stagedFactCounts: databasePath =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  const [symbolRows, edgeRows] = yield* Effect.all([
+                    sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM activation_symbols`,
+                    sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM activation_edges`,
+                  ]);
+                  return {
+                    edges: Number(edgeRows[0]?.count ?? 0),
+                    symbols: Number(symbolRows[0]?.count ?? 0),
+                  };
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('count staged code graph facts', cause)),
           ),
       });
     }),
@@ -829,18 +899,13 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
   yield* sql`DELETE FROM snapshot_leases WHERE token = ${token}`;
 });
 
-const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
+const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(function* (
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
-  files: readonly CodeGraphInventoryFile[],
-  inputSymbols: readonly CodeGraphSymbol[],
-  inputEdges: readonly CodeGraphEdge[],
   cacheExtractorSet: string,
   pruneCache: boolean,
 ) {
-  const symbols = inputSymbols;
-  const edges = inputEdges;
   const baseSnapshotId = snapshot.baseSnapshotId;
   if (baseSnapshotId) {
     const base = yield* sql<{readonly id: string}>`
@@ -851,6 +916,41 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
         new CodeGraphStoreError(`Base snapshot ${baseSnapshotId} is not ready for a dirty overlay.`),
       );
     }
+  }
+  const invalidEdges = yield* sql<{readonly id: string}>`
+    SELECT edge.id
+    FROM activation_edges AS edge
+    WHERE (edge.source_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM activation_symbols AS symbol WHERE symbol.id = edge.source_id
+           ))
+       OR (edge.target_id IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM activation_symbols AS symbol WHERE symbol.id = edge.target_id
+           ))
+    LIMIT 1
+  `;
+  if (invalidEdges[0]) {
+    return yield* Effect.fail(
+      new CodeGraphStoreError(`Code graph edge ${invalidEdges[0].id} references a missing symbol.`),
+    );
+  }
+  const stagedCounts = yield* sql<{
+    readonly edges: number;
+    readonly files: number;
+    readonly symbols: number;
+  }>`
+    SELECT
+      (SELECT COUNT(*) FROM activation_edges) AS edges,
+      (SELECT COUNT(*) FROM activation_files) AS files,
+      (SELECT COUNT(*) FROM activation_symbols) AS symbols
+  `;
+  const counts = stagedCounts[0];
+  if (
+    !counts ||
+    Number(counts.files) !== snapshot.fileCount ||
+    Number(counts.symbols) !== snapshot.symbolCount ||
+    Number(counts.edges) !== snapshot.edgeCount
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Staged code graph counts do not match the ready snapshot.'));
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -869,40 +969,44 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
           ) VALUES (
             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
             ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
-            ${snapshot.overlayFingerprint ?? null}, 'ready', ${files.length}, ${symbols.length}, ${edges.length},
+            ${snapshot.overlayFingerprint ?? null}, 'ready', ${snapshot.fileCount}, ${snapshot.symbolCount},
+            ${snapshot.edgeCount},
             ${startedAt}, ${completedAt}
           )
         `;
         if (!baseSnapshotId) {
-          yield* assertLexicalTermBudget(symbols, 0);
-          yield* insertSnapshotFiles(sql, snapshot.id, files);
-          yield* insertSnapshotSymbols(sql, snapshot.id, symbols);
-          yield* insertSymbolTerms(sql, snapshot.id, symbols);
-          yield* insertSnapshotEdges(sql, snapshot.id, edges);
+          yield* sql`
+            INSERT INTO snapshot_files (
+              snapshot_id, path, content_hash, language, mode, size, source
+            )
+            SELECT ${snapshot.id}, path, content_hash, language, mode, size, source
+            FROM activation_files
+          `;
+          yield* sql`
+            INSERT INTO symbols (
+              snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
+              package_name, exported, signature, documentation, span_json
+            )
+            SELECT ${snapshot.id}, id, content_hash, kind, name, qualified_name, path, language,
+              package_name, exported, signature, documentation, span_json
+            FROM activation_symbols
+          `;
+          yield* sql`
+            INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
+            SELECT ${snapshot.id}, term, symbol_id, weight
+            FROM activation_symbol_terms
+          `;
+          yield* sql`
+            INSERT INTO edges (
+              snapshot_id, id, source_id, source_name, relation, target_id, target_name,
+              provenance, confidence, evidence_path, evidence_span_json
+            )
+            SELECT ${snapshot.id}, id, source_id, source_name, relation, target_id, target_name,
+              provenance, confidence, evidence_path, evidence_span_json
+            FROM activation_edges
+          `;
         } else {
-          yield* prepareActivationTables(sql);
-          yield* stageActivationFiles(sql, files);
-          yield* stageActivationSymbols(sql, symbols);
-          yield* stageActivationEdges(sql, edges);
           yield* identifyChangedSymbols(sql, baseSnapshotId);
-          const changedSymbolRows = yield* sql<{readonly id: string}>`
-            SELECT id FROM activation_changed_symbol_ids
-          `;
-          const changedSymbolIds = new Set(changedSymbolRows.map(row => row.id));
-          const retainedTermCount = yield* sql<{readonly count: number}>`
-            SELECT COUNT(*) AS count
-            FROM symbol_terms AS base_terms
-            WHERE base_terms.snapshot_id = ${baseSnapshotId}
-              AND EXISTS (
-                SELECT 1 FROM activation_symbols AS current
-                WHERE current.id = base_terms.symbol_id
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM activation_changed_symbol_ids AS changed
-                WHERE changed.id = base_terms.symbol_id
-              )
-          `;
-          yield* assertLexicalTermBudget(symbols, Number(retainedTermCount[0]?.count ?? 0), changedSymbolIds);
           yield* sql`
             INSERT INTO snapshot_files (
               snapshot_id, path, content_hash, language, mode, size, source
@@ -937,7 +1041,12 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
             FROM activation_symbols AS current
             JOIN activation_changed_symbol_ids AS changed ON changed.id = current.id
           `;
-          yield* insertSymbolTerms(sql, snapshot.id, symbols, changedSymbolIds);
+          yield* sql`
+            INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
+            SELECT ${snapshot.id}, terms.term, terms.symbol_id, terms.weight
+            FROM activation_symbol_terms AS terms
+            JOIN activation_changed_symbol_ids AS changed ON changed.id = terms.symbol_id
+          `;
           yield* sql`
             INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id)
             SELECT ${snapshot.id}, base.id
@@ -993,131 +1102,6 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
   yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
 });
 
-function assertLexicalTermBudget(
-  symbols: readonly CodeGraphSymbol[],
-  retainedTermCount: number,
-  includedSymbolIds?: ReadonlySet<string>,
-) {
-  return Effect.gen(function* () {
-    let nextTermCount = retainedTermCount;
-    for (const symbol of symbols) {
-      if (includedSymbolIds && !includedSymbolIds.has(symbol.id)) continue;
-      nextTermCount += symbolTerms(symbol).length;
-      if (nextTermCount > MAX_CODE_GRAPH_LEXICAL_TERMS) {
-        return yield* Effect.fail(
-          new CodeGraphBudgetExceeded(`Code graph exceeds ${MAX_CODE_GRAPH_LEXICAL_TERMS} normalized lexical terms.`),
-        );
-      }
-    }
-  });
-}
-
-function insertSnapshotFiles(sql: SqlClient.SqlClient, snapshotId: string, files: readonly CodeGraphInventoryFile[]) {
-  return Effect.gen(function* () {
-    for (const batch of chunk(files, 400)) {
-      yield* sql.unsafe(
-        `INSERT INTO snapshot_files (
-          snapshot_id, path, content_hash, language, mode, size, source
-        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-        batch.flatMap(file => [
-          snapshotId,
-          file.path,
-          file.contentHash,
-          file.language,
-          file.mode,
-          file.size,
-          file.source,
-        ]),
-      );
-    }
-  });
-}
-
-function insertSnapshotSymbols(sql: SqlClient.SqlClient, snapshotId: string, symbols: readonly CodeGraphSymbol[]) {
-  return Effect.gen(function* () {
-    for (const batch of chunk(symbols, 300)) {
-      yield* sql.unsafe(
-        `INSERT INTO symbols (
-          snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
-          package_name, exported, signature, documentation, span_json
-        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-        batch.flatMap(symbol => [
-          snapshotId,
-          symbol.id,
-          symbol.contentHash,
-          symbol.kind,
-          symbol.name,
-          symbol.qualifiedName,
-          symbol.path,
-          symbol.language,
-          symbol.packageName ?? null,
-          symbol.exported ? 1 : 0,
-          symbol.signature ?? null,
-          symbol.documentation ?? null,
-          JSON.stringify(symbol.span),
-        ]),
-      );
-    }
-  });
-}
-
-function insertSymbolTerms(
-  sql: SqlClient.SqlClient,
-  snapshotId: string,
-  symbols: readonly CodeGraphSymbol[],
-  includedSymbolIds?: ReadonlySet<string>,
-) {
-  return Effect.gen(function* () {
-    let termBatch: Array<readonly [string, string, string, number]> = [];
-    for (const symbol of symbols) {
-      if (includedSymbolIds && !includedSymbolIds.has(symbol.id)) continue;
-      for (const [term, weight] of symbolTerms(symbol)) {
-        termBatch.push([snapshotId, term, symbol.id, weight]);
-      }
-      if (termBatch.length < 200) continue;
-      yield* sql.unsafe(
-        `INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
-         VALUES ${termBatch.map(() => '(?, ?, ?, ?)').join(', ')}`,
-        termBatch.flat(),
-      );
-      termBatch = [];
-    }
-    if (termBatch.length > 0) {
-      yield* sql.unsafe(
-        `INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
-         VALUES ${termBatch.map(() => '(?, ?, ?, ?)').join(', ')}`,
-        termBatch.flat(),
-      );
-    }
-  });
-}
-
-function insertSnapshotEdges(sql: SqlClient.SqlClient, snapshotId: string, edges: readonly CodeGraphEdge[]) {
-  return Effect.gen(function* () {
-    for (const batch of chunk(edges, 300)) {
-      yield* sql.unsafe(
-        `INSERT INTO edges (
-          snapshot_id, id, source_id, source_name, relation, target_id, target_name,
-          provenance, confidence, evidence_path, evidence_span_json
-        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-        batch.flatMap(edge => [
-          snapshotId,
-          edge.id,
-          edge.sourceId ?? null,
-          edge.sourceName,
-          edge.relation,
-          edge.targetId ?? null,
-          edge.targetName,
-          edge.provenance,
-          edge.confidence,
-          edge.evidencePath,
-          JSON.stringify(edge.evidenceSpan),
-        ]),
-      );
-    }
-  });
-}
-
 function storeFreshFacts(
   sql: SqlClient.SqlClient,
   files: readonly CodeGraphInventoryFile[],
@@ -1149,6 +1133,7 @@ function storeFreshFacts(
 }
 
 const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(function* (sql: SqlClient.SqlClient) {
+  yield* sql.unsafe('PRAGMA temp_store = FILE');
   yield* sql.unsafe(`
     CREATE TEMP TABLE IF NOT EXISTS activation_files (
       path TEXT PRIMARY KEY,
@@ -1189,12 +1174,21 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
       evidence_span_json TEXT NOT NULL
     ) WITHOUT ROWID
   `);
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_symbol_terms (
+      term TEXT NOT NULL,
+      symbol_id TEXT NOT NULL,
+      weight REAL NOT NULL,
+      PRIMARY KEY (term, symbol_id)
+    ) WITHOUT ROWID
+  `);
   yield* sql.unsafe(
     'CREATE TEMP TABLE IF NOT EXISTS activation_changed_symbol_ids (id TEXT PRIMARY KEY) WITHOUT ROWID',
   );
   yield* sql.unsafe('DELETE FROM activation_files');
   yield* sql.unsafe('DELETE FROM activation_symbols');
   yield* sql.unsafe('DELETE FROM activation_edges');
+  yield* sql.unsafe('DELETE FROM activation_symbol_terms');
   yield* sql.unsafe('DELETE FROM activation_changed_symbol_ids');
 });
 
@@ -1233,6 +1227,31 @@ function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly Code
           symbol.documentation ?? null,
           JSON.stringify(symbol.span),
         ]),
+      );
+    }
+  });
+}
+
+function stageActivationSymbolTerms(sql: SqlClient.SqlClient, symbols: readonly CodeGraphSymbol[]) {
+  return Effect.gen(function* () {
+    let termBatch: Array<readonly [string, string, number]> = [];
+    for (const symbol of symbols) {
+      for (const [term, weight] of symbolTerms(symbol)) {
+        termBatch.push([term, symbol.id, weight]);
+      }
+      if (termBatch.length < 200) continue;
+      yield* sql.unsafe(
+        `INSERT OR REPLACE INTO activation_symbol_terms (term, symbol_id, weight)
+         VALUES ${termBatch.map(() => '(?, ?, ?)').join(', ')}`,
+        termBatch.flat(),
+      );
+      termBatch = [];
+    }
+    if (termBatch.length > 0) {
+      yield* sql.unsafe(
+        `INSERT OR REPLACE INTO activation_symbol_terms (term, symbol_id, weight)
+         VALUES ${termBatch.map(() => '(?, ?, ?)').join(', ')}`,
+        termBatch.flat(),
       );
     }
   });
@@ -1452,32 +1471,6 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
     }
   }
   return output;
-});
-
-const selectCachedFactCounts = Effect.fn('codeGraph.selectCachedFactCounts')(function* (
-  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
-  extractorSet: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* configureConnection(sql);
-  const matchedPaths = new Set<string>();
-  let edges = 0;
-  let symbols = 0;
-  for (const batch of chunk(files, 300)) {
-    const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
-    for (const row of rows) {
-      try {
-        const facts = JSON.parse(row.facts_json) as Partial<CodeGraphFileFacts>;
-        if (!Array.isArray(facts.edges) || !Array.isArray(facts.symbols)) continue;
-        matchedPaths.add(row.path_hint);
-        edges += facts.edges.length;
-        symbols += facts.symbols.length;
-      } catch {
-        // A malformed cache row is disposable and will be replaced after extraction.
-      }
-    }
-  }
-  return {edges, files: matchedPaths.size, symbols};
 });
 
 function selectFileBlobBatch(

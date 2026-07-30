@@ -2,7 +2,12 @@ import {readFileSync, readdirSync, statSync} from 'node:fs';
 import {join, relative} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {extractRepositoryFacts} from '../../src/code_graph/extractor.js';
+import {
+  createPackageAttributor,
+  createRepositoryFactResolver,
+  extractRepositoryFacts,
+  extractRepositoryFileFacts,
+} from '../../src/code_graph/extractor.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 const REPOSITORY = join(import.meta.dirname, '../evaluation/fixtures/code-graph-v1/repository');
@@ -43,6 +48,23 @@ describe('native code graph extraction', () => {
       true,
     );
     expect(edges.some(edge => edge.targetName === 'Error' && edge.provenance === 'resolved')).toBe(false);
+  });
+
+  it('resolves file batches equivalently while retaining only symbols and reexports globally', () => {
+    const attributePackages = createPackageAttributor(files);
+    const attributed = files.map(file => attributePackages(extractRepositoryFileFacts([file]))[0]!);
+    const resolver = createRepositoryFactResolver(
+      attributed.map(file => ({
+        diagnostics: [],
+        edges: file.edges.filter(edge => edge.relation === 'reexports'),
+        path: file.path,
+        symbols: file.symbols,
+      })),
+      files,
+    );
+    const streamed = attributed.flatMap(file => resolver.resolve([file]));
+
+    expect(streamed).toEqual(facts);
   });
 
   it('indexes documentation without promoting prose similarity to a source dependency', () => {

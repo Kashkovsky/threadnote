@@ -17,16 +17,16 @@ markers; one worktree can never select another worktree's mutable overlay.
 
 Committed inventory streams from Git tree and blob plumbing. Overlay inventory comes from Git status plus
 boundary-checked worktree reads. Threadnote does not recursively walk a repository looking for source. Hidden
-directories, ignored/generated/vendor/cache paths, oversized files, symbolic links, submodule contents, and unsupported
-or binary files are rejected before parsing.
+directories, ignored/generated/vendor/cache paths, symbolic links, submodule contents, and unsupported or binary files
+are rejected before parsing. Eligible tracked source is not rejected because of file or repository size.
 
 Parsed file facts are content-addressed and reusable. Uncached source is read, parsed, and committed to the disposable
 parser cache in bounded batches; ordinary source text is released after each batch and is never retained until graph
-activation. Package and TypeScript configuration is reduced to bounded resolution metadata before its source text is
-released. Aggregate eligible source bytes are therefore not a repository admission limit. Safety remains enforced by
-individual-file, eligible-file, retained-resolution-metadata, symbol, edge, lexical-term, command-output, and
-per-command elapsed-time budgets. Completed parser-cache batches are reusable checkpoints after interruption.
-Snapshot-dependent symbol resolution remains separate.
+activation. Package and TypeScript configuration is reduced to compact resolution metadata before its source text is
+released. File, byte, symbol, edge, lexical-term, and vector counts are not repository admission or coverage limits.
+Fixed-size parser, SQLite, embedding, and output batches bound transient work without truncating the graph. Completed
+parser-cache batches are reusable checkpoints after interruption. Snapshot-dependent symbol resolution remains
+separate.
 Deterministic graph snapshots are staged, revalidated, then promoted transactionally. Incomplete or failed builds never
 replace the latest ready snapshot, and bounded reader leases keep selected snapshots alive without serializing queries
 behind the writer lock. Dirty activation stages complete current rows in bounded batches and derives overrides and
@@ -35,8 +35,8 @@ process-aware registration lease plus maintenance intent prevents repair or purg
 without holding a reader marker while an index request waits for the repository lock. Vector generations are optional,
 immutable, checksummed derived data associated with a ready snapshot only after verification; verified decoded
 generations are held in a small process-local cache and vector failure leaves exact and lexical graph search available.
-Vector projection is deterministically capped at 20,000 high-value symbols and is scale-gated with the pinned production
-embedding model and a lexical-disjoint semantic positive control.
+Vector projection includes every eligible high-value symbol and is processed in fixed-size embedding batches. It is
+scale-gated with the pinned production embedding model and a lexical-disjoint semantic positive control.
 
 Every relationship records evidence and exactly one authority tier:
 

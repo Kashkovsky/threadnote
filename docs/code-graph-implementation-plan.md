@@ -234,11 +234,12 @@ contract as, Threadnote seeding:
 - prune every directory whose basename starts with `.`;
 - prune `node_modules`, build output, package caches, coverage output, and known workspace caches before descent;
 - never follow filesystem symbolic links or Git links outside the repository boundary;
-- reject files above a configured byte limit before reading;
 - skip binary and unsupported files without retaining their bytes;
 - stream candidates through bounded queues instead of materializing the repository inventory;
-- cap visited entries, indexed files, individual-file bytes, retained resolution metadata, symbols, edges, parser
-  commands, and query time without rejecting a repository solely because its aggregate eligible source bytes are large;
+- do not cap eligible files, source bytes, retained compact resolution metadata, symbols, edges, lexical terms, or
+  vector coverage by repository size;
+- use fixed-size parser, SQLite, embedding, and response batches to control transient memory without truncating stored
+  graph facts;
 - persist completed parser batches as resumable checkpoints so an interrupted large build does not restart from zero;
 - report skipped and failed files in a summary rather than hiding them among per-file output;
 - continue with other files where a file-local failure is safe;
@@ -286,7 +287,7 @@ embedding similarity.
 
 ### Retrieval
 
-- `symbol_terms`: bounded normalized postings over qualified name, simple name, signature, documentation, path,
+- `symbol_terms`: normalized postings over bounded per-symbol qualified name, simple name, signature, documentation, path,
   package, and module.
 - `node_statistics`: degree by relation, hub penalties, usage counts, and traversal weights.
 - `resource_code_links`: derived links from Threadnote resources/memories to snapshot symbols or paths, including
@@ -584,8 +585,8 @@ Vector reuse keys include model hash, embedding-template version, symbol semanti
 fingerprint. Vectors are normalized and checksummed. Missing or incompatible vectors trigger lexical graph search and
 a repairable diagnostic.
 
-Exact vector scan remains the initial implementation over a deterministic ceiling of 20,000 exported/high-value
-symbols. Phase 0 and scheduled scale benchmarks must separately measure
+Exact vector scan remains the initial implementation over all exported/high-value symbols. Phase 0 and scheduled scale
+benchmarks must separately measure
 10k, 100k, and production-shaped node corpora. Adopt an ANN backend only when a reviewed benchmark demonstrates that
 exact scan violates an approved latency, memory, or concurrency budget. The replacement remains behind
 `CodeGraphEmbeddingIndex` and cannot change graph facts.

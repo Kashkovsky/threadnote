@@ -131,7 +131,9 @@ adding latency or surprise I/O to ordinary recall.
 The first graph query lazily builds a disposable snapshot below `~/.threadnote/indexes/code-graph/`. Committed source
 comes from bounded Git object reads; eligible dirty and untracked files are overlaid per worktree. Clean worktrees
 share an immutable commit snapshot, while dirty snapshots store only changed facts and deletion markers. Independent
-clones keep separate operational stores, and one worktree can never see another's dirty graph.
+clones keep separate operational stores, and one worktree can never see another's dirty graph. Eligible file, byte,
+symbol, edge, lexical-term, and vector counts are not capped by repository size; fixed-size processing batches bound
+transient work without truncating the stored graph.
 
 ```sh
 threadnote graph status

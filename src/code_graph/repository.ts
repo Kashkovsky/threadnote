@@ -57,14 +57,14 @@ export const repositoryWorktreeIds = Effect.fn('codeGraph.repositoryWorktreeIds'
   identity: RepositoryIdentity,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const result = yield* runGit(identity.repoRoot, ['worktree', 'list', '--porcelain', '-z']);
+  const result = yield* runCommandEffect('git', ['-C', identity.repoRoot, 'worktree', 'list', '--porcelain', '-z'], {
+    maxOutputBytes: 0,
+    timeoutMs: 0,
+  });
   const roots = result.stdout.split('\0\0').flatMap(record => {
     const field = record.split('\0').find(value => value.startsWith('worktree '));
     return field ? [field.slice('worktree '.length)] : [];
   });
-  if (roots.length > 1_000) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Repository has more than 1,000 linked worktrees.'));
-  }
   const ids = new Set<string>([identity.worktreeId]);
   for (const root of roots) {
     if (!(yield* fs.exists(root))) continue;
@@ -93,12 +93,12 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
   const [tracked, untracked] = yield* Effect.all(
     [
       runCommandEffect('git', ['-C', cwd, 'diff', '--name-only', '-z', objectId, '--'], {
-        maxOutputBytes: 4 * 1_048_576,
-        timeoutMs: 30_000,
+        maxOutputBytes: 0,
+        timeoutMs: 0,
       }),
       runCommandEffect('git', ['-C', cwd, 'ls-files', '--others', '--exclude-standard', '-z'], {
-        maxOutputBytes: 4 * 1_048_576,
-        timeoutMs: 30_000,
+        maxOutputBytes: 0,
+        timeoutMs: 0,
       }),
     ],
     {concurrency: 2},

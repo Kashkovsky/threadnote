@@ -193,26 +193,8 @@ export interface CodeGraphStatus {
   readonly stale: boolean;
 }
 
-export interface CodeGraphBudgets {
-  readonly maximumEdges: number;
-  readonly maximumFileBytes: number;
-  readonly maximumFiles: number;
-  readonly maximumSymbols: number;
-}
-
-export const DEFAULT_CODE_GRAPH_BUDGETS: CodeGraphBudgets = {
-  maximumEdges: 1_000_000,
-  maximumFileBytes: 1_048_576,
-  maximumFiles: 50_000,
-  maximumSymbols: 500_000,
-};
-
 export class CodeGraphRepositoryError extends Error {
   override readonly name = 'CodeGraphRepositoryError';
-}
-
-export class CodeGraphBudgetExceeded extends Error {
-  override readonly name = 'CodeGraphBudgetExceeded';
 }
 
 export class CodeGraphSnapshotUnavailable extends Error {

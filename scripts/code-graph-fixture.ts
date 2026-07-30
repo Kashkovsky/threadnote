@@ -41,8 +41,8 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  if (!Number.isSafeInteger(targetSymbols) || targetSymbols < 1 || targetSymbols > 250_000) {
-    return yield* Effect.fail(new Error('Generated code graph target must be between 1 and 250,000 symbols.'));
+  if (!Number.isSafeInteger(targetSymbols) || targetSymbols < 1) {
+    return yield* Effect.fail(new Error('Generated code graph target must be a positive safe integer.'));
   }
   const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-scale-'});
   const repository = path.join(root, 'repository');
@@ -77,7 +77,8 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
       const declarations = Array.from({length: count}, (_, offset) => {
         const symbolIndex = first + offset;
         const name = generatedSymbolName(symbolIndex);
-        const body = offset === 0 ? `return ${symbolIndex};` : `return ${generatedSymbolName(symbolIndex - 1)}() + 1;`;
+        const body =
+          symbolIndex === 0 ? `return ${symbolIndex};` : `return ${generatedSymbolName(symbolIndex - 1)}() + 1;`;
         return `export function ${name}(): number { ${body} }`;
       });
       return fs.writeFileString(

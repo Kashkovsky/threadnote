@@ -249,6 +249,12 @@ describe('runCommand guardrails', () => {
     expect(result.stderr).toContain('exceeded output limit of 16 bytes');
   });
 
+  it('supports explicitly unbounded output collection for repository inventory commands', async () => {
+    const script = 'process.stdout.write("x".repeat(1024));';
+    const result = await runCommand(process.execPath, ['-e', script], {maxOutputBytes: 0});
+    expect(result.stdout).toHaveLength(1024);
+  });
+
   it('escalates after timeout when the child ignores SIGTERM', async () => {
     const script = 'process.on("SIGTERM", () => undefined); setInterval(() => undefined, 1000);';
     const result = await runCommand(process.execPath, ['-e', script], {allowFailure: true, timeoutMs: 20});

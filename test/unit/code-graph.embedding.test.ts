@@ -1,7 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
+import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import type {CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
@@ -14,6 +14,14 @@ import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
 
 describe('native code graph vector generations', () => {
+  it('keeps every eligible symbol instead of truncating vectors at the former 20k cap', () => {
+    const symbols = Array.from({length: 20_001}, (_, index) =>
+      symbol(`symbol-${index}`, `Symbol${index}`, `Documents symbol ${index}.`),
+    );
+
+    expect(selectGraphEmbeddingSymbols(symbols)).toHaveLength(20_001);
+  });
+
   it('reuses unchanged symbol vectors, embeds changed symbols, and serves semantic scores', async () => {
     const home = await mkdtemp('threadnote-code-graph-vectors-');
     const embeddedBatches: number[] = [];

@@ -19,7 +19,6 @@ const CODE_GRAPH_VECTOR_POINTER_VERSION = 1;
 const CODE_GRAPH_SEMANTIC_MINIMUM_SCORE = 0.64;
 const EMBED_BATCH_SIZE = 128;
 const MAX_CACHED_VECTOR_GENERATIONS = 4;
-export const MAX_CODE_GRAPH_VECTOR_SYMBOLS = 20_000;
 
 interface CodeGraphVectorPointer {
   readonly count: number;
@@ -230,7 +229,7 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
       reused: reusableGeneration.sidecar.entries.length,
     };
   }
-  const highValue = selectHighValueSymbols(input.symbols);
+  const highValue = selectGraphEmbeddingSymbols(input.symbols);
   const reusable = new Map<string, readonly number[]>();
   for (const entry of reusableGeneration?.sidecar.entries ?? []) reusable.set(reuseKey(entry), entry.vector);
   const projected = highValue.map(symbol => projectSymbol(symbol));
@@ -358,7 +357,7 @@ const selectedEmbeddingModel = Effect.fn('codeGraph.selectedEmbeddingModel')(fun
   return {manifest, modelPath: verified.path};
 });
 
-function selectHighValueSymbols(symbols: readonly CodeGraphSymbol[]): readonly CodeGraphSymbol[] {
+export function selectGraphEmbeddingSymbols(symbols: readonly CodeGraphSymbol[]): readonly CodeGraphSymbol[] {
   const selected = symbols.filter(
     symbol =>
       symbol.exported ||
@@ -366,15 +365,13 @@ function selectHighValueSymbols(symbols: readonly CodeGraphSymbol[]): readonly C
         symbol.kind,
       ),
   );
-  return [...new Map(selected.map(symbol => [symbol.id, symbol])).values()]
-    .sort(
-      (left, right) =>
-        vectorPriority(right) - vectorPriority(left) ||
-        left.path.localeCompare(right.path) ||
-        left.qualifiedName.localeCompare(right.qualifiedName) ||
-        left.id.localeCompare(right.id),
-    )
-    .slice(0, MAX_CODE_GRAPH_VECTOR_SYMBOLS);
+  return [...new Map(selected.map(symbol => [symbol.id, symbol])).values()].sort(
+    (left, right) =>
+      vectorPriority(right) - vectorPriority(left) ||
+      left.path.localeCompare(right.path) ||
+      left.qualifiedName.localeCompare(right.qualifiedName) ||
+      left.id.localeCompare(right.id),
+  );
 }
 
 function vectorPriority(symbol: CodeGraphSymbol): number {

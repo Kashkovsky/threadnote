@@ -4,7 +4,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {extractRepositoryFileFacts, refreshPackageAttribution, resolveExtractedRepositoryFacts} from './extractor.js';
+import {createPackageAttributor, createRepositoryFactResolver, extractRepositoryFileFacts} from './extractor.js';
 import {inventoryRepository, worktreeOverlayState, type CodeGraphInventoryOptions} from './inventory.js';
 import {codeGraphLayout} from './layout.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
@@ -12,10 +12,7 @@ import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js'
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
-  CodeGraphBudgetExceeded,
-  DEFAULT_CODE_GRAPH_BUDGETS,
   type CodeGraphIndexSummary,
-  type CodeGraphBudgets,
   type CodeGraphProgress,
   type CodeGraphSnapshot,
   type RepositoryIdentity,
@@ -111,7 +108,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   const inventory = yield* inventoryRepository(identity, {
                     ...options,
                     cachedCommittedFileKeys,
-                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache, options.budgets),
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache),
                   });
                   const extractorSet = extractorSetIdentity(inventory.files);
                   const logicalSnapshotId = snapshotIdentity(identity, inventory.dirty, extractorSet, inventory.files);
@@ -173,7 +170,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         startedAt,
                         store,
                         threadnoteHome: options.threadnoteHome,
-                        budgets: options.budgets,
                       })
                     : undefined;
                   const building: CodeGraphSnapshot = {
@@ -207,7 +203,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     startedAt,
                     store,
                     threadnoteHome: options.threadnoteHome,
-                    budgets: options.budgets,
                   }).pipe(
                     Effect.catch(cause =>
                       store
@@ -292,11 +287,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     ...options,
                     cachedCommittedFileKeys,
                     includeOverlay: false,
-                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache, options.budgets),
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache),
                   });
                   const snapshot = yield* ensureCommittedBase({
                     activeWorktreeIds,
-                    budgets: options.budgets,
                     embedding,
                     force: false,
                     fs,
@@ -335,7 +329,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
 
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
-  readonly budgets?: Partial<CodeGraphBudgets>;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly force: boolean;
   readonly forceGeneration?: string;
@@ -397,7 +390,6 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly activeWorktreeIds: ReadonlySet<string>;
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
-  readonly budgets?: Partial<CodeGraphBudgets>;
   readonly existing?: CodeGraphSnapshot;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
@@ -411,59 +403,81 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
 }) {
-  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...input.budgets};
   const parserCache = parserCacheIdentity();
-  const cachedCounts = yield* input.store.cachedFactCounts(
-    input.layout.databasePath,
-    input.inventory.files,
-    parserCache,
-  );
-  if (cachedCounts.files !== input.inventory.files.length) {
-    return yield* Effect.fail(
-      new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+  const attributePackages = createPackageAttributor(input.inventory.files);
+  const resolutionFacts = [];
+  yield* input.store.prepareActivation(input.layout.databasePath, input.inventory.files);
+  for (const files of factMaterializationBatches(input.inventory.files)) {
+    const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, files, parserCache);
+    if (files.some(file => !cached.has(file.path))) {
+      return yield* Effect.fail(
+        new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+      );
+    }
+    const facts = attributePackages(files.map(file => cached.get(file.path)!));
+    yield* input.store.stageActivationFacts(
+      input.layout.databasePath,
+      uniqueById(facts.flatMap(file => file.symbols)),
+      [],
     );
+    for (const file of facts) {
+      resolutionFacts.push({
+        diagnostics: [],
+        edges: file.edges.filter(edge => edge.relation === 'reexports'),
+        path: file.path,
+        symbols: file.symbols,
+      });
+    }
   }
-  assertFactCounts(cachedCounts, budgets, 'before cache materialization');
-  const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, input.inventory.files, parserCache);
-  if (input.inventory.files.some(file => file.content === undefined && !cached.has(file.path))) {
-    return yield* Effect.fail(
-      new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
-    );
-  }
-  const rawFacts = refreshPackageAttribution(
-    input.inventory.files.map(file => cached.get(file.path)!),
-    input.inventory.files,
-  );
-  assertRawFactBudgets(rawFacts, budgets);
+  const resolver = createRepositoryFactResolver(resolutionFacts, input.inventory.files);
   yield* input.onProgress?.({
     completed: input.inventory.files.length,
     phase: 'parsing',
     reused: input.inventory.files.length - input.inventory.parsedFiles,
     total: input.inventory.files.length,
   }) ?? Effect.void;
-  const facts = resolveExtractedRepositoryFacts(rawFacts, input.inventory.files);
-  const {edges, symbols} = collectValidatedFacts(facts, budgets);
-  const extractionDiagnostics = facts.flatMap(file => file.diagnostics).slice(0, 100);
-  yield* input.onProgress?.({edges: edges.length, phase: 'resolving', symbols: symbols.length}) ?? Effect.void;
+  const extractionDiagnostics: string[] = [];
+  for (const files of factMaterializationBatches(input.inventory.files)) {
+    const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, files, parserCache);
+    if (files.some(file => !cached.has(file.path))) {
+      return yield* Effect.fail(
+        new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+      );
+    }
+    const facts = resolver.resolve(attributePackages(files.map(file => cached.get(file.path)!)));
+    if (extractionDiagnostics.length < 100) {
+      extractionDiagnostics.push(
+        ...facts.flatMap(file => file.diagnostics).slice(0, 100 - extractionDiagnostics.length),
+      );
+    }
+    yield* input.store.stageActivationFacts(
+      input.layout.databasePath,
+      [],
+      facts.flatMap(file => file.edges),
+    );
+  }
+  const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
+  yield* input.onProgress?.({
+    edges: stagedCounts.edges,
+    phase: 'resolving',
+    symbols: stagedCounts.symbols,
+  }) ?? Effect.void;
 
   const completedAt = new Date().toISOString();
   const ready: CodeGraphSnapshot = {
     ...input.building,
     completedAt,
-    edgeCount: new Set(edges.map(edge => edge.id)).size,
+    edgeCount: stagedCounts.edges,
     fileCount: input.inventory.files.length,
     state: 'ready',
-    symbolCount: new Set(symbols.map(symbol => symbol.id)).size,
+    symbolCount: stagedCounts.symbols,
   };
   yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
   yield* input.onProgress?.({phase: 'activating', snapshotId: ready.id}) ?? Effect.void;
-  yield* input.store.activate(
+  yield* input.store.activateStaged(
     input.layout.databasePath,
     input.identity,
     ready,
-    input.inventory.files,
-    symbols,
-    edges,
     parserCache,
     input.activatePointer,
   );
@@ -473,7 +487,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   }
   const embedding = input.ensureVectors
     ? yield* input.embedding
-        .ensure(input.threadnoteHome, input.layout, ready, symbols, {
+        .ensure(input.threadnoteHome, input.layout, ready, resolver.symbols, {
           activeWorktreeIds: input.activeWorktreeIds,
           force: input.force,
           onProgress: input.onProgress,
@@ -505,26 +519,10 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   } satisfies CodeGraphIndexSummary;
 });
 
-function cacheContentBatch(
-  store: CodeGraphStoreShape,
-  databasePath: string,
-  parserCache: string,
-  budgetOverrides: Partial<CodeGraphBudgets> | undefined,
-) {
-  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...budgetOverrides};
-  const countsBySource = {
-    commit: {edges: 0, symbols: 0},
-    worktree: {edges: 0, symbols: 0},
-  };
+function cacheContentBatch(store: CodeGraphStoreShape, databasePath: string, parserCache: string) {
   return (files: Parameters<typeof extractRepositoryFileFacts>[0]) =>
     Effect.sync(() => {
-      const facts = extractRepositoryFileFacts(files, undefined, budgetOverrides);
-      const source = files[0]?.source ?? 'commit';
-      const counts = countsBySource[source];
-      counts.edges += facts.reduce((total, file) => total + file.edges.length, 0);
-      counts.symbols += facts.reduce((total, file) => total + file.symbols.length, 0);
-      assertFactCounts(counts, budgets, `while extracting ${source} files`);
-      return facts;
+      return extractRepositoryFileFacts(files);
     }).pipe(Effect.flatMap(facts => store.cacheFacts(databasePath, files, facts, parserCache)));
 }
 
@@ -604,74 +602,6 @@ function forcedSnapshotIdentity(logicalSnapshotId: string, forceGeneration: stri
   return forceGeneration ? `${logicalSnapshotId}-full-${forceGeneration}` : logicalSnapshotId;
 }
 
-function collectValidatedFacts(
-  facts: readonly ReturnType<typeof extractRepositoryFileFacts>[number][],
-  budgets: Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>,
-) {
-  const symbols = [];
-  const edges = [];
-  const symbolIds = new Set<string>();
-  const edgeIds = new Set<string>();
-  for (const file of facts) {
-    for (const symbol of file.symbols) {
-      if (symbolIds.has(symbol.id)) continue;
-      symbolIds.add(symbol.id);
-      symbols.push(symbol);
-      if (symbols.length > budgets.maximumSymbols) {
-        throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} symbols.`);
-      }
-    }
-    for (const edge of file.edges) {
-      if (edgeIds.has(edge.id)) continue;
-      edgeIds.add(edge.id);
-      edges.push(edge);
-      if (edges.length > budgets.maximumEdges) {
-        throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} edges.`);
-      }
-    }
-  }
-  for (const edge of edges) {
-    if (edge.sourceId && !symbolIds.has(edge.sourceId)) {
-      throw new Error(`Code graph edge ${edge.id} has a missing source.`);
-    }
-    if (edge.targetId && !symbolIds.has(edge.targetId)) {
-      throw new Error(`Code graph edge ${edge.id} has a missing target.`);
-    }
-  }
-  return {edges, symbols};
-}
-
-function assertRawFactBudgets(
-  facts: readonly ReturnType<typeof extractRepositoryFileFacts>[number][],
-  budgets: Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>,
-): void {
-  let edges = 0;
-  let symbols = 0;
-  for (const file of facts) {
-    edges += file.edges.length;
-    symbols += file.symbols.length;
-    if (symbols > budgets.maximumSymbols) {
-      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} raw symbols before resolution.`);
-    }
-    if (edges > budgets.maximumEdges) {
-      throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} raw edges before resolution.`);
-    }
-  }
-}
-
-function assertFactCounts(
-  counts: {readonly edges: number; readonly symbols: number},
-  budgets: Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>,
-  phase: string,
-): void {
-  if (counts.symbols > budgets.maximumSymbols) {
-    throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} raw symbols ${phase}.`);
-  }
-  if (counts.edges > budgets.maximumEdges) {
-    throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} raw edges ${phase}.`);
-  }
-}
-
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -681,3 +611,37 @@ const CODE_GRAPH_LOCK_OPTIONS = {
   staleAfterMilliseconds: 120_000,
   waitTimeoutMilliseconds: 10 * 60_000,
 } as const;
+
+const FACT_MATERIALIZATION_BATCH_FILES = 128;
+const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
+
+function factMaterializationBatches<T extends {readonly size: number}>(
+  values: readonly T[],
+): readonly (readonly T[])[] {
+  const output: T[][] = [];
+  let batch: T[] = [];
+  let batchBytes = 0;
+  for (const value of values) {
+    if (
+      batch.length > 0 &&
+      (batch.length >= FACT_MATERIALIZATION_BATCH_FILES ||
+        batchBytes + value.size > FACT_MATERIALIZATION_BATCH_SOURCE_BYTES)
+    ) {
+      output.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(value);
+    batchBytes += value.size;
+  }
+  if (batch.length > 0) output.push(batch);
+  return output;
+}
+
+function uniqueById<T extends {readonly id: string}>(values: readonly T[]): readonly T[] {
+  const unique = new Map<string, T>();
+  for (const value of values) {
+    if (!unique.has(value.id)) unique.set(value.id, value);
+  }
+  return [...unique.values()];
+}

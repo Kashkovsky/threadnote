@@ -2,14 +2,7 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
-import {
-  CodeGraphBudgetExceeded,
-  DEFAULT_CODE_GRAPH_BUDGETS,
-  type CodeGraphBudgets,
-  type CodeGraphInventoryFile,
-  type CodeGraphProgress,
-  type RepositoryIdentity,
-} from './types.js';
+import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
 
 interface GitTreeEntry {
   readonly blobId: string;
@@ -34,7 +27,6 @@ export interface CodeGraphInventory {
 }
 
 export interface CodeGraphInventoryOptions {
-  readonly budgets?: Partial<CodeGraphBudgets>;
   readonly cachedCommittedFileKeys?: ReadonlySet<string>;
   readonly includeOverlay?: boolean;
   readonly onContentBatch?: (files: readonly CodeGraphInventoryFile[]) => Effect.Effect<void, unknown>;
@@ -57,9 +49,6 @@ const PRUNED_DIRECTORIES = new Set([
 ]);
 const CAT_FILE_BATCH_ENTRIES = 128;
 const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
-const MAX_RESOLUTION_CONTEXT_BYTES = 16 * 1_048_576;
-const MAX_RESOLUTION_CONTEXT_FILE_BYTES = 256 * 1_024;
-const THREADNOTE_IGNORE_MAX_BYTES = 256 * 1_024;
 
 export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(function* (
   identity: RepositoryIdentity,
@@ -67,31 +56,26 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...options.budgets};
   const allTreeEntries = isZeroObjectId(identity.headCommit)
     ? []
     : parseGitTree(
         (yield* runCommandEffect('git', ['-C', identity.repoRoot, 'ls-tree', '-r', '-l', '-z', identity.headCommit], {
-          maxOutputBytes: 64 * 1_048_576,
-          timeoutMs: 120_000,
+          maxOutputBytes: 0,
+          timeoutMs: 0,
         })).stdout,
       );
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
-  const acceptedByPolicy = allTreeEntries.filter(entry =>
-    acceptsRepositoryPathWithRules(entry.path, entry.size, budgets.maximumFileBytes, ignoreRules),
-  );
+  const acceptedByPolicy = allTreeEntries.filter(entry => acceptsRepositoryPathWithRules(entry.path, ignoreRules));
   const ignoredByGit = yield* ignoredPaths(
     identity.repoRoot,
     acceptedByPolicy.map(entry => entry.path),
   );
   const accepted = acceptedByPolicy.filter(entry => !ignoredByGit.has(entry.path));
-  assertInventoryFileBudget(accepted, budgets);
 
   const committed = yield* readCommittedFiles(
     identity,
     accepted,
-    budgets,
     options.cachedCommittedFileKeys ?? new Set(),
     options.onContentBatch,
     options.onProgress,
@@ -109,19 +93,15 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
       : yield* readDirtyOverlay(
           identity,
           path,
-          budgets,
           threadnoteIgnore,
           ignoreRules,
           options.cachedCommittedFileKeys ?? new Set(),
-          new Set(committed.files.map(file => file.path)),
-          MAX_RESOLUTION_CONTEXT_BYTES - committed.resolutionContextBytes,
           options.onContentBatch,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
   for (const changed of overlay.changed) filesByPath.delete(changed);
   for (const file of overlay.files) filesByPath.set(file.path, file);
   const files = [...filesByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
-  assertInventoryFileBudget(files, budgets);
   const parsedPaths = new Set([...committed.parsedPaths, ...overlay.parsedPaths]);
   const skipped = allTreeEntries.length - accepted.length + committed.skipped + overlay.skipped;
   yield* options.onProgress?.({
@@ -146,21 +126,16 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
 
 export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(function* (
   identity: RepositoryIdentity,
-  options: Pick<CodeGraphInventoryOptions, 'budgets'> = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...options.budgets};
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const overlay = yield* readDirtyOverlay(
     identity,
     path,
-    budgets,
     threadnoteIgnore,
     compileThreadnoteIgnore(threadnoteIgnore),
     new Set(),
-    new Set(),
-    MAX_RESOLUTION_CONTEXT_BYTES,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -178,21 +153,11 @@ export function parseGitTree(output: string): readonly GitTreeEntry[] {
   return entries;
 }
 
-export function acceptsRepositoryPath(
-  value: string,
-  size: number,
-  maximumFileBytes = DEFAULT_CODE_GRAPH_BUDGETS.maximumFileBytes,
-  threadnoteIgnore = '',
-): boolean {
-  return acceptsRepositoryPathWithRules(value, size, maximumFileBytes, compileThreadnoteIgnore(threadnoteIgnore));
+export function acceptsRepositoryPath(value: string, threadnoteIgnore = ''): boolean {
+  return acceptsRepositoryPathWithRules(value, compileThreadnoteIgnore(threadnoteIgnore));
 }
 
-function acceptsRepositoryPathWithRules(
-  value: string,
-  size: number,
-  maximumFileBytes: number,
-  ignoreRules: readonly CompiledIgnoreRule[],
-): boolean {
+function acceptsRepositoryPathWithRules(value: string, ignoreRules: readonly CompiledIgnoreRule[]): boolean {
   const path = normalizeRepositoryPath(value);
   if (!path || path.startsWith('/') || path.split('/').some(segment => segment === '..' || segment === '')) {
     return false;
@@ -201,7 +166,6 @@ function acceptsRepositoryPathWithRules(
   const directories = segments.slice(0, -1);
   if (
     directories.some(directory => directory.startsWith('.') || PRUNED_DIRECTORIES.has(directory.toLowerCase())) ||
-    size > maximumFileBytes ||
     isIgnoredByThreadnote(path, ignoreRules)
   ) {
     return false;
@@ -254,15 +218,14 @@ function ignoredPaths(repoRoot: string, paths: readonly string[]) {
   return runCommandEffect('git', ['-C', repoRoot, 'check-ignore', '--no-index', '-z', '--stdin'], {
     allowFailure: true,
     input,
-    maxOutputBytes: 64 * 1_048_576,
-    timeoutMs: 120_000,
+    maxOutputBytes: 0,
+    timeoutMs: 0,
   }).pipe(Effect.map(result => new Set(result.stdout.split('\0').filter(Boolean).map(normalizeRepositoryPath))));
 }
 
 const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   identity: RepositoryIdentity,
   entries: readonly GitTreeEntry[],
-  budgets: CodeGraphBudgets,
   cachedCommittedFileKeys: ReadonlySet<string>,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
   onProgress?: CodeGraphInventoryOptions['onProgress'],
@@ -270,7 +233,6 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   const files: CodeGraphInventoryFile[] = [];
   let skipped = 0;
   let completed = 0;
-  let resolutionContextBytes = 0;
   const parsedPaths = new Set<string>();
   const needsContent: Array<GitTreeEntry & {readonly parse: boolean}> = [];
   for (const entry of entries) {
@@ -284,10 +246,11 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     }
   }
   for (const batch of chunkTreeEntries(needsContent)) {
+    const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
       input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
-      maxOutputBytes: CAT_FILE_BATCH_BYTES + batch.length * 256,
-      timeoutMs: 120_000,
+      maxOutputBytes: expectedBytes,
+      timeoutMs: 0,
     });
     const blobs = parseGitCatFileBatch(result.stdout, batch);
     const contentBatch: CodeGraphInventoryFile[] = [];
@@ -309,13 +272,6 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       } satisfies CodeGraphInventoryFile;
       if (entry.parse) contentBatch.push(hydrated);
       const retained = retainResolutionContext(hydrated);
-      resolutionContextBytes +=
-        retained.content === undefined ? 0 : new TextEncoder().encode(retained.content).byteLength;
-      if (resolutionContextBytes > MAX_RESOLUTION_CONTEXT_BYTES) {
-        return yield* Effect.fail(
-          new CodeGraphBudgetExceeded(`Repository resolution metadata exceeds ${MAX_RESOLUTION_CONTEXT_BYTES} bytes.`),
-        );
-      }
       files.push(retained);
     }
     if (contentBatch.length > 0) yield* onContentBatch?.(contentBatch) ?? Effect.void;
@@ -328,7 +284,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       visited: completed,
     }) ?? Effect.void;
   }
-  return {files, parsedPaths, resolutionContextBytes, skipped};
+  return {files, parsedPaths, skipped};
 });
 
 function inventoryFileForCommittedEntry(entry: GitTreeEntry, contentHash: string): CodeGraphInventoryFile {
@@ -377,12 +333,9 @@ export function parseGitCatFileBatch(
 const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   identity: RepositoryIdentity,
   path: Path.Path,
-  budgets: CodeGraphBudgets,
   threadnoteIgnore: string,
   ignoreRules: readonly CompiledIgnoreRule[],
   cachedFileKeys: ReadonlySet<string>,
-  committedPaths: ReadonlySet<string>,
-  resolutionContextBytesAvailable: number,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -395,8 +348,8 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
           'git',
           ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
           {
-            maxOutputBytes: 64 * 1_048_576,
-            timeoutMs: 120_000,
+            maxOutputBytes: 0,
+            timeoutMs: 0,
           },
         )).stdout,
       ]
@@ -405,11 +358,11 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
           runCommandEffect(
             'git',
             ['-C', identity.repoRoot, 'diff', '--name-status', '-z', '--find-renames', identity.headCommit, '--'],
-            {maxOutputBytes: 64 * 1_048_576, timeoutMs: 120_000},
+            {maxOutputBytes: 0, timeoutMs: 0},
           ).pipe(Effect.map(result => result.stdout)),
           runCommandEffect('git', ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard'], {
-            maxOutputBytes: 64 * 1_048_576,
-            timeoutMs: 120_000,
+            maxOutputBytes: 0,
+            timeoutMs: 0,
           }).pipe(Effect.map(result => result.stdout)),
         ],
         {concurrency: 2},
@@ -425,10 +378,6 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   let contentBatch: CodeGraphInventoryFile[] = [];
   let contentBatchBytes = 0;
   const changed = new Set([...changes.deleted, ...changes.changed]);
-  const retainedCommittedFiles =
-    committedPaths.size - [...changed].reduce((count, relative) => count + (committedPaths.has(relative) ? 1 : 0), 0);
-  const maximumOverlayFiles = budgets.maximumFiles - retainedCommittedFiles;
-  let resolutionContextBytes = 0;
   const skippedPaths = new Set<string>();
   const markSkipped = (relative: string) => {
     skipped += 1;
@@ -455,18 +404,12 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       containment === '..' ||
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment) ||
-      !acceptsRepositoryPathWithRules(relative, 0, budgets.maximumFileBytes, ignoreRules)
+      !acceptsRepositoryPathWithRules(relative, ignoreRules)
     ) {
       markSkipped(relative);
       continue;
     }
-    const opened = yield* readContainedStableRegularFile(
-      fs,
-      path,
-      repositoryRoot,
-      relative,
-      budgets.maximumFileBytes,
-    ).pipe(Effect.option);
+    const opened = yield* readContainedStableRegularFile(fs, path, repositoryRoot, relative).pipe(Effect.option);
     if (opened._tag === 'None') {
       markSkipped(relative);
       continue;
@@ -480,11 +423,6 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
     if (content === undefined) {
       markSkipped(relative);
       continue;
-    }
-    if (files.length >= maximumOverlayFiles) {
-      return yield* Effect.fail(
-        new CodeGraphBudgetExceeded(`Repository has more than ${budgets.maximumFiles} eligible files.`),
-      );
     }
     if (
       contentBatch.length > 0 &&
@@ -508,13 +446,6 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       contentBatchBytes += bytes.byteLength;
     }
     const retained = retainResolutionContext(hydrated);
-    resolutionContextBytes +=
-      retained.content === undefined ? 0 : new TextEncoder().encode(retained.content).byteLength;
-    if (resolutionContextBytes > resolutionContextBytesAvailable) {
-      return yield* Effect.fail(
-        new CodeGraphBudgetExceeded(`Repository resolution metadata exceeds ${MAX_RESOLUTION_CONTEXT_BYTES} bytes.`),
-      );
-    }
     files.push(retained);
   }
   yield* flushContentBatch();
@@ -585,27 +516,10 @@ function chunkTreeEntries<T extends GitTreeEntry>(entries: readonly T[]): readon
   return batches;
 }
 
-export function assertInventoryFileBudget(
-  entries: readonly unknown[],
-  budgets: Pick<CodeGraphBudgets, 'maximumFiles'>,
-) {
-  if (entries.length > budgets.maximumFiles) {
-    throw new CodeGraphBudgetExceeded(
-      `Repository has ${entries.length} eligible files; limit is ${budgets.maximumFiles}.`,
-    );
-  }
-}
-
 function retainResolutionContext(file: CodeGraphInventoryFile): CodeGraphInventoryFile {
   const name = file.path.split('/').at(-1)?.toLowerCase() ?? '';
   const content = file.content === undefined ? undefined : compactResolutionContext(name, file.content);
   if (content !== undefined) {
-    const bytes = new TextEncoder().encode(content).byteLength;
-    if (bytes > MAX_RESOLUTION_CONTEXT_FILE_BYTES) {
-      throw new CodeGraphBudgetExceeded(
-        `Resolution metadata for ${file.path} exceeds ${MAX_RESOLUTION_CONTEXT_FILE_BYTES} bytes.`,
-      );
-    }
     return {...file, content};
   }
   const {content: _content, ...metadata} = file;
@@ -715,7 +629,7 @@ function isZeroObjectId(value: string): boolean {
 }
 
 const readOptionalText = Effect.fn('codeGraph.readOptionalText')(function* (fs: FileSystem.FileSystem, target: string) {
-  const opened = yield* readStableRegularFile(fs, target, THREADNOTE_IGNORE_MAX_BYTES).pipe(Effect.option);
+  const opened = yield* readStableRegularFile(fs, target).pipe(Effect.option);
   return opened._tag === 'Some' ? (decodeUtf8(opened.value.bytes) ?? '') : '';
 });
 
@@ -733,7 +647,6 @@ export interface ContainedReadInterlock {
 function readStableRegularFile(
   fs: FileSystem.FileSystem,
   target: string,
-  maximumBytes: number,
   interlock?: ContainedReadInterlock,
 ): Effect.Effect<StableRegularFile, Error, SystemInfo> {
   return Effect.gen(function* () {
@@ -745,8 +658,8 @@ function readStableRegularFile(
       return yield* Effect.fail(new Error(`Refusing to read a symbolic repository file: ${target}`));
     }
     const pathInfoBefore = yield* fs.stat(target);
-    if (pathInfoBefore.type !== 'File' || pathInfoBefore.size > BigInt(maximumBytes)) {
-      return yield* Effect.fail(new Error(`Refusing to read a non-regular or oversized repository file: ${target}`));
+    if (pathInfoBefore.type !== 'File') {
+      return yield* Effect.fail(new Error(`Refusing to read a non-regular repository file: ${target}`));
     }
     yield* interlock?.beforeOpen ?? Effect.void;
     return yield* Effect.scoped(
@@ -756,13 +669,14 @@ function readStableRegularFile(
         const openedInfoBefore = yield* file.stat;
         const openedPath = yield* openedFilePath(fs, file);
         const pathInfoOpened = yield* fs.stat(target);
-        if (
-          !sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore) ||
-          openedInfoBefore.size > BigInt(maximumBytes)
-        ) {
+        if (!sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
           return yield* Effect.fail(new Error(`Repository file changed while it was opened: ${target}`));
         }
-        const bytes = new Uint8Array(Number(openedInfoBefore.size));
+        const byteLength = Number(openedInfoBefore.size);
+        if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+          return yield* Effect.fail(new Error(`Repository file size cannot be represented safely: ${target}`));
+        }
+        const bytes = new Uint8Array(byteLength);
         let offset = 0;
         while (offset < bytes.byteLength) {
           const read = Number(yield* file.read(bytes.subarray(offset)));
@@ -797,7 +711,6 @@ export function readContainedStableRegularFile(
   path: Path.Path,
   repositoryRoot: string,
   relative: string,
-  maximumBytes: number,
   interlock?: ContainedReadInterlock,
 ): Effect.Effect<Uint8Array, Error, SystemInfo> {
   const target = path.join(repositoryRoot, ...relative.split('/'));
@@ -807,7 +720,7 @@ export function readContainedStableRegularFile(
     if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
       return yield* Effect.fail(new Error(`Repository file resolves outside its root: ${relative}`));
     }
-    const opened = yield* readStableRegularFile(fs, target, maximumBytes, interlock);
+    const opened = yield* readStableRegularFile(fs, target, interlock);
     if (Option.isSome(opened.openedPath) && !isContainedPath(path, repositoryRoot, opened.openedPath.value)) {
       return yield* Effect.fail(new Error(`Opened repository file is outside its root: ${relative}`));
     }

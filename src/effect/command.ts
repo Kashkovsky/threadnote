@@ -11,6 +11,7 @@ export interface CommandOptions {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly input?: Uint8Array;
+  /** Set to zero to collect output without a byte ceiling. */
   readonly maxOutputBytes?: number;
   readonly timeoutMs?: number;
 }
@@ -396,12 +397,15 @@ function collectCommandOutput(
   return stream.pipe(
     Stream.decodeText,
     Stream.runFoldEffect(
-      () => '',
+      () => ({chunks: [] as string[], size: 0}),
       (current, chunk) => {
-        const next = `${current}${chunk}`;
-        return encoder.encode(next).byteLength <= maxOutputBytes ? Effect.succeed(next) : Effect.fail(outputExceeded);
+        const size = current.size + encoder.encode(chunk).byteLength;
+        if (maxOutputBytes > 0 && size > maxOutputBytes) return Effect.fail(outputExceeded);
+        current.chunks.push(chunk);
+        return Effect.succeed({chunks: current.chunks, size});
       },
     ),
+    Effect.map(output => output.chunks.join('')),
   );
 }
 
@@ -416,7 +420,7 @@ function collectCommandBytes(
     yield* stream.pipe(
       Stream.runForEach(chunk => {
         size += chunk.byteLength;
-        if (size > maxOutputBytes) return Effect.fail(outputExceeded);
+        if (maxOutputBytes > 0 && size > maxOutputBytes) return Effect.fail(outputExceeded);
         chunks.push(chunk);
         return Effect.void;
       }),
