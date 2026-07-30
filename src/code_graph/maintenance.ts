@@ -26,9 +26,7 @@ export interface CodeGraphMaintenanceProgress {
 }
 
 type CodeGraphProgressHandler = (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void, unknown>;
-type CodeGraphRepairCompletionHandler<R> = (
-  completion: CodeGraphRepairCompletion,
-) => Effect.Effect<void, unknown, R>;
+type CodeGraphRepairCompletionHandler<R> = (completion: CodeGraphRepairCompletion) => Effect.Effect<void, unknown, R>;
 
 export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function* (
   threadnoteHome: string,
