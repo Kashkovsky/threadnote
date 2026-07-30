@@ -1110,21 +1110,43 @@ async function runCliOutput(
   args: readonly string[],
   environment: NodeJS.ProcessEnv = {},
 ): Promise<{readonly stderr: string; readonly stdout: string}> {
-  const result = await execute(cli, ['--home', home, ...args], {
-    cwd: root,
-    env: {
-      ...process.env,
-      HOME: userHome,
-      LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
-      NVM_DIR: '',
-      NVM_HOME: '',
-      THREADNOTE_USER: 'e2e-user',
-      USERPROFILE: userHome,
-      ...environment,
-    },
-    timeout: realModelTimeoutMs,
-  });
-  return {stderr: result.stderr, stdout: result.stdout};
+  try {
+    const result = await execute(cli, ['--home', home, ...args], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: userHome,
+        LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
+        NVM_DIR: '',
+        NVM_HOME: '',
+        THREADNOTE_USER: 'e2e-user',
+        USERPROFILE: userHome,
+        ...environment,
+      },
+      timeout: realModelTimeoutMs,
+    });
+    return {stderr: result.stderr, stdout: result.stdout};
+  } catch (cause) {
+    const failure = cause as {
+      readonly code?: unknown;
+      readonly stderr?: unknown;
+      readonly stdout?: unknown;
+    };
+    throw new Error(
+      [
+        `Packaged Threadnote command exited with ${String(failure.code ?? 'an unknown status')}:`,
+        `${cli} --home ${home} ${args.join(' ')}`,
+        `stdout:\n${boundedFailureOutput(failure.stdout)}`,
+        `stderr:\n${boundedFailureOutput(failure.stderr)}`,
+      ].join('\n'),
+      {cause},
+    );
+  }
+}
+
+function boundedFailureOutput(value: unknown): string {
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  return text.length <= 8_192 ? text : `${text.slice(0, 8_192)}\n[output truncated]`;
 }
 
 async function seedCoreEmbeddingFixture(): Promise<void> {

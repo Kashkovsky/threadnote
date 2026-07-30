@@ -251,7 +251,11 @@ function Invoke-ThreadnoteWithRetry {
       return & $Action
     } catch {
       if ($attempt -eq $maximumAttempts) {
-        throw "$Operation failed after $maximumAttempts attempts: $($_.Exception.Message)"
+        throw @"
+$Operation failed after $maximumAttempts attempts: $($_.Exception.Message)
+$($_.InvocationInfo.PositionMessage)
+$($_.ScriptStackTrace)
+"@
       }
       Start-Sleep -Seconds ([Math]::Min($attempt, 3))
     }
