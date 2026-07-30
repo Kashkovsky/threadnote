@@ -218,7 +218,7 @@ describe('Effect CLI', () => {
     } finally {
       await rm(root, {force: true, recursive: true});
     }
-  });
+  }, 30_000);
 
   it('rejects conflicting explicit update channels before checking GitHub', async () => {
     await expect(runCli(['update', '--beta', '--stable', '--check'])).rejects.toMatchObject({

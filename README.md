@@ -122,7 +122,8 @@ Repo files remain authoritative. `threadnote seed` imports only files selected b
 resources and memories keep stable `threadnote://` identifiers while their bytes live in the Threadnote-owned store.
 
 Memory recall and code search are deliberately separate. Agents use `recall_context` for historical decisions,
-handoffs, and seeded guidance, and `inspect_code_graph` for current source. A task can use both without a graph build
+handoffs, and seeded guidance, and `inspect_code_graph` with `query`, `explain`, `path`, or `impact` for current source.
+MCP impact accepts either an explicit symbol/path query or a Git `base` ref. A task can use both without a graph build
 adding latency or surprise I/O to ordinary recall.
 
 ## Native Code Graph

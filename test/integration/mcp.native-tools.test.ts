@@ -178,6 +178,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
+            base: {type: 'string'},
             callerCwd: {type: 'string'},
             depth: {maximum: 8, minimum: 0, type: 'integer'},
             edgeLimit: {maximum: 500, minimum: 1, type: 'integer'},
@@ -220,10 +221,26 @@ describe('Threadnote MCP toolsets', () => {
           },
           version: 1,
         });
+
+        const impact = await client.callTool(
+          {
+            arguments: {
+              base: 'HEAD~1',
+              callerCwd: process.cwd(),
+              nodeLimit: 5,
+              operation: 'impact',
+            },
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 60_000},
+        );
+        expect(impact.isError).not.toBe(true);
+        expect(impact.structuredContent).toMatchObject({operation: 'impact'});
       },
       {toolset: 'core'},
     );
-  }, 30_000);
+  }, 90_000);
 
   it('keeps inspected repositories fresh with one MCP-session watcher', async () => {
     await withMcpClient(

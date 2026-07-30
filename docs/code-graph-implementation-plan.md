@@ -237,7 +237,9 @@ contract as, Threadnote seeding:
 - reject files above a configured byte limit before reading;
 - skip binary and unsupported files without retaining their bytes;
 - stream candidates through bounded queues instead of materializing the repository inventory;
-- cap visited entries, indexed files, total bytes, symbols per file, edges per file, parser time, and total build time;
+- cap visited entries, indexed files, individual-file bytes, retained resolution metadata, symbols, edges, parser
+  commands, and query time without rejecting a repository solely because its aggregate eligible source bytes are large;
+- persist completed parser batches as resumable checkpoints so an interrupted large build does not restart from zero;
 - report skipped and failed files in a summary rather than hiding them among per-file output;
 - continue with other files where a file-local failure is safe;
 - fail the snapshot, not the process, when a repository-wide invariant fails.

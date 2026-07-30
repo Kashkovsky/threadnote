@@ -25,9 +25,11 @@ interface CompiledIgnoreRule {
 
 export interface CodeGraphInventory {
   readonly committedFiles: readonly CodeGraphInventoryFile[];
+  readonly committedParsedFiles: number;
   readonly dirty: boolean;
   readonly files: readonly CodeGraphInventoryFile[];
   readonly overlayFingerprint?: string;
+  readonly parsedFiles: number;
   readonly skipped: number;
 }
 
@@ -35,11 +37,13 @@ export interface CodeGraphInventoryOptions {
   readonly budgets?: Partial<CodeGraphBudgets>;
   readonly cachedCommittedFileKeys?: ReadonlySet<string>;
   readonly includeOverlay?: boolean;
+  readonly onContentBatch?: (files: readonly CodeGraphInventoryFile[]) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
 }
 
 const TEXT_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.md', '.mdx', '.mjs', '.mts', '.cts', '.ts', '.tsx']);
 const MANIFEST_NAMES = new Set(['go.mod', 'package.json', 'tsconfig.json']);
+const RESOLUTION_CONTEXT_NAMES = new Set(['package.json', 'tsconfig.json']);
 const PRUNED_DIRECTORIES = new Set([
   'bazel-bin',
   'bazel-out',
@@ -53,6 +57,8 @@ const PRUNED_DIRECTORIES = new Set([
 ]);
 const CAT_FILE_BATCH_ENTRIES = 128;
 const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
+const MAX_RESOLUTION_CONTEXT_BYTES = 16 * 1_048_576;
+const MAX_RESOLUTION_CONTEXT_FILE_BYTES = 256 * 1_024;
 const THREADNOTE_IGNORE_MAX_BYTES = 256 * 1_024;
 
 export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(function* (
@@ -80,24 +86,43 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     acceptedByPolicy.map(entry => entry.path),
   );
   const accepted = acceptedByPolicy.filter(entry => !ignoredByGit.has(entry.path));
-  assertInventoryBudgets(accepted, budgets);
+  assertInventoryFileBudget(accepted, budgets);
 
   const committed = yield* readCommittedFiles(
     identity,
     accepted,
     budgets,
     options.cachedCommittedFileKeys ?? new Set(),
+    options.onContentBatch,
     options.onProgress,
   );
   const overlay =
     options.includeOverlay === false
-      ? {changed: new Set<string>(), dirty: false, files: [], fingerprint: undefined, skipped: 0}
-      : yield* readDirtyOverlay(identity, path, budgets, threadnoteIgnore, ignoreRules);
+      ? {
+          changed: new Set<string>(),
+          dirty: false,
+          files: [],
+          fingerprint: undefined,
+          parsedPaths: new Set<string>(),
+          skipped: 0,
+        }
+      : yield* readDirtyOverlay(
+          identity,
+          path,
+          budgets,
+          threadnoteIgnore,
+          ignoreRules,
+          options.cachedCommittedFileKeys ?? new Set(),
+          new Set(committed.files.map(file => file.path)),
+          MAX_RESOLUTION_CONTEXT_BYTES - committed.resolutionContextBytes,
+          options.onContentBatch,
+        );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
   for (const changed of overlay.changed) filesByPath.delete(changed);
   for (const file of overlay.files) filesByPath.set(file.path, file);
   const files = [...filesByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
-  assertInventoryBudgets(files.map(file => ({size: file.size})) as readonly Pick<GitTreeEntry, 'size'>[], budgets);
+  assertInventoryFileBudget(files, budgets);
+  const parsedPaths = new Set([...committed.parsedPaths, ...overlay.parsedPaths]);
   const skipped = allTreeEntries.length - accepted.length + committed.skipped + overlay.skipped;
   yield* options.onProgress?.({
     accepted: files.length,
@@ -107,9 +132,14 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   }) ?? Effect.void;
   return {
     committedFiles: [...committed.files].sort((left, right) => left.path.localeCompare(right.path)),
+    committedParsedFiles: committed.files.reduce(
+      (total, file) => total + (committed.parsedPaths.has(file.path) ? 1 : 0),
+      0,
+    ),
     dirty: overlay.dirty,
     files,
     overlayFingerprint: overlay.fingerprint,
+    parsedFiles: files.reduce((total, file) => total + (parsedPaths.has(file.path) ? 1 : 0), 0),
     skipped,
   } satisfies CodeGraphInventory;
 });
@@ -128,6 +158,9 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
     budgets,
     threadnoteIgnore,
     compileThreadnoteIgnore(threadnoteIgnore),
+    new Set(),
+    new Set(),
+    MAX_RESOLUTION_CONTEXT_BYTES,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -231,34 +264,33 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   entries: readonly GitTreeEntry[],
   budgets: CodeGraphBudgets,
   cachedCommittedFileKeys: ReadonlySet<string>,
+  onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
   onProgress?: CodeGraphInventoryOptions['onProgress'],
 ) {
   const files: CodeGraphInventoryFile[] = [];
   let skipped = 0;
   let completed = 0;
-  const needsContent: GitTreeEntry[] = [];
+  let resolutionContextBytes = 0;
+  const parsedPaths = new Set<string>();
+  const needsContent: Array<GitTreeEntry & {readonly parse: boolean}> = [];
   for (const entry of entries) {
     const contentHash = committedContentHash(identity.objectFormat, entry.blobId);
-    if (
-      cachedCommittedFileKeys.has(`${entry.path}\0${contentHash}`) &&
-      !MANIFEST_NAMES.has(entry.path.split('/').at(-1)?.toLowerCase() ?? '')
-    ) {
+    const cached = cachedCommittedFileKeys.has(`${entry.path}\0${contentHash}`);
+    if (cached && !RESOLUTION_CONTEXT_NAMES.has(entry.path.split('/').at(-1)?.toLowerCase() ?? '')) {
       files.push(inventoryFileForCommittedEntry(entry, contentHash));
       completed += 1;
     } else {
-      needsContent.push(entry);
+      needsContent.push({...entry, parse: !cached});
     }
   }
   for (const batch of chunkTreeEntries(needsContent)) {
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
       input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
-      maxOutputBytes: Math.min(
-        CAT_FILE_BATCH_BYTES + batch.length * 256,
-        budgets.maximumTotalBytes + batch.length * 256,
-      ),
+      maxOutputBytes: CAT_FILE_BATCH_BYTES + batch.length * 256,
       timeoutMs: 120_000,
     });
     const blobs = parseGitCatFileBatch(result.stdout, batch);
+    const contentBatch: CodeGraphInventoryFile[] = [];
     for (let index = 0; index < batch.length; index += 1) {
       const entry = batch[index]!;
       const bytes = blobs[index];
@@ -271,11 +303,23 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
         skipped += 1;
         continue;
       }
-      files.push({
+      const hydrated = {
         ...inventoryFileForCommittedEntry(entry, committedContentHash(identity.objectFormat, entry.blobId)),
         content,
-      });
+      } satisfies CodeGraphInventoryFile;
+      if (entry.parse) contentBatch.push(hydrated);
+      const retained = retainResolutionContext(hydrated);
+      resolutionContextBytes +=
+        retained.content === undefined ? 0 : new TextEncoder().encode(retained.content).byteLength;
+      if (resolutionContextBytes > MAX_RESOLUTION_CONTEXT_BYTES) {
+        return yield* Effect.fail(
+          new CodeGraphBudgetExceeded(`Repository resolution metadata exceeds ${MAX_RESOLUTION_CONTEXT_BYTES} bytes.`),
+        );
+      }
+      files.push(retained);
     }
+    if (contentBatch.length > 0) yield* onContentBatch?.(contentBatch) ?? Effect.void;
+    for (const file of contentBatch) parsedPaths.add(file.path);
     completed += batch.length;
     yield* onProgress?.({
       accepted: files.length,
@@ -284,7 +328,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       visited: completed,
     }) ?? Effect.void;
   }
-  return {files, skipped};
+  return {files, parsedPaths, resolutionContextBytes, skipped};
 });
 
 function inventoryFileForCommittedEntry(entry: GitTreeEntry, contentHash: string): CodeGraphInventoryFile {
@@ -336,6 +380,10 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   budgets: CodeGraphBudgets,
   threadnoteIgnore: string,
   ignoreRules: readonly CompiledIgnoreRule[],
+  cachedFileKeys: ReadonlySet<string>,
+  committedPaths: ReadonlySet<string>,
+  resolutionContextBytesAvailable: number,
+  onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const repositoryRoot = yield* fs.realPath(identity.repoRoot);
@@ -373,8 +421,14 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   }
   const files: CodeGraphInventoryFile[] = [];
   let skipped = 0;
-  let totalBytes = 0;
+  const parsedPaths = new Set<string>();
+  let contentBatch: CodeGraphInventoryFile[] = [];
+  let contentBatchBytes = 0;
   const changed = new Set([...changes.deleted, ...changes.changed]);
+  const retainedCommittedFiles =
+    committedPaths.size - [...changed].reduce((count, relative) => count + (committedPaths.has(relative) ? 1 : 0), 0);
+  const maximumOverlayFiles = budgets.maximumFiles - retainedCommittedFiles;
+  let resolutionContextBytes = 0;
   const skippedPaths = new Set<string>();
   const markSkipped = (relative: string) => {
     skipped += 1;
@@ -386,6 +440,13 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       return;
     }
     skippedPaths.add(relative);
+  };
+  const flushContentBatch = () => {
+    const current = contentBatch;
+    contentBatch = [];
+    contentBatchBytes = 0;
+    for (const file of current) parsedPaths.add(file.path);
+    return current.length > 0 ? (onContentBatch?.(current) ?? Effect.void) : Effect.void;
   };
   for (const relative of [...changes.changed].sort()) {
     const absolute = path.resolve(identity.repoRoot, relative);
@@ -420,21 +481,43 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       markSkipped(relative);
       continue;
     }
-    totalBytes += bytes.byteLength;
-    if (totalBytes > budgets.maximumTotalBytes) {
-      return yield* Effect.fail(new CodeGraphBudgetExceeded('Dirty overlay exceeds the total byte budget.'));
+    if (files.length >= maximumOverlayFiles) {
+      return yield* Effect.fail(
+        new CodeGraphBudgetExceeded(`Repository has more than ${budgets.maximumFiles} eligible files.`),
+      );
     }
-    files.push({
+    if (
+      contentBatch.length > 0 &&
+      (contentBatch.length >= CAT_FILE_BATCH_ENTRIES || contentBatchBytes + bytes.byteLength > CAT_FILE_BATCH_BYTES)
+    ) {
+      yield* flushContentBatch();
+    }
+    const contentHash = sha256HexSync(bytes);
+    const hydrated = {
       blobId: `worktree:${sha256HexSync(bytes)}`,
       content,
-      contentHash: sha256HexSync(bytes),
+      contentHash,
       language: languageForPath(relative),
       mode: '100644',
       path: relative,
       size: bytes.byteLength,
       source: 'worktree',
-    });
+    } satisfies CodeGraphInventoryFile;
+    if (!cachedFileKeys.has(`${relative}\0${contentHash}`)) {
+      contentBatch.push(hydrated);
+      contentBatchBytes += bytes.byteLength;
+    }
+    const retained = retainResolutionContext(hydrated);
+    resolutionContextBytes +=
+      retained.content === undefined ? 0 : new TextEncoder().encode(retained.content).byteLength;
+    if (resolutionContextBytes > resolutionContextBytesAvailable) {
+      return yield* Effect.fail(
+        new CodeGraphBudgetExceeded(`Repository resolution metadata exceeds ${MAX_RESOLUTION_CONTEXT_BYTES} bytes.`),
+      );
+    }
+    files.push(retained);
   }
+  yield* flushContentBatch();
   const dirty = changed.size > 0;
   return {
     changed,
@@ -450,6 +533,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
           ].join('\n'),
         )
       : undefined,
+    parsedPaths,
     skipped,
   };
 });
@@ -481,9 +565,9 @@ export function parseNameStatus(output: string): {
   return {added, changed, deleted};
 }
 
-function chunkTreeEntries(entries: readonly GitTreeEntry[]): readonly (readonly GitTreeEntry[])[] {
-  const batches: GitTreeEntry[][] = [];
-  let current: GitTreeEntry[] = [];
+function chunkTreeEntries<T extends GitTreeEntry>(entries: readonly T[]): readonly (readonly T[])[] {
+  const batches: T[][] = [];
+  let current: T[] = [];
   let currentBytes = 0;
   for (const entry of entries) {
     if (
@@ -501,16 +585,97 @@ function chunkTreeEntries(entries: readonly GitTreeEntry[]): readonly (readonly 
   return batches;
 }
 
-function assertInventoryBudgets(entries: readonly Pick<GitTreeEntry, 'size'>[], budgets: CodeGraphBudgets): void {
+export function assertInventoryFileBudget(
+  entries: readonly unknown[],
+  budgets: Pick<CodeGraphBudgets, 'maximumFiles'>,
+) {
   if (entries.length > budgets.maximumFiles) {
     throw new CodeGraphBudgetExceeded(
       `Repository has ${entries.length} eligible files; limit is ${budgets.maximumFiles}.`,
     );
   }
-  const bytes = entries.reduce((total, entry) => total + entry.size, 0);
-  if (bytes > budgets.maximumTotalBytes) {
-    throw new CodeGraphBudgetExceeded(`Repository has ${bytes} eligible bytes; limit is ${budgets.maximumTotalBytes}.`);
+}
+
+function retainResolutionContext(file: CodeGraphInventoryFile): CodeGraphInventoryFile {
+  const name = file.path.split('/').at(-1)?.toLowerCase() ?? '';
+  const content = file.content === undefined ? undefined : compactResolutionContext(name, file.content);
+  if (content !== undefined) {
+    const bytes = new TextEncoder().encode(content).byteLength;
+    if (bytes > MAX_RESOLUTION_CONTEXT_FILE_BYTES) {
+      throw new CodeGraphBudgetExceeded(
+        `Resolution metadata for ${file.path} exceeds ${MAX_RESOLUTION_CONTEXT_FILE_BYTES} bytes.`,
+      );
+    }
+    return {...file, content};
   }
+  const {content: _content, ...metadata} = file;
+  return metadata;
+}
+
+function compactResolutionContext(name: string, content: string): string | undefined {
+  if (!RESOLUTION_CONTEXT_NAMES.has(name)) return undefined;
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    if (name === 'package.json') {
+      const entry = packageEntryForResolution(parsed.exports, parsed.main);
+      return JSON.stringify({
+        ...(entry === undefined ? {} : {main: entry}),
+        ...(typeof parsed.name === 'string' ? {name: parsed.name} : {}),
+      });
+    }
+    const compilerOptions =
+      parsed.compilerOptions && typeof parsed.compilerOptions === 'object' && !Array.isArray(parsed.compilerOptions)
+        ? (parsed.compilerOptions as Record<string, unknown>)
+        : {};
+    const paths =
+      compilerOptions.paths && typeof compilerOptions.paths === 'object' && !Array.isArray(compilerOptions.paths)
+        ? Object.fromEntries(
+            Object.entries(compilerOptions.paths as Record<string, unknown>).flatMap(([alias, targets]) =>
+              Array.isArray(targets)
+                ? [[alias, targets.filter((target): target is string => typeof target === 'string')]]
+                : [],
+            ),
+          )
+        : undefined;
+    const compact: Record<string, unknown> = {
+      compilerOptions: {
+        ...(typeof compilerOptions.baseUrl === 'string' ? {baseUrl: compilerOptions.baseUrl} : {}),
+        ...(typeof compilerOptions.outDir === 'string' ? {outDir: compilerOptions.outDir} : {}),
+        ...(paths === undefined ? {} : {paths}),
+      },
+    };
+    for (const field of ['exclude', 'files', 'include'] as const) {
+      if (Object.prototype.hasOwnProperty.call(parsed, field)) {
+        compact[field] = Array.isArray(parsed[field])
+          ? parsed[field].filter((value): value is string => typeof value === 'string')
+          : parsed[field];
+      }
+    }
+    return JSON.stringify(compact);
+  } catch {
+    return undefined;
+  }
+}
+
+function packageEntryForResolution(exportsValue: unknown, mainValue: unknown): string | undefined {
+  if (exportsValue === undefined) return typeof mainValue === 'string' ? mainValue : undefined;
+  const root =
+    typeof exportsValue === 'object' &&
+    exportsValue !== null &&
+    !Array.isArray(exportsValue) &&
+    Object.keys(exportsValue).some(key => key.startsWith('.'))
+      ? (exportsValue as Record<string, unknown>)['.']
+      : exportsValue;
+  const targets = new Set(collectResolutionExportTargets(root));
+  return targets.size === 1 ? [...targets][0] : undefined;
+}
+
+function collectResolutionExportTargets(value: unknown): readonly string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(collectResolutionExportTargets);
+  if (typeof value !== 'object' || value === null) return [];
+  return Object.values(value as Record<string, unknown>).flatMap(collectResolutionExportTargets);
 }
 
 function appearsBinary(bytes: Uint8Array): boolean {

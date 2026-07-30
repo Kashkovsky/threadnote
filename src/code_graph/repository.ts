@@ -74,6 +74,40 @@ export const repositoryWorktreeIds = Effect.fn('codeGraph.repositoryWorktreeIds'
   return ids;
 });
 
+export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSince')(function* (
+  cwd: string,
+  base: string,
+) {
+  const verified = yield* runCommandEffect(
+    'git',
+    ['-C', cwd, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`],
+    {
+      maxOutputBytes: 1_024,
+      timeoutMs: 30_000,
+    },
+  );
+  const objectId = verified.stdout.trim();
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(objectId)) {
+    return yield* Effect.fail(new Error(`Git resolved ${base} to an invalid object ID.`));
+  }
+  const [tracked, untracked] = yield* Effect.all(
+    [
+      runCommandEffect('git', ['-C', cwd, 'diff', '--name-only', '-z', objectId, '--'], {
+        maxOutputBytes: 4 * 1_048_576,
+        timeoutMs: 30_000,
+      }),
+      runCommandEffect('git', ['-C', cwd, 'ls-files', '--others', '--exclude-standard', '-z'], {
+        maxOutputBytes: 4 * 1_048_576,
+        timeoutMs: 30_000,
+      }),
+    ],
+    {concurrency: 2},
+  );
+  const paths = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean))].sort();
+  if (paths.length === 0) return yield* Effect.fail(new Error(`No changed paths found relative to ${base}.`));
+  return {baseCommit: objectId, paths};
+});
+
 export function worktreeIdForRoot(repoRoot: string): string {
   return sha256HexSync(`worktree-v${IDENTITY_FORMAT_VERSION}\n${repoRoot}`);
 }

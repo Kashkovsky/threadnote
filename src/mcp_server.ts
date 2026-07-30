@@ -118,7 +118,7 @@ import {
   selectedRecallCandidateUris,
 } from './recall/runtime.js';
 import {CodeGraphQueryService, renderCodeGraphResult} from './code_graph/query.js';
-import {resolveRepositoryIdentity} from './code_graph/repository.js';
+import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
 import {CodeGraphWatcher} from './code_graph/watcher.js';
 
 interface RuntimeConfig {
@@ -727,8 +727,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect Threadnote’s local, snapshot-aware native code graph. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
+        'Inspect Threadnote’s local, snapshot-aware native code graph. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
       inputSchema: {
+        base: McpInput.string('Git base ref for operation=impact when query is omitted; defaults to HEAD~1'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
         depth: McpInput.integer('Maximum traversal depth', {minimum: 0, maximum: 8}),
         edgeLimit: McpInput.integer('Maximum returned relationships', {minimum: 1, maximum: 500}),
@@ -743,6 +744,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
       },
     },
     ({
+      base,
       callerCwd,
       depth,
       edgeLimit,
@@ -771,6 +773,14 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('inspect_code_graph callerCwd must be an absolute workspace path.');
         }
+        if (base?.trim() && operation !== 'impact') {
+          return argumentError('inspect_code_graph base is valid only for operation=impact.');
+        }
+        const requestedQuery = query?.trim();
+        const changes =
+          operation === 'impact' && !requestedQuery
+            ? yield* repositoryChangesSince(checkedCwd.value, base?.trim() || 'HEAD~1')
+            : undefined;
         const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
         yield* watcher.ensure({
@@ -780,6 +790,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         });
         const service = yield* CodeGraphQueryService;
         const result = yield* service.inspect({
+          baseCommit: changes?.baseCommit,
           cwd: checkedCwd.value,
           depth,
           edgeLimit,
@@ -788,7 +799,8 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           includeModelAssociations,
           nodeLimit,
           operation,
-          query,
+          query: requestedQuery || changes?.paths.join(' '),
+          seedQueries: changes?.paths,
           symbol,
           threadnoteHome: config.agentContextHome,
           to,

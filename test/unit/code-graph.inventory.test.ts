@@ -1,5 +1,10 @@
 import {describe, expect, it} from 'vitest';
-import {acceptsRepositoryPath, parseGitTree, parseNameStatus} from '../../src/code_graph/inventory.js';
+import {
+  acceptsRepositoryPath,
+  assertInventoryFileBudget,
+  parseGitTree,
+  parseNameStatus,
+} from '../../src/code_graph/inventory.js';
 
 describe('native code graph inventory policy', () => {
   it('prunes every hidden, generated, vendor, and explicitly ignored directory before blob reads', () => {
@@ -49,5 +54,14 @@ describe('native code graph inventory policy', () => {
 
     expect(parseGitTree(tree).map(entry => entry.path)).toEqual(['src/a.ts', 'src\\\\a.ts']);
     expect(parseNameStatus(['M', 'src\\\\a.ts', ''].join('\0')).changed).toEqual(new Set(['src\\\\a.ts']));
+  });
+
+  it('does not reject a repository because eligible source bytes exceed the former aggregate cap', () => {
+    const entries = Array.from({length: 200}, () => ({size: 1_048_576}));
+
+    expect(() => assertInventoryFileBudget(entries, {maximumFiles: 50_000})).not.toThrow();
+    expect(() => assertInventoryFileBudget(entries, {maximumFiles: 199})).toThrow(
+      'Repository has 200 eligible files; limit is 199.',
+    );
   });
 });

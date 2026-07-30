@@ -112,9 +112,20 @@ export interface CodeGraphStoreShape {
     files: readonly CodeGraphInventoryFile[],
     symbols: readonly CodeGraphSymbol[],
     edges: readonly CodeGraphEdge[],
-    cacheFacts: readonly CodeGraphFileFacts[],
     cacheExtractorSet: string,
+    pruneCache: boolean,
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly cacheFacts: (
+    databasePath: string,
+    files: readonly CodeGraphInventoryFile[],
+    facts: readonly CodeGraphFileFacts[],
+    extractorSet: string,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly cachedFactCounts: (
+    databasePath: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+    extractorSet: string,
+  ) => Effect.Effect<{readonly edges: number; readonly files: number; readonly symbols: number}, CodeGraphStoreError>;
   readonly acquireSnapshotLease: (
     databasePath: string,
     snapshotId: string,
@@ -196,6 +207,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     activeWorktreeIds: ReadonlySet<string>,
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly pruneCachedFacts: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly repair: (databasePath: string) => Effect.Effect<CodeGraphDatabaseRepair | undefined, CodeGraphStoreError>;
   readonly releaseSnapshotLease: (databasePath: string, token: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly searchSymbols: (
@@ -248,17 +260,14 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           .pipe(Effect.mapError(cause => storeError('prepare code graph database', cause)));
       return CodeGraphStore.of({
         withSession: (databasePath, effect) =>
-          prepare(databasePath).pipe(
-            Effect.andThen(
-              useDatabaseDirect(
-                databasePath,
-                Effect.gen(function* () {
-                  const sql = yield* SqlClient.SqlClient;
-                  yield* configureConnection(sql);
-                  return yield* effect.pipe(Effect.provideService(CodeGraphDatabaseSession, {databasePath, sql}));
-                }),
-              ),
-            ),
+          useDatabaseDirect(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* configureConnection(sql);
+              return yield* effect.pipe(Effect.provideService(CodeGraphDatabaseSession, {databasePath, sql}));
+            }),
+          ).pipe(
             Effect.catchTag('SqlError', cause =>
               Effect.fail(storeError('use code graph database session', cause as SqlError.SqlError)),
             ),
@@ -271,7 +280,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause)),
             );
           }).pipe(Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause))),
-        activate: (databasePath, identity, snapshot, files, symbols, edges, cacheFacts, cacheExtractorSet) =>
+        activate: (databasePath, identity, snapshot, files, symbols, edges, cacheExtractorSet, pruneCache) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -286,13 +295,35 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     files,
                     symbols,
                     edges,
-                    cacheFacts,
                     cacheExtractorSet,
+                    pruneCache,
                   );
                 }),
               ),
             ),
             Effect.mapError(cause => storeError('activate code graph snapshot', cause)),
+          ),
+        cacheFacts: (databasePath, files, facts, extractorSet) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+                  if (Option.isNone(session) || session.value.databasePath !== databasePath) {
+                    yield* initializeSchema(sql);
+                  }
+                  yield* sql.withTransaction(storeFreshFacts(sql, files, facts, extractorSet));
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('cache code graph file facts', cause)),
+          ),
+        cachedFactCounts: (databasePath, files, extractorSet) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(useDatabase(databasePath, selectCachedFactCounts(files, extractorSet))),
+            Effect.mapError(cause => storeError('count cached code graph facts', cause)),
           ),
         promote: (databasePath, identity, snapshotId, activeWorktreeIds) =>
           prepare(databasePath).pipe(
@@ -448,6 +479,22 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 : Effect.void,
             ),
             Effect.mapError(cause => storeError('reconcile code graph worktrees', cause)),
+          ),
+        pruneCachedFacts: databasePath =>
+          fs.exists(databasePath).pipe(
+            Effect.flatMap(exists =>
+              exists
+                ? useDatabase(
+                    databasePath,
+                    Effect.gen(function* () {
+                      const sql = yield* SqlClient.SqlClient;
+                      yield* configureConnection(sql);
+                      yield* sql.withTransaction(pruneUnreferencedFileBlobs(sql));
+                    }),
+                  )
+                : Effect.void,
+            ),
+            Effect.mapError(cause => storeError('prune cached code graph facts', cause)),
           ),
         repair: databasePath =>
           fs.exists(databasePath).pipe(
@@ -735,12 +782,16 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* () {
     );
   }
   const candidates = health.buildingSnapshots + health.failedSnapshots;
-  if (candidates === 0) return {removedSnapshots: 0} satisfies CodeGraphDatabaseRepair;
   yield* sql.withTransaction(
-    sql`
-      DELETE FROM snapshots
-      WHERE state IN ('building', 'failed')
-    `.pipe(Effect.asVoid),
+    Effect.gen(function* () {
+      if (candidates > 0) {
+        yield* sql`
+          DELETE FROM snapshots
+          WHERE state IN ('building', 'failed')
+        `;
+      }
+      yield* pruneUnreferencedFileBlobs(sql);
+    }),
   );
   return {removedSnapshots: candidates} satisfies CodeGraphDatabaseRepair;
 });
@@ -785,8 +836,8 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
   files: readonly CodeGraphInventoryFile[],
   inputSymbols: readonly CodeGraphSymbol[],
   inputEdges: readonly CodeGraphEdge[],
-  cacheFacts: readonly CodeGraphFileFacts[],
   cacheExtractorSet: string,
+  pruneCache: boolean,
 ) {
   const symbols = inputSymbols;
   const edges = inputEdges;
@@ -924,18 +975,19 @@ const activateSnapshot = Effect.fn('codeGraph.activateSnapshot')(function* (
               AND NOT EXISTS (SELECT 1 FROM activation_edges AS current WHERE current.id = base.id)
           `;
         }
-        yield* storeFreshFacts(sql, snapshot.id, files, cacheFacts, cacheExtractorSet);
       }
-      yield* sql`
-        DELETE FROM file_blobs
-        WHERE extractor_set != ${cacheExtractorSet}
-           OR NOT EXISTS (
-             SELECT 1
-             FROM snapshot_files
-             WHERE snapshot_files.path = file_blobs.path_hint
-               AND snapshot_files.content_hash = file_blobs.content_hash
-           )
-      `;
+      if (pruneCache) {
+        yield* sql`
+          DELETE FROM file_blobs
+          WHERE extractor_set != ${cacheExtractorSet}
+             OR NOT EXISTS (
+               SELECT 1
+               FROM snapshot_files
+               WHERE snapshot_files.path = file_blobs.path_hint
+                 AND snapshot_files.content_hash = file_blobs.content_hash
+             )
+        `;
+      }
     }),
   );
   yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -1068,17 +1120,15 @@ function insertSnapshotEdges(sql: SqlClient.SqlClient, snapshotId: string, edges
 
 function storeFreshFacts(
   sql: SqlClient.SqlClient,
-  snapshotId: string,
   files: readonly CodeGraphInventoryFile[],
   cacheFacts: readonly CodeGraphFileFacts[],
   cacheExtractorSet: string,
 ) {
   return Effect.gen(function* () {
-    let fileIndex = 0;
     const createdAt = new Date().toISOString();
+    const filesByPath = new Map(files.map(file => [file.path, file]));
     for (const fileFacts of cacheFacts) {
-      while (fileIndex < files.length && files[fileIndex]?.path !== fileFacts.path) fileIndex += 1;
-      const file = files[fileIndex];
+      const file = filesByPath.get(fileFacts.path);
       if (!file) {
         return yield* Effect.fail(
           new CodeGraphStoreError(`Fresh parser facts do not match the indexed file inventory: ${fileFacts.path}.`),
@@ -1094,7 +1144,6 @@ function storeFreshFacts(
           facts_json = excluded.facts_json,
           created_at = excluded.created_at
       `;
-      fileIndex += 1;
     }
   });
 }
@@ -1392,22 +1441,9 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const output = new Map<string, CodeGraphFileFacts>();
-  const pathsByHash = new Map<string, Set<string>>();
-  for (const file of files) {
-    const paths = pathsByHash.get(file.contentHash) ?? new Set<string>();
-    paths.add(file.path);
-    pathsByHash.set(file.contentHash, paths);
-  }
-  for (const values of chunk([...pathsByHash.keys()], 400)) {
-    if (values.length === 0) continue;
-    const rows = yield* sql<FileBlobRow & {readonly path_hint: string}>`
-      SELECT content_hash, path_hint, facts_json
-      FROM file_blobs
-      WHERE extractor_set = ${extractorSet}
-        AND ${sql.in('content_hash', values)}
-    `;
+  for (const batch of chunk(files, 300)) {
+    const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
     for (const row of rows) {
-      if (!pathsByHash.get(row.content_hash)?.has(row.path_hint)) continue;
       try {
         output.set(row.path_hint, JSON.parse(row.facts_json) as CodeGraphFileFacts);
       } catch {
@@ -1417,6 +1453,47 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
   }
   return output;
 });
+
+const selectCachedFactCounts = Effect.fn('codeGraph.selectCachedFactCounts')(function* (
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const matchedPaths = new Set<string>();
+  let edges = 0;
+  let symbols = 0;
+  for (const batch of chunk(files, 300)) {
+    const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
+    for (const row of rows) {
+      try {
+        const facts = JSON.parse(row.facts_json) as Partial<CodeGraphFileFacts>;
+        if (!Array.isArray(facts.edges) || !Array.isArray(facts.symbols)) continue;
+        matchedPaths.add(row.path_hint);
+        edges += facts.edges.length;
+        symbols += facts.symbols.length;
+      } catch {
+        // A malformed cache row is disposable and will be replaced after extraction.
+      }
+    }
+  }
+  return {edges, files: matchedPaths.size, symbols};
+});
+
+function selectFileBlobBatch(
+  sql: SqlClient.SqlClient,
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+) {
+  if (files.length === 0) return Effect.succeed([] as readonly (FileBlobRow & {readonly path_hint: string})[]);
+  return sql.unsafe<FileBlobRow & {readonly path_hint: string}>(
+    `SELECT content_hash, path_hint, facts_json
+     FROM file_blobs
+     WHERE extractor_set = ?
+       AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
+    [extractorSet, ...files.flatMap(file => [file.contentHash, file.path])],
+  );
+}
 
 const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommittedFileKeys')(function* (
   extractorSet: string,

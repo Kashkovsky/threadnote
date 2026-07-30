@@ -92,67 +92,113 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome)) {
                 return yield* Effect.fail(new RepositoryMaintenanceInterrupted());
               }
-              const startedAt = yield* Clock.currentTimeMillis;
-              const identity = yield* resolveRepositoryIdentity(options.cwd);
-              if (identity.repositoryId !== initialIdentity.repositoryId) {
-                return yield* Effect.fail(new Error('Repository identity changed while waiting for the graph lock.'));
-              }
-              const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
-              const parserCache = parserCacheIdentity();
-              const cachedCommittedFileKeys = options.force
-                ? new Set<string>()
-                : yield* store.cachedCommittedFileKeys(layout.databasePath, parserCache);
-              const inventory = yield* inventoryRepository(identity, {...options, cachedCommittedFileKeys});
-              const extractorSet = extractorSetIdentity(inventory.files);
-              const logicalSnapshotId = snapshotIdentity(identity, inventory.dirty, extractorSet, inventory.files);
-              const forceGeneration = options.force
-                ? (yield* crypto.randomUUIDv4).replaceAll('-', '').slice(0, 16)
-                : undefined;
-              const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
-              const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-              if (!options.force && existing?.id === snapshotId) {
-                yield* store.reconcileWorktrees(layout.databasePath, activeWorktreeIds);
-                const diagnostics: string[] = [];
-                const vectorCheck = yield* embedding
-                  .check(options.threadnoteHome, layout, existing.id)
-                  .pipe(
-                    Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)),
-                  );
-                const symbols =
-                  vectorCheck.state === 'ready' ? [] : yield* store.loadSymbols(layout.databasePath, existing.id);
-                const repaired = yield* embedding
-                  .ensure(options.threadnoteHome, layout, existing, symbols, {
+              return yield* store.withSession(
+                layout.databasePath,
+                Effect.gen(function* () {
+                  yield* store.initialize(layout.databasePath);
+                  const startedAt = yield* Clock.currentTimeMillis;
+                  const identity = yield* resolveRepositoryIdentity(options.cwd);
+                  if (identity.repositoryId !== initialIdentity.repositoryId) {
+                    return yield* Effect.fail(
+                      new Error('Repository identity changed while waiting for the graph lock.'),
+                    );
+                  }
+                  const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
+                  const parserCache = parserCacheIdentity();
+                  const cachedCommittedFileKeys = options.force
+                    ? new Set<string>()
+                    : yield* store.cachedCommittedFileKeys(layout.databasePath, parserCache);
+                  const inventory = yield* inventoryRepository(identity, {
+                    ...options,
+                    cachedCommittedFileKeys,
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache, options.budgets),
+                  });
+                  const extractorSet = extractorSetIdentity(inventory.files);
+                  const logicalSnapshotId = snapshotIdentity(identity, inventory.dirty, extractorSet, inventory.files);
+                  const forceGeneration = options.force
+                    ? (yield* crypto.randomUUIDv4).replaceAll('-', '').slice(0, 16)
+                    : undefined;
+                  const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
+                  const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+                  if (!options.force && existing?.id === snapshotId) {
+                    yield* store.reconcileWorktrees(layout.databasePath, activeWorktreeIds);
+                    const diagnostics: string[] = [];
+                    const vectorCheck = yield* embedding
+                      .check(options.threadnoteHome, layout, existing.id)
+                      .pipe(
+                        Effect.catch(cause =>
+                          Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const),
+                        ),
+                      );
+                    const symbols =
+                      vectorCheck.state === 'ready' ? [] : yield* store.loadSymbols(layout.databasePath, existing.id);
+                    const repaired = yield* embedding
+                      .ensure(options.threadnoteHome, layout, existing, symbols, {
+                        activeWorktreeIds,
+                        onProgress: options.onProgress,
+                      })
+                      .pipe(
+                        Effect.catch(cause =>
+                          Effect.succeed({
+                            embedded: 0,
+                            ready: false,
+                            reason: messageOf(cause),
+                            reused: 0,
+                          } satisfies CodeGraphEmbeddingStatus),
+                        ),
+                      );
+                    if (!repaired.ready) {
+                      diagnostics.push(`Vector graph retrieval unavailable: ${repaired.reason ?? 'unknown reason'}`);
+                    }
+                    return {
+                      diagnostics,
+                      durationMs: (yield* Clock.currentTimeMillis) - startedAt,
+                      identity,
+                      reusedFiles: inventory.files.length - inventory.parsedFiles,
+                      skippedFiles: inventory.skipped,
+                      snapshot: existing,
+                    };
+                  }
+                  const baseSnapshot = inventory.dirty
+                    ? yield* ensureCommittedBase({
+                        activeWorktreeIds,
+                        embedding,
+                        force: options.force === true,
+                        forceGeneration,
+                        fs,
+                        identity,
+                        inventory,
+                        layout,
+                        onProgress: options.onProgress,
+                        startedAt,
+                        store,
+                        threadnoteHome: options.threadnoteHome,
+                        budgets: options.budgets,
+                      })
+                    : undefined;
+                  const building: CodeGraphSnapshot = {
+                    baseSnapshotId: baseSnapshot?.id,
+                    commit: identity.headCommit,
+                    dirty: inventory.dirty,
+                    edgeCount: 0,
+                    extractorSet,
+                    fileCount: 0,
+                    id: snapshotId,
+                    overlayFingerprint: inventory.overlayFingerprint,
+                    repositoryId: identity.repositoryId,
+                    state: 'building',
+                    symbolCount: 0,
+                    worktreeId: identity.worktreeId,
+                  };
+                  yield* store.markBuilding(layout.databasePath, identity, building);
+                  return yield* buildAndActivate({
                     activeWorktreeIds,
-                    onProgress: options.onProgress,
-                  })
-                  .pipe(
-                    Effect.catch(cause =>
-                      Effect.succeed({
-                        embedded: 0,
-                        ready: false,
-                        reason: messageOf(cause),
-                        reused: 0,
-                      } satisfies CodeGraphEmbeddingStatus),
-                    ),
-                  );
-                if (!repaired.ready) {
-                  diagnostics.push(`Vector graph retrieval unavailable: ${repaired.reason ?? 'unknown reason'}`);
-                }
-                return {
-                  diagnostics,
-                  durationMs: (yield* Clock.currentTimeMillis) - startedAt,
-                  identity,
-                  reusedFiles: inventory.files.length,
-                  skippedFiles: inventory.skipped,
-                  snapshot: existing,
-                };
-              }
-              const baseSnapshot = inventory.dirty
-                ? yield* ensureCommittedBase({
-                    activeWorktreeIds,
+                    activatePointer: true,
+                    building,
+                    existing,
                     embedding,
+                    ensureVectors: true,
                     force: options.force === true,
-                    forceGeneration,
                     fs,
                     identity,
                     inventory,
@@ -162,45 +208,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     store,
                     threadnoteHome: options.threadnoteHome,
                     budgets: options.budgets,
-                  })
-                : undefined;
-              const building: CodeGraphSnapshot = {
-                baseSnapshotId: baseSnapshot?.id,
-                commit: identity.headCommit,
-                dirty: inventory.dirty,
-                edgeCount: 0,
-                extractorSet,
-                fileCount: 0,
-                id: snapshotId,
-                overlayFingerprint: inventory.overlayFingerprint,
-                repositoryId: identity.repositoryId,
-                state: 'building',
-                symbolCount: 0,
-                worktreeId: identity.worktreeId,
-              };
-              yield* store.markBuilding(layout.databasePath, identity, building);
-              return yield* buildAndActivate({
-                activeWorktreeIds,
-                activatePointer: true,
-                building,
-                existing,
-                embedding,
-                ensureVectors: true,
-                force: options.force === true,
-                fs,
-                identity,
-                inventory,
-                layout,
-                onProgress: options.onProgress,
-                startedAt,
-                store,
-                threadnoteHome: options.threadnoteHome,
-                budgets: options.budgets,
-              }).pipe(
-                Effect.catch(cause =>
-                  store
-                    .markFailed(layout.databasePath, snapshotId, messageOf(cause))
-                    .pipe(Effect.andThen(Effect.fail(cause))),
+                  }).pipe(
+                    Effect.catch(cause =>
+                      store
+                        .markFailed(layout.databasePath, snapshotId, messageOf(cause))
+                        .pipe(Effect.andThen(Effect.fail(cause))),
+                    ),
+                  );
+                }).pipe(
+                  Effect.onError(() =>
+                    store.pruneCachedFacts(layout.databasePath).pipe(Effect.catch(() => Effect.void)),
+                  ),
                 ),
               );
             }),
@@ -250,38 +268,54 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome)) {
                 return yield* Effect.fail(new RepositoryMaintenanceInterrupted());
               }
-              const currentIdentity = yield* resolveRepositoryIdentity(options.cwd);
-              if (
-                currentIdentity.repositoryId !== initialIdentity.repositoryId ||
-                currentIdentity.worktreeId !== initialIdentity.worktreeId
-              ) {
-                return yield* Effect.fail(new Error('Repository identity changed while waiting for the graph lock.'));
-              }
-              const identity = {...currentIdentity, headCommit: options.commit};
-              const activeWorktreeIds = yield* repositoryWorktreeIds(currentIdentity);
-              const parserCache = parserCacheIdentity();
-              const cachedCommittedFileKeys = yield* store.cachedCommittedFileKeys(layout.databasePath, parserCache);
-              const inventory = yield* inventoryRepository(identity, {
-                ...options,
-                cachedCommittedFileKeys,
-                includeOverlay: false,
-              });
-              const snapshot = yield* ensureCommittedBase({
-                activeWorktreeIds,
-                budgets: options.budgets,
-                embedding,
-                force: false,
-                fs,
-                identity,
-                inventory,
-                layout,
-                onProgress: options.onProgress,
-                startedAt: yield* Clock.currentTimeMillis,
-                store,
-                threadnoteHome: options.threadnoteHome,
-              });
-              const leaseToken = yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 2 * 60_000);
-              return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
+              return yield* store.withSession(
+                layout.databasePath,
+                Effect.gen(function* () {
+                  yield* store.initialize(layout.databasePath);
+                  const currentIdentity = yield* resolveRepositoryIdentity(options.cwd);
+                  if (
+                    currentIdentity.repositoryId !== initialIdentity.repositoryId ||
+                    currentIdentity.worktreeId !== initialIdentity.worktreeId
+                  ) {
+                    return yield* Effect.fail(
+                      new Error('Repository identity changed while waiting for the graph lock.'),
+                    );
+                  }
+                  const identity = {...currentIdentity, headCommit: options.commit};
+                  const activeWorktreeIds = yield* repositoryWorktreeIds(currentIdentity);
+                  const parserCache = parserCacheIdentity();
+                  const cachedCommittedFileKeys = yield* store.cachedCommittedFileKeys(
+                    layout.databasePath,
+                    parserCache,
+                  );
+                  const inventory = yield* inventoryRepository(identity, {
+                    ...options,
+                    cachedCommittedFileKeys,
+                    includeOverlay: false,
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache, options.budgets),
+                  });
+                  const snapshot = yield* ensureCommittedBase({
+                    activeWorktreeIds,
+                    budgets: options.budgets,
+                    embedding,
+                    force: false,
+                    fs,
+                    identity,
+                    inventory,
+                    layout,
+                    onProgress: options.onProgress,
+                    startedAt: yield* Clock.currentTimeMillis,
+                    store,
+                    threadnoteHome: options.threadnoteHome,
+                  });
+                  const leaseToken = yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 2 * 60_000);
+                  return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
+                }).pipe(
+                  Effect.onError(() =>
+                    store.pruneCachedFacts(layout.databasePath).pipe(Effect.catch(() => Effect.void)),
+                  ),
+                ),
+              );
             }),
           );
         }).pipe(
@@ -316,8 +350,10 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
 }) {
   const cleanInventory: CodeGraphInventory = {
     committedFiles: input.inventory.committedFiles,
+    committedParsedFiles: input.inventory.committedParsedFiles,
     dirty: false,
     files: input.inventory.committedFiles,
+    parsedFiles: input.inventory.committedParsedFiles,
     skipped: input.inventory.skipped,
   };
   const extractorSet = extractorSetIdentity(cleanInventory.files);
@@ -377,26 +413,32 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
 }) {
   const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...input.budgets};
   const parserCache = parserCacheIdentity();
-  const cached = input.force
-    ? new Map<string, ReturnType<typeof extractRepositoryFileFacts>[number]>()
-    : yield* input.store.loadCachedFacts(input.layout.databasePath, input.inventory.files, parserCache);
+  const cachedCounts = yield* input.store.cachedFactCounts(
+    input.layout.databasePath,
+    input.inventory.files,
+    parserCache,
+  );
+  if (cachedCounts.files !== input.inventory.files.length) {
+    return yield* Effect.fail(
+      new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+    );
+  }
+  assertFactCounts(cachedCounts, budgets, 'before cache materialization');
+  const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, input.inventory.files, parserCache);
   if (input.inventory.files.some(file => file.content === undefined && !cached.has(file.path))) {
     return yield* Effect.fail(
       new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
     );
   }
-  const changedPaths = new Set(input.inventory.files.filter(file => !cached.has(file.path)).map(file => file.path));
-  const freshFacts = extractRepositoryFileFacts(input.inventory.files, changedPaths, budgets);
-  const freshByPath = new Map(freshFacts.map(facts => [facts.path, facts]));
   const rawFacts = refreshPackageAttribution(
-    input.inventory.files.map(file => cached.get(file.path) ?? freshByPath.get(file.path)!),
+    input.inventory.files.map(file => cached.get(file.path)!),
     input.inventory.files,
   );
   assertRawFactBudgets(rawFacts, budgets);
   yield* input.onProgress?.({
     completed: input.inventory.files.length,
     phase: 'parsing',
-    reused: cached.size,
+    reused: input.inventory.files.length - input.inventory.parsedFiles,
     total: input.inventory.files.length,
   }) ?? Effect.void;
   const facts = resolveExtractedRepositoryFacts(rawFacts, input.inventory.files);
@@ -422,8 +464,8 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     input.inventory.files,
     symbols,
     edges,
-    freshFacts,
     parserCache,
+    input.activatePointer,
   );
   yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
   if (input.activatePointer) {
@@ -457,11 +499,34 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     ].slice(0, 100),
     durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
     identity: input.identity,
-    reusedFiles: cached.size,
+    reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
     skippedFiles: input.inventory.skipped,
     snapshot: ready,
   } satisfies CodeGraphIndexSummary;
 });
+
+function cacheContentBatch(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  parserCache: string,
+  budgetOverrides: Partial<CodeGraphBudgets> | undefined,
+) {
+  const budgets = {...DEFAULT_CODE_GRAPH_BUDGETS, ...budgetOverrides};
+  const countsBySource = {
+    commit: {edges: 0, symbols: 0},
+    worktree: {edges: 0, symbols: 0},
+  };
+  return (files: Parameters<typeof extractRepositoryFileFacts>[0]) =>
+    Effect.sync(() => {
+      const facts = extractRepositoryFileFacts(files, undefined, budgetOverrides);
+      const source = files[0]?.source ?? 'commit';
+      const counts = countsBySource[source];
+      counts.edges += facts.reduce((total, file) => total + file.edges.length, 0);
+      counts.symbols += facts.reduce((total, file) => total + file.symbols.length, 0);
+      assertFactCounts(counts, budgets, `while extracting ${source} files`);
+      return facts;
+    }).pipe(Effect.flatMap(facts => store.cacheFacts(databasePath, files, facts, parserCache)));
+}
 
 const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function* (
   identity: RepositoryIdentity,
@@ -591,6 +656,19 @@ function assertRawFactBudgets(
     if (edges > budgets.maximumEdges) {
       throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} raw edges before resolution.`);
     }
+  }
+}
+
+function assertFactCounts(
+  counts: {readonly edges: number; readonly symbols: number},
+  budgets: Pick<CodeGraphBudgets, 'maximumEdges' | 'maximumSymbols'>,
+  phase: string,
+): void {
+  if (counts.symbols > budgets.maximumSymbols) {
+    throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumSymbols} raw symbols ${phase}.`);
+  }
+  if (counts.edges > budgets.maximumEdges) {
+    throw new CodeGraphBudgetExceeded(`Code graph exceeds ${budgets.maximumEdges} raw edges ${phase}.`);
   }
 }
 

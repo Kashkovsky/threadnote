@@ -78,10 +78,13 @@ calls, imports, extends, documents, or may affect. An agent can call both, but g
 effect of recall and graph evidence cannot turn a memory no-answer into an answer.
 
 The graph inventory reads committed files through bounded Git tree/blob plumbing and overlays eligible staged,
-unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. TypeScript/JavaScript,
-package manifests, Go manifests, and Markdown have built-in extractors. Every edge identifies its evidence and
-authority as declared, resolved, syntactic, heuristic, or model-derived; semantic similarity is never promoted to an
-authoritative source edge.
+unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. Uncached source is parsed
+into the SQLite-backed content-addressed fact cache in bounded batches, and ordinary source text is released before the
+next batch. Package and TypeScript configuration is retained only as compact, bounded resolution metadata. Repository
+admission is not capped by aggregate source bytes; individual files, resolution metadata, and graph cardinality remain
+bounded, and completed parser batches are reusable after interruption. TypeScript/JavaScript, package manifests, Go
+manifests, and Markdown have built-in extractors. Every edge identifies its evidence and authority as declared,
+resolved, syntactic, heuristic, or model-derived; semantic similarity is never promoted to an authoritative source edge.
 
 Each local Git checkout owns a SQLite graph under
 `~/.threadnote/indexes/code-graph/repositories/<checkout-id>/`. Linked worktrees share an immutable commit snapshot;
@@ -94,6 +97,13 @@ writer lock. Repository registration uses a short process-aware maintenance leas
 and purge cannot remove a graph being created, without serializing extraction or model work across repositories. Vectors
 use immutable checksummed generations, a bounded decoded-generation cache, and a deterministic 20,000-symbol ceiling;
 missing models fail open to indexed SQLite lexical postings.
+
+One Git checkout is one graph scope, including monorepos. Nested package manifests assign symbols to the deepest
+containing package, and the most specific matching TypeScript project supplies path aliases. These scopes disambiguate
+resolution; they are not graph partitions. A nested app can resolve declared dependencies and imports into the outer
+workspace while retaining isolated aliases for its own modules. Unique package names may resolve across `apps/`,
+`libs/`, or deeper nested workspaces; duplicate package names remain unresolved rather than creating false edges.
+Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.
 `threadnote graph status|index|query|explain|path|impact|watch|export|purge` provides the operator surface. Doctor reports
 graph integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and
 temporary vector files.

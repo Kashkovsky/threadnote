@@ -20,7 +20,13 @@ boundary-checked worktree reads. Threadnote does not recursively walk a reposito
 directories, ignored/generated/vendor/cache paths, oversized files, symbolic links, submodule contents, and unsupported
 or binary files are rejected before parsing.
 
-Parsed file facts are content-addressed and reusable. Snapshot-dependent symbol resolution remains separate.
+Parsed file facts are content-addressed and reusable. Uncached source is read, parsed, and committed to the disposable
+parser cache in bounded batches; ordinary source text is released after each batch and is never retained until graph
+activation. Package and TypeScript configuration is reduced to bounded resolution metadata before its source text is
+released. Aggregate eligible source bytes are therefore not a repository admission limit. Safety remains enforced by
+individual-file, eligible-file, retained-resolution-metadata, symbol, edge, lexical-term, command-output, and
+per-command elapsed-time budgets. Completed parser-cache batches are reusable checkpoints after interruption.
+Snapshot-dependent symbol resolution remains separate.
 Deterministic graph snapshots are staged, revalidated, then promoted transactionally. Incomplete or failed builds never
 replace the latest ready snapshot, and bounded reader leases keep selected snapshots alive without serializing queries
 behind the writer lock. Dirty activation stages complete current rows in bounded batches and derives overrides and
@@ -60,7 +66,8 @@ flooding results. Returned evidence includes repository, commit, dirty-overlay s
 provenance, confidence, and freshness.
 
 `recall_context` remains exclusively responsible for memories and seeded resources. A separate
-`inspect_code_graph` MCP tool provides `query`, `explain`, `path`, and `impact` over current source. Agents may
+`inspect_code_graph` MCP tool provides `query`, `explain`, `path`, and `impact` over current source; impact accepts
+either an explicit symbol/path query or a Git base ref whose changed paths become the impact seeds. Agents may
 explicitly call both tools and combine their evidence, but neither subsystem changes the other's no-answer or
 freshness contract. CLI commands provide status, forced indexing, the same graph queries, foreground watch, explicit
 export, purge, doctor, and repair.

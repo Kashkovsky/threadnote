@@ -198,7 +198,6 @@ export interface CodeGraphBudgets {
   readonly maximumFileBytes: number;
   readonly maximumFiles: number;
   readonly maximumSymbols: number;
-  readonly maximumTotalBytes: number;
 }
 
 export const DEFAULT_CODE_GRAPH_BUDGETS: CodeGraphBudgets = {
@@ -206,7 +205,6 @@ export const DEFAULT_CODE_GRAPH_BUDGETS: CodeGraphBudgets = {
   maximumFileBytes: 1_048_576,
   maximumFiles: 50_000,
   maximumSymbols: 500_000,
-  maximumTotalBytes: 128 * 1_048_576,
 };
 
 export class CodeGraphRepositoryError extends Error {

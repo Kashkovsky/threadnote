@@ -122,6 +122,81 @@ describe('native code graph extraction', () => {
     expect(targetPath('useB')).toBe('packages/b/src/shared.ts');
   });
 
+  it('uses the deepest package and TypeScript scopes inside a nested monorepo', () => {
+    const nested = extractRepositoryFacts([
+      sourceFile(
+        'package.json',
+        JSON.stringify({name: '@fixture/root', workspaces: ['apps/*', 'apps/app/modules/*', 'libs/*']}),
+      ),
+      sourceFile(
+        'tsconfig.json',
+        JSON.stringify({compilerOptions: {baseUrl: '.', paths: {'@shared/*': ['libs/shared/*']}}}),
+      ),
+      sourceFile('libs/shared/package.json', JSON.stringify({exports: './value.ts', name: '@fixture/outer-shared'})),
+      sourceFile('libs/shared/value.ts', 'export function sharedValue(): string { return "outer"; }\n'),
+      sourceFile(
+        'apps/sibling/src/use.ts',
+        'import {sharedValue} from "@shared/value";\nexport function useOuter(): string { return sharedValue(); }\n',
+      ),
+      sourceFile(
+        'apps/app/package.json',
+        JSON.stringify({
+          dependencies: {'@fixture/outer-shared': 'workspace:*'},
+          name: '@fixture/nested-app',
+          workspaces: ['modules/*'],
+        }),
+      ),
+      sourceFile(
+        'apps/app/tsconfig.json',
+        JSON.stringify({compilerOptions: {baseUrl: '.', paths: {'@shared/*': ['modules/shared/*']}}}),
+      ),
+      sourceFile('apps/app/modules/shared/package.json', JSON.stringify({name: '@fixture/nested-shared'})),
+      sourceFile('apps/app/modules/shared/value.ts', 'export function sharedValue(): string { return "nested"; }\n'),
+      sourceFile(
+        'apps/app/src/use.ts',
+        [
+          'import {sharedValue as nestedValue} from "@shared/value";',
+          'import {sharedValue as outerValue} from "@fixture/outer-shared";',
+          'export function useNested(): string { return nestedValue(); }',
+          'export function useIntegrated(): string { return outerValue(); }',
+        ].join('\n'),
+      ),
+    ]);
+    const nestedSymbols = nested.flatMap(file => file.symbols);
+    const nestedEdges = nested.flatMap(file => file.edges);
+    const target = (sourceName: string) => {
+      const edge = nestedEdges.find(
+        candidate =>
+          candidate.sourceName === sourceName &&
+          candidate.relation === 'calls' &&
+          candidate.targetName === 'sharedValue',
+      );
+      return nestedSymbols.find(symbol => symbol.id === edge?.targetId);
+    };
+
+    expect(target('useOuter')).toMatchObject({
+      packageName: '@fixture/outer-shared',
+      path: 'libs/shared/value.ts',
+    });
+    expect(target('useNested')).toMatchObject({
+      packageName: '@fixture/nested-shared',
+      path: 'apps/app/modules/shared/value.ts',
+    });
+    expect(target('useIntegrated')).toMatchObject({
+      packageName: '@fixture/outer-shared',
+      path: 'libs/shared/value.ts',
+    });
+    expect(
+      nestedEdges.find(
+        edge =>
+          edge.sourceName === '@fixture/nested-app' &&
+          edge.relation === 'depends_on' &&
+          edge.targetName === '@fixture/outer-shared',
+      ),
+    ).toMatchObject({provenance: 'declared'});
+    expect(nestedSymbols.find(symbol => symbol.name === 'useNested')?.packageName).toBe('@fixture/nested-app');
+  });
+
   it('selects each alias project scope once per importing source', () => {
     let scopeScans = 0;
     const projectFiles = Array.from({length: 20}, (_, index) => {

@@ -112,6 +112,8 @@ describe('agent instruction lifecycle', () => {
         expect(generatedInstructions[1]).toContain('<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->');
         expect(generatedInstructions[2]).toContain('threadnote://');
         expect(generatedInstructions[3]).toContain('applyTo: "**"');
+        expect(generatedInstructions.every(content => content.includes('`query` finds definitions'))).toBe(true);
+        expect(generatedInstructions.every(content => content.includes('Git `base`'))).toBe(true);
         expect(
           generatedInstructions.every(content =>
             /use `threadnote report-issue .*` to prepare the\s+public GitHub issue preview/.test(content),

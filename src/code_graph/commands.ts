@@ -1,13 +1,12 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {startProgress} from '../cli_ui.js';
-import {runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
 import {codeGraphLayout} from './layout.js';
 import {purgeAllCodeGraphIndexes} from './maintenance.js';
 import {CodeGraphQueryService, renderCodeGraphResult} from './query.js';
-import {resolveRepositoryIdentity} from './repository.js';
+import {repositoryChangesSince, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphEdgeCursor, type CodeGraphSymbolCursor} from './store.js';
 import type {CodeGraphEdge, CodeGraphProgress, CodeGraphQueryOptions, CodeGraphSymbol} from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
@@ -139,7 +138,7 @@ export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function
   },
 ) {
   const cwd = yield* commandCwd(options.cwd);
-  const changes = options.query?.trim() ? undefined : yield* changedPaths(cwd, options.base ?? 'HEAD~1');
+  const changes = options.query?.trim() ? undefined : yield* repositoryChangesSince(cwd, options.base ?? 'HEAD~1');
   const input = options.query?.trim() || changes!.paths.join(' ');
   yield* runCodeGraphInspect(config, {
     ...options,
@@ -361,37 +360,6 @@ function progressMessage(progress: CodeGraphProgress): string {
       return `Activating · ${progress.snapshotId}`;
   }
 }
-
-const changedPaths = Effect.fn('codeGraph.changedPaths')(function* (cwd: string, base: string) {
-  const verified = yield* runCommandEffect(
-    'git',
-    ['-C', cwd, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`],
-    {
-      maxOutputBytes: 1_024,
-      timeoutMs: 30_000,
-    },
-  );
-  const objectId = verified.stdout.trim();
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(objectId)) {
-    return yield* Effect.fail(new Error(`Git resolved ${base} to an invalid object ID.`));
-  }
-  const [tracked, untracked] = yield* Effect.all(
-    [
-      runCommandEffect('git', ['-C', cwd, 'diff', '--name-only', '-z', objectId, '--'], {
-        maxOutputBytes: 4 * 1_048_576,
-        timeoutMs: 30_000,
-      }),
-      runCommandEffect('git', ['-C', cwd, 'ls-files', '--others', '--exclude-standard', '-z'], {
-        maxOutputBytes: 4 * 1_048_576,
-        timeoutMs: 30_000,
-      }),
-    ],
-    {concurrency: 2},
-  );
-  const paths = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean))].sort();
-  if (paths.length === 0) return yield* Effect.fail(new Error(`No changed paths found relative to ${base}.`));
-  return {baseCommit: objectId, paths};
-});
 
 function renderGraphHtmlStart(
   graph: {
