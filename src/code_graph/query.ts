@@ -1,9 +1,10 @@
-import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {CodeGraphIndexer} from './indexer.js';
 import {worktreeOverlayState} from './inventory.js';
+import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout, type CodeGraphLayout} from './layout.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
@@ -54,6 +55,7 @@ export class CodeGraphQueryService extends Context.Service<
       const store = yield* CodeGraphStore;
       const indexer = yield* CodeGraphIndexer;
       const embedding = yield* CodeGraphEmbeddingIndex;
+      const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const withRepositoryServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
           Effect.provideService(CommandExecutor, command),
@@ -163,6 +165,18 @@ export class CodeGraphQueryService extends Context.Service<
               return {
                 databasePath: layout.databasePath,
                 identity,
+                languagePacks: languagePacks.packs.map(pack => ({
+                  assetCount: pack.assets.length,
+                  capabilities: [...pack.capabilities].sort(),
+                  extractorVersion: pack.extractor.version,
+                  id: pack.id,
+                  languages: [...new Set(pack.files.map(matcher => matcher.language))].sort(),
+                  resolutionDomain: pack.resolutionStrategy.domain,
+                  resolutionVersion: pack.resolutionStrategy.version,
+                  roles: [...new Set(pack.files.map(matcher => matcher.role))].sort(),
+                  version: pack.version,
+                  workspaceDetection: Option.isSome(pack.workspaceDetector),
+                })),
                 readySnapshot: readySnapshot ? {...readySnapshot, worktreeId: identity.worktreeId} : undefined,
                 stale:
                   !readySnapshot ||

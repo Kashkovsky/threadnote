@@ -224,6 +224,9 @@ describe('standalone updater', () => {
             captured,
             activeRelease: yield* fs.readFileString(path.join(installRoot, 'active-release.json')),
             corruptContentsExist: yield* fs.exists(path.join(releaseRoot, 'corrupt.txt')),
+            grammarAssetsExist: yield* fs.exists(
+              path.join(releaseRoot, 'assets', 'code-graph', 'grammars', 'swift.wasm'),
+            ),
             executableExists: yield* fs.exists(path.join(releaseRoot, executableName)),
             launcher: yield* fs.readFileString(launcher),
             mcpLauncher: yield* fs.readFileString(mcpLauncher),
@@ -236,6 +239,7 @@ describe('standalone updater', () => {
     );
 
     expect(result.executableExists).toBe(true);
+    expect(result.grammarAssetsExist).toBe(true);
     expect(result.corruptContentsExist).toBe(false);
     expect(JSON.parse(result.activeRelease)).toMatchObject({version: RELEASE_VERSION});
     expect(JSON.parse(result.releaseMetadata)).toMatchObject({version: RELEASE_VERSION});
@@ -311,6 +315,54 @@ describe('standalone updater', () => {
       mcpLauncherExists: false,
       releaseExists: false,
     });
+  });
+
+  it('rejects an archive whose bundled code graph grammar does not match its signed manifest', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-grammar-checksum-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const binRoot = path.join(temporaryRoot, 'bin');
+          const config = runtimeConfig(path.join(temporaryRoot, 'home'));
+          const artifactName = releaseArtifactName(baseSystem);
+          const archivePath = path.join(temporaryRoot, artifactName);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeReleaseArchive(archivePath, artifactName, executableName, RELEASE_VERSION, {
+            tamperCodeGraphAsset: true,
+          });
+          const checksum = yield* sha256FileHex(archivePath);
+          const release = releaseResponse(RELEASE_VERSION, false, artifactName);
+          const http = updateHttpService(fs, archivePath, checksum, artifactName, [release]);
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+
+          const failure = yield* runUpdate(config, {
+            allowUntrustedSource: true,
+            force: true,
+            postUpdate: false,
+            repair: false,
+            source: 'http://127.0.0.1:4312/releases',
+          }).pipe(Effect.provideService(HttpService, http), Effect.provideService(SystemInfo, testSystem), Effect.flip);
+          return {
+            failure,
+            releaseExists: yield* fs.exists(path.join(installRoot, 'versions', RELEASE_VERSION)),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(String(result.failure)).toMatch(/Code graph asset checksum validation failed for grammars\/java\.wasm/);
+    expect(result.releaseExists).toBe(false);
   });
 
   it('restores an existing release when atomic promotion fails', async () => {
@@ -461,14 +513,47 @@ function updateHttpService(
   });
 }
 
-function writeReleaseArchive(archivePath: string, _artifactName: string, executableName: string, version: string) {
+function writeReleaseArchive(
+  archivePath: string,
+  _artifactName: string,
+  executableName: string,
+  version: string,
+  options: {readonly tamperCodeGraphAsset?: boolean} = {},
+) {
   return Effect.tryPromise({
-    try: () =>
-      Bun.Archive.write(
+    try: async () => {
+      const assetPaths = [
+        'manifest.json',
+        'runtime/web-tree-sitter.wasm',
+        'grammars/java.wasm',
+        'grammars/kotlin.wasm',
+        'grammars/swift.wasm',
+        'licenses/tree-sitter-java.LICENSE',
+        'licenses/tree-sitter-kotlin.LICENSE',
+        'licenses/tree-sitter-swift.LICENSE',
+        'licenses/web-tree-sitter.LICENSE',
+      ] as const;
+      const assets = Object.fromEntries(
+        await Promise.all(
+          assetPaths.map(async asset => [
+            `assets/code-graph/${asset}`,
+            await Bun.file(`assets/code-graph/${asset}`).bytes(),
+          ]),
+        ),
+      );
+      if (options.tamperCodeGraphAsset) {
+        assets['assets/code-graph/grammars/java.wasm'] = new TextEncoder().encode('tampered grammar');
+      }
+      return Bun.Archive.write(
         archivePath,
         {
+          ...assets,
           [executableName]: '#!/usr/bin/env sh\nexit 0\n',
           'release.json': `${JSON.stringify({
+            codeGraphAssets: {
+              manifest: 'assets/code-graph/manifest.json',
+              version: 1,
+            },
             executable: executableName,
             nativeRuntime: 'runtime/node-llama-cpp.js',
             nativeRuntimePackage: '@node-llama-cpp/test',
@@ -481,7 +566,8 @@ function writeReleaseArchive(archivePath: string, _artifactName: string, executa
           'runtime/native/.keep': '',
         },
         {compress: 'gzip'},
-      ),
+      );
+    },
     catch: cause => new Error('Could not create updater fixture archive.', {cause}),
   });
 }

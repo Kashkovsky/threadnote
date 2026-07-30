@@ -31,7 +31,7 @@ flowchart TD
     Recall --> Vectors["packed vector generations"]
     Models --> Vectors
     CodeGraph --> GraphSqlite["per-repository SQLite snapshots"]
-    CodeGraph --> GraphVectors["code-symbol vector generations"]
+    CodeGraph --> GraphVectors["paged code-symbol vector SQLite"]
     Models --> GraphVectors
     Store --> Lexical
     Store --> Vectors
@@ -80,12 +80,18 @@ effect of recall and graph evidence cannot turn a memory no-answer into an answe
 The graph inventory reads committed files through bounded Git tree/blob plumbing and overlays eligible staged,
 unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. Uncached source is parsed
 into the SQLite-backed content-addressed fact cache in bounded batches, and ordinary source text is released before the
-next batch. Package and TypeScript configuration is retained only as compact resolution metadata. Repository admission
+next batch. Package and workspace configuration is retained only as compact resolution metadata. Repository admission
 and graph coverage are not capped by file bytes, file count, resolution metadata, symbols, edges, lexical terms, or
 vectors. Fixed-size parser and SQLite batches bound transient work without truncating the stored graph, and completed
-parser batches are reusable after interruption. TypeScript/JavaScript, package manifests, Go
-manifests, and Markdown have built-in extractors. Every edge identifies its evidence and authority as declared,
-resolved, syntactic, heuristic, or model-derived; semantic similarity is never promoted to an authoritative source edge.
+parser batches are reusable after interruption.
+
+A generated language-pack catalog owns classification, extraction, cache identity, verified assets, capabilities,
+workspace discovery, and resolution domains. TypeScript/JavaScript continues to use the pinned TypeScript compiler
+extractor. Java, Kotlin, and Swift use bundled, checksum-verified Tree-sitter WASM grammars and a backend-neutral
+normalized declaration/reference representation. Manifests and Markdown remain built-in data extractors. Adding a
+future first-party language requires a pack plus fixtures/assets, not changes to inventory, SQLite, query, CLI, or MCP
+code. Every edge identifies its evidence and authority as declared, resolved, syntactic, heuristic, or model-derived;
+semantic similarity is never promoted to an authoritative source edge.
 
 Each local Git checkout owns a SQLite graph under
 `~/.threadnote/indexes/code-graph/repositories/<checkout-id>/`. Linked worktrees share an immutable commit snapshot;
@@ -95,15 +101,18 @@ dirty activation stages complete current rows in bounded batches and compares th
 indexed SQL joins instead of issuing per-symbol or per-edge comparison queries. One scoped SQLite connection serves all
 store calls in a logical query or export. Concurrent readers pin snapshots with bounded leases instead of taking the
 writer lock. Repository registration uses a short process-aware maintenance lease and a writer-intent marker so repair
-and purge cannot remove a graph being created, without serializing extraction or model work across repositories. Vectors
-use immutable checksummed generations, a bounded decoded-generation cache, and fixed-size embedding batches over every
-eligible high-value symbol; missing models fail open to indexed SQLite lexical postings.
+and purge cannot remove a graph being created, without serializing extraction or model work across repositories.
+Code-symbol vectors use a per-model `vectors-v2.sqlite`: construction, fingerprint reuse, activation, pruning, and
+exact search are paged, and worktree pointers switch generations transactionally. No repository-sized symbol array or
+decoded vector sidecar is required. Missing models fail open to indexed SQLite lexical postings.
 
 One Git checkout is one graph scope, including monorepos. Nested package manifests assign symbols to the deepest
-containing package, and the most specific matching TypeScript project supplies path aliases. These scopes disambiguate
-resolution; they are not graph partitions. A nested app can resolve declared dependencies and imports into the outer
-workspace while retaining isolated aliases for its own modules. Unique package names may resolve across `apps/`,
-`libs/`, or deeper nested workspaces; duplicate package names remain unresolved rather than creating false edges.
+containing project/source root. Static detectors cover npm/TypeScript metadata, Maven modules, Gradle projects and
+conventional Android/Kotlin Multiplatform source sets, SwiftPM targets, and conservative Xcode project scope. These
+scopes disambiguate resolution; they are not graph partitions. A nested app can remain its own workspace and also be
+an integrated outer module: its project retains both workspace roots and can cross into outer `libs/` or inner modules
+only through declared dependencies. Java and Kotlin intentionally share the JVM resolution domain. Duplicate or
+dynamic targets remain unresolved instead of creating false edges.
 Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.
 `threadnote graph status|index|query|explain|path|impact|watch|export|purge` provides the operator surface. Doctor reports
 graph integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and

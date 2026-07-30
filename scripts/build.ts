@@ -9,7 +9,7 @@ interface PackageManifest {
 }
 
 const ROOT_URL = new URL('..', import.meta.url);
-const RELEASE_DIRECTORIES = ['config', 'docs', 'manager'] as const;
+const RELEASE_DIRECTORIES = ['assets', 'config', 'docs', 'manager'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
 const OPTIONAL_NATIVE_PACKAGE = /^@node-llama-cpp\//;
@@ -101,6 +101,10 @@ const build = Effect.gen(function* () {
     path.join(outputRoot, 'release.json'),
     `${JSON.stringify(
       {
+        codeGraphAssets: {
+          manifest: 'assets/code-graph/manifest.json',
+          version: 1,
+        },
         executable: executableName,
         nativeRuntime: `runtime/${NATIVE_RUNTIME_PACKAGE}.js`,
         nativeRuntimePackage: nativePackage,

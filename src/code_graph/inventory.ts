@@ -2,6 +2,7 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
 
 interface GitTreeEntry {
@@ -29,13 +30,11 @@ export interface CodeGraphInventory {
 export interface CodeGraphInventoryOptions {
   readonly cachedCommittedFileKeys?: ReadonlySet<string>;
   readonly includeOverlay?: boolean;
+  readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly onContentBatch?: (files: readonly CodeGraphInventoryFile[]) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
 }
 
-const TEXT_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.md', '.mdx', '.mjs', '.mts', '.cts', '.ts', '.tsx']);
-const MANIFEST_NAMES = new Set(['go.mod', 'package.json', 'tsconfig.json']);
-const RESOLUTION_CONTEXT_NAMES = new Set(['package.json', 'tsconfig.json']);
 const PRUNED_DIRECTORIES = new Set([
   'bazel-bin',
   'bazel-out',
@@ -56,6 +55,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
   const allTreeEntries = isZeroObjectId(identity.headCommit)
     ? []
     : parseGitTree(
@@ -66,7 +66,9 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
       );
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
-  const acceptedByPolicy = allTreeEntries.filter(entry => acceptsRepositoryPathWithRules(entry.path, ignoreRules));
+  const acceptedByPolicy = allTreeEntries.filter(entry =>
+    acceptsRepositoryPathWithRules(entry.path, ignoreRules, languagePacks),
+  );
   const ignoredByGit = yield* ignoredPaths(
     identity.repoRoot,
     acceptedByPolicy.map(entry => entry.path),
@@ -77,6 +79,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     identity,
     accepted,
     options.cachedCommittedFileKeys ?? new Set(),
+    languagePacks,
     options.onContentBatch,
     options.onProgress,
   );
@@ -96,6 +99,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           threadnoteIgnore,
           ignoreRules,
           options.cachedCommittedFileKeys ?? new Set(),
+          languagePacks,
           options.onContentBatch,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
@@ -136,6 +140,7 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
     threadnoteIgnore,
     compileThreadnoteIgnore(threadnoteIgnore),
     new Set(),
+    BUILTIN_LANGUAGE_PACK_REGISTRY,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -154,10 +159,18 @@ export function parseGitTree(output: string): readonly GitTreeEntry[] {
 }
 
 export function acceptsRepositoryPath(value: string, threadnoteIgnore = ''): boolean {
-  return acceptsRepositoryPathWithRules(value, compileThreadnoteIgnore(threadnoteIgnore));
+  return acceptsRepositoryPathWithRules(
+    value,
+    compileThreadnoteIgnore(threadnoteIgnore),
+    BUILTIN_LANGUAGE_PACK_REGISTRY,
+  );
 }
 
-function acceptsRepositoryPathWithRules(value: string, ignoreRules: readonly CompiledIgnoreRule[]): boolean {
+function acceptsRepositoryPathWithRules(
+  value: string,
+  ignoreRules: readonly CompiledIgnoreRule[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): boolean {
   const path = normalizeRepositoryPath(value);
   if (!path || path.startsWith('/') || path.split('/').some(segment => segment === '..' || segment === '')) {
     return false;
@@ -170,9 +183,7 @@ function acceptsRepositoryPathWithRules(value: string, ignoreRules: readonly Com
   ) {
     return false;
   }
-  const basename = segments.at(-1)!.toLowerCase();
-  const extension = basename.includes('.') ? `.${basename.split('.').at(-1)}` : '';
-  return TEXT_EXTENSIONS.has(extension) || MANIFEST_NAMES.has(basename);
+  return Option.isSome(languagePacks.match(path));
 }
 
 function compileThreadnoteIgnore(content: string): readonly CompiledIgnoreRule[] {
@@ -227,6 +238,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   identity: RepositoryIdentity,
   entries: readonly GitTreeEntry[],
   cachedCommittedFileKeys: ReadonlySet<string>,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
   onProgress?: CodeGraphInventoryOptions['onProgress'],
 ) {
@@ -237,9 +249,9 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   const needsContent: Array<GitTreeEntry & {readonly parse: boolean}> = [];
   for (const entry of entries) {
     const contentHash = committedContentHash(identity.objectFormat, entry.blobId);
-    const cached = cachedCommittedFileKeys.has(`${entry.path}\0${contentHash}`);
-    if (cached && !RESOLUTION_CONTEXT_NAMES.has(entry.path.split('/').at(-1)?.toLowerCase() ?? '')) {
-      files.push(inventoryFileForCommittedEntry(entry, contentHash));
+    const cached = cachedCommittedFileKeys.has(cacheKey(entry.path, contentHash, languagePacks));
+    if (cached && !languagePacks.isResolutionContext(entry.path)) {
+      files.push(inventoryFileForCommittedEntry(entry, contentHash, languagePacks));
       completed += 1;
     } else {
       needsContent.push({...entry, parse: !cached});
@@ -267,11 +279,15 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
         continue;
       }
       const hydrated = {
-        ...inventoryFileForCommittedEntry(entry, committedContentHash(identity.objectFormat, entry.blobId)),
+        ...inventoryFileForCommittedEntry(
+          entry,
+          committedContentHash(identity.objectFormat, entry.blobId),
+          languagePacks,
+        ),
         content,
       } satisfies CodeGraphInventoryFile;
       if (entry.parse) contentBatch.push(hydrated);
-      const retained = retainResolutionContext(hydrated);
+      const retained = retainResolutionContext(hydrated, languagePacks);
       files.push(retained);
     }
     if (contentBatch.length > 0) yield* onContentBatch?.(contentBatch) ?? Effect.void;
@@ -287,11 +303,16 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   return {files, parsedPaths, skipped};
 });
 
-function inventoryFileForCommittedEntry(entry: GitTreeEntry, contentHash: string): CodeGraphInventoryFile {
+function inventoryFileForCommittedEntry(
+  entry: GitTreeEntry,
+  contentHash: string,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): CodeGraphInventoryFile {
+  const matched = languagePacks.match(entry.path);
   return {
     blobId: entry.blobId,
     contentHash,
-    language: languageForPath(entry.path),
+    language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
     mode: entry.mode,
     path: entry.path,
     size: entry.size,
@@ -336,6 +357,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   threadnoteIgnore: string,
   ignoreRules: readonly CompiledIgnoreRule[],
   cachedFileKeys: ReadonlySet<string>,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -404,7 +426,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       containment === '..' ||
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment) ||
-      !acceptsRepositoryPathWithRules(relative, ignoreRules)
+      !acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks)
     ) {
       markSkipped(relative);
       continue;
@@ -431,21 +453,22 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       yield* flushContentBatch();
     }
     const contentHash = sha256HexSync(bytes);
+    const matched = languagePacks.match(relative);
     const hydrated = {
       blobId: `worktree:${sha256HexSync(bytes)}`,
       content,
       contentHash,
-      language: languageForPath(relative),
+      language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
       mode: '100644',
       path: relative,
       size: bytes.byteLength,
       source: 'worktree',
     } satisfies CodeGraphInventoryFile;
-    if (!cachedFileKeys.has(`${relative}\0${contentHash}`)) {
+    if (!cachedFileKeys.has(cacheKey(relative, contentHash, languagePacks))) {
       contentBatch.push(hydrated);
       contentBatchBytes += bytes.byteLength;
     }
-    const retained = retainResolutionContext(hydrated);
+    const retained = retainResolutionContext(hydrated, languagePacks);
     files.push(retained);
   }
   yield* flushContentBatch();
@@ -516,9 +539,16 @@ function chunkTreeEntries<T extends GitTreeEntry>(entries: readonly T[]): readon
   return batches;
 }
 
-function retainResolutionContext(file: CodeGraphInventoryFile): CodeGraphInventoryFile {
+function retainResolutionContext(
+  file: CodeGraphInventoryFile,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): CodeGraphInventoryFile {
   const name = file.path.split('/').at(-1)?.toLowerCase() ?? '';
-  const content = file.content === undefined ? undefined : compactResolutionContext(name, file.content);
+  const content =
+    file.content === undefined
+      ? undefined
+      : (compactResolutionContext(name, file.content) ??
+        (languagePacks.isResolutionContext(file.path) ? file.content : undefined));
   if (content !== undefined) {
     return {...file, content};
   }
@@ -527,7 +557,7 @@ function retainResolutionContext(file: CodeGraphInventoryFile): CodeGraphInvento
 }
 
 function compactResolutionContext(name: string, content: string): string | undefined {
-  if (!RESOLUTION_CONTEXT_NAMES.has(name)) return undefined;
+  if (name !== 'package.json' && name !== 'tsconfig.json') return undefined;
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
@@ -609,19 +639,12 @@ function decodeUtf8(bytes: Uint8Array): string | undefined {
   }
 }
 
-function languageForPath(path: string): string {
-  const lower = path.toLowerCase();
-  if (/\.tsx?$/.test(lower) || /\.(?:mts|cts)$/.test(lower)) return 'typescript';
-  if (/\.(?:jsx?|mjs|cjs)$/.test(lower)) return 'javascript';
-  if (/\.mdx?$/.test(lower)) return 'markdown';
-  if (lower.endsWith('package.json')) return 'npm-manifest';
-  if (lower.endsWith('go.mod')) return 'go-manifest';
-  if (lower.endsWith('tsconfig.json')) return 'typescript-config';
-  return 'text';
-}
-
 function normalizeRepositoryPath(value: string): string {
   return value.replace(/^\.\/+/, '');
+}
+
+function cacheKey(path: string, contentHash: string, languagePacks: CodeGraphLanguagePackRegistryShape): string {
+  return `${path}\0${contentHash}\0${Option.getOrElse(languagePacks.cacheIdentityForPath(path), () => 'unmatched')}`;
 }
 
 function isZeroObjectId(value: string): boolean {

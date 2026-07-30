@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "archive:release": "bun scripts/archive-release.ts",
-    "build": "bun run clean && bun scripts/build.ts",
+    "build": "bun run generate:code-graph-languages && bun run clean && bun scripts/build.ts",
     "check:self-contained": "bun scripts/check-self-contained.ts",
     "clean": "bun scripts/clean.ts",
     "compile:targets": "bun scripts/compile-targets.ts",
@@ -46,6 +46,7 @@
     "eval:recall:baseline": "bun scripts/capture-recall-baseline.ts",
     "eval:recall:baseline:v2": "bun scripts/capture-recall-v2-baseline.ts",
     "eval:recall:v2": "bun scripts/evaluate-recall-v2.ts",
+    "generate:code-graph-languages": "bun scripts/generate-code-graph-language-catalog.ts",
     "eval:recall:models": "bun scripts/evaluate-recall-models.ts",
     "bench:recall": "bun scripts/benchmark-recall-v2.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
@@ -82,7 +83,8 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "three": "^0.185.1",
-    "typescript-compiler": "npm:typescript@5.9.3"
+    "typescript-compiler": "npm:typescript@5.9.3",
+    "web-tree-sitter": "0.26.11"
   },
   "overrides": {
     "@hono/node-server": "^2.0.12"

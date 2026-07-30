@@ -40,18 +40,12 @@ describe('native code graph vector generations', () => {
             symbol('beta', 'BetaStore', 'Stores beta records.'),
           ]);
           const modelRoot = path.join(layout.vectorRoot, manifest.id);
-          yield* fs.rename(
-            path.join(modelRoot, 'pointers', `${layout.worktreeId}.json`),
-            path.join(modelRoot, 'active.json'),
-          );
           const unchanged = yield* vectors.ensure(home, layout, snapshot('snapshot-one'), []);
           const scores = yield* vectors.search(home, layout, 'snapshot-one', 'alpha deployment', 2);
           const shared = yield* vectors.ensure(home, otherWorktreeLayout, snapshot('snapshot-one'), [
             symbol('alpha', 'AlphaCoordinator', 'Coordinates alpha deployments.'),
             symbol('beta', 'BetaStore', 'Stores beta records.'),
           ]);
-          const corruptPointer = path.join(modelRoot, 'pointers', `${'e'.repeat(64)}.json`);
-          yield* fs.writeFileString(corruptPointer, '{"generation":"../../outside"}\n');
           const changed = yield* vectors.ensure(home, layout, snapshot('snapshot-two'), [
             symbol('alpha', 'AlphaCoordinator', 'Coordinates alpha deployments.'),
             symbol('beta', 'BetaStore', 'Stores changed beta records.'),
@@ -72,13 +66,11 @@ describe('native code graph vector generations', () => {
           yield* vectors.ensure(home, layout, snapshot('snapshot-three'), [duplicate], {
             activeWorktreeIds: new Set([layout.worktreeId]),
           });
-          const removedInactivePointer = !(yield* fs.exists(
-            path.join(modelRoot, 'pointers', `${otherWorktreeLayout.worktreeId}.json`),
-          ));
+          const removedInactivePointer = yield* vectors.check(home, otherWorktreeLayout, 'snapshot-one');
           return {
             changed,
             checked,
-            corruptPointerRemoved: !(yield* fs.exists(corruptPointer)),
+            databaseReady: yield* fs.exists(path.join(modelRoot, 'vectors-v2.sqlite')),
             deduplicated,
             first,
             forced,
@@ -103,12 +95,60 @@ describe('native code graph vector generations', () => {
       expect(result.deduplicated).toMatchObject({embedded: 1, ready: true, reused: 0});
       expect(result.forced).toMatchObject({embedded: 1, ready: true, reused: 0});
       expect(result.checked).toEqual({modelId: manifest.id, reused: 1, state: 'ready'});
-      expect(result.corruptPointerRemoved).toBe(true);
+      expect(result.databaseReady).toBe(true);
       expect(result.scores.get('alpha')).toBeCloseTo(1);
       expect(result.preservedScores.get('alpha')).toBeCloseTo(1);
-      expect(result.removedInactivePointer).toBe(true);
+      expect(result.removedInactivePointer).toMatchObject({state: 'stale'});
       expect(result.scores.has('beta')).toBe(false);
       expect(embeddedBatches).toEqual([2, 1, 1, 1, 1, 1]);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('builds and searches a paged SQLite vector generation without materializing a repository symbol array', async () => {
+    const home = await mkdtemp('threadnote-code-graph-vector-pages-');
+    const embeddedBatches: number[] = [];
+    const pageLimits: number[] = [];
+    try {
+      const symbols = Array.from({length: 901}, (_, index) =>
+        symbol(`paged-${index.toString().padStart(4, '0')}`, `Paged${index}`, `Paged symbol ${index}.`),
+      );
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const vectors = yield* CodeGraphEmbeddingIndex;
+          const layout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+          const source = {
+            count: Effect.succeed(symbols.length),
+            loadPage: (cursor: {readonly id: string} | undefined, limit: number) => {
+              pageLimits.push(limit);
+              const start = cursor ? symbols.findIndex(candidate => candidate.id === cursor.id) + 1 : 0;
+              return Effect.succeed(symbols.slice(start, start + limit));
+            },
+          };
+          const built = yield* vectors.ensure(
+            home,
+            layout,
+            {...snapshot('snapshot-paged'), symbolCount: symbols.length},
+            source,
+          );
+          const scores = yield* vectors.search(home, layout, 'snapshot-paged', 'paged symbol', 5);
+          return {built, scores};
+        }).pipe(
+          Effect.provide(
+            Layer.merge(testEmbeddingLayer(embeddedBatches), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
+          ),
+          Effect.provide(BunServices.layer),
+        ),
+      );
+
+      expect(result.built).toMatchObject({embedded: 901, ready: true, reused: 0});
+      expect(result.scores.size).toBe(5);
+      expect(pageLimits).toEqual([400, 400, 400]);
+      expect(Math.max(...embeddedBatches)).toBeLessThanOrEqual(128);
     } finally {
       await rm(home, {force: true, recursive: true});
     }

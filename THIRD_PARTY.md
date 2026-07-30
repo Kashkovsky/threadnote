@@ -16,10 +16,15 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `three` (MIT), used for GPU-accelerated manager graph rendering
 - `js-yaml` (MIT)
 - TypeScript compiler 5.9 (`typescript-compiler`, Apache-2.0), bundled for native TypeScript/JavaScript graph extraction
+- `web-tree-sitter` 0.26.11 (MIT), bundled as the portable structural parser runtime
+- `tree-sitter-java` 0.23.5 (MIT), bundled as a verified WASM grammar
+- `tree-sitter-kotlin` 0.3.8 plus pinned upstream revision `c8ac3d2` (MIT), bundled as a verified WASM grammar
+- `tree-sitter-swift` 0.7.3 (MIT), bundled as a verified WASM grammar
 
-Consult each installed package's metadata and license files for the authoritative terms. The pinned MIT-licensed BGE
-Small embedding model is installed automatically by `threadnote install`; other model files require an explicit
-`threadnote models install` action. Catalog entries identify every model source and license.
+Grammar and parser license copies, source revisions, ABIs, and SHA-256 checksums are included under
+`assets/code-graph/`. Consult those files and each installed package's metadata for the authoritative terms. The
+pinned MIT-licensed BGE Small embedding model is installed automatically by `threadnote install`; other model files
+require an explicit `threadnote models install` action. Catalog entries identify every model source and license.
 
 ## Historical migration compatibility
 

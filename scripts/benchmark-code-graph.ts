@@ -34,12 +34,12 @@ const benchmarkCodeGraph = Effect.scoped(
     const system = yield* SystemInfo;
     const options = parseArguments(yield* scriptArguments());
     const fixturePath = yield* path.fromFileUrl(
-      new URL('../test/evaluation/fixtures/code-graph-v1/fixture.json', import.meta.url),
+      new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
     const prepared =
       options.scaleSymbols === undefined
-        ? yield* prepareCodeGraphFixture()
+        ? yield* prepareCodeGraphFixture(options.fixture)
         : yield* prepareGeneratedCodeGraphFixture(options.scaleSymbols, options.vectors);
     const embeddingModelId = options.vectors
       ? yield* prepareBenchmarkEmbedding(prepared.home, options.modelHome)
@@ -47,7 +47,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const queryText = options.vectors
       ? VECTOR_SEMANTIC_CONTROL_QUERY
       : options.scaleSymbols === undefined
-        ? 'exclusive file lock'
+        ? options.fixture === 'code-graph-polyglot-v1'
+          ? 'KotlinApp'
+          : 'exclusive file lock'
         : generatedSymbolName(Math.max(0, options.scaleSymbols - 1));
     const indexer = yield* CodeGraphIndexer;
     const query = yield* CodeGraphQueryService;
@@ -108,7 +110,11 @@ const benchmarkCodeGraph = Effect.scoped(
 
     const changedPath = path.join(
       prepared.repository,
-      options.scaleSymbols === undefined ? 'packages/search/src/vector-index.ts' : 'src/module-00000.ts',
+      options.scaleSymbols === undefined
+        ? options.fixture === 'code-graph-polyglot-v1'
+          ? 'src/main.ts'
+          : 'packages/search/src/vector-index.ts'
+        : 'src/module-00000.ts',
     );
     yield* fs.writeFileString(
       changedPath,
@@ -234,7 +240,7 @@ const benchmarkCodeGraph = Effect.scoped(
       suite: options.vectors
         ? 'code-graph-vectors-v1'
         : options.scaleSymbols === undefined
-          ? 'code-graph-v1'
+          ? options.fixture
           : 'code-graph-scale-v1',
       version: BENCHMARK_ARTIFACT_VERSION,
       warmups: options.warmups,
@@ -243,7 +249,7 @@ const benchmarkCodeGraph = Effect.scoped(
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
     if (options.failOnBudget) {
       const budgetPath = yield* path.fromFileUrl(
-        new URL('../test/evaluation/baselines/code-graph-v1/budgets.json', import.meta.url),
+        new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
       );
       enforceBudget(artifact, yield* readJsonFile(budgetPath), options.scaleSymbols);
     }
@@ -270,6 +276,7 @@ const git = Effect.fn('benchmarkCodeGraph.git')((args: readonly string[]) =>
 );
 
 function parseArguments(args: readonly string[]): {
+  readonly fixture: string;
   readonly modelHome?: string;
   readonly outputPath?: string;
   readonly samples: number;
@@ -278,6 +285,7 @@ function parseArguments(args: readonly string[]): {
   readonly failOnBudget: boolean;
   readonly vectors: boolean;
 } {
+  let fixture = 'code-graph-v1';
   let modelHome: string | undefined;
   let outputPath: string | undefined;
   let samples = 25;
@@ -288,6 +296,7 @@ function parseArguments(args: readonly string[]): {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--output') outputPath = required(args[++index], argument);
+    else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--model-home') modelHome = required(args[++index], argument);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
@@ -296,7 +305,11 @@ function parseArguments(args: readonly string[]): {
     else if (argument === '--vectors') vectors = true;
     else throw new Error(`Unknown code graph benchmark option: ${argument}`);
   }
-  return {failOnBudget, modelHome, outputPath, samples, scaleSymbols, vectors, warmups};
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new Error(`Invalid code graph fixture name: ${fixture}.`);
+  if (vectors && fixture !== 'code-graph-v1') {
+    throw new Error('The vector semantic control is currently defined only for code-graph-v1.');
+  }
+  return {failOnBudget, fixture, modelHome, outputPath, samples, scaleSymbols, vectors, warmups};
 }
 
 function enforceBudget(artifact: BenchmarkArtifactV1, value: unknown, scaleSymbols: number | undefined): void {

@@ -25,7 +25,9 @@ The current beta publishes four archives: macOS and glibc Linux for arm64 and x6
 Windows executables remain compile gates only. Musl lacks a distinct compatible bundled local-inference payload, and
 Windows publication is disabled until Authenticode signing is approved and verified. Every enabled native release
 runner installs the core GGUF model and produces a real embedding with its exact `dist/` payload before signing or
-archiving.
+archiving. The same payload must contain the pinned Tree-sitter runtime, Java/Kotlin/Swift grammar WASM, source/ABI/
+version/checksum manifest, and all four parser licenses. Source checks, archive smoke tests, and updater validation each
+reject missing or altered code-graph assets.
 
 ## Signing order
 

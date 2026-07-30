@@ -2,12 +2,14 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
   CodeGraphProvenance,
+  CodeGraphReference,
   CodeGraphSnapshot,
   CodeGraphSymbol,
   CodeGraphQueryNode,
@@ -32,6 +34,7 @@ interface SnapshotRow {
 }
 
 interface SymbolRow {
+  readonly arity: unknown;
   readonly content_hash: string;
   readonly documentation: unknown;
   readonly exported: number;
@@ -39,9 +42,11 @@ interface SymbolRow {
   readonly kind: string;
   readonly language: string;
   readonly name: string;
+  readonly lookup_keys_json: string;
   readonly package_name: unknown;
   readonly path: string;
   readonly qualified_name: string;
+  readonly resolution_domain: unknown;
   readonly signature: unknown;
   readonly span_json: string;
 }
@@ -146,14 +151,14 @@ export interface CodeGraphStoreShape {
     files: readonly CodeGraphInventoryFile[],
     symbols: readonly CodeGraphSymbol[],
     edges: readonly CodeGraphEdge[],
-    cacheExtractorSet: string,
+    cacheExtractorSet: string | readonly string[],
     pruneCache: boolean,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly activateStaged: (
     databasePath: string,
     identity: RepositoryIdentity,
     snapshot: CodeGraphSnapshot,
-    cacheExtractorSet: string,
+    cacheExtractorSet: string | readonly string[],
     pruneCache: boolean,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
@@ -200,6 +205,16 @@ export interface CodeGraphStoreShape {
     limit: number,
   ) => Effect.Effect<readonly CodeGraphEdge[], CodeGraphStoreError>;
   readonly loadSymbolPage: (
+    databasePath: string,
+    snapshotId: string,
+    cursor: CodeGraphSymbolCursor | undefined,
+    limit: number,
+  ) => Effect.Effect<readonly CodeGraphSymbol[], CodeGraphStoreError>;
+  readonly countEmbeddingSymbols: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<number, CodeGraphStoreError>;
+  readonly loadEmbeddingSymbolPage: (
     databasePath: string,
     snapshotId: string,
     cursor: CodeGraphSymbolCursor | undefined,
@@ -292,7 +307,11 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     symbols: readonly CodeGraphSymbol[],
     edges: readonly CodeGraphEdge[],
+    references?: readonly CodeGraphReference[],
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly resolveStagedReferences: (
+    databasePath: string,
+  ) => Effect.Effect<{readonly resolved: number}, CodeGraphStoreError>;
   readonly stagedFactCounts: (
     databasePath: string,
   ) => Effect.Effect<{readonly edges: number; readonly symbols: number}, CodeGraphStoreError>;
@@ -477,6 +496,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(useDatabase(databasePath, selectSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph symbol page', cause)),
           ),
+        countEmbeddingSymbols: (databasePath, snapshotId) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(useDatabase(databasePath, selectEmbeddingSymbolCount(snapshotId))),
+            Effect.mapError(cause => storeError('count code graph embedding symbols', cause)),
+          ),
+        loadEmbeddingSymbolPage: (databasePath, snapshotId, cursor, limit) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(useDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
+            Effect.mapError(cause => storeError('load code graph embedding symbol page', cause)),
+          ),
         loadVisualizationCatalog: databasePath =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
@@ -629,7 +658,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(useDatabase(databasePath, selectSymbolsByIds(snapshotId, ids))),
             Effect.mapError(cause => storeError('load code graph symbols', cause)),
           ),
-        stageActivationFacts: (databasePath, symbols, edges) =>
+        stageActivationFacts: (databasePath, symbols, edges, references = []) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -641,12 +670,18 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       yield* stageActivationSymbols(sql, symbols);
                       yield* stageActivationSymbolTerms(sql, symbols);
                       yield* stageActivationEdges(sql, edges);
+                      yield* stageActivationReferences(sql, references);
                     }),
                   );
                 }),
               ),
             ),
             Effect.mapError(cause => storeError('stage code graph facts', cause)),
+          ),
+        resolveStagedReferences: databasePath =>
+          prepare(databasePath).pipe(
+            Effect.andThen(useDatabase(databasePath, resolveActivationReferences())),
+            Effect.mapError(cause => storeError('resolve staged code graph references', cause)),
           ),
         stagedFactCounts: databasePath =>
           prepare(databasePath).pipe(
@@ -792,6 +827,9 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       qualified_name TEXT NOT NULL,
       path TEXT NOT NULL,
       language TEXT NOT NULL,
+      arity INTEGER,
+      lookup_keys_json TEXT NOT NULL,
+      resolution_domain TEXT,
       package_name TEXT,
       exported INTEGER NOT NULL CHECK (exported IN (0, 1)),
       signature TEXT,
@@ -973,7 +1011,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
-  cacheExtractorSet: string,
+  cacheExtractorSet: string | readonly string[],
   pruneCache: boolean,
 ) {
   const baseSnapshotId = snapshot.baseSnapshotId;
@@ -1055,10 +1093,12 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* sql`
             INSERT INTO symbols (
               snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
-              package_name, exported, signature, documentation, span_json
+              arity, lookup_keys_json, resolution_domain, package_name, exported, signature,
+              documentation, span_json
             )
             SELECT ${snapshot.id}, id, content_hash, kind, name, qualified_name, path, language,
-              package_name, exported, signature, documentation, span_json
+              arity, lookup_keys_json, resolution_domain, package_name, exported, signature,
+              documentation, span_json
             FROM activation_symbols
           `;
           yield* sql`
@@ -1103,10 +1143,12 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* sql`
             INSERT INTO symbols (
               snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
-              package_name, exported, signature, documentation, span_json
+              arity, lookup_keys_json, resolution_domain, package_name, exported, signature,
+              documentation, span_json
             )
             SELECT ${snapshot.id}, current.id, current.content_hash, current.kind, current.name,
-              current.qualified_name, current.path, current.language, current.package_name,
+              current.qualified_name, current.path, current.language, current.arity,
+              current.lookup_keys_json, current.resolution_domain, current.package_name,
               current.exported, current.signature, current.documentation, current.span_json
             FROM activation_symbols AS current
             JOIN activation_changed_symbol_ids AS changed ON changed.id = current.id
@@ -1156,16 +1198,22 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
         }
       }
       if (pruneCache) {
-        yield* sql`
-          DELETE FROM file_blobs
-          WHERE extractor_set != ${cacheExtractorSet}
-             OR NOT EXISTS (
-               SELECT 1
-               FROM snapshot_files
-               WHERE snapshot_files.path = file_blobs.path_hint
-                 AND snapshot_files.content_hash = file_blobs.content_hash
-             )
-        `;
+        const acceptedExtractorSets =
+          typeof cacheExtractorSet === 'string' ? [cacheExtractorSet] : [...cacheExtractorSet];
+        if (acceptedExtractorSets.length === 0) {
+          return yield* Effect.fail(new CodeGraphStoreError('At least one active extractor cache is required.'));
+        }
+        yield* sql.unsafe(
+          `DELETE FROM file_blobs
+           WHERE extractor_set NOT IN (${acceptedExtractorSets.map(() => '?').join(', ')})
+              OR NOT EXISTS (
+                SELECT 1
+                FROM snapshot_files
+                WHERE snapshot_files.path = file_blobs.path_hint
+                  AND snapshot_files.content_hash = file_blobs.content_hash
+              )`,
+          acceptedExtractorSets,
+        );
       }
     }),
   );
@@ -1223,6 +1271,9 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
       qualified_name TEXT NOT NULL,
       path TEXT NOT NULL,
       language TEXT NOT NULL,
+      arity INTEGER,
+      lookup_keys_json TEXT NOT NULL,
+      resolution_domain TEXT,
       package_name TEXT,
       exported INTEGER NOT NULL,
       signature TEXT,
@@ -1230,6 +1281,34 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
       span_json TEXT NOT NULL
     ) WITHOUT ROWID
   `);
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_symbol_lookup (
+      lookup_key TEXT NOT NULL,
+      symbol_id TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      exported INTEGER NOT NULL,
+      PRIMARY KEY (lookup_key, symbol_id)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_references (
+      edge_id TEXT PRIMARY KEY,
+      resolution_domain TEXT NOT NULL,
+      exported_only INTEGER NOT NULL,
+      alias_lookup_keys_json TEXT NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_reference_candidates (
+      edge_id TEXT NOT NULL,
+      tier INTEGER NOT NULL,
+      lookup_key TEXT NOT NULL,
+      PRIMARY KEY (edge_id, tier, lookup_key)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS activation_reference_candidates_lookup ON activation_reference_candidates(lookup_key, edge_id, tier)',
+  );
   yield* sql.unsafe(`
     CREATE TEMP TABLE IF NOT EXISTS activation_edges (
       id TEXT PRIMARY KEY,
@@ -1257,7 +1336,10 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
   );
   yield* sql.unsafe('DELETE FROM activation_files');
   yield* sql.unsafe('DELETE FROM activation_symbols');
+  yield* sql.unsafe('DELETE FROM activation_symbol_lookup');
   yield* sql.unsafe('DELETE FROM activation_edges');
+  yield* sql.unsafe('DELETE FROM activation_references');
+  yield* sql.unsafe('DELETE FROM activation_reference_candidates');
   yield* sql.unsafe('DELETE FROM activation_symbol_terms');
   yield* sql.unsafe('DELETE FROM activation_changed_symbol_ids');
 });
@@ -1281,8 +1363,8 @@ function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly Code
       yield* sql.unsafe(
         `INSERT OR REPLACE INTO activation_symbols (
           id, content_hash, kind, name, qualified_name, path, language, package_name,
-          exported, signature, documentation, span_json
-        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          arity, lookup_keys_json, resolution_domain, exported, signature, documentation, span_json
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
         batch.flatMap(symbol => [
           symbol.id,
           symbol.contentHash,
@@ -1292,12 +1374,28 @@ function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly Code
           symbol.path,
           symbol.language,
           symbol.packageName ?? null,
+          symbol.arity ?? null,
+          JSON.stringify(symbol.lookupKeys ?? []),
+          symbol.resolutionDomain ?? null,
           symbol.exported ? 1 : 0,
           symbol.signature ?? null,
           symbol.documentation ?? null,
           JSON.stringify(symbol.span),
         ]),
       );
+      const lookupRows = batch.flatMap(symbol =>
+        (symbol.lookupKeys ?? []).map(
+          key => [key, symbol.id, lookupDomain(key, symbol.resolutionDomain), symbol.exported ? 1 : 0] as const,
+        ),
+      );
+      for (const lookupBatch of chunk(lookupRows, 500)) {
+        yield* sql.unsafe(
+          `INSERT OR REPLACE INTO activation_symbol_lookup (
+            lookup_key, symbol_id, resolution_domain, exported
+          ) VALUES ${lookupBatch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+          lookupBatch.flat(),
+        );
+      }
     }
   });
 }
@@ -1352,6 +1450,164 @@ function stageActivationEdges(sql: SqlClient.SqlClient, edges: readonly CodeGrap
   });
 }
 
+function stageActivationReferences(sql: SqlClient.SqlClient, references: readonly CodeGraphReference[]) {
+  return Effect.gen(function* () {
+    for (const batch of chunk(references, 300)) {
+      yield* sql.unsafe(
+        `INSERT OR REPLACE INTO activation_references (
+          edge_id, resolution_domain, exported_only, alias_lookup_keys_json
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        batch.flatMap(reference => [
+          reference.edgeId,
+          reference.resolutionDomain,
+          reference.exportedOnly === true ? 1 : 0,
+          JSON.stringify(reference.aliasLookupKeys ?? []),
+        ]),
+      );
+      const candidates = batch.flatMap(reference =>
+        reference.lookupTiers.flatMap((tier, tierIndex) =>
+          tier.map(key => [reference.edgeId, tierIndex, key] as const),
+        ),
+      );
+      for (const candidateBatch of chunk(candidates, 500)) {
+        yield* sql.unsafe(
+          `INSERT OR REPLACE INTO activation_reference_candidates (
+            edge_id, tier, lookup_key
+          ) VALUES ${candidateBatch.map(() => '(?, ?, ?)').join(', ')}`,
+          candidateBatch.flat(),
+        );
+      }
+    }
+  });
+}
+
+interface ResolvableActivationReferenceRow extends EdgeRow {
+  readonly alias_lookup_keys_json: string;
+  readonly symbol_exported: number;
+  readonly symbol_kind: string;
+  readonly symbol_resolution_domain: unknown;
+  readonly target_symbol_id: string;
+  readonly target_symbol_name: string;
+}
+
+const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationReferences')(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  let resolved = 0;
+  for (;;) {
+    let cursor = '';
+    let resolvedInPass = 0;
+    let aliasesInPass = 0;
+    for (;;) {
+      const rows = yield* sql.unsafe<ResolvableActivationReferenceRow>(
+        `
+        WITH candidate_matches AS (
+          SELECT DISTINCT
+            candidate.edge_id,
+            candidate.tier,
+            lookup.symbol_id
+          FROM activation_reference_candidates AS candidate
+          JOIN activation_references AS reference ON reference.edge_id = candidate.edge_id
+          JOIN activation_edges AS edge ON edge.id = candidate.edge_id AND edge.target_id IS NULL
+          JOIN activation_symbol_lookup AS lookup
+            ON lookup.lookup_key = candidate.lookup_key
+           AND lookup.resolution_domain = reference.resolution_domain
+           AND (reference.exported_only = 0 OR lookup.exported = 1)
+           AND (edge.relation <> 'overrides' OR lookup.symbol_id IS NOT edge.source_id)
+          WHERE candidate.edge_id > ?
+        ),
+        first_tiers AS (
+          SELECT edge_id, MIN(tier) AS tier
+          FROM candidate_matches
+          GROUP BY edge_id
+        ),
+        unique_candidates AS (
+          SELECT match.edge_id, MIN(match.symbol_id) AS symbol_id
+          FROM candidate_matches AS match
+          JOIN first_tiers AS first
+            ON first.edge_id = match.edge_id AND first.tier = match.tier
+          GROUP BY match.edge_id
+          HAVING COUNT(DISTINCT match.symbol_id) = 1
+        )
+        SELECT
+          edge.*,
+          reference.alias_lookup_keys_json,
+          symbol.id AS target_symbol_id,
+          symbol.name AS target_symbol_name,
+          symbol.exported AS symbol_exported,
+          symbol.kind AS symbol_kind,
+          symbol.resolution_domain AS symbol_resolution_domain
+        FROM unique_candidates AS candidate
+        JOIN activation_edges AS edge ON edge.id = candidate.edge_id
+        JOIN activation_references AS reference ON reference.edge_id = candidate.edge_id
+        JOIN activation_symbols AS symbol ON symbol.id = candidate.symbol_id
+        ORDER BY candidate.edge_id
+        LIMIT 500
+        `,
+        [cursor],
+      );
+      if (rows.length === 0) break;
+      cursor = rows.at(-1)!.id;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (const row of rows) {
+            const provenance: CodeGraphProvenance =
+              row.provenance === 'declared' ? 'declared' : row.relation === 'documents' ? 'syntactic' : 'resolved';
+            const relation =
+              row.relation === 'extends' && ['interface', 'protocol'].includes(row.symbol_kind)
+                ? 'implements'
+                : row.relation;
+            const id = activationEdgeId(
+              Option.getOrUndefined(sqlTextOption(row.source_id)),
+              row.source_name,
+              relation,
+              row.target_symbol_id,
+              row.target_symbol_name,
+              provenance,
+              row.evidence_path,
+            );
+            yield* sql.unsafe(
+              `UPDATE OR REPLACE activation_edges
+               SET id = ?, relation = ?, target_id = ?, target_name = ?, provenance = ?, confidence = ?
+               WHERE id = ?`,
+              [
+                id,
+                relation,
+                row.target_symbol_id,
+                row.target_symbol_name,
+                provenance,
+                provenance === 'declared' || provenance === 'resolved' ? 1 : row.confidence,
+                row.id,
+              ],
+            );
+            const aliases = parseLookupKeys(row.alias_lookup_keys_json);
+            aliasesInPass += aliases.length;
+            for (const alias of aliases) {
+              yield* sql.unsafe(
+                `INSERT OR IGNORE INTO activation_symbol_lookup (
+                  lookup_key, symbol_id, resolution_domain, exported
+                ) VALUES (?, ?, ?, ?)`,
+                [
+                  alias,
+                  row.target_symbol_id,
+                  lookupDomain(alias, Option.getOrUndefined(sqlTextOption(row.symbol_resolution_domain))),
+                  row.symbol_exported,
+                ],
+              );
+            }
+            yield* sql.unsafe('DELETE FROM activation_reference_candidates WHERE edge_id = ?', [row.id]);
+            yield* sql.unsafe('DELETE FROM activation_references WHERE edge_id = ?', [row.id]);
+          }
+        }),
+      );
+      resolvedInPass += rows.length;
+      resolved += rows.length;
+      if (rows.length < 500) break;
+    }
+    if (resolvedInPass === 0 || aliasesInPass === 0) break;
+  }
+  return {resolved};
+});
+
 const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(function* (
   sql: SqlClient.SqlClient,
   baseSnapshotId: string | undefined,
@@ -1373,6 +1629,9 @@ const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(fun
        OR base.qualified_name IS NOT current.qualified_name
        OR base.path IS NOT current.path
        OR base.language IS NOT current.language
+       OR base.arity IS NOT current.arity
+       OR base.lookup_keys_json IS NOT current.lookup_keys_json
+       OR base.resolution_domain IS NOT current.resolution_domain
        OR base.package_name IS NOT current.package_name
        OR base.exported IS NOT current.exported
        OR base.signature IS NOT current.signature
@@ -1569,7 +1828,7 @@ const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommitted
     WHERE extractor_set = ${extractorSet}
       AND json_valid(facts_json)
   `;
-  return new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}`));
+  return new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}\0${extractorSet}`));
 });
 
 const selectStoredGraph = Effect.fn('codeGraph.selectStoredGraph')(function* (snapshotId: string) {
@@ -1704,6 +1963,63 @@ const selectSymbolPage = Effect.fn('codeGraph.selectSymbolPage')(function* (
          ORDER BY path, qualified_name, id
          LIMIT ?`,
         [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), boundedPageLimit(limit)],
+      );
+  return rows.map(symbolFromRow);
+});
+
+const EMBEDDING_SYMBOL_KINDS = [
+  'class',
+  'document',
+  'function',
+  'heading',
+  'interface',
+  'method',
+  'module',
+  'package',
+  'type',
+] as const;
+
+const selectEmbeddingSymbolCount = Effect.fn('codeGraph.selectEmbeddingSymbolCount')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const rows = yield* sql.unsafe<{readonly count: number}>(
+    `${effectiveSymbolsCte()}
+     SELECT COUNT(*) AS count
+     FROM effective_symbols
+     WHERE exported = 1 OR kind IN (${EMBEDDING_SYMBOL_KINDS.map(() => '?').join(', ')})`,
+    [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), ...EMBEDDING_SYMBOL_KINDS],
+  );
+  return Number(rows[0]?.count ?? 0);
+});
+
+const selectEmbeddingSymbolPage = Effect.fn('codeGraph.selectEmbeddingSymbolPage')(function* (
+  snapshotId: string,
+  cursor: CodeGraphSymbolCursor | undefined,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const eligibility = `exported = 1 OR kind IN (${EMBEDDING_SYMBOL_KINDS.map(() => '?').join(', ')})`;
+  const parameters = [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), ...EMBEDDING_SYMBOL_KINDS];
+  const rows = cursor
+    ? yield* sql.unsafe<SymbolRow>(
+        `${effectiveSymbolsCte()}
+         SELECT * FROM effective_symbols
+         WHERE (${eligibility})
+           AND (path, qualified_name, id) > (?, ?, ?)
+         ORDER BY path, qualified_name, id
+         LIMIT ?`,
+        [...parameters, cursor.path, cursor.qualifiedName, cursor.id, boundedPageLimit(limit)],
+      )
+    : yield* sql.unsafe<SymbolRow>(
+        `${effectiveSymbolsCte()}
+         SELECT * FROM effective_symbols
+         WHERE ${eligibility}
+         ORDER BY path, qualified_name, id
+         LIMIT ?`,
+        [...parameters, boundedPageLimit(limit)],
       );
   return rows.map(symbolFromRow);
 });
@@ -2190,17 +2506,22 @@ function snapshotFromRow(row: SnapshotRow): CodeGraphSnapshot {
 }
 
 function symbolFromRow(row: SymbolRow): CodeGraphSymbol {
+  const arity = typeof row.arity === 'number' && Number.isSafeInteger(row.arity) ? row.arity : undefined;
+  const resolutionDomain = Option.getOrUndefined(sqlTextOption(row.resolution_domain));
   return {
+    ...(arity === undefined ? {} : {arity}),
     contentHash: row.content_hash,
     documentation: Option.getOrUndefined(sqlTextOption(row.documentation)),
     exported: row.exported === 1,
     id: row.id,
     kind: row.kind,
     language: row.language,
+    lookupKeys: parseLookupKeys(row.lookup_keys_json),
     name: row.name,
     packageName: Option.getOrUndefined(sqlTextOption(row.package_name)),
     path: row.path,
     qualifiedName: row.qualified_name,
+    ...(resolutionDomain === undefined ? {} : {resolutionDomain}),
     signature: Option.getOrUndefined(sqlTextOption(row.signature)),
     span: JSON.parse(row.span_json) as CodeGraphSymbol['span'],
   };
@@ -2231,6 +2552,36 @@ function boundedPageLimit(value: number): number {
 
 function* chunk<const Value>(values: readonly Value[], size: number): Generator<readonly Value[]> {
   for (let index = 0; index < values.length; index += size) yield values.slice(index, index + size);
+}
+
+function parseLookupKeys(value: string): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length <= 4_096))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function lookupDomain(key: string, fallback: string | undefined): string {
+  const separator = key.indexOf(':');
+  return separator > 0 ? key.slice(0, separator) : (fallback ?? 'generic');
+}
+
+function activationEdgeId(
+  sourceId: string | undefined,
+  sourceName: string,
+  relation: string,
+  targetId: string | undefined,
+  targetName: string,
+  provenance: string,
+  path: string,
+): string {
+  return `cge_${sha256HexSync(
+    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}`,
+  ).slice(0, 32)}`;
 }
 
 function storeError(operation: string, cause: unknown): CodeGraphStoreError {

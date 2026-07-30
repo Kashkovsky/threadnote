@@ -10,9 +10,16 @@ definitions, authoritative calls and dependencies, paths, reverse impact, docume
 linked-worktree dirty-overlay isolation. The fixture identity is frozen; changing the repository or judgments requires
 reviewing every baseline with the new hash.
 
+`fixtures/code-graph-polyglot-v1/` is the complementary Java, Kotlin, Swift, and TypeScript contract. It executes the
+bundled Java/Kotlin/Swift grammar packs and the unchanged compiler-backed TypeScript pack in one repository, including
+declared Gradle JVM interoperability and SwiftPM target resolution. Its checked native quality and development
+performance artifacts live under `baselines/code-graph-polyglot-v1/`.
+
 ```sh
 bun run eval:code-graph
+bun run eval:code-graph -- --fixture code-graph-polyglot-v1
 bun run bench:code-graph -- --output artifacts/code-graph-local.json
+bun run bench:code-graph -- --fixture code-graph-polyglot-v1 --fail-on-budget
 bun run bench:code-graph -- --vectors --model-home ~/.threadnote --output artifacts/code-graph-vectors-local.json
 bun run bench:code-graph -- --scale-symbols 10000 --fail-on-budget
 bun run bench:code-graph -- --scale-symbols 100000 --fail-on-budget
@@ -27,9 +34,10 @@ development and scale performance limits. The default development and scale arti
 `performance-vectors-development.json` separately records activation and a lexically disjoint semantic query with the
 pinned production embedding model. Reviewed local lexical 10k/100k results and a production-model 10k vector result
 are stored as `performance-10000-development.json`, `performance-100000-development.json`, and
-`performance-vectors-10000-development.json`. Scheduled 10k/100k production-vector jobs gate bounded sidecar decoding,
-exact scans, RSS, and disk. The platform workflow retains full artifacts rather than pretending shared-runner latency
-is machine-independent.
+`performance-vectors-10000-development.json`. Scheduled 10k/100k production-vector jobs gate bounded decoding, exact
+scans, RSS, and disk. Code-graph embeddings use paged SQLite generations so candidate construction, reuse, and search
+do not materialize a repository-sized sidecar. The platform workflow retains full artifacts rather than pretending
+shared-runner latency is machine-independent.
 
 Graph code search is intentionally separate from memory recall. `recall_context` evaluates durable memories and
 resources; `inspect_code_graph` evaluates current source evidence. Agents may call both, but one subsystem failing or

@@ -42,7 +42,8 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Targeted local recall.** A pinned BGE Small model runs in process through `node-llama-cpp`; agents load selected
   `threadnote://` records instead of replaying the entire memory history or sending it to a hosted embedding service.
 - **Current-code relationships.** A separate native code-graph tool finds definitions, paths, calls, inheritance, and
-  change impact from the current Git commit plus this worktree's dirty overlay—without Python, Graphify, or a daemon.
+  change impact across TypeScript/JavaScript, Java, Kotlin, and Swift from the current Git commit plus this worktree's
+  dirty overlay—without Python, Graphify, an external compiler, or a daemon.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, scope, lifecycle, currentness,
   authority, and feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, agents store normal durable feature knowledge and
@@ -135,6 +136,12 @@ clones keep separate operational stores, and one worktree can never see another'
 symbol, edge, lexical-term, and vector counts are not capped by repository size; fixed-size processing batches bound
 transient work without truncating the stored graph.
 
+TypeScript and JavaScript retain the compiler-backed extractor that shipped with the first native graph. Java,
+Kotlin, and Swift use exact-pinned Tree-sitter WASM grammars bundled in the standalone release. A generated
+language-pack catalog owns file matching, parser/cache identity, workspace discovery, lookup rules, capabilities, and
+verified assets, so future first-party languages do not require changes to inventory, storage, query, CLI, or MCP
+architecture.
+
 Small cold graphs normally finish inside the first MCP call. If a large monorepo needs longer, `inspect_code_graph`
 returns a structured `state: "indexing"` response with the current phase and `retryAfterMilliseconds` while the
 session-scoped build continues. Agents retry the same graph call instead of waiting for the MCP transport timeout or
@@ -150,10 +157,17 @@ threadnote graph impact --base origin/main
 threadnote graph index --full
 ```
 
+Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, and conservative Xcode metadata form a static
+workspace model; repository build scripts are never executed. Nested workspaces remain distinct, while an app that is
+also integrated into the outer monorepo can resolve only its explicitly declared project dependencies. Ambiguous or
+dynamic relationships stay syntactic.
+
 Exact and normalized SQLite lexical search always work. If the core embedding model is installed—as it is by default—
-Threadnote also maintains checksummed code-symbol vectors through the same in-process `node-llama-cpp` runtime. Every
-relationship is labeled declared, resolved, syntactic, heuristic, or model-derived and includes a repository-relative
-evidence location. `threadnote doctor` checks graph integrity; `threadnote repair` cleans only disposable graph state.
+Threadnote also maintains code-symbol vectors in a paged, snapshot-atomic SQLite generation through the same in-process
+`node-llama-cpp` runtime. Vector construction, reuse, and exact search operate in fixed pages rather than decoding one
+repository-sized sidecar. Every relationship is labeled declared, resolved, syntactic, heuristic, or model-derived
+and includes a repository-relative evidence location. `threadnote doctor` checks graph integrity; `threadnote repair`
+cleans only disposable graph state.
 
 ## Updates
 
@@ -278,8 +292,10 @@ The reviewed recall-v2 corpus contains 200 documents and 250 queries across lexi
 authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. Frozen 3.0.3 quality and M1 Max
 performance baselines are checked in under `test/evaluation/baselines/threadnote-3.0.3/`.
 
-The separate code-graph-v1 repository fixture gates definitions, paths, impact, documentation, false edges,
-no-answer behavior, and worktree isolation against frozen Graphify/no-graph comparisons and a native baseline.
+The original code-graph-v1 repository fixture preserves compiler-backed TypeScript behavior and gates definitions,
+paths, impact, documentation, false edges, no-answer behavior, and worktree isolation against frozen
+Graphify/no-graph comparisons and a native baseline. A second frozen `code-graph-polyglot-v1` fixture and performance
+baseline exercise Java, Kotlin, Swift, and TypeScript together, including JVM and Swift target dependencies.
 
 ```sh
 bun run eval:recall:v2 -- \

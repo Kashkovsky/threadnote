@@ -32,6 +32,11 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   }
   yield* Console.log(`Repository: ${status.identity.displayName}`);
   yield* Console.log(`Database: ${status.databasePath}`);
+  yield* Console.log(
+    `Language packs: ${status.languagePacks
+      .map(pack => `${pack.id}@${pack.version} [${pack.languages.join(', ')}]`)
+      .join('; ')}`,
+  );
   if (!status.readySnapshot) {
     yield* Console.log('Ready snapshot: none');
     return;

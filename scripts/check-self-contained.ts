@@ -1,6 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
+import {sha256FileHex} from '../src/effect/digest.js';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -14,6 +15,7 @@ const EXPECTED_BUN_VERSION = '1.3.14';
 const EXPECTED_EFFECT_VERSION = '4.0.0-beta.99';
 const EXPECTED_NODE_LLAMA_CPP_VERSION = '3.19.1';
 const EXPECTED_TYPESCRIPT_COMPILER_VERSION = 'npm:typescript@5.9.3';
+const EXPECTED_WEB_TREE_SITTER_VERSION = '0.26.11';
 const FORBIDDEN_LEGACY_FILES = [
   '.nvmrc',
   'bin/node-warning-filter.cjs',
@@ -45,6 +47,7 @@ const checkSelfContained = Effect.gen(function* () {
   const path = yield* Path.Path;
   const root = yield* path.fromFileUrl(ROOT_URL);
   const failures: string[] = [];
+  yield* validateCodeGraphAssets(fs, path, path.join(root, 'assets', 'code-graph'), failures);
 
   for (const file of FORBIDDEN_LEGACY_FILES) {
     if (yield* fs.exists(path.join(root, file))) {
@@ -93,6 +96,9 @@ const checkSelfContained = Effect.gen(function* () {
   if (manifest.dependencies?.['typescript-compiler'] !== EXPECTED_TYPESCRIPT_COMPILER_VERSION) {
     failures.push(`typescript-compiler must be pinned to ${EXPECTED_TYPESCRIPT_COMPILER_VERSION}`);
   }
+  if (manifest.dependencies?.['web-tree-sitter'] !== EXPECTED_WEB_TREE_SITTER_VERSION) {
+    failures.push(`web-tree-sitter must be pinned to ${EXPECTED_WEB_TREE_SITTER_VERSION}`);
+  }
   if (manifest.devDependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
     failures.push(`@effect/platform-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
@@ -124,9 +130,32 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote'),
       path.join(root, 'dist', 'runtime', 'node-llama-cpp.js'),
       path.join(root, 'dist', 'runtime', 'native'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'runtime', 'web-tree-sitter.wasm'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'java.wasm'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'kotlin.wasm'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'swift.wasm'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'tree-sitter-java.LICENSE'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'tree-sitter-kotlin.LICENSE'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'tree-sitter-swift.LICENSE'),
+      path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'web-tree-sitter.LICENSE'),
     ]) {
       if (!(yield* fs.exists(required))) {
         failures.push(`standalone build output is missing: ${normalizePath(path.relative(root, required))}`);
+      }
+    }
+    if (yield* fs.exists(path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'))) {
+      yield* validateCodeGraphAssets(fs, path, path.join(root, 'dist', 'assets', 'code-graph'), failures);
+    }
+    if (yield* fs.exists(releaseMetadata)) {
+      const metadata = yield* parseJsonFile(fs, releaseMetadata);
+      if (
+        !isRecord(metadata) ||
+        !isRecord(metadata.codeGraphAssets) ||
+        metadata.codeGraphAssets.manifest !== 'assets/code-graph/manifest.json' ||
+        metadata.codeGraphAssets.version !== 1
+      ) {
+        failures.push('dist/release.json does not declare the verified code graph asset manifest');
       }
     }
   }
@@ -157,6 +186,79 @@ const sourceFiles = Effect.fn('checkSelfContained.sourceFiles')(function* (
 
 function normalizePath(value: string): string {
   return value.replaceAll('\\', '/');
+}
+
+const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphAssets')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+  failures: string[],
+) {
+  const manifestPath = path.join(root, 'manifest.json');
+  if (!(yield* fs.exists(manifestPath))) {
+    failures.push(`code graph asset manifest is missing: ${manifestPath}`);
+    return;
+  }
+  const manifest = yield* parseJsonFile(fs, manifestPath);
+  if (!isRecord(manifest) || manifest.version !== 1 || !isRecord(manifest.runtime) || !isRecord(manifest.grammars)) {
+    failures.push(`code graph asset manifest is invalid: ${manifestPath}`);
+    return;
+  }
+  const expected = [
+    {id: 'web-tree-sitter', metadata: manifest.runtime, path: 'runtime/web-tree-sitter.wasm', runtime: true},
+    {id: 'java', metadata: manifest.grammars.java, path: 'grammars/java.wasm', runtime: false},
+    {id: 'kotlin', metadata: manifest.grammars.kotlin, path: 'grammars/kotlin.wasm', runtime: false},
+    {id: 'swift', metadata: manifest.grammars.swift, path: 'grammars/swift.wasm', runtime: false},
+  ] as const;
+  for (const asset of expected) {
+    if (
+      !isRecord(asset.metadata) ||
+      asset.metadata.path !== asset.path ||
+      typeof asset.metadata.version !== 'string' ||
+      typeof asset.metadata.source !== 'string' ||
+      !asset.metadata.source.startsWith('https://github.com/') ||
+      typeof asset.metadata.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(asset.metadata.sha256) ||
+      (!asset.runtime && (!Number.isInteger(asset.metadata.abi) || Number(asset.metadata.abi) <= 0))
+    ) {
+      failures.push(`code graph asset metadata is invalid for ${asset.id}`);
+      continue;
+    }
+    const assetPath = path.join(root, ...asset.path.split('/'));
+    if (!(yield* fs.exists(assetPath))) {
+      failures.push(`code graph asset is missing: ${asset.path}`);
+      continue;
+    }
+    if ((yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
+      failures.push(`code graph asset checksum does not match: ${asset.path}`);
+    }
+  }
+  for (const license of [
+    'tree-sitter-java.LICENSE',
+    'tree-sitter-kotlin.LICENSE',
+    'tree-sitter-swift.LICENSE',
+    'web-tree-sitter.LICENSE',
+  ]) {
+    if (!(yield* fs.exists(path.join(root, 'licenses', license)))) {
+      failures.push(`code graph asset license is missing: ${license}`);
+    }
+  }
+});
+
+function parseJsonFile(fs: FileSystem.FileSystem, path: string): Effect.Effect<unknown> {
+  return fs.readFileString(path).pipe(
+    Effect.flatMap(content =>
+      Effect.try({
+        try: () => JSON.parse(content) as unknown,
+        catch: cause => new Error(`Could not parse JSON file ${path}.`, {cause}),
+      }),
+    ),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 BunRuntime.runMain(checkSelfContained.pipe(Effect.provide(BunServices.layer)));

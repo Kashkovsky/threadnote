@@ -1,18 +1,24 @@
-import ts from 'typescript-compiler';
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {createPackageAttributor, createRepositoryFactResolver, extractRepositoryFileFacts} from './extractor.js';
+import {createPackageAttributor, createResolutionAttributor, extractRepositoryFileFacts} from './extractor.js';
 import {inventoryRepository, worktreeOverlayState, type CodeGraphInventoryOptions} from './inventory.js';
+import {
+  BUILTIN_LANGUAGE_PACK_REGISTRY,
+  CodeGraphLanguagePackRegistry,
+  type CodeGraphLanguagePackRegistryShape,
+} from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  type CodeGraphFileFacts,
   type CodeGraphIndexSummary,
+  type CodeGraphInventoryFile,
   type CodeGraphProgress,
   type CodeGraphSnapshot,
   type RepositoryIdentity,
@@ -24,6 +30,8 @@ import {
   type CodeGraphEmbeddingIndexShape,
   type CodeGraphEmbeddingStatus,
 } from './embedding.js';
+import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
+import {createWorkspaceAttributor} from './workspace.js';
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly cwd: string;
@@ -53,6 +61,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
       const embedding = yield* CodeGraphEmbeddingIndex;
+      const languagePacks = yield* CodeGraphLanguagePackRegistry;
+      const treeSitter = yield* TreeSitterRuntime;
       const command = yield* CommandExecutor;
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
@@ -105,16 +115,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     );
                   }
                   const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
-                  const parserCache = parserCacheIdentity();
                   const cachedCommittedFileKeys = options.force
                     ? new Set<string>()
-                    : yield* store.cachedCommittedFileKeys(layout.databasePath, parserCache);
+                    : yield* cachedFileKeys(store, layout.databasePath, languagePacks);
                   const inventory = yield* inventoryRepository(identity, {
                     ...options,
                     cachedCommittedFileKeys,
-                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache),
+                    languagePacks,
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, languagePacks, treeSitter),
                   });
-                  const extractorSet = extractorSetIdentity(inventory.files);
+                  const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
                   const logicalSnapshotId = snapshotIdentity(identity, inventory.dirty, extractorSet, inventory.files);
                   const forceGeneration = options.force
                     ? (yield* crypto.randomUUIDv4).replaceAll('-', '').slice(0, 16)
@@ -132,7 +142,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     const symbols =
-                      vectorCheck.state === 'ready' ? [] : yield* store.loadSymbols(layout.databasePath, existing.id);
+                      vectorCheck.state === 'ready'
+                        ? []
+                        : embeddingSymbolSource(store, layout.databasePath, existing.id);
                     const repaired = yield* embedding
                       .ensure(options.threadnoteHome, layout, existing, symbols, {
                         activeWorktreeIds,
@@ -169,6 +181,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         fs,
                         identity,
                         inventory,
+                        languagePacks,
                         layout,
                         onProgress: options.onProgress,
                         startedAt,
@@ -202,6 +215,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     fs,
                     identity,
                     inventory,
+                    languagePacks,
                     layout,
                     onProgress: options.onProgress,
                     startedAt,
@@ -286,16 +300,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   }
                   const identity = {...currentIdentity, headCommit: options.commit};
                   const activeWorktreeIds = yield* repositoryWorktreeIds(currentIdentity);
-                  const parserCache = parserCacheIdentity();
-                  const cachedCommittedFileKeys = yield* store.cachedCommittedFileKeys(
-                    layout.databasePath,
-                    parserCache,
-                  );
+                  const cachedCommittedFileKeys = yield* cachedFileKeys(store, layout.databasePath, languagePacks);
                   const inventory = yield* inventoryRepository(identity, {
                     ...options,
                     cachedCommittedFileKeys,
                     includeOverlay: false,
-                    onContentBatch: cacheContentBatch(store, layout.databasePath, parserCache),
+                    languagePacks,
+                    onContentBatch: cacheContentBatch(store, layout.databasePath, languagePacks, treeSitter),
                   });
                   const snapshot = yield* ensureCommittedBase({
                     activeWorktreeIds,
@@ -304,6 +315,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     fs,
                     identity,
                     inventory,
+                    languagePacks,
                     layout,
                     onProgress: options.onProgress,
                     startedAt: yield* Clock.currentTimeMillis,
@@ -343,6 +355,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly startedAt: number;
@@ -357,7 +370,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
     parsedFiles: input.inventory.committedParsedFiles,
     skipped: input.inventory.skipped,
   };
-  const extractorSet = extractorSetIdentity(cleanInventory.files);
+  const extractorSet = extractorSetIdentity(cleanInventory.files, input.languagePacks);
   const snapshotId = forcedSnapshotIdentity(
     snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files),
     input.forceGeneration,
@@ -405,54 +418,29 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
 }) {
-  const parserCache = parserCacheIdentity();
+  const workspace = yield* input.languagePacks.discoverWorkspace(input.inventory.files);
   const attributePackages = createPackageAttributor(input.inventory.files);
-  const resolutionFacts = [];
+  const attributeWorkspace = createWorkspaceAttributor(workspace);
+  const attributeResolution = createResolutionAttributor(input.inventory.files);
+  const attributeFacts = (facts: readonly CodeGraphFileFacts[]) =>
+    attributeResolution(attributeWorkspace(attributePackages(facts)));
+  const extractionDiagnostics: string[] = [...workspace.diagnostics];
   yield* input.store.prepareActivation(input.layout.databasePath, input.inventory.files);
   for (const files of factMaterializationBatches(input.inventory.files)) {
-    const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, files, parserCache);
+    const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
     if (files.some(file => !cached.has(file.path))) {
       return yield* Effect.fail(
         new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
       );
     }
-    const facts = attributePackages(files.map(file => cached.get(file.path)!));
-    yield* input.store.stageActivationFacts(
-      input.layout.databasePath,
-      uniqueById(facts.flatMap(file => file.symbols)),
-      [],
-    );
-    for (const file of facts) {
-      resolutionFacts.push({
-        diagnostics: [],
-        edges: file.edges.filter(edge => edge.relation === 'reexports'),
-        path: file.path,
-        symbols: file.symbols,
-      });
-    }
-  }
-  const resolver = createRepositoryFactResolver(resolutionFacts, input.inventory.files);
-  yield* input.onProgress?.({
-    completed: input.inventory.files.length,
-    phase: 'parsing',
-    reused: input.inventory.files.length - input.inventory.parsedFiles,
-    total: input.inventory.files.length,
-  }) ?? Effect.void;
-  const extractionDiagnostics: string[] = [];
-  for (const files of factMaterializationBatches(input.inventory.files)) {
-    const cached = yield* input.store.loadCachedFacts(input.layout.databasePath, files, parserCache);
-    if (files.some(file => !cached.has(file.path))) {
-      return yield* Effect.fail(
-        new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
-      );
-    }
-    const facts = resolver.resolve(attributePackages(files.map(file => cached.get(file.path)!)));
+    const facts = attributeFacts(files.map(file => cached.get(file.path)!));
     if (extractionDiagnostics.length < 100) {
       extractionDiagnostics.push(
         ...facts.flatMap(file => file.diagnostics).slice(0, 100 - extractionDiagnostics.length),
@@ -460,10 +448,18 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     }
     yield* input.store.stageActivationFacts(
       input.layout.databasePath,
-      [],
+      uniqueById(facts.flatMap(file => file.symbols)),
       facts.flatMap(file => file.edges),
+      facts.flatMap(file => file.references ?? []),
     );
   }
+  yield* input.onProgress?.({
+    completed: input.inventory.files.length,
+    phase: 'parsing',
+    reused: input.inventory.files.length - input.inventory.parsedFiles,
+    total: input.inventory.files.length,
+  }) ?? Effect.void;
+  yield* input.store.resolveStagedReferences(input.layout.databasePath);
   const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
   yield* input.onProgress?.({
     edges: stagedCounts.edges,
@@ -486,7 +482,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     input.layout.databasePath,
     input.identity,
     ready,
-    parserCache,
+    input.languagePacks.cacheIdentities,
     input.activatePointer,
   );
   yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
@@ -495,11 +491,17 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   }
   const embedding = input.ensureVectors
     ? yield* input.embedding
-        .ensure(input.threadnoteHome, input.layout, ready, resolver.symbols, {
-          activeWorktreeIds: input.activeWorktreeIds,
-          force: input.force,
-          onProgress: input.onProgress,
-        })
+        .ensure(
+          input.threadnoteHome,
+          input.layout,
+          ready,
+          embeddingSymbolSource(input.store, input.layout.databasePath, ready.id),
+          {
+            activeWorktreeIds: input.activeWorktreeIds,
+            force: input.force,
+            onProgress: input.onProgress,
+          },
+        )
         .pipe(
           Effect.catch(cause =>
             Effect.succeed({
@@ -527,11 +529,30 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   } satisfies CodeGraphIndexSummary;
 });
 
-function cacheContentBatch(store: CodeGraphStoreShape, databasePath: string, parserCache: string) {
+function cacheContentBatch(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+  treeSitter: TreeSitterRuntimeShape,
+) {
   return (files: Parameters<typeof extractRepositoryFileFacts>[0]) =>
-    Effect.sync(() => {
-      return extractRepositoryFileFacts(files);
-    }).pipe(Effect.flatMap(facts => store.cacheFacts(databasePath, files, facts, parserCache)));
+    Effect.forEach(files, file => languagePacks.extractFile(file), {concurrency: 1}).pipe(
+      Effect.provideService(TreeSitterRuntime, treeSitter),
+      Effect.flatMap(facts => {
+        const factsByPath = new Map(facts.map(file => [file.path, file]));
+        return Effect.forEach(
+          groupFilesByCacheIdentity(files, languagePacks),
+          group =>
+            store.cacheFacts(
+              databasePath,
+              group.files,
+              group.files.map(file => factsByPath.get(file.path)!),
+              group.cacheIdentity,
+            ),
+          {concurrency: 1, discard: true},
+        );
+      }),
+    );
 }
 
 const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function* (
@@ -574,17 +595,24 @@ class RepositoryMaintenanceInterrupted extends Error {
   }
 }
 
-export function extractorSetIdentity(files: readonly {readonly contentHash: string; readonly path: string}[]): string {
+export function extractorSetIdentity(
+  files: readonly {readonly contentHash: string; readonly path: string}[],
+  languagePacks: CodeGraphLanguagePackRegistryShape = BUILTIN_LANGUAGE_PACK_REGISTRY,
+): string {
   const context = files
-    .filter(file => /(?:^|\/)(?:package|tsconfig)\.json$|(?:^|\/)go\.mod$/i.test(file.path))
+    .filter(file => languagePacks.isResolutionContext(file.path))
     .map(file => `${file.path}\0${file.contentHash}`)
     .sort()
     .join('\n');
-  return sha256HexSync(`parser:${parserCacheIdentity()}\nignore-policy:3\nresolution-context:\n${context}`);
+  const activePacks = languagePacks.activeCacheIdentities(files.map(file => file.path)).join('\n');
+  return sha256HexSync(
+    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-language-packs:\n${activePacks}\nignore-policy:3\nresolution-context:\n${context}`,
+  );
 }
 
 export function parserCacheIdentity(): string {
-  return sha256HexSync(`${CODE_GRAPH_EXTRACTOR_SET_VERSION}\ntypescript:${ts.version}\nparse-policy:1`);
+  const identity = BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentityForPath('source.ts');
+  return identity._tag === 'Some' ? identity.value : sha256HexSync(`${CODE_GRAPH_EXTRACTOR_SET_VERSION}:typescript`);
 }
 
 export function snapshotIdentity(
@@ -608,6 +636,14 @@ export function snapshotIdentity(
 
 function forcedSnapshotIdentity(logicalSnapshotId: string, forceGeneration: string | undefined): string {
   return forceGeneration ? `${logicalSnapshotId}-full-${forceGeneration}` : logicalSnapshotId;
+}
+
+function embeddingSymbolSource(store: CodeGraphStoreShape, databasePath: string, snapshotId: string) {
+  return {
+    count: store.countEmbeddingSymbols(databasePath, snapshotId),
+    loadPage: (cursor: Parameters<CodeGraphStoreShape['loadSymbolPage']>[2], limit: number) =>
+      store.loadEmbeddingSymbolPage(databasePath, snapshotId, cursor, limit),
+  };
 }
 
 function messageOf(cause: unknown): string {
@@ -652,4 +688,54 @@ function uniqueById<T extends {readonly id: string}>(values: readonly T[]): read
     if (!unique.has(value.id)) unique.set(value.id, value);
   }
   return [...unique.values()];
+}
+
+function cachedFileKeys(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): Effect.Effect<ReadonlySet<string>, unknown> {
+  return Effect.forEach(
+    languagePacks.cacheIdentities,
+    identity => store.cachedCommittedFileKeys(databasePath, identity),
+    {concurrency: 1},
+  ).pipe(Effect.map(sets => new Set(sets.flatMap(set => [...set]))));
+}
+
+function loadCachedFacts(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): Effect.Effect<ReadonlyMap<string, CodeGraphFileFacts>, unknown> {
+  return Effect.forEach(
+    groupFilesByCacheIdentity(files, languagePacks),
+    group => store.loadCachedFacts(databasePath, group.files, group.cacheIdentity),
+    {concurrency: 1},
+  ).pipe(
+    Effect.map(groups => {
+      const output = new Map<string, CodeGraphFileFacts>();
+      for (const group of groups) {
+        for (const [path, facts] of group) output.set(path, facts);
+      }
+      return output;
+    }),
+  );
+}
+
+function groupFilesByCacheIdentity<T extends {readonly path: string}>(
+  files: readonly T[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): readonly {readonly cacheIdentity: string; readonly files: readonly T[]}[] {
+  const groups = new Map<string, T[]>();
+  for (const file of files) {
+    const matched = languagePacks.cacheIdentityForPath(file.path);
+    const identity = matched._tag === 'Some' ? matched.value : 'unmatched';
+    const group = groups.get(identity);
+    if (group) group.push(file);
+    else groups.set(identity, [file]);
+  }
+  return [...groups]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([cacheIdentity, groupedFiles]) => ({cacheIdentity, files: groupedFiles}));
 }

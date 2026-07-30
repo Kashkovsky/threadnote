@@ -6,6 +6,7 @@ import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
   CodeGraphProvenance,
+  CodeGraphReference,
   CodeGraphRelation,
   CodeGraphSpan,
   CodeGraphSymbol,
@@ -120,6 +121,207 @@ function refreshFilePackageAttribution(file: CodeGraphFileFacts, packages: Packa
       return packageName ? {...withoutPackage, packageName} : withoutPackage;
     }),
   };
+}
+
+export function createResolutionAttributor(
+  files: readonly CodeGraphInventoryFile[],
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
+  const packages = discoverPackages(files);
+  const duplicatePackages = new Set(
+    packages.all.map(candidate => candidate.name).filter((name, index, names) => names.indexOf(name) !== index),
+  );
+  const existingPaths = new Set(files.map(file => file.path));
+  const aliases = discoverResolutionAliases(files, {});
+  const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
+  return facts =>
+    facts.map(file => {
+      const imports = collectImportBindings([file]).get(file.path);
+      const edges = file.edges.map(normalizeLocallyBoundEdge);
+      const typedEdgeIds = new Set(file.references?.map(reference => reference.edgeId) ?? []);
+      const references = [
+        ...(file.references ?? []),
+        ...file.edges.flatMap(edge =>
+          typedEdgeIds.has(edge.id)
+            ? []
+            : referenceForLegacyEdge(edge, imports, existingPaths, packages, aliases, resolutionCache),
+        ),
+      ];
+      return {
+        ...file,
+        diagnostics: [
+          ...file.diagnostics,
+          ...file.symbols
+            .filter(symbol => symbol.kind === 'package' && duplicatePackages.has(symbol.name))
+            .map(symbol => `${file.path}: duplicate workspace package name ${symbol.name}`),
+        ],
+        edges,
+        references,
+        symbols: file.symbols.map(addNormalizedLookupKeys),
+      };
+    });
+}
+
+function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
+  if (symbol.lookupKeys !== undefined && symbol.resolutionDomain !== undefined) {
+    return {
+      ...symbol,
+      lookupKeys: uniqueStrings([...symbol.lookupKeys, ...globalLookupKeys(symbol)]),
+    };
+  }
+  const resolutionDomain = TYPESCRIPT_EXTENSIONS.test(symbol.path)
+    ? 'typescript'
+    : symbol.kind === 'package'
+      ? 'workspace'
+      : symbol.kind === 'document' || symbol.kind === 'heading'
+        ? 'documentation'
+        : 'generic';
+  const lookupKeys =
+    resolutionDomain === 'typescript'
+      ? [
+          `typescript:path:${lookupComponent(symbol.path)}:qualified:${lookupComponent(symbol.qualifiedName)}`,
+          `typescript:path:${lookupComponent(symbol.path)}:name:${lookupComponent(symbol.name)}`,
+          ...(symbol.kind === 'module' ? [`typescript:module:${lookupComponent(symbol.path)}`] : []),
+        ]
+      : resolutionDomain === 'workspace'
+        ? [`workspace:package:${lookupComponent(symbol.name)}`]
+        : [];
+  return {
+    ...symbol,
+    lookupKeys: uniqueStrings([...lookupKeys, ...globalLookupKeys(symbol)]),
+    resolutionDomain,
+  };
+}
+
+function globalLookupKeys(symbol: CodeGraphSymbol): readonly string[] {
+  return [
+    `global:qualified:${lookupComponent(symbol.qualifiedName)}`,
+    `global:name:${lookupComponent(symbol.name)}`,
+    ...(symbol.kind === 'module' || symbol.kind === 'document' ? [`global:path:${lookupComponent(symbol.path)}`] : []),
+  ];
+}
+
+function normalizeLocallyBoundEdge(edge: CodeGraphEdge): CodeGraphEdge {
+  const targetName = parseLocallyBoundTarget(edge.targetName);
+  if (targetName === undefined) return edge;
+  return {
+    ...edge,
+    id: edgeId(
+      edge.sourceId,
+      edge.sourceName,
+      edge.relation,
+      undefined,
+      targetName,
+      edge.provenance,
+      edge.evidencePath,
+    ),
+    targetName,
+  };
+}
+
+function referenceForLegacyEdge(
+  edge: CodeGraphEdge,
+  imports: ReadonlyMap<string, {readonly imported: string; readonly specifier: string}> | undefined,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+): readonly CodeGraphReference[] {
+  if (edge.targetId || parseLocallyBoundTarget(edge.targetName) !== undefined) return [];
+  const binding = parseImportBindingTarget(edge.targetName);
+  if ((edge.relation === 'imports' || edge.relation === 'reexports') && binding) {
+    if (binding.imported === '*' || binding.imported === 'default') return [];
+    const targetPath = resolveModulePath(edge.evidencePath, binding.specifier, existingPaths, packages, aliases, cache);
+    if (targetPath === undefined) return [];
+    return [
+      referenceForEdge(edge, 'typescript', [[typescriptNameKey(targetPath, binding.imported)]], {
+        aliasLookupKeys:
+          edge.relation === 'reexports' ? [typescriptNameKey(edge.evidencePath, binding.local)] : undefined,
+        exportedOnly: true,
+      }),
+    ];
+  }
+  if (edge.relation === 'imports' || edge.relation === 'reexports') {
+    const targetPath = resolveModulePath(edge.evidencePath, edge.targetName, existingPaths, packages, aliases, cache);
+    return targetPath === undefined
+      ? []
+      : [referenceForEdge(edge, 'typescript', [[`typescript:module:${lookupComponent(targetPath)}`]])];
+  }
+  if (edge.relation === 'depends_on') {
+    return [referenceForEdge(edge, 'workspace', [[`workspace:package:${lookupComponent(edge.targetName)}`]])];
+  }
+  if (edge.relation === 'documents') {
+    const lookupTiers = edge.targetName.includes('/')
+      ? [[`global:path:${lookupComponent(edge.targetName)}`]]
+      : [
+          [`global:qualified:${lookupComponent(edge.targetName)}`],
+          [`global:name:${lookupComponent(lastName(edge.targetName))}`],
+        ];
+    return [referenceForEdge(edge, 'global', lookupTiers)];
+  }
+  if (!['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(edge.relation)) {
+    return [];
+  }
+  const imported = imports?.get(edge.targetName);
+  if (imported && imported.imported !== '*' && imported.imported !== 'default') {
+    const targetPath = resolveModulePath(
+      edge.evidencePath,
+      imported.specifier,
+      existingPaths,
+      packages,
+      aliases,
+      cache,
+    );
+    return targetPath === undefined
+      ? []
+      : [
+          referenceForEdge(edge, 'typescript', [[typescriptNameKey(targetPath, imported.imported)]], {
+            exportedOnly: true,
+          }),
+        ];
+  }
+  if (edge.targetName.startsWith('this.') || edge.targetName.includes('.')) return [];
+  return [
+    referenceForEdge(edge, 'typescript', [
+      [`typescript:path:${lookupComponent(edge.evidencePath)}:qualified:${lookupComponent(edge.targetName)}`],
+    ]),
+  ];
+}
+
+function referenceForEdge(
+  edge: CodeGraphEdge,
+  resolutionDomain: string,
+  lookupTiers: readonly (readonly string[])[],
+  options: {
+    readonly aliasLookupKeys?: readonly string[];
+    readonly exportedOnly?: boolean;
+  } = {},
+): CodeGraphReference {
+  return {
+    aliasLookupKeys: options.aliasLookupKeys,
+    edgeId: edge.id,
+    evidencePath: edge.evidencePath,
+    evidenceSpan: edge.evidenceSpan,
+    exportedOnly: options.exportedOnly,
+    lookupTiers,
+    provenance: edge.provenance,
+    relation: edge.relation,
+    resolutionDomain,
+    sourceId: edge.sourceId,
+    sourceName: edge.sourceName,
+    targetName: edge.targetName,
+  };
+}
+
+function typescriptNameKey(path: string, name: string): string {
+  return `typescript:path:${lookupComponent(path)}:name:${lookupComponent(name)}`;
+}
+
+function lookupComponent(value: string): string {
+  return encodeURIComponent(value);
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
 
 export function extractFileFacts(
@@ -406,6 +608,7 @@ export function createRepositoryFactResolver(
   const byQualifiedName = groupSymbols(symbols, symbol => symbol.qualifiedName);
   const byPath = groupSymbols(symbols, symbol => symbol.path);
   const byPathAndName = groupSymbols(symbols, symbol => `${symbol.path}\0${symbol.name}`);
+  const byLookupKey = groupSymbolLookupKeys(symbols);
   const packageSymbols = groupSymbols(
     symbols.filter(symbol => symbol.kind === 'package'),
     symbol => symbol.name,
@@ -421,96 +624,136 @@ export function createRepositoryFactResolver(
   return {
     resolve: facts => {
       const importsByPath = collectImportBindings(facts);
-      return facts.map(fileFacts => ({
-        ...fileFacts,
-        diagnostics: [
-          ...fileFacts.diagnostics,
-          ...fileFacts.symbols
-            .filter(symbol => symbol.kind === 'package' && (packageSymbols.get(symbol.name)?.length ?? 0) > 1)
-            .map(symbol => `${fileFacts.path}: duplicate workspace package name ${symbol.name}`),
-        ],
-        edges: fileFacts.edges.map(edge => {
-          if (edge.targetId) return edge;
-          const locallyBound = parseLocallyBoundTarget(edge.targetName);
-          if (locallyBound) {
-            return {
-              ...edge,
-              id: edgeId(
-                edge.sourceId,
-                edge.sourceName,
-                edge.relation,
-                undefined,
-                locallyBound,
-                edge.provenance,
-                edge.evidencePath,
-              ),
-              targetName: locallyBound,
-            };
-          }
-          const binding = parseImportBindingTarget(edge.targetName);
-          const resolved =
-            (edge.relation === 'imports' || edge.relation === 'reexports') && binding
-              ? resolveImportedSymbol(
+      return facts.map(fileFacts => {
+        const typedReferences = new Map(fileFacts.references?.map(reference => [reference.edgeId, reference]) ?? []);
+        return {
+          ...fileFacts,
+          diagnostics: [
+            ...fileFacts.diagnostics,
+            ...fileFacts.symbols
+              .filter(symbol => symbol.kind === 'package' && (packageSymbols.get(symbol.name)?.length ?? 0) > 1)
+              .map(symbol => `${fileFacts.path}: duplicate workspace package name ${symbol.name}`),
+          ],
+          edges: fileFacts.edges.map(edge => {
+            if (edge.targetId) return edge;
+            const typedReference = typedReferences.get(edge.id);
+            const locallyBound = parseLocallyBoundTarget(edge.targetName);
+            if (locallyBound) {
+              return {
+                ...edge,
+                id: edgeId(
+                  edge.sourceId,
+                  edge.sourceName,
+                  edge.relation,
+                  undefined,
+                  locallyBound,
+                  edge.provenance,
                   edge.evidencePath,
-                  binding,
-                  byPathAndName,
-                  factsByPath,
-                  existingPaths,
-                  packages,
-                  aliases,
-                  resolutionCache,
-                )
-              : edge.relation === 'imports' || edge.relation === 'reexports'
-                ? resolveModuleTarget(
+                ),
+                targetName: locallyBound,
+              };
+            }
+            const binding = parseImportBindingTarget(edge.targetName);
+            const resolved = typedReference
+              ? resolveTypedReference(typedReference, byLookupKey)
+              : (edge.relation === 'imports' || edge.relation === 'reexports') && binding
+                ? resolveImportedSymbol(
                     edge.evidencePath,
-                    edge.targetName,
-                    moduleSymbols,
+                    binding,
+                    byPathAndName,
+                    factsByPath,
                     existingPaths,
                     packages,
                     aliases,
                     resolutionCache,
                   )
-                : edge.relation === 'depends_on'
-                  ? uniqueSymbol(packageSymbols.get(edge.targetName))
-                  : edge.relation === 'documents' && edge.targetName.includes('/')
-                    ? byPath.get(edge.targetName)?.[0]
-                    : edge.relation === 'documents'
-                      ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
-                        uniqueSymbol(byName.get(lastName(edge.targetName))))
-                      : resolveSourceRelationshipTarget(
-                          edge,
-                          byPathAndName,
-                          importsByPath.get(edge.evidencePath),
-                          factsByPath,
-                          existingPaths,
-                          packages,
-                          aliases,
-                          resolutionCache,
-                        );
-          if (!resolved) return edge;
-          const provenance: CodeGraphProvenance =
-            edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
-          return {
-            ...edge,
-            confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : edge.confidence,
-            id: edgeId(
-              edge.sourceId,
-              edge.sourceName,
-              edge.relation,
-              resolved.id,
-              resolved.name,
+                : edge.relation === 'imports' || edge.relation === 'reexports'
+                  ? resolveModuleTarget(
+                      edge.evidencePath,
+                      edge.targetName,
+                      moduleSymbols,
+                      existingPaths,
+                      packages,
+                      aliases,
+                      resolutionCache,
+                    )
+                  : edge.relation === 'depends_on'
+                    ? uniqueSymbol(packageSymbols.get(edge.targetName))
+                    : edge.relation === 'documents' && edge.targetName.includes('/')
+                      ? byPath.get(edge.targetName)?.[0]
+                      : edge.relation === 'documents'
+                        ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
+                          uniqueSymbol(byName.get(lastName(edge.targetName))))
+                        : resolveSourceRelationshipTarget(
+                            edge,
+                            byPathAndName,
+                            importsByPath.get(edge.evidencePath),
+                            factsByPath,
+                            existingPaths,
+                            packages,
+                            aliases,
+                            resolutionCache,
+                          );
+            if (!resolved) return edge;
+            const provenance: CodeGraphProvenance =
+              edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
+            const relation =
+              edge.relation === 'extends' && ['interface', 'protocol'].includes(resolved.kind)
+                ? 'implements'
+                : edge.relation;
+            return {
+              ...edge,
+              confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : edge.confidence,
+              id: edgeId(
+                edge.sourceId,
+                edge.sourceName,
+                relation,
+                resolved.id,
+                resolved.name,
+                provenance,
+                edge.evidencePath,
+              ),
               provenance,
-              edge.evidencePath,
-            ),
-            provenance,
-            targetId: resolved.id,
-            targetName: resolved.name,
-          };
-        }),
-      }));
+              relation,
+              targetId: resolved.id,
+              targetName: resolved.name,
+            };
+          }),
+        };
+      });
     },
     symbols,
   };
+}
+
+function groupSymbolLookupKeys(symbols: readonly CodeGraphSymbol[]): ReadonlyMap<string, readonly CodeGraphSymbol[]> {
+  const output = new Map<string, CodeGraphSymbol[]>();
+  for (const symbol of symbols) {
+    for (const key of symbol.lookupKeys ?? []) {
+      const values = output.get(key);
+      if (values) values.push(symbol);
+      else output.set(key, [symbol]);
+    }
+  }
+  return output;
+}
+
+function resolveTypedReference(
+  reference: CodeGraphReference,
+  byLookupKey: ReadonlyMap<string, readonly CodeGraphSymbol[]>,
+): CodeGraphSymbol | undefined {
+  for (const tier of reference.lookupTiers) {
+    const candidates = new Map<string, CodeGraphSymbol>();
+    for (const key of tier) {
+      for (const symbol of byLookupKey.get(key) ?? []) {
+        if (reference.relation === 'overrides' && symbol.id === reference.sourceId) continue;
+        if (symbol.resolutionDomain === reference.resolutionDomain) candidates.set(symbol.id, symbol);
+      }
+    }
+    if (candidates.size === 1) return candidates.values().next().value;
+    if (candidates.size > 1) return undefined;
+  }
+  return undefined;
 }
 
 function uniqueSymbols(symbols: readonly CodeGraphSymbol[]): readonly CodeGraphSymbol[] {

@@ -1414,9 +1414,12 @@
               </div>
               <div>
                 <strong>Code search is separate.</strong> <code>inspect_code_graph</code> reads a Git-snapshot-aware
-                SQLite graph through query, explain, path, and Git-base impact operations;
-                <code>recall_context</code> stays focused on memories and seeded guidance. Cold large-monorepo builds
-                return phase and retry timing while indexing continues in the MCP session.
+                SQLite graph through query, explain, path, and Git-base impact operations. TypeScript remains
+                compiler-backed; bundled Java, Kotlin, and Swift WASM packs require no external toolchain. Nested and
+                integrated monorepo modules connect through declared dependencies, while graph vectors are built and
+                searched in bounded SQLite pages. <code>recall_context</code> stays focused on memories and seeded
+                guidance. Cold large-monorepo builds return phase and retry timing while indexing continues in the MCP
+                session.
               </div>
             </div>
           </div>
@@ -1560,7 +1563,8 @@
           <p class="lead">
             Memory recall does not ingest whole repos. Point it at a seed manifest of paths you actually want agents to
             recall — typically <code>AGENTS.md</code>, <code>CLAUDE.md</code>, repo docs, and
-            <code>SKILL.md</code> guidance. Current-source search uses the separate disposable native code graph.
+            <code>SKILL.md</code> guidance. Current-source search uses the separate disposable native code graph for
+            TypeScript/JavaScript, Java, Kotlin, and Swift.
           </p>
 
           <div class="grid grid-2" style="margin-top: 1.5rem">

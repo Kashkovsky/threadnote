@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "id": "polyglot-workspace",
+  "repositoryRoot": "repository",
+  "languages": ["java", "kotlin", "swift", "typescript"],
+  "expectedSymbols": [
+    {
+      "kind": "class",
+      "name": "Greeter",
+      "path": "shared/src/main/java/com/acme/Greeter.java"
+    },
+    {
+      "kind": "class",
+      "name": "KotlinApp",
+      "path": "app/src/main/kotlin/com/acme/KotlinApp.kt"
+    },
+    {
+      "kind": "function",
+      "name": "makeService",
+      "path": "Sources/SwiftCore/Service.swift"
+    },
+    {
+      "kind": "function",
+      "name": "swiftBoot",
+      "path": "Sources/SwiftApp/Main.swift"
+    },
+    {
+      "kind": "function",
+      "name": "typescriptHelper",
+      "path": "src/helper.ts"
+    },
+    {
+      "kind": "function",
+      "name": "typescriptBoot",
+      "path": "src/main.ts"
+    }
+  ],
+  "allowedAuthoritativeEdges": [
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "app/src/main/kotlin/com/acme/KotlinApp.kt",
+      "target": "Greeter"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "constructs",
+      "source": "start",
+      "target": "Greeter"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "swiftBoot",
+      "target": "makeService"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "src/main.ts",
+      "target": "src/helper.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "src/main.ts",
+      "target": "typescriptHelper"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "typescriptBoot",
+      "target": "typescriptHelper"
+    }
+  ],
+  "expectedEdges": [
+    {
+      "provenance": "resolved",
+      "relation": "constructs",
+      "source": "start",
+      "target": "Greeter"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "swiftBoot",
+      "target": "makeService"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "typescriptBoot",
+      "target": "typescriptHelper"
+    }
+  ],
+  "queries": [
+    {
+      "answerable": true,
+      "category": "definition",
+      "id": "java-greeter",
+      "operation": "query",
+      "query": "Greeter",
+      "relevantSymbols": ["Greeter\u0000shared/src/main/java/com/acme/Greeter.java"]
+    },
+    {
+      "answerable": true,
+      "category": "definition",
+      "id": "kotlin-app",
+      "operation": "query",
+      "query": "KotlinApp",
+      "relevantSymbols": ["KotlinApp\u0000app/src/main/kotlin/com/acme/KotlinApp.kt"]
+    },
+    {
+      "answerable": true,
+      "category": "impact",
+      "id": "swift-service-impact",
+      "operation": "impact",
+      "query": "makeService",
+      "relevantSymbols": ["swiftBoot\u0000Sources/SwiftApp/Main.swift"]
+    },
+    {
+      "answerable": true,
+      "category": "path",
+      "from": "typescriptBoot",
+      "id": "typescript-call-path",
+      "operation": "path",
+      "relevantSymbols": ["typescriptBoot\u0000src/main.ts", "typescriptHelper\u0000src/helper.ts"],
+      "to": "typescriptHelper"
+    },
+    {
+      "answerable": false,
+      "category": "no-answer",
+      "id": "polyglot-no-answer",
+      "operation": "query",
+      "query": "quantum settlement observatory",
+      "relevantSymbols": []
+    }
+  ],
+  "worktreeContracts": []
+}

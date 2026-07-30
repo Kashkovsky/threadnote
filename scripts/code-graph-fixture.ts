@@ -10,11 +10,14 @@ export interface PreparedCodeGraphFixture {
 export const GENERATED_VECTOR_CONTROL_PATH = 'docs/vector-semantic-control.md';
 export const VECTOR_SEMANTIC_CONTROL_QUERY = 'serialize concurrent tasks via mutual exclusion';
 
-export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(function* () {
+export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(function* (fixture = 'code-graph-v1') {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) {
+    return yield* Effect.fail(new Error(`Invalid code graph fixture name: ${fixture}.`));
+  }
   const source = yield* path.fromFileUrl(
-    new URL('../test/evaluation/fixtures/code-graph-v1/repository/', import.meta.url),
+    new URL(`../test/evaluation/fixtures/${fixture}/repository/`, import.meta.url),
   );
   const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-evaluation-'});
   const repository = path.join(root, 'repository');

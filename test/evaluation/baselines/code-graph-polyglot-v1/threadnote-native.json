@@ -1,0 +1,25 @@
+{
+  "createdAt": "2026-07-30T00:00:00.000Z",
+  "fixture": {
+    "hash": "e0a7c7446bcb91f9b244c0d4d49d44472fd4db2a58a6ce02a7292f18be5ed8b1",
+    "id": "polyglot-workspace",
+    "queries": 5,
+    "version": 1
+  },
+  "metrics": {
+    "answerableQueries": 4,
+    "authoritativeFalseEdgeRate": 0,
+    "edgeRecall": 1,
+    "meanReciprocalRank": 1,
+    "noAnswerPrecision": 1,
+    "noAnswerRecall": 1,
+    "queryCount": 5,
+    "symbolRecall": 1,
+    "worktreeLeakageRate": 0
+  },
+  "source": {
+    "name": "threadnote-native-code-graph",
+    "version": "4.0.0"
+  },
+  "version": 1
+}

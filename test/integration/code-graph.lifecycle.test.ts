@@ -223,7 +223,7 @@ describe('native code graph lifecycle', () => {
           'code-graph',
           'repositories',
           indexed.identity.checkoutId,
-          'graph-v2.sqlite',
+          'graph-v3.sqlite',
         );
         return yield* store.diagnose(database);
       }),
@@ -255,7 +255,7 @@ describe('native code graph lifecycle', () => {
           'code-graph',
           'repositories',
           first.identity.checkoutId,
-          'graph-v2.sqlite',
+          'graph-v3.sqlite',
         );
         return {first, forced, health: yield* store.diagnose(database), second};
       }),
@@ -278,7 +278,7 @@ describe('native code graph lifecycle', () => {
       'code-graph',
       'repositories',
       result.first.identity.checkoutId,
-      'graph-v2.sqlite',
+      'graph-v3.sqlite',
     );
     const audit = new Database(databasePath);
     try {
@@ -319,7 +319,7 @@ describe('native code graph lifecycle', () => {
           'code-graph',
           'repositories',
           result.first.identity.checkoutId,
-          'graph-v2.sqlite',
+          'graph-v3.sqlite',
         );
         return {clean, dirty, health: yield* store.diagnose(database)};
       }),
@@ -427,7 +427,7 @@ describe('native code graph lifecycle', () => {
         const store = yield* CodeGraphStore;
         const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
         const graph = yield* store.loadGraph(
-          join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v2.sqlite'),
+          join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite'),
           indexed.snapshot.id,
         );
         return {graph, indexed};
@@ -468,7 +468,7 @@ describe('native code graph lifecycle', () => {
       'code-graph',
       'repositories',
       first.identity.checkoutId,
-      'graph-v2.sqlite',
+      'graph-v3.sqlite',
     );
     const sourcePath = 'packages/search/src/vector-index.ts';
     const committedHash = snapshotFileHash(databasePath, first.snapshot.id, sourcePath);
@@ -527,7 +527,7 @@ describe('native code graph lifecycle', () => {
       'code-graph',
       'repositories',
       first.identity.checkoutId,
-      'graph-v2.sqlite',
+      'graph-v3.sqlite',
     );
     const database = new Database(databasePath);
     try {
@@ -677,7 +677,7 @@ describe('native code graph lifecycle', () => {
     );
     expect(first.snapshot.symbolCount).toBeGreaterThan(256);
     const database = new Database(
-      join(home, 'indexes', 'code-graph', 'repositories', first.identity.checkoutId, 'graph-v2.sqlite'),
+      join(home, 'indexes', 'code-graph', 'repositories', first.identity.checkoutId, 'graph-v3.sqlite'),
       {readonly: true},
     );
     try {
@@ -1097,7 +1097,7 @@ describe('native code graph lifecycle', () => {
       'code-graph',
       'repositories',
       indexed.identity.checkoutId,
-      'graph-v2.sqlite',
+      'graph-v3.sqlite',
     );
     const database = new Database(databasePath);
     try {
@@ -1398,7 +1398,7 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(exit._tag).toBe('Failure');
-    expect(existsSync(join(outside, 'graph-v2.sqlite'))).toBe(false);
+    expect(existsSync(join(outside, 'graph-v3.sqlite'))).toBe(false);
   });
 
   it('recovers a maintenance intent left by a crashed process', async () => {
@@ -1530,6 +1530,19 @@ describe('native code graph lifecycle', () => {
     );
     expect(before.readySnapshot).toBeUndefined();
     expect(existsSync(before.databasePath)).toBe(false);
+    expect(before.languagePacks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'typescript',
+          languages: expect.arrayContaining(['javascript', 'typescript']),
+          workspaceDetection: false,
+        }),
+        expect.objectContaining({id: 'manifests', workspaceDetection: true}),
+        expect.objectContaining({assetCount: 1, id: 'java', languages: ['java']}),
+        expect.objectContaining({assetCount: 1, id: 'kotlin', languages: ['kotlin']}),
+        expect.objectContaining({assetCount: 1, id: 'swift', languages: ['swift']}),
+      ]),
+    );
 
     const result = await runEffect(
       Effect.gen(function* () {

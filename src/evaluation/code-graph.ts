@@ -270,19 +270,23 @@ export function evaluateCodeGraphObservations(
   const answerableQueries = fixture.queries.filter(query => query.answerable).length;
   return {
     answerableQueries,
-    authoritativeFalseEdgeRate: ratio(falseAuthoritativeEdges, actualAuthoritative.length),
+    authoritativeFalseEdgeRate: failureRate(falseAuthoritativeEdges, actualAuthoritative.length),
     edgeRecall: ratio(edgeHits, expectedEdgeKeys.size),
     meanReciprocalRank: ratio(reciprocalRank, answerableQueries),
     noAnswerPrecision: ratio(trueNoAnswer, predictedNoAnswer),
     noAnswerRecall: ratio(trueNoAnswer, expectedNoAnswer),
     queryCount: fixture.queries.length,
     symbolRecall: ratio(hitSymbols, relevantSymbols),
-    worktreeLeakageRate: ratio(options.worktreeLeakageCount, options.worktreeObservationCount),
+    worktreeLeakageRate: failureRate(options.worktreeLeakageCount, options.worktreeObservationCount),
   };
 }
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 1 : numerator / denominator;
+}
+
+function failureRate(numerator: number, denominator: number): number {
+  return denominator === 0 ? 0 : numerator / denominator;
 }
 
 function matchesExpected(actual: string, expected: string): boolean {

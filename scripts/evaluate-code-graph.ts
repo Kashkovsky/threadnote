@@ -24,10 +24,10 @@ const evaluateNativeCodeGraph = Effect.scoped(
     const fs = yield* FileSystem.FileSystem;
     const options = parseArguments(yield* scriptArguments());
     const fixturePath = yield* path.fromFileUrl(
-      new URL('../test/evaluation/fixtures/code-graph-v1/fixture.json', import.meta.url),
+      new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
-    const prepared = yield* prepareCodeGraphFixture();
+    const prepared = yield* prepareCodeGraphFixture(options.fixture);
     const indexer = yield* CodeGraphIndexer;
     const query = yield* CodeGraphQueryService;
     const store = yield* CodeGraphStore;
@@ -191,18 +191,25 @@ function nativeGateFailures(metrics: CodeGraphEvaluationBaselineV1['metrics']): 
   ].filter(Boolean);
 }
 
-function parseArguments(args: readonly string[]): {readonly createdAt: string; readonly outputPath?: string} {
+function parseArguments(args: readonly string[]): {
+  readonly createdAt: string;
+  readonly fixture: string;
+  readonly outputPath?: string;
+} {
   let outputPath: string | undefined;
+  let fixture = 'code-graph-v1';
   let createdAt = process.env.SOURCE_DATE_EPOCH
     ? new Date(Number.parseInt(process.env.SOURCE_DATE_EPOCH, 10) * 1_000).toISOString()
     : new Date().toISOString();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--output') outputPath = required(args[++index], argument);
+    else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--created-at') createdAt = new Date(required(args[++index], argument)).toISOString();
     else throw new Error(`Unknown code graph evaluation option: ${argument}`);
   }
-  return {createdAt, outputPath};
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new Error(`Invalid code graph fixture name: ${fixture}.`);
+  return {createdAt, fixture, outputPath};
 }
 
 function required(value: string | undefined, option: string): string {

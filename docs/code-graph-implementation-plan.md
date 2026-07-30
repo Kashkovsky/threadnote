@@ -138,10 +138,10 @@ Each local Git checkout gets an isolated graph root shared by its linked worktre
     code-graph/
       repositories/
         <checkout-id>/
-          graph-v2.sqlite
+          graph-v3.sqlite
           vectors/
             <model-id>/
-              generations/
+              vectors-v2.sqlite
   locks/
     indexes/
       code-graph/
@@ -292,9 +292,10 @@ embedding similarity.
 - `node_statistics`: degree by relation, hub penalties, usage counts, and traversal weights.
 - `resource_code_links`: derived links from Threadnote resources/memories to snapshot symbols or paths, including
   evidence and confidence.
-- `vector_generations`: immutable sidecar identity, model/template versions, checksums, dimensions, counts, and build
-  status.
-- `snapshot_vector_generations`: transactionally associates a complete vector generation with one ready snapshot.
+- `vector_generations`: immutable generation identity, snapshot/model/template versions, dimensions, counts, and build
+  status in the per-model vector database.
+- `vector_pointers`: transactionally associates one complete generation with each active worktree.
+- `vectors`: normalized binary vectors keyed by generation and symbol identity, read and written in bounded pages.
 - `communities`: optional deterministic community membership and algorithm version.
 - `community_labels`: optional local generated label, model identity, input hash, and generation status.
 
@@ -459,8 +460,8 @@ command owns one subscription for the command lifetime. Neither is a daemon.
   freshness after acquiring the lock;
 - extraction checkpoints are keyed by content hash and extractor version;
 - graph snapshot activation is transactional;
-- an immutable vector sidecar is associated with a snapshot in a later transaction only after checksum verification;
-- an orphan sidecar is disposable, and a failed vector build leaves deterministic graph queries available;
+- an immutable vector generation is associated with a worktree in a later transaction only after every row is ready;
+- an orphan generation is disposable, and a failed vector build leaves deterministic graph queries available;
 - stale lock recovery reuses Threadnote's process identity and heartbeat rules;
 - interruption marks or removes only the incomplete build;
 - repair can discard incomplete derived state without asking to alter canonical data.

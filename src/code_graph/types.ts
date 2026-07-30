@@ -1,6 +1,6 @@
-export const CODE_GRAPH_SCHEMA_VERSION = 2 as const;
+export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_SET_VERSION = 'native-code-graph-5' as const;
+export const CODE_GRAPH_EXTRACTOR_SET_VERSION = 'native-code-graph-6' as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
 export type CodeGraphRelation =
@@ -54,16 +54,19 @@ export interface CodeGraphSpan {
 }
 
 export interface CodeGraphSymbol {
+  readonly arity?: number;
   readonly contentHash: string;
   readonly documentation?: string;
   readonly exported: boolean;
   readonly id: string;
   readonly kind: string;
   readonly language: string;
+  readonly lookupKeys?: readonly string[];
   readonly name: string;
   readonly packageName?: string;
   readonly path: string;
   readonly qualifiedName: string;
+  readonly resolutionDomain?: string;
   readonly signature?: string;
   readonly span: CodeGraphSpan;
 }
@@ -85,7 +88,24 @@ export interface CodeGraphFileFacts {
   readonly diagnostics: readonly string[];
   readonly edges: readonly CodeGraphEdge[];
   readonly path: string;
+  readonly references?: readonly CodeGraphReference[];
   readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export interface CodeGraphReference {
+  readonly aliasLookupKeys?: readonly string[];
+  readonly arity?: number;
+  readonly edgeId: string;
+  readonly evidencePath: string;
+  readonly evidenceSpan: CodeGraphSpan;
+  readonly exportedOnly?: boolean;
+  readonly lookupTiers: readonly (readonly string[])[];
+  readonly provenance: CodeGraphProvenance;
+  readonly relation: CodeGraphRelation;
+  readonly resolutionDomain: string;
+  readonly sourceId?: string;
+  readonly sourceName: string;
+  readonly targetName: string;
 }
 
 export interface CodeGraphSnapshot {
@@ -192,8 +212,22 @@ export interface CodeGraphQueryOptions {
 export interface CodeGraphStatus {
   readonly databasePath: string;
   readonly identity: RepositoryIdentity;
+  readonly languagePacks: readonly CodeGraphLanguagePackStatus[];
   readonly readySnapshot?: CodeGraphSnapshot;
   readonly stale: boolean;
+}
+
+export interface CodeGraphLanguagePackStatus {
+  readonly assetCount: number;
+  readonly capabilities: readonly string[];
+  readonly extractorVersion: string;
+  readonly id: string;
+  readonly languages: readonly string[];
+  readonly resolutionDomain: string;
+  readonly resolutionVersion: string;
+  readonly roles: readonly string[];
+  readonly version: string;
+  readonly workspaceDetection: boolean;
 }
 
 export class CodeGraphRepositoryError extends Error {

@@ -396,13 +396,76 @@ const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(fu
     !isJsonObject(metadata) ||
     metadata.version !== version ||
     metadata.executable !== executable ||
+    !isJsonObject(metadata.codeGraphAssets) ||
+    metadata.codeGraphAssets.manifest !== 'assets/code-graph/manifest.json' ||
+    metadata.codeGraphAssets.version !== 1 ||
     !(yield* fs.exists(path.join(releaseRoot, executable))) ||
     !(yield* fs.exists(path.join(releaseRoot, 'runtime', 'node-llama-cpp.js')))
   ) {
     return yield* Effect.fail(new Error(`Release artifact validation failed for Threadnote ${version}.`));
   }
+  yield* validateCodeGraphAssets(fs, path, releaseRoot);
   if (platform !== 'win32') {
     yield* fs.chmod(path.join(releaseRoot, executable), 0o755);
+  }
+});
+
+const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  releaseRoot: string,
+) {
+  const manifestPath = path.join(releaseRoot, 'assets', 'code-graph', 'manifest.json');
+  const content = yield* fs.readFileString(manifestPath);
+  const manifest = yield* Effect.try({
+    try: () => JSON.parse(content) as unknown,
+    catch: cause => new Error('Code graph asset manifest is invalid.', {cause}),
+  });
+  if (!isJsonObject(manifest) || manifest.version !== 1 || !isJsonObject(manifest.runtime)) {
+    return yield* Effect.fail(new Error('Code graph asset manifest is invalid.'));
+  }
+  const grammars = isJsonObject(manifest.grammars) ? manifest.grammars : {};
+  const expected = [
+    {
+      id: 'web-tree-sitter',
+      metadata: manifest.runtime,
+      path: 'runtime/web-tree-sitter.wasm',
+      runtime: true,
+    },
+    {id: 'java', metadata: grammars.java, path: 'grammars/java.wasm', runtime: false},
+    {id: 'kotlin', metadata: grammars.kotlin, path: 'grammars/kotlin.wasm', runtime: false},
+    {id: 'swift', metadata: grammars.swift, path: 'grammars/swift.wasm', runtime: false},
+  ] as const;
+  for (const asset of expected) {
+    if (
+      !isJsonObject(asset.metadata) ||
+      asset.metadata.path !== asset.path ||
+      typeof asset.metadata.version !== 'string' ||
+      typeof asset.metadata.source !== 'string' ||
+      !asset.metadata.source.startsWith('https://github.com/') ||
+      typeof asset.metadata.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(asset.metadata.sha256) ||
+      (asset.runtime
+        ? asset.metadata.id !== asset.id
+        : !Number.isInteger(asset.metadata.abi) || Number(asset.metadata.abi) <= 0)
+    ) {
+      return yield* Effect.fail(new Error(`Code graph asset metadata is invalid for ${asset.path}.`));
+    }
+    const assetPath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.path.split('/'));
+    if (!(yield* fs.exists(assetPath)) || (yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
+      return yield* Effect.fail(new Error(`Code graph asset checksum validation failed for ${asset.path}.`));
+    }
+  }
+  for (const license of [
+    'tree-sitter-java.LICENSE',
+    'tree-sitter-kotlin.LICENSE',
+    'tree-sitter-swift.LICENSE',
+    'web-tree-sitter.LICENSE',
+  ]) {
+    const licensePath = path.join(releaseRoot, 'assets', 'code-graph', 'licenses', license);
+    if (!(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
+      return yield* Effect.fail(new Error(`Code graph asset license is missing for ${license}.`));
+    }
   }
 });
 

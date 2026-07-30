@@ -13,6 +13,8 @@ import {CodeGraphIndexer} from '../code_graph/indexer.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphEmbeddingIndex} from '../code_graph/embedding.js';
 import {CodeGraphWatcher} from '../code_graph/watcher.js';
+import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
+import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 
 const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
@@ -25,11 +27,22 @@ const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 
 const localModelRuntimeLayer = LocalModelRuntime.nativeLayer.pipe(Layer.provideMerge(systemLayer));
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
+const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));
+const codeGraphLanguagePackLayer = CodeGraphLanguagePackRegistry.layer;
 const codeGraphEmbeddingLayer = CodeGraphEmbeddingIndex.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(localModelCatalogLayer, localModelRuntimeLayer, localModelStoreLayer)),
 );
 const codeGraphIndexerLayer = CodeGraphIndexer.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(codeGraphStoreLayer, codeGraphEmbeddingLayer, commandLayer, systemLayer)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      codeGraphStoreLayer,
+      codeGraphEmbeddingLayer,
+      codeGraphLanguagePackLayer,
+      commandLayer,
+      systemLayer,
+      treeSitterRuntimeLayer,
+    ),
+  ),
 );
 const codeGraphQueryLayer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
 const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));

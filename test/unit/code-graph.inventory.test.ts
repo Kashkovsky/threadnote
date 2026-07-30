@@ -53,4 +53,22 @@ describe('native code graph inventory policy', () => {
   it('does not reject eligible source paths based on individual file size', () => {
     expect(acceptsRepositoryPath('src/generated-but-tracked.ts')).toBe(true);
   });
+
+  it('accepts every bundled language and workspace manifest through the generated registry', () => {
+    for (const path of [
+      'src/service.ts',
+      'src/service.tsx',
+      'src/service.java',
+      'src/service.kt',
+      'Sources/App/Service.swift',
+      'pom.xml',
+      'settings.gradle.kts',
+      'apps/mobile/build.gradle',
+      'Package.swift',
+      'App.xcodeproj/project.pbxproj',
+    ]) {
+      expect(acceptsRepositoryPath(path), path).toBe(true);
+    }
+    expect(acceptsRepositoryPath('src/readme.txt')).toBe(false);
+  });
 });

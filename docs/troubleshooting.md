@@ -138,6 +138,27 @@ threadnote index verify
 threadnote index rebuild
 ```
 
+## Code graph indexing or a language pack fails
+
+The native graph supports TypeScript/JavaScript, Java, Kotlin, and Swift without invoking repository build tools.
+TypeScript stays compiler-backed; the standalone archive bundles checksum-verified Java, Kotlin, and Swift grammar
+WASM. Check the disposable graph and rebuild it with:
+
+```sh
+threadnote graph status
+threadnote doctor --dry-run
+threadnote graph index --full
+```
+
+A large cold MCP inspection can return `state: "indexing"` with phase and retry timing. Retry the same
+`inspect_code_graph` call; there is no repository-size admission limit and no daemon to start. Nested Maven, Gradle,
+SwiftPM, and Xcode scopes are detected statically. Dynamic build logic and ambiguous dependencies remain syntactic
+rather than being guessed.
+
+If doctor reports a missing or mismatched grammar asset, reinstall or update the standalone archive for the current
+platform. Threadnote never downloads parser grammars at runtime. Repair may discard and rebuild graph SQLite files, but
+it does not modify the repository or canonical memories.
+
 ## MCP does not appear in the agent
 
 ```sh

@@ -236,8 +236,9 @@ describe('built self-contained distribution', () => {
     const repositories = await readdir(repositoryIndexes);
     expect(repositories).toHaveLength(1);
     const files = await readdir(join(repositoryIndexes, repositories[0]!), {recursive: true});
-    expect(files).toContain('graph-v2.sqlite');
-    expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors\.bin$/)]));
+    expect(files).toContain('graph-v3.sqlite');
+    expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors-v2\.sqlite$/)]));
+    expect(files).not.toEqual(expect.arrayContaining([expect.stringMatching(/vectors\.bin$/)]));
 
     const exportPath = join(temporaryRoot, 'native-code-graph.json');
     expect(

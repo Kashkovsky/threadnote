@@ -32,11 +32,19 @@ replace the latest ready snapshot, and bounded reader leases keep selected snaps
 behind the writer lock. Dirty activation stages complete current rows in bounded batches and derives overrides and
 deletions with indexed SQL joins, so a one-file edit does not issue one comparison query per symbol or edge. A short
 process-aware registration lease plus maintenance intent prevents repair or purge from racing repository-root creation
-without holding a reader marker while an index request waits for the repository lock. Vector generations are optional,
-immutable, checksummed derived data associated with a ready snapshot only after verification; verified decoded
-generations are held in a small process-local cache and vector failure leaves exact and lexical graph search available.
-Vector projection includes every eligible high-value symbol and is processed in fixed-size embedding batches. It is
-scale-gated with the pinned production embedding model and a lexical-disjoint semantic positive control.
+without holding a reader marker while an index request waits for the repository lock. Vector generations are optional
+derived data associated with a ready snapshot only after verification. A per-model SQLite database pages candidate
+selection, fingerprint reuse, embedding writes, exact scans, and bounded top-k selection; a transaction switches each
+worktree pointer only after the complete generation is ready. Vector failure leaves exact and lexical graph search
+available. Vector projection includes every eligible high-value symbol and is processed in fixed-size embedding
+batches. It is scale-gated with the pinned production embedding model and a lexical-disjoint semantic positive control.
+
+Language support is provided through a generated first-party pack catalog. TypeScript/JavaScript preserves its pinned
+compiler-backed extractor. Java, Kotlin, and Swift use bundled Tree-sitter WASM grammars whose source revision, ABI,
+version, checksum, and license are verified in source, standalone packaging, and update validation. Packs emit a
+language-neutral declaration/reference representation. Maven, Gradle, SwiftPM, Xcode, and existing package metadata
+feed a static workspace model; repository build logic is never executed. Java and Kotlin share a JVM resolution
+domain, while nested/integrated projects connect only through unique declared dependencies.
 
 Every relationship records evidence and exactly one authority tier:
 
@@ -77,10 +85,11 @@ export, purge, doctor, and repair.
 
 ## Evaluation contract
 
-The reviewed `code-graph-v1` fixture and compact baselines are release inputs. Global and per-category quality,
-no-answer behavior, authoritative false-edge rate, worktree/commit/repository isolation, interruption safety, and
-existing recall-v2 metrics are cumulative gates. Performance budgets cover cold index, one-file incremental update,
-hot query, dirty overlay, peak RSS, and disk at reviewed scale points.
+The reviewed `code-graph-v1` TypeScript fixture and `code-graph-polyglot-v1` Java/Kotlin/Swift/TypeScript fixture and
+compact baselines are release inputs. Global and per-category quality, no-answer behavior, authoritative false-edge
+rate, worktree/commit/repository isolation, interruption safety, and existing recall-v2 metrics are cumulative gates.
+Performance budgets cover cold index, one-file incremental update, hot query, dirty overlay, peak RSS, and disk at
+reviewed scale points.
 
 Graphify is an external Phase 0 comparison only. Its output may be summarized in a checked baseline, but Threadnote
 production, tests, install, update, repair, and release artifacts must not invoke or contain Graphify or Python.
@@ -90,6 +99,7 @@ production, tests, install, update, repair, and release artifacts must not invok
 - Worktrees share immutable facts without copying mutable graph directories.
 - Git object identity, not checkout location or file timestamps, defines committed freshness.
 - SQLite schema changes rebuild derived data rather than migrate canonical content.
-- TypeScript/JavaScript and manifest support can ship honestly before full polyglot semantics.
+- TypeScript/JavaScript remains compiler-backed while portable structural packs extend coverage without external
+  toolchains.
 - Exact/lexical graph retrieval remains deterministic when models are unavailable.
 - A graph can be purged or disabled without changing memories, resources, Git repositories, or model files.

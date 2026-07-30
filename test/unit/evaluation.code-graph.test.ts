@@ -12,6 +12,8 @@ import {
 
 const FIXTURE_ROOT = 'test/evaluation/fixtures/code-graph-v1';
 const BASELINE_ROOT = 'test/evaluation/baselines/code-graph-v1';
+const POLYGLOT_FIXTURE_ROOT = 'test/evaluation/fixtures/code-graph-polyglot-v1';
+const POLYGLOT_BASELINE_ROOT = 'test/evaluation/baselines/code-graph-polyglot-v1';
 
 describe('code graph evaluation contract', () => {
   const fixture = parseCodeGraphEvaluationFixtureV1(readJson(join(FIXTURE_ROOT, 'fixture.json')));
@@ -109,6 +111,28 @@ describe('code graph evaluation contract', () => {
     expect(metrics.authoritativeFalseEdgeRate).toBe(1 / (edgeKeys.length + 1));
   });
 
+  it('treats zero observed failures as a zero failure rate instead of a perfect-ratio sentinel', () => {
+    const edgeKeys = fixture.expectedEdges.map(codeGraphEdgeKey);
+    const metrics = evaluateCodeGraphObservations(
+      fixture,
+      fixture.queries.map(query => ({
+        answerable: query.answerable,
+        edgeKeys,
+        pathHits: query.relevantPaths ?? [],
+        queryId: query.id,
+        symbolHits: query.relevantSymbols,
+      })),
+      {
+        actualAuthoritativeEdges: [],
+        worktreeLeakageCount: 0,
+        worktreeObservationCount: 0,
+      },
+    );
+
+    expect(metrics.authoritativeFalseEdgeRate).toBe(0);
+    expect(metrics.worktreeLeakageRate).toBe(0);
+  });
+
   it('validates compact frozen Graphify, no-graph, and native baselines against the fixture hash', () => {
     const hash = codeGraphEvaluationFixtureHash(fixture);
     const graphify = parseCodeGraphEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'graphify-0.9.29.json')));
@@ -192,6 +216,40 @@ describe('code graph evaluation contract', () => {
         expect(testCase.artifact.metadata.scaleSymbols).toBe(testCase.scale);
       }
     }
+  });
+
+  it('stores a passing Java, Kotlin, Swift, and compiler-backed TypeScript baseline and performance gate', () => {
+    const polyglotFixture = parseCodeGraphEvaluationFixtureV1(readJson(join(POLYGLOT_FIXTURE_ROOT, 'fixture.json')));
+    const baseline = parseCodeGraphEvaluationBaselineV1(
+      readJson(join(POLYGLOT_BASELINE_ROOT, 'threadnote-native.json')),
+    );
+    const artifact = parseBenchmarkArtifactV1(readJson(join(POLYGLOT_BASELINE_ROOT, 'performance-development.json')));
+    const budgets = readJson(join(POLYGLOT_BASELINE_ROOT, 'budgets.json')) as {
+      readonly developmentPerformance: PerformanceBudget;
+      readonly fixture: {readonly hash: string; readonly id: string};
+    };
+    const hash = codeGraphEvaluationFixtureHash(polyglotFixture);
+
+    expect(polyglotFixture.languages).toEqual(['java', 'kotlin', 'swift', 'typescript']);
+    expect(baseline.fixture).toEqual({
+      hash,
+      id: polyglotFixture.id,
+      queries: polyglotFixture.queries.length,
+      version: polyglotFixture.version,
+    });
+    expect(baseline.metrics).toMatchObject({
+      authoritativeFalseEdgeRate: 0,
+      edgeRecall: 1,
+      meanReciprocalRank: 1,
+      noAnswerPrecision: 1,
+      noAnswerRecall: 1,
+      symbolRecall: 1,
+      worktreeLeakageRate: 0,
+    });
+    expect(budgets.fixture).toEqual({hash, id: polyglotFixture.id});
+    expect(artifact.suite).toBe('code-graph-polyglot-v1');
+    expect(artifact.environment.fixtureHash).toBe(hash);
+    expectBenchmarkWithinBudget(artifact, budgets.developmentPerformance);
   });
 });
 
