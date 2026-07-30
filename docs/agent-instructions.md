@@ -8,11 +8,13 @@ At the start of a non-trivial task, call `recall_context` with the project and a
 checks, blockers, and next steps with `kind: handoff`. Use stable `project` and `topic` identities, and update an
 existing memory with `replaceUri` instead of creating timestamped duplicates.
 
-Use `inspect_code_graph` separately for current source: `query` finds definitions and concepts, `explain` inspects one
-symbol, `path` connects two symbols, and `impact` traces reverse dependencies from a query or Git `base`. Memory recall
-answers what was learned or decided; code-graph search answers what the current Git snapshot and worktree contain. Call
-both when a task needs historical context and present code evidence, but do not treat one as a fallback answer from the
-other.
+For non-trivial investigation of existing source, use `inspect_code_graph` before broad `rg` or grep searches.
+`query` finds definitions and concepts, `explain` inspects one symbol, `path` connects two symbols, and `impact` traces
+reverse dependencies from a query or Git `base`. Use text search afterward for exact literals, unsupported files, or
+verification. If graph search is unavailable or fails, report the issue and use text search as the fallback; do not
+silently skip graph search. Memory recall answers what was learned or decided; code-graph search answers what the
+current Git snapshot and worktree contain. Call both when a task needs historical context and present code evidence,
+but do not treat one as a fallback answer from the other.
 
 At closeout, store normal durable feature knowledge and handoffs directly without asking. Use
 `review_session_context` only for additional session-extracted candidates, and apply those only after explicit user

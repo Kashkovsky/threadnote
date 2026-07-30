@@ -90,7 +90,7 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async client => {
         const instructions = client.getInstructions() ?? '';
-        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(512);
+        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(640);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('durable');
@@ -98,6 +98,8 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('directly');
         expect(instructions).toContain('additional candidates');
         expect(instructions).toContain('Do not store');
+        expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
+        expect(instructions).toContain('exact literals, unsupported files, verification, or graph failure');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -175,6 +177,8 @@ describe('Threadnote MCP toolsets', () => {
           idempotentHint: true,
           readOnlyHint: false,
         });
+        expect(graphTool?.description).toContain('use this before broad rg/grep');
+        expect(graphTool?.description).toContain('exact literals, unsupported files, verification, or fallback');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {

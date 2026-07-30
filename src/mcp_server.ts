@@ -215,7 +215,7 @@ export const mcpServerEffect = Effect.gen(function* () {
       });
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
-        'For non-trivial work call `recall_context` with repo and absolute `callerCwd`; read `threadnote://` pointers. Inspect source via `inspect_code_graph`. Write durable knowledge and handoffs directly via `remember_context`. Use `review_session_context` only for additional candidates; apply after approval. Keep stable project/topic; replace duplicates. Do not store secrets, customer data, or raw logs. Confirm `share_publish`; never publish handoffs/preferences. Preview `obsidian_publish`; use selected URIs.';
+        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. For non-trivial source investigation call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals, unsupported files, verification, or graph failure. Write durable knowledge and handoffs directly; keep stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -727,7 +727,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect Threadnote’s local, snapshot-aware native code graph. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
+        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, or fallback. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance.',
       inputSchema: {
         base: McpInput.string('Git base ref for operation=impact when query is omitted; defaults to HEAD~1'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
