@@ -3,6 +3,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {captureConsole} from '../../src/effect/console.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runExportPack, runForget, runImportPack, runList, runRead, runRecall, runRemember} from '../../src/memory.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
@@ -77,6 +78,151 @@ describe('native memory workflow', () => {
             ),
           ),
         ).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('uses the SQLite exact index for a production no-hit recall instead of canonical grep scans', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-no-hit-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const memoryRoot = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        yield* fs.makeDirectory(memoryRoot, {recursive: true});
+        yield* Effect.forEach(
+          Array.from({length: 100}, (_unused, index) => index),
+          index =>
+            fs.writeFileString(
+              path.join(memoryRoot, `memory-${index}.md`),
+              `# Memory ${index}\n\nA deterministic unrelated corpus entry ${index}.`,
+            ),
+          {concurrency: 16, discard: true},
+        );
+        yield* loadRecallIndex(config, {includeInactive: false, query: 'deterministic'});
+
+        const store = yield* ResourceStore;
+        let grepManyCalls = 0;
+        const instrumentedStore = ResourceStore.of({
+          ...store,
+          grepMany: () =>
+            Effect.sync(() => {
+              grepManyCalls += 1;
+              return [];
+            }),
+        });
+        yield* captureConsole(
+          runRecall(config, {
+            inferScope: false,
+            query: 'NOHIT-908172635',
+          }),
+        ).pipe(Effect.provideService(ResourceStore, instrumentedStore));
+
+        expect(grepManyCalls).toBe(0);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('does not advertise dangling referenced-context pointers', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-references-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const memoryRoot = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/reference-source.md';
+        const existingUri = 'threadnote://user/tester/memories/durable/projects/threadnote/existing-target.md';
+        const missingUri = 'threadnote://user/tester/memories/durable/projects/threadnote/missing-target.md';
+        yield* fs.makeDirectory(memoryRoot, {recursive: true});
+        yield* fs.writeFileString(
+          path.join(memoryRoot, 'reference-source.md'),
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: reference-source',
+            'source_agent_client: test',
+            'timestamp: 2026-07-30T00:00:00.000Z',
+            `references: ${existingUri}`,
+            `references: ${missingUri}`,
+            '',
+            '# Reference source',
+            '',
+            'DANGLING-REFERENCE-908172635 belongs only to the surfaced source.',
+          ].join('\n'),
+        );
+        yield* fs.writeFileString(
+          path.join(memoryRoot, 'existing-target.md'),
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: existing-target',
+            'source_agent_client: test',
+            'timestamp: 2026-07-30T00:00:00.000Z',
+            '',
+            '# Existing target',
+            '',
+            'Readable prior design context.',
+          ].join('\n'),
+        );
+        yield* loadRecallIndex(config, {
+          forceRefresh: true,
+          includeInactive: false,
+          query: 'DANGLING-REFERENCE-908172635',
+        });
+
+        const recalled = yield* captureConsole(
+          runRecall(config, {
+            inferScope: false,
+            query: 'DANGLING-REFERENCE-908172635',
+            threshold: '0.1',
+          }),
+        );
+
+        expect(recalled.output).toContain(sourceUri);
+        expect(recalled.output).toContain(existingUri);
+        expect(recalled.output).not.toContain(missingUri);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

@@ -26,8 +26,18 @@ npm run eval:recall:models -- \
   --fail-on-regression
 ```
 
-The checked-in `benchmarks/darwin-arm64-m1-max/recall-index-sqlite-10000.json` run records the normalized SQLite
-implementation on the same hardware class as the 3.0.3 indexed-recall baseline. All four scenarios pass their release
-budgets; incremental-update p95 improves from 903.03 ms to 424.45 ms and source-validation p95 improves from 841.59 ms
-to 417.63 ms. Hot-query p95 is 74.79 ms versus the older 10.22 ms and remains below the 150 ms release budget; the
-tradeoff removes whole-file JSON decode and rewrite behavior at production corpus sizes.
+The checked-in `benchmarks/darwin-arm64-m1-max/recall-index-sqlite-10000.json` run records lexical schema v3 on the same
+hardware class as the 3.0.3 indexed-recall baseline. Incremental-update p95 is 229.81 ms, source-validation p95 is
+256.97 ms, hot-query p95 is 48.42 ms, exact-substring p95 is 3.56 ms, and exact-no-hit p95 is 3.22 ms. Every scenario
+passes its release budget without rereading the canonical corpus for exact matching.
+
+`recall-vector-storage-sqlite-v2.json` records the content-addressed paged vector store at 10k and 50k documents. At
+50k, semantic query p95 is 195.38 ms, a one-document update reuses 49,999 vectors and grows the database by 4 KiB, and
+initial construction peaks at 401.6 MB. The retired packed sidecar needed 3.35 s for a cold decode/search and peaked at
+1.15 GB
+during construction. The SQLite design intentionally accepts a slower initial build and 52.6% more derived disk space
+for bounded memory, atomic availability, and fast incremental/cold-query behavior.
+
+`code-graph-performance-audit-2026-07-30.json` preserves the matched 10k and 100k graph runs before and after the
+set-based activation/resolution work. At 100k symbols, cold indexing falls from 133.36 s to 36.29 s and a one-file
+incremental update falls from 127.70 s to 24.99 s.

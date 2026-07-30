@@ -7,6 +7,20 @@ export const THREADNOTE_STORAGE_LAYOUT_VERSION = 2 as const;
 export const LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION = 1 as const;
 export const LEGACY_THREADNOTE_DATA_DIRECTORY = 'viking';
 
+export interface ThreadnoteStorageLayoutReceipt {
+  readonly createdBy: 'threadnote';
+  readonly version: typeof THREADNOTE_STORAGE_LAYOUT_VERSION;
+}
+
+export function isThreadnoteStorageLayoutReceipt(value: unknown): value is ThreadnoteStorageLayoutReceipt {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Partial<ThreadnoteStorageLayoutReceipt>).createdBy === 'threadnote' &&
+    (value as Partial<ThreadnoteStorageLayoutReceipt>).version === THREADNOTE_STORAGE_LAYOUT_VERSION
+  );
+}
+
 export interface ThreadnoteStorageLayout {
   readonly accountRoot: string;
   readonly cacheRoot: string;

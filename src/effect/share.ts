@@ -52,6 +52,8 @@ import type {
 } from '../types.js';
 
 const SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS = 250;
+const SHARED_REPOSITORY_READ_CONTENTION_WARNING =
+  'Shared repository auto-sync was skipped because another Threadnote process held the repository lock for more than 250 ms; this read used the local snapshot.';
 
 export const runShareInit = (config: ShareRuntime, remoteUrl: string, options: ShareInitOptions) =>
   withSharedRepositoryLock(config, runShareInitEffect(config, remoteUrl, options));
@@ -77,7 +79,10 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRe
     waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
   }).pipe(
     Effect.catchIf(isFileLockTimeout, () =>
-      Effect.succeed({syncedTeams: [] as readonly string[], warnings: [] as readonly string[]}),
+      Effect.succeed({
+        syncedTeams: [] as readonly string[],
+        warnings: [SHARED_REPOSITORY_READ_CONTENTION_WARNING] as readonly string[],
+      }),
     ),
   );
 });

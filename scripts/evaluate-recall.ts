@@ -2,7 +2,12 @@ import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Console, Effect, FileSystem, Option, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
-import {clearRecallIndexMemoryCache, expireRecallIndexValidation, loadRecallIndex} from '../src/recall/index.js';
+import {
+  clearRecallIndexMemoryCache,
+  expireRecallIndexValidation,
+  loadRecallExactMatches,
+  loadRecallIndex,
+} from '../src/recall/index.js';
 import {prepareRecallSections} from '../src/recall/runtime.js';
 
 const FIXTURE_PATH = 'test/evaluation/fixtures/recall-v1/fixture.json';
@@ -13,10 +18,12 @@ const HOT_QUERY_SAMPLE_COUNT = 25;
 const COLD_DECODE_SAMPLE_COUNT = 5;
 const VALIDATION_SAMPLE_COUNT = 3;
 const INCREMENTAL_UPDATE_SAMPLE_COUNT = 40;
+const EXACT_SEARCH_SAMPLE_COUNT = 25;
 const HOT_QUERY_P95_LIMIT_MILLISECONDS = 150;
 const COLD_DECODE_P95_LIMIT_MILLISECONDS = 1_000;
 const VALIDATION_P95_LIMIT_MILLISECONDS = 2_000;
 const INCREMENTAL_UPDATE_P95_LIMIT_MILLISECONDS = 2_000;
+const EXACT_SEARCH_P95_LIMIT_MILLISECONDS = 150;
 const PRODUCTION_BENCHMARK_WRITE_CONCURRENCY = 64;
 const PRODUCTION_BENCHMARK_QUERY = 'benchmark-anchor-9999';
 const PRODUCTION_BENCHMARK_BASE_TIMESTAMP_MILLISECONDS = Date.UTC(2026, 0, 1);
@@ -182,11 +189,40 @@ const runProductionBenchmark = Effect.scoped(
         };
       });
     const hotQuery = yield* measure(HOT_QUERY_SAMPLE_COUNT, HOT_QUERY_P95_LIMIT_MILLISECONDS, () => Effect.void);
+    const measureExactSearch = (term: string, expected: 'hit' | 'no-hit') =>
+      Effect.gen(function* () {
+        const durations: number[] = [];
+        for (let sample = 0; sample < EXACT_SEARCH_SAMPLE_COUNT; sample += 1) {
+          const startedAt = yield* Clock.currentTimeNanos;
+          const matches = yield* loadRecallExactMatches(config, {
+            includeInactive: false,
+            terms: [term],
+            uriScopes: ['threadnote://resources/repos/threadnote'],
+          });
+          const finishedAt = yield* Clock.currentTimeNanos;
+          const found = matches.some(match => match.uri === targetUri);
+          if ((expected === 'hit' && !found) || (expected === 'no-hit' && matches.length > 0)) {
+            return yield* Effect.fail(
+              new Error(`Production exact-search benchmark produced an unexpected ${expected}.`),
+            );
+          }
+          durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
+        }
+        const sorted = durations.sort((left, right) => left - right);
+        return {
+          p50Milliseconds: percentile(sorted, 0.5),
+          p95LimitMilliseconds: EXACT_SEARCH_P95_LIMIT_MILLISECONDS,
+          p95Milliseconds: percentile(sorted, 0.95),
+          samples: EXACT_SEARCH_SAMPLE_COUNT,
+        };
+      });
+    const exactSubstring = yield* measureExactSearch('anchor-9999', 'hit');
+    const exactNoHit = yield* measureExactSearch('no-hit-anchor-908172635', 'no-hit');
     const coldDecode = yield* measure(COLD_DECODE_SAMPLE_COUNT, COLD_DECODE_P95_LIMIT_MILLISECONDS, () =>
       clearRecallIndexMemoryCache(),
     );
     const sourceValidation = yield* measure(VALIDATION_SAMPLE_COUNT, VALIDATION_P95_LIMIT_MILLISECONDS, () =>
-      expireRecallIndexValidation(agentContextHome, false),
+      expireRecallIndexValidation(agentContextHome, false, []),
     );
     const incrementalUpdate = yield* measure(
       INCREMENTAL_UPDATE_SAMPLE_COUNT,
@@ -204,7 +240,7 @@ const runProductionBenchmark = Effect.scoped(
             fs.utimes(targetRepoPath, timestamp, timestamp),
           ]);
           yield* writeSeedState;
-          yield* expireRecallIndexValidation(agentContextHome, false);
+          yield* expireRecallIndexValidation(agentContextHome, false, [targetUri]);
         }),
       sample => prepareForQuery(`benchmark-update-${String(sample).padStart(3, '0')}`),
     );
@@ -218,6 +254,8 @@ const runProductionBenchmark = Effect.scoped(
       documents: PRODUCTION_BENCHMARK_DOCUMENT_COUNT,
       scenarios: {
         coldDecode,
+        exactNoHit,
+        exactSubstring,
         hotQuery,
         incrementalUpdate,
         sourceValidation,

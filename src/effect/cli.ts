@@ -527,7 +527,7 @@ const indexVerify = Command.make(
   'verify',
   {model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model')},
   options => withRuntimeEffect(config => runIndexVerify(config, options)),
-).pipe(Command.withDescription('Verify the selected vector sidecar and generation pointer'));
+).pipe(Command.withDescription('Verify the selected SQLite vector index and active mapping'));
 
 const indexPurge = Command.make(
   'purge',

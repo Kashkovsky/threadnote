@@ -218,6 +218,34 @@ describe('code graph evaluation contract', () => {
     }
   });
 
+  it('keeps lexical scale incremental budgets below the known minute-scale regression with runner headroom', () => {
+    const budgets = readJson(join(BASELINE_ROOT, 'budgets.json')) as {
+      readonly scalePerformance: Readonly<Record<string, PerformanceBudget>>;
+    };
+    const cases = [
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-10000-development.json'))),
+        maximum: 15_000,
+        scale: '10000',
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-100000-development.json'))),
+        maximum: 60_000,
+        scale: '100000',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const budget = budgets.scalePerformance[testCase.scale]!;
+      const baseline = testCase.artifact.measurements.find(
+        measurement => measurement.name === 'one-file-incremental-index',
+      )!.p95;
+      expect(budget.oneFileIncrementalP95MillisecondsMaximum).toBe(testCase.maximum);
+      expect(budget.oneFileIncrementalP95MillisecondsMaximum).toBeLessThan(128_000);
+      expect(budget.oneFileIncrementalP95MillisecondsMaximum).toBeGreaterThanOrEqual(baseline * 5);
+    }
+  });
+
   it('stores a passing Java, Kotlin, Swift, and compiler-backed TypeScript baseline and performance gate', () => {
     const polyglotFixture = parseCodeGraphEvaluationFixtureV1(readJson(join(POLYGLOT_FIXTURE_ROOT, 'fixture.json')));
     const baseline = parseCodeGraphEvaluationBaselineV1(

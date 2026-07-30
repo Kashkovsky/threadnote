@@ -28,7 +28,7 @@ flowchart TD
     Runtime --> CodeGraph["native code graph"]
     Runtime --> Models["LocalModelRuntime<br/>node-llama-cpp"]
     Recall --> Lexical["SQLite lexical index"]
-    Recall --> Vectors["packed vector generations"]
+    Recall --> Vectors["paged SQLite vector index"]
     Models --> Vectors
     CodeGraph --> GraphSqlite["per-repository SQLite snapshots"]
     CodeGraph --> GraphVectors["paged code-symbol vector SQLite"]
@@ -45,8 +45,8 @@ flowchart TD
 | -------------------------------------- | -------------------------------------------------------------------------------- | ----------------------- |
 | `data/<account>/`                      | Canonical resources, personal memories, and ingested shared memories             | Authoritative           |
 | `models/`                              | Verified, immutable GGUF model files and role selection                          | Re-downloadable state   |
-| `indexes/lexical/active-v2.sqlite`     | Normalized document metadata, terms, postings, and corpus statistics             | Derived and disposable  |
-| `indexes/vectors/<model>/`             | Checksummed active pointer plus immutable packed vector generations              | Derived and disposable  |
+| `indexes/lexical/active-v3.sqlite`     | Normalized metadata, postings, statistics, and trigram exact search              | Derived and disposable  |
+| `indexes/vectors/<model>/`             | Paged content-addressed Float32 vectors and transactional active metadata        | Derived and disposable  |
 | `indexes/code-graph/repositories/`     | Git-snapshot-aware source symbols, relationships, lexical terms, and vectors     | Derived and disposable  |
 | `share/`                               | Team configuration and isolated Git worktrees/gitdirs                            | Operational integration |
 | `migration/`, `locks/`, `logs/`, `tmp` | Receipts, bounded cross-process coordination, diagnostics, and temporary staging | Operational state       |
@@ -58,8 +58,8 @@ or rebuilt without migrating canonical content.
 
 1. Share repositories auto-sync only when their worktrees are clean.
 2. The SQLite index returns bounded lexical candidates and corpus statistics without loading a monolithic JSON cache.
-3. The automatically installed BGE Small model embeds the query in process. Exact cosine search reads the active
-   packed vector generation.
+3. The automatically installed BGE Small model embeds the query in process. Exact cosine search pages the active
+   SQLite vector rows without decoding or caching the corpus as a JavaScript array.
 4. The hybrid ranker combines lexical, exact-term, field, semantic, scope, lifecycle, authority, time, graph, feedback,
    and—only when explicitly selected—reranker signals.
 5. Confidence and no-answer gates prevent weak semantic-only matches from becoming answers.

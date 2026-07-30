@@ -1,0 +1,95 @@
+{
+  "createdAt": "2026-07-30T19:16:30Z",
+  "environment": {
+    "architecture": "arm64",
+    "bun": "1.3.14",
+    "commit": "bc053331d31790c8ed939ba0e995f66bb8083eef",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "memoryBytes": 68719476736,
+    "operatingSystem": "Darwin 27.0.0"
+  },
+  "legacyPackedSidecar": {
+    "10000": {
+      "buildMilliseconds": 730.4,
+      "buildPeakRssBytes": 314245120,
+      "coldDecodeAndSearchMilliseconds": 690.65,
+      "fileBytes": 16427986,
+      "queryPeakRssBytes": 158121984
+    },
+    "50000": {
+      "buildMilliseconds": 3571.99,
+      "buildPeakRssBytes": 1148403712,
+      "coldDecodeAndSearchMilliseconds": 3351.19,
+      "fileBytes": 82227986,
+      "queryPeakRssBytes": 416497664
+    }
+  },
+  "scales": {
+    "10000": {
+      "database": {
+        "bytesAfterIncremental": 25108480,
+        "bytesAfterInitial": 25104384,
+        "chunkMappings": 10000,
+        "generations": 1,
+        "incrementalBytes": 4096,
+        "vectorValues": 10000
+      },
+      "incrementalBuild": {
+        "embeddedChunks": 1,
+        "milliseconds": 436.69475,
+        "peakRssBytes": 257835008,
+        "reusedChunks": 9999
+      },
+      "initialBuild": {
+        "embeddedChunks": 10000,
+        "milliseconds": 1594.060833,
+        "peakRssBytes": 237469696
+      },
+      "semanticQuery": {
+        "p50Milliseconds": 38.980167,
+        "p95Milliseconds": 42.46975,
+        "peakRssBytes": 239828992,
+        "resultCount": 25,
+        "rssDeltaBytes": 14483456,
+        "samples": 5
+      }
+    },
+    "50000": {
+      "database": {
+        "bytesAfterIncremental": 125472768,
+        "bytesAfterInitial": 125468672,
+        "chunkMappings": 50000,
+        "generations": 1,
+        "incrementalBytes": 4096,
+        "vectorValues": 50000
+      },
+      "incrementalBuild": {
+        "embeddedChunks": 1,
+        "milliseconds": 2393.487292,
+        "peakRssBytes": 458375168,
+        "reusedChunks": 49999
+      },
+      "initialBuild": {
+        "embeddedChunks": 50000,
+        "milliseconds": 10072.639458,
+        "peakRssBytes": 401588224
+      },
+      "semanticQuery": {
+        "p50Milliseconds": 190.269,
+        "p95Milliseconds": 195.382083,
+        "peakRssBytes": 399179776,
+        "resultCount": 25,
+        "rssDeltaBytes": 23101440,
+        "samples": 3
+      }
+    }
+  },
+  "source": {
+    "database": "@effect/sql-sqlite-bun; vector schema v2",
+    "runner": "scripts/benchmark-recall-vectors.ts",
+    "search": "paged exact cosine over content-addressed normalized Float32 blobs; deterministic unique-target correctness and cardinality assertions"
+  },
+  "suite": "recall-vector-storage-v1",
+  "version": 1
+}

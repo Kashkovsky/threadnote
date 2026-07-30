@@ -6,13 +6,19 @@ import {
 } from './constants.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
+import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstallationLock} from './installations.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
-import {loadRecallIndexData, type RecallIndexProgress} from './recall/index.js';
+import {
+  loadRecallIndexData,
+  recallIndexStatus,
+  type RecallIndexProgress,
+  type RecallIndexStatus,
+} from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
 import {applyLegacyInstallationCleanup, planLegacyInstallationCleanup} from './migration/legacy-installations.js';
@@ -22,13 +28,22 @@ import {provisionCoreEmbedding} from './models/core-embedding.js';
 import {LocalModelCatalog, type LocalModelManifest} from './models/catalog.js';
 import {readModelSelection} from './models/selection.js';
 import {LocalModelStore} from './models/store.js';
-import {ensureVectorIndex, type VectorIndexProgress, vectorIndexStatus} from './search/vector-index.js';
+import {
+  ensureVectorIndex,
+  type VectorIndexProgress,
+  vectorIndexMatchesGeneration,
+  vectorIndexStatus,
+} from './search/vector-index.js';
 import {
   codeGraphDoctorCheck,
   type CodeGraphMaintenanceProgress,
   repairCodeGraphIndexes,
 } from './code_graph/maintenance.js';
-import {threadnoteStorageLayout, THREADNOTE_STORAGE_LAYOUT_VERSION} from './storage/layout.js';
+import {
+  isThreadnoteStorageLayoutReceipt,
+  threadnoteStorageLayout,
+  THREADNOTE_STORAGE_LAYOUT_VERSION,
+} from './storage/layout.js';
 import type {
   DoctorCheck,
   DoctorOptions,
@@ -96,6 +111,15 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
   const system = yield* SystemInfo;
   const platform = currentPlatform ?? system.platform;
   const layout = threadnoteStorageLayout(path, config.agentContextHome, config.account, uriSegment(config.user));
+  const lexicalStatus = yield* recallIndexStatus(config, false).pipe(
+    Effect.catch(cause =>
+      Effect.succeed({
+        documentCount: 0,
+        ready: false,
+        reason: errorMessage(cause),
+      } satisfies RecallIndexStatus),
+    ),
+  );
   const checks: DoctorCheck[] = [
     {detail: options.dryRun ? 'dry run; no writes' : 'read-only checks', name: 'mode', status: 'ok'},
     {
@@ -129,9 +153,9 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
   );
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks())));
   checks.push(
-    yield* safeDoctorCheck('lexical recall index', recallIndexCheck(config)),
+    recallIndexCheck(lexicalStatus),
     yield* safeDoctorCheck('embedding model', embeddingModelCheck(config)),
-    yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config)),
+    yield* safeDoctorCheck('vector recall index', vectorRecallIndexCheck(config, lexicalStatus)),
     yield* safeDoctorCheck(
       'native code graph',
       codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
@@ -288,7 +312,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
           `Rebuilt recall indexes for ${documentCount} document(s) and ${vectors.chunkCount} vector chunk(s).`,
         ),
       ),
-      Effect.catch(cause => Console.warn(`WARN recall index repair failed: ${errorMessage(cause)}`)),
+      Effect.mapError(cause => new Error(`Recall index repair failed: ${errorMessage(cause)}`)),
     );
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
@@ -300,7 +324,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
   }
-  const graphRepair = yield* repairCodeGraphIndexes(
+  yield* repairCodeGraphIndexes(
     config.agentContextHome,
     dryRun,
     progress => Console.log(codeGraphMaintenanceProgressMessage(progress, dryRun)),
@@ -308,26 +332,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
         Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
       ),
-  ).pipe(
-    Effect.map(summary => ({doctorReported: true, summary})),
-    Effect.catch(cause => {
-      return Console.warn(`WARN native code graph repair failed: ${errorMessage(cause)}`).pipe(
-        Effect.as({
-          doctorReported: false,
-          summary: {
-            databases: 0,
-            discarded: 0,
-            removedIncompleteSnapshots: 0,
-            removedTemporaryFiles: 0,
-          },
-        }),
-      );
-    }),
-  );
-  if (!graphRepair.doctorReported) {
-    yield* Console.log(codeGraphRepairSummaryMessage(graphRepair.summary, dryRun));
-    yield* runDoctor(config, {dryRun, strict: false});
-  }
+  ).pipe(Effect.mapError(cause => new Error(`Native code graph repair failed: ${errorMessage(cause)}`)));
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
@@ -507,21 +512,22 @@ function manifestCheck(manifestPath: string) {
   );
 }
 
-function recallIndexCheck(config: RuntimeConfig) {
-  return loadRecallIndexData(config, {includeInactive: false}).pipe(
-    Effect.map(index => ({
-      detail: `${index.candidates.length} canonical document(s)`,
+function recallIndexCheck(status: RecallIndexStatus): DoctorCheck {
+  if (!status.ready) {
+    return {
+      detail: status.reason ?? 'not ready; run `threadnote repair`',
       name: 'lexical recall index',
-      status: 'ok' as const,
-    })),
-    Effect.catch(cause =>
-      Effect.succeed({
-        detail: errorMessage(cause),
-        name: 'lexical recall index',
-        status: 'warn' as const,
-      }),
-    ),
-  );
+      status: 'fail',
+    };
+  }
+  const skipped = status.skippedOversizedDocumentCount ?? 0;
+  return {
+    detail:
+      `${status.documentCount} canonical document(s); generation ${status.generation ?? 'unknown'}` +
+      (skipped > 0 ? `; ${skipped} document(s) over 512 KiB omitted` : ''),
+    name: 'lexical recall index',
+    status: skipped > 0 ? 'warn' : 'ok',
+  };
 }
 
 function embeddingModelCheck(config: RuntimeConfig) {
@@ -541,23 +547,38 @@ function embeddingModelCheck(config: RuntimeConfig) {
       return {detail: `${modelId} is not an embedding model`, name: 'embedding model', status: 'fail' as const};
     }
     const store = yield* LocalModelStore;
-    const verified = yield* store.verify(config.agentContextHome, manifest).pipe(Effect.result);
-    return Result.isSuccess(verified)
-      ? {
-          detail: `${manifest.id}; ${manifest.dimensions ?? 0} dimensions; verified`,
-          name: 'embedding model',
-          status: 'ok' as const,
-        }
-      : {
-          detail: `${manifest.id} is not installed or failed verification; run \`threadnote repair\``,
-          name: 'embedding model',
-          status: 'fail' as const,
-        };
+    const installed = yield* store.status(config.agentContextHome, manifest);
+    if (!installed.installed || installed.bytes !== manifest.size) {
+      return {
+        detail: `${manifest.id} is not installed or has an unexpected size; run \`threadnote repair\``,
+        name: 'embedding model',
+        status: 'fail' as const,
+      };
+    }
+    if ((yield* sha256FileHex(installed.path)) !== manifest.sha256) {
+      return {
+        detail: `${manifest.id} failed verification; run \`threadnote repair\``,
+        name: 'embedding model',
+        status: 'fail' as const,
+      };
+    }
+    return {
+      detail: `${manifest.id}; ${manifest.dimensions ?? 0} dimensions; verified`,
+      name: 'embedding model',
+      status: 'ok' as const,
+    };
   });
 }
 
-function vectorRecallIndexCheck(config: RuntimeConfig) {
+function vectorRecallIndexCheck(config: RuntimeConfig, lexicalStatus: RecallIndexStatus) {
   return Effect.gen(function* () {
+    if (!lexicalStatus.ready || !lexicalStatus.generation) {
+      return {
+        detail: 'unavailable until the lexical recall index is ready',
+        name: 'vector recall index',
+        status: 'fail' as const,
+      };
+    }
     const selection = yield* readModelSelection(config.agentContextHome);
     const modelId = selection.roles.embedding;
     if (!modelId) {
@@ -569,14 +590,22 @@ function vectorRecallIndexCheck(config: RuntimeConfig) {
     }
     const catalog = yield* LocalModelCatalog;
     const manifest = yield* catalog.get(modelId);
-    const index = yield* loadRecallIndexData(config, {includeInactive: false});
-    const status = yield* vectorIndexStatus(config.agentContextHome, manifest, index.candidates);
+    const status = yield* vectorIndexStatus(config.agentContextHome, manifest);
+    const currentGeneration =
+      status.ready &&
+      (yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, lexicalStatus.generation));
     return status.ready
-      ? {
-          detail: `${status.chunkCount} chunk(s); ${manifest.id}; generation ${status.generation ?? 'unknown'}`,
-          name: 'vector recall index',
-          status: 'ok' as const,
-        }
+      ? currentGeneration
+        ? {
+            detail: `${status.chunkCount} chunk(s); ${manifest.id}; generation ${status.generation ?? 'unknown'}`,
+            name: 'vector recall index',
+            status: 'ok' as const,
+          }
+        : {
+            detail: `${manifest.id}; stale; canonical documents changed; run \`threadnote repair\``,
+            name: 'vector recall index',
+            status: 'fail' as const,
+          }
       : {
           detail: `${manifest.id}; ${status.reason ?? 'not built'}; run \`threadnote repair\``,
           name: 'vector recall index',
@@ -597,10 +626,7 @@ function layoutReceiptCheck(fs: FileSystem.FileSystem, path: Path.Path, home: st
     }
     const raw = yield* fs.readFileString(receiptPath);
     const parsed = Result.try(() => JSON.parse(raw) as unknown);
-    return Result.isSuccess(parsed) &&
-      typeof parsed.success === 'object' &&
-      parsed.success !== null &&
-      (parsed.success as {version?: unknown}).version === THREADNOTE_STORAGE_LAYOUT_VERSION
+    return Result.isSuccess(parsed) && isThreadnoteStorageLayoutReceipt(parsed.success)
       ? ({
           detail: `version ${THREADNOTE_STORAGE_LAYOUT_VERSION}`,
           name: 'storage layout',
@@ -630,14 +656,14 @@ function writeLayoutReceipt(fs: FileSystem.FileSystem, path: Path.Path, home: st
 
 function eraseThreadnoteHome(home: string, dryRun: boolean) {
   return Effect.gen(function* () {
-    yield* assertSafeThreadnoteHomeForErase(home);
+    const ownedHome = yield* assertSafeThreadnoteHomeForErase(home);
     if (dryRun) {
-      yield* Console.log(`Would erase Threadnote home: ${home}`);
+      yield* Console.log(`Would erase Threadnote home: ${ownedHome}`);
       return;
     }
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.remove(home, {recursive: true});
-    yield* Console.log(`Erased Threadnote home: ${home}`);
+    yield* fs.remove(ownedHome, {recursive: true});
+    yield* Console.log(`Erased Threadnote home: ${ownedHome}`);
   });
 }
 

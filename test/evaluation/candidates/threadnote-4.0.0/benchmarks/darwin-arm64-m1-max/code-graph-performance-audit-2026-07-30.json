@@ -1,0 +1,64 @@
+{
+  "createdAt": "2026-07-30T18:30:00Z",
+  "environment": {
+    "architecture": "arm64",
+    "bun": "1.3.14",
+    "commit": "bc053331d31790c8ed939ba0e995f66bb8083eef",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "memoryBytes": 68719476736,
+    "operatingSystem": "Darwin 27.0.0"
+  },
+  "microbenchmarks": {
+    "javaDeclarationOwnership10000": {
+      "afterMilliseconds": 336,
+      "beforeMilliseconds": 11450
+    },
+    "nestedProjectAttribution1000": {
+      "afterMilliseconds": 1.8,
+      "beforeMilliseconds": 580
+    }
+  },
+  "scales": {
+    "10000": {
+      "after": {
+        "coldIndexMilliseconds": 2338.107,
+        "derivedIndexBytes": 71966720,
+        "hotQueryP95Milliseconds": 120.123458,
+        "oneFileIncrementalMilliseconds": 1430.11825,
+        "processPeakRssBytes": 551550976
+      },
+      "before": {
+        "coldIndexMilliseconds": 3487.588125,
+        "derivedIndexBytes": 71966720,
+        "hotQueryP95Milliseconds": 115.036209,
+        "oneFileIncrementalMilliseconds": 2717.517167,
+        "processPeakRssBytes": 497713152
+      }
+    },
+    "100000": {
+      "after": {
+        "coldIndexMilliseconds": 36289.51275,
+        "derivedIndexBytes": 710623232,
+        "hotQueryP95Milliseconds": 824.896,
+        "oneFileIncrementalMilliseconds": 24992.169541,
+        "processPeakRssBytes": 718340096
+      },
+      "before": {
+        "coldIndexMilliseconds": 133364.334834,
+        "derivedIndexBytes": 710623232,
+        "hotQueryP95Milliseconds": 870.742125,
+        "oneFileIncrementalMilliseconds": 127701.400542,
+        "processPeakRssBytes": 647233536
+      }
+    }
+  },
+  "source": {
+    "after": "artifacts/audit-after-batch-size-code-graph-{10000,100000}.json",
+    "before": "artifacts/audit-before-code-graph-{10000,100000}.json",
+    "runner": "scripts/benchmark-code-graph.ts",
+    "vectors": false
+  },
+  "suite": "code-graph-performance-audit-v1",
+  "version": 1
+}

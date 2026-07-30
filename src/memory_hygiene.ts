@@ -319,6 +319,20 @@ export function referencedUrisFromRecords(records: readonly MemoryRecord[], reca
   return result;
 }
 
+/**
+ * Keeps declared reference candidates that were successfully read back as
+ * canonical memory records. Reference metadata is intentionally one-way and may
+ * outlive an archived, replaced, or deleted target; recall must not advertise a
+ * pointer that its read command cannot currently resolve.
+ */
+export function existingReferencedUris(
+  candidates: readonly string[],
+  records: readonly MemoryRecord[],
+): readonly string[] {
+  const existing = new Set(records.map(record => record.uri));
+  return candidates.filter(uri => existing.has(uri));
+}
+
 /** Renders bounded one-way reference pointers without inlining another memory. */
 export function formatReferencedContextPointers(uris: readonly string[], maxUris: number): string | undefined {
   if (uris.length === 0) {

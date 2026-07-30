@@ -54,13 +54,23 @@ const benchmarkCodeGraph = Effect.scoped(
     const indexer = yield* CodeGraphIndexer;
     const query = yield* CodeGraphQueryService;
     const coldStarted = yield* Clock.currentTimeNanos;
+    let coldMaterializationFinished = coldStarted;
+    let coldResolutionFinished = coldStarted;
     let coldActivationStarted = coldStarted;
     const cold = yield* indexer.index({
       cwd: prepared.repository,
-      onProgress: progress =>
-        progress.phase === 'activating'
-          ? Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (coldActivationStarted = now))))
-          : Effect.void,
+      onProgress: progress => {
+        if (progress.phase === 'parsing') {
+          return Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (coldMaterializationFinished = now))));
+        }
+        if (progress.phase === 'resolving') {
+          return Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (coldResolutionFinished = now))));
+        }
+        if (progress.phase === 'activating') {
+          return Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (coldActivationStarted = now))));
+        }
+        return Effect.void;
+      },
       threadnoteHome: prepared.home,
     });
     const coldFinished = yield* Clock.currentTimeNanos;
@@ -121,13 +131,29 @@ const benchmarkCodeGraph = Effect.scoped(
       `${yield* fs.readFileString(changedPath)}\nexport const benchmarkIncrementalMarker = true;\n`,
     );
     const incrementalStarted = yield* Clock.currentTimeNanos;
+    let incrementalMaterializationFinished = incrementalStarted;
+    let incrementalResolutionFinished = incrementalStarted;
     let incrementalActivationStarted = incrementalStarted;
     const incremental = yield* indexer.index({
       cwd: prepared.repository,
-      onProgress: progress =>
-        progress.phase === 'activating'
-          ? Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (incrementalActivationStarted = now))))
-          : Effect.void,
+      onProgress: progress => {
+        if (progress.phase === 'parsing') {
+          return Clock.currentTimeNanos.pipe(
+            Effect.tap(now => Effect.sync(() => (incrementalMaterializationFinished = now))),
+          );
+        }
+        if (progress.phase === 'resolving') {
+          return Clock.currentTimeNanos.pipe(
+            Effect.tap(now => Effect.sync(() => (incrementalResolutionFinished = now))),
+          );
+        }
+        if (progress.phase === 'activating') {
+          return Clock.currentTimeNanos.pipe(
+            Effect.tap(now => Effect.sync(() => (incrementalActivationStarted = now))),
+          );
+        }
+        return Effect.void;
+      },
       threadnoteHome: prepared.home,
     });
     const incrementalFinished = yield* Clock.currentTimeNanos;
@@ -198,6 +224,15 @@ const benchmarkCodeGraph = Effect.scoped(
         benchmarkMeasurement('cold-pre-activation', 'milliseconds', [
           Number(coldActivationStarted - coldStarted) / NANOSECONDS_PER_MILLISECOND,
         ]),
+        benchmarkMeasurement('cold-materialization', 'milliseconds', [
+          Number(coldMaterializationFinished - coldStarted) / NANOSECONDS_PER_MILLISECOND,
+        ]),
+        benchmarkMeasurement('cold-reference-resolution', 'milliseconds', [
+          Number(coldResolutionFinished - coldMaterializationFinished) / NANOSECONDS_PER_MILLISECOND,
+        ]),
+        benchmarkMeasurement('cold-pre-activation-validation', 'milliseconds', [
+          Number(coldActivationStarted - coldResolutionFinished) / NANOSECONDS_PER_MILLISECOND,
+        ]),
         benchmarkMeasurement(
           options.vectors ? 'cold-activation-and-vectors' : 'cold-activation-lexical-only',
           'milliseconds',
@@ -208,6 +243,15 @@ const benchmarkCodeGraph = Effect.scoped(
         ]),
         benchmarkMeasurement('one-file-incremental-pre-activation', 'milliseconds', [
           Number(incrementalActivationStarted - incrementalStarted) / NANOSECONDS_PER_MILLISECOND,
+        ]),
+        benchmarkMeasurement('one-file-incremental-materialization', 'milliseconds', [
+          Number(incrementalMaterializationFinished - incrementalStarted) / NANOSECONDS_PER_MILLISECOND,
+        ]),
+        benchmarkMeasurement('one-file-incremental-reference-resolution', 'milliseconds', [
+          Number(incrementalResolutionFinished - incrementalMaterializationFinished) / NANOSECONDS_PER_MILLISECOND,
+        ]),
+        benchmarkMeasurement('one-file-incremental-pre-activation-validation', 'milliseconds', [
+          Number(incrementalActivationStarted - incrementalResolutionFinished) / NANOSECONDS_PER_MILLISECOND,
         ]),
         benchmarkMeasurement(
           options.vectors

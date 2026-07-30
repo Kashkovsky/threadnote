@@ -78,7 +78,7 @@ const smokeSelfContained = Effect.scoped(
       return yield* Effect.fail(new Error(`Standalone lexical recall missed the stored memory:\n${recall}`));
     }
 
-    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v2.sqlite');
+    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v3.sqlite');
     const lexicalInfo = yield* fs.stat(lexicalDatabase);
     if (lexicalInfo.type !== 'File' || lexicalInfo.size <= 0) {
       return yield* Effect.fail(new Error('Standalone recall did not create a populated Bun SQLite index.'));

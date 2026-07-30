@@ -9,7 +9,13 @@ import {LocalModelStore} from '../models/store.js';
 import {loadRecallFeedback} from './feedback.js';
 import {loadRecallIndexData, loadRecallIndexDataBatch, recallUriMatchesScopes} from './index.js';
 import type {RecallCandidate} from './rank.js';
-import {ensureVectorIndex, selectedSemanticScores, vectorIndexMatchesGeneration} from '../search/vector-index.js';
+import {
+  ensureVectorIndex,
+  rebuildVectorIndex,
+  selectedSemanticScores,
+  type VectorIndexCorrupt,
+  vectorIndexMatchesGeneration,
+} from '../search/vector-index.js';
 
 interface RecallRuntimeConfig {
   readonly account: string;
@@ -201,9 +207,17 @@ export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(f
       const index = yield* loadRecallIndexData(config, {includeInactive: false});
       yield* ensureVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
     }
-    return yield* selectedSemanticScores(config, query, {
-      limit: Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER),
-    });
+    const semanticLimit = Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER);
+    return yield* selectedSemanticScores(config, query, {limit: semanticLimit}).pipe(
+      Effect.mapError(error => error as typeof error | VectorIndexCorrupt),
+      Effect.catchTag('VectorIndexCorrupt', () =>
+        Effect.gen(function* () {
+          const index = yield* loadRecallIndexData(config, {includeInactive: false});
+          yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
+          return yield* selectedSemanticScores(config, query, {limit: semanticLimit});
+        }),
+      ),
+    );
   }).pipe(
     Effect.catchCause(cause => (Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
   );

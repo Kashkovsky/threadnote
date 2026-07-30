@@ -16,7 +16,7 @@ import {
 import {redactSensitiveText} from '../scrubber.js';
 import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
 import type {ProjectManifest} from '../types.js';
-import {expandPath, globToRegExp} from '../utils.js';
+import {errorMessage, expandPath, globToRegExp} from '../utils.js';
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
 
 interface RecallIndexSource {
@@ -54,6 +54,20 @@ export interface RecallIndexData {
   readonly candidates: readonly RecallCandidate[];
   readonly corpusStatistics: RecallCorpusStatistics;
   readonly generation: string;
+}
+
+export interface RecallExactMatch {
+  readonly terms: readonly string[];
+  readonly uri: string;
+}
+
+export interface RecallIndexStatus {
+  readonly databasePath?: string;
+  readonly documentCount: number;
+  readonly generation?: string;
+  readonly ready: boolean;
+  readonly reason?: string;
+  readonly skippedOversizedDocumentCount?: number;
 }
 
 export type RecallIndexProgress =
@@ -120,15 +134,18 @@ interface RecallQueryTermStatistics {
 interface IndexedRecallSource {
   readonly candidate: RecallCandidate;
   readonly documentLength: number;
+  readonly exactSearchText: string;
   readonly postings: ReadonlyMap<string, RecallIndexPosting>;
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 2;
+const RECALL_INDEX_DATABASE_VERSION = 3;
 const RECALL_INDEX_POINTER_VERSION = 1;
+const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const CACHE_VALIDATION_INTERVAL_MILLISECONDS = 30_000;
+const MAX_RECALL_INVALIDATED_URIS = 1_024;
 const MAX_INDEXED_FILE_BYTES = 512 * 1_024;
 const DEFAULT_QUERY_RESULT_LIMIT = 100;
 const QUERY_POSTING_POOL_MULTIPLIER = 5;
@@ -151,6 +168,13 @@ let staleGenerationCounter = 0;
 interface RecallIndexPointer {
   readonly database: string;
   readonly version: typeof RECALL_INDEX_POINTER_VERSION;
+}
+
+interface RecallStaleMarker {
+  readonly forceRefresh: boolean;
+  readonly generation: string;
+  readonly invalidatedUris: readonly string[];
+  readonly version: typeof RECALL_STALE_MARKER_VERSION;
 }
 
 class RecallIndexCorrupt extends Error {
@@ -180,9 +204,18 @@ interface LoadRecallIndexBatchOptions {
   readonly selections: readonly Omit<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>[];
 }
 
+interface LoadRecallExactMatchesOptions {
+  readonly forceRefresh?: boolean;
+  readonly includeInactive: boolean;
+  readonly limitPerTerm?: number;
+  readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
+  readonly terms: readonly string[];
+  readonly uriScopes: readonly string[];
+}
+
 const loadRecallIndexDataInternal = Effect.fn('recall.loadIndexDataInternal')(function* (
   config: RecallIndexConfig,
-  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions,
+  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -207,7 +240,7 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
   databasePath: string,
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
-  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions,
+  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
   prepareForActivation = false,
   indexLockHeld = false,
 ) {
@@ -233,17 +266,19 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
       const generation = metadata.get('content_generation') ?? '';
       const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
       const result =
-        'selections' in options
-          ? yield* Effect.forEach(
-              options.selections,
-              selection =>
-                selectRecallIndexData(sql, corpusStatistics, generation, {
-                  ...selection,
-                  includeInactive: options.includeInactive,
-                }),
-              {concurrency: 1},
-            )
-          : yield* selectRecallIndexData(sql, corpusStatistics, generation, options);
+        'terms' in options
+          ? yield* selectRecallExactMatches(sql, options)
+          : 'selections' in options
+            ? yield* Effect.forEach(
+                options.selections,
+                selection =>
+                  selectRecallIndexData(sql, corpusStatistics, generation, {
+                    ...selection,
+                    includeInactive: options.includeInactive,
+                  }),
+                {concurrency: 1},
+              )
+            : yield* selectRecallIndexData(sql, corpusStatistics, generation, options);
       if (prepareForActivation) {
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         yield* sql.unsafe('PRAGMA journal_mode = DELETE');
@@ -259,7 +294,7 @@ const recoverRecallIndex = Effect.fn('recall.recoverIndex')(function* (
   failedDatabasePath: string,
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
-  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions,
+  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
   firstCause: Cause.Cause<unknown>,
 ) {
   return yield* withRecallIndexLock(fs, path, config.agentContextHome, options.includeInactive, () =>
@@ -333,6 +368,115 @@ export const loadRecallIndex = Effect.fn('recall.loadIndex')(function* (
   return (yield* loadRecallIndexData(config, options)).candidates;
 });
 
+export const loadRecallExactMatches = Effect.fn('recall.loadExactMatches')(function* (
+  config: RecallIndexConfig,
+  options: LoadRecallExactMatchesOptions,
+) {
+  return (yield* loadRecallIndexDataInternal(config, options)) as readonly RecallExactMatch[];
+});
+
+export const recallIndexStatus = Effect.fn('recall.indexStatus')(function* (
+  config: RecallIndexConfig,
+  includeInactive = false,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const fixedDatabasePath = recallIndexDatabasePath(path, config.agentContextHome, includeInactive);
+  const databasePath = yield* resolveActiveRecallDatabasePath(fs, path, config.agentContextHome, includeInactive);
+  if (!(yield* fs.exists(databasePath))) {
+    return {
+      databasePath,
+      documentCount: 0,
+      ready: false,
+      reason: 'not built; run `threadnote repair`',
+    } satisfies RecallIndexStatus;
+  }
+  return yield* useRecallDatabaseReadOnly(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const metadata = yield* loadRecallMetadata(sql);
+      if (metadata.get('schema_version') !== String(RECALL_INDEX_DATABASE_VERSION)) {
+        return {
+          databasePath,
+          documentCount: 0,
+          ready: false,
+          reason: `unsupported schema ${metadata.get('schema_version') ?? 'unknown'}; run \`threadnote repair\``,
+        } satisfies RecallIndexStatus;
+      }
+      if (metadata.get('initialized') !== 'true') {
+        return {
+          databasePath,
+          documentCount: 0,
+          ready: false,
+          reason: 'not initialized; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      if (!recallMetadataIntegrityIsCurrent(metadata)) {
+        return {
+          databasePath,
+          documentCount: numericMetadata(metadata, 'document_count'),
+          ready: false,
+          reason: 'integrity sequence mismatch; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      const staleMarker = yield* readStaleMarker(fs, fixedDatabasePath);
+      if (metadata.get('stale_generation') !== (staleMarker?.generation ?? '')) {
+        return {
+          databasePath,
+          documentCount: numericMetadata(metadata, 'document_count'),
+          generation: metadata.get('content_generation'),
+          ready: false,
+          reason: 'canonical documents changed; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      const rows = yield* sql<{readonly document_count: number}>`SELECT COUNT(*) AS document_count FROM documents`;
+      const documentCount = Number(rows[0]?.document_count ?? 0);
+      if (!Number.isSafeInteger(documentCount) || documentCount < 0) {
+        return {
+          databasePath,
+          documentCount: 0,
+          ready: false,
+          reason: 'invalid document count; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      if (numericMetadata(metadata, 'document_count') !== documentCount) {
+        return {
+          databasePath,
+          documentCount,
+          ready: false,
+          reason: 'document count metadata mismatch; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      const generation = metadata.get('content_generation');
+      if (!generation) {
+        return {
+          databasePath,
+          documentCount,
+          ready: false,
+          reason: 'missing content generation; run `threadnote repair`',
+        } satisfies RecallIndexStatus;
+      }
+      return {
+        databasePath,
+        documentCount,
+        generation,
+        ready: true,
+        skippedOversizedDocumentCount: numericMetadata(metadata, 'oversized_document_count'),
+      } satisfies RecallIndexStatus;
+    }),
+  ).pipe(
+    Effect.catch(cause =>
+      Effect.succeed({
+        databasePath,
+        documentCount: 0,
+        ready: false,
+        reason: `unreadable: ${errorMessage(cause)}; run \`threadnote repair\``,
+      } satisfies RecallIndexStatus),
+    ),
+  );
+});
+
 export const clearRecallIndexMemoryCache = Effect.fn('recall.clearMemoryCache')(function* () {
   // SQLite owns its page cache and every operation uses a scoped connection.
   yield* Effect.void;
@@ -341,12 +485,13 @@ export const clearRecallIndexMemoryCache = Effect.fn('recall.clearMemoryCache')(
 export const expireRecallIndexValidation = Effect.fn('recall.expireValidation')(function* (
   agentContextHome: string,
   includeInactive: boolean,
+  invalidatedUris?: readonly string[],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const databasePath = recallIndexDatabasePath(pathService, agentContextHome, includeInactive);
   yield* fs.makeDirectory(pathService.dirname(databasePath), {recursive: true, mode: 0o700});
-  yield* writeStaleGeneration(fs, databasePath);
+  yield* writeStaleGeneration(fs, databasePath, invalidatedUris);
 });
 
 const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
@@ -433,6 +578,53 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     }
   }
   return {candidates: selected, corpusStatistics, generation} satisfies RecallIndexData;
+});
+
+const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function* (
+  sql: SqlClient.SqlClient,
+  options: LoadRecallExactMatchesOptions,
+) {
+  const terms = [
+    ...new Map(
+      options.terms
+        .map(term => term.trim())
+        .filter(Boolean)
+        .map(term => [term.toLocaleLowerCase(), term] as const),
+    ).values(),
+  ];
+  const scopes = [...new Set(options.uriScopes.map(stripRecallAnchor))];
+  const limitPerTerm = Math.max(0, Math.floor(options.limitPerTerm ?? 25));
+  if (terms.length === 0 || scopes.length === 0 || limitPerTerm === 0) {
+    return [] satisfies readonly RecallExactMatch[];
+  }
+  const matchedTermsByUri = new Map<string, Set<string>>();
+  for (const scopeUri of scopes) {
+    const scope = recallUriScopePredicate('d', [scopeUri]);
+    for (const term of terms) {
+      const phrase = `"${term.replaceAll('"', '""')}"`;
+      const rows = yield* sql.unsafe<{readonly uri: string}>(
+        `SELECT d.uri
+         FROM exact_search
+         INNER JOIN documents AS d ON d.id = exact_search.rowid
+         WHERE exact_search MATCH ?
+           AND ${scope.sql}
+         ORDER BY d.uri
+         LIMIT ?`,
+        [phrase, ...scope.params, limitPerTerm],
+      );
+      for (const row of rows) {
+        const matched = matchedTermsByUri.get(row.uri) ?? new Set<string>();
+        matched.add(term);
+        matchedTermsByUri.set(row.uri, matched);
+      }
+    }
+  }
+  return [...matchedTermsByUri]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([uri, matched]) => ({
+      terms: terms.filter(term => matched.has(term)),
+      uri,
+    })) satisfies readonly RecallExactMatch[];
 });
 
 function candidatePostings(candidate: RecallCandidate): ReadonlyMap<string, RecallIndexPosting> {
@@ -615,6 +807,25 @@ function useRecallDatabase<A, E, R>(
   return Effect.scoped(effect.pipe(Effect.provide(SqliteClient.layer({filename: databasePath}))));
 }
 
+function useRecallDatabaseReadOnly<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.scoped(
+    effect.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: true,
+          readwrite: false,
+        }),
+      ),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
 const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA foreign_keys = ON');
   yield* sql.unsafe('PRAGMA busy_timeout = 5000');
@@ -651,6 +862,14 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
       term TEXT PRIMARY KEY NOT NULL,
       document_frequency INTEGER NOT NULL CHECK (document_frequency > 0)
     ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS exact_search USING fts5(
+      content,
+      content = '',
+      contentless_delete = 1,
+      tokenize = 'trigram'
+    )
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_uri ON documents(uri)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_modified_uri ON documents(source_modified_at DESC, uri)');
@@ -698,26 +917,26 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
   indexLockHeld = false,
 ) {
   const metadata = yield* loadRecallMetadata(sql);
-  const staleGeneration = yield* readStaleGeneration(fs, staleMarkerBasePath);
+  const staleMarker = yield* readStaleMarker(fs, staleMarkerBasePath);
   const now = yield* Clock.currentTimeMillis;
   if (
     options.forceRefresh !== true &&
     recallMetadataIntegrityIsCurrent(metadata) &&
     metadata.get('initialized') === 'true' &&
-    metadata.get('stale_generation') === (staleGeneration ?? '') &&
+    metadata.get('stale_generation') === (staleMarker?.generation ?? '') &&
     now - numericMetadata(metadata, 'validated_at') < CACHE_VALIDATION_INTERVAL_MILLISECONDS
   ) {
     return;
   }
   const refresh = Effect.gen(function* () {
     const lockedMetadata = yield* loadRecallMetadata(sql);
-    const lockedStaleGeneration = yield* readStaleGeneration(fs, staleMarkerBasePath);
+    const lockedStaleMarker = yield* readStaleMarker(fs, staleMarkerBasePath);
     const lockedNow = yield* Clock.currentTimeMillis;
     if (
       options.forceRefresh !== true &&
       recallMetadataIntegrityIsCurrent(lockedMetadata) &&
       lockedMetadata.get('initialized') === 'true' &&
-      lockedMetadata.get('stale_generation') === (lockedStaleGeneration ?? '') &&
+      lockedMetadata.get('stale_generation') === (lockedStaleMarker?.generation ?? '') &&
       lockedNow - numericMetadata(lockedMetadata, 'validated_at') < CACHE_VALIDATION_INTERVAL_MILLISECONDS
     ) {
       return;
@@ -752,9 +971,11 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   forceRefresh: boolean,
   onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>,
 ) {
-  const staleGeneration = yield* readStaleGeneration(fs, staleMarkerBasePath);
+  const staleMarker = yield* readStaleMarker(fs, staleMarkerBasePath);
+  const staleGeneration = staleMarker?.generation;
   const canonicalResourcePolicy = yield* loadCanonicalResourcePolicy(config);
-  const sources = yield* scanRecallSources(fs, path, config, includeInactive);
+  const sourceScan = yield* scanRecallSources(fs, path, config, includeInactive);
+  const sources = sourceScan.sources;
   const storedRows = yield* sql<RecallDocumentSourceRow>`
     SELECT
       id,
@@ -767,6 +988,10 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
     FROM documents
     ORDER BY uri
   `;
+  const previousMetadata = yield* loadRecallMetadata(sql);
+  const markerChanged = previousMetadata.get('stale_generation') !== (staleGeneration ?? '');
+  const invalidatedUris = markerChanged ? new Set(staleMarker?.invalidatedUris ?? []) : new Set<string>();
+  const forceFromMarker = markerChanged && staleMarker?.forceRefresh === true;
   const storedByUri = new Map(storedRows.map(row => [row.uri, row]));
   const sourceUris = new Set(sources.map(source => source.uri));
   const removedUris = storedRows.map(row => row.uri).filter(uri => !sourceUris.has(uri));
@@ -774,6 +999,8 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
     const stored = storedByUri.get(source.uri);
     return (
       forceRefresh ||
+      forceFromMarker ||
+      invalidatedUris.has(source.uri) ||
       !stored ||
       !sameStoredSource(stored, source) ||
       stored.authority_policy_key !== (canonicalResourcePolicy.entryKeyByUri.get(source.uri) ?? null)
@@ -795,6 +1022,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             return {
               candidate,
               documentLength: recallDocumentTerms(candidate).length,
+              exactSearchText: redactSensitiveText(content),
               postings,
               source,
             } satisfies IndexedRecallSource;
@@ -810,7 +1038,6 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
     }) ?? Effect.void;
   }
   const changedUris = new Set([...removedUris, ...changedSources.map(source => source.uri)]);
-  const previousMetadata = yield* loadRecallMetadata(sql);
   const previousContentGeneration = previousMetadata.get('content_generation');
   const contentGeneration =
     changedUris.size === 0 && previousContentGeneration
@@ -838,6 +1065,9 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
     Effect.void;
   yield* sql.withTransaction(
     Effect.gen(function* () {
+      for (const documentIds of chunkValues(replacedDocumentIds, 400)) {
+        yield* sql`DELETE FROM exact_search WHERE ${sql.in('rowid', documentIds)}`;
+      }
       for (const uris of chunkValues([...removedUris, ...changedSources.map(source => source.uri)], 400)) {
         yield* sql`DELETE FROM documents WHERE ${sql.in('uri', uris)}`;
       }
@@ -874,6 +1104,19 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           SELECT id, uri FROM documents WHERE ${sql.in('uri', uris)}
         `;
         rows.forEach(row => insertedIdByUri.set(row.uri, row.id));
+      }
+      for (const batch of chunkValues(indexedSources, 50)) {
+        yield* sql.unsafe(
+          `INSERT INTO exact_search (rowid, content)
+           VALUES ${batch.map(() => '(?, ?)').join(', ')}`,
+          batch.flatMap(indexed => {
+            const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
+            if (documentId === undefined) {
+              throw new Error(`Could not resolve exact-search document ${indexed.candidate.uri}.`);
+            }
+            return [documentId, indexed.exactSearchText];
+          }),
+        );
       }
       let postingBatch: Array<readonly [string, number, number, number]> = [];
       const flushPostings = () => {
@@ -930,6 +1173,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         ['document_count', String(documentCount)],
         ['include_inactive', includeInactive ? 'true' : 'false'],
         ['initialized', 'true'],
+        ['oversized_document_count', String(sourceScan.skippedOversizedDocumentCount)],
         ['stale_generation', staleGeneration ?? ''],
         ['total_document_length', String(totalDocumentLength)],
         ['validated_at', String(Math.max(now, previousValidatedAt + 1))],
@@ -948,6 +1192,9 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
     }),
   );
   yield* fs.chmod(databasePath, 0o600);
+  if (markerChanged && staleMarker) {
+    yield* clearStaleMarkerInvalidations(fs, staleMarkerBasePath, staleMarker).pipe(Effect.catch(() => Effect.void));
+  }
   yield* removeLegacyRecallCaches(fs, path, config.agentContextHome);
 });
 
@@ -959,31 +1206,35 @@ function scanRecallSources(
 ) {
   return Effect.gen(function* () {
     const sources: RecallIndexSource[] = [];
+    let skippedOversizedDocumentCount = 0;
     for (const root of recallIndexRoots(config, path)) {
       if (!(yield* fs.exists(root.path))) continue;
       const files = yield* scanFilesWithinBoundary(fs, root.path, root.path, {
         includeDirectory: candidate => !excludedDirectory(candidate, includeInactive),
         includeFile: candidate => !excludedFile(candidate),
       });
+      const eligibleFiles = files.filter(file => file.size <= MAX_INDEXED_FILE_BYTES);
+      skippedOversizedDocumentCount += files.length - eligibleFiles.length;
       const rootId = parseResourceId(root.uri);
       sources.push(
-        ...files
-          .filter(file => file.size <= MAX_INDEXED_FILE_BYTES)
-          .map(file => {
-            const relativeSegments = path
-              .relative(root.path, file.path)
-              .split(path.sep)
-              .map(segment => segment.normalize('NFC'));
-            return {
-              modifiedAt: file.modifiedAt?.toISOString(),
-              path: file.path,
-              size: file.size,
-              uri: canonicalResourceUri(rootId.namespace, [...rootId.segments, ...relativeSegments]),
-            };
-          }),
+        ...eligibleFiles.map(file => {
+          const relativeSegments = path
+            .relative(root.path, file.path)
+            .split(path.sep)
+            .map(segment => segment.normalize('NFC'));
+          return {
+            modifiedAt: file.modifiedAt?.toISOString(),
+            path: file.path,
+            size: file.size,
+            uri: canonicalResourceUri(rootId.namespace, [...rootId.segments, ...relativeSegments]),
+          };
+        }),
       );
     }
-    return sources.sort((left, right) => left.uri.localeCompare(right.uri));
+    return {
+      skippedOversizedDocumentCount,
+      sources: sources.sort((left, right) => left.uri.localeCompare(right.uri)),
+    };
   });
 }
 
@@ -1034,7 +1285,12 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
   } satisfies RecallCorpusStatistics;
 });
 
-function recallStatisticTerms(options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions): readonly string[] {
+function recallStatisticTerms(
+  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+): readonly string[] {
+  if ('terms' in options) {
+    return [];
+  }
   const queries =
     'selections' in options
       ? options.selections.flatMap(selection => (selection.query === undefined ? [] : [selection.query]))
@@ -1450,22 +1706,51 @@ function uriBasename(uri: string): string {
   return uri.slice(uri.lastIndexOf('/') + 1);
 }
 
-function readStaleGeneration(fs: FileSystem.FileSystem, path: string): Effect.Effect<string | null, never> {
+function readStaleMarker(fs: FileSystem.FileSystem, path: string): Effect.Effect<RecallStaleMarker | undefined, never> {
   return Effect.gen(function* () {
     const stalePath = `${path}.stale`;
     if (!(yield* fs.exists(stalePath).pipe(Effect.catch(() => Effect.succeed(false))))) {
-      return null;
+      return undefined;
     }
-    return yield* fs.readFileString(stalePath).pipe(
-      Effect.map(value => value.trim() || 'present'),
-      Effect.catch(() => Effect.succeed('present')),
-    );
+    const raw = yield* fs.readFileString(stalePath).pipe(Effect.catch(() => Effect.succeed('present')));
+    const legacyGeneration = raw.trim() || 'present';
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        (value as {readonly version?: unknown}).version === RECALL_STALE_MARKER_VERSION &&
+        typeof (value as {readonly generation?: unknown}).generation === 'string' &&
+        (value as {readonly generation: string}).generation.length > 0 &&
+        typeof (value as {readonly forceRefresh?: unknown}).forceRefresh === 'boolean' &&
+        Array.isArray((value as {readonly invalidatedUris?: unknown}).invalidatedUris) &&
+        (value as {readonly invalidatedUris: readonly unknown[]}).invalidatedUris.every(uri => typeof uri === 'string')
+      ) {
+        const marker = value as RecallStaleMarker;
+        return {
+          forceRefresh: marker.forceRefresh,
+          generation: marker.generation,
+          invalidatedUris: [...new Set(marker.invalidatedUris.map(stripRecallAnchor))],
+          version: RECALL_STALE_MARKER_VERSION,
+        };
+      }
+    } catch {
+      // Plain-text markers were written before URI-aware invalidation. They
+      // require a conservative full refresh so same-size replacements remain correct.
+    }
+    return {
+      forceRefresh: true,
+      generation: legacyGeneration,
+      invalidatedUris: [],
+      version: RECALL_STALE_MARKER_VERSION,
+    };
   });
 }
 
 const writeStaleGeneration = Effect.fn('recall.writeStaleGeneration')(function* (
   fs: FileSystem.FileSystem,
   path: string,
+  invalidatedUris?: readonly string[],
 ) {
   const system = yield* SystemInfo;
   const counter = yield* Effect.sync(() => {
@@ -1474,12 +1759,59 @@ const writeStaleGeneration = Effect.fn('recall.writeStaleGeneration')(function* 
   });
   const generation = `${yield* Clock.currentTimeMillis}:${system.processId}:${counter}`;
   const stalePath = `${path}.stale`;
+  const previous = yield* readStaleMarker(fs, path);
+  const mergedInvalidatedUris = [
+    ...new Set(
+      [...(previous?.invalidatedUris ?? []), ...(invalidatedUris ?? [])]
+        .map(stripRecallAnchor)
+        .map(uri => uri.replace(/\/+$/, ''))
+        .filter(Boolean),
+    ),
+  ];
+  const forceRefresh =
+    invalidatedUris === undefined ||
+    previous?.forceRefresh === true ||
+    mergedInvalidatedUris.length > MAX_RECALL_INVALIDATED_URIS;
+  const marker: RecallStaleMarker = {
+    forceRefresh,
+    generation,
+    invalidatedUris: forceRefresh ? [] : mergedInvalidatedUris,
+    version: RECALL_STALE_MARKER_VERSION,
+  };
   const temporaryPath = `${stalePath}.${system.processId}.${counter}.tmp`;
-  yield* fs.writeFileString(temporaryPath, `${generation}\n`, {mode: 0o600});
+  yield* fs.writeFileString(temporaryPath, `${JSON.stringify(marker)}\n`, {mode: 0o600});
   yield* fs
     .rename(temporaryPath, stalePath)
     .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
   return generation;
+});
+
+const clearStaleMarkerInvalidations = Effect.fn('recall.clearStaleMarkerInvalidations')(function* (
+  fs: FileSystem.FileSystem,
+  path: string,
+  observed: RecallStaleMarker,
+) {
+  const current = yield* readStaleMarker(fs, path);
+  if (current?.generation !== observed.generation) {
+    return;
+  }
+  const system = yield* SystemInfo;
+  const counter = yield* Effect.sync(() => {
+    staleGenerationCounter += 1;
+    return staleGenerationCounter;
+  });
+  const stalePath = `${path}.stale`;
+  const temporaryPath = `${stalePath}.${system.processId}.${counter}.tmp`;
+  const cleared: RecallStaleMarker = {
+    forceRefresh: false,
+    generation: observed.generation,
+    invalidatedUris: [],
+    version: RECALL_STALE_MARKER_VERSION,
+  };
+  yield* fs.writeFileString(temporaryPath, `${JSON.stringify(cleared)}\n`, {mode: 0o600});
+  yield* fs
+    .rename(temporaryPath, stalePath)
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
 });
 
 function loadCanonicalResourcePolicy(

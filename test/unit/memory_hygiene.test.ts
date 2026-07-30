@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import type {MemoryMetadata, MemoryRecord} from '../../src/memory_hygiene.js';
 import {
   buildCompactPlan,
+  existingReferencedUris,
   formatCompactPlan,
   handoffTopicForBranch,
   memoryContentWithHygieneSources,
@@ -309,6 +310,19 @@ describe('references relation', () => {
     expect(referencedUrisFromRecords([withRefs], recallOutput)).toEqual([
       'threadnote://user/me/memories/durable/projects/threadnote/design.md',
     ]);
+  });
+
+  it('keeps only reference candidates that still resolve to memory records', () => {
+    const first = 'threadnote://user/me/memories/durable/projects/threadnote/first.md';
+    const missing = 'threadnote://user/me/memories/durable/projects/threadnote/missing.md';
+    const second = 'threadnote://user/me/memories/durable/projects/threadnote/second.md';
+
+    expect(
+      existingReferencedUris(
+        [first, missing, second],
+        [record({uri: second, metadata: {kind: 'durable'}}), record({uri: first, metadata: {kind: 'durable'}})],
+      ),
+    ).toEqual([first, second]);
   });
 
   it('renders bounded URI-only pointers without referenced memory bodies', () => {

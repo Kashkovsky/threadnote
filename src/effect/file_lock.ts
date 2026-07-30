@@ -20,6 +20,13 @@ export class FileLockTimeout extends Error {
   }
 }
 
+interface FileLockOwner {
+  readonly processId: number;
+  readonly processStartIdentity?: string;
+  readonly token: string;
+  readonly version: 1;
+}
+
 export function isFileLockTimeout(cause: unknown): cause is FileLockTimeout {
   return cause instanceof FileLockTimeout;
 }
@@ -38,9 +45,7 @@ export function withExclusiveFileLock<A, E, R>(
   return Effect.gen(function* () {
     const pathService = yield* Path.Path;
     yield* fs.makeDirectory(pathService.dirname(lockPath), {recursive: true});
-    const crypto = yield* Crypto.Crypto;
-    const system = yield* SystemInfo;
-    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+    const token = yield* fileLockToken();
     const startedAt = yield* Clock.currentTimeMillis;
     let contentionReported = false;
     while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
@@ -117,9 +122,7 @@ function acquireRecoveryGuard(
   staleAfterMilliseconds: number,
 ): Effect.Effect<string | undefined, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    const system = yield* SystemInfo;
-    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+    const token = yield* fileLockToken();
     if (yield* tryWriteLockToken(fs, guardPath, token)) {
       return token;
     }
@@ -155,8 +158,8 @@ function staleDeadLockToken(
     }
     const info = yield* fs.stat(path);
     const token = (yield* fs.readFileString(path)).trim();
-    const ownerPid = fileLockOwnerPid(token);
-    if (ownerPid !== undefined && !system.isProcessRunning(ownerPid)) {
+    const owner = fileLockOwner(token);
+    if (owner && !system.isProcessRunning(owner.processId)) {
       return token;
     }
     const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
@@ -164,7 +167,13 @@ function staleDeadLockToken(
     if (modifiedAt === undefined || now - modifiedAt <= staleAfterMilliseconds) {
       return undefined;
     }
-    return ownerPid === undefined ? token : undefined;
+    if (owner?.processStartIdentity) {
+      const currentStartIdentity = yield* system.processStartIdentity(owner.processId);
+      if (currentStartIdentity !== undefined && currentStartIdentity !== owner.processStartIdentity) {
+        return token;
+      }
+    }
+    return owner === undefined ? token : undefined;
   });
 }
 
@@ -205,9 +214,39 @@ function refreshFileLockLease(
   }).pipe(Effect.catch(() => Effect.void));
 }
 
-function fileLockOwnerPid(token: string): number | undefined {
-  const value = Number.parseInt(token.split(':', 1)[0] ?? '', 10);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+const fileLockToken = Effect.fn('fileLock.token')(function* () {
+  const crypto = yield* Crypto.Crypto;
+  const system = yield* SystemInfo;
+  const processStartIdentity = yield* system.processStartIdentity(system.processId);
+  return JSON.stringify({
+    processId: system.processId,
+    ...(processStartIdentity ? {processStartIdentity} : {}),
+    token: yield* crypto.randomUUIDv4,
+    version: 1,
+  } satisfies FileLockOwner);
+});
+
+function fileLockOwner(token: string): FileLockOwner | undefined {
+  try {
+    const parsed = JSON.parse(token) as Partial<FileLockOwner>;
+    if (
+      parsed.version === 1 &&
+      Number.isSafeInteger(parsed.processId) &&
+      parsed.processId! > 0 &&
+      (parsed.processStartIdentity === undefined ||
+        (typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity.length > 0)) &&
+      typeof parsed.token === 'string' &&
+      parsed.token.length > 0
+    ) {
+      return parsed as FileLockOwner;
+    }
+  } catch {
+    // Threadnote 4 beta lock tokens used the legacy "<pid>:<nonce>" format.
+  }
+  const legacyProcessId = Number.parseInt(token.split(':', 1)[0] ?? '', 10);
+  return Number.isSafeInteger(legacyProcessId) && legacyProcessId > 0
+    ? {processId: legacyProcessId, token, version: 1}
+    : undefined;
 }
 
 function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: string): Effect.Effect<void, never> {

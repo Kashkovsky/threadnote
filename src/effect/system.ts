@@ -41,6 +41,21 @@ export interface SystemHardwareInfo {
 export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/SystemInfo') {
   static readonly layer = Layer.sync(SystemInfo, () => {
     const homeDirectory = resolveHomeDirectory(process.env, process.platform);
+    let ownProcessStartIdentity: string | undefined;
+    let ownProcessStartIdentityLoaded = false;
+    const processStartIdentity = (processId: number) =>
+      processId === process.pid && ownProcessStartIdentityLoaded
+        ? Effect.succeed(ownProcessStartIdentity)
+        : readProcessStartIdentity(processId, process.platform, process.env).pipe(
+            Effect.tap(identity =>
+              processId === process.pid
+                ? Effect.sync(() => {
+                    ownProcessStartIdentity = identity;
+                    ownProcessStartIdentityLoaded = identity !== undefined;
+                  })
+                : Effect.void,
+            ),
+          );
     return SystemInfo.of({
       architecture: process.arch,
       availableDiskBytes: path => availableDiskBytes(path, process.platform, process.env),
@@ -70,7 +85,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
           rss: usage.rss,
         };
       },
-      processStartIdentity: processId => readProcessStartIdentity(processId, process.platform, process.env),
+      processStartIdentity,
       runtimeVersion: Bun.version,
       pathDelimiter: process.platform === 'win32' ? ';' : ':',
       platform: process.platform,

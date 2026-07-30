@@ -9,7 +9,6 @@ import {
   type ResolvedEffectAiConfiguration,
 } from './consolidator.js';
 import {sha256Hex} from '../digest.js';
-import {generateWithSelectedLocalModel} from '../../models/inference.js';
 
 const MAX_RECALL_REWRITES = 2;
 const MAX_RECALL_REWRITE_LENGTH = 512;
@@ -208,23 +207,19 @@ export const expandWeakRecallQueryEffect = Effect.fn('RecallQueryExpander.expand
   resolved: ResolvedEffectAiConfiguration | undefined,
 ) {
   if (!shouldExpandRecall(input.confidence)) return [];
-  let rewrites: readonly string[];
-  if (resolved) {
-    const ready = yield* ensureEffectAiReady(runtimeConfig, resolved).pipe(
-      Effect.as(true),
-      Effect.timeoutOrElse({
-        duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
-        orElse: () => Effect.succeed(false),
-      }),
-      Effect.catch(() => Effect.succeed(false)),
-    );
-    if (!ready) return [];
-    const config = resolved.configuration;
-    const expansionInput = isLoopbackAiEndpoint(config.apiUrl) ? input : {project: input.project, query: input.query};
-    rewrites = yield* runEffectAiRecallExpansion(expansionInput, config);
-  } else {
-    rewrites = yield* runNativeRecallExpansion(runtimeConfig, input);
-  }
+  if (!resolved) return [];
+  const ready = yield* ensureEffectAiReady(runtimeConfig, resolved).pipe(
+    Effect.as(true),
+    Effect.timeoutOrElse({
+      duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
+      orElse: () => Effect.succeed(false),
+    }),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+  if (!ready) return [];
+  const config = resolved.configuration;
+  const expansionInput = isLoopbackAiEndpoint(config.apiUrl) ? input : {project: input.project, query: input.query};
+  const rewrites = yield* runEffectAiRecallExpansion(expansionInput, config);
   return limitRecallRewritesForConfidence(input.confidence, rewrites);
 });
 
@@ -249,8 +244,6 @@ export const selectExpandedRecallCandidatesEffect = Effect.fn('RecallCandidateSe
         Effect.catch(() => Effect.succeed(false)),
       );
       selected = ready ? yield* runEffectAiRecallSelection(bounded, resolved.configuration) : undefined;
-    } else if (!resolved) {
-      selected = yield* runNativeRecallSelection(runtimeConfig, bounded);
     }
     return yield* Effect.succeed(selected).pipe(
       Effect.map(selected => selected as readonly string[] | undefined),
@@ -262,55 +255,6 @@ export const selectExpandedRecallCandidatesEffect = Effect.fn('RecallCandidateSe
     );
   },
 );
-
-const runNativeRecallExpansion = Effect.fn('RecallQueryExpander.runNative')(function* (
-  config: Pick<RuntimeConfig, 'agentContextHome'>,
-  input: RecallExpansionInput,
-) {
-  const output = yield* generateWithSelectedLocalModel(config.agentContextHome, {
-    jsonSchema: Schema.toJsonSchemaDocument(RecallExpansionDraft).schema,
-    maxTokens: 128,
-    prompt: recallExpansionPrompt(input),
-    seed: 0,
-    system: 'Return only grounded recall rewrites matching the JSON schema.',
-  }).pipe(
-    Effect.timeoutOrElse({duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS, orElse: () => Effect.succeed(undefined)}),
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  if (output === undefined) return [];
-  const draft = yield* Schema.decodeUnknownEffect(RecallExpansionDraft)(output).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  return draft ? normalizeRecallRewrites(input.query, draft.queries, input.vocabulary) : [];
-});
-
-const runNativeRecallSelection = Effect.fn('RecallCandidateSelector.runNative')(function* (
-  config: Pick<RuntimeConfig, 'agentContextHome'>,
-  input: RecallSelectionInput,
-) {
-  const output = yield* generateWithSelectedLocalModel(config.agentContextHome, {
-    jsonSchema: Schema.toJsonSchemaDocument(RecallSelectionDraft).schema,
-    maxTokens: 128,
-    prompt: recallCandidateSelectionPrompt(input),
-    seed: 0,
-    system: 'Return only candidate IDs supported by the untrusted summaries.',
-  }).pipe(
-    Effect.timeoutOrElse({duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS, orElse: () => Effect.succeed(undefined)}),
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  if (output === undefined) return undefined;
-  const draft = yield* Schema.decodeUnknownEffect(RecallSelectionDraft)(output).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  if (!draft) return undefined;
-  return yield* Effect.sync(() => {
-    try {
-      return normalizeRecallCandidateSelection(draft, input.candidates);
-    } catch {
-      return undefined;
-    }
-  });
-});
 
 export {shouldExpandRecall};
 

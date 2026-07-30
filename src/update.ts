@@ -1,4 +1,4 @@
-import {Console, Effect, FileSystem, Path, Result} from 'effect';
+import {Console, Crypto, Effect, FileSystem, Path, Result} from 'effect';
 import {
   heading,
   info as infoText,
@@ -12,13 +12,16 @@ import {installCommandShim} from './command-shim.js';
 import {extractGzipTar} from './effect/archive.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
+import {withExclusiveFileLock} from './effect/file_lock.js';
 import {getJsonEffect, HttpService} from './effect/http.js';
 import {sha256FileHex} from './effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {
   activateStandaloneRelease,
   installationRoot,
+  promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
+  type StandalonePromotionFaultInjection,
   withStandaloneInstallationLock,
 } from './installations.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
@@ -44,6 +47,12 @@ const RELEASE_SOURCE_ENV = 'THREADNOTE_RELEASE_SOURCE';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 const POST_UPDATE_MIGRATIONS_FILE = 'post-update-migrations.json';
 const POST_UPDATE_STATE_FILE = 'post-update-state.json';
+const POST_UPDATE_LOCK_OPTIONS = {
+  heartbeatIntervalMilliseconds: 10_000,
+  retryIntervalMilliseconds: 100,
+  staleAfterMilliseconds: 60_000,
+  waitTimeoutMilliseconds: 10 * 60_000,
+} as const;
 
 interface UpdateInfo {
   readonly channel: UpdateChannel;
@@ -90,6 +99,15 @@ interface PostUpdateMigration {
 
 interface PostUpdateState {
   readonly handledMigrationIds: readonly string[];
+}
+
+interface PostUpdateMigrationRunOptions {
+  readonly dryRun: boolean;
+  readonly fromVersion: string;
+  readonly interactive: boolean;
+  readonly markHandled: boolean;
+  readonly toVersion: string;
+  readonly yes: boolean;
 }
 
 export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryRun?: boolean} = {}) {
@@ -476,22 +494,10 @@ export const promoteReleaseDirectory = Effect.fn('update.promoteReleaseDirectory
   releaseRoot: string,
   force: boolean,
   processId: number,
+  faultInjection: StandalonePromotionFaultInjection = {},
 ) {
-  const exists = yield* fs.exists(releaseRoot);
   void force;
-  const backupRoot = path.join(path.dirname(releaseRoot), `.${path.basename(releaseRoot)}.${processId}.backup`);
-  yield* fs.remove(backupRoot, {force: true, recursive: true});
-  if (exists) {
-    yield* fs.rename(releaseRoot, backupRoot);
-  }
-  yield* fs
-    .rename(stagedRoot, releaseRoot)
-    .pipe(
-      Effect.catch(error =>
-        exists ? fs.rename(backupRoot, releaseRoot).pipe(Effect.andThen(Effect.fail(error))) : Effect.fail(error),
-      ),
-    );
-  yield* fs.remove(backupRoot, {force: true, recursive: true});
+  yield* promoteStandaloneReleaseDirectory(fs, path, stagedRoot, releaseRoot, processId, faultInjection);
 });
 
 function printWhatsNewIfAvailable(info: UpdateInfo) {
@@ -749,16 +755,26 @@ const updateCachePath = Effect.fn('update.cachePath')(function* (config: Runtime
 
 const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrations')(function* (
   config: RuntimeConfig,
-  options: {
-    readonly dryRun: boolean;
-    readonly fromVersion: string;
-    readonly interactive: boolean;
-    readonly markHandled: boolean;
-    readonly toVersion: string;
-    readonly yes: boolean;
-  },
+  options: PostUpdateMigrationRunOptions,
+) {
+  const run = runApplicablePostUpdateMigrationsUnlocked(config, options);
+  if (options.dryRun) return yield* run;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* withExclusiveFileLock(
+    fs,
+    path.join(config.agentContextHome, 'locks', 'post-update-migrations.lock'),
+    POST_UPDATE_LOCK_OPTIONS,
+    run,
+  );
+});
+
+const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicableMigrationsUnlocked')(function* (
+  config: RuntimeConfig,
+  options: PostUpdateMigrationRunOptions,
 ) {
   const system = yield* SystemInfo;
+  if (!options.dryRun) yield* removeInterruptedPostUpdateStateWrites(config);
   const state = yield* readPostUpdateState(config);
   const migrations = yield* applicablePostUpdateMigrations(config, {
     fromVersion: options.fromVersion,
@@ -774,11 +790,14 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
   yield* Console.log('Post-update actions are available.');
   const threadnoteCommand = currentThreadnoteCommand(system) ?? THREADNOTE_COMMAND;
   const handledMigrationIds = new Set(state.handledMigrationIds);
+  const checkpoint = (migrationId: string) => {
+    if (options.dryRun || !options.markHandled || handledMigrationIds.has(migrationId)) return Effect.void;
+    handledMigrationIds.add(migrationId);
+    return writePostUpdateState(config, {handledMigrationIds: [...handledMigrationIds].sort()});
+  };
   for (const migration of migrations) {
     if (!(yield* migrationRequirementsSatisfied(config, migration))) {
-      if (!options.dryRun) {
-        handledMigrationIds.add(migration.id);
-      }
+      if (!options.dryRun) yield* checkpoint(migration.id);
       continue;
     }
     yield* printPostUpdateMigration(migration);
@@ -790,13 +809,13 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
       yield* Console.log('Skipped. Run manually later:');
       yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, migration.commandArgs)}`);
       if (options.interactive && migration.markHandledWhenSkipped === true) {
-        handledMigrationIds.add(migration.id);
+        yield* checkpoint(migration.id);
       }
       continue;
     }
     yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
     if (!options.dryRun) {
-      handledMigrationIds.add(migration.id);
+      yield* checkpoint(migration.id);
       for (const instruction of migration.instructions) {
         yield* Console.log(instruction);
       }
@@ -806,12 +825,6 @@ const runApplicablePostUpdateMigrations = Effect.fn('update.runApplicableMigrati
         yield* Console.log(`  ${instruction}`);
       }
     }
-  }
-
-  const nextHandledMigrationIds = [...handledMigrationIds].sort();
-  const previousHandledMigrationIds = [...state.handledMigrationIds].sort();
-  if (!options.dryRun && options.markHandled && !arraysEqual(nextHandledMigrationIds, previousHandledMigrationIds)) {
-    yield* writePostUpdateState(config, {handledMigrationIds: nextHandledMigrationIds});
   }
 });
 
@@ -862,10 +875,6 @@ const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSa
   }
   return true;
 });
-
-function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
 
 const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(function* () {
   const path = yield* Path.Path;
@@ -954,19 +963,37 @@ function currentThreadnoteCommand(system: SystemInfoShape): string | undefined {
 }
 
 const readPostUpdateState = Effect.fn('update.readPostUpdateState')(function* (config: RuntimeConfig) {
-  const raw = yield* readFileIfExists(yield* postUpdateStatePath(config));
-  if (!raw) {
+  const fs = yield* FileSystem.FileSystem;
+  const statePath = yield* postUpdateStatePath(config);
+  if (!(yield* fs.exists(statePath))) {
     return {handledMigrationIds: []};
   }
+  const raw = yield* fs.readFileString(statePath);
   const parsedResult = Result.try((): unknown => JSON.parse(raw));
   if (Result.isFailure(parsedResult)) {
-    return {handledMigrationIds: []};
+    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
   }
   const parsed = parsedResult.success;
   if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
-    return {handledMigrationIds: []};
+    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
   }
-  return {handledMigrationIds: parsed.handledMigrationIds.filter((id): id is string => typeof id === 'string')};
+  if (!parsed.handledMigrationIds.every((id): id is string => typeof id === 'string')) {
+    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
+  }
+  return {handledMigrationIds: [...new Set(parsed.handledMigrationIds)].sort()};
+});
+
+const removeInterruptedPostUpdateStateWrites = Effect.fn('update.removeInterruptedStateWrites')(function* (
+  config: RuntimeConfig,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if (!(yield* fs.exists(config.agentContextHome))) return;
+  for (const name of yield* fs.readDirectory(config.agentContextHome)) {
+    if (/^\.post-update-state\.json\.[0-9a-f-]+\.tmp$/i.test(name)) {
+      yield* fs.remove(path.join(config.agentContextHome, name), {force: true});
+    }
+  }
 });
 
 const writePostUpdateState = Effect.fn('update.writePostUpdateState')(function* (
@@ -974,14 +1001,32 @@ const writePostUpdateState = Effect.fn('update.writePostUpdateState')(function* 
   state: PostUpdateState,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
+  const target = yield* postUpdateStatePath(config);
+  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${yield* crypto.randomUUIDv4}.tmp`);
   yield* ensureDirectory(config.agentContextHome, false);
-  yield* fs.writeFileString(yield* postUpdateStatePath(config), `${JSON.stringify(state, null, 2)}\n`, {mode: 0o600});
+  yield* Effect.gen(function* () {
+    yield* fs.writeFileString(temporary, `${JSON.stringify(state, null, 2)}\n`, {flag: 'wx', mode: 0o600});
+    yield* syncPath(fs, temporary);
+    yield* fs.rename(temporary, target);
+    yield* syncPath(fs, path.dirname(target)).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
 });
 
 const postUpdateStatePath = Effect.fn('update.postUpdateStatePath')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
   return path.join(config.agentContextHome, POST_UPDATE_STATE_FILE);
 });
+
+function syncPath(fs: FileSystem.FileSystem, target: string) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fs.open(target, {flag: 'r'});
+      yield* file.sync;
+    }),
+  );
+}
 
 export function releaseSource(environment: NodeJS.ProcessEnv): string {
   return resolveReleaseSource(undefined, false, environment);

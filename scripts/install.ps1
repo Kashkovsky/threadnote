@@ -18,6 +18,8 @@ $releaseSource = if ($env:THREADNOTE_RELEASE_SOURCE) {
   "https://api.github.com/repos/$repository/releases?per_page=100"
 }
 $installationLockWait = [TimeSpan]::FromMinutes(10)
+$installationLockStaleAge = [TimeSpan]::FromMinutes(1)
+$downloadTimeout = [TimeSpan]::FromMinutes(15)
 $installationLockPath = $null
 $installationLockToken = $null
 
@@ -34,10 +36,65 @@ function Release-ThreadnoteInstallationLock {
   $script:installationLockToken = $null
 }
 
+function Get-ThreadnoteProcessStartIdentity {
+  param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+  try {
+    return "win32:$($Process.StartTime.ToUniversalTime().Ticks)"
+  } catch {
+    return $null
+  }
+}
+
+function Get-ThreadnoteLockOwner {
+  param([Parameter(Mandatory = $true)][string]$Token)
+  if ($Token.StartsWith('{')) {
+    try {
+      $parsed = $Token | ConvertFrom-Json
+      $parsedProcessId = 0
+      if (
+        $parsed.version -eq 1 -and
+        [int]::TryParse([string]$parsed.processId, [ref]$parsedProcessId) -and
+        $parsedProcessId -gt 0
+      ) {
+        return [PSCustomObject]@{
+          ProcessId = $parsedProcessId
+          ProcessStartIdentity = if ($parsed.processStartIdentity) {
+            [string]$parsed.processStartIdentity
+          } else {
+            $null
+          }
+        }
+      }
+    } catch {
+      return $null
+    }
+    return $null
+  }
+  $ownerText = ($Token -split ':', 2)[0]
+  $ownerProcessId = 0
+  if ([int]::TryParse($ownerText, [ref]$ownerProcessId) -and $ownerProcessId -gt 0) {
+    return [PSCustomObject]@{
+      ProcessId = $ownerProcessId
+      ProcessStartIdentity = $null
+    }
+  }
+  return $null
+}
+
 function Enter-ThreadnoteInstallationLock {
   param([Parameter(Mandatory = $true)][string]$Path)
   $script:installationLockPath = $Path
-  $script:installationLockToken = "$PID`:bootstrap-installer:$([Guid]::NewGuid().ToString('N'))"
+  $currentProcess = Get-Process -Id $PID -ErrorAction Stop
+  $currentProcessStartIdentity = Get-ThreadnoteProcessStartIdentity $currentProcess
+  $lockOwner = @{
+    processId = $PID
+    token = "bootstrap-installer:$([Guid]::NewGuid().ToString('N'))"
+    version = 1
+  }
+  if ($currentProcessStartIdentity) {
+    $lockOwner.processStartIdentity = $currentProcessStartIdentity
+  }
+  $script:installationLockToken = $lockOwner | ConvertTo-Json -Compress
   $startedAt = [DateTimeOffset]::UtcNow
   while ($true) {
     try {
@@ -56,17 +113,47 @@ function Enter-ThreadnoteInstallationLock {
       } catch {
         ''
       }
-      $ownerText = ($observed -split ':', 2)[0]
-      $ownerProcessId = 0
-      if ([int]::TryParse($ownerText, [ref]$ownerProcessId)) {
-        $owner = Get-Process -Id $ownerProcessId -ErrorAction SilentlyContinue
-        if (-not $owner) {
+      $ownerInfo = Get-ThreadnoteLockOwner $observed
+      if ($ownerInfo) {
+        $ownerProcess = Get-Process -Id $ownerInfo.ProcessId -ErrorAction SilentlyContinue
+        $ownerIsStale = -not $ownerProcess
+        if ($ownerProcess -and $ownerInfo.ProcessStartIdentity) {
+          $currentOwnerStartIdentity = Get-ThreadnoteProcessStartIdentity $ownerProcess
+          if (
+            $currentOwnerStartIdentity -and
+            $currentOwnerStartIdentity -cne $ownerInfo.ProcessStartIdentity
+          ) {
+            $ownerIsStale = $true
+          }
+        }
+        if ($ownerIsStale) {
           $current = try {
             (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
           } catch {
             ''
           }
           if ($current -ceq $observed) {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            continue
+          }
+        }
+      } else {
+        $lockInfo = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if ($lockInfo -and ([DateTime]::UtcNow - $lockInfo.LastWriteTimeUtc -ge $installationLockStaleAge)) {
+          $observedLastWriteTimeTicks = $lockInfo.LastWriteTimeUtc.Ticks
+          $observedLength = $lockInfo.Length
+          $current = try {
+            (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
+          } catch {
+            ''
+          }
+          $currentInfo = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+          if (
+            $currentInfo -and
+            $current -ceq $observed -and
+            $currentInfo.LastWriteTimeUtc.Ticks -eq $observedLastWriteTimeTicks -and
+            $currentInfo.Length -eq $observedLength
+          ) {
             Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
             continue
           }
@@ -153,18 +240,171 @@ function Get-ThreadnoteSha256 {
   }
 }
 
+function Invoke-ThreadnoteWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Operation,
+    [Parameter(Mandatory = $true)][scriptblock]$Action
+  )
+  $maximumAttempts = 4
+  for ($attempt = 1; $attempt -le $maximumAttempts; $attempt += 1) {
+    try {
+      return & $Action
+    } catch {
+      if ($attempt -eq $maximumAttempts) {
+        throw "$Operation failed after $maximumAttempts attempts: $($_.Exception.Message)"
+      }
+      Start-Sleep -Seconds ([Math]::Min($attempt, 3))
+    }
+  }
+}
+
 function Save-ThreadnoteDownload {
   param(
     [Parameter(Mandatory = $true)][string]$Uri,
     [Parameter(Mandatory = $true)][string]$Path
   )
 
-  $client = [System.Net.WebClient]::new()
+  Add-Type -AssemblyName System.Net.Http
   try {
-    $client.Headers[[System.Net.HttpRequestHeader]::UserAgent] = 'threadnote-installer'
-    $client.DownloadFile($Uri, $Path)
-  } finally {
-    $client.Dispose()
+    Invoke-ThreadnoteWithRetry "Download $Uri" {
+      Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+      $client = [System.Net.Http.HttpClient]::new()
+      $cancellation = [System.Threading.CancellationTokenSource]::new()
+      $response = $null
+      $sourceStream = $null
+      $destinationStream = $null
+      try {
+        $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+        $client.DefaultRequestHeaders.UserAgent.ParseAdd('threadnote-installer')
+        $cancellation.CancelAfter($downloadTimeout)
+        $response = $client.GetAsync(
+          $Uri,
+          [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead,
+          $cancellation.Token
+        ).GetAwaiter().GetResult()
+        $null = $response.EnsureSuccessStatusCode()
+        $sourceStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $destinationStream = [IO.FileStream]::new(
+          $Path,
+          [IO.FileMode]::CreateNew,
+          [IO.FileAccess]::Write,
+          [IO.FileShare]::None
+        )
+        $sourceStream.CopyToAsync($destinationStream, 81920, $cancellation.Token).GetAwaiter().GetResult()
+        $destinationStream.Flush($true)
+      } finally {
+        if ($destinationStream) { $destinationStream.Dispose() }
+        if ($sourceStream) { $sourceStream.Dispose() }
+        if ($response) { $response.Dispose() }
+        $cancellation.Dispose()
+        $client.Dispose()
+      }
+    }
+  } catch {
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    throw
+  }
+}
+
+function Assert-ThreadnoteArchivePath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Value,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  if (
+    -not $Value -or
+    $Value -match '^[/\\]' -or
+    $Value -match '^[A-Za-z]:' -or
+    $Value.Contains('\')
+  ) {
+    throw "Unsafe release archive: $Label is absolute or uses a platform-specific separator: $Value"
+  }
+  $components = @()
+  foreach ($component in ($Value -split '/')) {
+    if (-not $component -or $component -eq '.') { continue }
+    if ($component -eq '..') {
+      if ($components.Count -eq 0) {
+        throw "Unsafe release archive: $Label escapes the extraction root: $Value"
+      }
+      if ($components.Count -eq 1) {
+        $components = @()
+      } else {
+        $components = @($components[0..($components.Count - 2)])
+      }
+      continue
+    }
+    $components += $component
+  }
+}
+
+function Assert-ThreadnoteReleaseArchive {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $entries = @(& tar.exe -tzf $Path)
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Could not inspect the release archive.'
+  }
+  $verboseEntries = @(& tar.exe -tvzf $Path)
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Could not inspect release archive entry types.'
+  }
+  if ($entries.Count -eq 0 -or $entries.Count -ne $verboseEntries.Count) {
+    throw 'Unsafe release archive: archive listings have different entry counts or are empty.'
+  }
+  for ($index = 0; $index -lt $entries.Count; $index += 1) {
+    $entry = [string]$entries[$index]
+    Assert-ThreadnoteArchivePath -Value $entry -Label 'entry path'
+    $verboseEntry = [string]$verboseEntries[$index]
+    if (-not $verboseEntry) {
+      throw "Unsafe release archive: entry type is missing for $entry"
+    }
+    $type = $verboseEntry.Substring(0, 1)
+    if ($type -notin @('-', 'd')) {
+      throw "Unsafe release archive: unsupported entry type $type for $entry"
+    }
+  }
+}
+
+function Recover-ThreadnoteReleasePromotion {
+  param(
+    [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+    [Parameter(Mandatory = $true)][string]$StagedRoot,
+    [Parameter(Mandatory = $true)][string]$BackupRoot,
+    [Parameter(Mandatory = $true)][string]$JournalPath
+  )
+  if (Test-Path -LiteralPath $BackupRoot) {
+    if (Test-Path -LiteralPath $ReleaseRoot) {
+      Remove-Item -LiteralPath $BackupRoot -Recurse -Force
+    } else {
+      Move-Item -LiteralPath $BackupRoot -Destination $ReleaseRoot
+    }
+  }
+  Remove-Item -LiteralPath $StagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $JournalPath -Force -ErrorAction SilentlyContinue
+}
+
+function Write-ThreadnotePromotionJournal {
+  param(
+    [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+    [Parameter(Mandatory = $true)][string]$StagedRoot,
+    [Parameter(Mandatory = $true)][string]$BackupRoot,
+    [Parameter(Mandatory = $true)][string]$JournalPath
+  )
+  $temporary = "$JournalPath.$PID.tmp"
+  $content = @{
+    backupRoot = $BackupRoot
+    releaseRoot = $ReleaseRoot
+    stagedRoot = $StagedRoot
+    version = 1
+  } | ConvertTo-Json -Compress
+  $encoding = [Text.UTF8Encoding]::new($false)
+  [IO.File]::WriteAllText($temporary, "$content`n", $encoding)
+  Move-Item -LiteralPath $temporary -Destination $JournalPath -Force
+}
+
+function Invoke-ThreadnotePromotionFault {
+  param([Parameter(Mandatory = $true)][string]$Step)
+  if ($env:THREADNOTE_INSTALLER_FAIL_AFTER_PROMOTION_STEP -ceq $Step) {
+    throw "Injected installer interruption after promotion step: $Step"
   }
 }
 
@@ -188,7 +428,9 @@ function Resolve-ThreadnoteVersion {
   $selectedVersion = $null
   # Windows PowerShell 5.1 emits a top-level REST JSON array as one pipeline
   # object. Store the response first so foreach enumerates the array itself.
-  $releaseResponse = Invoke-RestMethod -Uri $releaseSource -Headers $headers
+  $releaseResponse = Invoke-ThreadnoteWithRetry 'Fetch Threadnote releases' {
+    Invoke-RestMethod -Uri $releaseSource -Headers $headers -TimeoutSec 60
+  }
   foreach ($candidate in $releaseResponse) {
     if ($candidate.draft -or $candidate.immutable -ne $true) { continue }
     if (-not $requestedVersion -and [bool]$candidate.prerelease -ne $prerelease) { continue }
@@ -246,6 +488,7 @@ try {
   if ($actual -ne $expected) {
     throw "Checksum verification failed for $artifact (expected $expected, received $actual)."
   }
+  Assert-ThreadnoteReleaseArchive $archive
 
   $installRoot = if ($env:THREADNOTE_INSTALL_ROOT) {
     $env:THREADNOTE_INSTALL_ROOT
@@ -254,6 +497,7 @@ try {
   } else {
     Join-Path $HOME '.local\share\threadnote'
   }
+  $installRoot = [IO.Path]::GetFullPath($installRoot)
   $launcherRoot = if ($env:THREADNOTE_BIN_DIR) {
     $env:THREADNOTE_BIN_DIR
   } elseif ($env:LOCALAPPDATA) {
@@ -265,11 +509,10 @@ try {
   $releaseRoot = Join-Path $versionsRoot $version
   New-Item -ItemType Directory -Path $versionsRoot -Force | Out-Null
   Enter-ThreadnoteInstallationLock (Join-Path $installRoot '.installation.lock')
-  $operationId = [Guid]::NewGuid().ToString('N')
-  $stagedRoot = Join-Path $versionsRoot ".$version.$operationId.staging"
-  $backupRoot = Join-Path $versionsRoot ".$version.$operationId.backup"
-  Remove-Item -LiteralPath $stagedRoot -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+  $stagedRoot = Join-Path $versionsRoot ".$version.bootstrap.staging"
+  $backupRoot = Join-Path $versionsRoot ".$version.promotion-backup"
+  $promotionJournal = Join-Path $versionsRoot ".$version.promotion.json"
+  Recover-ThreadnoteReleasePromotion $releaseRoot $stagedRoot $backupRoot $promotionJournal
   New-Item -ItemType Directory -Path $stagedRoot | Out-Null
   & tar.exe -xzf $archive -C $stagedRoot
   if ($LASTEXITCODE -ne 0) {
@@ -307,18 +550,21 @@ try {
     }
   }
 
+  Write-ThreadnotePromotionJournal $releaseRoot $stagedRoot $backupRoot $promotionJournal
+  Invoke-ThreadnotePromotionFault 'journaled'
   if (Test-Path -LiteralPath $releaseRoot) {
     Move-Item -LiteralPath $releaseRoot -Destination $backupRoot
   }
+  Invoke-ThreadnotePromotionFault 'previous-backed-up'
   try {
     Move-Item -LiteralPath $stagedRoot -Destination $releaseRoot
   } catch {
-    if (Test-Path -LiteralPath $backupRoot) {
-      Move-Item -LiteralPath $backupRoot -Destination $releaseRoot
-    }
+    Recover-ThreadnoteReleasePromotion $releaseRoot $stagedRoot $backupRoot $promotionJournal
     throw
   }
+  Invoke-ThreadnotePromotionFault 'release-promoted'
   Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $promotionJournal -Force -ErrorAction SilentlyContinue
   Release-ThreadnoteInstallationLock
 
   Write-Host "Installed standalone Threadnote $version"
@@ -354,10 +600,10 @@ try {
     }
   }
 } finally {
-  Release-ThreadnoteInstallationLock
   if ($stagedRoot) {
     Remove-Item -LiteralPath $stagedRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
+  Release-ThreadnoteInstallationLock
   Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 

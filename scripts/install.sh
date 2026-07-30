@@ -5,6 +5,7 @@ REPOSITORY="${THREADNOTE_REPOSITORY:-Kashkovsky/threadnote}"
 CHANNEL="${THREADNOTE_CHANNEL:-latest}"
 RELEASES_API="${THREADNOTE_RELEASE_SOURCE:-https://api.github.com/repos/$REPOSITORY/releases?per_page=100}"
 INSTALL_LOCK_WAIT_SECONDS=600
+INSTALL_LOCK_STALE_SECONDS=60
 installation_lock_path=""
 installation_lock_token=""
 
@@ -36,6 +37,62 @@ require_command() {
   have "$1" || die "$1 is required to install Threadnote."
 }
 
+process_start_identity() {
+  process_id="$1"
+  case "$(uname -s 2>/dev/null || true)" in
+    Linux)
+      [ -r "/proc/$process_id/stat" ] || return 0
+      identity="$(
+        sed 's/^.*) //' "/proc/$process_id/stat" 2>/dev/null |
+          awk 'NF >= 20 { print "linux:" $20; exit }'
+      )"
+      ;;
+    Darwin)
+      identity="$(ps -o lstart= -p "$process_id" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
+      [ -z "$identity" ] || identity="darwin:$identity"
+      ;;
+    *) identity="" ;;
+  esac
+  printf '%s' "$identity"
+}
+
+lock_owner_pid() {
+  token="$1"
+  case "$token" in
+    \{*)
+      printf '%s' "$token" |
+        sed -n 's/.*"processId"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p'
+      ;;
+    *) printf '%s' "${token%%:*}" ;;
+  esac
+}
+
+lock_owner_start_identity() {
+  token="$1"
+  case "$token" in
+    \{*)
+      printf '%s' "$token" |
+        sed -n 's/.*"processStartIdentity"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+      ;;
+  esac
+}
+
+lock_modified_epoch() {
+  lock_path="$1"
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) stat -f '%m' "$lock_path" 2>/dev/null || true ;;
+    *) stat -c '%Y' "$lock_path" 2>/dev/null || true ;;
+  esac
+}
+
+lock_file_signature() {
+  lock_path="$1"
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) stat -f '%i:%m:%z' "$lock_path" 2>/dev/null || true ;;
+    *) stat -c '%i:%Y:%s' "$lock_path" 2>/dev/null || true ;;
+  esac
+}
+
 release_installation_lock() {
   [ -n "$installation_lock_path" ] || return 0
   observed="$(sed -n '1p' "$installation_lock_path" 2>/dev/null || true)"
@@ -48,7 +105,12 @@ release_installation_lock() {
 
 acquire_installation_lock() {
   installation_lock_path="$1"
-  installation_lock_token="$$:bootstrap-installer"
+  owner_start_identity="$(process_start_identity "$$")"
+  if [ -n "$owner_start_identity" ]; then
+    installation_lock_token="{\"processId\":$$,\"processStartIdentity\":\"$owner_start_identity\",\"token\":\"bootstrap-installer\",\"version\":1}"
+  else
+    installation_lock_token="{\"processId\":$$,\"token\":\"bootstrap-installer\",\"version\":1}"
+  fi
   started_at="$(date +%s)"
   while ! (
     umask 077
@@ -56,11 +118,42 @@ acquire_installation_lock() {
     printf '%s\n' "$installation_lock_token" >"$installation_lock_path"
   ) 2>/dev/null; do
     observed="$(sed -n '1p' "$installation_lock_path" 2>/dev/null || true)"
-    owner_pid="${observed%%:*}"
+    owner_pid="$(lock_owner_pid "$observed")"
+    now="$(date +%s)"
     case "$owner_pid" in
-      '' | *[!0-9]*) ;;
+      '' | *[!0-9]*)
+        modified_at="$(lock_modified_epoch "$installation_lock_path")"
+        observed_signature="$(lock_file_signature "$installation_lock_path")"
+        case "$modified_at" in
+          '' | *[!0-9]*) ;;
+          *)
+            if [ $((now - modified_at)) -ge "$INSTALL_LOCK_STALE_SECONDS" ]; then
+              current="$(sed -n '1p' "$installation_lock_path" 2>/dev/null || true)"
+              current_signature="$(lock_file_signature "$installation_lock_path")"
+              if [ -n "$observed_signature" ] &&
+                [ "$current" = "$observed" ] &&
+                [ "$current_signature" = "$observed_signature" ]; then
+                rm -f -- "$installation_lock_path"
+                continue
+              fi
+            fi
+            ;;
+        esac
+        ;;
       *)
+        owner_is_stale=false
         if ! kill -0 "$owner_pid" 2>/dev/null; then
+          owner_is_stale=true
+        else
+          recorded_start_identity="$(lock_owner_start_identity "$observed")"
+          if [ -n "$recorded_start_identity" ]; then
+            current_start_identity="$(process_start_identity "$owner_pid")"
+            if [ -n "$current_start_identity" ] && [ "$current_start_identity" != "$recorded_start_identity" ]; then
+              owner_is_stale=true
+            fi
+          fi
+        fi
+        if [ "$owner_is_stale" = true ]; then
           current="$(sed -n '1p' "$installation_lock_path" 2>/dev/null || true)"
           if [ "$current" = "$observed" ]; then
             rm -f -- "$installation_lock_path"
@@ -69,7 +162,6 @@ acquire_installation_lock() {
         fi
         ;;
     esac
-    now="$(date +%s)"
     [ $((now - started_at)) -lt "$INSTALL_LOCK_WAIT_SECONDS" ] ||
       die "Timed out waiting for Threadnote installation lock: $installation_lock_path"
     sleep 1
@@ -77,9 +169,9 @@ acquire_installation_lock() {
 }
 
 cleanup() {
-  release_installation_lock
   rm -rf -- "$temporary_root"
   [ -z "$staged_root" ] || rm -rf -- "$staged_root"
+  release_installation_lock
 }
 
 release_objects() {
@@ -126,7 +218,7 @@ resolve_version() {
   else
     prerelease=any
   fi
-  releases="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: threadnote-installer' "$RELEASES_API")"
+  releases="$(fetch_release_json "$RELEASES_API")"
   version=$(
     printf '%s' "$releases" |
       release_objects |
@@ -221,6 +313,124 @@ sha256_file() {
   fi
 }
 
+fetch_release_json() {
+  curl -fsSL \
+    --retry 3 \
+    --retry-delay 1 \
+    --retry-max-time 90 \
+    --connect-timeout 15 \
+    --max-time 60 \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'User-Agent: threadnote-installer' \
+    "$1"
+}
+
+download_release_file() {
+  curl -fsSL \
+    --retry 3 \
+    --retry-delay 1 \
+    --retry-max-time 180 \
+    --connect-timeout 15 \
+    --max-time 900 \
+    "$1" \
+    -o "$2"
+}
+
+validate_release_archive() {
+  archive_path="$1"
+  entry_list="$temporary_root/archive-entries.txt"
+  verbose_list="$temporary_root/archive-entries-verbose.txt"
+  LC_ALL=C tar -tzf "$archive_path" >"$entry_list" || die "Could not inspect the release archive."
+  LC_ALL=C tar -tvzf "$archive_path" >"$verbose_list" || die "Could not inspect release archive entry types."
+  awk '
+    function reject(message) {
+      print "Unsafe release archive: " message > "/dev/stderr"
+      exit 1
+    }
+    function validate_path(value, label, count, index_, component, depth, components) {
+      if (value == "") reject(label " is empty")
+      if (substr(value, 1, 1) == "/" || substr(value, 1, 1) == "\\" || value ~ /^[A-Za-z]:/ || index(value, "\\") > 0)
+        reject(label " is absolute or uses a platform-specific separator: " value)
+      count = split(value, components, "/")
+      depth = 0
+      for (index_ = 1; index_ <= count; index_++) {
+        component = components[index_]
+        if (component == "" || component == ".") continue
+        if (component == "..") {
+          if (depth == 0) reject(label " escapes the extraction root: " value)
+          depth--
+        } else {
+          depth++
+        }
+      }
+    }
+    FILENAME == ARGV[1] {
+      names[++name_count] = $0
+      validate_path($0, "entry path")
+      next
+    }
+    {
+      verbose_count++
+      name = names[verbose_count]
+      if (name == "") reject("verbose listing does not match the entry listing")
+      type = substr($0, 1, 1)
+      if (type != "-" && type != "d")
+        reject("unsupported entry type " type " for " name)
+    }
+    END {
+      if (name_count == 0) reject("archive is empty")
+      if (name_count != verbose_count) reject("archive listings have different entry counts")
+    }
+  ' "$entry_list" "$verbose_list" || die "Release archive validation failed."
+}
+
+json_escape() {
+  awk '
+    BEGIN { ORS = ""; first = 1 }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\r/, "\\r")
+      gsub(/\t/, "\\t")
+      if (!first) printf "\\n"
+      printf "%s", $0
+      first = 0
+    }
+  '
+}
+
+write_promotion_journal() {
+  journal_temporary="$promotion_journal.$$"
+  escaped_release_root="$(printf '%s' "$release_root" | json_escape)"
+  escaped_backup_root="$(printf '%s' "$backup_root" | json_escape)"
+  escaped_staged_root="$(printf '%s' "$staged_root" | json_escape)"
+  (
+    umask 077
+    printf '{"backupRoot":"%s","releaseRoot":"%s","stagedRoot":"%s","version":1}\n' \
+      "$escaped_backup_root" \
+      "$escaped_release_root" \
+      "$escaped_staged_root" >"$journal_temporary"
+  )
+  mv "$journal_temporary" "$promotion_journal"
+}
+
+recover_release_promotion() {
+  if [ -e "$backup_root" ]; then
+    if [ -e "$release_root" ]; then
+      rm -rf -- "$backup_root"
+    else
+      mv "$backup_root" "$release_root"
+    fi
+  fi
+  rm -rf -- "$staged_root"
+  rm -f -- "$promotion_journal"
+}
+
+fail_after_promotion_step_if_requested() {
+  requested_step="${THREADNOTE_INSTALLER_FAIL_AFTER_PROMOTION_STEP:-}"
+  [ "$requested_step" != "$1" ] || die "Injected installer interruption after promotion step: $1"
+}
+
 require_command curl
 require_command tar
 version="$(resolve_version)"
@@ -238,8 +448,8 @@ archive="$temporary_root/$artifact"
 checksum_file="$archive.sha256"
 
 say "Downloading Threadnote $version for $platform-$architecture"
-curl -fsSL "$download_root/$artifact" -o "$archive"
-curl -fsSL "$download_root/$artifact.sha256" -o "$checksum_file"
+download_release_file "$download_root/$artifact" "$archive"
+download_release_file "$download_root/$artifact.sha256" "$checksum_file"
 expected="$(awk 'NF {print tolower($1); exit}' "$checksum_file")"
 checksum_name="$(awk 'NF {name=$2; sub(/^\\*/, "", name); print name; exit}' "$checksum_file")"
 actual="$(sha256_file "$archive" | tr '[:upper:]' '[:lower:]')"
@@ -247,15 +457,17 @@ actual="$(sha256_file "$archive" | tr '[:upper:]' '[:lower:]')"
 [ -z "$checksum_name" ] || [ "$checksum_name" = "$artifact" ] ||
   die "Release checksum document names $checksum_name instead of $artifact."
 [ "$expected" = "$actual" ] || die "Checksum verification failed for $artifact."
+validate_release_archive "$archive"
 
 install_root="${THREADNOTE_INSTALL_ROOT:-$HOME/.local/share/threadnote}"
 versions_root="$install_root/versions"
 release_root="$versions_root/$version"
-staged_root="$versions_root/.$version.$$.staging"
-backup_root="$versions_root/.$version.$$.backup"
+staged_root="$versions_root/.$version.bootstrap.staging"
+backup_root="$versions_root/.$version.promotion-backup"
+promotion_journal="$versions_root/.$version.promotion.json"
 mkdir -p "$versions_root"
 acquire_installation_lock "$install_root/.installation.lock"
-rm -rf "$staged_root" "$backup_root"
+recover_release_promotion
 mkdir -p "$staged_root"
 tar -xzf "$archive" -C "$staged_root"
 [ -x "$staged_root/threadnote" ] || chmod 755 "$staged_root/threadnote"
@@ -280,14 +492,19 @@ if [ "$platform" = "darwin" ] &&
     die "Release signature validation failed for the Threadnote executable."
 fi
 
+write_promotion_journal
+fail_after_promotion_step_if_requested journaled
 if [ -e "$release_root" ]; then
   mv "$release_root" "$backup_root"
 fi
+fail_after_promotion_step_if_requested previous-backed-up
 if ! mv "$staged_root" "$release_root"; then
-  [ ! -e "$backup_root" ] || mv "$backup_root" "$release_root"
+  recover_release_promotion
   die "Could not promote Threadnote $version."
 fi
+fail_after_promotion_step_if_requested release-promoted
 rm -rf "$backup_root"
+rm -f "$promotion_journal"
 staged_root=""
 chmod 755 "$release_root/threadnote"
 release_installation_lock

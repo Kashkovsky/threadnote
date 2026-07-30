@@ -1,6 +1,7 @@
 import {Effect, FileSystem} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -103,6 +104,85 @@ describe('Effect file lock', () => {
         }),
       ),
     ).resolves.toBe('acquired');
+  });
+
+  it('recovers a lock when the owner PID was reused by a different process instance', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'original-process',
+        token: 'orphaned-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath, old, old);
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(fs, lockPath, TEST_LOCK_OPTIONS, Effect.succeed('acquired')).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () => Effect.succeed('replacement-process'),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).resolves.toBe('acquired');
+  });
+
+  it('does not inspect process identity while a live lock lease is fresh', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'same-process',
+        token: 'live-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+    let identityLookups = 0;
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {...TEST_LOCK_OPTIONS, staleAfterMilliseconds: 60_000, waitTimeoutMilliseconds: 10},
+            Effect.void,
+          ).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () =>
+                  Effect.sync(() => {
+                    identityLookups += 1;
+                    return 'same-process';
+                  }),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FileLockTimeout);
+    expect(identityLookups).toBe(1);
   });
 
   it('recovers a stale lock even when an old recovery guard was orphaned', async () => {

@@ -1,8 +1,5 @@
 import {describe, expect, it} from 'vitest';
 import {normalizeVector, searchExactVectors} from '../../src/search/vector-search.js';
-import {decodeVectorSidecar, encodeVectorSidecar, VectorSidecarInvalid} from '../../src/search/vector-sidecar.js';
-
-const modelSha256 = 'a'.repeat(64);
 
 describe('exact vector search', () => {
   it('normalizes query vectors and applies deterministic score/id ordering', () => {
@@ -66,88 +63,5 @@ describe('exact vector search', () => {
         {dimensions: 2, limit: 0},
       ),
     ).toThrow('Duplicate');
-  });
-});
-
-describe('packed vector sidecar', () => {
-  it('round-trips versioned metadata and normalized float32 vectors', () => {
-    const diagonal = normalizeVector([1, 1]);
-    const encoded = encodeVectorSidecar({
-      entries: [
-        {
-          fingerprint: 'doc-a-sha',
-          id: 'doc-a#0',
-          uri: 'threadnote://resources/repos/threadnote/doc-a.md',
-          vector: [1, 0],
-        },
-        {
-          fingerprint: 'doc-b-sha',
-          id: 'doc-b#0',
-          uri: 'threadnote://resources/repos/threadnote/doc-b.md',
-          vector: diagonal,
-        },
-      ],
-      metadata: {
-        chunkerVersion: 1,
-        dimensions: 2,
-        modelId: 'embedding-fixture',
-        modelSha256,
-        normalized: 'l2',
-      },
-      version: 1,
-    });
-    const decoded = decodeVectorSidecar(encoded);
-    expect(decoded.metadata).toEqual({
-      chunkerVersion: 1,
-      dimensions: 2,
-      modelId: 'embedding-fixture',
-      modelSha256,
-      normalized: 'l2',
-    });
-    expect(
-      decoded.entries.map(entry => ({...entry, vector: entry.vector.map(value => Number(value.toFixed(6)))})),
-    ).toEqual([
-      {
-        fingerprint: 'doc-a-sha',
-        id: 'doc-a#0',
-        uri: 'threadnote://resources/repos/threadnote/doc-a.md',
-        vector: [1, 0],
-      },
-      {
-        fingerprint: 'doc-b-sha',
-        id: 'doc-b#0',
-        uri: 'threadnote://resources/repos/threadnote/doc-b.md',
-        vector: [0.707107, 0.707107],
-      },
-    ]);
-  });
-
-  it('detects payload corruption and incompatible embedding metadata', () => {
-    const encoded = encodeVectorSidecar({
-      entries: [{fingerprint: 'sha', id: 'doc', uri: 'threadnote://doc', vector: [1, 0]}],
-      metadata: {
-        chunkerVersion: 1,
-        dimensions: 2,
-        modelId: 'fixture',
-        modelSha256,
-        normalized: 'l2',
-      },
-      version: 1,
-    });
-    encoded[encoded.length - 1] ^= 1;
-    expect(() => decodeVectorSidecar(encoded)).toThrow(VectorSidecarInvalid);
-    expect(() =>
-      encodeVectorSidecar({
-        entries: [{fingerprint: 'sha', id: 'doc', uri: 'threadnote://doc', vector: [0.5, 0]}],
-        metadata: {
-          chunkerVersion: 1,
-          dimensions: 2,
-          modelId: 'fixture',
-          modelSha256,
-          normalized: 'l2',
-        },
-        version: 1,
-      }),
-    ).toThrow('not L2-normalized');
   });
 });

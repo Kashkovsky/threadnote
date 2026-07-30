@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.0.0-beta.24",
+  "version": "4.0.0-beta.25",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -49,6 +49,7 @@
     "generate:code-graph-languages": "bun scripts/generate-code-graph-language-catalog.ts",
     "eval:recall:models": "bun scripts/evaluate-recall-models.ts",
     "bench:recall": "bun scripts/benchmark-recall-v2.ts",
+    "bench:recall:vectors": "bun scripts/benchmark-recall-vectors.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
     "bench:code-graph": "bun scripts/benchmark-code-graph.ts",
     "eval:code-graph": "bun scripts/evaluate-code-graph.ts",

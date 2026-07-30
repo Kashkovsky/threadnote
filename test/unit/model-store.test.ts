@@ -114,6 +114,33 @@ describe('LocalModelStore', () => {
     expect(ranges).toEqual([undefined, undefined]);
   });
 
+  it('reuses a verified model while its file identity is unchanged', async () => {
+    const bytes = Buffer.from('verified model cache fixture');
+    const manifest = fixtureManifest(bytes);
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-model-store-cache-'));
+    homes.push(home);
+    let verifyLocks = 0;
+    const layer = LocalModelStore.layerWith({
+      onModelLockAcquired: event =>
+        Effect.sync(() => {
+          if (event.operation === 'verify') verifyLocks += 1;
+        }),
+    });
+
+    const results = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* LocalModelStore;
+        const installedPath = store.path(home, manifest);
+        yield* Effect.promise(() => mkdir(dirname(installedPath), {recursive: true}));
+        yield* Effect.promise(() => writeFile(installedPath, bytes));
+        return yield* Effect.all([store.verify(home, manifest), store.verify(home, manifest)], {concurrency: 1});
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(results.every(result => result.verified)).toBe(true);
+    expect(verifyLocks).toBe(1);
+  });
+
   it('serializes removal behind an in-progress installation of the same model', async () => {
     const bytes = Buffer.from('barrier-controlled model bytes');
     const manifest = fixtureManifest(bytes);

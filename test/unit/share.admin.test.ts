@@ -3,11 +3,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {publishShareGitChange, syncSharedReposBeforeAgentRead} from '../../src/share.js';
+import {clearAutoShareStateForTest, publishShareGitChange} from '../../src/share.js';
 import {
   runShareRemove as runShareRemoveEffect,
   runShareRename as runShareRenameEffect,
   runShareSetUrl as runShareSetUrlEffect,
+  syncSharedReposBeforeAgentRead,
 } from '../../src/effect/share.js';
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
@@ -71,12 +72,15 @@ describe('share administration', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    clearAutoShareStateForTest();
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockImplementation(() => Effect.succeed(ok()));
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
+    clearAutoShareStateForTest();
     vi.restoreAllMocks();
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
@@ -159,6 +163,82 @@ describe('share administration', () => {
       ['-C', join(config.agentContextHome, 'share', 'worktrees', 'default'), 'rev-list', '--count', 'HEAD..@{u}'],
       {allowFailure: true, timeoutMs: 5_000},
     );
+  });
+
+  it('shares one fetch across twelve restarted reader states', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+
+    for (let reader = 0; reader < 12; reader += 1) {
+      clearAutoShareStateForTest();
+      await runEffect(syncSharedReposBeforeAgentRead(config));
+    }
+
+    const commands = vi.mocked(utils.runCommand).mock.calls;
+    const fetches = commands.filter(([, args]) => args[2] === 'fetch');
+    const inspections = commands.filter(([, args]) => args[2] === 'rev-list');
+    expect(fetches).toHaveLength(1);
+    expect(inspections).toHaveLength(1);
+    expect(commands).toHaveLength(2);
+    await expect(
+      readFile(join(config.agentContextHome, 'share', 'fetch-receipts', 'default.json'), 'utf8'),
+    ).resolves.toContain('"succeeded":true');
+  });
+
+  it('serializes concurrent process states and reuses the completed fetch receipt', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    let markFetchStarted: (() => void) | undefined;
+    let releaseFetch: (() => void) | undefined;
+    const fetchStarted = new Promise<void>(resolve => {
+      markFetchStarted = resolve;
+    });
+    const fetchBlocked = new Promise<void>(resolve => {
+      releaseFetch = resolve;
+    });
+    vi.mocked(utils.runCommand).mockImplementation((_executable, args) => {
+      if (args[2] === 'fetch') {
+        return Effect.promise(async () => {
+          markFetchStarted?.();
+          await fetchBlocked;
+          return ok();
+        });
+      }
+      return Effect.succeed(ok());
+    });
+
+    const first = runEffect(syncSharedReposBeforeAgentRead(config));
+    await fetchStarted;
+    clearAutoShareStateForTest();
+    const second = runEffect(syncSharedReposBeforeAgentRead(config));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    releaseFetch?.();
+    const results = await Promise.all([first, second]);
+
+    const commands = vi.mocked(utils.runCommand).mock.calls;
+    expect(commands.filter(([, args]) => args[2] === 'fetch')).toHaveLength(1);
+    expect(commands.filter(([, args]) => args[2] === 'rev-list')).toHaveLength(1);
+    expect(results).toEqual([
+      {syncedTeams: [], warnings: []},
+      {syncedTeams: [], warnings: []},
+    ]);
+  });
+
+  it('repairs a corrupt fetch receipt by performing one fresh fetch', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const receipt = join(config.agentContextHome, 'share', 'fetch-receipts', 'default.json');
+    await mkdir(join(config.agentContextHome, 'share', 'fetch-receipts'), {recursive: true});
+    await writeFile(receipt, '{not-json\n');
+
+    await runEffect(syncSharedReposBeforeAgentRead(config));
+
+    expect(vi.mocked(utils.runCommand).mock.calls.filter(([, args]) => args[2] === 'fetch')).toHaveLength(1);
+    await expect(readFile(receipt, 'utf8').then(content => JSON.parse(content))).resolves.toMatchObject({
+      succeeded: true,
+      team: 'default',
+      version: 1,
+    });
   });
 
   it('can preserve shared durable memories locally before removing a share', async () => {

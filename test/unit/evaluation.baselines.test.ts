@@ -82,15 +82,84 @@ describe('frozen Threadnote 3.0.3 baselines', () => {
     };
 
     expect(indexed.fixture?.documents).toBe(10_000);
-    expect(indexed.source?.index).toContain('@effect/sql-sqlite-node');
+    expect(indexed.source?.index).toContain('@effect/sql-sqlite-bun');
     expect(Object.keys(indexed.scenarios ?? {}).sort()).toEqual([
       'coldDecode',
+      'exactNoHit',
+      'exactSubstring',
       'hotQuery',
       'incrementalUpdate',
       'sourceValidation',
     ]);
     for (const scenario of Object.values(indexed.scenarios ?? {})) {
       expect(scenario.p95Milliseconds).toBeLessThanOrEqual(scenario.p95LimitMilliseconds ?? 0);
+    }
+  });
+
+  it('stores bounded content-addressed vector results at 10k and 50k', () => {
+    const artifact = readJson(
+      join(CANDIDATE_ROOT, 'benchmarks', 'darwin-arm64-m1-max', 'recall-vector-storage-sqlite-v2.json'),
+    ) as {
+      readonly scales?: Readonly<
+        Record<
+          string,
+          {
+            readonly database: {
+              readonly chunkMappings: number;
+              readonly incrementalBytes: number;
+              readonly vectorValues: number;
+            };
+            readonly incrementalBuild: {
+              readonly embeddedChunks: number;
+              readonly reusedChunks: number;
+            };
+            readonly semanticQuery: {readonly p95Milliseconds: number};
+          }
+        >
+      >;
+      readonly suite?: string;
+    };
+
+    expect(artifact.suite).toBe('recall-vector-storage-v1');
+    expect(Object.keys(artifact.scales ?? {}).sort()).toEqual(['10000', '50000']);
+    for (const [documentsText, result] of Object.entries(artifact.scales ?? {})) {
+      const documents = Number(documentsText);
+      expect(result.database.chunkMappings).toBe(documents);
+      expect(result.database.vectorValues).toBe(documents);
+      expect(result.database.incrementalBytes).toBeLessThanOrEqual(64 * 1024);
+      expect(result.incrementalBuild.embeddedChunks).toBe(1);
+      expect(result.incrementalBuild.reusedChunks).toBe(documents - 1);
+      expect(result.semanticQuery.p95Milliseconds).toBeLessThan(1_000);
+    }
+  });
+
+  it('stores the audited code-graph improvements at 10k and 100k', () => {
+    const artifact = readJson(
+      join(CANDIDATE_ROOT, 'benchmarks', 'darwin-arm64-m1-max', 'code-graph-performance-audit-2026-07-30.json'),
+    ) as {
+      readonly scales?: Readonly<
+        Record<
+          string,
+          {
+            readonly after: {
+              readonly coldIndexMilliseconds: number;
+              readonly oneFileIncrementalMilliseconds: number;
+            };
+            readonly before: {
+              readonly coldIndexMilliseconds: number;
+              readonly oneFileIncrementalMilliseconds: number;
+            };
+          }
+        >
+      >;
+      readonly suite?: string;
+    };
+
+    expect(artifact.suite).toBe('code-graph-performance-audit-v1');
+    expect(Object.keys(artifact.scales ?? {}).sort()).toEqual(['10000', '100000']);
+    for (const result of Object.values(artifact.scales ?? {})) {
+      expect(result.after.coldIndexMilliseconds).toBeLessThan(result.before.coldIndexMilliseconds);
+      expect(result.after.oneFileIncrementalMilliseconds).toBeLessThan(result.before.oneFileIncrementalMilliseconds);
     }
   });
 

@@ -73,6 +73,12 @@ interface MaterializedDeclaration extends Declaration {
   readonly symbol: CodeGraphSymbol;
 }
 
+interface DeclarationIntervalGroup {
+  readonly declarations: readonly MaterializedDeclaration[];
+  readonly endIndex: number;
+  readonly startIndex: number;
+}
+
 export function extractTreeSitterFacts(
   definition: TreeSitterLanguageDefinition,
   file: CodeGraphInventoryFile,
@@ -99,11 +105,12 @@ export function extractTreeSitterFacts(
             metadata,
             declarationMatches(definition, queries[1].matches(parsed.root)),
           );
+          const owners = createDeclarationOwnerIndex(declarations);
           const symbols = [moduleSymbol, ...declarations.map(declaration => declaration.symbol)];
           const edges: CodeGraphEdge[] = [];
           const references: CodeGraphReference[] = [];
           for (const declaration of declarations) {
-            const parent = nearestOwner(declarations, declaration.node, declaration.symbol.id, moduleSymbol);
+            const parent = owners.find(declaration.node, declaration.symbol.id)?.symbol ?? moduleSymbol;
             edges.push(resolvedEdge(parent, declaration.symbol, 'contains', declaration.node, file.path));
           }
           for (const match of queries[2].matches(parsed.root)) {
@@ -114,7 +121,7 @@ export function extractTreeSitterFacts(
             const relation =
               definition.referenceRelation?.(capture.name, capture.node) ??
               relationForCapture(capture.name.replace(/^reference\./, ''));
-            const owner = nearestOwner(declarations, capture.node, undefined, moduleSymbol);
+            const owner = owners.find(capture.node)?.symbol ?? moduleSymbol;
             const arity = referenceArity(capture.node);
             const input: TreeSitterReferenceInput = {
               arity,
@@ -206,8 +213,12 @@ function materializeDeclarations(
   declarations: readonly Declaration[],
 ): readonly MaterializedDeclaration[] {
   const output: MaterializedDeclaration[] = [];
+  const open: MaterializedDeclaration[] = [];
   for (const declaration of declarations) {
-    const parent = nearestDeclaration(output, declaration.node);
+    while (open.length > 0 && !containsNode(open.at(-1)!.node, declaration.node)) {
+      open.pop();
+    }
+    const parent = open.at(-1);
     const namespace = Option.getOrUndefined(metadata.namespace);
     const qualifiedName = [namespace, parent?.symbol.qualifiedName.replace(`${namespace}.`, ''), declaration.name]
       .filter(Boolean)
@@ -246,7 +257,16 @@ function materializeDeclarations(
       signature: signature || undefined,
       span: nodeSpan(declaration.node),
     };
-    output.push({...declaration, symbol});
+    const materialized = {...declaration, symbol};
+    output.push(materialized);
+    const current = open.at(-1);
+    if (
+      current === undefined ||
+      current.node.startIndex !== declaration.node.startIndex ||
+      current.node.endIndex !== declaration.node.endIndex
+    ) {
+      open.push(materialized);
+    }
   }
   return output;
 }
@@ -272,41 +292,96 @@ function makeModuleSymbol(
   };
 }
 
-function nearestDeclaration(
-  declarations: readonly MaterializedDeclaration[],
-  node: Node,
-): MaterializedDeclaration | undefined {
-  let best: MaterializedDeclaration | undefined;
+function createDeclarationOwnerIndex(declarations: readonly MaterializedDeclaration[]): {
+  readonly find: (node: Node, excludedSymbolId?: string) => MaterializedDeclaration | undefined;
+} {
+  const groups: Array<{
+    declarations: MaterializedDeclaration[];
+    endIndex: number;
+    startIndex: number;
+  }> = [];
   for (const declaration of declarations) {
-    if (
-      declaration.node.startIndex <= node.startIndex &&
-      declaration.node.endIndex >= node.endIndex &&
-      (!best || declaration.node.startIndex > best.node.startIndex || declaration.node.endIndex < best.node.endIndex)
-    ) {
-      best = declaration;
+    const previous = groups.at(-1);
+    if (previous?.startIndex === declaration.node.startIndex && previous.endIndex === declaration.node.endIndex) {
+      previous.declarations.push(declaration);
+    } else {
+      groups.push({
+        declarations: [declaration],
+        endIndex: declaration.node.endIndex,
+        startIndex: declaration.node.startIndex,
+      });
     }
   }
-  return best;
+  if (groups.length === 0) return {find: () => undefined};
+
+  const intervalGroups: readonly DeclarationIntervalGroup[] = groups;
+  let leafCount = 1;
+  while (leafCount < intervalGroups.length) leafCount *= 2;
+  const maximumEnds = new Float64Array(leafCount * 2);
+  maximumEnds.fill(Number.NEGATIVE_INFINITY);
+  for (let index = 0; index < intervalGroups.length; index += 1) {
+    maximumEnds[leafCount + index] = intervalGroups[index]!.endIndex;
+  }
+  for (let index = leafCount - 1; index > 0; index -= 1) {
+    maximumEnds[index] = Math.max(maximumEnds[index * 2]!, maximumEnds[index * 2 + 1]!);
+  }
+
+  return {
+    find: (node, excludedSymbolId) => {
+      let maximumGroupIndex = lastGroupStartingBefore(intervalGroups, node.startIndex);
+      while (maximumGroupIndex >= 0) {
+        const groupIndex = rightmostContainingGroup(
+          maximumEnds,
+          leafCount,
+          intervalGroups.length,
+          maximumGroupIndex,
+          node.endIndex,
+        );
+        if (groupIndex < 0) return undefined;
+        const owner = intervalGroups[groupIndex]!.declarations.find(
+          declaration => declaration.symbol.id !== excludedSymbolId,
+        );
+        if (owner) return owner;
+        maximumGroupIndex = groupIndex - 1;
+      }
+      return undefined;
+    },
+  };
 }
 
-function nearestOwner(
-  declarations: readonly MaterializedDeclaration[],
-  node: Node,
-  excludedSymbolId: string | undefined,
-  fallback: CodeGraphSymbol,
-): CodeGraphSymbol {
-  let best: MaterializedDeclaration | undefined;
-  for (const declaration of declarations) {
-    if (
-      declaration.symbol.id !== excludedSymbolId &&
-      declaration.node.startIndex <= node.startIndex &&
-      declaration.node.endIndex >= node.endIndex &&
-      (!best || declaration.node.startIndex > best.node.startIndex || declaration.node.endIndex < best.node.endIndex)
-    ) {
-      best = declaration;
+function lastGroupStartingBefore(groups: readonly DeclarationIntervalGroup[], startIndex: number): number {
+  let lower = 0;
+  let upper = groups.length;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if (groups[middle]!.startIndex <= startIndex) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
     }
   }
-  return best?.symbol ?? fallback;
+  return lower - 1;
+}
+
+function rightmostContainingGroup(
+  maximumEnds: Float64Array,
+  leafCount: number,
+  groupCount: number,
+  maximumGroupIndex: number,
+  requiredEndIndex: number,
+): number {
+  const visit = (treeIndex: number, lower: number, upper: number): number => {
+    if (lower > maximumGroupIndex || maximumEnds[treeIndex]! < requiredEndIndex) return -1;
+    if (lower === upper) return lower < groupCount ? lower : -1;
+    const middle = lower + Math.floor((upper - lower) / 2);
+    const right = visit(treeIndex * 2 + 1, middle + 1, upper);
+    return right >= 0 ? right : visit(treeIndex * 2, lower, middle);
+  };
+  return visit(1, 0, leafCount - 1);
+}
+
+function containsNode(container: Node, candidate: Node): boolean {
+  return container.startIndex <= candidate.startIndex && container.endIndex >= candidate.endIndex;
 }
 
 function deduplicateDeclarations(declarations: readonly Declaration[]): readonly Declaration[] {

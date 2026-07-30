@@ -4,9 +4,11 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   clearRecallIndexMemoryCache,
   expireRecallIndexValidation,
+  loadRecallExactMatches,
   loadRecallIndex,
   loadRecallIndexDataBatch,
   recallIndexDatabaseFilename,
+  recallIndexStatus,
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
 import {join, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
@@ -134,6 +136,58 @@ describe('local recall index', () => {
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
+  });
+
+  it('reports canonical documents omitted by the bounded file-size policy', async () => {
+    const root = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
+    await mkdir(root, {recursive: true});
+    await writeFile(join(root, 'small.md'), '# Indexed\n\nSmall canonical document.', 'utf8');
+    await writeFile(join(root, 'oversized.md'), `# Oversized\n\n${'x'.repeat(512 * 1024)}`, 'utf8');
+
+    await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
+    const status = await run(recallIndexStatus(config()));
+
+    expect(status).toMatchObject({
+      documentCount: 1,
+      ready: true,
+      skippedOversizedDocumentCount: 1,
+    });
+  });
+
+  it('serves bounded exact substring matches from SQLite without scanning canonical files', async () => {
+    const memoryRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'durable', 'projects', 'threadnote');
+    const outsideRoot = join(directory, 'data', 'local', 'resources', 'repos', 'outside');
+    await mkdir(memoryRoot, {recursive: true});
+    await mkdir(outsideRoot, {recursive: true});
+    await writeFile(join(memoryRoot, 'target.md'), '# Target\n\nReSharding keeps ALPHA-42 available.', 'utf8');
+    await writeFile(join(memoryRoot, 'other.md'), '# Other\n\nNo distinctive exact anchor.', 'utf8');
+    await writeFile(join(outsideRoot, 'outside.md'), '# Outside\n\nresharding alpha-42', 'utf8');
+
+    const scope = 'threadnote://user/me/memories/durable/projects/threadnote';
+    const matches = await run(
+      loadRecallExactMatches(config(), {
+        includeInactive: false,
+        limitPerTerm: 25,
+        terms: ['sharding', 'alpha-42'],
+        uriScopes: [scope],
+      }),
+    );
+
+    expect(matches).toEqual([
+      {
+        terms: ['sharding', 'alpha-42'],
+        uri: `${scope}/target.md`,
+      },
+    ]);
+    await expect(
+      run(
+        loadRecallExactMatches(config(), {
+          includeInactive: false,
+          terms: ['not-present-908'],
+          uriScopes: [scope],
+        }),
+      ),
+    ).resolves.toEqual([]);
   });
 
   it('reports determinate lexical indexing and posting progress', async () => {
@@ -272,8 +326,46 @@ describe('local recall index', () => {
     const original = await stat(resourcePath);
 
     await writeFile(resourcePath, '# Other\n\nomega-99', 'utf8');
-    await utimes(resourcePath, original.mtimeMs, original.mtimeMs);
+    await utimes(resourcePath, new Date(original.mtimeMs), new Date(original.mtimeMs));
     const refreshed = await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
+
+    expect(refreshed[0]?.text).toContain('omega-99');
+    expect(refreshed[0]?.text).not.toContain('alpha-42');
+  });
+
+  it('fully refreshes an explicitly stale generation when size and modification time are preserved', async () => {
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+    const original = await stat(resourcePath);
+
+    await writeFile(resourcePath, '# Other\n\nomega-99', 'utf8');
+    await utimes(resourcePath, new Date(original.mtimeMs), new Date(original.mtimeMs));
+    await run(expireRecallIndexValidation(directory, false));
+    const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'omega-99'}));
+
+    expect(refreshed[0]?.text).toContain('omega-99');
+    expect(refreshed[0]?.text).not.toContain('alpha-42');
+  });
+
+  it('bounds URI-aware invalidation growth and falls back to a conservative refresh', async () => {
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+    const original = await stat(resourcePath);
+
+    await writeFile(resourcePath, '# Other\n\nomega-99', 'utf8');
+    await utimes(resourcePath, new Date(original.mtimeMs), new Date(original.mtimeMs));
+    await run(
+      expireRecallIndexValidation(
+        directory,
+        false,
+        Array.from({length: 1_025}, (_unused, index) => `threadnote://resources/repos/unrelated/doc-${index}.md`),
+      ),
+    );
+    const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'omega-99'}));
 
     expect(refreshed[0]?.text).toContain('omega-99');
     expect(refreshed[0]?.text).not.toContain('alpha-42');
@@ -645,7 +737,7 @@ describe('local recall index', () => {
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'initial-anchor'}));
 
     await writeFile(resourcePath, '# Target\n\nconstructor prototype-collision-anchor', 'utf8');
-    await run(expireRecallIndexValidation(directory, false));
+    await run(expireRecallIndexValidation(directory, false, ['threadnote://resources/repos/threadnote/target.md']));
     const refreshed = await run(loadRecallIndex(config(), {includeInactive: false, query: 'constructor'}));
 
     expect(refreshed[0]?.uri).toBe('threadnote://resources/repos/threadnote/target.md');
@@ -670,7 +762,7 @@ describe('local recall index', () => {
     const originalIds = queryDatabase<{id: number; uri: string}>('SELECT id, uri FROM documents ORDER BY uri');
 
     await writeFile(join(resourceRoot, 'changed.md'), '# Changed\n\nchanged-term-002', 'utf8');
-    await run(expireRecallIndexValidation(directory, false));
+    await run(expireRecallIndexValidation(directory, false, ['threadnote://resources/repos/threadnote/changed.md']));
     await run(loadRecallIndex(config(), {includeInactive: false, query: 'changed-term-002'}));
 
     const refreshedIds = queryDatabase<{id: number; uri: string}>('SELECT id, uri FROM documents ORDER BY uri');
@@ -872,7 +964,7 @@ describe('local recall index', () => {
     await utimes(targetResourcePath, updatedAt, updatedAt);
     const updatedTargetInfo = await stat(targetRepoPath);
     await writeState(updatedTargetInfo.mtimeMs, updatedTargetInfo.size);
-    await run(expireRecallIndexValidation(directory, false));
+    await run(expireRecallIndexValidation(directory, false, [targetUri]));
     const updated = await run(loadRecallIndex(recallConfig, {includeInactive: false}));
 
     expect(updated.find(candidate => candidate.uri === stableUri)).toStrictEqual(initialStable);

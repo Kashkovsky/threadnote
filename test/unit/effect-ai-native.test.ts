@@ -1,5 +1,5 @@
 import {expect, it} from '@effect/vitest';
-import {Effect, Exit, Layer} from 'effect';
+import {Effect, Exit, Fiber, Layer} from 'effect';
 import * as EmbeddingModel from 'effect/unstable/ai/EmbeddingModel';
 import {describe} from 'vitest';
 import {llamaEmbeddingModelLayer} from '../../src/effect/ai/embedding.js';
@@ -365,8 +365,9 @@ describe('Effect AI native harness', () => {
     }),
   );
 
-  it.effect('keeps one warm session per role and model for the root runtime scope', () => {
+  it.effect('keeps retrieval sessions warm and releases heavyweight generation sessions after each request', () => {
     const loads = {embedding: 0, generation: 0, reranker: 0};
+    let releasedGenerationSessions = 0;
     const engine = Layer.succeed(
       LlamaCppEngine,
       LlamaCppEngine.of({
@@ -381,13 +382,16 @@ describe('Effect AI native harness', () => {
             };
           }),
         loadGenerationSession: options =>
-          Effect.sync(() => {
-            loads.generation += 1;
-            return {
-              generate: request => Effect.succeed({model: options.modelId, prompt: request.prompt}),
-              modelId: options.modelId,
-            };
-          }),
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              loads.generation += 1;
+              return {
+                generate: request => Effect.succeed({model: options.modelId, prompt: request.prompt}),
+                modelId: options.modelId,
+              };
+            }),
+            () => Effect.sync(() => (releasedGenerationSessions += 1)),
+          ),
         loadRankingSession: options =>
           Effect.sync(() => {
             loads.reranker += 1;
@@ -421,7 +425,8 @@ describe('Effect AI native harness', () => {
             prompt: 'return json',
           });
         }
-        expect(loads).toEqual({embedding: 1, generation: 1, reranker: 1});
+        expect(loads).toEqual({embedding: 1, generation: 2, reranker: 1});
+        expect(releasedGenerationSessions).toBe(2);
       }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
     );
   });
@@ -510,6 +515,48 @@ describe('Effect AI native harness', () => {
           }),
         ).toEqual([0, 0.1]);
         expect(loads).toEqual({embedding: 2, reranker: 2});
+      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+    );
+  });
+
+  it.effect('releases a generation session when the request is interrupted', () => {
+    let loaded = false;
+    let releases = 0;
+    const engine = Layer.succeed(
+      LlamaCppEngine,
+      LlamaCppEngine.of({
+        diagnostics: {backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4},
+        loadEmbeddingSession: () => Effect.die(new Error('Unexpected embedding model load')),
+        loadGenerationSession: options =>
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              loaded = true;
+              return {
+                generate: () => Effect.never,
+                modelId: options.modelId,
+              };
+            }),
+            () => Effect.sync(() => (releases += 1)),
+          ),
+        loadRankingSession: () => Effect.die(new Error('Unexpected reranker model load')),
+      }),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const generation = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
+        const runtime = yield* LocalModelRuntime;
+        const fiber = yield* Effect.forkChild(
+          runtime.generate({
+            jsonSchema: {type: 'object'},
+            manifest: generation,
+            maxTokens: 16,
+            modelPath: '/models/generate.gguf',
+            prompt: 'return json',
+          }),
+        );
+        while (!loaded) yield* Effect.yieldNow;
+        yield* Fiber.interrupt(fiber);
+        expect(releases).toBe(1);
       }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
     );
   });

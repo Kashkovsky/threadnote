@@ -9,7 +9,7 @@ import {
   ResourcePathUnsafe,
   ResourceStore,
 } from '../../src/effect/resource-store.js';
-import {loadRecallIndex} from '../../src/recall/index.js';
+import {loadRecallExactMatches, loadRecallIndex} from '../../src/recall/index.js';
 import {InvalidResourceId, parseResourceId} from '../../src/storage/resource-id.js';
 import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -199,7 +199,7 @@ describe('native ResourceStore', () => {
           yield* store.write(location(home), uri, '# Other\n\nomega-99', {mode: 'replace'});
         }),
       );
-      await utimes(resourcePath, original.mtimeMs, original.mtimeMs);
+      await utimes(resourcePath, new Date(original.mtimeMs), new Date(original.mtimeMs));
       const refreshed = await runEffect(
         loadRecallIndex(config, {
           includeInactive: false,
@@ -208,6 +208,25 @@ describe('native ResourceStore', () => {
       );
       expect(refreshed[0]?.text).toContain('omega-99');
       expect(refreshed[0]?.text).not.toContain('alpha-42');
+      const scope = 'threadnote://resources/repos/threadnote';
+      await expect(
+        runEffect(
+          loadRecallExactMatches(config, {
+            includeInactive: false,
+            terms: ['alpha-42'],
+            uriScopes: [scope],
+          }),
+        ),
+      ).resolves.toEqual([]);
+      await expect(
+        runEffect(
+          loadRecallExactMatches(config, {
+            includeInactive: false,
+            terms: ['omega-99'],
+            uriScopes: [scope],
+          }),
+        ),
+      ).resolves.toEqual([{terms: ['omega-99'], uri}]);
     } finally {
       await rm(home, {force: true, recursive: true});
     }

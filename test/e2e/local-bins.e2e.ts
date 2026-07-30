@@ -3,10 +3,12 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {Database} from 'bun:sqlite';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
+import {vectorIndexDatabaseFilename} from '../../src/search/vector-index.js';
 
 const execute = promisify(execFile);
 const root = process.cwd();
@@ -20,7 +22,7 @@ let userHome: string;
 let graphRepository: string;
 let installedModelPath: string;
 let installedModelModifiedAt: number;
-let initialVectorGeneration: string;
+let initialVectorRevision: string;
 let installOutput: string;
 let installedFiles: string[];
 
@@ -61,7 +63,7 @@ beforeAll(async () => {
   const installedModel = await stat(installedModelPath);
   expect(installedModel.size).toBe(receipt.size);
   installedModelModifiedAt = installedModel.mtimeMs;
-  initialVectorGeneration = await activeVectorGeneration();
+  initialVectorRevision = await activeVectorRevision();
   await runCli([
     'remember',
     '--kind',
@@ -100,8 +102,8 @@ describe('built self-contained distribution', () => {
     );
     expect(installOutput).toContain('Activating vector recall index with 0 chunk(s).');
     expect(installedFiles).toContain('layout.json');
-    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v2.sqlite'));
-    expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, 'active.json'));
+    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v3.sqlite'));
+    expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename()));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);
     const commandShim = installedLauncher();
@@ -139,12 +141,10 @@ describe('built self-contained distribution', () => {
       },
     );
     expect(`${shimRecall.stdout}${shimRecall.stderr}`).toContain('native-e2e.md');
-    const refreshedVectorGeneration = await activeVectorGeneration();
-    expect(refreshedVectorGeneration).not.toBe(initialVectorGeneration);
+    const refreshedVectorRevision = await activeVectorRevision();
+    expect(refreshedVectorRevision).not.toBe(initialVectorRevision);
     await expect(
-      stat(
-        join(home, 'indexes', 'vectors', coreEmbeddingModelId, 'generations', refreshedVectorGeneration, 'vectors.bin'),
-      ),
+      stat(join(home, 'indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename())),
     ).resolves.toMatchObject({size: expect.any(Number)});
     const canonical = join(
       home,
@@ -377,11 +377,11 @@ describe('built self-contained distribution', () => {
   });
 
   it('preserves the installed core model and current indexes on repeat install', async () => {
-    const vectorGeneration = await activeVectorGeneration();
+    const vectorRevision = await activeVectorRevision();
     const output = await runCli(['install']);
     expect(output).toContain(`${coreEmbeddingModelId}: core embedding model verified`);
     expect((await stat(installedModelPath)).mtimeMs).toBe(installedModelModifiedAt);
-    expect(await activeVectorGeneration()).toBe(vectorGeneration);
+    expect(await activeVectorRevision()).toBe(vectorRevision);
   });
 
   it('recovers legacy data without overwriting newer canonical beta content', async () => {
@@ -1075,12 +1075,24 @@ describe('built self-contained distribution', () => {
   });
 });
 
-async function activeVectorGeneration(): Promise<string> {
-  const pointer = JSON.parse(
-    await readFile(join(home, 'indexes', 'vectors', coreEmbeddingModelId, 'active.json'), 'utf8'),
-  ) as {readonly generation?: string};
-  expect(pointer.generation).toEqual(expect.any(String));
-  return pointer.generation as string;
+async function activeVectorRevision(): Promise<string> {
+  const database = new Database(join(home, 'indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename()), {
+    readonly: true,
+  });
+  try {
+    const pointer = database
+      .query(
+        `SELECT generation.job_id
+         FROM vector_pointer AS pointer
+         JOIN vector_generations AS generation ON generation.generation = pointer.generation
+         WHERE pointer.singleton = 1`,
+      )
+      .get() as {readonly job_id?: string} | null;
+    expect(pointer?.job_id).toMatch(/^[a-f0-9]{64}$/);
+    return pointer!.job_id as string;
+  } finally {
+    database.close();
+  }
 }
 
 async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}): Promise<string> {

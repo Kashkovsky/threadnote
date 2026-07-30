@@ -196,15 +196,18 @@ function createResourceStoreOperations(
 ): ResourceStoreShape {
   const resolve = (location: ResourceStoreLocation, uri: string) =>
     resolveResourcePath(fs, path, location, uri).pipe(mapIoError('resolve', uri));
-  const invalidateRecall = (location: ResourceStoreLocation) =>
+  const invalidateRecall = (location: ResourceStoreLocation, invalidatedUris: readonly string[]) =>
     provideLockServices(
       Effect.all(
-        [expireRecallIndexValidation(location.home, false), expireRecallIndexValidation(location.home, true)],
+        [
+          expireRecallIndexValidation(location.home, false, invalidatedUris),
+          expireRecallIndexValidation(location.home, true, invalidatedUris),
+        ],
         {concurrency: 2},
       ).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
     );
-  const invalidateRecallBestEffort = (location: ResourceStoreLocation) =>
-    invalidateRecall(location).pipe(Effect.catchCause(() => Effect.void));
+  const invalidateRecallBestEffort = (location: ResourceStoreLocation, invalidatedUris: readonly string[]) =>
+    invalidateRecall(location, invalidatedUris).pipe(Effect.catchCause(() => Effect.void));
   const withLock = <A, E, R>(
     location: ResourceStoreLocation,
     id: ResourceId,
@@ -254,6 +257,7 @@ function createResourceStoreOperations(
           yield* verifyExistingPath(fs, path, resolved);
           yield* fs.remove(resolved.path, {recursive: options?.recursive === true});
           yield* syncDirectory(fs, path.dirname(resolved.path));
+          yield* invalidateRecallBestEffort(location, [resolved.id.canonicalUri]);
         }),
       );
     }).pipe(mapIoError('remove', uri));
@@ -305,6 +309,7 @@ function createResourceStoreOperations(
             });
           }
           yield* writeAtomically(fs, path, resolved, content, options.mode === 'create');
+          yield* invalidateRecallBestEffort(location, [resolved.id.canonicalUri]);
         }),
       );
       return {fingerprint, uri: resolved.id.canonicalUri};
@@ -370,23 +375,21 @@ function createResourceStoreOperations(
         ? Effect.void
         : Effect.forEach(mutations, mutation => applyMutation(location, mutation), {
             discard: true,
-          }).pipe(Effect.ensuring(invalidateRecallBestEffort(location))),
+          }),
     read: (location, uri) =>
       Effect.gen(function* () {
         const resolved = yield* resolve(location, uri);
         yield* verifyExistingPath(fs, path, resolved, 'File');
         return yield* fs.readFileString(resolved.path);
       }).pipe(mapIoError('read', uri)),
-    remove: (location, uri, options) =>
-      removeResource(location, uri, options).pipe(Effect.tap(() => invalidateRecallBestEffort(location))),
+    remove: (location, uri, options) => removeResource(location, uri, options),
     stat: (location, uri) =>
       Effect.gen(function* () {
         const resolved = yield* resolve(location, uri);
         const info = yield* verifyExistingPath(fs, path, resolved);
         return entryForInfo(resolved.id.canonicalUri, info);
       }).pipe(mapIoError('stat', uri)),
-    write: (location, uri, content, options) =>
-      writeResource(location, uri, content, options).pipe(Effect.tap(() => invalidateRecallBestEffort(location))),
+    write: (location, uri, content, options) => writeResource(location, uri, content, options),
   };
 }
 

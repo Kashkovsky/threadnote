@@ -1,6 +1,34 @@
 name: Platform benchmarks
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/benchmarks.yml'
+      - 'bun.lock'
+      - 'package.json'
+      - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/benchmark-recall-vectors.ts'
+      - 'scripts/code-graph-fixture.ts'
+      - 'scripts/evaluate-recall.ts'
+      - 'src/code_graph/**'
+      - 'src/crypto/**'
+      - 'src/effect/ai/**'
+      - 'src/effect/command.ts'
+      - 'src/effect/digest.ts'
+      - 'src/effect/file_lock.ts'
+      - 'src/effect/runtime.ts'
+      - 'src/effect/system.ts'
+      - 'src/evaluation/**'
+      - 'src/models/**'
+      - 'src/recall/**'
+      - 'src/search/chunker.ts'
+      - 'src/search/vector-index.ts'
+      - 'src/search/vector-search.ts'
+      - 'src/storage/layout.ts'
+      - 'test/evaluation/baselines/code-graph-v1/**'
+      - 'test/evaluation/candidates/threadnote-4.0.0/**'
+      - 'test/evaluation/fixtures/code-graph-v1/**'
+      - 'test/evaluation/fixtures/recall-v1/**'
   workflow_dispatch:
     inputs:
       include_100k:
@@ -24,8 +52,77 @@ env:
   CODE_GRAPH_EMBEDDING_MODEL_SHA256: f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804
 
 jobs:
+  recall-pr-10k:
+    name: Recall production 10k · Linux
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate production lexical and exact-search behavior
+        run: bun run eval:recall
+
+      - name: Gate paged vector storage and incremental reuse
+        run: >-
+          bun run bench:recall:vectors --
+          --documents 10000
+          --samples 5
+          --fail-on-budget
+          --output artifacts/recall-vectors-pr-10000-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-vector-benchmark-pr-10000-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  code-graph-pr-scale:
+    name: Code graph PR lexical ${{ matrix.scale }} · Linux
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: [10000, 100000]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate changed graph runtime at ${{ matrix.scale }} symbols
+        run: >-
+          bun run bench:code-graph --
+          --scale-symbols ${{ matrix.scale }}
+          --samples 3
+          --warmups 1
+          --fail-on-budget
+          --output artifacts/code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
   code-graph:
     name: Code graph · ${{ matrix.os }}
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +159,7 @@ jobs:
 
   code-graph-10k:
     name: Code graph 10k · ${{ matrix.os }}
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +194,7 @@ jobs:
 
   code-graph-vectors:
     name: Code graph pinned vectors · Linux
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -133,6 +232,7 @@ jobs:
 
   code-graph-vectors-10k:
     name: Code graph pinned vectors 10k · Linux
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -241,6 +341,7 @@ jobs:
 
   recall-10k:
     name: Recall 10k · ${{ matrix.os }}
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:

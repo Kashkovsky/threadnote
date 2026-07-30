@@ -80,6 +80,8 @@ const PACK_FILES_DIR = 'files';
 const PACK_ROOT_TOKEN = '${THREADNOTE_PACK_ROOT}';
 const AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS = 5_000;
 export const SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS = 5 * 60 * 1000;
+const SHARE_FETCH_RECEIPT_VERSION = 1;
+const SHARE_FETCH_WARNING_MAXIMUM_LENGTH = 1_000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
 export {applyScrubber, scrubberBlocker} from './scrubber.js';
@@ -364,6 +366,17 @@ interface ShareUpdateStatus {
   readonly warning?: string;
 }
 
+interface ShareFetchReceipt {
+  readonly behind: number;
+  readonly checkedAt: number;
+  readonly remote: string;
+  readonly succeeded: boolean;
+  readonly team: string;
+  readonly version: number;
+  readonly warning?: string;
+  readonly worktree: string;
+}
+
 interface PendingReindexFile {
   readonly teams: Readonly<Record<string, readonly ChangedFile[]>>;
   readonly version: number;
@@ -546,6 +559,7 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBe
         if (Result.isSuccess(syncResult)) {
           warnings.push(...syncResult.success.warnings);
           if (syncResult.success.synced) {
+            if (remainingBehind.has(team)) yield* recordShareTeamSynced(config, team);
             remainingBehind.delete(team);
             syncedTeams.push(team);
           }
@@ -702,19 +716,40 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
   if (teams.length === 0) {
     return [];
   }
-  const git = yield* requiredExecutable('git');
+  let git: string | undefined;
   const statuses: ShareUpdateStatus[] = [];
   for (const [name, team] of teams) {
+    const receipt = yield* readFreshShareFetchReceipt(config, name, team);
+    if (receipt) {
+      statuses.push({
+        behind: receipt.behind,
+        team: name,
+        ...(receipt.warning ? {warning: receipt.warning} : {}),
+      });
+      continue;
+    }
+    git ??= yield* requiredExecutable('git');
     const fetchResult = yield* runCommand(git, ['-C', team.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
       allowFailure: true,
       timeoutMs: AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
     });
     if (fetchResult.exitCode !== 0) {
-      statuses.push({
+      const warning = boundedShareFetchWarning(
+        `Auto-sync check for shared team "${name}" failed: ${
+          fetchResult.stderr.trim() || fetchResult.stdout.trim() || 'unknown git fetch error'
+        }`,
+      );
+      yield* persistShareFetchReceipt(config, {
         behind: 0,
+        checkedAt: Date.now(),
+        remote: team.remote,
+        succeeded: false,
         team: name,
-        warning: `Auto-sync check for shared team "${name}" failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim() || 'unknown git fetch error'}`,
+        version: SHARE_FETCH_RECEIPT_VERSION,
+        warning,
+        worktree: team.worktree,
       });
+      statuses.push({behind: 0, team: name, warning});
       continue;
     }
     const behind = yield* gitOutput(
@@ -724,17 +759,129 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
       AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
     );
     if (behind === undefined) {
-      statuses.push({
+      const warning = `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`;
+      yield* persistShareFetchReceipt(config, {
         behind: 0,
+        checkedAt: Date.now(),
+        remote: team.remote,
+        succeeded: false,
         team: name,
-        warning: `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`,
+        version: SHARE_FETCH_RECEIPT_VERSION,
+        warning,
+        worktree: team.worktree,
       });
+      statuses.push({behind: 0, team: name, warning});
       continue;
     }
-    statuses.push({behind: Number.parseInt(behind, 10) || 0, team: name});
+    const behindCount = Number.parseInt(behind, 10) || 0;
+    yield* persistShareFetchReceipt(config, {
+      behind: behindCount,
+      checkedAt: Date.now(),
+      remote: team.remote,
+      succeeded: true,
+      team: name,
+      version: SHARE_FETCH_RECEIPT_VERSION,
+      worktree: team.worktree,
+    });
+    statuses.push({behind: behindCount, team: name});
   }
   return statuses;
 });
+
+const shareFetchReceiptPath = Effect.fn('share.fetchReceiptPath')(function* (config: ShareRuntime, team: string) {
+  return yield* pathJoin(config.agentContextHome, 'share', 'fetch-receipts', `${team}.json`);
+});
+
+const readFreshShareFetchReceipt = Effect.fn('share.readFreshFetchReceipt')(function* (
+  config: ShareRuntime,
+  teamName: string,
+  team: ShareTeamConfig,
+) {
+  const raw = yield* readFileIfExists(yield* shareFetchReceiptPath(config, teamName));
+  if (!raw) return undefined;
+  return parseFreshShareFetchReceipt(raw, teamName, team, Date.now());
+});
+
+const persistShareFetchReceipt = Effect.fn('share.persistFetchReceipt')(function* (
+  config: ShareRuntime,
+  receipt: ShareFetchReceipt,
+) {
+  const target = yield* shareFetchReceiptPath(config, receipt.team);
+  const parent = yield* pathDirname(target);
+  const system = yield* SystemInfo;
+  const temporary = `${target}.${system.processId}.tmp`;
+  const write = Effect.gen(function* () {
+    yield* mkdir(parent, {mode: 0o700, recursive: true});
+    yield* writeFile(temporary, `${JSON.stringify(receipt)}\n`, {encoding: 'utf8', mode: 0o600});
+    yield* rename(temporary, target);
+  }).pipe(Effect.ensuring(rm(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  yield* write.pipe(
+    Effect.catch(error =>
+      Console.error(
+        `Could not persist the shared fetch receipt for team "${receipt.team}"; another process may fetch again: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    ),
+  );
+});
+
+const recordShareTeamSynced = Effect.fn('share.recordTeamSynced')(function* (config: ShareRuntime, teamName: string) {
+  const team = yield* resolveTeam(config, teamName);
+  yield* persistShareFetchReceipt(config, {
+    behind: 0,
+    checkedAt: Date.now(),
+    remote: team.config.remote,
+    succeeded: true,
+    team: team.name,
+    version: SHARE_FETCH_RECEIPT_VERSION,
+    worktree: team.config.worktree,
+  });
+});
+
+function parseFreshShareFetchReceipt(
+  raw: string,
+  teamName: string,
+  team: ShareTeamConfig,
+  now: number,
+): ShareFetchReceipt | undefined {
+  const parsed = parseJsonConfigObject(raw);
+  if (
+    !parsed ||
+    parsed.version !== SHARE_FETCH_RECEIPT_VERSION ||
+    parsed.team !== teamName ||
+    parsed.remote !== team.remote ||
+    parsed.worktree !== team.worktree ||
+    typeof parsed.behind !== 'number' ||
+    !Number.isSafeInteger(parsed.behind) ||
+    parsed.behind < 0 ||
+    typeof parsed.checkedAt !== 'number' ||
+    !Number.isSafeInteger(parsed.checkedAt) ||
+    parsed.checkedAt <= 0 ||
+    parsed.checkedAt > now ||
+    now - parsed.checkedAt >= SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS ||
+    typeof parsed.succeeded !== 'boolean' ||
+    (parsed.succeeded === false && typeof parsed.warning !== 'string')
+  ) {
+    return undefined;
+  }
+  return {
+    behind: parsed.behind,
+    checkedAt: parsed.checkedAt,
+    remote: parsed.remote,
+    succeeded: parsed.succeeded,
+    team: parsed.team,
+    version: parsed.version,
+    ...(typeof parsed.warning === 'string' ? {warning: boundedShareFetchWarning(parsed.warning)} : {}),
+    worktree: parsed.worktree,
+  };
+}
+
+function boundedShareFetchWarning(warning: string): string {
+  return warning.length <= SHARE_FETCH_WARNING_MAXIMUM_LENGTH
+    ? warning
+    : `${warning.slice(0, SHARE_FETCH_WARNING_MAXIMUM_LENGTH - 1)}…`;
+}
 
 export const runShareSync = Effect.fn('share.runShareSync')(function* (
   config: ShareRuntime,

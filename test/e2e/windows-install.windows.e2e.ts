@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
 import {promisify} from 'node:util';
@@ -30,6 +30,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
     hasher.update(new Uint8Array(await Bun.file(artifact).arrayBuffer()));
     await writeFile(checksum, `${hasher.digest('hex')}  ${artifactName}\n`);
     const assetRequests: string[] = [];
+    let transientArchiveFailures = 2;
     const server = Bun.serve({
       hostname: '127.0.0.1',
       port: 0,
@@ -64,6 +65,10 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
           ]);
         }
         assetRequests.push(name);
+        if (name === artifactName && transientArchiveFailures > 0) {
+          transientArchiveFailures -= 1;
+          return new Response('retry this request', {status: 503});
+        }
         if (name === artifactName) return new Response(Bun.file(artifact));
         if (name === `${artifactName}.sha256`) return new Response(Bun.file(checksum));
         return new Response('not found', {status: 404});
@@ -114,6 +119,11 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         `${String((exactFailure as {readonly stdout?: unknown}).stdout)}${String((exactFailure as {readonly stderr?: unknown}).stderr)}`,
       ).toContain(`Downloading Threadnote ${packageManifest.version}`);
       expect(assetRequests.at(-1)).toBe(`missing-assets/${artifactName}`);
+      const installationLock = join(installRoot, '.installation.lock');
+      await writeFile(installationLock, '');
+      const staleInstallationLockDate = new Date(Date.now() - 120_000);
+      await utimes(installationLock, staleInstallationLockDate, staleInstallationLockDate);
+      const archiveRequestsBeforeInstall = assetRequests.filter(name => name === artifactName).length;
       const result = await execute(join(powerShellDirectory, 'powershell.exe'), installerArguments, {
         env: installEnvironment,
         timeout: 600_000,
@@ -123,6 +133,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       expect(output).toContain('Wrote command launcher');
       expect(output).toContain('Threadnote is installed');
       expect(output).not.toMatch(/\bnpm\b|Python|OpenViking/i);
+      expect(assetRequests.filter(name => name === artifactName)).toHaveLength(archiveRequestsBeforeInstall + 3);
       const installedExecutable = join(installRoot, 'versions', packageManifest.version, 'threadnote.exe');
       await expect(stat(installedExecutable)).resolves.toMatchObject({size: expect.any(Number)});
       const version = await execute(installedExecutable, ['--version']);
@@ -159,6 +170,53 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       expect(
         JSON.parse(await readFile(join(installRoot, 'versions', packageManifest.version, 'release.json'), 'utf8')),
       ).toMatchObject({version: packageManifest.version});
+      const versionsRoot = join(installRoot, 'versions');
+      const releaseRoot = join(versionsRoot, packageManifest.version);
+      const promotionBackup = join(versionsRoot, `.${packageManifest.version}.promotion-backup`);
+      const promotionJournal = join(versionsRoot, `.${packageManifest.version}.promotion.json`);
+      const recoverySentinel = join(releaseRoot, 'promotion-recovery-sentinel.txt');
+      await writeFile(recoverySentinel, 'preserve the previous release\n');
+      await writeFile(
+        installationLock,
+        `${JSON.stringify({
+          processId: 2_147_483_647,
+          processStartIdentity: 'win32:stale-installer-fixture',
+          token: 'stale-ts-lock',
+          version: 1,
+        })}\n`,
+      );
+      const interruptedPromotion = await execute(join(powerShellDirectory, 'powershell.exe'), installerArguments, {
+        env: {
+          ...installEnvironment,
+          THREADNOTE_INSTALLER_FAIL_AFTER_PROMOTION_STEP: 'previous-backed-up',
+        },
+        timeout: 600_000,
+      }).catch((cause: unknown) => cause);
+      expect(
+        `${String((interruptedPromotion as {readonly stdout?: unknown}).stdout)}${String(
+          (interruptedPromotion as {readonly stderr?: unknown}).stderr,
+        )}`,
+      ).toContain('Injected installer interruption after promotion step: previous-backed-up');
+      await expect(stat(releaseRoot)).rejects.toThrow();
+      await expect(readFile(join(promotionBackup, 'promotion-recovery-sentinel.txt'), 'utf8')).resolves.toBe(
+        'preserve the previous release\n',
+      );
+
+      const recoveredPromotion = await execute(join(powerShellDirectory, 'powershell.exe'), installerArguments, {
+        env: {
+          ...installEnvironment,
+          THREADNOTE_INSTALLER_FAIL_AFTER_PROMOTION_STEP: 'journaled',
+        },
+        timeout: 600_000,
+      }).catch((cause: unknown) => cause);
+      expect(
+        `${String((recoveredPromotion as {readonly stdout?: unknown}).stdout)}${String(
+          (recoveredPromotion as {readonly stderr?: unknown}).stderr,
+        )}`,
+      ).toContain('Injected installer interruption after promotion step: journaled');
+      await expect(readFile(recoverySentinel, 'utf8')).resolves.toBe('preserve the previous release\n');
+      await expect(stat(promotionBackup)).rejects.toThrow();
+      await expect(stat(promotionJournal)).resolves.toMatchObject({size: expect.any(Number)});
     } finally {
       server.stop(true);
     }

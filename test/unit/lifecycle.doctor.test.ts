@@ -143,7 +143,8 @@ describe('doctor report resilience', () => {
         expect(report.output).toContain('WARN codex user instructions:');
         expect(report.output).toContain('FAIL embedding model:');
         expect(report.output).toContain('FAIL vector recall index:');
-        expect(report.output).toContain('Summary: 3 failure(s)');
+        expect(report.output).toContain('FAIL lexical recall index:');
+        expect(report.output).toContain('Summary: 4 failure(s)');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

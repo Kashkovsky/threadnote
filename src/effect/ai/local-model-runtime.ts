@@ -11,7 +11,6 @@ import {
   StructuredGenerator,
   type StructuredGenerationError,
   type StructuredGenerationRequest,
-  type StructuredGeneratorShape,
 } from './structured-generator.js';
 import type {InferenceInterrupted, ModelSessionError, NativeRuntimeError, RerankingFailed} from './errors.js';
 import type {SystemInfo} from '../system.js';
@@ -77,11 +76,10 @@ export function localModelRuntimeLayer<R = Path.Path | SystemInfo>(
         string,
         Effect.Effect<RerankerShape, InferenceInterrupted | RerankingFailed | ModelSessionError>
       >();
-      const generators = new Map<string, Effect.Effect<StructuredGeneratorShape, StructuredGenerationError>>();
       return Context.make(LocalModelRuntime, {
         embedMany: request =>
           inferencePermits.withPermit(embedManyNative(request, scope, engineContext, embeddingModels)),
-        generate: request => inferencePermits.withPermit(generateNative(request, scope, engineContext, generators)),
+        generate: request => inferencePermits.withPermit(generateNative(request, engineContext)),
         rerank: request => inferencePermits.withPermit(rerankNative(request, scope, engineContext, rerankers)),
       });
     }),
@@ -165,36 +163,26 @@ function rerankNative(
 
 function generateNative(
   request: LocalGenerationRequest,
-  scope: Scope.Scope,
   engineContext: Effect.Effect<Context.Context<LlamaCppEngine>, NativeRuntimeError>,
-  models: Map<string, Effect.Effect<StructuredGeneratorShape, StructuredGenerationError>>,
 ) {
   if (request.manifest.role !== 'generation') {
     return Effect.die(new Error(`Model ${request.manifest.id} is not a generation model.`));
   }
-  const key = modelCacheKey(request);
-  return Effect.gen(function* () {
-    let model = models.get(key);
-    if (!model) {
-      model = yield* Effect.cached(
-        Effect.gen(function* () {
-          const engine = yield* engineContext;
-          const services = yield* Layer.buildWithScope(
-            llamaStructuredGeneratorLayer({
-              contextSize: request.manifest.contextLimit,
-              modelId: request.manifest.id,
-              modelPath: request.modelPath,
-            }),
-            scope,
-          ).pipe(Effect.provide(engine));
-          return Context.get(services, StructuredGenerator);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope;
+      const engine = yield* engineContext;
+      const services = yield* Layer.buildWithScope(
+        llamaStructuredGeneratorLayer({
+          contextSize: request.manifest.contextLimit,
+          modelId: request.manifest.id,
+          modelPath: request.modelPath,
         }),
-      );
-      models.set(key, model);
-    }
-    const generator = yield* model;
-    return yield* generator.generate(request);
-  });
+        scope,
+      ).pipe(Effect.provide(engine));
+      return yield* Context.get(services, StructuredGenerator).generate(request);
+    }),
+  );
 }
 
 function modelCacheKey(request: {readonly manifest: LocalModelManifest; readonly modelPath: string}): string {

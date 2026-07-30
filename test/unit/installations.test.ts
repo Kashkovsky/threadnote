@@ -1,10 +1,12 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {SystemInfo} from '../../src/effect/system.js';
+import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {
   activateStandaloneRelease,
   activeInstalledVersion,
+  promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
+  recoverStandaloneReleasePromotion,
   withStandaloneInstallationLock,
 } from '../../src/installations.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -202,6 +204,136 @@ describe('standalone release lifecycle', () => {
     expect(maximumActive).toBe(1);
   });
 
+  it('recovers an interrupted active-pointer backup before the next activation', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-active-recovery-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const versionsRoot = path.join(installRoot, 'versions');
+          const oldRelease = yield* createRelease(fs, path, versionsRoot, '4.0.1', 'old');
+          const newRelease = yield* createRelease(fs, path, versionsRoot, '4.0.2', 'new');
+          const testSystem = installationTestSystem(baseSystem, installRoot, oldRelease);
+          yield* activateStandaloneRelease(oldRelease, false).pipe(Effect.provideService(SystemInfo, testSystem));
+          const interrupted = yield* activateStandaloneRelease(newRelease, false, {
+            afterStep: step =>
+              step === 'active-previous-backed-up'
+                ? Effect.fail(new Error('simulated active pointer crash'))
+                : Effect.void,
+          }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
+          const activeMissingAfterCrash = !(yield* fs.exists(path.join(installRoot, 'active-release.json')));
+
+          yield* activateStandaloneRelease(newRelease, false).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {
+            active: JSON.parse(yield* fs.readFileString(path.join(installRoot, 'active-release.json'))) as {
+              version: string;
+            },
+            activeMissingAfterCrash,
+            backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            interrupted: String(interrupted),
+            journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toMatchObject({
+      active: {version: '4.0.2'},
+      activeMissingAfterCrash: true,
+      backupExists: false,
+      journalExists: false,
+    });
+    expect(result.interrupted).toContain('simulated active pointer crash');
+  });
+
+  it('commits an interrupted active-pointer promotion during installation-lock recovery', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-active-commit-recovery-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const versionsRoot = path.join(installRoot, 'versions');
+          const oldRelease = yield* createRelease(fs, path, versionsRoot, '4.0.1', 'old');
+          const newRelease = yield* createRelease(fs, path, versionsRoot, '4.0.2', 'new');
+          const testSystem = installationTestSystem(baseSystem, installRoot, oldRelease);
+          yield* activateStandaloneRelease(oldRelease, false).pipe(Effect.provideService(SystemInfo, testSystem));
+          yield* activateStandaloneRelease(newRelease, false, {
+            afterStep: step =>
+              step === 'active-promoted'
+                ? Effect.fail(new Error('simulated crash after pointer promotion'))
+                : Effect.void,
+          }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
+
+          yield* withStandaloneInstallationLock(Effect.void).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {
+            active: JSON.parse(yield* fs.readFileString(path.join(installRoot, 'active-release.json'))) as {
+              version: string;
+            },
+            backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      active: {releaseRoot: expect.any(String), version: '4.0.2'},
+      backupExists: false,
+      journalExists: false,
+    });
+  });
+
+  it.each([
+    {expected: 'old', step: 'release-journaled' as const},
+    {expected: 'old', step: 'release-previous-backed-up' as const},
+    {expected: 'new', step: 'release-promoted' as const},
+  ])('recovers release directory promotion interrupted after $step', async ({expected, step}) => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const system = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-release-recovery-'});
+          const versionsRoot = path.join(temporaryRoot, 'versions');
+          const releaseRoot = yield* createRelease(fs, path, versionsRoot, '4.0.2', 'old');
+          const stagingContainer = path.join(versionsRoot, '.threadnote-update-fixture');
+          const stagedRoot = path.join(stagingContainer, 'release');
+          yield* fs.makeDirectory(stagedRoot, {recursive: true});
+          yield* fs.writeFileString(path.join(stagedRoot, 'marker.txt'), 'new\n');
+          yield* fs.writeFileString(path.join(stagedRoot, 'release.json'), '{"version":"4.0.2"}\n');
+          yield* promoteStandaloneReleaseDirectory(fs, path, stagedRoot, releaseRoot, system.processId, {
+            afterStep: observed =>
+              observed === step ? Effect.fail(new Error(`simulated crash after ${step}`)) : Effect.void,
+          }).pipe(Effect.flip);
+
+          yield* recoverStandaloneReleasePromotion(fs, path, releaseRoot);
+          return {
+            backupExists: yield* fs.exists(path.join(versionsRoot, '.4.0.2.promotion-backup')),
+            journalExists: yield* fs.exists(path.join(versionsRoot, '.4.0.2.promotion.json')),
+            marker: yield* fs.readFileString(path.join(releaseRoot, 'marker.txt')),
+            stagedExists: yield* fs.exists(stagedRoot),
+            stagingContainerExists: yield* fs.exists(stagingContainer),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      backupExists: false,
+      journalExists: false,
+      marker: `${expected}\n`,
+      stagedExists: false,
+      stagingContainerExists: false,
+    });
+  });
+
   it('uses semantic version precedence when choosing the retained rollback release', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -290,3 +422,30 @@ describe('standalone release lifecycle', () => {
     });
   });
 });
+
+function createRelease(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  versionsRoot: string,
+  version: string,
+  marker: string,
+) {
+  return Effect.gen(function* () {
+    const releaseRoot = path.join(versionsRoot, version);
+    yield* fs.makeDirectory(releaseRoot, {recursive: true});
+    yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify({version})}\n`);
+    yield* fs.writeFileString(path.join(releaseRoot, 'marker.txt'), `${marker}\n`);
+    return releaseRoot;
+  });
+}
+
+function installationTestSystem(baseSystem: SystemInfoShape, installRoot: string, runningRelease: string) {
+  return SystemInfo.of({
+    ...baseSystem,
+    environment: () => ({
+      ...baseSystem.environment(),
+      THREADNOTE_INSTALL_ROOT: installRoot,
+    }),
+    executablePath: `${runningRelease}/threadnote`,
+  });
+}

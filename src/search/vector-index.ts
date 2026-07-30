@@ -1,41 +1,72 @@
-import {Clock, Crypto, Effect, FileSystem, Path, Result} from 'effect';
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
+import {Clock, Crypto, Effect, FileSystem, Path, Result, Schema} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import {LocalModelRuntime, type LocalModelRuntimeShape} from '../effect/ai/local-model-runtime.js';
 import {sha256Hex} from '../effect/digest.js';
-import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {LocalModelStore} from '../models/store.js';
 import {readModelSelection} from '../models/selection.js';
 import type {RecallCandidate} from '../recall/rank.js';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {chunkRecallDocument, RECALL_CHUNKER_VERSION, type RecallChunk} from './chunker.js';
-import {normalizeVector, searchExactVectors} from './vector-search.js';
-import {
-  decodeVectorSidecar,
-  encodeVectorSidecar,
-  type VectorSidecar,
-  type VectorSidecarEntry,
-} from './vector-sidecar.js';
+import {normalizeVector, type VectorSearchResult} from './vector-search.js';
 
-const VECTOR_INDEX_POINTER_VERSION = 1 as const;
+const VECTOR_INDEX_DATABASE_VERSION = 2;
 const VECTOR_INDEX_EMBED_BATCH_SIZE = 256;
-interface VectorIndexPointer {
-  readonly chunkCount?: number;
-  readonly chunkerVersion?: number;
-  readonly corpusGeneration?: string;
-  readonly createdAt: string;
-  readonly dimensions?: number;
+const VECTOR_INDEX_PAGE_SIZE = 400;
+const VECTOR_INDEX_INSERT_BATCH_SIZE = 100;
+const VECTOR_INDEX_DATABASE_FILENAME = `vectors-v${VECTOR_INDEX_DATABASE_VERSION}.sqlite`;
+const VECTOR_INDEX_SCHEMA_COLUMNS = {
+  vector_chunks: ['generation', 'chunk_id', 'uri', 'fingerprint', 'vector_id'],
+  vector_generations: [
+    'generation',
+    'job_id',
+    'corpus_generation',
+    'model_id',
+    'model_sha256',
+    'dimensions',
+    'embedding_recipe',
+    'chunker_version',
+    'normalized',
+    'chunk_count',
+    'state',
+    'created_at',
+  ],
+  vector_pointer: ['singleton', 'generation'],
+  vector_values: ['id', 'vector_key', 'vector'],
+} as const;
+
+interface VectorGenerationRow {
+  readonly actual_chunk_count: number;
+  readonly chunk_count: number;
+  readonly chunker_version: number;
+  readonly corpus_generation: string | null;
+  readonly created_at: string;
+  readonly dimensions: number;
+  readonly embedding_recipe: string;
   readonly generation: string;
-  readonly modelSha256?: string;
-  readonly sidecarSha256: string;
-  readonly version: typeof VECTOR_INDEX_POINTER_VERSION;
+  readonly job_id: string;
+  readonly model_id: string;
+  readonly model_sha256: string;
+  readonly normalized: 'l2';
+  readonly state: 'building' | 'ready';
 }
 
-interface CachedVectorSidecar {
-  readonly generation: string;
-  readonly sidecar: VectorSidecar;
-  readonly sidecarSha256: string;
+interface VectorRow {
+  readonly chunk_id: string;
+  readonly fingerprint: string;
+  readonly uri: string;
+  readonly vector: unknown;
 }
 
-const decodedVectorSidecarByModel = new Map<string, CachedVectorSidecar>();
+interface DesiredVectorChunk extends RecallChunk {
+  readonly vectorKey: string;
+}
+
+interface SemanticChunkMatch extends VectorSearchResult {
+  readonly uri: string;
+}
 
 export interface VectorIndexStatus {
   readonly chunkCount: number;
@@ -48,6 +79,11 @@ export interface VectorIndexStatus {
   readonly reason?: string;
   readonly reusedChunkCount?: number;
 }
+
+export class VectorIndexCorrupt extends Schema.TaggedErrorClass<VectorIndexCorrupt>()('VectorIndexCorrupt', {
+  message: Schema.String,
+  modelId: Schema.String,
+}) {}
 
 export type VectorIndexProgress =
   | {
@@ -112,12 +148,8 @@ export const vectorIndexMatchesGeneration = Effect.fn('vectorIndex.matchesGenera
   manifest: LocalModelManifest,
   corpusGeneration: string,
 ) {
-  const active = yield* readActiveVectorSidecar(home, manifest).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  if (!active) return false;
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const pointer = yield* readVectorPointer(path, fs, home, manifest.id);
-  return pointerMatchesCorpus(pointer, manifest, corpusGeneration);
+  const active = yield* readActiveVectorGeneration(home, manifest).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return active ? generationMatchesCorpus(active, manifest, corpusGeneration) : false;
 });
 
 const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* (
@@ -126,24 +158,21 @@ const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function
   chunks: readonly RecallChunk[],
   options: VectorIndexBuildOptions,
 ) {
-  const active = yield* readActiveVectorSidecar(home, manifest);
+  const active = yield* readActiveVectorGeneration(home, manifest);
   if (!active) return undefined;
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const pointer = yield* readVectorPointer(path, fs, home, manifest.id);
   const current = options.corpusGeneration
-    ? pointerMatchesCorpus(pointer, manifest, options.corpusGeneration)
-    : vectorSidecarMatchesChunks(active, chunks);
+    ? generationMatchesCorpus(active, manifest, options.corpusGeneration)
+    : yield* vectorGenerationMatchesChunks(home, manifest, active.generation, chunks);
   if (!current) return undefined;
   return {
-    chunkCount: active.entries.length,
-    createdAt: pointer?.createdAt,
-    dimensions: active.metadata.dimensions,
+    chunkCount: active.chunk_count,
+    createdAt: active.created_at,
+    dimensions: active.dimensions,
     embeddedChunkCount: 0,
-    generation: pointer?.generation,
+    generation: active.generation,
     modelId: manifest.id,
     ready: true,
-    reusedChunkCount: active.entries.length,
+    reusedChunkCount: active.chunk_count,
   } satisfies VectorIndexStatus;
 });
 
@@ -157,6 +186,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
     return yield* Effect.fail(new Error(`Model ${manifest.id} is not an embedding model.`));
   }
+  const dimensions = manifest.dimensions;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
@@ -164,113 +194,185 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   const store = yield* LocalModelStore;
   const installed = yield* store.verify(config.agentContextHome, manifest);
   const chunks = preparedChunks ?? candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
-  const root = vectorModelRoot(path, config.agentContextHome, manifest.id);
-  const jobId = yield* sha256Hex(
-    `${manifest.sha256}\n${RECALL_CHUNKER_VERSION}\n${chunks.map(chunk => chunk.id).join('\n')}`,
-  );
-  const checkpointRoot = path.join(root, 'staging', jobId, 'batches');
-  const [active, checkpoint] = yield* Effect.all(
-    [
-      readActiveVectorSidecar(config.agentContextHome, manifest).pipe(Effect.catch(() => Effect.succeed(undefined))),
-      readCompatibleCheckpoints(fs, path, checkpointRoot, manifest).pipe(
-        Effect.catch(() => Effect.succeed({batchCount: 0, entries: [] as readonly VectorSidecarEntry[]})),
-      ),
-    ],
-    {concurrency: 2},
-  );
-  const vectorByChunk = new Map<string, readonly number[]>();
-  for (const entry of [...(active?.entries ?? []), ...checkpoint.entries]) {
-    vectorByChunk.set(chunkReuseKey(entry.uri, entry.fingerprint), entry.vector);
-  }
-  const reusableChunkCount = chunks.filter(chunk =>
-    vectorByChunk.has(chunkReuseKey(chunk.uri, chunk.fingerprint)),
-  ).length;
-  let embeddedChunkCount = 0;
-  const missing = chunks.filter(chunk => !vectorByChunk.has(chunkReuseKey(chunk.uri, chunk.fingerprint)));
-  yield* options.onProgress?.({
-    completed: embeddedChunkCount,
-    phase: 'embedding',
-    reused: reusableChunkCount,
-    total: missing.length,
-  }) ?? Effect.void;
-  for (let start = 0; start < missing.length; start += VECTOR_INDEX_EMBED_BATCH_SIZE) {
-    const batch = missing.slice(start, start + VECTOR_INDEX_EMBED_BATCH_SIZE);
-    const vectors = yield* runtime.embedMany({
-      inputs: batch.map(chunk => `${manifest.promptPrefixes?.document ?? ''}${chunk.content}`),
-      manifest,
-      modelPath: installed.path,
-    });
-    for (const [index, chunk] of batch.entries()) {
-      vectorByChunk.set(chunkReuseKey(chunk.uri, chunk.fingerprint), normalizeVector(vectors[index]!));
-    }
-    embeddedChunkCount += batch.length;
-    const checkpointEntries = batch.map(chunk => ({
-      fingerprint: chunk.fingerprint,
-      id: chunk.id,
-      uri: chunk.uri,
-      vector: vectorByChunk.get(chunkReuseKey(chunk.uri, chunk.fingerprint))!,
-    }));
-    yield* writeCheckpointAtomically(
-      fs,
-      path,
-      path.join(
-        checkpointRoot,
-        `batch-${String(checkpoint.batchCount + start / VECTOR_INDEX_EMBED_BATCH_SIZE).padStart(8, '0')}.bin`,
-      ),
-      sidecarForEntries(manifest, manifest.dimensions, checkpointEntries),
-    );
-    yield* options.onProgress?.({
-      completed: embeddedChunkCount,
-      phase: 'embedding',
-      reused: reusableChunkCount,
-      total: missing.length,
-    }) ?? Effect.void;
-  }
-  const entries: VectorSidecarEntry[] = chunks.map(chunk => ({
-    fingerprint: chunk.fingerprint,
-    id: chunk.id,
-    uri: chunk.uri,
-    vector: vectorByChunk.get(chunkReuseKey(chunk.uri, chunk.fingerprint))!,
+  const recipe = embeddingRecipe(manifest);
+  const desiredChunks = chunks.map(chunk => ({
+    ...chunk,
+    vectorKey: vectorKeyForChunk(recipe, chunk),
   }));
-  const sidecar = sidecarForEntries(manifest, manifest.dimensions, entries);
-  const encoded = encodeVectorSidecar(sidecar);
-  const generation = `${yield* Clock.currentTimeMillis}-${(yield* crypto.randomUUIDv4).slice(0, 8)}`;
-  const generationDirectory = path.join(root, 'generations', generation);
-  const sidecarPath = path.join(generationDirectory, 'vectors.bin');
-  yield* options.onProgress?.({chunkCount: entries.length, phase: 'activating'}) ?? Effect.void;
-  yield* fs.makeDirectory(generationDirectory, {recursive: true, mode: 0o700});
-  yield* fs.writeFile(sidecarPath, encoded, {mode: 0o600});
-  const pointer: VectorIndexPointer = {
-    chunkCount: entries.length,
-    chunkerVersion: RECALL_CHUNKER_VERSION,
-    corpusGeneration: options.corpusGeneration,
-    createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
-    dimensions: manifest.dimensions,
-    generation,
-    modelSha256: manifest.sha256,
-    sidecarSha256: yield* sha256Hex(encoded),
-    version: VECTOR_INDEX_POINTER_VERSION,
-  };
-  yield* writePointerAtomically(fs, path, root, pointer);
-  yield* Effect.sync(() =>
-    decodedVectorSidecarByModel.set(vectorSidecarCacheKey(path, config.agentContextHome, manifest.id), {
-      generation,
-      sidecar,
-      sidecarSha256: pointer.sidecarSha256,
+  const root = vectorModelRoot(path, config.agentContextHome, manifest.id);
+  const databasePath = vectorDatabasePath(path, config.agentContextHome, manifest.id);
+  const jobId = yield* sha256Hex(
+    JSON.stringify({
+      chunkerVersion: RECALL_CHUNKER_VERSION,
+      chunks: chunks.map(chunk => ({fingerprint: chunk.fingerprint, id: chunk.id, uri: chunk.uri})),
+      dimensions: manifest.dimensions,
+      modelSha256: manifest.sha256,
+      promptPrefix: manifest.promptPrefixes?.document ?? '',
     }),
   );
-  yield* fs.remove(path.join(root, 'staging'), {force: true, recursive: true});
-  yield* pruneVectorGenerations(fs, path, root, generation);
-  return {
-    chunkCount: entries.length,
-    createdAt: pointer.createdAt,
-    dimensions: manifest.dimensions,
-    embeddedChunkCount,
-    generation,
-    modelId: manifest.id,
-    ready: true,
-    reusedChunkCount: reusableChunkCount,
-  } satisfies VectorIndexStatus;
+  yield* fs.makeDirectory(root, {recursive: true, mode: 0o700});
+  yield* initializeVectorDatabaseWithRecovery(fs, databasePath);
+
+  const status = yield* useVectorDatabase(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* initializeVectorDatabase(sql);
+      const activeResult = yield* selectActiveGeneration(sql).pipe(Effect.result);
+      const active =
+        Result.isSuccess(activeResult) &&
+        activeResult.success !== undefined &&
+        generationIsCompatible(activeResult.success, manifest)
+          ? activeResult.success
+          : undefined;
+      if (!active && (Result.isFailure(activeResult) || activeResult.success !== undefined)) {
+        yield* sql.unsafe('DELETE FROM vector_pointer');
+      }
+      yield* sql`DELETE FROM vector_generations WHERE state = 'building' AND job_id <> ${jobId}`;
+      yield* prepareDesiredChunks(sql, desiredChunks);
+      if (active) {
+        yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
+        return yield* updateActiveVectorGeneration(
+          sql,
+          active,
+          jobId,
+          options.corpusGeneration,
+          manifest,
+          desiredChunks,
+          runtime,
+          installed.path,
+          options,
+        );
+      }
+
+      let building: VectorGenerationRow | undefined = yield* selectGenerationByJob(sql, jobId);
+      if (building && !generationIsCompatible(building, manifest)) {
+        yield* sql`DELETE FROM vector_generations WHERE generation = ${building.generation}`;
+        building = undefined;
+      }
+      if (!building) {
+        const generation = `${yield* Clock.currentTimeMillis}-${(yield* crypto.randomUUIDv4).slice(0, 8)}`;
+        yield* sql`
+          INSERT INTO vector_generations (
+            generation,
+            job_id,
+            corpus_generation,
+            model_id,
+            model_sha256,
+            dimensions,
+            embedding_recipe,
+            chunker_version,
+            normalized,
+            chunk_count,
+            state,
+            created_at
+          ) VALUES (
+            ${generation},
+            ${jobId},
+            ${options.corpusGeneration ?? null},
+            ${manifest.id},
+            ${manifest.sha256},
+            ${manifest.dimensions},
+            ${recipe},
+            ${RECALL_CHUNKER_VERSION},
+            'l2',
+            0,
+            'building',
+            ${new Date(yield* Clock.currentTimeMillis).toISOString()}
+          )
+        `;
+        building = yield* selectGenerationByJob(sql, jobId);
+      }
+      if (!building) {
+        return yield* Effect.fail(new Error(`Could not create vector generation for ${manifest.id}.`));
+      }
+
+      yield* removeUndesiredVectorRows(sql, building.generation);
+      yield* mapReusableVectorRows(sql, building.generation);
+      yield* removeInvalidVectorRows(sql, building.generation, dimensions);
+      yield* pruneUnreferencedVectorValues(sql);
+
+      const reusableChunkCount = yield* countVectorRows(sql, building.generation);
+      if (building.state === 'ready' && reusableChunkCount === chunks.length) {
+        yield* options.onProgress?.({
+          completed: 0,
+          phase: 'embedding',
+          reused: reusableChunkCount,
+          total: 0,
+        }) ?? Effect.void;
+        yield* options.onProgress?.({chunkCount: reusableChunkCount, phase: 'activating'}) ?? Effect.void;
+        yield* activateVectorGeneration(sql, building.generation, reusableChunkCount);
+        yield* pruneVectorGenerations(sql, building.generation);
+        yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
+        return vectorStatus(building, manifest.id, reusableChunkCount, 0, reusableChunkCount);
+      }
+
+      yield* sql`
+        UPDATE vector_generations
+        SET state = 'building', chunk_count = ${reusableChunkCount}
+        WHERE generation = ${building.generation}
+      `;
+      const missingTotal = chunks.length - reusableChunkCount;
+      let embeddedChunkCount = 0;
+      yield* options.onProgress?.({
+        completed: embeddedChunkCount,
+        phase: 'embedding',
+        reused: reusableChunkCount,
+        total: missingTotal,
+      }) ?? Effect.void;
+
+      for (let pageStart = 0; pageStart < desiredChunks.length; pageStart += VECTOR_INDEX_PAGE_SIZE) {
+        const page = desiredChunks.slice(pageStart, pageStart + VECTOR_INDEX_PAGE_SIZE);
+        const existingIds = yield* selectExistingChunkIds(
+          sql,
+          building.generation,
+          page.map(chunk => chunk.id),
+        );
+        const missing = page.filter(chunk => !existingIds.has(chunk.id));
+        for (let start = 0; start < missing.length; start += VECTOR_INDEX_EMBED_BATCH_SIZE) {
+          const batch = missing.slice(start, start + VECTOR_INDEX_EMBED_BATCH_SIZE);
+          const vectors = yield* runtime.embedMany({
+            inputs: batch.map(chunk => `${manifest.promptPrefixes?.document ?? ''}${chunk.content}`),
+            manifest,
+            modelPath: installed.path,
+          });
+          const rows = batch.map(
+            (chunk, index) =>
+              [
+                building!.generation,
+                chunk.id,
+                chunk.uri,
+                chunk.fingerprint,
+                chunk.vectorKey,
+                encodeVector(normalizeVector(vectors[index]!), dimensions),
+              ] as const,
+          );
+          yield* insertVectorRows(sql, rows);
+          embeddedChunkCount += batch.length;
+          yield* options.onProgress?.({
+            completed: embeddedChunkCount,
+            phase: 'embedding',
+            reused: reusableChunkCount,
+            total: missingTotal,
+          }) ?? Effect.void;
+        }
+      }
+
+      const finalChunkCount = yield* countVectorRows(sql, building.generation);
+      if (finalChunkCount !== chunks.length) {
+        return yield* Effect.fail(
+          new Error(`Vector generation ${building.generation} has ${finalChunkCount}/${chunks.length} chunks.`),
+        );
+      }
+      yield* options.onProgress?.({chunkCount: finalChunkCount, phase: 'activating'}) ?? Effect.void;
+      yield* activateVectorGeneration(sql, building.generation, finalChunkCount);
+      yield* pruneVectorGenerations(sql, building.generation);
+      yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
+      return vectorStatus(building, manifest.id, finalChunkCount, embeddedChunkCount, reusableChunkCount);
+    }),
+  );
+  yield* removeLegacyVectorSidecars(fs, path, root);
+  return status;
 });
 
 export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticScores')(function* (
@@ -284,33 +386,66 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
   const catalog = yield* LocalModelCatalog;
   const manifest = yield* catalog.get(modelId);
   if (!manifest.dimensions || manifest.role !== 'embedding') return undefined;
-  const loaded = yield* readActiveVectorSidecar(config.agentContextHome, manifest);
-  if (!loaded) return undefined;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const databasePath = vectorDatabasePath(path, config.agentContextHome, manifest.id);
+  if (!(yield* fs.exists(databasePath))) return undefined;
   const store = yield* LocalModelStore;
   const runtime = yield* LocalModelRuntime;
   const status = yield* store.status(config.agentContextHome, manifest);
   if (!status.installed) return undefined;
-  const [queryVector] = yield* runtime.embedMany({
-    inputs: [`${manifest.promptPrefixes?.query ?? ''}${query}`],
-    manifest,
-    modelPath: status.path,
-  });
-  const results = searchExactVectors(
-    queryVector!,
-    loaded.entries.map(entry => ({id: entry.id, vector: entry.vector})),
-    {
-      dimensions: manifest.dimensions,
-      limit: Math.min(loaded.entries.length, options.limit ?? 500),
-    },
+
+  return yield* useVectorDatabaseReadOnly(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* validateVectorDatabase(sql);
+      const active = yield* selectActiveGeneration(sql);
+      if (!active || !generationIsCompatible(active, manifest)) return undefined;
+      if (active.chunk_count === 0) return new Map<string, number>();
+      const [queryVector] = yield* runtime.embedMany({
+        inputs: [`${manifest.promptPrefixes?.query ?? ''}${query}`],
+        manifest,
+        modelPath: status.path,
+      });
+      const normalizedQuery = normalizeVector(queryVector!);
+      const limit = Math.min(active.chunk_count, options.limit ?? 500);
+      let cursor = '';
+      let best: readonly SemanticChunkMatch[] = [];
+      for (;;) {
+        const rows = yield* sql.unsafe<VectorRow>(
+          `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
+           FROM vector_chunks AS chunk
+           JOIN vector_values AS value ON value.id = chunk.vector_id
+           WHERE chunk.generation = ? AND chunk.chunk_id > ?
+           ORDER BY chunk.chunk_id
+           LIMIT ?`,
+          [active.generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+        );
+        if (rows.length === 0) break;
+        const pageMatches = yield* Effect.try({
+          try: () => searchEncodedVectorRows(normalizedQuery, rows, active.dimensions, limit),
+          catch: cause =>
+            new VectorIndexCorrupt({
+              message: cause instanceof Error ? cause.message : String(cause),
+              modelId: manifest.id,
+            }),
+        });
+        best = mergeSemanticMatches(best, pageMatches, limit);
+        cursor = rows.at(-1)!.chunk_id;
+        if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
+      }
+      const scores = new Map<string, number>();
+      for (const result of best) {
+        scores.set(result.uri, Math.max(scores.get(result.uri) ?? 0, Math.max(0, result.score)));
+      }
+      return scores;
+    }),
+  ).pipe(
+    // Effect's generator inference does not retain the tagged error introduced by
+    // the paged synchronous scorer, so make the public failure channel explicit.
+    Effect.mapError(error => error as typeof error | VectorIndexCorrupt),
   );
-  const entryById = new Map(loaded.entries.map(entry => [entry.id, entry]));
-  const scores = new Map<string, number>();
-  for (const result of results) {
-    const uri = entryById.get(result.id)?.uri;
-    if (!uri) continue;
-    scores.set(uri, Math.max(scores.get(uri) ?? 0, Math.max(0, result.score)));
-  }
-  return scores;
 });
 
 export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
@@ -318,40 +453,56 @@ export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
   manifest: LocalModelManifest,
   candidates?: readonly RecallCandidate[],
 ) {
-  const sidecar = yield* readActiveVectorSidecar(home, manifest).pipe(Effect.result);
-  if (Result.isFailure(sidecar)) {
+  const active = yield* readActiveVectorGeneration(home, manifest).pipe(Effect.result);
+  if (Result.isFailure(active)) {
     return {
       chunkCount: 0,
       modelId: manifest.id,
       ready: false,
-      reason: sidecar.failure instanceof Error ? sidecar.failure.message : String(sidecar.failure),
+      reason: active.failure instanceof Error ? active.failure.message : String(active.failure),
     } satisfies VectorIndexStatus;
   }
-  if (!sidecar.success) {
+  if (!active.success) {
     return {chunkCount: 0, modelId: manifest.id, ready: false, reason: 'not built'} satisfies VectorIndexStatus;
+  }
+  const vectorIntegrity = yield* validateVectorGenerationRows(
+    home,
+    manifest,
+    active.success.generation,
+    active.success.dimensions,
+  ).pipe(Effect.result);
+  if (Result.isFailure(vectorIntegrity)) {
+    return {
+      chunkCount: active.success.chunk_count,
+      dimensions: active.success.dimensions,
+      modelId: manifest.id,
+      ready: false,
+      reason:
+        vectorIntegrity.failure instanceof Error ? vectorIntegrity.failure.message : String(vectorIntegrity.failure),
+    } satisfies VectorIndexStatus;
   }
   if (
     candidates &&
-    !vectorSidecarMatchesChunks(
-      sidecar.success,
+    !(yield* vectorGenerationMatchesChunks(
+      home,
+      manifest,
+      active.success.generation,
       candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text)),
-    )
+    ))
   ) {
     return {
-      chunkCount: sidecar.success.entries.length,
-      dimensions: sidecar.success.metadata.dimensions,
+      chunkCount: active.success.chunk_count,
+      dimensions: active.success.dimensions,
       modelId: manifest.id,
       ready: false,
       reason: 'stale; canonical documents changed',
     } satisfies VectorIndexStatus;
   }
-  const path = yield* Path.Path;
-  const pointer = yield* readVectorPointer(path, yield* FileSystem.FileSystem, home, manifest.id);
   return {
-    chunkCount: sidecar.success.entries.length,
-    createdAt: pointer?.createdAt,
-    dimensions: sidecar.success.metadata.dimensions,
-    generation: pointer?.generation,
+    chunkCount: active.success.chunk_count,
+    createdAt: active.success.created_at,
+    dimensions: active.success.dimensions,
+    generation: active.success.generation,
     modelId: manifest.id,
     ready: true,
   } satisfies VectorIndexStatus;
@@ -360,159 +511,893 @@ export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
 export const purgeVectorIndex = Effect.fn('vectorIndex.purge')(function* (home: string, modelId: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = vectorModelRoot(path, home, modelId);
-  yield* Effect.sync(() => decodedVectorSidecarByModel.delete(vectorSidecarCacheKey(path, home, modelId)));
-  if (!(yield* fs.exists(root))) return false;
-  yield* fs.remove(root, {recursive: true});
-  return true;
+  return yield* withVectorIndexLock(fs, path, home, modelId, () =>
+    Effect.gen(function* () {
+      const root = vectorModelRoot(path, home, modelId);
+      if (!(yield* fs.exists(root))) return false;
+      yield* fs.remove(root, {recursive: true});
+      return true;
+    }),
+  );
 });
 
-const readActiveVectorSidecar = Effect.fn('vectorIndex.readActive')(function* (
+export function vectorIndexDatabaseFilename(): string {
+  return VECTOR_INDEX_DATABASE_FILENAME;
+}
+
+const readActiveVectorGeneration = Effect.fn('vectorIndex.readActive')(function* (
   home: string,
   manifest: LocalModelManifest,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const pointer = yield* readVectorPointer(path, fs, home, manifest.id);
-  if (!pointer) return undefined;
-  const cacheKey = vectorSidecarCacheKey(path, home, manifest.id);
-  const cached = yield* Effect.sync(() => decodedVectorSidecarByModel.get(cacheKey));
-  if (
-    cached?.generation === pointer.generation &&
-    cached.sidecarSha256 === pointer.sidecarSha256 &&
-    vectorSidecarIsCompatible(cached.sidecar, manifest)
-  ) {
-    return cached.sidecar;
-  }
-  const sidecarPath = path.join(
-    vectorModelRoot(path, home, manifest.id),
-    'generations',
-    pointer.generation,
-    'vectors.bin',
-  );
-  const bytes = yield* fs.readFile(sidecarPath);
-  if ((yield* sha256Hex(bytes)) !== pointer.sidecarSha256) {
-    return yield* Effect.fail(new Error(`Vector index ${manifest.id}/${pointer.generation} checksum does not match.`));
-  }
-  const sidecar = decodeVectorSidecar(bytes);
-  if (!vectorSidecarIsCompatible(sidecar, manifest)) {
-    return yield* Effect.fail(new Error(`Vector index ${manifest.id}/${pointer.generation} is incompatible.`));
-  }
-  yield* Effect.sync(() =>
-    decodedVectorSidecarByModel.set(cacheKey, {
-      generation: pointer.generation,
-      sidecar,
-      sidecarSha256: pointer.sidecarSha256,
+  const databasePath = vectorDatabasePath(path, home, manifest.id);
+  if (!(yield* fs.exists(databasePath))) return undefined;
+  return yield* useVectorDatabaseReadOnly(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* validateVectorDatabase(sql);
+      const active = yield* selectActiveGeneration(sql);
+      if (active && !generationIsCompatible(active, manifest)) {
+        return yield* Effect.fail(new Error(`Vector index ${manifest.id}/${active.generation} is incompatible.`));
+      }
+      return active;
     }),
   );
-  return sidecar;
 });
 
-function readCompatibleSidecar(fs: FileSystem.FileSystem, sidecarPath: string, manifest: LocalModelManifest) {
-  return Effect.gen(function* () {
-    if (!(yield* fs.exists(sidecarPath))) return undefined;
-    const sidecar = decodeVectorSidecar(yield* fs.readFile(sidecarPath));
-    if (!vectorSidecarIsCompatible(sidecar, manifest)) {
-      return undefined;
-    }
-    return sidecar;
-  });
-}
-
-function readCompatibleCheckpoints(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  checkpointRoot: string,
+const vectorGenerationMatchesChunks = Effect.fn('vectorIndex.generationMatchesChunks')(function* (
+  home: string,
   manifest: LocalModelManifest,
+  generation: string,
+  chunks: readonly RecallChunk[],
 ) {
-  return Effect.gen(function* () {
-    if (!(yield* fs.exists(checkpointRoot))) {
-      return {batchCount: 0, entries: [] as readonly VectorSidecarEntry[]};
-    }
-    const names = (yield* fs.readDirectory(checkpointRoot)).filter(name => /^batch-[0-9]{8}\.bin$/.test(name)).sort();
-    const entries: VectorSidecarEntry[] = [];
-    for (const name of names) {
-      const sidecar = yield* readCompatibleSidecar(fs, path.join(checkpointRoot, name), manifest);
-      if (!sidecar) {
-        return yield* Effect.fail(new Error(`Vector checkpoint ${name} is incompatible.`));
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const databasePath = vectorDatabasePath(path, home, manifest.id);
+  if (!(yield* fs.exists(databasePath))) return false;
+  return yield* useVectorDatabaseReadOnly(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* validateVectorDatabase(sql);
+      const expected = new Map(chunks.map(chunk => [chunk.id, chunk]));
+      if (expected.size !== chunks.length) return false;
+      let cursor = '';
+      let count = 0;
+      for (;;) {
+        const rows = yield* sql.unsafe<Omit<VectorRow, 'vector'>>(
+          `SELECT chunk_id, uri, fingerprint
+           FROM vector_chunks
+           WHERE generation = ? AND chunk_id > ?
+           ORDER BY chunk_id
+           LIMIT ?`,
+          [generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+        );
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const chunk = expected.get(row.chunk_id);
+          if (!chunk || chunk.uri !== row.uri || chunk.fingerprint !== row.fingerprint) return false;
+          count += 1;
+        }
+        cursor = rows.at(-1)!.chunk_id;
+        if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
       }
-      entries.push(...sidecar.entries);
-    }
-    return {batchCount: names.length, entries};
-  });
-}
+      return count === chunks.length;
+    }),
+  );
+});
 
-function writeCheckpointAtomically(
+const validateVectorGenerationRows = Effect.fn('vectorIndex.validateGenerationRows')(function* (
+  home: string,
+  manifest: LocalModelManifest,
+  generation: string,
+  dimensions: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const databasePath = vectorDatabasePath(path, home, manifest.id);
+  if (!(yield* fs.exists(databasePath))) {
+    return yield* Effect.fail(new Error(`Vector database for ${manifest.id} is missing.`));
+  }
+  yield* useVectorDatabaseReadOnly(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* validateVectorDatabase(sql);
+      let cursor = '';
+      for (;;) {
+        const rows = yield* sql.unsafe<VectorRow>(
+          `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
+           FROM vector_chunks AS chunk
+           JOIN vector_values AS value ON value.id = chunk.vector_id
+           WHERE chunk.generation = ? AND chunk.chunk_id > ?
+           ORDER BY chunk.chunk_id
+           LIMIT ?`,
+          [generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+        );
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          try {
+            validateEncodedVector(row.vector, dimensions);
+          } catch (cause) {
+            return yield* Effect.fail(
+              new Error(
+                `Vector chunk ${row.chunk_id} is corrupt: ${cause instanceof Error ? cause.message : String(cause)}`,
+              ),
+            );
+          }
+        }
+        cursor = rows.at(-1)!.chunk_id;
+        if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
+      }
+    }),
+  );
+});
+
+const initializeVectorDatabaseWithRecovery = Effect.fn('vectorIndex.initializeWithRecovery')(function* (
   fs: FileSystem.FileSystem,
-  path: Path.Path,
-  checkpointPath: string,
-  sidecar: VectorSidecar,
+  databasePath: string,
+) {
+  const initialize = useVectorDatabase(
+    databasePath,
+    Effect.gen(function* () {
+      yield* initializeVectorDatabase(yield* SqlClient.SqlClient);
+    }),
+  );
+  yield* initialize.pipe(
+    Effect.catchCause(() =>
+      removeVectorDatabaseFiles(fs, databasePath).pipe(
+        Effect.andThen(
+          useVectorDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              yield* initializeVectorDatabase(yield* SqlClient.SqlClient);
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+});
+
+const initializeVectorDatabase = Effect.fn('vectorIndex.initializeDatabase')(function* (sql: SqlClient.SqlClient) {
+  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+  yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  yield* sql.unsafe('PRAGMA journal_mode = WAL');
+  const versions = yield* sql.unsafe<{readonly user_version: number}>('PRAGMA user_version');
+  const version = Number(versions[0]?.user_version ?? 0);
+  if (version !== 0 && version !== VECTOR_INDEX_DATABASE_VERSION) {
+    yield* sql.unsafe('DROP TABLE IF EXISTS vector_pointer');
+    yield* sql.unsafe('DROP TABLE IF EXISTS vector_chunks');
+    yield* sql.unsafe('DROP TABLE IF EXISTS vector_generations');
+    yield* sql.unsafe('DROP TABLE IF EXISTS vector_values');
+  }
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS vector_generations (
+      generation TEXT PRIMARY KEY,
+      job_id TEXT UNIQUE NOT NULL,
+      corpus_generation TEXT,
+      model_id TEXT NOT NULL,
+      model_sha256 TEXT NOT NULL,
+      dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+      embedding_recipe TEXT NOT NULL,
+      chunker_version INTEGER NOT NULL CHECK(chunker_version > 0),
+      normalized TEXT NOT NULL CHECK(normalized = 'l2'),
+      chunk_count INTEGER NOT NULL CHECK(chunk_count >= 0),
+      state TEXT NOT NULL CHECK(state IN ('building', 'ready')),
+      created_at TEXT NOT NULL
+    )
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS vector_pointer (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+      generation TEXT NOT NULL REFERENCES vector_generations(generation)
+    )
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS vector_values (
+      id INTEGER PRIMARY KEY,
+      vector_key TEXT UNIQUE NOT NULL,
+      vector BLOB NOT NULL
+    )
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS vector_chunks (
+      generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE,
+      chunk_id TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      vector_id INTEGER NOT NULL REFERENCES vector_values(id),
+      PRIMARY KEY (generation, chunk_id)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS vector_chunks_by_value ON vector_chunks (vector_id)');
+  yield* sql.unsafe(`PRAGMA user_version = ${VECTOR_INDEX_DATABASE_VERSION}`);
+  yield* validateVectorDatabaseStructure(sql);
+});
+
+const validateVectorDatabase = Effect.fn('vectorIndex.validateDatabase')(function* (sql: SqlClient.SqlClient) {
+  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+  yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  const versions = yield* sql.unsafe<{readonly user_version: number}>('PRAGMA user_version');
+  const version = Number(versions[0]?.user_version ?? 0);
+  if (version !== VECTOR_INDEX_DATABASE_VERSION) {
+    return yield* Effect.fail(
+      new Error(`Unsupported vector index schema ${version}; expected ${VECTOR_INDEX_DATABASE_VERSION}.`),
+    );
+  }
+  yield* validateVectorDatabaseStructure(sql);
+});
+
+const validateVectorDatabaseStructure = Effect.fn('vectorIndex.validateDatabaseStructure')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  for (const [table, expected] of Object.entries(VECTOR_INDEX_SCHEMA_COLUMNS)) {
+    const rows = yield* sql.unsafe<{readonly name: string}>(`PRAGMA table_info('${table}')`);
+    const actual = rows.map(row => row.name);
+    if (actual.length !== expected.length || actual.some((column, index) => column !== expected[index])) {
+      return yield* Effect.fail(
+        new Error(
+          `Vector index table ${table} has invalid columns: ${actual.length > 0 ? actual.join(', ') : '(missing)'}.`,
+        ),
+      );
+    }
+  }
+});
+
+const selectActiveGeneration = Effect.fn('vectorIndex.selectActiveGeneration')(function* (sql: SqlClient.SqlClient) {
+  const rows = yield* sql.unsafe<VectorGenerationRow>(
+    `SELECT
+       generation.*,
+       (SELECT COUNT(*) FROM vector_chunks WHERE vector_chunks.generation = generation.generation)
+         AS actual_chunk_count
+     FROM vector_pointer AS pointer
+     JOIN vector_generations AS generation ON generation.generation = pointer.generation
+     WHERE pointer.singleton = 1 AND generation.state = 'ready'
+     LIMIT 1`,
+  );
+  const active = rows[0];
+  if (!active) return undefined;
+  assertVectorGeneration(active);
+  if (Number(active.actual_chunk_count) !== Number(active.chunk_count)) {
+    return yield* Effect.fail(
+      new Error(
+        `Vector generation ${active.generation} contains ${active.actual_chunk_count}/${active.chunk_count} chunks.`,
+      ),
+    );
+  }
+  return active;
+});
+
+const selectGenerationByJob = Effect.fn('vectorIndex.selectGenerationByJob')(function* (
+  sql: SqlClient.SqlClient,
+  jobId: string,
+) {
+  const rows = yield* sql.unsafe<VectorGenerationRow>(
+    `SELECT
+       generation.*,
+       (SELECT COUNT(*) FROM vector_chunks WHERE vector_chunks.generation = generation.generation)
+         AS actual_chunk_count
+     FROM vector_generations AS generation
+     WHERE generation.job_id = ?
+     LIMIT 1`,
+    [jobId],
+  );
+  const generation = rows[0];
+  if (generation) assertVectorGeneration(generation);
+  return generation;
+});
+
+const prepareDesiredChunks = Effect.fn('vectorIndex.prepareDesiredChunks')(function* (
+  sql: SqlClient.SqlClient,
+  chunks: readonly DesiredVectorChunk[],
+) {
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS desired_vector_chunks (
+      chunk_id TEXT PRIMARY KEY,
+      uri TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      vector_key TEXT NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe('DELETE FROM desired_vector_chunks');
+  for (let start = 0; start < chunks.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
+    const batch = chunks.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
+    yield* sql.unsafe(
+      `INSERT INTO desired_vector_chunks (chunk_id, uri, fingerprint, vector_key)
+       VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+      batch.flatMap(chunk => [chunk.id, chunk.uri, chunk.fingerprint, chunk.vectorKey]),
+    );
+  }
+});
+
+const updateActiveVectorGeneration = Effect.fn('vectorIndex.updateActiveGeneration')(function* (
+  sql: SqlClient.SqlClient,
+  active: VectorGenerationRow,
+  jobId: string,
+  corpusGeneration: string | undefined,
+  manifest: LocalModelManifest,
+  chunks: readonly DesiredVectorChunk[],
+  runtime: LocalModelRuntimeShape,
+  modelPath: string,
+  options: VectorIndexBuildOptions,
+) {
+  const dimensions = manifest.dimensions!;
+  yield* pruneUnreferencedVectorValuesExceptDesired(sql);
+  const missing: DesiredVectorChunk[] = [];
+  for (let pageStart = 0; pageStart < chunks.length; pageStart += VECTOR_INDEX_PAGE_SIZE) {
+    const page = chunks.slice(pageStart, pageStart + VECTOR_INDEX_PAGE_SIZE);
+    const validKeys = yield* selectValidVectorKeys(
+      sql,
+      page.map(chunk => chunk.vectorKey),
+      dimensions,
+    );
+    missing.push(...page.filter(chunk => !validKeys.has(chunk.vectorKey)));
+  }
+  const reusableChunkCount = chunks.length - missing.length;
+
+  let embeddedChunkCount = 0;
+  yield* options.onProgress?.({
+    completed: embeddedChunkCount,
+    phase: 'embedding',
+    reused: reusableChunkCount,
+    total: missing.length,
+  }) ?? Effect.void;
+  for (let start = 0; start < missing.length; start += VECTOR_INDEX_EMBED_BATCH_SIZE) {
+    const batch = missing.slice(start, start + VECTOR_INDEX_EMBED_BATCH_SIZE);
+    const vectors = yield* runtime.embedMany({
+      inputs: batch.map(chunk => `${manifest.promptPrefixes?.document ?? ''}${chunk.content}`),
+      manifest,
+      modelPath,
+    });
+    yield* insertVectorValues(
+      sql,
+      batch.map(
+        (chunk, index) => [chunk.vectorKey, encodeVector(normalizeVector(vectors[index]!), dimensions)] as const,
+      ),
+    );
+    embeddedChunkCount += batch.length;
+    yield* options.onProgress?.({
+      completed: embeddedChunkCount,
+      phase: 'embedding',
+      reused: reusableChunkCount,
+      total: missing.length,
+    }) ?? Effect.void;
+  }
+
+  const available = yield* countDesiredChunksWithVectors(sql);
+  if (available !== chunks.length) {
+    return yield* Effect.fail(
+      new Error(`Vector generation ${active.generation} has ${available}/${chunks.length} reusable values.`),
+    );
+  }
+  yield* options.onProgress?.({chunkCount: chunks.length, phase: 'activating'}) ?? Effect.void;
+  const createdAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* removeUndesiredVectorRows(sql, active.generation);
+      yield* synchronizeDesiredVectorRows(sql, active.generation);
+      yield* sql`
+        UPDATE vector_generations
+        SET
+          job_id = ${jobId},
+          corpus_generation = ${corpusGeneration ?? null},
+          chunk_count = ${chunks.length},
+          created_at = ${createdAt}
+        WHERE generation = ${active.generation}
+      `;
+    }),
+  );
+  yield* pruneVectorGenerations(sql, active.generation);
+  yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
+  return vectorStatus(
+    {
+      ...active,
+      chunk_count: chunks.length,
+      corpus_generation: corpusGeneration ?? null,
+      created_at: createdAt,
+      job_id: jobId,
+    },
+    manifest.id,
+    chunks.length,
+    embeddedChunkCount,
+    reusableChunkCount,
+  );
+});
+
+const selectValidVectorKeys = Effect.fn('vectorIndex.selectValidVectorKeys')(function* (
+  sql: SqlClient.SqlClient,
+  vectorKeys: readonly string[],
+  dimensions: number,
+) {
+  const uniqueKeys = [...new Set(vectorKeys)];
+  if (uniqueKeys.length === 0) return new Set<string>();
+  const rows = yield* sql.unsafe<{readonly vector: unknown; readonly vector_key: string}>(
+    `SELECT vector_key, vector
+     FROM vector_values
+     WHERE vector_key IN (${uniqueKeys.map(() => '?').join(', ')})`,
+    uniqueKeys,
+  );
+  const valid = new Set<string>();
+  for (const row of rows) {
+    try {
+      validateEncodedVector(row.vector, dimensions);
+      valid.add(row.vector_key);
+    } catch {
+      // A corrupt value is treated as missing and replaced before activation.
+    }
+  }
+  return valid;
+});
+
+const countDesiredChunksWithVectors = Effect.fn('vectorIndex.countDesiredChunksWithVectors')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const rows = yield* sql.unsafe<{readonly count: number}>(
+    `SELECT COUNT(*) AS count
+     FROM desired_vector_chunks AS desired
+     JOIN vector_values AS value ON value.vector_key = desired.vector_key`,
+  );
+  return Number(rows[0]?.count ?? 0);
+});
+
+const synchronizeDesiredVectorRows = Effect.fn('vectorIndex.synchronizeDesiredRows')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+) {
+  yield* sql.unsafe(
+    `INSERT INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
+     SELECT ?, desired.chunk_id, desired.uri, desired.fingerprint, value.id
+     FROM desired_vector_chunks AS desired
+     JOIN vector_values AS value ON value.vector_key = desired.vector_key
+     WHERE true
+     ON CONFLICT(generation, chunk_id) DO UPDATE SET
+       uri = excluded.uri,
+       fingerprint = excluded.fingerprint,
+       vector_id = excluded.vector_id
+     WHERE vector_chunks.uri <> excluded.uri
+        OR vector_chunks.fingerprint <> excluded.fingerprint
+        OR vector_chunks.vector_id <> excluded.vector_id`,
+    [generation],
+  );
+});
+
+const removeUndesiredVectorRows = Effect.fn('vectorIndex.removeUndesiredRows')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+) {
+  yield* sql.unsafe(
+    `DELETE FROM vector_chunks
+     WHERE generation = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM desired_vector_chunks AS desired
+         WHERE desired.chunk_id = vector_chunks.chunk_id
+           AND desired.uri = vector_chunks.uri
+           AND desired.fingerprint = vector_chunks.fingerprint
+       )`,
+    [generation],
+  );
+});
+
+const mapReusableVectorRows = Effect.fn('vectorIndex.mapReusableRows')(function* (
+  sql: SqlClient.SqlClient,
+  buildingGeneration: string,
+) {
+  yield* sql.unsafe(
+    `INSERT OR IGNORE INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
+     SELECT ?, desired.chunk_id, desired.uri, desired.fingerprint, value.id
+     FROM desired_vector_chunks AS desired
+     JOIN vector_values AS value ON value.vector_key = desired.vector_key`,
+    [buildingGeneration],
+  );
+});
+
+const removeInvalidVectorRows = Effect.fn('vectorIndex.removeInvalidRows')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+  dimensions: number,
+) {
+  let cursor = '';
+  for (;;) {
+    const rows = yield* sql.unsafe<VectorRow>(
+      `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
+       FROM vector_chunks AS chunk
+       JOIN vector_values AS value ON value.id = chunk.vector_id
+       WHERE chunk.generation = ? AND chunk.chunk_id > ?
+       ORDER BY chunk.chunk_id
+       LIMIT ?`,
+      [generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+    );
+    if (rows.length === 0) break;
+    const invalid: string[] = [];
+    for (const row of rows) {
+      try {
+        validateEncodedVector(row.vector, dimensions);
+      } catch {
+        invalid.push(row.chunk_id);
+      }
+    }
+    if (invalid.length > 0) {
+      yield* sql.unsafe(
+        `DELETE FROM vector_chunks
+         WHERE generation = ? AND chunk_id IN (${invalid.map(() => '?').join(', ')})`,
+        [generation, ...invalid],
+      );
+    }
+    cursor = rows.at(-1)!.chunk_id;
+    if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
+  }
+});
+
+const selectExistingChunkIds = Effect.fn('vectorIndex.selectExistingChunkIds')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+  chunkIds: readonly string[],
+) {
+  if (chunkIds.length === 0) return new Set<string>();
+  const rows = yield* sql.unsafe<{readonly chunk_id: string}>(
+    `SELECT chunk_id
+     FROM vector_chunks
+     WHERE generation = ? AND chunk_id IN (${chunkIds.map(() => '?').join(', ')})`,
+    [generation, ...chunkIds],
+  );
+  return new Set(rows.map(row => row.chunk_id));
+});
+
+function insertVectorRows(
+  sql: SqlClient.SqlClient,
+  rows: readonly (readonly [string, string, string, string, string, Uint8Array])[],
 ) {
   return Effect.gen(function* () {
-    yield* fs.makeDirectory(path.dirname(checkpointPath), {recursive: true, mode: 0o700});
-    const temporary = `${checkpointPath}.tmp`;
-    yield* fs.writeFile(temporary, encodeVectorSidecar(sidecar), {mode: 0o600});
-    yield* fs.rename(temporary, checkpointPath);
+    for (let start = 0; start < rows.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
+      const batch = rows.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* insertVectorValues(
+            sql,
+            batch.map(row => [row[4], row[5]] as const),
+          );
+          const values = yield* sql.unsafe<{readonly id: number; readonly vector_key: string}>(
+            `SELECT id, vector_key
+             FROM vector_values
+             WHERE vector_key IN (${batch.map(() => '?').join(', ')})`,
+            batch.map(row => row[4]),
+          );
+          const idByKey = new Map(values.map(value => [value.vector_key, Number(value.id)]));
+          const mappings = batch.map(row => {
+            const vectorId = idByKey.get(row[4]);
+            if (vectorId === undefined) {
+              throw new Error(`Could not resolve stored vector ${row[4]}.`);
+            }
+            return [row[0], row[1], row[2], row[3], vectorId] as const;
+          });
+          yield* sql.unsafe(
+            `INSERT OR REPLACE INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
+             VALUES ${mappings.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
+            mappings.flat(),
+          );
+        }),
+      );
+    }
   });
 }
 
-function sidecarForEntries(
-  manifest: LocalModelManifest,
-  dimensions: number,
-  entries: readonly VectorSidecarEntry[],
-): VectorSidecar {
+function insertVectorValues(sql: SqlClient.SqlClient, rows: readonly (readonly [string, Uint8Array])[]) {
+  return Effect.gen(function* () {
+    for (let start = 0; start < rows.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
+      const batch = rows.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
+      yield* sql.unsafe(
+        `INSERT INTO vector_values (vector_key, vector)
+         VALUES ${batch.map(() => '(?, ?)').join(', ')}
+         ON CONFLICT(vector_key) DO UPDATE SET vector = excluded.vector`,
+        batch.flat(),
+      );
+    }
+  });
+}
+
+const pruneUnreferencedVectorValuesExceptDesired = Effect.fn('vectorIndex.pruneUnreferencedValuesExceptDesired')(
+  function* (sql: SqlClient.SqlClient) {
+    yield* sql.unsafe(
+      `DELETE FROM vector_values
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM vector_chunks
+       WHERE vector_chunks.vector_id = vector_values.id
+     )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM desired_vector_chunks
+         WHERE desired_vector_chunks.vector_key = vector_values.vector_key
+       )`,
+    );
+  },
+);
+
+const pruneUnreferencedVectorValues = Effect.fn('vectorIndex.pruneUnreferencedValues')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  yield* sql.unsafe(
+    `DELETE FROM vector_values
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM vector_chunks
+       WHERE vector_chunks.vector_id = vector_values.id
+     )`,
+  );
+});
+
+const countVectorRows = Effect.fn('vectorIndex.countRows')(function* (sql: SqlClient.SqlClient, generation: string) {
+  const rows = yield* sql.unsafe<{readonly count: number}>(
+    'SELECT COUNT(*) AS count FROM vector_chunks WHERE generation = ?',
+    [generation],
+  );
+  return Number(rows[0]?.count ?? 0);
+});
+
+const activateVectorGeneration = Effect.fn('vectorIndex.activateGeneration')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+  chunkCount: number,
+) {
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`
+        UPDATE vector_generations
+        SET state = 'ready', chunk_count = ${chunkCount}
+        WHERE generation = ${generation}
+      `;
+      yield* sql`
+        INSERT INTO vector_pointer (singleton, generation)
+        VALUES (1, ${generation})
+        ON CONFLICT(singleton) DO UPDATE SET generation = excluded.generation
+      `;
+    }),
+  );
+});
+
+const pruneVectorGenerations = Effect.fn('vectorIndex.pruneGenerations')(function* (
+  sql: SqlClient.SqlClient,
+  activeGeneration: string,
+) {
+  yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
+  yield* sql.unsafe('DELETE FROM vector_generations WHERE state = ? AND generation <> ?', ['ready', activeGeneration]);
+  yield* pruneUnreferencedVectorValues(sql);
+});
+
+function vectorStatus(
+  generation: VectorGenerationRow,
+  modelId: string,
+  chunkCount: number,
+  embeddedChunkCount: number,
+  reusedChunkCount: number,
+): VectorIndexStatus {
   return {
-    entries,
-    metadata: {
-      chunkerVersion: RECALL_CHUNKER_VERSION,
-      dimensions,
-      modelId: manifest.id,
-      modelSha256: manifest.sha256,
-      normalized: 'l2',
-    },
-    version: 1,
+    chunkCount,
+    createdAt: generation.created_at,
+    dimensions: generation.dimensions,
+    embeddedChunkCount,
+    generation: generation.generation,
+    modelId,
+    ready: true,
+    reusedChunkCount,
   };
 }
 
-function chunkReuseKey(uri: string, fingerprint: string): string {
-  return `${uri}\u0000${fingerprint}`;
+function encodeVector(vector: readonly number[], dimensions: number): Uint8Array {
+  if (vector.length !== dimensions) {
+    throw new Error(`Vector has ${vector.length} dimensions; expected ${dimensions}.`);
+  }
+  const bytes = new Uint8Array(dimensions * 4);
+  const view = new DataView(bytes.buffer);
+  let squaredMagnitude = 0;
+  for (const [index, component] of vector.entries()) {
+    if (!Number.isFinite(component)) throw new Error('Vector contains a non-finite component.');
+    squaredMagnitude += component * component;
+    view.setFloat32(index * 4, component, true);
+  }
+  if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.001) {
+    throw new Error('Vector is not L2-normalized.');
+  }
+  return bytes;
 }
 
-function readVectorPointer(path: Path.Path, fs: FileSystem.FileSystem, home: string, modelId: string) {
-  return Effect.gen(function* () {
-    const pointerPath = path.join(vectorModelRoot(path, home, modelId), 'active.json');
-    if (!(yield* fs.exists(pointerPath))) return undefined;
-    const raw = yield* fs.readFileString(pointerPath);
-    const parsed = Result.try(() => JSON.parse(raw) as unknown);
-    if (Result.isFailure(parsed) || !isVectorPointer(parsed.success)) {
-      return yield* Effect.fail(new Error(`Vector index pointer for ${modelId} is invalid.`));
+function validateEncodedVector(value: unknown, dimensions: number): void {
+  const bytes = bytesFromSqlBlob(value);
+  if (bytes.byteLength !== dimensions * 4) {
+    throw new Error(`Stored vector has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let squaredMagnitude = 0;
+  for (let index = 0; index < dimensions; index += 1) {
+    const component = view.getFloat32(index * 4, true);
+    if (!Number.isFinite(component)) {
+      throw new Error('Stored vector contains a non-finite component.');
     }
-    return parsed.success;
-  });
+    squaredMagnitude += component * component;
+  }
+  if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.002) {
+    throw new Error('Stored vector is not L2-normalized.');
+  }
 }
 
-function writePointerAtomically(fs: FileSystem.FileSystem, path: Path.Path, root: string, pointer: VectorIndexPointer) {
-  return Effect.gen(function* () {
-    const target = path.join(root, 'active.json');
-    const temporary = path.join(root, `.active.${pointer.generation}.tmp`);
-    yield* fs.writeFileString(temporary, `${JSON.stringify(pointer, undefined, 2)}\n`, {mode: 0o600});
-    yield* fs.rename(temporary, target);
-  });
+function bytesFromSqlBlob(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  throw new Error('Stored vector is not a binary SQLite value.');
 }
 
-function pruneVectorGenerations(fs: FileSystem.FileSystem, path: Path.Path, root: string, active: string) {
-  return Effect.gen(function* () {
-    const generationsRoot = path.join(root, 'generations');
-    const generations = [...(yield* fs.readDirectory(generationsRoot))].sort().reverse();
-    for (const generation of generations.filter(value => value !== active).slice(1)) {
-      yield* fs.remove(path.join(generationsRoot, generation), {recursive: true});
+function mergeSemanticMatches(
+  left: readonly SemanticChunkMatch[],
+  right: readonly SemanticChunkMatch[],
+  limit: number,
+): readonly SemanticChunkMatch[] {
+  return [...left, ...right].sort(compareVectorMatches).slice(0, limit);
+}
+
+function searchEncodedVectorRows(
+  normalizedQuery: readonly number[],
+  rows: readonly VectorRow[],
+  dimensions: number,
+  limit: number,
+): readonly SemanticChunkMatch[] {
+  if (normalizedQuery.length !== dimensions) {
+    throw new Error(`Query vector has ${normalizedQuery.length} dimensions; expected ${dimensions}.`);
+  }
+  const matches: SemanticChunkMatch[] = [];
+  for (const row of rows) {
+    const bytes = bytesFromSqlBlob(row.vector);
+    if (bytes.byteLength !== dimensions * 4) {
+      throw new Error(`Stored vector ${row.chunk_id} has ${bytes.byteLength} bytes; expected ${dimensions * 4}.`);
     }
-  });
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let score = 0;
+    let squaredMagnitude = 0;
+    for (let index = 0; index < dimensions; index += 1) {
+      const component = view.getFloat32(index * 4, true);
+      if (!Number.isFinite(component)) {
+        throw new Error(`Stored vector ${row.chunk_id} contains a non-finite component.`);
+      }
+      squaredMagnitude += component * component;
+      score += normalizedQuery[index]! * component;
+    }
+    if (Math.abs(Math.sqrt(squaredMagnitude) - 1) > 0.002) {
+      throw new Error(`Stored vector ${row.chunk_id} is not L2-normalized.`);
+    }
+    matches.push({
+      id: row.chunk_id,
+      score: Math.max(-1, Math.min(1, score)),
+      uri: row.uri,
+    });
+  }
+  return matches.sort(compareVectorMatches).slice(0, Math.min(limit, matches.length));
+}
+
+function compareVectorMatches(left: VectorSearchResult, right: VectorSearchResult): number {
+  return right.score - left.score || left.id.localeCompare(right.id);
+}
+
+function generationMatchesCorpus(
+  generation: VectorGenerationRow,
+  manifest: LocalModelManifest,
+  corpusGeneration: string,
+): boolean {
+  return generation.corpus_generation === corpusGeneration && generationIsCompatible(generation, manifest);
+}
+
+function generationIsCompatible(generation: VectorGenerationRow, manifest: LocalModelManifest): boolean {
+  return (
+    generation.model_id === manifest.id &&
+    generation.model_sha256 === manifest.sha256 &&
+    generation.dimensions === manifest.dimensions &&
+    generation.embedding_recipe === embeddingRecipe(manifest) &&
+    generation.chunker_version === RECALL_CHUNKER_VERSION &&
+    generation.normalized === 'l2'
+  );
+}
+
+function embeddingRecipe(manifest: LocalModelManifest): string {
+  return sha256HexSync(
+    [
+      'threadnote-recall-embedding-v1',
+      manifest.sha256,
+      String(manifest.dimensions ?? 0),
+      manifest.promptPrefixes?.document ?? '',
+      'l2',
+    ].join('\0'),
+  );
+}
+
+function vectorKeyForChunk(recipe: string, chunk: RecallChunk): string {
+  return sha256HexSync(`${recipe}\0${chunk.fingerprint}`);
+}
+
+function assertVectorGeneration(generation: VectorGenerationRow): void {
+  if (
+    !generation.generation ||
+    !/^[0-9]+-[a-f0-9-]+$/.test(generation.generation) ||
+    !/^[0-9a-f]{64}$/.test(generation.job_id) ||
+    !generation.model_id ||
+    !/^[0-9a-f]{64}$/.test(generation.model_sha256) ||
+    !/^[0-9a-f]{64}$/.test(generation.embedding_recipe) ||
+    !Number.isInteger(generation.dimensions) ||
+    generation.dimensions <= 0 ||
+    !Number.isInteger(generation.chunker_version) ||
+    generation.chunker_version <= 0 ||
+    generation.normalized !== 'l2' ||
+    !Number.isInteger(Number(generation.chunk_count)) ||
+    Number(generation.chunk_count) < 0 ||
+    !Number.isInteger(Number(generation.actual_chunk_count)) ||
+    Number(generation.actual_chunk_count) < 0 ||
+    !['building', 'ready'].includes(generation.state) ||
+    !generation.created_at
+  ) {
+    throw new Error(`Vector generation ${generation.generation || '<unknown>'} metadata is invalid.`);
+  }
+}
+
+function vectorDatabasePath(path: Path.Path, home: string, modelId: string): string {
+  return path.join(vectorModelRoot(path, home, modelId), VECTOR_INDEX_DATABASE_FILENAME);
 }
 
 function vectorModelRoot(path: Path.Path, home: string, modelId: string): string {
   return path.join(home, 'indexes', 'vectors', modelId);
 }
+
+function useVectorDatabase<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.scoped(effect.pipe(Effect.provide(SqliteClient.layer({filename: databasePath})))) as Effect.Effect<
+    A,
+    E,
+    Exclude<R, SqlClient.SqlClient>
+  >;
+}
+
+function useVectorDatabaseReadOnly<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.scoped(
+    effect.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: true,
+          readwrite: false,
+        }),
+      ),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+function removeVectorDatabaseFiles(fs: FileSystem.FileSystem, databasePath: string): Effect.Effect<void, never> {
+  return Effect.all(
+    [databasePath, `${databasePath}-shm`, `${databasePath}-wal`].map(candidate =>
+      fs.remove(candidate, {force: true}).pipe(Effect.catch(() => Effect.void)),
+    ),
+    {discard: true},
+  ).pipe(Effect.asVoid);
+}
+
+const removeLegacyVectorSidecars = Effect.fn('vectorIndex.removeLegacySidecars')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+) {
+  for (const legacy of ['active.json', 'generations', 'staging']) {
+    yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+  }
+});
 
 function withVectorIndexLock<A, E, R>(
   fs: FileSystem.FileSystem,
@@ -531,61 +1416,6 @@ function withVectorIndexLock<A, E, R>(
       waitTimeoutMilliseconds: 120_000,
     },
     Effect.suspend(effect),
-  );
-}
-
-function vectorSidecarMatchesChunks(sidecar: VectorSidecar, chunks: readonly RecallChunk[]): boolean {
-  if (sidecar.entries.length !== chunks.length) return false;
-  const expectedById = new Map(chunks.map(chunk => [chunk.id, chunk]));
-  return sidecar.entries.every(entry => {
-    const expected = expectedById.get(entry.id);
-    return expected?.fingerprint === entry.fingerprint && expected.uri === entry.uri;
-  });
-}
-
-function vectorSidecarCacheKey(path: Path.Path, home: string, modelId: string): string {
-  return `${path.resolve(home)}\u0000${modelId}`;
-}
-
-function vectorSidecarIsCompatible(sidecar: VectorSidecar, manifest: LocalModelManifest): boolean {
-  return (
-    sidecar.metadata.modelId === manifest.id &&
-    sidecar.metadata.modelSha256 === manifest.sha256 &&
-    sidecar.metadata.dimensions === manifest.dimensions &&
-    sidecar.metadata.chunkerVersion === RECALL_CHUNKER_VERSION
-  );
-}
-
-function pointerMatchesCorpus(
-  pointer: VectorIndexPointer | undefined,
-  manifest: LocalModelManifest,
-  corpusGeneration: string,
-): boolean {
-  return (
-    pointer?.corpusGeneration === corpusGeneration &&
-    pointer.modelSha256 === manifest.sha256 &&
-    pointer.dimensions === manifest.dimensions &&
-    pointer.chunkerVersion === RECALL_CHUNKER_VERSION &&
-    pointer.chunkCount !== undefined &&
-    pointer.chunkCount >= 0
-  );
-}
-
-function isVectorPointer(value: unknown): value is VectorIndexPointer {
-  if (typeof value !== 'object' || value === null) return false;
-  const pointer = value as Partial<VectorIndexPointer>;
-  return (
-    pointer.version === VECTOR_INDEX_POINTER_VERSION &&
-    typeof pointer.createdAt === 'string' &&
-    typeof pointer.generation === 'string' &&
-    /^[0-9]+-[a-f0-9-]+$/.test(pointer.generation) &&
-    typeof pointer.sidecarSha256 === 'string' &&
-    /^[0-9a-f]{64}$/.test(pointer.sidecarSha256) &&
-    (pointer.chunkCount === undefined || (Number.isInteger(pointer.chunkCount) && pointer.chunkCount >= 0)) &&
-    (pointer.chunkerVersion === undefined || Number.isInteger(pointer.chunkerVersion)) &&
-    (pointer.corpusGeneration === undefined || typeof pointer.corpusGeneration === 'string') &&
-    (pointer.dimensions === undefined || (Number.isInteger(pointer.dimensions) && pointer.dimensions > 0)) &&
-    (pointer.modelSha256 === undefined || /^[0-9a-f]{64}$/.test(pointer.modelSha256))
   );
 }
 

@@ -128,10 +128,10 @@ Unverified or unresponsive PIDs are left untouched with a warning.
 
 ## An index rebuild was interrupted
 
-Re-run `threadnote repair` or `threadnote index rebuild`. The lexical SQLite database is disposable and rebuilt from
-canonical Markdown after corruption. Vector checkpoints contain a checksum and reuse unchanged URI+fingerprint chunks
-from both the active generation and an interrupted staging generation. Activation occurs only after the complete
-sidecar and pointer are durably written.
+Re-run `threadnote repair` or `threadnote index rebuild`. The lexical and vector SQLite databases are disposable and
+rebuilt from canonical Markdown after corruption. Vector values are content-addressed, so a retry reuses every valid
+value already written. A changed active mapping is committed in one SQLite transaction only after every required
+vector is present; an interrupted embedding run leaves the previous mapping available.
 
 Repair and doctor also run a full SQLite integrity check over each derived native code graph. Large monorepo graphs can
 take time to scan; both commands print the current graph database and cleanup phase while they work. If a graph is

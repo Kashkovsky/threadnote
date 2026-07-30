@@ -89,7 +89,26 @@ jobs:
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
       - run: ./dist/threadnote --version
-      - run: ./dist/threadnote doctor --dry-run
+      - name: Prepare strict doctor fixture
+        shell: bash
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          ./dist/threadnote --home "$THREADNOTE_HOME" install --no-start
+      - name: Verify release with strict read-only doctor
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
       - run: bun run archive:release
@@ -129,7 +148,26 @@ jobs:
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
       - run: ./dist/threadnote --version
-      - run: ./dist/threadnote doctor --dry-run
+      - name: Prepare strict doctor fixture
+        shell: bash
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          ./dist/threadnote --home "$THREADNOTE_HOME" install --no-start
+      - name: Verify release with strict read-only doctor
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
 
@@ -242,10 +280,23 @@ jobs:
       - run: bun run build
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
-      - shell: pwsh
+      - name: Prepare fixture and verify with strict read-only doctor
+        shell: pwsh
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          USERPROFILE: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
         run: |
+          New-Item -ItemType Directory -Force -Path $env:HOME | Out-Null
           & .\dist\threadnote.exe --version
-          & .\dist\threadnote.exe doctor --dry-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\threadnote.exe --home $env:THREADNOTE_HOME install --no-start
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\threadnote.exe --home $env:THREADNOTE_HOME doctor --dry-run --strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
 

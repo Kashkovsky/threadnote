@@ -4,6 +4,7 @@ import {describe} from 'vitest';
 import {
   boundedRecallExpansionScopes,
   expandRecallQueryEffect,
+  expandWeakRecallQueryEffect,
   isLoopbackAiEndpoint,
   limitRecallRewritesForConfidence,
   mergeRecallRewritesForConfidence,
@@ -13,6 +14,7 @@ import {
   recallHybridMinimumScore,
   RecallQueryExpander,
   selectRecallCandidatesEffect,
+  selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../src/effect/ai/recall.js';
 
@@ -139,5 +141,27 @@ describe('Effect AI recall expansion', () => {
       ),
       Effect.tap(selected => Effect.sync(() => expect(selected).toEqual(['c1']))),
     ),
+  );
+
+  it.effect('does not auto-load an optional generation model for ordinary recall', () =>
+    Effect.gen(function* () {
+      expect(
+        yield* expandWeakRecallQueryEffect(
+          {confidence: {level: 'no_answer'}, query: 'missing memory'},
+          {agentContextHome: '/unused'},
+          undefined,
+        ),
+      ).toEqual([]);
+      expect(
+        yield* selectExpandedRecallCandidatesEffect(
+          {
+            candidates: [{id: 'c1', summary: 'candidate', uri: 'threadnote://candidate'}],
+            query: 'missing memory',
+          },
+          {agentContextHome: '/unused'},
+          undefined,
+        ),
+      ).toBeUndefined();
+    }),
   );
 });

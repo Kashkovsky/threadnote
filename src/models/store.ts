@@ -1,4 +1,4 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Path, Result, Schema} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
 import {
   InsufficientDiskSpace,
   ModelChecksumMismatch,
@@ -102,6 +102,10 @@ function makeLocalModelStore(
   ) => Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>>,
   layerOptions: LocalModelStoreLayerOptions,
 ): LocalModelStoreShape {
+  const verifiedModels = new Map<
+    string,
+    {readonly fileIdentity: string; readonly installation: LocalModelInstallation}
+  >();
   const modelPath = (home: string, manifest: LocalModelManifest) =>
     path.join(modelDirectory(path, home, manifest), `${manifest.sha256}.gguf`);
   const partialPath = (home: string, manifest: LocalModelManifest) => `${modelPath(home, manifest)}.partial`;
@@ -122,7 +126,48 @@ function makeLocalModelStore(
         verified: false,
       };
     }).pipe(mapStoreIoError(manifest, 'status'));
-  const verifyUnlocked = (home: string, manifest: LocalModelManifest) =>
+  const verificationCacheKey = (home: string, manifest: LocalModelManifest) =>
+    `${modelPath(home, manifest)}\0${manifest.sha256}`;
+  const installedFileIdentity = (installedPath: string) =>
+    fs.stat(installedPath).pipe(
+      Effect.map(info => {
+        const inode = Option.getOrUndefined(info.ino);
+        const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
+        return inode === undefined || modifiedAt === undefined
+          ? Option.none<string>()
+          : Option.some(`${info.size}:${inode}:${modifiedAt}`);
+      }),
+    );
+  const cacheVerifiedInstallation = (
+    home: string,
+    manifest: LocalModelManifest,
+    installation: LocalModelInstallation,
+  ) =>
+    installedFileIdentity(installation.path).pipe(
+      Effect.tap(identity =>
+        Option.isSome(identity)
+          ? Effect.sync(() =>
+              verifiedModels.set(verificationCacheKey(home, manifest), {
+                fileIdentity: identity.value,
+                installation,
+              }),
+            )
+          : Effect.void,
+      ),
+      Effect.asVoid,
+    );
+  const cachedVerification = (home: string, manifest: LocalModelManifest) =>
+    Effect.gen(function* () {
+      const cached = verifiedModels.get(verificationCacheKey(home, manifest));
+      if (!cached || !(yield* fs.exists(cached.installation.path))) {
+        return Option.none<LocalModelInstallation>();
+      }
+      const identity = yield* installedFileIdentity(cached.installation.path);
+      return Option.isSome(identity) && identity.value === cached.fileIdentity
+        ? Option.some(cached.installation)
+        : Option.none<LocalModelInstallation>();
+    }).pipe(mapStoreIoError(manifest, 'verify'));
+  const verifyUnlocked = (home: string, manifest: LocalModelManifest, allowCache: boolean) =>
     Effect.gen(function* () {
       const current = yield* status(home, manifest);
       if (!current.installed) {
@@ -135,11 +180,17 @@ function makeLocalModelStore(
       if (current.bytes !== manifest.size) {
         return yield* checksumMismatch(manifest, `size:${current.bytes}`);
       }
+      if (allowCache) {
+        const cached = yield* cachedVerification(home, manifest);
+        if (Option.isSome(cached)) return cached.value;
+      }
       const digest = yield* providePlatform(sha256FileHex(current.path));
       if (digest !== manifest.sha256) {
         return yield* checksumMismatch(manifest, digest);
       }
-      return {...current, verified: true};
+      const verified = {...current, verified: true};
+      yield* cacheVerifiedInstallation(home, manifest, verified);
+      return verified;
     }).pipe(mapStoreIoError(manifest, 'verify'));
   const withModelLock = <A, E, R>(
     home: string,
@@ -179,7 +230,7 @@ function makeLocalModelStore(
           const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
           const directory = modelDirectory(path, home, manifest);
           if (current.installed) {
-            const verified = yield* verifyUnlocked(home, manifest).pipe(Effect.result);
+            const verified = yield* verifyUnlocked(home, manifest, false).pipe(Effect.result);
             if (Result.isSuccess(verified)) {
               return {...verified.success, resumed: false, sourceUrl};
             }
@@ -237,7 +288,7 @@ function makeLocalModelStore(
           yield* fs.rename(partial, installedPath);
           yield* fs.chmod(installedPath, 0o600);
           yield* writeManifestReceipt(fs, path, directory, manifest);
-          return {
+          const installed = {
             bytes: downloadedBytes,
             installed: true,
             modelId: manifest.id,
@@ -247,6 +298,8 @@ function makeLocalModelStore(
             sourceUrl,
             verified: true,
           };
+          yield* cacheVerifiedInstallation(home, manifest, installed);
+          return installed;
         }),
       ) as Effect.Effect<LocalModelInstallResult, LocalModelStoreError>,
     path: modelPath,
@@ -259,15 +312,19 @@ function makeLocalModelStore(
           const directory = modelDirectory(path, home, manifest);
           if (!(yield* fs.exists(directory))) return false;
           yield* fs.remove(directory, {recursive: true});
+          verifiedModels.delete(verificationCacheKey(home, manifest));
           return true;
         }),
       ) as Effect.Effect<boolean, LocalModelStoreError>,
     status,
     verify: (home, manifest) =>
-      withModelLock(home, manifest, 'verify', verifyUnlocked(home, manifest)) as Effect.Effect<
-        LocalModelInstallation,
-        LocalModelStoreError
-      >,
+      cachedVerification(home, manifest).pipe(
+        Effect.flatMap(cached =>
+          Option.isSome(cached)
+            ? Effect.succeed(cached.value)
+            : withModelLock(home, manifest, 'verify', verifyUnlocked(home, manifest, true)),
+        ),
+      ) as Effect.Effect<LocalModelInstallation, LocalModelStoreError>,
   };
 }
 

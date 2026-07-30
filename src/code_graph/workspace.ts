@@ -14,6 +14,19 @@ interface ProjectCandidate {
   readonly workspaceRoots: readonly string[];
 }
 
+interface WorkspaceFileIndex {
+  readonly buildFileByRoot: ReadonlyMap<string, CodeGraphInventoryFile>;
+  readonly fileByPath: ReadonlyMap<string, CodeGraphInventoryFile>;
+  readonly sortedPaths: readonly string[];
+}
+
+interface WorkspaceProjectPathIndex {
+  readonly projectsByRoot: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;
+  readonly projectsBySourceRoot: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;
+}
+
+const workspaceProjectPathIndexes = new WeakMap<readonly CodeGraphWorkspaceProject[], WorkspaceProjectPathIndex>();
+
 export const manifestWorkspaceDetector: CodeGraphWorkspaceDetector = {
   contextFiles: [],
   detect: files => Effect.succeed(discoverManifestWorkspace(files)),
@@ -21,9 +34,10 @@ export const manifestWorkspaceDetector: CodeGraphWorkspaceDetector = {
 
 export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile[]): CodeGraphWorkspace {
   const diagnostics: string[] = [];
+  const fileIndex = createWorkspaceFileIndex(files);
   const candidates = [
-    ...discoverMavenProjects(files, diagnostics),
-    ...discoverGradleProjects(files, diagnostics),
+    ...discoverMavenProjects(files, diagnostics, fileIndex),
+    ...discoverGradleProjects(files, diagnostics, fileIndex),
     ...discoverSwiftPackageProjects(files, diagnostics),
     ...discoverXcodeProjects(files, diagnostics),
   ];
@@ -92,9 +106,10 @@ export function createWorkspaceAttributor(
   workspace: CodeGraphWorkspace,
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const projectsById = new Map(workspace.projects.map(project => [project.id, project]));
+  const findProject = createWorkspaceProjectLookup(workspace.projects);
   return facts =>
     facts.map(file => {
-      const project = projectForPath(workspace.projects, file.path);
+      const project = findProject(file.path);
       if (Option.isNone(project)) return file;
       return {
         ...file,
@@ -108,24 +123,25 @@ export function projectForPath(
   projects: readonly CodeGraphWorkspaceProject[],
   filePath: string,
 ): Option.Option<CodeGraphWorkspaceProject> {
-  const ranked = projects.flatMap(project => {
-    const sourceRoot = project.sourceRoots
-      .filter(root => containsPath(root, filePath))
-      .sort((left, right) => right.length - left.length)[0];
-    if (sourceRoot !== undefined) return [{project, rank: 2, specificity: sourceRoot.length}];
-    if (containsPath(project.root, filePath)) return [{project, rank: 1, specificity: project.root.length}];
-    return [];
-  });
-  ranked.sort(
-    (left, right) =>
-      right.rank - left.rank || right.specificity - left.specificity || left.project.id.localeCompare(right.project.id),
-  );
-  return Option.fromUndefinedOr(ranked[0]?.project);
+  return createWorkspaceProjectLookup(projects)(filePath);
+}
+
+export function createWorkspaceProjectLookup(
+  projects: readonly CodeGraphWorkspaceProject[],
+): (filePath: string) => Option.Option<CodeGraphWorkspaceProject> {
+  const index = workspaceProjectPathIndexes.get(projects) ?? createWorkspaceProjectPathIndex(projects);
+  if (!workspaceProjectPathIndexes.has(projects)) workspaceProjectPathIndexes.set(projects, index);
+  return filePath =>
+    Option.fromUndefinedOr(
+      nearestPrefixProject(index.projectsBySourceRoot, filePath) ??
+        nearestPrefixProject(index.projectsByRoot, filePath),
+    );
 }
 
 function discoverMavenProjects(
   files: readonly CodeGraphInventoryFile[],
   diagnostics: string[],
+  fileIndex: WorkspaceFileIndex,
 ): readonly ProjectCandidate[] {
   const output: ProjectCandidate[] = [];
   for (const file of files.filter(candidate => basename(candidate.path) === 'pom.xml')) {
@@ -157,7 +173,7 @@ function discoverMavenProjects(
       workspaceRoots: [root],
     });
     for (const moduleRoot of moduleRoots) {
-      if (!files.some(candidate => candidate.path === joinPath(moduleRoot, 'pom.xml'))) {
+      if (!fileIndex.fileByPath.has(joinPath(moduleRoot, 'pom.xml'))) {
         diagnostics.push(`${file.path}: declared Maven module ${moduleRoot} has no indexed pom.xml`);
       }
     }
@@ -168,6 +184,7 @@ function discoverMavenProjects(
 function discoverGradleProjects(
   files: readonly CodeGraphInventoryFile[],
   diagnostics: string[],
+  fileIndex: WorkspaceFileIndex,
 ): readonly ProjectCandidate[] {
   const output: ProjectCandidate[] = [];
   const settingsFiles = files
@@ -180,14 +197,13 @@ function discoverGradleProjects(
       /\brootProject\.name\s*=\s*["']([^"']+)["']/.exec(settings.content!)?.[1] ??
       (workspaceRoot.split('/').at(-1) || 'root');
     const projectDirectories = gradleProjectDirectories(settings.content!, workspaceRoot);
-    const modules = ['', ...gradleIncludes(settings.content!)];
+    const includedModules = gradleIncludes(settings.content!);
+    const modules = ['', ...includedModules];
     for (const modulePath of modules) {
       const gradlePath = modulePath ? `:${modulePath.split('/').join(':')}` : ':';
       const root = projectDirectories.get(gradlePath) ?? joinPath(workspaceRoot, modulePath);
       coveredBuildRoots.add(root);
-      const buildFile = files.find(
-        candidate => dirname(candidate.path) === root && /^build\.gradle(?:\.kts)?$/i.test(basename(candidate.path)),
-      );
+      const buildFile = fileIndex.buildFileByRoot.get(root);
       const dependencyAliases = buildFile?.content ? gradleProjectDependencies(buildFile.content) : [];
       const moduleName = modulePath.split('/').at(-1) || rootName;
       output.push({
@@ -201,9 +217,9 @@ function discoverGradleProjects(
         workspaceRoots: [workspaceRoot],
       });
     }
-    for (const modulePath of gradleIncludes(settings.content!)) {
+    for (const modulePath of includedModules) {
       const root = projectDirectories.get(`:${modulePath.split('/').join(':')}`) ?? joinPath(workspaceRoot, modulePath);
-      if (!files.some(candidate => containsPath(root, candidate.path))) {
+      if (!hasIndexedPathWithin(fileIndex.sortedPaths, root)) {
         diagnostics.push(`${settings.path}: declared Gradle project ${modulePath} has no indexed files`);
       }
     }
@@ -308,8 +324,9 @@ function discoverXcodeProjects(
 }
 
 function addFallbackProjects(files: readonly CodeGraphInventoryFile[], candidates: ProjectCandidate[]): void {
+  const coveredSourceRoots = createPathPrefixSet(candidates.flatMap(candidate => candidate.sourceRoots));
   for (const file of files.filter(candidate => /\.(?:java|kt|kts|swift)$/i.test(candidate.path))) {
-    if (candidates.some(candidate => candidate.sourceRoots.some(root => containsPath(root, file.path)))) continue;
+    if (coveredSourceRoots.hasPrefix(file.path)) continue;
     const swift = file.path.toLowerCase().endsWith('.swift');
     const inferred = swift ? inferSwiftRoot(file.path) : inferJvmRoot(file.path);
     if (!inferred) continue;
@@ -323,6 +340,7 @@ function addFallbackProjects(files: readonly CodeGraphInventoryFile[], candidate
       sourceRoots: [inferred.sourceRoot],
       workspaceRoots: [inferred.root],
     });
+    coveredSourceRoots.add(inferred.sourceRoot);
   }
 }
 
@@ -425,6 +443,94 @@ function attributeReference(
 function scopedLookupKey(key: string, project: CodeGraphWorkspaceProject): string {
   const prefix = `${project.resolutionDomain}:`;
   return key.startsWith(prefix) ? `${prefix}${project.id}:${key.slice(prefix.length)}` : key;
+}
+
+function createWorkspaceFileIndex(files: readonly CodeGraphInventoryFile[]): WorkspaceFileIndex {
+  const buildFileByRoot = new Map<string, CodeGraphInventoryFile>();
+  const fileByPath = new Map<string, CodeGraphInventoryFile>();
+  for (const file of files) {
+    fileByPath.set(file.path, file);
+    if (/^build\.gradle(?:\.kts)?$/i.test(basename(file.path)) && !buildFileByRoot.has(dirname(file.path))) {
+      buildFileByRoot.set(dirname(file.path), file);
+    }
+  }
+  return {
+    buildFileByRoot,
+    fileByPath,
+    sortedPaths: [...fileByPath.keys()].sort(),
+  };
+}
+
+function createWorkspaceProjectPathIndex(projects: readonly CodeGraphWorkspaceProject[]): WorkspaceProjectPathIndex {
+  const projectsByRoot = new Map<string, CodeGraphWorkspaceProject[]>();
+  const projectsBySourceRoot = new Map<string, CodeGraphWorkspaceProject[]>();
+  const add = (target: Map<string, CodeGraphWorkspaceProject[]>, root: string, project: CodeGraphWorkspaceProject) => {
+    const existing = target.get(root);
+    if (existing) {
+      if (!existing.some(candidate => candidate.id === project.id)) existing.push(project);
+    } else {
+      target.set(root, [project]);
+    }
+  };
+  for (const project of projects) {
+    add(projectsByRoot, project.root, project);
+    for (const sourceRoot of project.sourceRoots) add(projectsBySourceRoot, sourceRoot, project);
+  }
+  for (const candidates of [...projectsByRoot.values(), ...projectsBySourceRoot.values()]) {
+    candidates.sort((left, right) => left.id.localeCompare(right.id));
+  }
+  return {projectsByRoot, projectsBySourceRoot};
+}
+
+function nearestPrefixProject(
+  projectsByPrefix: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>,
+  filePath: string,
+): CodeGraphWorkspaceProject | undefined {
+  let prefix = filePath;
+  for (;;) {
+    const project = projectsByPrefix.get(prefix)?.[0];
+    if (project) return project;
+    const separator = prefix.lastIndexOf('/');
+    if (separator < 0) return projectsByPrefix.get('')?.[0];
+    prefix = prefix.slice(0, separator);
+  }
+}
+
+function hasIndexedPathWithin(sortedPaths: readonly string[], root: string): boolean {
+  if (root === '') return sortedPaths.length > 0;
+  let lower = 0;
+  let upper = sortedPaths.length;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if (sortedPaths[middle]! < root) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
+    }
+  }
+  const candidate = sortedPaths[lower];
+  return candidate === root || candidate?.startsWith(`${root}/`) === true;
+}
+
+function createPathPrefixSet(initial: readonly string[]): {
+  readonly add: (root: string) => void;
+  readonly hasPrefix: (path: string) => boolean;
+} {
+  const roots = new Set(initial);
+  return {
+    add: root => {
+      roots.add(root);
+    },
+    hasPrefix: path => {
+      let prefix = path;
+      for (;;) {
+        if (roots.has(prefix)) return true;
+        const separator = prefix.lastIndexOf('/');
+        if (separator < 0) return roots.has('');
+        prefix = prefix.slice(0, separator);
+      }
+    },
+  };
 }
 
 function conventionalJvmSourceRoots(root: string): readonly string[] {
@@ -535,10 +641,6 @@ function normalizeContainedPath(root: string, relative: string): string | undefi
     }
   }
   return output.join('/');
-}
-
-function containsPath(root: string, path: string): boolean {
-  return root === '' || path === root || path.startsWith(`${root}/`);
 }
 
 function dirname(path: string): string {

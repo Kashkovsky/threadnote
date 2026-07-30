@@ -1,10 +1,12 @@
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Effect, FileSystem, Path} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {DoctorCheck} from '../types.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {codeGraphMaintenanceLockPath, codeGraphRepositoriesRoot} from './layout.js';
 import {withCodeGraphMaintenanceIntent} from './maintenance_gate.js';
-import {CodeGraphStore} from './store.js';
-import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
+import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 
 export interface CodeGraphRepairSummary {
   readonly databases: number;
@@ -33,9 +35,6 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   onProgress?: CodeGraphProgressHandler,
   precomputed?: DoctorCheck,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const store = yield* CodeGraphStore;
   if (precomputed) return precomputed;
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   if (databases.length === 0) {
@@ -50,13 +49,7 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   let unhealthy = 0;
   for (const [index, database] of databases.entries()) {
     yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
-    const health = yield* withDatabaseLock(
-      fs,
-      path,
-      threadnoteHome,
-      database,
-      store.diagnose(database).pipe(Effect.option),
-    );
+    const health = yield* diagnoseCodeGraphDatabaseReadOnly(database).pipe(Effect.option);
     if (health._tag === 'None' || health.value?.integrity !== 'ok') {
       unhealthy += 1;
       continue;
@@ -65,6 +58,57 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
     incomplete += health.value.buildingSnapshots + health.value.failedSnapshots;
   }
   return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy);
+});
+
+const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseReadOnly')(function* (
+  databasePath: string,
+) {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe('PRAGMA query_only = ON');
+      yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+      const integrityRows = yield* sql.unsafe<{readonly integrity_check: string}>('PRAGMA integrity_check(10)');
+      const schemaRows = yield* sql<{readonly value: string}>`
+        SELECT value FROM schema_metadata WHERE key = 'schema_version'
+      `;
+      const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
+      const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
+        SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
+      `;
+      const activeRows = yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM active_snapshots`;
+      const cacheRows = yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM file_blobs`;
+      const foreignKeyRows = yield* sql.unsafe('PRAGMA foreign_key_check');
+      const counts = new Map(stateRows.map(row => [row.state, Number(row.count)]));
+      const integrityOk =
+        integrityRows.length === 1 && integrityRows[0]?.integrity_check === 'ok' && foreignKeyRows.length === 0;
+      return {
+        activeSnapshots: Number(activeRows[0]?.count ?? 0),
+        buildingSnapshots: counts.get('building') ?? 0,
+        cachedFileBlobs: Number(cacheRows[0]?.count ?? 0),
+        failedSnapshots: counts.get('failed') ?? 0,
+        foreignKeyViolations: foreignKeyRows.length,
+        integrity:
+          !Number.isSafeInteger(schemaVersion) || schemaVersion !== CODE_GRAPH_SCHEMA_VERSION
+            ? 'incompatible'
+            : integrityOk
+              ? 'ok'
+              : 'corrupt',
+        readySnapshots: counts.get('ready') ?? 0,
+        schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
+      } satisfies CodeGraphDatabaseHealth;
+    }).pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: true,
+          readwrite: false,
+        }),
+      ),
+    ),
+  );
 });
 
 export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(function* <R = never>(

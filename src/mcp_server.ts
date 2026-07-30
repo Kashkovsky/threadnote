@@ -9,6 +9,7 @@ import {
   type ArchiveAction,
   buildCompactPlan,
   type CompactableMemoryKind,
+  existingReferencedUris,
   formatCompactPlan,
   formatReferencedContextPointers,
   parseMemoryDocument,
@@ -101,6 +102,7 @@ import {
   withCandidateReviewLock,
 } from './candidate_memory.js';
 import {recordRecallFeedback} from './recall/feedback.js';
+import {loadRecallExactMatches} from './recall/index.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
@@ -1783,7 +1785,9 @@ const referencedContextSection = Effect.fn('mcpServer.referencedContext')(functi
   if (referenced.length === 0) {
     return undefined;
   }
-  return formatReferencedContextPointers(referenced, MAX_REFERENCED_CONTEXT);
+  const candidates = referenced.slice(0, MAX_REFERENCED_CONTEXT);
+  const existingRecords = yield* readMemoryRecordsByUri(config, candidates);
+  return formatReferencedContextPointers(existingReferencedUris(candidates, existingRecords), MAX_REFERENCED_CONTEXT);
 });
 
 const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatches')(function* (
@@ -1796,22 +1800,13 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
   if (terms.length === 0) {
     return [];
   }
-  const store = yield* ResourceStore;
   const scopes = exactMemoryScopes(config, includeArchived, query, project);
-  const termsByUri = new Map<string, Set<string>>();
-  for (const scope of scopes) {
-    const matches = yield* store
-      .grepMany(resourceStoreLocation(config), scope, terms, 25)
-      .pipe(Effect.catch(() => Effect.succeed([])));
-    for (const match of matches) {
-      const matchedTerms = termsByUri.get(match.uri) ?? new Set<string>();
-      matchedTerms.add(match.term);
-      termsByUri.set(match.uri, matchedTerms);
-    }
-  }
-  return [...termsByUri]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([uri, matchedTerms]) => ({terms: [...matchedTerms], uri}));
+  return yield* loadRecallExactMatches(config, {
+    includeInactive: includeArchived,
+    limitPerTerm: 25,
+    terms,
+    uriScopes: scopes,
+  }).pipe(Effect.catch(() => Effect.succeed([])));
 });
 
 function registerReadTool(

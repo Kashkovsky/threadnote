@@ -48,14 +48,14 @@
       "coldIndexP95MillisecondsMaximum": 60000,
       "derivedIndexBytesMaximum": 268435456,
       "hotQueryP95MillisecondsMaximum": 1000,
-      "oneFileIncrementalP95MillisecondsMaximum": 30000,
+      "oneFileIncrementalP95MillisecondsMaximum": 15000,
       "processPeakRssBytesMaximum": 2147483648
     },
     "100000": {
       "coldIndexP95MillisecondsMaximum": 600000,
       "derivedIndexBytesMaximum": 2147483648,
       "hotQueryP95MillisecondsMaximum": 3000,
-      "oneFileIncrementalP95MillisecondsMaximum": 180000,
+      "oneFileIncrementalP95MillisecondsMaximum": 60000,
       "processPeakRssBytesMaximum": 6442450944
     }
   },
@@ -63,6 +63,7 @@
     "Quality and safety budgets are release gates on every platform.",
     "Development performance budgets detect order-of-magnitude regressions on the reviewed fixture.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
-    "Generated 10k and 100k symbol artifacts are budget-gated on scheduled runners; production-shaped repositories remain a separate soak gate."
+    "Generated 10k and 100k lexical artifacts are budget-gated on graph/runtime pull requests in Linux and on scheduled runners; production-shaped repositories remain a separate soak gate.",
+    "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions."
   ]
 }

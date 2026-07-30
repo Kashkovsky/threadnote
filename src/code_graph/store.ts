@@ -1310,6 +1310,17 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
     'CREATE INDEX IF NOT EXISTS activation_reference_candidates_lookup ON activation_reference_candidates(lookup_key, edge_id, tier)',
   );
   yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_resolved_reference_batch (
+      old_edge_id TEXT PRIMARY KEY,
+      new_edge_id TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_name TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      confidence REAL NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
     CREATE TEMP TABLE IF NOT EXISTS activation_edges (
       id TEXT PRIMARY KEY,
       source_id TEXT,
@@ -1340,13 +1351,24 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
   yield* sql.unsafe('DELETE FROM activation_edges');
   yield* sql.unsafe('DELETE FROM activation_references');
   yield* sql.unsafe('DELETE FROM activation_reference_candidates');
+  yield* sql.unsafe('DELETE FROM activation_resolved_reference_batch');
   yield* sql.unsafe('DELETE FROM activation_symbol_terms');
   yield* sql.unsafe('DELETE FROM activation_changed_symbol_ids');
 });
 
+// Stay comfortably below SQLite's cross-platform parameter ceiling while
+// avoiding thousands of statement preparations on production-sized graphs.
+const ACTIVATION_FILE_BATCH_ROWS = 2_500;
+const ACTIVATION_SYMBOL_BATCH_ROWS = 1_000;
+const ACTIVATION_LOOKUP_BATCH_ROWS = 4_000;
+const ACTIVATION_TERM_BATCH_ROWS = 5_000;
+const ACTIVATION_EDGE_BATCH_ROWS = 1_500;
+const ACTIVATION_REFERENCE_BATCH_ROWS = 3_000;
+const ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS = 5_000;
+
 function stageActivationFiles(sql: SqlClient.SqlClient, files: readonly CodeGraphInventoryFile[]) {
   return Effect.gen(function* () {
-    for (const batch of chunk(files, 400)) {
+    for (const batch of chunk(files, ACTIVATION_FILE_BATCH_ROWS)) {
       yield* sql.unsafe(
         `INSERT OR REPLACE INTO activation_files (
           path, content_hash, language, mode, size, source
@@ -1359,7 +1381,7 @@ function stageActivationFiles(sql: SqlClient.SqlClient, files: readonly CodeGrap
 
 function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly CodeGraphSymbol[]) {
   return Effect.gen(function* () {
-    for (const batch of chunk(symbols, 300)) {
+    for (const batch of chunk(symbols, ACTIVATION_SYMBOL_BATCH_ROWS)) {
       yield* sql.unsafe(
         `INSERT OR REPLACE INTO activation_symbols (
           id, content_hash, kind, name, qualified_name, path, language, package_name,
@@ -1388,7 +1410,7 @@ function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly Code
           key => [key, symbol.id, lookupDomain(key, symbol.resolutionDomain), symbol.exported ? 1 : 0] as const,
         ),
       );
-      for (const lookupBatch of chunk(lookupRows, 500)) {
+      for (const lookupBatch of chunk(lookupRows, ACTIVATION_LOOKUP_BATCH_ROWS)) {
         yield* sql.unsafe(
           `INSERT OR REPLACE INTO activation_symbol_lookup (
             lookup_key, symbol_id, resolution_domain, exported
@@ -1403,31 +1425,29 @@ function stageActivationSymbols(sql: SqlClient.SqlClient, symbols: readonly Code
 function stageActivationSymbolTerms(sql: SqlClient.SqlClient, symbols: readonly CodeGraphSymbol[]) {
   return Effect.gen(function* () {
     let termBatch: Array<readonly [string, string, number]> = [];
+    const flush = () => {
+      if (termBatch.length === 0) return Effect.void;
+      const current = termBatch;
+      termBatch = [];
+      return sql.unsafe(
+        `INSERT OR REPLACE INTO activation_symbol_terms (term, symbol_id, weight)
+         VALUES ${current.map(() => '(?, ?, ?)').join(', ')}`,
+        current.flat(),
+      );
+    };
     for (const symbol of symbols) {
       for (const [term, weight] of symbolTerms(symbol)) {
         termBatch.push([term, symbol.id, weight]);
+        if (termBatch.length >= ACTIVATION_TERM_BATCH_ROWS) yield* flush();
       }
-      if (termBatch.length < 200) continue;
-      yield* sql.unsafe(
-        `INSERT OR REPLACE INTO activation_symbol_terms (term, symbol_id, weight)
-         VALUES ${termBatch.map(() => '(?, ?, ?)').join(', ')}`,
-        termBatch.flat(),
-      );
-      termBatch = [];
     }
-    if (termBatch.length > 0) {
-      yield* sql.unsafe(
-        `INSERT OR REPLACE INTO activation_symbol_terms (term, symbol_id, weight)
-         VALUES ${termBatch.map(() => '(?, ?, ?)').join(', ')}`,
-        termBatch.flat(),
-      );
-    }
+    yield* flush();
   });
 }
 
 function stageActivationEdges(sql: SqlClient.SqlClient, edges: readonly CodeGraphEdge[]) {
   return Effect.gen(function* () {
-    for (const batch of chunk(edges, 300)) {
+    for (const batch of chunk(edges, ACTIVATION_EDGE_BATCH_ROWS)) {
       yield* sql.unsafe(
         `INSERT OR REPLACE INTO activation_edges (
           id, source_id, source_name, relation, target_id, target_name, provenance,
@@ -1452,7 +1472,7 @@ function stageActivationEdges(sql: SqlClient.SqlClient, edges: readonly CodeGrap
 
 function stageActivationReferences(sql: SqlClient.SqlClient, references: readonly CodeGraphReference[]) {
   return Effect.gen(function* () {
-    for (const batch of chunk(references, 300)) {
+    for (const batch of chunk(references, ACTIVATION_REFERENCE_BATCH_ROWS)) {
       yield* sql.unsafe(
         `INSERT OR REPLACE INTO activation_references (
           edge_id, resolution_domain, exported_only, alias_lookup_keys_json
@@ -1469,7 +1489,7 @@ function stageActivationReferences(sql: SqlClient.SqlClient, references: readonl
           tier.map(key => [reference.edgeId, tierIndex, key] as const),
         ),
       );
-      for (const candidateBatch of chunk(candidates, 500)) {
+      for (const candidateBatch of chunk(candidates, ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS)) {
         yield* sql.unsafe(
           `INSERT OR REPLACE INTO activation_reference_candidates (
             edge_id, tier, lookup_key
@@ -1490,6 +1510,16 @@ interface ResolvableActivationReferenceRow extends EdgeRow {
   readonly target_symbol_name: string;
 }
 
+interface ActivationResolutionRow {
+  readonly confidence: number;
+  readonly newEdgeId: string;
+  readonly oldEdgeId: string;
+  readonly provenance: CodeGraphProvenance;
+  readonly relation: string;
+  readonly targetId: string;
+  readonly targetName: string;
+}
+
 const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationReferences')(function* () {
   const sql = yield* SqlClient.SqlClient;
   let resolved = 0;
@@ -1498,6 +1528,16 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     let resolvedInPass = 0;
     let aliasesInPass = 0;
     for (;;) {
+      const pending = yield* sql.unsafe<{readonly edge_id: string}>(
+        `SELECT edge_id
+         FROM activation_references
+         WHERE edge_id > ?
+         ORDER BY edge_id
+         LIMIT 500`,
+        [cursor],
+      );
+      if (pending.length === 0) break;
+      const batchEnd = pending.at(-1)!.edge_id;
       const rows = yield* sql.unsafe<ResolvableActivationReferenceRow>(
         `
         WITH candidate_matches AS (
@@ -1513,7 +1553,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
            AND lookup.resolution_domain = reference.resolution_domain
            AND (reference.exported_only = 0 OR lookup.exported = 1)
            AND (edge.relation <> 'overrides' OR lookup.symbol_id IS NOT edge.source_id)
-          WHERE candidate.edge_id > ?
+          WHERE candidate.edge_id > ? AND candidate.edge_id <= ?
         ),
         first_tiers AS (
           SELECT edge_id, MIN(tier) AS tier
@@ -1543,65 +1583,113 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         ORDER BY candidate.edge_id
         LIMIT 500
         `,
-        [cursor],
+        [cursor, batchEnd],
       );
-      if (rows.length === 0) break;
-      cursor = rows.at(-1)!.id;
+      cursor = batchEnd;
+      if (rows.length === 0) continue;
+      const resolutions: ActivationResolutionRow[] = [];
+      const aliases: Array<readonly [string, string, string, number]> = [];
+      for (const row of rows) {
+        const provenance: CodeGraphProvenance =
+          row.provenance === 'declared' ? 'declared' : row.relation === 'documents' ? 'syntactic' : 'resolved';
+        const relation =
+          row.relation === 'extends' && ['interface', 'protocol'].includes(row.symbol_kind)
+            ? 'implements'
+            : row.relation;
+        resolutions.push({
+          confidence: provenance === 'declared' || provenance === 'resolved' ? 1 : row.confidence,
+          newEdgeId: activationEdgeId(
+            Option.getOrUndefined(sqlTextOption(row.source_id)),
+            row.source_name,
+            relation,
+            row.target_symbol_id,
+            row.target_symbol_name,
+            provenance,
+            row.evidence_path,
+          ),
+          oldEdgeId: row.id,
+          provenance,
+          relation,
+          targetId: row.target_symbol_id,
+          targetName: row.target_symbol_name,
+        });
+        for (const alias of parseLookupKeys(row.alias_lookup_keys_json)) {
+          aliases.push([
+            alias,
+            row.target_symbol_id,
+            lookupDomain(alias, Option.getOrUndefined(sqlTextOption(row.symbol_resolution_domain))),
+            row.symbol_exported,
+          ]);
+        }
+      }
+      aliasesInPass += aliases.length;
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          for (const row of rows) {
-            const provenance: CodeGraphProvenance =
-              row.provenance === 'declared' ? 'declared' : row.relation === 'documents' ? 'syntactic' : 'resolved';
-            const relation =
-              row.relation === 'extends' && ['interface', 'protocol'].includes(row.symbol_kind)
-                ? 'implements'
-                : row.relation;
-            const id = activationEdgeId(
-              Option.getOrUndefined(sqlTextOption(row.source_id)),
-              row.source_name,
-              relation,
-              row.target_symbol_id,
-              row.target_symbol_name,
-              provenance,
-              row.evidence_path,
-            );
+          yield* sql.unsafe('DELETE FROM activation_resolved_reference_batch');
+          for (const batch of chunk(resolutions, 400)) {
             yield* sql.unsafe(
-              `UPDATE OR REPLACE activation_edges
-               SET id = ?, relation = ?, target_id = ?, target_name = ?, provenance = ?, confidence = ?
-               WHERE id = ?`,
-              [
-                id,
-                relation,
-                row.target_symbol_id,
-                row.target_symbol_name,
-                provenance,
-                provenance === 'declared' || provenance === 'resolved' ? 1 : row.confidence,
-                row.id,
-              ],
+              `INSERT INTO activation_resolved_reference_batch (
+                old_edge_id, new_edge_id, relation, target_id, target_name, provenance, confidence
+              ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+              batch.flatMap(row => [
+                row.oldEdgeId,
+                row.newEdgeId,
+                row.relation,
+                row.targetId,
+                row.targetName,
+                row.provenance,
+                row.confidence,
+              ]),
             );
-            const aliases = parseLookupKeys(row.alias_lookup_keys_json);
-            aliasesInPass += aliases.length;
-            for (const alias of aliases) {
-              yield* sql.unsafe(
-                `INSERT OR IGNORE INTO activation_symbol_lookup (
-                  lookup_key, symbol_id, resolution_domain, exported
-                ) VALUES (?, ?, ?, ?)`,
-                [
-                  alias,
-                  row.target_symbol_id,
-                  lookupDomain(alias, Option.getOrUndefined(sqlTextOption(row.symbol_resolution_domain))),
-                  row.symbol_exported,
-                ],
-              );
-            }
-            yield* sql.unsafe('DELETE FROM activation_reference_candidates WHERE edge_id = ?', [row.id]);
-            yield* sql.unsafe('DELETE FROM activation_references WHERE edge_id = ?', [row.id]);
           }
+          for (const batch of chunk(aliases, 500)) {
+            yield* sql.unsafe(
+              `INSERT OR IGNORE INTO activation_symbol_lookup (
+                lookup_key, symbol_id, resolution_domain, exported
+              ) VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+              batch.flat(),
+            );
+          }
+          yield* sql.unsafe(`
+            INSERT OR REPLACE INTO activation_edges (
+              id, source_id, source_name, relation, target_id, target_name, provenance,
+              confidence, evidence_path, evidence_span_json
+            )
+            SELECT
+              resolution.new_edge_id,
+              edge.source_id,
+              edge.source_name,
+              resolution.relation,
+              resolution.target_id,
+              resolution.target_name,
+              resolution.provenance,
+              resolution.confidence,
+              edge.evidence_path,
+              edge.evidence_span_json
+            FROM activation_resolved_reference_batch AS resolution
+            JOIN activation_edges AS edge ON edge.id = resolution.old_edge_id
+          `);
+          yield* sql.unsafe(`
+            DELETE FROM activation_edges
+            WHERE id IN (
+              SELECT old_edge_id
+              FROM activation_resolved_reference_batch
+              WHERE old_edge_id <> new_edge_id
+            )
+              AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)
+          `);
+          yield* sql.unsafe(`
+            DELETE FROM activation_reference_candidates
+            WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
+          `);
+          yield* sql.unsafe(`
+            DELETE FROM activation_references
+            WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
+          `);
         }),
       );
       resolvedInPass += rows.length;
       resolved += rows.length;
-      if (rows.length < 500) break;
     }
     if (resolvedInPass === 0 || aliasesInPass === 0) break;
   }

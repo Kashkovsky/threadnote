@@ -1,3 +1,5 @@
+import {Database} from 'bun:sqlite';
+import {join} from 'node:path';
 import {Effect, Layer, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {InferenceInterrupted} from '../../src/effect/ai/errors.js';
@@ -6,13 +8,18 @@ import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
+import {loadRecallIndexData} from '../../src/recall/index.js';
+import {loadRecallSemanticScores} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,
+  purgeVectorIndex,
   rebuildVectorIndex,
   selectedSemanticScores,
+  vectorIndexDatabaseFilename,
+  vectorIndexMatchesGeneration,
   vectorIndexStatus,
 } from '../../src/search/vector-index.js';
-import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
+import {mkdir, mkdtemp, rm, stat, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
@@ -48,6 +55,244 @@ describe('vector index generations', () => {
       expect(rebuilt.chunkCount).toBe(2);
       expect(scores?.get('threadnote://resources/repos/a.md')).toBeCloseTo(1);
       expect(scores?.get('threadnote://resources/repos/b.md')).toBeCloseTo(0);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('stores vectors as bounded SQLite rows and removes legacy sidecar artifacts after activation', async () => {
+    const home = await mkdtemp('threadnote-vector-sqlite-');
+    const root = join(home, 'indexes', 'vectors', manifest.id);
+    const legacyGeneration = join(root, 'generations', 'legacy');
+    try {
+      await mkdir(legacyGeneration, {recursive: true});
+      await mkdir(join(root, 'staging'), {recursive: true});
+      await writeFile(join(root, 'active.json'), '{"version":1}', 'utf8');
+      await writeFile(join(legacyGeneration, 'vectors.bin'), 'legacy', 'utf8');
+
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, [
+          {text: '# Alpha\n\nSQLite vector rows.', uri: 'threadnote://resources/repos/a.md'},
+          {text: '# Beta\n\nPaged exact search.', uri: 'threadnote://resources/repos/b.md'},
+        ]).pipe(
+          Effect.provide(fakeRuntimeLayer(input => (input.includes('Alpha') ? 0 : 1))),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      const database = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(database.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_chunks').get()).toEqual({count: 2});
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_values').get()).toEqual({count: 2});
+        expect(database.query('SELECT MIN(length(vector)) AS bytes FROM vector_values').get()).toEqual({
+          bytes: manifest.dimensions! * 4,
+        });
+        expect(database.query('SELECT state FROM vector_generations').all()).toEqual([{state: 'ready'}]);
+      } finally {
+        database.close();
+      }
+      expect(rebuilt.chunkCount).toBe(2);
+      await expect(stat(join(root, 'active.json'))).rejects.toThrow();
+      await expect(stat(join(root, 'generations'))).rejects.toThrow();
+      await expect(stat(join(root, 'staging'))).rejects.toThrow();
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('recreates an incompatible vector schema as a disposable derived index', async () => {
+    const home = await mkdtemp('threadnote-vector-schema-');
+    const candidates = [{text: '# Alpha\n\nSchema recovery.', uri: 'threadnote://resources/repos/a.md'}];
+    try {
+      const runtimeLayer = fakeRuntimeLayer(() => 0);
+      await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+      const incompatible = new Database(vectorDatabasePath(home));
+      incompatible.exec('PRAGMA user_version = 999');
+      incompatible.close();
+
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(rebuilt.ready).toBe(true);
+      expect(rebuilt.embeddedChunkCount).toBe(1);
+      const current = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+      } finally {
+        current.close();
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it.each([0, 2])('recreates a structurally malformed schema at user_version %i', async userVersion => {
+    const home = await mkdtemp(`threadnote-vector-malformed-v${userVersion}-`);
+    const candidates = [{text: '# Alpha\n\nSchema recovery.', uri: 'threadnote://resources/repos/a.md'}];
+    try {
+      await mkdir(join(vectorDatabasePath(home), '..'), {recursive: true});
+      const malformed = new Database(vectorDatabasePath(home));
+      malformed.exec(`CREATE TABLE vector_values (broken TEXT); PRAGMA user_version = ${userVersion}`);
+      malformed.close();
+
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(fakeRuntimeLayer(() => 0)),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(rebuilt).toMatchObject({chunkCount: 1, embeddedChunkCount: 1, ready: true});
+      const current = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(current.query("PRAGMA table_info('vector_values')").all()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({name: 'id'}),
+            expect.objectContaining({name: 'vector_key'}),
+            expect.objectContaining({name: 'vector'}),
+          ]),
+        );
+      } finally {
+        current.close();
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('recovers a malformed vector database without risking canonical resources', async () => {
+    const home = await mkdtemp('threadnote-vector-database-recovery-');
+    const candidates = [{text: '# Alpha\n\nDatabase recovery.', uri: 'threadnote://resources/repos/a.md'}];
+    try {
+      const runtimeLayer = fakeRuntimeLayer(() => 0);
+      await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+      await rm(vectorDatabasePath(home), {force: true});
+      await rm(`${vectorDatabasePath(home)}-shm`, {force: true});
+      await rm(`${vectorDatabasePath(home)}-wal`, {force: true});
+      await writeFile(vectorDatabasePath(home), 'not a sqlite database', 'utf8');
+
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(rebuilt).toMatchObject({chunkCount: 1, embeddedChunkCount: 1, ready: true});
+      await expect(runEffect(vectorIndexStatus(home, manifest))).resolves.toMatchObject({
+        chunkCount: 1,
+        ready: true,
+      });
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('reports corrupt vector rows and repairs only the affected chunk on rebuild', async () => {
+    const home = await mkdtemp('threadnote-vector-row-recovery-');
+    const candidates = [
+      {text: '# Alpha\n\nStable canonical content.', uri: 'threadnote://resources/repos/a.md'},
+      {text: '# Beta\n\nRepair this vector row.', uri: 'threadnote://resources/repos/b.md'},
+    ];
+    try {
+      const runtimeLayer = fakeRuntimeLayer(input => (input.toLowerCase().includes('alpha') ? 0 : 1));
+      await runEffect(
+        Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          yield* rebuildVectorIndex({agentContextHome: home}, manifest, candidates);
+        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+      );
+      const corrupted = new Database(vectorDatabasePath(home));
+      corrupted.exec(`
+        UPDATE vector_values
+        SET vector = zeroblob(4)
+        WHERE id = (SELECT vector_id FROM vector_chunks ORDER BY chunk_id LIMIT 1)
+      `);
+      corrupted.close();
+
+      const status = await runEffect(vectorIndexStatus(home, manifest));
+      const failedSearch = await runEffect(
+        selectedSemanticScores({agentContextHome: home}, 'alpha').pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+          Effect.as('unexpected'),
+          Effect.catchCause(() => Effect.succeed('failed')),
+        ),
+      );
+      const repaired = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(status.ready).toBe(false);
+      expect(status.reason).toContain('corrupt');
+      expect(failedSearch).toBe('failed');
+      expect(repaired).toMatchObject({chunkCount: 2, embeddedChunkCount: 1, ready: true, reusedChunkCount: 1});
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('repairs a corrupt active vector once during semantic recall and returns semantic scores', async () => {
+    const home = await mkdtemp('threadnote-vector-semantic-repair-');
+    const config = {account: 'local', agentContextHome: home, user: 'me'};
+    const uri = 'threadnote://resources/repos/threadnote/alpha.md';
+    const resourcePath = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'alpha.md');
+    const embeddedBatches: number[] = [];
+    const runtimeLayer = fakeRuntimeLayer(
+      () => 0,
+      inputs => embeddedBatches.push(inputs.length),
+    );
+    try {
+      await mkdir(join(resourcePath, '..'), {recursive: true});
+      await writeFile(resourcePath, '# Alpha\n\nSemantic repair content.', 'utf8');
+      await runEffect(
+        Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
+        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+      );
+      const corrupted = new Database(vectorDatabasePath(home));
+      corrupted.exec('UPDATE vector_values SET vector = zeroblob(4)');
+      corrupted.close();
+
+      const scores = await runEffect(
+        loadRecallSemanticScores(config, 'alpha semantic repair', 5).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(scores?.get(uri)).toBeCloseTo(1);
+      expect(embeddedBatches).toEqual([1, 1, 1, 1]);
+      const repaired = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(repaired.query('SELECT length(vector) AS bytes FROM vector_values').get()).toEqual({
+          bytes: manifest.dimensions! * 4,
+        });
+      } finally {
+        repaired.close();
+      }
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -119,6 +364,17 @@ describe('vector index generations', () => {
 
       const first = await rebuild(candidates);
       const unchanged = await rebuild(candidates);
+      const beforeChange = new Database(vectorDatabasePath(home), {readonly: true});
+      const stableVectorId = (
+        beforeChange
+          .query(
+            `SELECT vector_id
+             FROM vector_chunks
+             WHERE uri = 'threadnote://resources/repos/a.md'`,
+          )
+          .get() as {readonly vector_id: number}
+      ).vector_id;
+      beforeChange.close();
       const changed = await rebuild([
         candidates[0]!,
         {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
@@ -131,6 +387,23 @@ describe('vector index generations', () => {
       expect(changed.embeddedChunkCount).toBe(1);
       expect(changed.reusedChunkCount).toBe(1);
       expect(embeddedInputs.map(inputs => inputs.length)).toEqual([2, 1]);
+      const database = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_values').get()).toEqual({count: 2});
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_chunks').get()).toEqual({count: 2});
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_generations').get()).toEqual({count: 1});
+        expect(
+          database
+            .query(
+              `SELECT vector_id
+               FROM vector_chunks
+               WHERE uri = 'threadnote://resources/repos/a.md'`,
+            )
+            .get(),
+        ).toEqual({vector_id: stableVectorId});
+      } finally {
+        database.close();
+      }
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -158,16 +431,23 @@ describe('vector index generations', () => {
 
       const first = await ensure(initial, 'lexical-generation-1');
       const current = await ensure(initial, 'lexical-generation-1');
+      const metadataOnlyRefresh = await ensure(initial, 'lexical-generation-2');
+      const metadataOnlyRefreshIsCurrent = await runEffect(
+        vectorIndexMatchesGeneration(home, manifest, 'lexical-generation-2'),
+      );
       const changedDocuments = [
         initial[0]!,
         {text: '# Beta\n\nChanged canonical content.', uri: 'threadnote://resources/repos/b.md'},
       ];
-      const refreshed = await ensure(changedDocuments, 'lexical-generation-2');
+      const refreshed = await ensure(changedDocuments, 'lexical-generation-3');
       const status = await runEffect(vectorIndexStatus(home, manifest, changedDocuments));
 
       expect(first.embeddedChunkCount).toBe(2);
       expect(current.embeddedChunkCount).toBe(0);
       expect(current.reusedChunkCount).toBe(2);
+      expect(metadataOnlyRefresh.embeddedChunkCount).toBe(0);
+      expect(metadataOnlyRefresh.reusedChunkCount).toBe(2);
+      expect(metadataOnlyRefreshIsCurrent).toBe(true);
       expect(refreshed.embeddedChunkCount).toBe(1);
       expect(refreshed.reusedChunkCount).toBe(1);
       expect(embeddedInputs.map(inputs => inputs.length)).toEqual([2, 1]);
@@ -263,6 +543,52 @@ describe('vector index generations', () => {
       await rm(home, {force: true, recursive: true});
     }
   });
+
+  it('serializes purge behind an in-progress vector rebuild', async () => {
+    const home = await mkdtemp('threadnote-vector-purge-lock-');
+    let releaseEmbedding!: () => void;
+    let embeddingStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      embeddingStarted = resolve;
+    });
+    const runtimeLayer = Layer.succeed(
+      LocalModelRuntime,
+      LocalModelRuntime.of({
+        embedMany: ({inputs, manifest: requested}) =>
+          Effect.promise(
+            () =>
+              new Promise<readonly (readonly number[])[]>(resolve => {
+                embeddingStarted();
+                releaseEmbedding = () => resolve(inputs.map(() => unitVector(requested.dimensions ?? 0, 0)));
+              }),
+          ),
+        generate: () => Effect.die(new Error('Unexpected generation')),
+        rerank: () => Effect.die(new Error('Unexpected reranking')),
+      }),
+    );
+    try {
+      const rebuilding = runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, [
+          {text: '# Alpha\n\nLock coordination.', uri: 'threadnote://resources/repos/a.md'},
+        ]).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+      );
+      await started;
+      let purgeSettled = false;
+      const purging = runEffect(purgeVectorIndex(home, manifest.id)).finally(() => {
+        purgeSettled = true;
+      });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(purgeSettled).toBe(false);
+
+      releaseEmbedding();
+      await expect(rebuilding).resolves.toMatchObject({ready: true});
+      await expect(purging).resolves.toBe(true);
+      await expect(stat(vectorDatabasePath(home))).rejects.toThrow();
+    } finally {
+      releaseEmbedding?.();
+      await rm(home, {force: true, recursive: true});
+    }
+  });
 });
 
 function installation(home: string) {
@@ -298,4 +624,8 @@ function unitVector(dimensions: number, index: number): readonly number[] {
   const vector = new Array<number>(dimensions).fill(0);
   vector[index] = 1;
   return vector;
+}
+
+function vectorDatabasePath(home: string): string {
+  return join(home, 'indexes', 'vectors', manifest.id, vectorIndexDatabaseFilename());
 }

@@ -2,7 +2,12 @@ import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {listShareConflicts, showShareConflict} from '../../src/share.js';
+import {
+  clearAutoShareStateForTest,
+  listShareConflicts,
+  refreshSharedReposInBackground,
+  showShareConflict,
+} from '../../src/share.js';
 import {
   resolveShareConflict as resolveShareConflictEffect,
   runShareInit as runShareInitEffect,
@@ -20,6 +25,8 @@ const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
 const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => runEffect(runShareSyncEffect(...args));
 const syncSharedReposBeforeAgentRead = (...args: Parameters<typeof syncSharedReposBeforeAgentReadEffect>) =>
   runEffect(syncSharedReposBeforeAgentReadEffect(...args));
+const refreshSharedRepos = (...args: Parameters<typeof refreshSharedReposInBackground>) =>
+  runEffect(refreshSharedReposInBackground(...args));
 const resolveShareConflict = (...args: Parameters<typeof resolveShareConflictEffect>) =>
   runEffect(resolveShareConflictEffect(...args));
 
@@ -203,6 +210,7 @@ describe('share sync git handling', () => {
   });
 
   afterEach(async () => {
+    clearAutoShareStateForTest();
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
     for (const key of GIT_ENV_KEYS) {
       const value = savedGitEnv.get(key);
@@ -1194,6 +1202,38 @@ describe('share sync git handling', () => {
     await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe('');
     await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toContain('remote update');
     await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toContain('remote update');
+  });
+
+  it('carries a behind team across a process-state restart through the fetch receipt', async () => {
+    const {config, home, seed} = await makeShareRepo();
+    const relativePath = 'durable/projects/threadnote/restart-receipt.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/restart-receipt.md';
+    await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+    await writeFile(
+      join(seed, relativePath),
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: restart-receipt\n\nRemote body.\n',
+      'utf8',
+    );
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add restart receipt memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+
+    await refreshSharedRepos(config, true);
+    const receiptPath = join(home, 'share', 'fetch-receipts', 'default.json');
+    await expect(readFile(receiptPath, 'utf8').then(content => JSON.parse(content))).resolves.toMatchObject({
+      behind: 1,
+      succeeded: true,
+    });
+    clearAutoShareStateForTest();
+
+    const result = await syncSharedReposBeforeAgentRead(config);
+
+    expect(result.syncedTeams).toEqual(['default']);
+    await expect(readFile(canonicalResourceFile(home, uri), 'utf8')).resolves.toContain('Remote body.');
+    await expect(readFile(receiptPath, 'utf8').then(content => JSON.parse(content))).resolves.toMatchObject({
+      behind: 0,
+      succeeded: true,
+    });
   });
 
   it('leaves an in-progress rebase untouched when retrying pending ingestion', async () => {

@@ -164,7 +164,7 @@ describe('Effect share transaction', () => {
     expect(events).toEqual(['first:start', 'first:end', 'second:start']);
   });
 
-  it('lets automatic reads silently use the local snapshot when the share lock is busy', async () => {
+  it('returns a bounded warning when an automatic read uses the local snapshot under lock contention', async () => {
     const agentContextHome = await mkdtemp('threadnote-effect-share-read-lock-');
     homes.push(agentContextHome);
     let markSyncStarted: (() => void) | undefined;
@@ -205,7 +205,13 @@ describe('Effect share transaction', () => {
         releaseSync?.();
         yield* Fiber.join(explicitSync);
 
-        expect(automaticRead).toEqual({syncedTeams: [], warnings: []});
+        expect(automaticRead).toEqual({
+          syncedTeams: [],
+          warnings: [
+            'Shared repository auto-sync was skipped because another Threadnote process held the repository lock for more than 250 ms; this read used the local snapshot.',
+          ],
+        });
+        expect(automaticRead.warnings[0]!.length).toBeLessThan(200);
         expect(elapsed).toBeLessThan(2_000);
         expect(automaticReadEntered).toBe(false);
       }),

@@ -22,6 +22,7 @@ import {
 } from './recall/rank.js';
 import {redactSensitiveText} from './scrubber.js';
 import {parseResourceId} from './storage/resource-id.js';
+import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './version.js';
 
@@ -603,18 +604,52 @@ export const expandPath = Effect.fn('utils.expandPath')(function* (path: string)
 });
 
 export const assertSafeThreadnoteHomeForErase = Effect.fn('utils.assertSafeThreadnoteHomeForErase')(function* (
-  path: string,
+  home: string,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const system = yield* SystemInfo;
-  const resolvedPath = pathService.resolve(path);
+  const resolvedPath = pathService.resolve(home);
+  const resolvedUserHome = pathService.resolve(system.homeDirectory);
+  const comparable = (value: string) => (system.platform === 'win32' ? value.toLowerCase() : value);
   if (
-    resolvedPath === pathService.parse(resolvedPath).root ||
-    resolvedPath === system.homeDirectory ||
-    resolvedPath === pathService.dirname(system.homeDirectory)
+    comparable(resolvedPath) === comparable(pathService.parse(resolvedPath).root) ||
+    comparable(resolvedPath) === comparable(resolvedUserHome) ||
+    comparable(resolvedPath) === comparable(pathService.dirname(resolvedUserHome))
   ) {
     return yield* Effect.fail(new Error(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`));
   }
+  if ((yield* fs.readLink(resolvedPath).pipe(Effect.option))._tag === 'Some') {
+    return yield* Effect.fail(new Error(`Refusing to erase symbolic-link THREADNOTE_HOME: ${resolvedPath}`));
+  }
+  const homeInfo = yield* fs.stat(resolvedPath).pipe(Effect.option);
+  if (Option.isNone(homeInfo) || homeInfo.value.type !== 'Directory') {
+    return yield* Effect.fail(new Error(`Refusing to erase invalid THREADNOTE_HOME directory: ${resolvedPath}`));
+  }
+  const receiptPath = pathService.join(resolvedPath, 'layout.json');
+  if ((yield* fs.readLink(receiptPath).pipe(Effect.option))._tag === 'Some') {
+    return yield* Effect.fail(new Error(`Refusing to trust symbolic-link Threadnote layout receipt: ${receiptPath}`));
+  }
+  const receiptInfo = yield* fs.stat(receiptPath).pipe(Effect.option);
+  if (Option.isNone(receiptInfo) || receiptInfo.value.type !== 'File') {
+    return yield* Effect.fail(
+      new Error(`Refusing to erase unowned THREADNOTE_HOME without a valid layout receipt: ${resolvedPath}`),
+    );
+  }
+  const receipt = yield* fs.readFileString(receiptPath).pipe(
+    Effect.flatMap(content =>
+      Effect.try({
+        try: () => JSON.parse(content) as unknown,
+        catch: () => new Error(`Refusing to erase THREADNOTE_HOME with an invalid layout receipt: ${resolvedPath}`),
+      }),
+    ),
+  );
+  if (!isThreadnoteStorageLayoutReceipt(receipt)) {
+    return yield* Effect.fail(
+      new Error(`Refusing to erase THREADNOTE_HOME with an invalid or unsupported layout receipt: ${resolvedPath}`),
+    );
+  }
+  return resolvedPath;
 });
 
 export const portablePath = Effect.fn('utils.portablePath')(function* (path: string) {

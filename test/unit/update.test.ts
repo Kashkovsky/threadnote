@@ -13,6 +13,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     currentPackageVersion: vi.fn(() => Effect.succeed('4.0.0')),
+    toolRoot: vi.fn(actual.toolRoot),
   };
 });
 
@@ -32,9 +33,13 @@ import * as utils from '../../src/utils.js';
 
 const OFFICIAL_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_VERSION = '4.0.0';
+const defaultToolRootImplementation = vi.mocked(utils.toolRoot).getMockImplementation();
 
 beforeEach(() => {
   vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(RELEASE_VERSION));
+  if (defaultToolRootImplementation) {
+    vi.mocked(utils.toolRoot).mockImplementation(defaultToolRootImplementation);
+  }
 });
 
 describe('standalone release selection', () => {
@@ -466,6 +471,170 @@ describe('post-update validation', () => {
       /Provide --from-version and --to-version/,
     );
   });
+
+  it('checkpoints each successful migration before a later migration fails', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-checkpoint-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, 'home');
+          const config = runtimeConfig(home);
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('fixture-one'),
+            fixtureMigration('fixture-two'),
+          ]);
+          yield* fs.makeDirectory(home, {recursive: true});
+          yield* fs.writeFileString(
+            path.join(home, '.post-update-state.json.00000000-0000-4000-8000-000000000000.tmp'),
+            'interrupted write\n',
+          );
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+
+          let failSecond = true;
+          const attempts: string[] = [];
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: (_executable, args) =>
+              Effect.sync(() => {
+                attempts.push(args[0] ?? '');
+                return {
+                  exitCode: failSecond && args[0] === 'fixture-two' ? 1 : 0,
+                  stderr: '',
+                  stdout: '',
+                };
+              }),
+          });
+          const firstFailure = yield* runPostUpdate(config, {
+            fromVersion: '3.9.0',
+            toVersion: RELEASE_VERSION,
+            yes: true,
+          }).pipe(Effect.provideService(CommandExecutor, commandExecutor), Effect.flip);
+          const firstState = JSON.parse(yield* fs.readFileString(path.join(home, 'post-update-state.json'))) as {
+            handledMigrationIds: string[];
+          };
+          const temporaryStateFiles = (yield* fs.readDirectory(home)).filter(name =>
+            /^\.post-update-state\.json\..+\.tmp$/.test(name),
+          );
+
+          failSecond = false;
+          attempts.length = 0;
+          yield* runPostUpdate(config, {
+            fromVersion: '3.9.0',
+            toVersion: RELEASE_VERSION,
+            yes: true,
+          }).pipe(Effect.provideService(CommandExecutor, commandExecutor));
+          const finalState = JSON.parse(yield* fs.readFileString(path.join(home, 'post-update-state.json'))) as {
+            handledMigrationIds: string[];
+          };
+          return {
+            finalState,
+            firstFailure: String(firstFailure),
+            firstState,
+            retryAttempts: [...attempts],
+            temporaryStateFiles,
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      finalState: {handledMigrationIds: ['fixture-one', 'fixture-two']},
+      firstFailure: expect.stringContaining('exited with 1'),
+      firstState: {handledMigrationIds: ['fixture-one']},
+      retryAttempts: ['fixture-two'],
+      temporaryStateFiles: [],
+    });
+  });
+
+  it('serializes concurrent post-update runs so a migration executes once', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-concurrent-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, 'home');
+          const config = runtimeConfig(home);
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [fixtureMigration('fixture-once')]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+
+          let executions = 0;
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () =>
+              Effect.gen(function* () {
+                executions += 1;
+                yield* Effect.sleep(75);
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }),
+          });
+          const run = runPostUpdate(config, {
+            fromVersion: '3.9.0',
+            toVersion: RELEASE_VERSION,
+            yes: true,
+          }).pipe(Effect.provideService(CommandExecutor, commandExecutor));
+          yield* Effect.all([run, run], {concurrency: 2});
+          return {
+            executions,
+            state: JSON.parse(yield* fs.readFileString(path.join(home, 'post-update-state.json'))),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      executions: 1,
+      state: {handledMigrationIds: ['fixture-once']},
+    });
+  });
+
+  it('preserves corrupt post-update state instead of silently rerunning migrations', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-corrupt-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, 'home');
+          const statePath = path.join(home, 'post-update-state.json');
+          const config = runtimeConfig(home);
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [fixtureMigration('must-not-run')]);
+          yield* fs.makeDirectory(home, {recursive: true});
+          yield* fs.writeFileString(statePath, '{"handledMigrationIds": [');
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () => Effect.die('must not run a migration with corrupt state'),
+          });
+          const failure = yield* runPostUpdate(config, {
+            fromVersion: '3.9.0',
+            toVersion: RELEASE_VERSION,
+            yes: true,
+          }).pipe(Effect.provideService(CommandExecutor, commandExecutor), Effect.flip);
+          return {
+            failure: String(failure),
+            state: yield* fs.readFileString(statePath),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      failure: expect.stringContaining('Post-update state is invalid and was preserved'),
+      state: '{"handledMigrationIds": [',
+    });
+  });
 });
 
 function releaseResponse(version: string, prerelease: boolean, artifactName = 'threadnote-darwin-arm64.tar.gz') {
@@ -495,6 +664,36 @@ function runtimeConfig(home: string): RuntimeConfig {
     manifestPath: `${home}/seed-manifest.yaml`,
     user: 'update-test',
   };
+}
+
+function fixtureMigration(id: string) {
+  return {
+    commandArgs: [id],
+    description: [`Run ${id}.`],
+    id,
+    instructions: [`Finished ${id}.`],
+    introducedIn: RELEASE_VERSION,
+    title: id,
+  };
+}
+
+function writePostUpdateFixture(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+  migrations: readonly ReturnType<typeof fixtureMigration>[],
+) {
+  const configRoot = path.join(root, 'config');
+  return fs
+    .makeDirectory(configRoot, {recursive: true})
+    .pipe(
+      Effect.andThen(
+        fs.writeFileString(
+          path.join(configRoot, 'post-update-migrations.json'),
+          `${JSON.stringify({migrations, version: 1}, undefined, 2)}\n`,
+        ),
+      ),
+    );
 }
 
 function updateHttpService(

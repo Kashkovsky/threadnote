@@ -57,9 +57,27 @@ describe('Windows platform contracts', () => {
   it('downloads release archives as binary data on Windows PowerShell', async () => {
     const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
 
-    expect(installer).toContain('[System.Net.WebClient]::new()');
-    expect(installer).toContain('$client.DownloadFile($Uri, $Path)');
+    expect(installer).toContain('[System.Net.Http.HttpClient]::new()');
+    expect(installer).toContain('[System.Net.Http.HttpCompletionOption]::ResponseHeadersRead');
+    expect(installer).toContain('$cancellation.CancelAfter($downloadTimeout)');
+    expect(installer).toContain('$sourceStream.CopyToAsync($destinationStream, 81920, $cancellation.Token)');
+    expect(installer).not.toContain('[System.Net.WebClient]::new()');
     expect(installer).not.toContain('Invoke-WebRequest');
+  });
+
+  it('recovers cross-runtime locks and interrupted release promotion safely', async () => {
+    const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
+
+    expect(installer).toContain('Get-ThreadnoteLockOwner');
+    expect(installer).toContain('processStartIdentity');
+    expect(installer).toContain('$installationLockStaleAge');
+    expect(installer).toContain('$lockInfo.LastWriteTimeUtc');
+    expect(installer).toContain('Recover-ThreadnoteReleasePromotion');
+    expect(installer).toContain('.promotion-backup');
+    expect(installer).toContain('.promotion.json');
+    expect(installer).toContain('Invoke-ThreadnoteWithRetry');
+    expect(installer).toContain('Assert-ThreadnoteReleaseArchive');
+    expect(installer).toContain("$type -notin @('-', 'd')");
   });
 
   it('selects the beta release channel from an explicit bootstrap flag', async () => {
