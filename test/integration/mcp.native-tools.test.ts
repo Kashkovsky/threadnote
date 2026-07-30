@@ -168,7 +168,7 @@ describe('Threadnote MCP toolsets', () => {
 
   it('exposes current-source search through a separate read-only code graph tool', async () => {
     await withMcpClient(
-      async client => {
+      async (client, fixture) => {
         const graphTool = (await client.listTools()).tools.find(tool => tool.name === 'inspect_code_graph');
         expect(graphTool?.annotations).toMatchObject({
           destructiveHint: false,
@@ -222,11 +222,36 @@ describe('Threadnote MCP toolsets', () => {
           version: 1,
         });
 
+        const impactRepository = join(fixture.root, 'impact-repository');
+        await mkdir(join(impactRepository, 'src'), {recursive: true});
+        await writeFile(join(impactRepository, 'package.json'), '{"name":"impact-repository"}\n', 'utf8');
+        await writeFile(
+          join(impactRepository, 'src', 'index.ts'),
+          'export function beforeImpact(): string { return "before"; }\n',
+          'utf8',
+        );
+        execFileSync('git', ['init', '-q'], {cwd: impactRepository});
+        execFileSync('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: impactRepository});
+        execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: impactRepository});
+        execFileSync('git', ['add', '.'], {cwd: impactRepository});
+        execFileSync('git', ['commit', '-qm', 'fixture base'], {cwd: impactRepository});
+        await writeFile(
+          join(impactRepository, 'src', 'index.ts'),
+          [
+            'export function beforeImpact(): string { return "before"; }',
+            'export function afterImpact(): string { return beforeImpact(); }',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        execFileSync('git', ['add', '.'], {cwd: impactRepository});
+        execFileSync('git', ['commit', '-qm', 'fixture change'], {cwd: impactRepository});
+
         const impact = await client.callTool(
           {
             arguments: {
               base: 'HEAD~1',
-              callerCwd: process.cwd(),
+              callerCwd: impactRepository,
               nodeLimit: 5,
               operation: 'impact',
             },
