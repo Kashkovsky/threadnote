@@ -328,8 +328,9 @@ function createRepository(passiveFiles = 0): string {
     );
   }
   git(root, ['init', '-q']);
+  configureTestGitIdentity(root);
   git(root, ['add', '.']);
-  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  git(root, ['commit', '-qm', 'fixture']);
   return root;
 }
 
@@ -350,16 +351,9 @@ function createBarrelRepository(): string {
   writeFileSync(join(root, 'src', 'index.ts'), 'export {decode, helper} from "./helper.js";\n');
   writeBarrelConsumer(root, 'clean');
   git(root, ['init', '-q']);
+  configureTestGitIdentity(root);
   git(root, ['add', '.']);
-  git(root, [
-    '-c',
-    'user.name=Threadnote Test',
-    '-c',
-    'user.email=test@threadnote.local',
-    'commit',
-    '-qm',
-    'barrel fixture',
-  ]);
+  git(root, ['commit', '-qm', 'barrel fixture']);
   return root;
 }
 
@@ -534,4 +528,9 @@ function promoteLegacySnapshot(databasePath: string, worktreeId: string, snapsho
 
 function git(cwd: string, args: readonly string[]): void {
   execFileSync('git', ['-C', cwd, ...args], {stdio: 'pipe'});
+}
+
+function configureTestGitIdentity(cwd: string): void {
+  git(cwd, ['config', 'user.name', 'Threadnote Test']);
+  git(cwd, ['config', 'user.email', 'test@threadnote.local']);
 }
