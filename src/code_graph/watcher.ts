@@ -25,10 +25,24 @@ export interface CodeGraphWatchOptions {
   readonly threadnoteHome: string;
 }
 
+export interface CodeGraphProgressTiming {
+  readonly buildId: string;
+  readonly elapsedMilliseconds: number;
+  readonly estimateConfidence?: 'high' | 'low' | 'medium';
+  readonly estimateScope?: 'phase';
+  readonly estimatedPhaseRemainingMilliseconds?: number;
+  readonly lastProgressAgeMilliseconds: number;
+  readonly phaseElapsedMilliseconds: number;
+  readonly phaseStartedAtMilliseconds: number;
+  readonly startedAtMilliseconds: number;
+  readonly updatedAtMilliseconds: number;
+}
+
 export type CodeGraphRefreshStatus =
   | {
       readonly progress?: CodeGraphProgress;
       readonly state: 'indexing';
+      readonly timing: CodeGraphProgressTiming;
     }
   | {
       readonly edges: number;
@@ -42,7 +56,7 @@ export type CodeGraphRefreshStatus =
 
 export interface CodeGraphWatcherShape {
   readonly ensure: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
-  readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
+  readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
   readonly status: (key: string) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>>;
   readonly watch: (options: CodeGraphWatchOptions) => Effect.Effect<void, unknown>;
 }
@@ -83,9 +97,25 @@ interface WatchStartDecision {
   readonly start: boolean;
 }
 
+interface ProgressTracker {
+  buildId: string;
+  estimatedPhaseRemainingMilliseconds?: number;
+  estimateConfidence?: CodeGraphProgressTiming['estimateConfidence'];
+  lastCompleted?: number;
+  lastSampleAtMilliseconds?: number;
+  phase?: CodeGraphProgress['phase'];
+  phaseStartedAtMilliseconds: number;
+  sampleCount: number;
+  smoothedUnitsPerMillisecond?: number;
+  startedAtMilliseconds: number;
+  updatedAtMilliseconds: number;
+}
+
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEFAULT_MAXIMUM_WATCHERS = 32;
 const DEFAULT_SWEEP_INTERVAL_MILLISECONDS = 60_000;
+const PROGRESS_RATE_SMOOTHING_FACTOR = 0.35;
+const PROGRESS_ESTIMATE_MINIMUM_SAMPLES = 2;
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
   'threadnote/codeGraph/CodeGraphWatcher',
@@ -126,6 +156,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
   const activeRefreshes = yield* SynchronizedRef.make(new Map<string, ActiveRefresh>());
   const refreshStatuses = yield* SynchronizedRef.make(new Map<string, CodeGraphRefreshStatus>());
   const refreshSemaphore = yield* Semaphore.make(1);
+  const refreshSequence = yield* Ref.make(0);
   const sweepStarted = yield* Ref.make(false);
   const setStatus = (key: string, status: CodeGraphRefreshStatus) =>
     SynchronizedRef.update(refreshStatuses, current => new Map(current).set(key, status));
@@ -137,12 +168,19 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
           for (const key of keys) next.delete(key);
           return next;
         });
-  const trackedRefreshOptions = (options: CodeGraphWatchOptions): CodeGraphWatchOptions => ({
+  const trackedRefreshOptions = (options: CodeGraphWatchOptions, tracker: ProgressTracker): CodeGraphWatchOptions => ({
     ...options,
     onProgress: progress =>
-      setStatus(options.key, {progress, state: 'indexing'}).pipe(
-        Effect.andThen(options.onProgress?.(progress) ?? Effect.void),
-      ),
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        observeProgress(tracker, progress, now);
+        yield* setStatus(options.key, {
+          progress,
+          state: 'indexing',
+          timing: progressTiming(tracker, now),
+        });
+        yield* options.onProgress?.(progress) ?? Effect.void;
+      }),
     onRefreshed: (symbols, edges) =>
       setStatus(options.key, {edges, state: 'ready', symbols}).pipe(
         Effect.andThen(options.onRefreshed?.(symbols, edges) ?? Effect.void),
@@ -175,9 +213,15 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
       let options = initialOptions;
       let lastFailure: Error | undefined;
       for (;;) {
-        yield* setStatus(key, {state: 'indexing'});
+        const startedAtMilliseconds = yield* Clock.currentTimeMillis;
+        const sequence = yield* Ref.updateAndGet(refreshSequence, value => value + 1);
+        const tracker = makeProgressTracker(startedAtMilliseconds, sequence);
+        yield* setStatus(key, {
+          state: 'indexing',
+          timing: progressTiming(tracker, startedAtMilliseconds),
+        });
         lastFailure = undefined;
-        yield* refreshSemaphore.withPermit(refreshRun(trackedRefreshOptions(options))).pipe(
+        yield* refreshSemaphore.withPermit(refreshRun(trackedRefreshOptions(options, tracker))).pipe(
           Effect.catchCause(cause => {
             lastFailure = new Error(String(cause));
             return setStatus(key, {message: lastFailure.message, state: 'failed'}).pipe(
@@ -232,12 +276,12 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
       if (decision.start) {
         yield* runRefreshLoop(options.key, decision.completion, options).pipe(Effect.forkIn(scope));
       }
-      return decision.completion;
+      return decision;
     });
   const requestBackgroundRefresh = (options: CodeGraphWatchOptions, queueTrailing: boolean) =>
-    scheduleRefresh(options, queueTrailing).pipe(Effect.asVoid);
+    scheduleRefresh(options, queueTrailing).pipe(Effect.map(decision => decision.start));
   const requestRefreshAndWait = (options: CodeGraphWatchOptions) =>
-    scheduleRefresh(options, false).pipe(Effect.flatMap(Deferred.await));
+    scheduleRefresh(options, false).pipe(Effect.flatMap(decision => Deferred.await(decision.completion)));
   const cancelWatches = (entries: readonly [string, ActiveWatch][]) =>
     Effect.gen(function* () {
       yield* removeStatuses(entries.map(([key]) => key));
@@ -271,7 +315,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
       });
       yield* cancelWatches(decision.evicted);
       if (!decision.start) return;
-      const fiber = yield* run(options, false, () => requestBackgroundRefresh(options, true)).pipe(
+      const fiber = yield* run(options, false, () => requestBackgroundRefresh(options, true).pipe(Effect.asVoid)).pipe(
         Effect.ensuring(removeWatch(options.key, generation)),
         Effect.forkIn(scope),
       );
@@ -321,16 +365,19 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
     refresh: options =>
       Effect.gen(function* () {
         yield* touchWatch(options.key);
-        yield* requestBackgroundRefresh(options, false);
+        return yield* requestBackgroundRefresh(options, false);
       }),
     status: key =>
-      touchWatch(key).pipe(
-        Effect.andThen(SynchronizedRef.get(refreshStatuses)),
-        Effect.map(current => Option.fromUndefinedOr(current.get(key))),
-      ),
+      Effect.gen(function* () {
+        yield* touchWatch(key);
+        const current = (yield* SynchronizedRef.get(refreshStatuses)).get(key);
+        if (!current) return Option.none();
+        const now = yield* Clock.currentTimeMillis;
+        return Option.some(refreshStatusAt(current, now));
+      }),
     watch: options =>
       requestRefreshAndWait(options).pipe(
-        Effect.andThen(run(options, true, () => requestBackgroundRefresh(options, true))),
+        Effect.andThen(run(options, true, () => requestBackgroundRefresh(options, true).pipe(Effect.asVoid))),
         Effect.ensuring(removeStatuses([options.key])),
       ),
   });
@@ -346,6 +393,146 @@ function oldestWatch(watches: ReadonlyMap<string, ActiveWatch>): [string, Active
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return value === undefined || !Number.isSafeInteger(value) || value <= 0 ? fallback : value;
+}
+
+function makeProgressTracker(startedAtMilliseconds: number, sequence: number): ProgressTracker {
+  return {
+    buildId: `${startedAtMilliseconds.toString(36)}-${sequence.toString(36)}`,
+    phaseStartedAtMilliseconds: startedAtMilliseconds,
+    sampleCount: 0,
+    startedAtMilliseconds,
+    updatedAtMilliseconds: startedAtMilliseconds,
+  };
+}
+
+function observeProgress(tracker: ProgressTracker, progress: CodeGraphProgress, now: number): void {
+  const work = measuredProgress(progress);
+  if (tracker.phase !== progress.phase) {
+    tracker.phase = progress.phase;
+    tracker.phaseStartedAtMilliseconds = now;
+    tracker.lastCompleted = work?.completed;
+    tracker.lastSampleAtMilliseconds = work ? now : undefined;
+    tracker.sampleCount = 0;
+    tracker.smoothedUnitsPerMillisecond = undefined;
+    tracker.estimatedPhaseRemainingMilliseconds = undefined;
+    tracker.estimateConfidence = undefined;
+  } else if (work) {
+    const previousCompleted = tracker.lastCompleted;
+    const previousSampleAt = tracker.lastSampleAtMilliseconds;
+    if (
+      previousCompleted !== undefined &&
+      previousSampleAt !== undefined &&
+      work.completed > previousCompleted &&
+      now > previousSampleAt
+    ) {
+      const observedRate = (work.completed - previousCompleted) / (now - previousSampleAt);
+      tracker.smoothedUnitsPerMillisecond =
+        tracker.smoothedUnitsPerMillisecond === undefined
+          ? observedRate
+          : PROGRESS_RATE_SMOOTHING_FACTOR * observedRate +
+            (1 - PROGRESS_RATE_SMOOTHING_FACTOR) * tracker.smoothedUnitsPerMillisecond;
+      tracker.sampleCount += 1;
+    }
+    if (work.completed !== previousCompleted) {
+      tracker.lastCompleted = work.completed;
+      tracker.lastSampleAtMilliseconds = now;
+    }
+    const remaining = Math.max(0, work.total - work.completed);
+    const rate = tracker.smoothedUnitsPerMillisecond;
+    if (
+      remaining > 0 &&
+      rate !== undefined &&
+      rate > 0 &&
+      Number.isFinite(rate) &&
+      tracker.sampleCount >= PROGRESS_ESTIMATE_MINIMUM_SAMPLES
+    ) {
+      tracker.estimatedPhaseRemainingMilliseconds = roundUpToSecond(remaining / rate);
+      tracker.estimateConfidence = estimateConfidence(tracker.sampleCount, work.completed, work.total);
+    } else {
+      tracker.estimatedPhaseRemainingMilliseconds = undefined;
+      tracker.estimateConfidence = undefined;
+    }
+  }
+  tracker.updatedAtMilliseconds = now;
+}
+
+function measuredProgress(
+  progress: CodeGraphProgress,
+): {readonly completed: number; readonly total: number} | undefined {
+  switch (progress.phase) {
+    case 'scanning':
+    case 'materializing':
+    case 'embedding':
+      return {completed: progress.completed, total: progress.total};
+    default:
+      return undefined;
+  }
+}
+
+function estimateConfidence(
+  sampleCount: number,
+  completed: number,
+  total: number,
+): CodeGraphProgressTiming['estimateConfidence'] {
+  const fraction = total === 0 ? 1 : completed / total;
+  if (sampleCount >= 6 && fraction >= 0.4) return 'high';
+  if (sampleCount >= 3 && fraction >= 0.1) return 'medium';
+  return 'low';
+}
+
+function roundUpToSecond(milliseconds: number): number {
+  return Math.ceil(Math.max(0, milliseconds) / 1_000) * 1_000;
+}
+
+function progressTiming(tracker: ProgressTracker, now: number): CodeGraphProgressTiming {
+  return {
+    buildId: tracker.buildId,
+    elapsedMilliseconds: Math.max(0, now - tracker.startedAtMilliseconds),
+    ...(tracker.estimateConfidence ? {estimateConfidence: tracker.estimateConfidence} : {}),
+    ...(tracker.estimatedPhaseRemainingMilliseconds === undefined
+      ? {}
+      : {
+          estimatedPhaseRemainingMilliseconds: tracker.estimatedPhaseRemainingMilliseconds,
+          estimateScope: 'phase' as const,
+        }),
+    lastProgressAgeMilliseconds: Math.max(0, now - tracker.updatedAtMilliseconds),
+    phaseElapsedMilliseconds: Math.max(0, now - tracker.phaseStartedAtMilliseconds),
+    phaseStartedAtMilliseconds: tracker.phaseStartedAtMilliseconds,
+    startedAtMilliseconds: tracker.startedAtMilliseconds,
+    updatedAtMilliseconds: tracker.updatedAtMilliseconds,
+  };
+}
+
+function refreshStatusAt(status: CodeGraphRefreshStatus, now: number): CodeGraphRefreshStatus {
+  if (status.state !== 'indexing') return status;
+  const lastProgressAgeMilliseconds = Math.max(0, now - status.timing.updatedAtMilliseconds);
+  const estimate = status.timing.estimatedPhaseRemainingMilliseconds;
+  const adjustedEstimate =
+    estimate === undefined || lastProgressAgeMilliseconds >= estimate
+      ? undefined
+      : roundUpToSecond(estimate - lastProgressAgeMilliseconds);
+  const {
+    estimateConfidence: _estimateConfidence,
+    estimatedPhaseRemainingMilliseconds: _estimatedPhaseRemainingMilliseconds,
+    estimateScope: _estimateScope,
+    ...timing
+  } = status.timing;
+  return {
+    ...status,
+    timing: {
+      ...timing,
+      elapsedMilliseconds: Math.max(0, now - status.timing.startedAtMilliseconds),
+      ...(adjustedEstimate === undefined
+        ? {}
+        : {
+            estimateConfidence: status.timing.estimateConfidence,
+            estimatedPhaseRemainingMilliseconds: adjustedEstimate,
+            estimateScope: 'phase' as const,
+          }),
+      lastProgressAgeMilliseconds,
+      phaseElapsedMilliseconds: Math.max(0, now - status.timing.phaseStartedAtMilliseconds),
+    },
+  };
 }
 
 const indexRepository = (indexer: CodeGraphIndexerShape, options: CodeGraphWatchOptions) =>

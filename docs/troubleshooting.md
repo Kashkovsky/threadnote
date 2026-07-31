@@ -155,10 +155,11 @@ threadnote doctor --dry-run
 threadnote graph index --full
 ```
 
-A large cold MCP inspection can return `state: "indexing"` with phase and retry timing. Retry the same
-`inspect_code_graph` call; there is no repository-size admission limit and no daemon to start. Nested Maven, Gradle,
-SwiftPM, and Xcode scopes are detected statically. Dynamic build logic and ambiguous dependencies remain syntactic
-rather than being guessed.
+A large cold MCP inspection can return `state: "indexing"` with measured phase progress, an optional phase-scoped
+estimate, and adaptive retry timing. Continue useful targeted text or path investigation while it builds, then retry
+the same `inspect_code_graph` call before making relationship-aware graph claims. There is no repository-size admission
+limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
+logic and ambiguous dependencies remain syntactic rather than being guessed.
 
 If doctor reports a missing or mismatched grammar asset, reinstall or update the standalone archive for the current
 platform. Threadnote never downloads parser grammars at runtime. Repair may discard and rebuild graph SQLite files, but

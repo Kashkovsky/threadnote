@@ -133,15 +133,19 @@ export type CodeGraphProgress =
     }
   | {
       readonly accepted: number;
+      readonly completed: number;
+      readonly excluded: number;
       readonly phase: 'scanning';
       readonly skipped: number;
-      readonly visited: number;
+      readonly total: number;
+      readonly unit: 'files';
     }
   | {
       readonly completed: number;
-      readonly phase: 'parsing';
+      readonly phase: 'materializing';
       readonly reused: number;
       readonly total: number;
+      readonly unit: 'files';
     }
   | {
       readonly edges: number;
@@ -153,10 +157,12 @@ export type CodeGraphProgress =
       readonly snapshotId: string;
     }
   | {
+      readonly completed: number;
       readonly embedded: number;
       readonly phase: 'embedding';
       readonly reused: number;
       readonly total: number;
+      readonly unit: 'symbols';
     };
 
 export interface CodeGraphIndexSummary {

@@ -559,9 +559,10 @@ Expose one read-only `inspect_code_graph` tool rather than a tool per operation.
 
 The response includes repository identity, snapshot commit, dirty-overlay state, freshness, warnings, nodes, edges,
 evidence, and compact rendered text. A cold large-repository build returns a non-error `code-graph-index-state`
-payload with `state: "indexing"`, current `phase`, and `retryAfterMilliseconds`; the agent retries the same request
-while the MCP-session build continues. The tool remains annotated as non-read-only because starting that disposable
-derived build mutates graph index state.
+payload with `state: "indexing"`, measured phase progress, timing metadata, an optional phase-scoped estimate, and
+adaptive `retryAfterMilliseconds`. The agent may continue useful independent text or path investigation while the
+MCP-session build continues, then retries before making relationship-aware graph claims. The tool remains annotated as
+non-read-only because starting that disposable derived build mutates graph index state.
 
 ### Manager
 

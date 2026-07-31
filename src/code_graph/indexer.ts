@@ -432,6 +432,15 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   const attributeFacts = (facts: readonly CodeGraphFileFacts[]) =>
     attributeResolution(attributeWorkspace(attributePackages(facts)));
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
+  let materializedFiles = 0;
+  const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
+  yield* input.onProgress?.({
+    completed: materializedFiles,
+    phase: 'materializing',
+    reused: reusedFiles,
+    total: input.inventory.files.length,
+    unit: 'files',
+  }) ?? Effect.void;
   yield* input.store.prepareActivation(input.layout.databasePath, input.inventory.files);
   for (const files of factMaterializationBatches(input.inventory.files)) {
     const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
@@ -452,13 +461,15 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       facts.flatMap(file => file.edges),
       facts.flatMap(file => file.references ?? []),
     );
+    materializedFiles += files.length;
+    yield* input.onProgress?.({
+      completed: materializedFiles,
+      phase: 'materializing',
+      reused: reusedFiles,
+      total: input.inventory.files.length,
+      unit: 'files',
+    }) ?? Effect.void;
   }
-  yield* input.onProgress?.({
-    completed: input.inventory.files.length,
-    phase: 'parsing',
-    reused: input.inventory.files.length - input.inventory.parsedFiles,
-    total: input.inventory.files.length,
-  }) ?? Effect.void;
   yield* input.store.resolveStagedReferences(input.layout.databasePath);
   const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
   yield* input.onProgress?.({

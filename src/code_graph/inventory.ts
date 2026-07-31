@@ -74,10 +74,12 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     acceptedByPolicy.map(entry => entry.path),
   );
   const accepted = acceptedByPolicy.filter(entry => !ignoredByGit.has(entry.path));
+  const excluded = allTreeEntries.length - accepted.length;
 
   const committed = yield* readCommittedFiles(
     identity,
     accepted,
+    excluded,
     options.cachedCommittedFileKeys ?? new Set(),
     languagePacks,
     options.onContentBatch,
@@ -107,13 +109,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   for (const file of overlay.files) filesByPath.set(file.path, file);
   const files = [...filesByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
   const parsedPaths = new Set([...committed.parsedPaths, ...overlay.parsedPaths]);
-  const skipped = allTreeEntries.length - accepted.length + committed.skipped + overlay.skipped;
-  yield* options.onProgress?.({
-    accepted: files.length,
-    phase: 'scanning',
-    skipped,
-    visited: files.length + skipped,
-  }) ?? Effect.void;
+  const skipped = excluded + committed.skipped + overlay.skipped;
   return {
     committedFiles: [...committed.files].sort((left, right) => left.path.localeCompare(right.path)),
     committedParsedFiles: committed.files.reduce(
@@ -237,6 +233,7 @@ function ignoredPaths(repoRoot: string, paths: readonly string[]) {
 const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   identity: RepositoryIdentity,
   entries: readonly GitTreeEntry[],
+  excluded: number,
   cachedCommittedFileKeys: ReadonlySet<string>,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
@@ -257,6 +254,15 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       needsContent.push({...entry, parse: !cached});
     }
   }
+  yield* onProgress?.({
+    accepted: files.length,
+    completed,
+    excluded,
+    phase: 'scanning',
+    skipped,
+    total: entries.length,
+    unit: 'files',
+  }) ?? Effect.void;
   for (const batch of chunkTreeEntries(needsContent)) {
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
@@ -295,9 +301,12 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     completed += batch.length;
     yield* onProgress?.({
       accepted: files.length,
+      completed,
+      excluded,
       phase: 'scanning',
       skipped,
-      visited: completed,
+      total: entries.length,
+      unit: 'files',
     }) ?? Effect.void;
   }
   return {files, parsedPaths, skipped};

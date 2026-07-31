@@ -114,9 +114,12 @@ describe('CodeGraphWatcher', () => {
                 Effect.andThen(
                   refreshOptions.onProgress?.({
                     accepted: 128,
+                    completed: 132,
+                    excluded: 12,
                     phase: 'scanning',
                     skipped: 4,
-                    visited: 132,
+                    total: 256,
+                    unit: 'files',
                   }) ?? Effect.void,
                 ),
                 Effect.andThen(Deferred.succeed(started, undefined)),
@@ -144,8 +147,21 @@ describe('CodeGraphWatcher', () => {
     expect(result.indexing).toMatchObject({
       _tag: 'Some',
       value: {
-        progress: {accepted: 128, phase: 'scanning', skipped: 4, visited: 132},
+        progress: {
+          accepted: 128,
+          completed: 132,
+          excluded: 12,
+          phase: 'scanning',
+          skipped: 4,
+          total: 256,
+          unit: 'files',
+        },
         state: 'indexing',
+        timing: {
+          buildId: expect.any(String),
+          elapsedMilliseconds: expect.any(Number),
+          lastProgressAgeMilliseconds: expect.any(Number),
+        },
       },
     });
     expect(result.ready).toMatchObject({
@@ -180,9 +196,12 @@ describe('CodeGraphWatcher', () => {
                 yield* Ref.update(maximumConcurrent, current => Math.max(current, active));
                 yield* refreshOptions.onProgress?.({
                   accepted: ordinal,
+                  completed: ordinal,
+                  excluded: 0,
                   phase: 'scanning',
                   skipped: 0,
-                  visited: ordinal,
+                  total: 2,
+                  unit: 'files',
                 }) ?? Effect.void;
                 yield* Deferred.succeed(ordinal === 1 ? firstStarted : secondStarted, undefined);
                 yield* Deferred.await(ordinal === 1 ? firstRelease : secondRelease);
@@ -293,6 +312,104 @@ describe('CodeGraphWatcher', () => {
     expect(result.finalMaximum).toBe(1);
     expect(result.finalStarts).toBe(8);
   });
+
+  effectIt.effect('estimates measured phase work and identifies newly started refreshes', () =>
+    Effect.gen(function* () {
+      const captured = yield* Deferred.make<CodeGraphWatchOptions>();
+      const release = yield* Deferred.make<void>();
+      const watcher = yield* makeCodeGraphWatcher(
+        () => Effect.never,
+        refreshOptions =>
+          Deferred.succeed(captured, refreshOptions).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(refreshOptions.onRefreshed?.(10, 20) ?? Effect.void),
+          ),
+      );
+
+      const firstStarted = yield* watcher.refresh(options);
+      const secondStarted = yield* watcher.refresh(options);
+      const progress = yield* Deferred.await(captured);
+      const scanning = (completed: number) =>
+        progress.onProgress?.({
+          accepted: completed,
+          completed,
+          excluded: 20,
+          phase: 'scanning',
+          skipped: 0,
+          total: 100,
+          unit: 'files',
+        }) ?? Effect.void;
+
+      yield* scanning(0);
+      yield* TestClock.adjust(1_000);
+      yield* scanning(10);
+      const insufficient = yield* watcher.status(options.key);
+      yield* TestClock.adjust(1_000);
+      yield* scanning(20);
+      const estimated = yield* watcher.status(options.key);
+      yield* TestClock.adjust(500);
+      const aged = yield* watcher.status(options.key);
+      yield* TestClock.adjust(7_500);
+      const expired = yield* watcher.status(options.key);
+      yield* progress.onProgress?.({
+        completed: 0,
+        phase: 'materializing',
+        reused: 80,
+        total: 100,
+        unit: 'files',
+      }) ?? Effect.void;
+      const reset = yield* watcher.status(options.key);
+      yield* Deferred.succeed(release, undefined);
+
+      expect(firstStarted).toBe(true);
+      expect(secondStarted).toBe(false);
+      expect(insufficient).toMatchObject({
+        _tag: 'Some',
+        value: {state: 'indexing'},
+      });
+      if (insufficient._tag === 'Some' && insufficient.value.state === 'indexing') {
+        expect(insufficient.value.timing).not.toHaveProperty('estimatedPhaseRemainingMilliseconds');
+      }
+      expect(estimated).toMatchObject({
+        _tag: 'Some',
+        value: {
+          state: 'indexing',
+          timing: {
+            estimateConfidence: 'low',
+            estimatedPhaseRemainingMilliseconds: 8_000,
+            estimateScope: 'phase',
+          },
+        },
+      });
+      expect(aged).toMatchObject({
+        _tag: 'Some',
+        value: {
+          state: 'indexing',
+          timing: {
+            elapsedMilliseconds: 2_500,
+            lastProgressAgeMilliseconds: 500,
+            phaseElapsedMilliseconds: 2_500,
+          },
+        },
+      });
+      if (expired._tag === 'Some' && expired.value.state === 'indexing') {
+        expect(expired.value.timing).not.toHaveProperty('estimatedPhaseRemainingMilliseconds');
+      }
+      expect(reset).toMatchObject({
+        _tag: 'Some',
+        value: {
+          progress: {phase: 'materializing'},
+          state: 'indexing',
+          timing: {
+            phaseElapsedMilliseconds: 0,
+          },
+        },
+      });
+      if (reset._tag === 'Some' && reset.value.state === 'indexing') {
+        expect(reset.value.timing).not.toHaveProperty('estimatedPhaseRemainingMilliseconds');
+      }
+    }).pipe(Effect.scoped),
+  );
 
   it('caps retained session watchers and evicts the least recently used registrations', async () => {
     const counts = await Effect.runPromise(

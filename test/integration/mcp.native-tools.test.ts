@@ -111,8 +111,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('additional candidates');
         expect(instructions).toContain('Do not store');
         expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
-        expect(instructions).toContain('exact literals, unsupported files, verification, or graph failure');
-        expect(instructions).toContain('Retry `state=indexing` graph calls');
+        expect(instructions).toContain('useful independent work while a cold graph builds');
+        expect(instructions).toContain('Retry `state=indexing` after `retryAfterMilliseconds`');
+        expect(instructions).toContain('relationship-aware graph claims');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -191,8 +192,8 @@ describe('Threadnote MCP toolsets', () => {
           readOnlyHint: false,
         });
         expect(graphTool?.description).toContain('use this before broad rg/grep');
-        expect(graphTool?.description).toContain('exact literals, unsupported files, verification, or fallback');
-        expect(graphTool?.description).toContain('state=indexing with progress');
+        expect(graphTool?.description).toContain('useful independent work while a cold graph builds');
+        expect(graphTool?.description).toContain('state=indexing with measured phase progress');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
@@ -307,20 +308,14 @@ describe('Threadnote MCP toolsets', () => {
         await writeFile(graphLock, `${process.pid}:cold-build-test\n`, {encoding: 'utf8', mode: 0o600});
 
         const startedAt = Date.now();
-        const pending = await (async () => {
-          try {
-            return await client.callTool(
-              {
-                arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
-                name: 'inspect_code_graph',
-              },
-              undefined,
-              {timeout: 10_000},
-            );
-          } finally {
-            await rm(graphLock, {force: true});
-          }
-        })();
+        const pending = await client.callTool(
+          {
+            arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
         expect(Date.now() - startedAt).toBeLessThan(8_000);
         expect(pending.isError).not.toBe(true);
         expect(pending.structuredContent).toMatchObject({
@@ -328,10 +323,32 @@ describe('Threadnote MCP toolsets', () => {
           phase: 'waiting',
           retryAfterMilliseconds: 5_000,
           state: 'indexing',
+          timing: {
+            buildId: expect.any(String),
+            elapsedMilliseconds: expect.any(Number),
+          },
           type: 'code-graph-index-state',
-          version: 1,
+          version: 2,
         });
-        expect(JSON.stringify(pending.content)).toContain('Retry this same inspect_code_graph call');
+        expect(JSON.stringify(pending.content)).toContain('Continue with targeted text/path search');
+        expect(JSON.stringify(pending.content)).not.toContain('Do not replace');
+
+        const repeatedStartedAt = Date.now();
+        const repeated = await client.callTool(
+          {
+            arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(Date.now() - repeatedStartedAt).toBeLessThan(2_000);
+        expect(repeated.structuredContent).toMatchObject({
+          phase: 'waiting',
+          state: 'indexing',
+          version: 2,
+        });
+        await rm(graphLock, {force: true});
 
         let ready: typeof pending | undefined;
         const deadline = Date.now() + 20_000;

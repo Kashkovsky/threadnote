@@ -60,7 +60,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const cold = yield* indexer.index({
       cwd: prepared.repository,
       onProgress: progress => {
-        if (progress.phase === 'parsing') {
+        if (progress.phase === 'materializing') {
           return Clock.currentTimeNanos.pipe(Effect.tap(now => Effect.sync(() => (coldMaterializationFinished = now))));
         }
         if (progress.phase === 'resolving') {
@@ -137,7 +137,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const incremental = yield* indexer.index({
       cwd: prepared.repository,
       onProgress: progress => {
-        if (progress.phase === 'parsing') {
+        if (progress.phase === 'materializing') {
           return Clock.currentTimeNanos.pipe(
             Effect.tap(now => Effect.sync(() => (incrementalMaterializationFinished = now))),
           );

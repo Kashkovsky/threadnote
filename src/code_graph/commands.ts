@@ -67,7 +67,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
         Console.log(
           JSON.stringify({
             type: 'code-graph-progress',
-            version: 1,
+            version: 2,
             repository: {
               displayName: identity.displayName,
               repositoryId: identity.repositoryId,
@@ -134,7 +134,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       threadnoteHome: config.agentContextHome,
     });
   const result = options.json
-    ? yield* inspect(progress => Console.log(JSON.stringify({type: 'code-graph-progress', version: 1, ...progress})))
+    ? yield* inspect(progress => Console.log(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})))
     : status.stale
       ? yield* Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
@@ -367,9 +367,12 @@ function progressMessage(progress: CodeGraphProgress): string {
     case 'waiting':
       return 'Waiting for another code graph build to finish';
     case 'scanning':
-      return `Scanning · ${progress.accepted} accepted / ${progress.visited} visited · ${progress.skipped} skipped`;
-    case 'parsing':
-      return `Parsing · ${progress.completed}/${progress.total} · ${progress.reused} reused`;
+      return (
+        `Scanning · ${progress.completed}/${progress.total} eligible files · ${progress.accepted} accepted · ` +
+        `${progress.skipped} content skipped · ${progress.excluded} excluded`
+      );
+    case 'materializing':
+      return `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused`;
     case 'resolving':
       return `Resolving · ${progress.symbols} symbols · ${progress.edges} relationships`;
     case 'embedding':

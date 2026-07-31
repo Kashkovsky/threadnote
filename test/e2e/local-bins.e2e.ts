@@ -164,8 +164,10 @@ describe('built self-contained distribution', () => {
   it('lazily builds and queries the native code graph with visible packaged progress', async () => {
     const firstQuery = await runCli(['graph', 'query', '--cwd', graphRepository, '--query', 'exclusive file lock']);
     expect(firstQuery).toContain('Scanning repository source from Git.');
-    expect(firstQuery).toMatch(/Scanning · \d+ accepted \/ \d+ visited · \d+ skipped/);
-    expect(firstQuery).toMatch(/Parsing · \d+\/\d+ · \d+ reused/);
+    expect(firstQuery).toMatch(
+      /Scanning · \d+\/\d+ eligible files · \d+ accepted · \d+ content skipped · \d+ excluded/,
+    );
+    expect(firstQuery).toMatch(/Materializing · \d+\/\d+ files · \d+ reused/);
     expect(firstQuery).toContain('Code graph: code-graph-repository');
     expect(firstQuery).toContain('withExclusiveFileLock');
 

@@ -121,6 +121,7 @@ import {
 } from './recall/runtime.js';
 import {CodeGraphQueryService, renderCodeGraphResult} from './code_graph/query.js';
 import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
+import type {CodeGraphProgress} from './code_graph/types.js';
 import {CodeGraphWatcher, type CodeGraphRefreshStatus, type CodeGraphWatcherShape} from './code_graph/watcher.js';
 
 interface RuntimeConfig {
@@ -179,8 +180,11 @@ type CheckedOptionalTextArray =
 let mcpStartupVersion: string | undefined;
 let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
 const STALE_NOTICE_TTL_MS = 60_000;
-const MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS = 5_000;
+const MCP_CODE_GRAPH_INITIAL_WAIT_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_POLL_MILLISECONDS = 100;
+const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
+const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
+const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 30_000;
 
 const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
@@ -220,7 +224,7 @@ export const mcpServerEffect = Effect.gen(function* () {
       });
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
-        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. For non-trivial source investigation call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals, unsupported files, verification, or graph failure. Retry `state=indexing` graph calls after the requested delay. Write durable knowledge and handoffs directly; keep stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
+        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. Call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals or useful independent work while a cold graph builds. Retry `state=indexing` after `retryAfterMilliseconds` before relationship-aware graph claims. Write durable knowledge and handoffs directly; use stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -732,7 +736,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, or fallback. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance. A cold large-repository call may return state=indexing with progress instead of blocking; retry the same call after retryAfterMilliseconds.',
+        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, fallback, or useful independent work while a cold graph builds. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance. A cold large-repository call may return state=indexing with measured phase progress, an optional phase-scoped estimate, and adaptive retryAfterMilliseconds; continue independent investigation and retry before making relationship-aware graph claims.',
       inputSchema: {
         base: McpInput.string('Git base ref for operation=impact when query is omitted; defaults to HEAD~1'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
@@ -795,8 +799,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         });
         const service = yield* CodeGraphQueryService;
         let status = yield* service.status(config.agentContextHome, checkedCwd.value);
+        let refreshStarted = false;
         if (status.stale) {
-          yield* watcher.refresh({
+          refreshStarted = yield* watcher.refresh({
             cwd: identity.repoRoot,
             key: identity.worktreeId,
             threadnoteHome: config.agentContextHome,
@@ -804,7 +809,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         }
         const strictFreshness = operation === 'impact' || operation === 'path';
         if (!status.readySnapshot || (status.stale && strictFreshness)) {
-          yield* waitForCodeGraphRefresh(watcher, identity.worktreeId);
+          if (refreshStarted) yield* waitForCodeGraphRefresh(watcher, identity.worktreeId);
           status = yield* service.status(config.agentContextHome, checkedCwd.value);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId));
@@ -849,7 +854,7 @@ const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(f
   watcher: CodeGraphWatcherShape,
   key: string,
 ) {
-  const attempts = Math.ceil(MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS / MCP_CODE_GRAPH_POLL_MILLISECONDS);
+  const attempts = Math.ceil(MCP_CODE_GRAPH_INITIAL_WAIT_MILLISECONDS / MCP_CODE_GRAPH_POLL_MILLISECONDS);
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const status = yield* watcher.status(key);
     if (Option.isSome(status) && status.value.state !== 'indexing') return;
@@ -878,30 +883,42 @@ function codeGraphRefreshResult(
         operation,
         state: 'failed',
         type: 'code-graph-index-state',
-        version: 1,
+        version: 2,
       },
     };
   }
   const progress = status?.state === 'indexing' ? status.progress : undefined;
+  const timing = status?.state === 'indexing' ? status.timing : undefined;
   const phase = progress?.phase ?? 'queued';
+  const retryAfterMilliseconds = codeGraphRetryAfterMilliseconds(status);
+  const progressSummary = codeGraphProgressSummary(progress);
+  const estimateSummary =
+    timing?.estimatedPhaseRemainingMilliseconds === undefined
+      ? ''
+      : ` Estimated remaining time for this phase: about ${formatCodeGraphDuration(
+          timing.estimatedPhaseRemainingMilliseconds,
+        )} (${timing.estimateConfidence ?? 'low'} confidence).`;
   return {
     content: [
       {
         type: 'text',
         text:
-          `Code graph indexing is continuing in the background (phase: ${phase}). ` +
-          `Retry this same inspect_code_graph call in about ${MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS / 1_000} seconds. ` +
-          'Do not replace graph-capable investigation with broad rg/grep while the graph is building.',
+          `Code graph indexing is continuing in the background (${progressSummary ?? `phase: ${phase}`}).` +
+          estimateSummary +
+          ` Retry this inspect_code_graph call in about ${retryAfterMilliseconds / 1_000} seconds for graph evidence. ` +
+          'Continue with targeted text/path search or other independent investigation while the graph builds; ' +
+          'retry before making relationship-aware graph claims.',
       },
     ],
     structuredContent: {
       operation,
       phase,
       ...(progress ? {progress} : {}),
-      retryAfterMilliseconds: MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS,
+      retryAfterMilliseconds,
       state: 'indexing',
+      ...(timing ? {timing} : {}),
       type: 'code-graph-index-state',
-      version: 1,
+      version: 2,
     },
   };
 }
@@ -920,12 +937,50 @@ function codeGraphQueryTimeoutResult(operation: 'explain' | 'impact' | 'path' | 
     isError: true,
     structuredContent: {
       operation,
-      retryAfterMilliseconds: MCP_CODE_GRAPH_COLD_WAIT_MILLISECONDS,
+      retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS,
       state: 'timed_out',
       type: 'code-graph-query-state',
       version: 1,
     },
   };
+}
+
+export function codeGraphRetryAfterMilliseconds(status: CodeGraphRefreshStatus | undefined): number {
+  const estimate = status?.state === 'indexing' ? status.timing.estimatedPhaseRemainingMilliseconds : undefined;
+  if (estimate === undefined || !Number.isFinite(estimate) || estimate <= 0) {
+    return MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS;
+  }
+  const adaptive = Math.ceil(estimate / 4_000) * 1_000;
+  return Math.max(
+    MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS,
+    Math.min(MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS, adaptive),
+  );
+}
+
+function codeGraphProgressSummary(progress: CodeGraphProgress | undefined): string | undefined {
+  if (!progress) return undefined;
+  switch (progress.phase) {
+    case 'scanning':
+      return (
+        `scanning: ${progress.completed}/${progress.total} eligible files processed; ` +
+        `${progress.accepted} accepted, ${progress.skipped} content skipped, ${progress.excluded} excluded`
+      );
+    case 'materializing':
+      return `materializing: ${progress.completed}/${progress.total} files; ${progress.reused} reused`;
+    case 'embedding':
+      return `embedding: ${progress.completed}/${progress.total} symbols; ${progress.reused} reused`;
+    default:
+      return `phase: ${progress.phase}`;
+  }
+}
+
+function formatCodeGraphDuration(milliseconds: number): string {
+  const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
+  if (seconds < 90) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
 function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {

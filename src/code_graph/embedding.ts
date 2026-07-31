@@ -320,7 +320,14 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
   let reused = 0;
   let cursor: CodeGraphSymbolCursor | undefined;
   let arrayOffset = 0;
-  yield* input.onProgress?.({embedded, phase: 'embedding', reused, total}) ?? Effect.void;
+  yield* input.onProgress?.({
+    completed: embedded + reused,
+    embedded,
+    phase: 'embedding',
+    reused,
+    total,
+    unit: 'symbols',
+  }) ?? Effect.void;
 
   for (;;) {
     const rawPage = isSymbolPageSource(input.source)
@@ -344,7 +351,14 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
       }
     }
     yield* insertVectorRows(input.sql, rows);
-    yield* input.onProgress?.({embedded, phase: 'embedding', reused, total}) ?? Effect.void;
+    yield* input.onProgress?.({
+      completed: embedded + reused,
+      embedded,
+      phase: 'embedding',
+      reused,
+      total,
+      unit: 'symbols',
+    }) ?? Effect.void;
 
     for (let start = 0; start < missing.length; start += EMBED_BATCH_SIZE) {
       const batch = missing.slice(start, start + EMBED_BATCH_SIZE);
@@ -364,7 +378,14 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
       );
       yield* insertVectorRows(input.sql, embeddedRows);
       embedded += batch.length;
-      yield* input.onProgress?.({embedded, phase: 'embedding', reused, total}) ?? Effect.void;
+      yield* input.onProgress?.({
+        completed: embedded + reused,
+        embedded,
+        phase: 'embedding',
+        reused,
+        total,
+        unit: 'symbols',
+      }) ?? Effect.void;
     }
 
     if (isSymbolPageSource(input.source)) {
@@ -380,7 +401,14 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
     SELECT COUNT(*) AS count FROM vectors WHERE generation = ${input.generation}
   `;
   const count = Number(rows[0]?.count ?? 0);
-  yield* input.onProgress?.({embedded, phase: 'embedding', reused, total: count}) ?? Effect.void;
+  yield* input.onProgress?.({
+    completed: count,
+    embedded,
+    phase: 'embedding',
+    reused,
+    total: count,
+    unit: 'symbols',
+  }) ?? Effect.void;
   return {count, embedded, reused};
 });
 
