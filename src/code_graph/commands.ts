@@ -31,7 +31,17 @@ interface CwdOption {
 
 export interface CodeGraphExportInterlock {
   readonly afterOutputCheck?: () => Effect.Effect<void>;
+  readonly beforeLink?: (temporaryPath: string) => Effect.Effect<void>;
   readonly beforePublish?: (temporaryPath: string) => Effect.Effect<void>;
+}
+
+interface CodeGraphExportTemporaryIdentity {
+  readonly birthtimeMilliseconds: number;
+  readonly dev: number;
+  readonly ino: number;
+  readonly mode: number;
+  readonly modifiedAtMilliseconds: number;
+  readonly size: bigint;
 }
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
@@ -463,14 +473,12 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
   const parent = path.dirname(output);
   yield* fs.makeDirectory(parent, {recursive: true});
   const temporary = path.join(parent, `.${path.basename(output)}.${yield* crypto.randomUUIDv4}.tmp`);
-  let temporaryIdentity: FileSystem.File.Info | undefined;
-  const summary = yield* Effect.gen(function* () {
-    const rendered = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const file = yield* fs.open(temporary, {flag: 'wx', mode: 0o600});
-        temporaryIdentity = yield* file.stat;
+  const summary = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fs.open(temporary, {flag: 'wx', mode: 0o600});
+      return yield* Effect.gen(function* () {
         const encoder = new TextEncoder();
-        const result = yield* exportCodeGraph({
+        const rendered = yield* exportCodeGraph({
           databasePath: layout.databasePath,
           ...(edgeLimit === undefined ? {} : {edgeLimit}),
           format: options.format,
@@ -480,24 +488,30 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
           write: content => file.writeAll(encoder.encode(content)),
         });
         yield* file.sync;
-        return result;
-      }),
-    );
-    yield* verifyOwnedExportTemporary(fs, temporary, temporaryIdentity);
-    yield* options.interlock?.beforePublish?.(temporary) ?? Effect.void;
-    yield* verifyOwnedExportTemporary(fs, temporary, temporaryIdentity);
-    const linked = yield* fs.link(temporary, output).pipe(Effect.result);
-    if (linked._tag === 'Failure') {
-      if (yield* fs.exists(output)) {
-        return yield* Effect.fail(new Error(`Export output already exists: ${output}`));
-      }
-      return yield* linked.failure;
-    }
-    yield* syncExportDirectory(fs, parent);
-    yield* removeOwnedExportTemporary(fs, temporary, temporaryIdentity);
-    yield* syncExportDirectory(fs, parent);
-    return rendered;
-  }).pipe(Effect.ensuring(Effect.suspend(() => removeOwnedExportTemporary(fs, temporary, temporaryIdentity))));
+        // Capture the final stable metadata only after every byte and its metadata have reached the file.
+        const publicationIdentity = yield* requireExportTemporaryIdentity(yield* file.stat);
+        yield* verifyOwnedExportTemporary(fs, temporary, publicationIdentity);
+        yield* options.interlock?.beforePublish?.(temporary) ?? Effect.void;
+        yield* verifyOwnedExportTemporary(fs, temporary, publicationIdentity);
+        yield* options.interlock?.beforeLink?.(temporary) ?? Effect.void;
+        const linked = yield* fs.link(temporary, output).pipe(Effect.result);
+        if (linked._tag === 'Failure') {
+          if (yield* fs.exists(output)) {
+            return yield* Effect.fail(new Error(`Export output already exists: ${output}`));
+          }
+          return yield* linked.failure;
+        }
+        yield* verifyPublishedExportOutput(fs, output, publicationIdentity);
+        yield* syncExportDirectory(fs, parent);
+        yield* removeOwnedExportTemporary(fs, temporary, publicationIdentity);
+        yield* syncExportDirectory(fs, parent);
+        return rendered;
+      }).pipe(
+        // The descriptor stays open through verification and publication, preventing inode reuse in that window.
+        Effect.ensuring(removeOpenedExportTemporary(fs, temporary, file)),
+      );
+    }),
+  );
   yield* Console.log(
     `Exported ${summary.nodes.written} node(s) and ${summary.edges.written} relationship(s) as ${summary.format}: ${output}`,
   );
@@ -541,45 +555,108 @@ function parseCodeGraphExportLimit(
 function verifyOwnedExportTemporary(
   fs: FileSystem.FileSystem,
   temporary: string,
-  opened: FileSystem.File.Info | undefined,
+  expected: CodeGraphExportTemporaryIdentity,
 ) {
   return Effect.gen(function* () {
-    if (!opened) return yield* Effect.fail(new Error('Export temporary file ownership was not established.'));
     if (Option.isSome(yield* fs.readLink(temporary).pipe(Effect.option))) {
       return yield* Effect.fail(new Error('Export temporary path was replaced by a symbolic link.'));
     }
-    const current = yield* fs.stat(temporary);
-    if (!sameExportFile(opened, current)) {
+    const current = exportTemporaryIdentity(yield* fs.stat(temporary));
+    if (Option.isNone(current) || !sameExportFile(expected, current.value)) {
       return yield* Effect.fail(new Error('Export temporary path no longer identifies the private output file.'));
     }
+  });
+}
+
+function verifyPublishedExportOutput(
+  fs: FileSystem.FileSystem,
+  output: string,
+  expected: CodeGraphExportTemporaryIdentity,
+) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(output).pipe(Effect.option))) {
+      yield* fs.remove(output, {force: true});
+      return yield* Effect.fail(new Error('Export publication did not link the private output file.'));
+    }
+    const current = yield* fs.stat(output).pipe(Effect.option);
+    const identity = Option.flatMap(current, exportTemporaryIdentity);
+    if (
+      Option.isSome(identity) &&
+      sameExportFile(expected, identity.value) &&
+      Option.isNone(yield* fs.readLink(output).pipe(Effect.option))
+    ) {
+      return;
+    }
+    if (Option.isSome(yield* fs.readLink(output).pipe(Effect.option))) {
+      yield* fs.remove(output, {force: true});
+      return yield* Effect.fail(new Error('Export publication did not link the private output file.'));
+    }
+    if (Option.isSome(identity)) yield* removeOwnedExportTemporary(fs, output, identity.value);
+    return yield* Effect.fail(new Error('Export publication did not link the private output file.'));
   });
 }
 
 function removeOwnedExportTemporary(
   fs: FileSystem.FileSystem,
   temporary: string,
-  opened: FileSystem.File.Info | undefined,
+  expected: CodeGraphExportTemporaryIdentity,
 ): Effect.Effect<void, never> {
-  if (!opened) return Effect.void;
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(temporary).pipe(Effect.option))) return;
     const current = yield* fs.stat(temporary).pipe(Effect.option);
-    if (Option.isSome(current) && sameExportFile(opened, current.value)) {
+    const currentIdentity = Option.flatMap(current, exportTemporaryIdentity);
+    if (Option.isSome(currentIdentity) && sameExportFile(expected, currentIdentity.value)) {
       yield* fs.remove(temporary, {force: true});
     }
   }).pipe(Effect.catch(() => Effect.void));
 }
 
-function sameExportFile(opened: FileSystem.File.Info, current: FileSystem.File.Info): boolean {
-  const openedInode = Option.getOrUndefined(opened.ino);
-  const currentInode = Option.getOrUndefined(current.ino);
+function removeOpenedExportTemporary(
+  fs: FileSystem.FileSystem,
+  temporary: string,
+  file: FileSystem.File,
+): Effect.Effect<void, never> {
+  return Effect.gen(function* () {
+    const identity = exportTemporaryIdentity(yield* file.stat);
+    if (Option.isSome(identity)) yield* removeOwnedExportTemporary(fs, temporary, identity.value);
+  }).pipe(Effect.catch(() => Effect.void));
+}
+
+function requireExportTemporaryIdentity(info: FileSystem.File.Info) {
+  return Option.match(exportTemporaryIdentity(info), {
+    onNone: () =>
+      Effect.fail(new Error('Export temporary file has insufficient identity metadata for safe publication.')),
+    onSome: Effect.succeed,
+  });
+}
+
+function exportTemporaryIdentity(info: FileSystem.File.Info): Option.Option<CodeGraphExportTemporaryIdentity> {
+  const birthtime = Option.getOrUndefined(info.birthtime);
+  const ino = Option.getOrUndefined(info.ino);
+  const modifiedAt = Option.getOrUndefined(info.mtime);
+  return info.type !== 'File' || birthtime === undefined || ino === undefined || modifiedAt === undefined
+    ? Option.none()
+    : Option.some({
+        birthtimeMilliseconds: birthtime.getTime(),
+        dev: info.dev,
+        ino,
+        mode: info.mode,
+        modifiedAtMilliseconds: modifiedAt.getTime(),
+        size: info.size,
+      });
+}
+
+function sameExportFile(
+  expected: CodeGraphExportTemporaryIdentity,
+  current: CodeGraphExportTemporaryIdentity,
+): boolean {
   return (
-    opened.type === 'File' &&
-    current.type === 'File' &&
-    opened.dev === current.dev &&
-    openedInode !== undefined &&
-    currentInode !== undefined &&
-    openedInode === currentInode
+    expected.dev === current.dev &&
+    expected.ino === current.ino &&
+    expected.size === current.size &&
+    expected.mode === current.mode &&
+    expected.modifiedAtMilliseconds === current.modifiedAtMilliseconds &&
+    expected.birthtimeMilliseconds === current.birthtimeMilliseconds
   );
 }
 

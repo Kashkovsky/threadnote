@@ -86,10 +86,73 @@ describe('website and standalone release boundary', () => {
   it('gates the Pages deployment on website contract checks', async () => {
     const workflow = await readFile(join(root, '.github', 'workflows', 'pages.yml'), 'utf8');
 
+    await expect(access(join(root, 'docs', 'index.html'))).rejects.toThrow();
+    await expect(access(join(root, 'website', 'public', 'CNAME'))).rejects.toThrow();
     expect(workflow).toContain("'assets/brand/**'");
     expect(workflow).toContain('bun run site:check');
     expect(workflow).toContain('bun run site:build');
+    expect(workflow).toContain('path: site-dist');
     expect(workflow).toContain('actions/deploy-pages@');
+    expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
+  });
+
+  it('uses threadnote.io as the single public website origin', async () => {
+    const origin = 'https://threadnote.io';
+    const entries = [
+      ['index.html', '/'],
+      ['docs/index.html', '/docs/'],
+      ['pro-tips/index.html', '/pro-tips/'],
+      ['manager-demo/index.html', '/manager-demo/'],
+      ['faq/index.html', '/faq/'],
+    ] as const;
+    const htmlDocuments = await Promise.all(
+      entries.map(async ([entry, route]) => ({
+        route,
+        html: await readFile(join(root, 'website', entry), 'utf8'),
+      })),
+    );
+
+    for (const {route, html} of htmlDocuments) {
+      expect(html).toContain(`<link rel="canonical" href="${origin}${route}" />`);
+      expect(html).toContain(`<meta property="og:url" content="${origin}${route}" />`);
+      expect(html).toContain(`<meta property="og:image" content="${origin}/og.png" />`);
+      expect(html).toContain(`<meta name="twitter:image" content="${origin}/og.png" />`);
+      expect(html).not.toContain('kashkovsky.github.io/threadnote');
+    }
+
+    const structuredDataSource = htmlDocuments[0]?.html.match(
+      /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,
+    )?.[1];
+    expect(structuredDataSource).toBeDefined();
+    expect(JSON.parse(structuredDataSource ?? '{}')).toMatchObject({
+      '@context': 'https://schema.org',
+      '@graph': [
+        {'@type': 'WebSite', url: `${origin}/`},
+        {'@type': 'SoftwareApplication', url: `${origin}/`},
+      ],
+    });
+
+    const [sitemap, robots, readme, manifest, pagesWorkflow, ciWorkflow] = await Promise.all([
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'robots.txt'), 'utf8'),
+      readFile(join(root, 'README.md'), 'utf8'),
+      readFile(join(root, 'package.json'), 'utf8'),
+      readFile(join(root, '.github', 'workflows', 'pages.yml'), 'utf8'),
+      readFile(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
+    ]);
+    const sitemapLocations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]);
+
+    expect(sitemapLocations).toEqual(entries.map(([, route]) => `${origin}${route}`));
+    expect(robots).toContain(`Sitemap: ${origin}/sitemap.xml`);
+    expect(readme).toContain(`**Website:** ${origin}/`);
+    expect(readme).toContain(`**Documentation:** ${origin}/docs/`);
+    expect(JSON.parse(manifest)).toMatchObject({homepage: `${origin}/`});
+    expect(pagesWorkflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
+    expect(ciWorkflow).toMatch(/^ {10}THREADNOTE_SITE_BASE: \/$/m);
+
+    for (const source of [sitemap, robots, readme, manifest, pagesWorkflow, ciWorkflow]) {
+      expect(source).not.toContain('kashkovsky.github.io/threadnote');
+    }
   });
 
   it('packages the agent instruction template outside the public docs tree', async () => {

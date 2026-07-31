@@ -34,6 +34,26 @@ describe('code graph corpus extraction', () => {
     expect(facts.edges.map(edge => edge.relation)).toEqual(expect.arrayContaining(['contains', 'references']));
   });
 
+  test('never exposes script or style bodies through whitespace-tolerant HTML end tags', async () => {
+    const facts = await extractCorpusFile(
+      textFile(
+        'docs/overview.html',
+        [
+          '<h1>Public architecture overview</h1>',
+          '<script>privateScriptPayload()</script >',
+          '<style>.private-style-payload { display: block }</STYLE \n>',
+          '<p>Visible operational guidance.</p>',
+        ].join('\n'),
+      ),
+    );
+    const searchableEvidence = facts.symbols.map(symbol => `${symbol.name}\n${symbol.documentation ?? ''}`).join('\n');
+
+    expect(searchableEvidence).toContain('Public architecture overview');
+    expect(searchableEvidence).toContain('Visible operational guidance');
+    expect(searchableEvidence).not.toContain('privateScriptPayload');
+    expect(searchableEvidence).not.toContain('private-style-payload');
+  });
+
   test('extracts OpenXML text locally without materializing non-document archive entries', async () => {
     const bytes = zipSync({
       '[Content_Types].xml': strToU8('<Types/>'),

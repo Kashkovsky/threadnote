@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -1821,6 +1822,8 @@ describe('native code graph lifecycle', () => {
       }),
     );
     let replacement = '';
+    let replacementContent = '';
+    let synchronizedSize = 0;
 
     await expect(
       runEffect(
@@ -1831,8 +1834,11 @@ describe('native code graph lifecycle', () => {
             beforePublish: temporary =>
               Effect.sync(() => {
                 replacement = temporary;
+                synchronizedSize = statSync(temporary).size;
+                // A distinct size keeps this regression deterministic even on a filesystem that immediately reuses an inode.
+                replacementContent = 'x'.repeat(synchronizedSize + 1);
                 rmSync(temporary);
-                writeFileSync(temporary, 'replacement owned by another process\n');
+                writeFileSync(temporary, replacementContent, {mode: 0o600});
               }),
           },
           output,
@@ -1841,7 +1847,96 @@ describe('native code graph lifecycle', () => {
     ).rejects.toThrow('no longer identifies');
 
     expect(existsSync(output)).toBe(false);
-    expect(readFileSync(replacement, 'utf8')).toBe('replacement owned by another process\n');
+    expect(statSync(replacement).size).toBe(synchronizedSize + 1);
+    expect(readFileSync(replacement, 'utf8')).toBe(replacementContent);
+  });
+
+  it('rejects a temporary path replaced between final verification and atomic publication', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const output = join(root, 'graph-link-race.json');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+    await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    let replacement = '';
+    let replacementContent = '';
+
+    await expect(
+      runEffect(
+        runCodeGraphExport(config, {
+          cwd: root,
+          format: 'json',
+          interlock: {
+            beforeLink: temporary =>
+              Effect.sync(() => {
+                replacement = temporary;
+                replacementContent = 'x'.repeat(statSync(temporary).size);
+                rmSync(temporary);
+                writeFileSync(temporary, replacementContent, {mode: 0o600});
+              }),
+          },
+          output,
+        }),
+      ),
+    ).rejects.toThrow('did not link the private output file');
+
+    expect(existsSync(output)).toBe(false);
+    expect(readFileSync(replacement, 'utf8')).toBe(replacementContent);
+  });
+
+  it('removes a published symlink without touching its target when the temporary path is replaced', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const output = join(root, 'graph-link-symlink.json');
+    const target = join(root, 'attacker-owned.txt');
+    const targetContent = 'attacker-owned content must remain\n';
+    writeFileSync(target, targetContent);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+    await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    let replacement = '';
+
+    await expect(
+      runEffect(
+        runCodeGraphExport(config, {
+          cwd: root,
+          format: 'json',
+          interlock: {
+            beforeLink: temporary =>
+              Effect.sync(() => {
+                replacement = temporary;
+                rmSync(temporary);
+                symlinkSync(target, temporary);
+              }),
+          },
+          output,
+        }),
+      ),
+    ).rejects.toThrow('did not link the private output file');
+
+    expect(existsSync(output)).toBe(false);
+    expect(readlinkSync(replacement)).toBe(target);
+    expect(readFileSync(target, 'utf8')).toBe(targetContent);
   });
 
   it('keeps status read-only and repairs only disposable incomplete graph state', async () => {

@@ -22,7 +22,7 @@ concurrency:
 
 env:
   BUN_VERSION: 1.3.14
-  THREADNOTE_SITE_BASE: /threadnote/
+  THREADNOTE_SITE_BASE: /
 
 jobs:
   build:

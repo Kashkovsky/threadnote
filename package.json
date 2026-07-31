@@ -1,10 +1,10 @@
 {
   "name": "threadnote",
-  "version": "4.0.0-beta.27",
+  "version": "4.0.0-beta.28",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
-  "homepage": "https://github.com/Kashkovsky/threadnote#readme",
+  "homepage": "https://threadnote.io/",
   "bugs": {
     "url": "https://github.com/Kashkovsky/threadnote/issues"
   },

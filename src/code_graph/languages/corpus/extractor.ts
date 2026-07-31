@@ -482,7 +482,7 @@ function notebookToText(content: string): string {
 function xmlToText(content: string): string {
   return decodeXmlEntities(
     content
-      .replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/(?:script|style)>/gi, ' ')
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
       .replace(
         /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi,
         (_match, level: string, body: string) => `\n${'#'.repeat(Number(level))} ${stripTags(body)}\n`,

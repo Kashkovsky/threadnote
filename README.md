@@ -21,9 +21,9 @@ Threadnote 4 is a self-contained native executable with an embedded Bun runtime.
 indexes, locks, logs, migration receipts, and sharing metadata are owned under `~/.threadnote`—no separately installed
 runtime, Python service, external memory platform, or background daemon required.
 
-**Website:** https://kashkovsky.github.io/threadnote/
+**Website:** https://threadnote.io/
 
-**Documentation:** https://kashkovsky.github.io/threadnote/docs/
+**Documentation:** https://threadnote.io/docs/
 
 ## The Value
 

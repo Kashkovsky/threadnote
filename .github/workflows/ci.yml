@@ -32,7 +32,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run site:build
         env:
-          THREADNOTE_SITE_BASE: /threadnote/
+          THREADNOTE_SITE_BASE: /
       - run: bun run build
       - run: bun run check:self-contained
       - run: bun run test:coverage

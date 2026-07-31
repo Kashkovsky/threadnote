@@ -22,7 +22,7 @@ Run the website checks and a production build with:
 
 ```bash
 bun run site:check
-THREADNOTE_SITE_BASE=/threadnote/ bun run site:build
+THREADNOTE_SITE_BASE=/ bun run site:build
 ```
 
 The production output is `site-dist/`. It is ignored by Git and rejected if it appears inside `dist/`.
@@ -46,16 +46,34 @@ builds. Set `VITE_SHOW_GRAPHIFY_COMPARISON=true` only when the comparison is rea
 ## GitHub Pages
 
 `.github/workflows/pages.yml` builds the site with the repository-pinned Bun version, uploads only `site-dist/`, and
-deploys it through GitHub Pages Actions. The workflow sets `THREADNOTE_SITE_BASE=/threadnote/` for project Pages URLs.
+deploys it through GitHub Pages Actions. The production origin is `https://threadnote.io`, so the workflow builds with
+`THREADNOTE_SITE_BASE=/` and all public routes live directly under the domain root.
 
-The repository Pages source must be **GitHub Actions**, not the legacy `main:/docs` source. This is a one-time repository
-setting when the website workflow reaches the default branch. Keep the lightweight `docs/index.html` transition page
-until that switch is complete so the existing project Pages URL never returns a 404:
+The repository Pages source must be **GitHub Actions**, not the legacy `main:/docs` source. The transition page formerly
+at `docs/index.html` has been retired; do not recreate it or configure Pages to publish the checked-in documentation
+tree. A repository `CNAME` file is intentionally absent: GitHub ignores it for custom Actions-based Pages deployments,
+and the custom domain is configured in repository settings.
 
-1. Merge the website workflow and source into `main`.
-2. In **Settings → Pages → Build and deployment**, change **Source** to **GitHub Actions**.
-3. Dispatch the **Website** workflow, verify the production deployment, then the transition page may be removed in a
-   later change.
+### Custom-domain cutover
+
+Perform the control-plane changes in this order to avoid domain takeover and certificate failures:
+
+1. In personal **GitHub Settings → Pages**, add and verify `threadnote.io`. Publish the TXT record GitHub supplies at
+   `_github-pages-challenge-Kashkovsky.threadnote.io` and retain it after verification.
+2. After the Website workflow exists on `main`, set **Repository Settings → Pages → Source** to **GitHub Actions**.
+3. In the same repository Pages settings, set the custom domain to `threadnote.io` before changing its public DNS.
+4. Replace any registrar parking records with all four GitHub Pages apex `A` records:
+   `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, and `185.199.111.153`.
+5. Set `www` as a `CNAME` directly to `Kashkovsky.github.io` (without `/threadnote`), so GitHub can redirect it to the
+   canonical apex. Do not point `www` at the apex and do not publish wildcard records.
+6. Optionally add GitHub's four IPv6 `AAAA` records: `2606:50c0:8000::153`, `2606:50c0:8001::153`,
+   `2606:50c0:8002::153`, and `2606:50c0:8003::153`.
+7. After DNS propagation and certificate provisioning, enable **Enforce HTTPS**, dispatch the Website workflow, and
+   verify `/`, `/docs/`, `/pro-tips/`, `/manager-demo/`, `/faq/`, `/robots.txt`, and `/sitemap.xml`.
+
+After cutover, set the repository About homepage to `https://threadnote.io/` and submit
+`https://threadnote.io/sitemap.xml` to the search-engine webmaster consoles in use. The default project Pages URL and
+the configured `www` variant should redirect to the canonical apex.
 
 The CLI release pipeline copies only `assets/`, `config/`, and `manager/`. `bun run check:self-contained` rejects
 `docs/`, `website/`, or `site-dist/` inside a compiled release.
