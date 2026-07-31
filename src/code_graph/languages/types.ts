@@ -2,9 +2,17 @@ import {Effect, Option} from 'effect';
 import type {TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 
-export type CodeGraphFileRole = 'documentation' | 'manifest' | 'source' | 'workspace';
+export type CodeGraphFileRole = 'corpus' | 'documentation' | 'manifest' | 'source' | 'workspace';
 export type CodeGraphCapability =
-  'calls' | 'declarations' | 'dependencies' | 'documentation' | 'imports' | 'inheritance' | 'workspace';
+  | 'assets'
+  | 'calls'
+  | 'corpus'
+  | 'declarations'
+  | 'dependencies'
+  | 'documentation'
+  | 'imports'
+  | 'inheritance'
+  | 'workspace';
 
 export type CodeGraphFileMatcher =
   | {
@@ -28,6 +36,7 @@ export type CodeGraphFileMatcher =
 
 export interface VerifiedLanguageAsset {
   readonly abi: number;
+  readonly developmentRelativePath?: string;
   readonly relativePath: string;
   readonly sha256: string;
   readonly source: string;
@@ -40,20 +49,46 @@ export interface CodeGraphExtractionContext {
 }
 
 export interface CodeGraphWorkspaceProject {
+  readonly buildSystem: CodeGraphWorkspaceBuildSystem;
   readonly dependencies: readonly string[];
+  readonly dependencyDetails: readonly CodeGraphWorkspaceDependency[];
+  readonly diagnostics: readonly string[];
   readonly id: string;
+  readonly kind: CodeGraphWorkspaceComponentKind;
   readonly languages: readonly string[];
   readonly name: string;
+  readonly provenance: CodeGraphWorkspaceProvenance;
   readonly resolutionDomain: string;
   readonly root: string;
   readonly sourceRoots: readonly string[];
+  readonly workspaceId: string;
   readonly workspaceRoots: readonly string[];
+}
+
+export type CodeGraphWorkspaceBuildSystem = 'gradle' | 'inferred' | 'maven' | 'swiftpm' | 'xcode';
+export type CodeGraphWorkspaceComponentKind = 'module' | 'package' | 'project' | 'target';
+export type CodeGraphWorkspaceProvenance = 'declared' | 'inferred';
+
+export interface CodeGraphWorkspaceDependency {
+  readonly evidence?: string;
+  readonly provenance: CodeGraphWorkspaceProvenance;
+  readonly targetId: string;
+}
+
+export interface CodeGraphBuildWorkspace {
+  readonly buildSystem: CodeGraphWorkspaceBuildSystem;
+  readonly diagnostics: readonly string[];
+  readonly id: string;
+  readonly name: string;
+  readonly provenance: CodeGraphWorkspaceProvenance;
+  readonly root: string;
 }
 
 export interface CodeGraphWorkspace {
   readonly diagnostics: readonly string[];
   readonly fingerprint: string;
   readonly projects: readonly CodeGraphWorkspaceProject[];
+  readonly workspaces: readonly CodeGraphBuildWorkspace[];
 }
 
 export interface CodeGraphWorkspaceDetector {

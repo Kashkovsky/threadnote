@@ -1,21 +1,31 @@
 import {access, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
-import {docsSections} from '../../website/src/content/docs.js';
-import {heroScenario} from '../../website/src/content/landing.js';
+import {docsSections, mcpTools} from '../../website/src/content/docs.js';
+import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
 import {proTips} from '../../website/src/content/proTips.js';
 
 const root = process.cwd();
 const toolKeys = {
+  analyze_code_graph: new Set([
+    'callerCwd',
+    'communityId',
+    'includeHeuristic',
+    'includeModelAssociations',
+    'memberLimit',
+    'operation',
+  ]),
   inspect_code_graph: new Set([
     'base',
     'callerCwd',
     'depth',
+    'direction',
     'edgeLimit',
     'from',
     'includeHeuristic',
     'includeModelAssociations',
+    'nodeId',
     'nodeLimit',
     'operation',
     'query',
@@ -119,6 +129,8 @@ describe('Threadnote 4 website content', () => {
         'local-ai',
         'sharing-setup',
         'graph-operations',
+        'graph-analysis',
+        'graph-corpus-and-exports',
         'graph-monorepos',
         'manager',
         'obsidian-source',
@@ -155,7 +167,7 @@ describe('Threadnote 4 website content', () => {
 
   it('uses fictional, generic examples in public graph simulations', async () => {
     const publicExamples = await Promise.all(
-      ['content/proTips.ts', 'content/managerDemo.ts'].map(path =>
+      ['content/landing.ts', 'content/proTips.ts', 'content/managerDemo.ts'].map(path =>
         readFile(join(root, 'website', 'src', path), 'utf8'),
       ),
     ).then(sources => sources.join('\n'));
@@ -168,7 +180,7 @@ describe('Threadnote 4 website content', () => {
   });
 
   it('keeps every simulated MCP payload parseable and aligned with the actual tool contract', () => {
-    const scenarios = [heroScenario, ...proTips.map(tip => tip.scenario)];
+    const scenarios = [heroScenario, graphInspectScenario, graphAnalyzeScenario, ...proTips.map(tip => tip.scenario)];
 
     for (const scenario of scenarios) {
       const sharePreviews: boolean[] = [];
@@ -202,17 +214,39 @@ describe('Threadnote 4 website content', () => {
             sharePreviews.push(payload.preview as boolean);
             break;
           case 'inspect_code_graph':
-            expect(['query', 'explain', 'path', 'impact']).toContain(payload.operation);
+            expect(['query', 'node', 'neighbors', 'explain', 'path', 'impact']).toContain(payload.operation);
             expectNonEmptyString(payload, 'callerCwd');
             expect(payload.callerCwd).toMatch(/^\//);
             if (payload.operation === 'query') expectNonEmptyString(payload, 'query');
             if (payload.operation === 'explain') expectNonEmptyString(payload, 'symbol');
+            if (payload.operation === 'node' || payload.operation === 'neighbors') {
+              expectNonEmptyString(payload, 'nodeId');
+              expect(payload.nodeId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
+            }
             if (payload.operation === 'path') {
               expectNonEmptyString(payload, 'from');
               expectNonEmptyString(payload, 'to');
             }
             if (payload.operation === 'impact') {
               expect(typeof payload.query === 'string' || typeof payload.base === 'string').toBe(true);
+            }
+            break;
+          case 'analyze_code_graph':
+            expect([
+              'stats',
+              'communities',
+              'community',
+              'groups',
+              'hubs',
+              'surprises',
+              'confidence',
+              'full',
+            ]).toContain(payload.operation);
+            expectNonEmptyString(payload, 'callerCwd');
+            expect(payload.callerCwd).toMatch(/^\//);
+            if (payload.operation === 'community') {
+              expectNonEmptyString(payload, 'communityId');
+              expect(payload.communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
             }
             break;
         }
@@ -222,6 +256,22 @@ describe('Threadnote 4 website content', () => {
         expect(sharePreviews.at(-1)).toBe(false);
       }
     }
+  });
+
+  it('promotes graph search as a first-class landing-page pillar', async () => {
+    const landingSource = await readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8');
+    const scenarios = JSON.stringify([graphInspectScenario, graphAnalyzeScenario]);
+
+    expect(landingSource).toContain('id="graph-search"');
+    expect(landingSource).toContain('inspect_code_graph');
+    expect(landingSource).toContain('analyze_code_graph');
+    expect(landingSource).toContain('Current-worktree truth');
+    expect(landingSource).toContain('Repository size is not an admission test');
+    expect(landingSource).toContain('Architecture signals');
+    expect(landingSource).toContain('JSON, GraphML, HTML, or SVG');
+    expect(landingSource).toContain('Open the Manager demo');
+    expect(scenarios).toContain('current commit + isolated dirty overlay');
+    expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
 
   it('documents the explicit publishing and supported hook boundaries', () => {
@@ -247,20 +297,36 @@ describe('Threadnote 4 website content', () => {
     }
   });
 
-  it('labels synthetic Manager data and includes the Graphify FAQ comparison', async () => {
-    const [managerSource, faqSource] = await Promise.all([
+  it('labels synthetic Manager data and retains the hidden Graphify comparison behind an opt-in flag', async () => {
+    const [managerSource, faqSource, faqHtml] = await Promise.all([
       readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'faq', 'index.html'), 'utf8'),
     ]);
 
     expect(managerSource).toContain('Mock data — no local files read');
+    expect(faqHtml).not.toContain('Graphify');
+    expect(faqSource).toContain(
+      "const SHOW_GRAPHIFY_COMPARISON = import.meta.env.VITE_SHOW_GRAPHIFY_COMPARISON === 'true'",
+    );
+    expect(faqSource).toContain('{SHOW_GRAPHIFY_COMPARISON ? (');
+    expect(faqSource).toContain('!item.comparisonOnly || SHOW_GRAPHIFY_COMPARISON');
     expect(faqSource).toContain('Threadnote vs Graphify');
     expect(faqSource.indexOf('The practical questions')).toBeLessThan(faqSource.indexOf('Threadnote vs Graphify'));
     expect(faqSource).toContain('Not TypeScript-only');
     expect(faqSource).toContain('36 tree-sitter grammars');
     expect(faqSource).toContain('512 MiB load guard');
     expect(faqSource).toContain('no eligible-repository admission cap');
+    expect(faqSource).toContain('per-artifact corpus safety budgets');
+    expect(faqSource).toContain('searchable metadata-only nodes');
     expect(faqSource).toContain('semantic inputs require an assistant or configured model');
+    expect(faqSource).toContain('analyze_code_graph');
+    expect(faqSource).toContain('stable community drill-down, structural n-ary groups, hubs and god nodes');
+    expect(faqSource).toContain('PDF text and links');
+    expect(faqSource).toContain('not OCR or transcription');
+    expect(faqSource).toContain('JSON, GraphML, HTML, or SVG');
+    expect(faqSource).toContain('Leiden communities');
+    expect(faqSource).toContain('hyperedges');
     expect(faqSource).not.toContain(
       'Broader language and multimodal analysis, including documents, papers, and diagrams',
     );
@@ -268,6 +334,27 @@ describe('Threadnote 4 website content', () => {
       'https://github.com/Graphify-Labs/graphify/tree/4fe11092ccbe9f543608f140c790f68d5d83cae4',
     );
     expect(faqSource).toContain('https://graphify.net/knowledge-graph-for-ai-coding-assistants.html');
+  });
+
+  it('documents the separate whole-graph analysis and corpus/export contracts', () => {
+    const content = JSON.stringify(docsSections);
+    const analysisTool = mcpTools.find(tool => tool.name === 'analyze_code_graph');
+
+    expect(analysisTool).toMatchObject({toolset: 'core'});
+    expect(analysisTool?.keyInputs).toContain(
+      'operation: stats | communities | community | groups | hubs | surprises | confidence | full',
+    );
+    expect(content).toContain('analyze_code_graph');
+    expect(content).toContain('threadnote graph communities');
+    expect(content).toContain('threadnote graph community --community-id cgc_…');
+    expect(content).toContain('threadnote graph groups');
+    expect(content).toContain('threadnote graph confidence');
+    expect(content).toContain('threadnote graph report --output architecture-report.md');
+    expect(content).toContain('OpenXML, OpenDocument, and EPUB');
+    expect(content).toContain('does not claim OCR, pixel understanding, or transcription');
+    expect(content).toContain('64 MiB per-artifact source budget');
+    expect(content).toContain('not repository or graph-size admission caps');
+    expect(content).toContain('threadnote graph export --format graphml');
   });
 
   it('pins the Manager canvas to its stage without a resize feedback loop', async () => {

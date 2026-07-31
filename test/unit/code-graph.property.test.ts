@@ -4,7 +4,7 @@ import {Effect} from 'effect';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
 import {parseGitCatFileBatch, parseGitTree, parseNameStatus} from '../../src/code_graph/inventory.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
-import {traversalQuery} from '../../src/code_graph/query.js';
+import {neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphQueryNode} from '../../src/code_graph/types.js';
 
@@ -58,6 +58,16 @@ const nameStatusChangeArbitrary: FC.Arbitrary<NameStatusChange> = FC.oneof(
 const graphCaseArbitrary = FC.record({
   depth: FC.integer({max: 8, min: 0}),
   nodeCount: FC.integer({max: 8, min: 1}),
+  rawEdges: FC.array(FC.tuple(FC.integer({max: 31, min: 0}), FC.integer({max: 31, min: 0})), {maxLength: 32}),
+  seedIndex: FC.integer({max: 31, min: 0}),
+});
+
+const boundedNeighborCaseArbitrary = FC.record({
+  depth: FC.integer({max: 8, min: 0}),
+  direction: FC.constantFrom<'both' | 'incoming' | 'outgoing'>('both', 'incoming', 'outgoing'),
+  edgeLimit: FC.integer({max: 24, min: 1}),
+  nodeCount: FC.integer({max: 8, min: 1}),
+  nodeLimit: FC.integer({max: 8, min: 1}),
   rawEdges: FC.array(FC.tuple(FC.integer({max: 31, min: 0}), FC.integer({max: 31, min: 0})), {maxLength: 32}),
   seedIndex: FC.integer({max: 31, min: 0}),
 });
@@ -170,6 +180,52 @@ describe('native code graph traversal properties', () => {
       });
     },
     {fastCheck: {numRuns: 80}},
+  );
+
+  it.effect.prop(
+    'keeps exact-ID neighbor traversal within direction, depth, node, and edge bounds',
+    {
+      graph: boundedNeighborCaseArbitrary,
+    },
+    ({graph}) => {
+      const nodes = Array.from({length: graph.nodeCount}, (_, index) => graphNode(index));
+      const seed = nodes[graph.seedIndex % graph.nodeCount]!;
+      const edges = graphEdges(graph.nodeCount, graph.rawEdges);
+      const store = graphStore(nodes, seed, edges);
+      const reachable = referenceNeighborReachability(seed.id, edges, graph.direction, graph.depth);
+
+      return Effect.gen(function* () {
+        const result = yield* neighborQuery(
+          store,
+          layout.databasePath,
+          'snapshot',
+          seed.id,
+          graph.direction,
+          graph.nodeLimit,
+          graph.edgeLimit,
+          graph.depth,
+          ['resolved'],
+        );
+
+        const visibleIds = new Set(result.nodes.map(node => node.id));
+        expect(result.nodes[0]?.id).toBe(seed.id);
+        expect(result.nodes.length).toBeLessThanOrEqual(graph.nodeLimit);
+        expect(result.edges.length).toBeLessThanOrEqual(graph.edgeLimit);
+        expect(visibleIds.size).toBe(result.nodes.length);
+        expect(new Set(result.edges.map(edge => edge.id)).size).toBe(result.edges.length);
+        expect(result.nodes.every(node => reachable.has(node.id))).toBe(true);
+        expect(
+          result.edges.every(
+            edge =>
+              edge.sourceId !== undefined &&
+              visibleIds.has(edge.sourceId) &&
+              edge.targetId !== undefined &&
+              visibleIds.has(edge.targetId),
+          ),
+        ).toBe(true);
+      });
+    },
+    {fastCheck: {numRuns: 120}},
   );
 });
 
@@ -317,4 +373,37 @@ function referenceTraversal(
     frontier = next;
   }
   return {edges: inspectedEdges, nodes: visited};
+}
+
+function referenceNeighborReachability(
+  seedId: string,
+  edges: readonly CodeGraphEdge[],
+  direction: 'both' | 'incoming' | 'outgoing',
+  depth: number,
+): ReadonlySet<string> {
+  const visited = new Set([seedId]);
+  let frontier = new Set([seedId]);
+  for (let currentDepth = 0; currentDepth < depth && frontier.size > 0; currentDepth += 1) {
+    const next = new Set<string>();
+    for (const edge of edges) {
+      if (!edge.sourceId || !edge.targetId) continue;
+      if (
+        (direction === 'outgoing' || direction === 'both') &&
+        frontier.has(edge.sourceId) &&
+        !visited.has(edge.targetId)
+      ) {
+        next.add(edge.targetId);
+      }
+      if (
+        (direction === 'incoming' || direction === 'both') &&
+        frontier.has(edge.targetId) &&
+        !visited.has(edge.sourceId)
+      ) {
+        next.add(edge.sourceId);
+      }
+    }
+    for (const nodeId of next) visited.add(nodeId);
+    frontier = next;
+  }
+  return visited;
 }

@@ -9,15 +9,18 @@ checks, blockers, and next steps with `kind: handoff`. Use stable `project` and 
 existing memory with `replaceUri` instead of creating timestamped duplicates.
 
 For non-trivial investigation of existing source, use `inspect_code_graph` before broad `rg` or grep searches.
-`query` finds definitions and concepts, `explain` inspects one symbol, `path` connects two symbols, and `impact` traces
-reverse dependencies from a query or Git `base`. Use text search afterward for exact literals, unsupported files, or
-verification. If the tool returns `state: "indexing"`, continue useful independent work such as targeted text or path
-search, then retry after `retryAfterMilliseconds` before making relationship-aware graph claims. The optional estimate
-is scoped only to the current measured phase; it is not a full-build promise. Indexing is expected cold-start progress,
-not graph failure. If graph search is unavailable or fails, report the issue and use text search as the fallback; do
-not silently skip graph search. Memory recall answers what was learned or decided; code-graph search answers what the
-current Git snapshot and worktree contain. Call both when a task needs historical context and present code evidence,
-but do not treat one as a fallback answer from the other.
+`query` finds definitions and concepts; use the returned stable `cgs_` ID with `node` for exact lookup, `neighbors` for
+bounded directional adjacency, or as a `path` endpoint. `explain` accepts a human-readable symbol selector, and `impact`
+traces reverse dependencies from a query or Git `base`. Use the separate `analyze_code_graph` tool for whole-repository
+statistics, stable community drill-down, structural groups, hubs or god nodes, confidence audits, and surprising
+cross-community links. Use text search afterward for exact literals, unsupported files, or verification. If either
+graph tool returns `state: "indexing"`, continue useful independent work such as targeted text or path search, then
+retry after `retryAfterMilliseconds` before making relationship-aware graph claims. The optional estimate is scoped
+only to the current measured phase; it is not a full-build promise. Indexing is expected cold-start progress, not graph
+failure. If graph search is unavailable or fails, report the issue and use text search as the fallback; do not silently
+skip graph search. Memory recall answers what was learned or decided; code-graph search answers what the current Git
+snapshot and worktree contain. Call both when a task needs historical context and present code evidence, but do not
+treat one as a fallback answer from the other.
 
 At closeout, store normal durable feature knowledge and handoffs directly without asking. Use
 `review_session_context` only for additional session-extracted candidates, and apply those only after explicit user

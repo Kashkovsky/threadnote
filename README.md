@@ -43,9 +43,10 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Targeted local recall.** A pinned BGE Small model runs in a supervised local worker through `node-llama-cpp`;
   agents load selected `threadnote://` records instead of replaying the entire memory history or sending it to a hosted
   embedding service.
-- **Current-code relationships.** A separate native code-graph tool finds definitions, paths, calls, inheritance, and
-  change impact across TypeScript/JavaScript, Java, Kotlin, and Swift from the current Git commit plus this worktree's
-  dirty overlay—without Python, Graphify, an external compiler, or a daemon.
+- **Current-code relationships.** Separate native graph tools find definitions, paths, calls, inheritance, change
+  impact, stable community membership, structural n-ary groups, hubs, confidence gaps, and cross-community links
+  across broad source-language packs from the current Git commit plus this worktree's dirty overlay—without Python,
+  Graphify, an external compiler, or a daemon.
 - **Recall explains itself.** Semantic and BM25 relevance, fields, graph links, scope, lifecycle, currentness,
   authority, and feedback produce a confidence level and inspectable ranking reasons.
 - **Routine continuity is automatic.** At meaningful task closeout, agents store normal durable feature knowledge and
@@ -119,15 +120,18 @@ threadnote read threadnote://user/me/memories/handoffs/active/threadnote/release
 threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
 threadnote handoff --project threadnote --topic release --text "..."
 threadnote graph query --query "release update lifecycle"
+threadnote graph analyze --view hubs
 ```
 
 Repo files remain authoritative. `threadnote seed` imports only files selected by the seed manifest. Canonical
 resources and memories keep stable `threadnote://` identifiers while their bytes live in the Threadnote-owned store.
 
 Memory recall and code search are deliberately separate. Agents use `recall_context` for historical decisions,
-handoffs, and seeded guidance, and `inspect_code_graph` with `query`, `explain`, `path`, or `impact` for current source.
-MCP impact accepts either an explicit symbol/path query or a Git `base` ref. A task can use both without a graph build
-adding latency or surprise I/O to ordinary recall.
+handoffs, and seeded guidance; `inspect_code_graph` with `query`, exact `node`/`neighbors` drill-down, `explain`, `path`,
+or `impact` for scoped current-source questions; and `analyze_code_graph` for whole-repository statistics, structural communities, hubs or god nodes, and
+surprising cross-community links. Analysis also supports stable community drill-down, structural groups, confidence
+audits, and suggested follow-up questions. MCP impact accepts either an explicit symbol/path query or a Git `base` ref.
+A task can combine the tools without a graph build adding latency or surprise I/O to ordinary recall.
 
 ## Native Code Graph
 
@@ -139,10 +143,28 @@ symbol, edge, lexical-term, and vector counts are not capped by repository size;
 transient work without truncating the stored graph.
 
 TypeScript and JavaScript retain the compiler-backed extractor that shipped with the first native graph. Java,
-Kotlin, and Swift use exact-pinned Tree-sitter WASM grammars bundled in the standalone release. A generated
-language-pack catalog owns file matching, parser/cache identity, workspace discovery, lookup rules, capabilities, and
-verified assets, so future first-party languages do not require changes to inventory, storage, query, CLI, or MCP
-architecture.
+Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP, PowerShell, Python,
+Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, and Zig use exact-pinned, bundled Tree-sitter WASM
+grammars for portable structural extraction. Apex, Fortran, and Razor use bounded deterministic text-structural packs
+because no compatible prebuilt WASM is available or the format mixes template languages. Compiler-backed TypeScript
+relationships remain higher-fidelity than structural packs; every pack advertises its actual capabilities and
+unresolved relationships remain syntactic. Deterministic extractors also cover SQL, GraphQL, protobuf, common
+configuration/schema formats, Dockerfiles, manifests, and workspace metadata. A generated language-pack catalog owns
+file matching, parser/cache identity, workspace discovery, lookup rules, capabilities, and verified assets, so future
+first-party languages do not require changes to inventory, storage, query, CLI, or MCP architecture.
+
+The same snapshot can index searchable text and explicit links from local text documents, notebooks, HTML/XML,
+text-based diagrams, PDFs, OpenXML documents (`docx`, `pptx`, `xlsx`), OpenDocument files (`odt`, `odp`, `ods`), and
+EPUB. Diagram markup is indexed as text; it is not interpreted as visual semantics. Images, audio, and video become
+searchable asset nodes with deterministic format, size, and available dimension metadata, but Threadnote performs no
+OCR, image understanding, audio transcription, or video/frame analysis. PDFs without extractable text are likewise
+represented as assets rather than guessed. A corpus artifact over 64 MiB remains indexed as a metadata-only asset
+instead of being rejected or semantically decompressed. Selected OpenXML, OpenDocument, and EPUB text entries have
+bounded expansion. These are per-artifact extraction safety budgets, not repository or graph-size caps.
+
+Comments marked `NOTE`, `WHY`, `HACK`, `RATIONALE`, `DECISION`, `SAFETY`, or `INVARIANT`, plus ADR/RFC citations,
+become first-class rationale nodes linked to the nearest source declaration. They remain repository evidence, not
+canonical Threadnote memory.
 
 Small cold graphs normally finish inside the first MCP call. If a large monorepo needs longer, `inspect_code_graph`
 returns a structured `state: "indexing"` response with the current phase and `retryAfterMilliseconds` while the
@@ -153,9 +175,19 @@ active build and remain interruptible; they do not fail after a fixed graph-lock
 ```sh
 threadnote graph status
 threadnote graph query --query "exclusive file lock"
+threadnote graph node --node-id cgs_…
+threadnote graph neighbors --node-id cgs_… --direction incoming --depth 2
 threadnote graph explain --symbol CodeGraphQueryService
-threadnote graph path --from runApplication --to withExclusiveFileLock
+threadnote graph path --from runApplication --to cgs_…
 threadnote graph impact --base origin/main
+threadnote graph analyze --view communities
+threadnote graph community --community-id cgc_…
+threadnote graph groups
+threadnote graph stats
+threadnote graph hubs
+threadnote graph surprises
+threadnote graph report --output architecture-report.md
+threadnote graph export --format graphml --output code-graph.graphml
 threadnote graph index --full
 ```
 
@@ -170,6 +202,18 @@ supervised local-model worker. Vector construction, reuse, and exact search oper
 one repository-sized sidecar. Every relationship is labeled declared, resolved, syntactic, heuristic, or model-derived
 and includes a repository-relative evidence location. `threadnote doctor` checks graph integrity; `threadnote repair`
 cleans only disposable graph state.
+
+Every returned symbol includes a stable `cgs_` identity. `graph node` resolves that ID exactly, `graph neighbors`
+walks its bounded incoming, outgoing, or bidirectional neighborhood, and `graph path` accepts stable IDs as either
+endpoint. This lets agents round-trip a selected symbol without relying on fuzzy names in large or repetitive codebases.
+
+Whole-graph analysis is deterministic and SQLite-paged. It has no repository-size admission cap; elapsed-time and
+response-size budgets return explicit partial-coverage warnings instead of rejecting a large monorepo. The Manager
+loads the same topology signals only when the user selects **Analyze**, so opening a graph does not force a full
+analysis. `graph report` writes a deterministic Markdown architecture report. `graph export` streams JSON, GraphML,
+HTML, or SVG without materializing the graph in memory: JSON, GraphML, and HTML select the complete snapshot by
+default, while SVG defaults to a readable 300-node/1,000-edge overview. Explicit `--node-limit all --edge-limit all`
+is accepted for every format; those output controls are not graph admission limits.
 
 ## Updates
 

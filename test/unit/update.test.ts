@@ -721,22 +721,34 @@ function writeReleaseArchive(
 ) {
   return Effect.tryPromise({
     try: async () => {
+      const manifest = JSON.parse(await Bun.file('assets/code-graph/manifest.json').text()) as {
+        readonly grammars: Readonly<
+          Record<
+            string,
+            {
+              readonly builderLicense?: string;
+              readonly license: string;
+              readonly licensePackagePath?: string;
+              readonly packagePath?: string;
+              readonly path: string;
+            }
+          >
+        >;
+      };
+      const grammarMetadata = Object.values(manifest.grammars);
       const assetPaths = [
         'manifest.json',
         'runtime/web-tree-sitter.wasm',
-        'grammars/java.wasm',
-        'grammars/kotlin.wasm',
-        'grammars/swift.wasm',
-        'licenses/tree-sitter-java.LICENSE',
-        'licenses/tree-sitter-kotlin.LICENSE',
-        'licenses/tree-sitter-swift.LICENSE',
         'licenses/web-tree-sitter.LICENSE',
-      ] as const;
+        ...grammarMetadata.map(asset => asset.path),
+        ...grammarMetadata.map(asset => asset.license),
+        ...grammarMetadata.flatMap(asset => (asset.builderLicense ? [asset.builderLicense] : [])),
+      ].filter((value, index, values) => values.indexOf(value) === index);
       const assets = Object.fromEntries(
         await Promise.all(
           assetPaths.map(async asset => [
             `assets/code-graph/${asset}`,
-            await Bun.file(`assets/code-graph/${asset}`).bytes(),
+            await codeGraphFixtureAsset(asset, grammarMetadata),
           ]),
         ),
       );
@@ -769,6 +781,24 @@ function writeReleaseArchive(
     },
     catch: cause => new Error('Could not create updater fixture archive.', {cause}),
   });
+}
+
+async function codeGraphFixtureAsset(
+  asset: string,
+  grammars: readonly {
+    readonly license: string;
+    readonly licensePackagePath?: string;
+    readonly packagePath?: string;
+    readonly path: string;
+  }[],
+): Promise<Uint8Array> {
+  const bundled = Bun.file(`assets/code-graph/${asset}`);
+  if (await bundled.exists()) return bundled.bytes();
+  const grammar = grammars.find(value => value.path === asset);
+  if (grammar?.packagePath) return Bun.file(grammar.packagePath).bytes();
+  const license = grammars.find(value => value.license === asset);
+  if (license?.licensePackagePath) return Bun.file(license.licensePackagePath).bytes();
+  throw new Error(`Missing code graph fixture asset: ${asset}`);
 }
 
 function pathSeparator(): string {

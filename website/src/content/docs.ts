@@ -109,12 +109,17 @@ export const cliCommands: CliCommandReference[] = [
   },
   {
     command: 'graph',
-    summary: 'Build and inspect the current snapshot-aware polyglot code graph.',
+    summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
     examples: [
       'threadnote graph query --query "session refresh"',
+      'threadnote graph node --node-id cgs_…',
+      'threadnote graph neighbors --node-id cgs_… --direction incoming',
       'threadnote graph explain --symbol RefreshSession',
       'threadnote graph path --from LoginScreen --to TokenStore',
       'threadnote graph impact --base origin/main',
+      'threadnote graph analyze --view full',
+      'threadnote graph report --output architecture-report.md',
+      'threadnote graph export --format graphml --output code-graph.graphml',
     ],
   },
   {
@@ -261,13 +266,25 @@ export const mcpTools: McpToolReference[] = [
     summary:
       'Inspect current source definitions, relationships, paths, and reverse impact separately from memory recall.',
     keyInputs: [
-      'operation: query | explain | path | impact',
+      'operation: query | node | neighbors | explain | path | impact',
       'callerCwd',
       'query or symbol',
+      'nodeId and direction for exact node drill-down',
       'from and to',
       'base',
       'nodeLimit',
       'edgeLimit',
+    ],
+  },
+  {
+    name: 'analyze_code_graph',
+    toolset: 'core',
+    summary:
+      'Analyze whole-repository topology with stable communities, structural groups, confidence, hubs, and surprising links.',
+    keyInputs: [
+      'operation: stats | communities | community | groups | hubs | surprises | confidence | full',
+      'callerCwd',
+      'communityId and memberLimit for community drill-down',
     ],
   },
   {
@@ -466,7 +483,7 @@ threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: 'The default core toolset includes recall, read, list, remember, candidate review, code graph inspection, selected-memory Obsidian publishing, team-memory publishing, and the guided tour. Use --toolset full only when the agent needs maintenance, conflict-resolution, artifact-sharing, or compatibility tools.',
+            text: 'The default core toolset includes recall, read, list, remember, candidate review, scoped code graph inspection, whole-graph analysis, selected-memory Obsidian publishing, team-memory publishing, and the guided tour. Use --toolset full only when the agent needs maintenance, conflict-resolution, artifact-sharing, or compatibility tools.',
           },
           {
             type: 'code',
@@ -493,6 +510,7 @@ threadnote doctor`,
             items: [
               'Recall historical context with project and absolute callerCwd at the start of non-trivial work.',
               'Use inspect_code_graph separately, before broad text search, for current source relationships.',
+              'Use analyze_code_graph for repository-wide statistics, structural communities, hubs, and surprising links.',
               'Store normal durable feature knowledge and a concise handoff at meaningful closeout.',
               'Ask before publishing durable memory; never publish handoffs or preferences.',
               'If Threadnote fails, show a privacy-safe issue preview and create it only after explicit approval.',
@@ -526,7 +544,7 @@ threadnote install --with-hooks`,
             items: [
               'At the start of a non-trivial task, call recall_context with a focused query, stable project, and absolute callerCwd.',
               'Treat returned threadnote:// URIs as pointers. Read only the records that matter.',
-              'Use inspect_code_graph separately when the task needs evidence about current source.',
+              'Use inspect_code_graph for a scoped current-source question and analyze_code_graph for whole-repository topology.',
               'Store reusable decisions and contracts as durable memory. Store status, checks, blockers, and next steps as a handoff.',
             ],
           },
@@ -1024,11 +1042,11 @@ threadnote share conflict resolve <id> --take shared`,
     id: 'code-graph',
     title: 'Polyglot code graph',
     description:
-      'Search the current Git snapshot and dirty worktree across TypeScript, JavaScript, Java, Kotlin, and Swift.',
+      'Inspect and analyze the current Git snapshot and dirty worktree across code, schemas, documentation, and local project artifacts.',
     articles: [
       {
         id: 'graph-operations',
-        title: 'Query, explain, path, and impact',
+        title: 'Query, exact nodes, neighbors, path, and impact',
         summary: 'Choose the graph operation that matches the source question.',
         body: [
           {
@@ -1039,6 +1057,16 @@ threadnote share conflict resolve <id> --take shared`,
                 'query',
                 'Find definitions, concepts, files, and a bounded relationship neighborhood',
                 'threadnote graph query --query "session refresh"',
+              ],
+              [
+                'node',
+                'Round-trip one exact stable cgs_ node ID from an earlier result',
+                'threadnote graph node --node-id cgs_…',
+              ],
+              [
+                'neighbors',
+                'Walk bounded incoming, outgoing, or bidirectional relationships from an exact node',
+                'threadnote graph neighbors --node-id cgs_… --direction incoming',
               ],
               [
                 'explain',
@@ -1059,11 +1087,71 @@ threadnote share conflict resolve <id> --take shared`,
           },
           {
             type: 'paragraph',
-            text: 'Every relationship reports evidence and provenance: declared, resolved, syntactic, heuristic, or model-derived. Heuristic and model associations are opt-in; they are never promoted to authoritative source edges.',
+            text: 'Query results expose stable cgs_ node IDs. Feed an ID to node or neighbors for an unambiguous follow-up, or use it as either path endpoint. Neighbor traversal honors direction, depth, node, edge, and provenance bounds. Every relationship reports evidence and provenance: declared, resolved, syntactic, heuristic, or model-derived. Heuristic and model associations are opt-in; they are never promoted to authoritative source edges.',
           },
           {
             type: 'note',
-            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure.',
+            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure.',
+          },
+        ],
+      },
+      {
+        id: 'graph-analysis',
+        title: 'Statistics, communities, groups, confidence, hubs, and surprises',
+        summary:
+          'Analyze whole-repository topology deterministically without loading one repository-sized graph document.',
+        body: [
+          {
+            type: 'table',
+            headers: ['View', 'Use it for', 'CLI'],
+            rows: [
+              [
+                'stats',
+                'Composition, connectivity, degree, provenance, and relationship counts',
+                'threadnote graph stats',
+              ],
+              [
+                'communities',
+                'Stable structural communities and weak connected components',
+                'threadnote graph communities',
+              ],
+              [
+                'community',
+                'Inspect bounded members of one stable community ID',
+                'threadnote graph community --community-id cgc_…',
+              ],
+              ['groups', 'Find bounded deterministic n-ary fan-in and fan-out groups', 'threadnote graph groups'],
+              [
+                'confidence',
+                'Audit provenance, confidence bands, endpoints, and review findings',
+                'threadnote graph confidence',
+              ],
+              ['hubs', 'High-degree hubs and graph-wide god nodes', 'threadnote graph hubs'],
+              [
+                'surprises',
+                'Unusual, high-signal relationships that cross structural communities',
+                'threadnote graph surprises',
+              ],
+              ['full', 'A compact combined analysis', 'threadnote graph analyze --view full'],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Community IDs, membership, structural groups, component, hub, confidence, and surprising-link algorithms are deterministic for the same snapshot and selected provenance tiers. Results include bounded suggested questions. Rationale comments and ADR/RFC references become first-class evidence nodes, so a report can connect a non-obvious constraint to the source it documents.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph report --output architecture-report.md
+# Existing output files are never overwritten.`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The analyzer pages nodes and relationships from SQLite instead of hydrating the entire graph in memory. Repository size is not admission-capped. Elapsed-time and response-output budgets return an explicit partial-coverage warning rather than presenting an incomplete result as complete.',
+          },
+          {
+            type: 'note',
+            text: 'MCP keeps scoped inspection and whole-graph analysis separate: inspect_code_graph supports query, node, neighbors, explain, path, and impact; analyze_code_graph supports stats, communities, community, groups, hubs, surprises, confidence, and full.',
           },
         ],
       },
@@ -1090,7 +1178,7 @@ threadnote graph watch`,
           },
           {
             type: 'paragraph',
-            text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Retry the same inspect_code_graph call after the requested delay. Query and explain may disclose a ready stale snapshot while refresh continues; path and impact wait for current state.',
+            text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Retry the same inspect_code_graph call after the requested delay. Query, node, neighbors, and explain may disclose a ready stale snapshot while refresh continues; path and impact wait for current state.',
           },
           {
             type: 'note',
@@ -1101,7 +1189,8 @@ threadnote graph watch`,
       {
         id: 'graph-languages',
         title: 'Languages and evidence',
-        summary: 'Compiler-backed TypeScript plus pinned Tree-sitter packs for Java, Kotlin, and Swift.',
+        summary:
+          'A compiler-backed TypeScript extractor, bundled structural AST packs, and deterministic schema and corpus packs.',
         body: [
           {
             type: 'table',
@@ -1119,12 +1208,78 @@ threadnote graph watch`,
                 'Gradle, Android, Kotlin Multiplatform source sets',
               ],
               ['Swift', 'Bundled checksum-verified Tree-sitter WASM', 'SwiftPM and conservative Xcode metadata'],
+              [
+                'Python, Go, Rust, C/C++, C#, Ruby, PHP, Bash, HCL',
+                'Bundled checksum-verified structural AST packs',
+                'Definitions, references, imports, calls, and conservative language-specific relationships',
+              ],
+              [
+                'Dart, Elixir, Julia, Lua, Objective-C, PowerShell, Scala, Solidity, Zig',
+                'Bundled checksum-verified structural AST packs',
+                'Definitions, references, imports, calls, and conservative language-specific relationships',
+              ],
+              [
+                'Verilog / SystemVerilog',
+                'Bundled checksum-verified structural AST pack',
+                'Modules, interfaces, programs, packages, classes, functions, tasks, instances, and inheritance',
+              ],
+              [
+                'Svelte / Vue',
+                'Bundled checksum-verified structural AST packs',
+                'Component-markup structure and references; embedded script is not presented as full JavaScript/TypeScript semantics',
+              ],
+              [
+                'Fortran, Apex, Razor',
+                'Bounded deterministic text-structural extractors',
+                'Explicit definitions and references without an external compiler, Python process, or false AST claim',
+              ],
+              [
+                'SQL, GraphQL, Protobuf, JSON/YAML/TOML/INI, MSBuild/XAML/solutions, Dockerfiles',
+                'Deterministic schema and configuration extractors',
+                'Declarations, dependencies, imports, and project metadata where declared',
+              ],
               ['Markdown / manifests', 'Built-in data extractors', 'Documentation and declared dependency facts'],
             ],
           },
           {
             type: 'paragraph',
-            text: 'Repository build scripts are never executed during indexing. The generated language-pack catalog owns file classification, parser identity, verified assets, capabilities, workspace discovery, and resolution domains, so another first-party language can be added without redesigning inventory, storage, query, CLI, or MCP.',
+            text: 'Repository build scripts are never executed during indexing. Structural depth is reported honestly: a portable AST pack is not presented as equivalent to TypeScript compiler resolution. The generated language-pack catalog owns file classification, parser identity, verified assets, capabilities, workspace discovery, and resolution domains, so another first-party language can be added without redesigning inventory, storage, query, CLI, or MCP.',
+          },
+        ],
+      },
+      {
+        id: 'graph-corpus-and-exports',
+        title: 'Documents, diagrams, media assets, and exports',
+        summary: 'Bring deterministic local project artifacts into the graph and export a pinned snapshot explicitly.',
+        body: [
+          {
+            type: 'list',
+            items: [
+              'Markdown, plain-text and rich-text formats, HTML/XML, CSV/TSV, notebooks, URL pointers, and TeX are indexed as searchable document structure.',
+              'PDF text and links are extracted locally. OpenXML, OpenDocument, and EPUB archives contribute bounded local text sections.',
+              'Mermaid, PlantUML, DOT, draw.io, GraphML, and SVG files are indexed as project artifacts and can contribute text and references.',
+              'Image, audio, and video assets are searchable by filename, format, size, and deterministic image dimensions when available. Threadnote does not claim OCR, pixel understanding, or transcription.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Corpus parsing has a 64 MiB per-artifact source budget. Larger eligible files are still admitted to the graph as searchable metadata-only assets. Archive extraction separately bounds each selected entry and total expanded text to prevent decompression blowups. These are per-artifact extraction safety budgets, not repository or graph-size admission caps.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph export --format json --output code-graph.json
+threadnote graph export --format graphml --output code-graph.graphml
+threadnote graph export --format html --output code-graph.html
+threadnote graph export --format svg --output code-graph.svg`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Exports pin one ready snapshot and page it from SQLite. JSON and GraphML support complete portable exports without a fixed graph-size cap. HTML and SVG are explicit visualization artifacts and accept caller-selected node and edge bounds, including all where the format and consumer can handle it. Existing output files are never overwritten.',
+          },
+          {
+            type: 'warning',
+            text: 'Repository-derived document text, asset names, paths, and graph labels remain untrusted evidence. Export only to an intended local destination and review an artifact before sharing it.',
           },
         ],
       },
@@ -1178,7 +1333,7 @@ threadnote manage --no-open`,
             items: [
               'Doctor: installation, integration, model, index, and storage health.',
               'Memory: browse lifecycle-aware canonical records and pending candidates.',
-              'Knowledge graph: explore current symbols and relationships visually.',
+              'Knowledge graph: explore current symbols and relationships visually, then request topology signals such as communities, hubs, and surprising links on demand.',
               'Shares: inspect configured teams, synchronization, and conflicts.',
               'Tools: discover operational surfaces without memorizing every command.',
             ],
@@ -1555,7 +1710,7 @@ threadnote report-issue \\
           },
           {
             type: 'paragraph',
-            text: 'ResourceStore owns safe canonical files. SQLite owns normalized lexical postings, paged vectors, and per-repository code-graph snapshots as derived state. Recall combines deterministic and local-model signals; code search remains a separate snapshot-aware service.',
+            text: 'ResourceStore owns safe canonical files. SQLite owns normalized lexical postings, paged vectors, and per-repository code-graph snapshots as derived state. Recall combines deterministic and local-model signals; scoped graph inspection and whole-graph topology analysis remain separate snapshot-aware services that page from the same ready graph generation.',
           },
           {
             type: 'heading',

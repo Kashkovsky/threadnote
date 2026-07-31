@@ -1,8 +1,9 @@
 # Native code graph implementation plan
 
-Status: first production scope implemented; later polyglot/community adapters remain phased
+Status: production scope, polyglot packs, corpus extraction, topology analysis, Manager visualization, and portable
+exports implemented; future fidelity work remains incremental
 Target release: Threadnote 4.0
-Last updated: 2026-07-29
+Last updated: 2026-07-31
 
 Related contracts:
 
@@ -13,16 +14,17 @@ Related contracts:
 
 ## Outcome
 
-Threadnote will provide Graphify-class code navigation and relationship retrieval as a self-contained, local derived
-index. It will not require Python, a daemon, a database server, a copied graph directory, or a graph synchronized
-between Git worktrees.
+Threadnote provides code navigation, relationship retrieval, corpus search, and deterministic topology analysis as a
+self-contained, local derived index. It does not require Python, a daemon, a database server, a copied graph directory,
+or a graph synchronized between Git worktrees.
 
-The feature is successful when an agent can use one compact, dedicated code-graph tool to answer:
+The feature is successful when an agent can use dedicated scoped-inspection and whole-graph-analysis tools to answer:
 
 - where a concept, symbol, module, or contract is defined;
 - how two code concepts are connected;
 - what imports, calls, implements, tests, configures, or depends on something;
 - what code is likely affected by a file, symbol, or Git diff;
+- which structural communities, hubs, god nodes, and unusual cross-community links characterize the repository;
 - which memories and seeded resources explain the selected code;
 - whether the evidence describes the current commit and dirty worktree.
 
@@ -64,12 +66,18 @@ authoritative.
 - Status, progress, doctor, repair, purge, and on-demand export.
 - macOS, Linux, and Windows standalone-package coverage.
 
-### Later adapters covered by this plan
+### Follow-on scope implemented for Threadnote 4
 
-- SCIP ingestion as the preferred high-fidelity polyglot interchange.
-- Built-in structural extractors for Go and other prioritized languages.
-- Optional deterministic community detection and local labels.
-- Manager visualization after the query and correctness contracts are stable.
+- Exact stable-node lookup, bounded directional neighbor traversal, and stable-ID shortest-path endpoints.
+- Built-in structural extractors for 28 source packs alongside compiler-backed TypeScript/JavaScript: 25 use bundled,
+  checksum-verified WASM and three use bounded deterministic text structure without an AST claim.
+- Deterministic structured-schema and local document-corpus extraction.
+- Deterministic communities, connected components, hubs or god nodes, and surprising cross-community links.
+- On-demand Manager visualization and analysis over bounded SQLite projections.
+- Streaming JSON, GraphML, HTML, and SVG exports plus deterministic Markdown architecture reports.
+
+SCIP ingestion remains a possible future fidelity adapter; the architecture does not require it for current language
+coverage.
 
 ### Non-goals
 
@@ -524,11 +532,16 @@ may be returned by `inspect_code_graph`, but it cannot inject a graph answer int
 threadnote graph status [--cwd <path>] [--json]
 threadnote graph index [--cwd <path>] [--full] [--json]
 threadnote graph query --query <text> [--cwd <path>] [--limit <n>] [--json]
+threadnote graph node --node-id <cgs-id> [--cwd <path>] [--json]
+threadnote graph neighbors --node-id <cgs-id> [--direction both|incoming|outgoing] [--depth <n>] [--cwd <path>] [--json]
 threadnote graph explain --symbol <selector> [--cwd <path>] [--json]
-threadnote graph path --from <selector> --to <selector> [--cwd <path>] [--json]
+threadnote graph path --from <selector-or-cgs-id> --to <selector-or-cgs-id> [--cwd <path>] [--json]
 threadnote graph impact [--base <git-ref>] [--cwd <path>] [--json]
 threadnote graph watch [--cwd <path>]
-threadnote graph export --format json|html --output <path> [--cwd <path>]
+threadnote graph analyze --view stats|communities|hubs|surprises|full [--cwd <path>] [--json]
+threadnote graph stats|communities|hubs|surprises [--cwd <path>] [--json]
+threadnote graph report --output <path> [--cwd <path>]
+threadnote graph export --format json|graphml|html|svg --output <path> [--cwd <path>]
 threadnote graph purge [--cwd <path>] [--all] [--dry-run]
 ```
 
@@ -549,12 +562,13 @@ tests and integrations.
 
 ### MCP
 
-Expose one read-only `inspect_code_graph` tool rather than a tool per operation. Its schema includes:
+Expose one `inspect_code_graph` tool rather than a tool per scoped operation. Its schema includes:
 
-- `operation`: `query`, `explain`, `path`, or `impact`;
+- `operation`: `query`, exact `node`, directional `neighbors`, `explain`, `path`, or `impact`;
 - `callerCwd`: required absolute workspace path;
-- `query`, `symbol`, `from`, `to`, or `base` as required by the operation;
+- `query`, `nodeId`, `symbol`, `from`, `to`, or `base` as required by the operation;
 - `nodeLimit`, `edgeLimit`, `depth`, and optional relation filters;
+- `direction` for bounded neighbor traversal; `path` also accepts stable `cgs_` IDs as endpoints;
 - `includeHeuristic` and `includeModelAssociations`, both false by default.
 
 The response includes repository identity, snapshot commit, dirty-overlay state, freshness, warnings, nodes, edges,
@@ -564,15 +578,18 @@ adaptive `retryAfterMilliseconds`. The agent may continue useful independent tex
 MCP-session build continues, then retries before making relationship-aware graph claims. The tool remains annotated as
 non-read-only because starting that disposable derived build mutates graph index state.
 
+Expose `analyze_code_graph` separately so scoped source retrieval does not mix with whole-repository topology. Its
+operations are `stats`, `communities`, `hubs`, `surprises`, and `full`. Analysis has no graph-size admission cap;
+elapsed-time and response-output budgets produce explicit partial-coverage warnings.
+
 ### Manager
 
-The first release adds status and diagnostics, not a visualization-first graph UI. A graph explorer may land only
-after:
+The graph explorer and topology summary are implemented after the following contracts were established:
 
 - query output and IDs are versioned;
 - large-graph pagination is tested;
 - snapshot switching is explicit;
-- the manager does not load an entire graph into the browser;
+- the manager does not load an entire graph into the browser, and analysis runs only after the user requests it;
 - export and UI use the same query service.
 
 ## Model and vector policy
@@ -839,13 +856,13 @@ approved no-answer/worktree-isolation safety. Existing recall-v2 gates remain un
 
 ## Phase 5 — lifecycle, watch, doctor, and export
 
-### Implementation
+### Implemented
 
 - Add `CodeGraphFreshness` modes and scoped background refresh for long-lived processes.
 - Add optional foreground watch and cheap stale-marker hooks.
 - Add doctor, repair, storage reporting, garbage collection, and progress.
-- Add explicit JSON and HTML export using bounded paginated queries.
-- Add manager status and diagnostics.
+- Add explicit JSON, GraphML, HTML, and SVG export using bounded paginated queries.
+- Add Manager status, diagnostics, paged visualization, and on-demand topology analysis.
 - Add `.graph.md` deprecation telemetry without deleting user-modified resources.
 
 ### Tests
@@ -864,17 +881,19 @@ requires a daemon or Python.
 
 ## Phase 6 — polyglot and community adapters
 
-### Implementation
+### Implemented
 
-- Add validated SCIP import.
-- Select the next built-in language adapters from measured user repositories.
-- Add deterministic community computation behind a versioned service.
-- Add optional local community labels and subgraph summaries.
-- Re-run vector-scaling evaluation and adopt ANN only if its gate is triggered.
+- Add compiler-backed TypeScript/JavaScript and first-party portable structural language packs selected from measured
+  user repositories.
+- Add deterministic community, component, hub/god-node, and surprising-link computation behind a versioned service.
+- Add deterministic local community labels, compact topology views, and Markdown architecture reports.
+- Re-run vector and analysis scaling evaluations; retain paged exact vectors while their gate passes.
+
+Validated SCIP import is deferred as an optional future fidelity adapter. It is not required for current language
+coverage, packaging, or runtime operation.
 
 ### Tests
 
-- SCIP version, containment, duplicate, oversized, malformed, and partial-input handling;
 - cross-language package/module references with explicit provenance;
 - deterministic community membership for a fixed graph/version;
 - local generation schema failure and lexical fallback;

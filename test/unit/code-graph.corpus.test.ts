@@ -1,0 +1,255 @@
+import {describe, expect, test} from 'vitest';
+import {strToU8, zipSync} from 'fflate';
+import {extractCorpusFile} from '../../src/code_graph/languages/corpus/extractor.js';
+import {
+  CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
+  CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
+} from '../../src/code_graph/languages/corpus/policy.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
+
+describe('code graph corpus extraction', () => {
+  test('turns structured text and external references into searchable graph evidence', async () => {
+    const facts = await extractCorpusFile(
+      textFile(
+        'docs/reliability.rst',
+        [
+          'Reliability architecture',
+          '========================',
+          '',
+          'Retries use bounded exponential backoff.',
+          '',
+          'https://example.test/adr',
+        ].join('\n'),
+      ),
+    );
+
+    expect(facts.symbols.map(symbol => [symbol.kind, symbol.name])).toEqual(
+      expect.arrayContaining([
+        ['document', 'Reliability'],
+        ['section', 'Reliability architecture'],
+        ['external-resource', 'https://example.test/adr'],
+      ]),
+    );
+    expect(facts.edges.map(edge => edge.relation)).toEqual(expect.arrayContaining(['contains', 'references']));
+  });
+
+  test('extracts OpenXML text locally without materializing non-document archive entries', async () => {
+    const bytes = zipSync({
+      '[Content_Types].xml': strToU8('<Types/>'),
+      'word/document.xml': strToU8(
+        '<w:document><w:body><w:p><w:r><w:t>Portable incident handoff</w:t></w:r></w:p></w:body></w:document>',
+      ),
+      'word/media/image.png': new Uint8Array(1_024),
+    });
+    const facts = await extractCorpusFile(binaryFile('handbook/on-call.docx', bytes));
+
+    expect(facts.diagnostics).toEqual([]);
+    expect(facts.symbols.some(symbol => symbol.documentation?.includes('Portable incident handoff'))).toBe(true);
+    expect(facts.symbols.some(symbol => symbol.qualifiedName.includes('word/media'))).toBe(false);
+  });
+
+  test('rejects a compressed document entry before expanding past the per-entry budget', async () => {
+    const bytes = zipSync({'word/document.xml': new Uint8Array(CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT + 1)}, {level: 9});
+    const facts = await extractCorpusFile(binaryFile('handbook/oversized.docx', bytes));
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Oversized'});
+    expect(facts.diagnostics.join('\n')).toContain('per-entry safety budget');
+  });
+
+  test('caps inspected and selected archive entries before materializing an archive fan-out', async () => {
+    const inspected = await extractCorpusFile(
+      binaryFile(
+        'handbook/inspected.docx',
+        zipSync({
+          'ignored-a.bin': strToU8('a'),
+          'ignored-b.bin': strToU8('b'),
+          'ignored-c.bin': strToU8('c'),
+        }),
+      ),
+      {archiveInspectedEntryLimit: 2},
+    );
+    const selected = await extractCorpusFile(
+      binaryFile(
+        'handbook/selected.epub',
+        zipSync({
+          'chapter-a.html': strToU8('<p>a</p>'),
+          'chapter-b.html': strToU8('<p>b</p>'),
+          'chapter-c.html': strToU8('<p>c</p>'),
+        }),
+      ),
+      {archiveSelectedEntryLimit: 2},
+    );
+
+    expect(inspected.symbols[0]).toMatchObject({kind: 'asset', name: 'Inspected'});
+    expect(inspected.diagnostics.join('\n')).toContain('inspected entry-count safety budget');
+    expect(selected.symbols[0]).toMatchObject({kind: 'asset', name: 'Selected'});
+    expect(selected.diagnostics.join('\n')).toContain('selected entry-count safety budget');
+  });
+
+  test('deduplicates normalized archive names before expansion', async () => {
+    const facts = await extractCorpusFile(
+      binaryFile(
+        'handbook/deduplicated.docx',
+        zipSync({
+          'word/document.xml': strToU8('<w:p><w:t>trusted first copy</w:t></w:p>'),
+          'WORD//./document.xml': strToU8('<w:p><w:t>shadow duplicate copy</w:t></w:p>'),
+        }),
+      ),
+    );
+
+    const documentation = facts.symbols.map(symbol => symbol.documentation ?? '').join('\n');
+    expect(documentation).toContain('trusted first copy');
+    expect(documentation).not.toContain('shadow duplicate copy');
+  });
+
+  test('orders archive entries naturally without locale-sensitive collation', async () => {
+    const facts = await extractCorpusFile(
+      binaryFile(
+        'handbook/ordered.epub',
+        zipSync({
+          'chapters/chapter10.xhtml': strToU8('<p>ten</p>'),
+          'chapters/chapter2.xhtml': strToU8('<p>two</p>'),
+        }),
+      ),
+    );
+
+    expect(facts.symbols.filter(symbol => symbol.kind === 'section').map(symbol => symbol.name)).toEqual([
+      'chapter2',
+      'chapter10',
+    ]);
+  });
+
+  test('extracts pages and links from a tracked PDF', async () => {
+    const facts = await extractCorpusFile(binaryFile('docs/reliability.pdf', minimalPdf('Retry queue architecture')));
+
+    expect(facts.diagnostics).toEqual([]);
+    expect(facts.symbols.some(symbol => symbol.documentation?.includes('Retry queue architecture'))).toBe(true);
+    expect(facts.symbols[0]?.signature).toContain('1 page');
+  });
+
+  test('falls back to metadata when cumulative PDF text exceeds its per-artifact budget', async () => {
+    const facts = await extractCorpusFile(binaryFile('docs/text-bomb.pdf', minimalPdf('long extracted text')), {
+      maximumExtractedTextCharacters: 4,
+    });
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Text Bomb'});
+    expect(facts.diagnostics.join('\n')).toContain('character safety budget');
+  });
+
+  test('enforces the PDF elapsed budget independently of page count', async () => {
+    let read = 0;
+    const facts = await extractCorpusFile(binaryFile('docs/slow.pdf', minimalPdf('bounded')), {
+      maximumElapsedMilliseconds: 1_000,
+      monotonicNow: () => (read++ === 0 ? 0 : 2_000),
+    });
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Slow'});
+    expect(facts.diagnostics.join('\n')).toContain('elapsed-time safety budget');
+  });
+
+  test('propagates in-flight caller cancellation instead of caching an asset fallback', async () => {
+    const controller = new AbortController();
+    const extraction = extractCorpusFile(binaryFile('docs/cancelled.pdf', minimalPdf('cancelled')), {
+      signal: controller.signal,
+    });
+    queueMicrotask(() => controller.abort(new Error('indexing cancelled')));
+
+    await expect(extraction).rejects.toThrow('indexing cancelled');
+  });
+
+  test('indexes binary media as explicit assets without claiming semantic interpretation', async () => {
+    const png = new Uint8Array(24);
+    png.set([0x89, 0x50, 0x4e, 0x47], 0);
+    writeUint32(png, 16, 320);
+    writeUint32(png, 20, 200);
+    const facts = await extractCorpusFile(binaryFile('diagrams/retry-flow.png', png));
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Retry Flow'});
+    expect(facts.symbols[0]?.signature).toContain('320×200 pixels');
+    expect(facts.diagnostics[0]).toContain('pixels were not interpreted');
+  });
+
+  test('keeps an oversized artifact searchable without materializing or interpreting its bytes', async () => {
+    const facts = await extractCorpusFile({
+      blobId: 'large-video',
+      contentHash: 'large-video-hash',
+      contentOmittedReason: 'size-budget',
+      language: 'video',
+      mode: '100644',
+      path: 'recordings/architecture-review.mp4',
+      size: CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT + 1,
+      source: 'commit',
+    });
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Architecture Review'});
+    expect(facts.diagnostics[0]).toContain('per-artifact extraction safety budget');
+  });
+
+  test('registers documents and media as corpus files while keeping manifest precedence', () => {
+    expect(BUILTIN_LANGUAGE_PACK_REGISTRY.match('architecture/system.pdf')).toMatchObject({
+      _tag: 'Some',
+      value: {role: 'corpus'},
+    });
+    expect(BUILTIN_LANGUAGE_PACK_REGISTRY.match('package.json')).toMatchObject({
+      _tag: 'Some',
+      value: {role: 'manifest'},
+    });
+  });
+});
+
+function textFile(path: string, content: string): CodeGraphInventoryFile {
+  return {
+    blobId: 'blob',
+    content,
+    contentHash: `hash:${path}`,
+    language: 'document',
+    mode: '100644',
+    path,
+    size: content.length,
+    source: 'commit',
+  };
+}
+
+function binaryFile(path: string, bytes: Uint8Array): CodeGraphInventoryFile {
+  return {
+    blobId: 'blob',
+    bytes,
+    contentHash: `hash:${path}`,
+    language: path.endsWith('.pdf') || path.endsWith('.docx') ? 'office-document' : 'image',
+    mode: '100644',
+    path,
+    size: bytes.byteLength,
+    source: 'commit',
+  };
+}
+
+function minimalPdf(text: string): Uint8Array {
+  const escaped = text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)');
+  const stream = `BT /F1 12 Tf 72 720 Td (${escaped}) Tj ET`;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let output = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objects.forEach((object, index) => {
+    offsets.push(new TextEncoder().encode(output).byteLength);
+    output += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = new TextEncoder().encode(output).byteLength;
+  output += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  output += offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return new TextEncoder().encode(output);
+}
+
+function writeUint32(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
+}

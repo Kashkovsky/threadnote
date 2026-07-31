@@ -4,9 +4,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -29,7 +32,7 @@ import {
   repairCodeGraphIndexes,
 } from '../../src/code_graph/maintenance.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -418,11 +421,39 @@ describe('native code graph lifecycle', () => {
   it('rehydrates cached package and TypeScript resolution context without reparsing manifests', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
+    mkdirSync(join(root, 'cmd', 'fixture'), {recursive: true});
+    writeFileSync(
+      join(root, 'go.mod'),
+      ['module example.com/threadnote-fixture', '', 'require example.com/cache-dependency v1.2.3', ''].join('\n'),
+    );
+    writeFileSync(join(root, 'cmd', 'fixture', 'main.go'), 'package main\n\nfunc main() {}\n');
+    git(root, ['add', 'go.mod', 'cmd/fixture/main.go']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'add go fixture',
+    ]);
     const first = await runEffect(
       Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
         return yield* indexer.index({cwd: root, threadnoteHome: home});
       }),
+    );
+    const databasePath = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      first.identity.checkoutId,
+      'graph-v3.sqlite',
+    );
+    const contextPaths = ['go.mod', 'package.json', 'packages/app/package.json', 'tsconfig.json'] as const;
+    const firstContextHashes = Object.fromEntries(
+      contextPaths.map(path => [path, effectiveSnapshotFileHash(databasePath, first.snapshot.id, path)]),
     );
     const appPath = join(root, 'packages/app/src/main.ts');
     writeFileSync(appPath, `${readFileSync(appPath, 'utf8')}\n// ordinary source revision\n`);
@@ -457,6 +488,20 @@ describe('native code graph lifecycle', () => {
           edge.provenance === 'resolved',
       ),
     ).toBe(true);
+    expect(result.graph.symbols.some(symbol => symbol.name === 'example.com/threadnote-fixture')).toBe(true);
+    expect(
+      result.graph.edges.some(
+        edge =>
+          edge.sourceName === 'example.com/threadnote-fixture' &&
+          edge.relation === 'depends_on' &&
+          edge.targetName === 'example.com/cache-dependency',
+      ),
+    ).toBe(true);
+    expect(
+      Object.fromEntries(
+        contextPaths.map(path => [path, effectiveSnapshotFileHash(databasePath, result.indexed.snapshot.id, path)]),
+      ),
+    ).toEqual(firstContextHashes);
   });
 
   it('prunes parser-cache revisions no longer referenced by an active snapshot', async () => {
@@ -672,6 +717,103 @@ describe('native code graph lifecycle', () => {
     expect(result.snapshot.fileCount).toBeGreaterThan(0);
   });
 
+  it('reuses fresh clean staging for a modification-only dirty overlay without changing graph results', async () => {
+    const incrementalRoot = createBodyModifiedRepository(24);
+    const fullRoot = createBodyModifiedRepository(24);
+    const incrementalHome = join(incrementalRoot, '.threadnote-test-home');
+    const fullHome = join(fullRoot, '.threadnote-test-home');
+    const materializingTotals: number[] = [];
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const incremental = yield* indexer.index({
+          cwd: incrementalRoot,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase === 'materializing' && progress.completed === progress.total) {
+                materializingTotals.push(progress.total);
+              }
+            }),
+          threadnoteHome: incrementalHome,
+        });
+        const full = yield* indexer.index({
+          cwd: fullRoot,
+          incrementalOverlay: false,
+          threadnoteHome: fullHome,
+        });
+        const incrementalGraph = yield* store.loadGraph(
+          codeGraphDatabasePath(incrementalHome, incremental),
+          incremental.snapshot.id,
+        );
+        const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(fullHome, full), full.snapshot.id);
+        return {full, fullGraph, incremental, incrementalGraph};
+      }),
+    );
+
+    expect(result.incremental.materialization).toEqual({
+      mode: 'incremental-overlay',
+      stagedFiles: 1,
+      totalFiles: 24,
+    });
+    expect(result.incremental.diagnostics).toContain('Dirty overlay reused clean staging for 1 modified file(s).');
+    expect(materializingTotals.at(-1)).toBe(1);
+    expect(result.full.materialization).toEqual({
+      fallbackReason: 'disabled',
+      mode: 'full',
+      stagedFiles: 24,
+      totalFiles: 24,
+    });
+    expect(
+      result.incrementalGraph.edges.some(
+        edge =>
+          edge.evidencePath === 'src/file-001.ts' &&
+          edge.relation === 'calls' &&
+          edge.targetId !== undefined &&
+          edge.targetName === 'original0',
+      ),
+    ).toBe(true);
+    expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
+  });
+
+  it('preserves diagnostics from unchanged files when reusing clean staging', async () => {
+    const root = createBodyModifiedRepositoryWithCommittedDiagnostic();
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: join(root, '.threadnote-test-home')});
+      }),
+    );
+
+    expect(result.materialization?.mode).toBe('incremental-overlay');
+    expect(result.diagnostics.some(diagnostic => diagnostic.includes('src/broken.ts'))).toBe(true);
+  });
+
+  it.each([
+    ['a renamed declaration', createRenamedDeclarationRepository, 'resolution-surface-changed'],
+    ['a changed lookup signature', createChangedSignatureRepository, 'resolution-surface-changed'],
+    ['a changed export surface', createChangedExportRepository, 'resolution-surface-changed'],
+    ['changed resolution context', createChangedResolutionContextRepository, 'extractor-context-changed'],
+    ['dynamic re-export aliases', createDynamicAliasRepository, 'dynamic-aliases'],
+    ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
+    ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
+  ] as const)('fails closed to full materialization for %s', async (_label, createRepository, fallbackReason) => {
+    const root = createRepository();
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: join(root, '.threadnote-test-home')});
+      }),
+    );
+
+    expect(result.materialization).toMatchObject({fallbackReason, mode: 'full'});
+    expect(result.materialization?.stagedFiles).toBe(result.materialization?.totalFiles);
+    expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
+      true,
+    );
+  });
+
   it('indexes aggregate symbols across parser batches without a repository-scale cap', async () => {
     const root = createManySourceRepository(129);
     const home = join(root, '.threadnote-test-home');
@@ -731,7 +873,7 @@ describe('native code graph lifecycle', () => {
     expect(result.inspected.nodes.some(node => node.name === 'changed128')).toBe(true);
   }, 30_000);
 
-  it('keeps the prior pointer and retries when the worktree changes after pre-activation verification', async () => {
+  it('retries when the worktree changes after activation but before pointer promotion', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
     let changed = false;
@@ -744,7 +886,7 @@ describe('native code graph lifecycle', () => {
           cwd: root,
           onProgress: progress =>
             Effect.sync(() => {
-              if (!changed && progress.phase === 'activating') {
+              if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
                 changed = true;
                 replaceFunction(root, 'ensureVectorIndex', 'ensureRacedVectorIndex');
               }
@@ -967,6 +1109,113 @@ describe('native code graph lifecycle', () => {
     expect(states[0].dirty).toBe(true);
     expect(states[1].dirty).toBe(true);
     expect(states[0].fingerprint).not.toBe(states[1].fingerprint);
+  });
+
+  it('indexes a manifest-declared Android module named pods while pruning generated CocoaPods output', async () => {
+    const root = temporaryDirectory('threadnote-code-graph-declared-pods-');
+    git(root, ['init', '-q']);
+    mkdirSync(join(root, 'modules', 'pods', 'src', 'main', 'kotlin'), {recursive: true});
+    mkdirSync(join(root, 'ios', 'Pods', 'Headers'), {recursive: true});
+    writeFileSync(
+      join(root, 'settings.gradle.kts'),
+      [
+        'rootProject.name = "mobile"',
+        'include(":pods")',
+        'project(":pods").projectDir = file("modules/pods")',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(root, 'modules', 'pods', 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+    writeFileSync(join(root, 'modules', 'pods', 'src', 'main', 'kotlin', 'PodsService.kt'), 'class PodsService\n');
+    writeFileSync(join(root, 'ios', 'Pods', 'Headers', 'Generated.h'), 'void generated(void);\n');
+    git(root, ['add', '.']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'fixture',
+    ]);
+
+    const inventory = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity);
+      }),
+    );
+    const paths = inventory.files.map(file => file.path);
+
+    expect(paths).toContain('modules/pods/src/main/kotlin/PodsService.kt');
+    expect(paths).not.toContain('ios/Pods/Headers/Generated.h');
+
+    writeFileSync(
+      join(root, 'settings.gradle.kts'),
+      [
+        'rootProject.name = "mobile"',
+        'include(":pods", ":out")',
+        'project(":pods").projectDir = file("modules/pods")',
+        'project(":out").projectDir = file("modules/out")',
+        '',
+      ].join('\n'),
+    );
+    mkdirSync(join(root, 'modules', 'out', 'src', 'main', 'kotlin'), {recursive: true});
+    writeFileSync(join(root, 'modules', 'out', 'src', 'main', 'kotlin', 'NewModule.kt'), 'class NewModule\n');
+    const dirtyInventory = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity);
+      }),
+    );
+    expect(dirtyInventory.files.map(file => file.path)).toContain('modules/out/src/main/kotlin/NewModule.kt');
+  });
+
+  it('keeps oversized dirty corpus artifacts metadata-only while preserving an exact fingerprint', async () => {
+    const root = temporaryDirectory('threadnote-code-graph-dirty-corpus-');
+    git(root, ['init', '-q']);
+    writeFileSync(join(root, 'README.md'), '# fixture\n');
+    git(root, ['add', '.']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'fixture',
+    ]);
+    mkdirSync(join(root, 'media'), {recursive: true});
+    const artifact = join(root, 'media', 'architecture.pdf');
+    writeFileSync(artifact, '%PDF-1.7\n');
+    truncateSync(artifact, 64 * 1_048_576 + 1);
+    const cachedBatches: Array<
+      readonly {
+        readonly bytes?: Uint8Array;
+        readonly content?: string;
+        readonly contentOmittedReason?: 'size-budget';
+        readonly path: string;
+      }[]
+    > = [];
+
+    const inventory = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity, {
+          onContentBatch: files => Effect.sync(() => cachedBatches.push(files)),
+        });
+      }),
+    );
+    const file = inventory.files.find(candidate => candidate.path === 'media/architecture.pdf');
+    const cached = cachedBatches.flat().find(candidate => candidate.path === file?.path);
+
+    expect(file).toMatchObject({size: 64 * 1_048_576 + 1});
+    expect(file?.bytes).toBeUndefined();
+    expect(file?.content).toBeUndefined();
+    expect(file?.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(cached).toMatchObject({contentOmittedReason: 'size-budget'});
+    expect(cached?.bytes).toBeUndefined();
+    expect(cached?.content).toBeUndefined();
   });
 
   it('keeps the overlay stable when untracked files become intent-to-add entries', async () => {
@@ -1523,6 +1772,76 @@ describe('native code graph lifecycle', () => {
     ).rejects.toThrow();
 
     expect(readFileSync(output, 'utf8')).toBe('other-process\n');
+    expect(
+      readdirSync(root).filter(entry => entry.startsWith('.graph-export.json.') && entry.endsWith('.tmp')),
+    ).toEqual([]);
+  });
+
+  it('publishes exports atomically as private files without leaving a temporary sibling', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const output = join(root, 'graph-export.json');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+    await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+        yield* runCodeGraphExport(config, {cwd: root, format: 'json', output});
+      }),
+    );
+
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({type: 'threadnote-code-graph-export'});
+    expect(statSync(output).mode & 0o777).toBe(0o600);
+    expect(
+      readdirSync(root).filter(entry => entry.startsWith('.graph-export.json.') && entry.endsWith('.tmp')),
+    ).toEqual([]);
+  });
+
+  it('does not publish or unlink a temporary path replaced before atomic publication', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const output = join(root, 'graph-export.json');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+    await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    let replacement = '';
+
+    await expect(
+      runEffect(
+        runCodeGraphExport(config, {
+          cwd: root,
+          format: 'json',
+          interlock: {
+            beforePublish: temporary =>
+              Effect.sync(() => {
+                replacement = temporary;
+                rmSync(temporary);
+                writeFileSync(temporary, 'replacement owned by another process\n');
+              }),
+          },
+          output,
+        }),
+      ),
+    ).rejects.toThrow('no longer identifies');
+
+    expect(existsSync(output)).toBe(false);
+    expect(readFileSync(replacement, 'utf8')).toBe('replacement owned by another process\n');
   });
 
   it('keeps status read-only and repairs only disposable incomplete graph state', async () => {
@@ -1666,7 +1985,7 @@ describe('native code graph lifecycle', () => {
     expect(existsSync(result.databasePath)).toBe(false);
   });
 
-  it('prints lifecycle progress with truthful dry-run wording and reuses the repair diagnosis', async () => {
+  it('keeps default lifecycle repair bounded and points deep maintenance to an explicit command', async () => {
     const root = createFixtureRepository();
     const secondRoot = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
@@ -1704,15 +2023,18 @@ describe('native code graph lifecycle', () => {
         '1 database(s) need a disposable rebuild',
     );
     expect(output.repair.match(/Checking native code graph database [12]\/2\./g)).toHaveLength(2);
-    expect(output.repair).toMatch(/Would clean 1 incomplete snapshot\(s\) from native code graph database [12]\/2\./);
-    expect(output.repair).toMatch(/Would discard unreadable derived native code graph database [12]\/2\./);
+    expect(
+      output.repair.match(
+        /Deferred native code graph database [12]\/2: run `threadnote repair --deep` when a full derived-store check is convenient\./g,
+      ),
+    ).toHaveLength(2);
     expect(output.repair).toContain(
-      'Would repair 2 native code graph database(s): 1 disposable rebuild(s), 1 incomplete snapshot(s), ' +
+      'Would repair 2 native code graph database(s): 2 deferred, 0 disposable rebuild(s), 0 incomplete snapshot(s), ' +
         '0 temporary vector file(s).',
     );
     expect(output.repair).toContain(
-      'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
-        '1 database(s) need a disposable rebuild',
+      'WARN native code graph: 2 database(s); 1 ready snapshot(s); 0 incomplete snapshot(s); ' +
+        '2 database maintenance check(s) deferred',
     );
   });
 
@@ -1834,6 +2156,119 @@ function createManySourceRepository(count: number): string {
   return root;
 }
 
+function createBodyModifiedRepository(count = 4): string {
+  const root = createManySourceRepository(count);
+  if (count > 1) {
+    writeFileSync(
+      join(root, 'src/file-001.ts'),
+      'import {original0} from "./file-000.js";\nexport function original1(): number { return original0(); }\n',
+    );
+    git(root, ['add', 'src/file-001.ts']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'cross-file relation',
+    ]);
+  }
+  const file = join(root, 'src/file-000.ts');
+  writeFileSync(file, readFileSync(file, 'utf8').replace('return 0;', 'return 1000;'));
+  return root;
+}
+
+function createBodyModifiedRepositoryWithCommittedDiagnostic(): string {
+  const root = createManySourceRepository(4);
+  writeFileSync(join(root, 'src/broken.ts'), 'export function broken(): number {\n');
+  git(root, ['add', 'src/broken.ts']);
+  git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'broken committed source',
+  ]);
+  const modified = join(root, 'src/file-000.ts');
+  writeFileSync(modified, readFileSync(modified, 'utf8').replace('return 0;', 'return 1000;'));
+  return root;
+}
+
+function createRenamedDeclarationRepository(): string {
+  const root = createManySourceRepository(4);
+  const file = join(root, 'src/file-000.ts');
+  writeFileSync(file, readFileSync(file, 'utf8').replace('original0', 'renamed0'));
+  return root;
+}
+
+function createChangedSignatureRepository(): string {
+  const root = createManySourceRepository(4);
+  writeFileSync(join(root, 'src/file-000.ts'), 'export function original0(value: number): number { return value; }\n');
+  return root;
+}
+
+function createChangedExportRepository(): string {
+  const root = createManySourceRepository(4);
+  const file = join(root, 'src/file-000.ts');
+  writeFileSync(file, readFileSync(file, 'utf8').replace('export function', 'function'));
+  return root;
+}
+
+function createChangedResolutionContextRepository(): string {
+  const root = createManySourceRepository(4);
+  writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({compilerOptions: {strict: false}}));
+  git(root, ['add', 'tsconfig.json']);
+  git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'resolution context',
+  ]);
+  writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({compilerOptions: {strict: true}}));
+  return root;
+}
+
+function createDynamicAliasRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-dynamic-alias-');
+  mkdirSync(join(root, 'src'), {recursive: true});
+  git(root, ['init', '-q']);
+  writeFileSync(join(root, 'src/source.ts'), 'export function value(): number { return 1; }\n');
+  writeFileSync(join(root, 'src/index.ts'), '// committed\nexport {value} from "./source.js";\n');
+  git(root, ['add', '.']);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  writeFileSync(join(root, 'src/index.ts'), '// dirty\nexport {value} from "./source.js";\n');
+  return root;
+}
+
+function createAddedFileRepository(): string {
+  const root = createManySourceRepository(4);
+  writeFileSync(join(root, 'src/added.ts'), 'export function added(): number { return 5; }\n');
+  return root;
+}
+
+function createDeletedFileRepository(): string {
+  const root = createManySourceRepository(4);
+  rmSync(join(root, 'src/file-000.ts'));
+  return root;
+}
+
+function codeGraphDatabasePath(home: string, indexed: {readonly identity: {readonly checkoutId: string}}): string {
+  return join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite');
+}
+
+function normalizeStoredGraph(graph: StoredCodeGraph): Pick<StoredCodeGraph, 'edges' | 'symbols'> {
+  return {
+    edges: [...graph.edges].sort((left, right) => left.id.localeCompare(right.id)),
+    symbols: [...graph.symbols].sort((left, right) => left.id.localeCompare(right.id)),
+  };
+}
+
 function createLargeInventoryRepository(count: number, bytes = 1_048_576): string {
   const root = temporaryDirectory('threadnote-code-graph-large-inventory-');
   git(root, ['init', '-q']);
@@ -1879,6 +2314,36 @@ function snapshotFileHash(databasePath: string, snapshotId: string, sourcePath: 
       .get(snapshotId, sourcePath);
     if (!row) throw new Error(`Snapshot ${snapshotId} has no row for ${sourcePath}.`);
     return row.content_hash;
+  } finally {
+    database.close();
+  }
+}
+
+function effectiveSnapshotFileHash(databasePath: string, snapshotId: string, sourcePath: string): string {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    let current: string | undefined = snapshotId;
+    while (current !== undefined) {
+      const deleted = database
+        .query<{readonly present: number}, [string, string]>(
+          'SELECT 1 AS present FROM snapshot_file_deletions WHERE snapshot_id = ? AND path = ? LIMIT 1',
+        )
+        .get(current, sourcePath);
+      if (deleted) break;
+      const row = database
+        .query<{readonly content_hash: string}, [string, string]>(
+          'SELECT content_hash FROM snapshot_files WHERE snapshot_id = ? AND path = ?',
+        )
+        .get(current, sourcePath);
+      if (row) return row.content_hash;
+      const baseSnapshotId: unknown = database
+        .query<{readonly base_snapshot_id: unknown}, [string]>(
+          'SELECT base_snapshot_id FROM snapshots WHERE id = ? LIMIT 1',
+        )
+        .get(current)?.base_snapshot_id;
+      current = typeof baseSnapshotId === 'string' ? baseSnapshotId : undefined;
+    }
+    throw new Error(`Snapshot ${snapshotId} has no effective row for ${sourcePath}.`);
   } finally {
     database.close();
   }

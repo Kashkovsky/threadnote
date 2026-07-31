@@ -451,14 +451,14 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
       path: 'runtime/web-tree-sitter.wasm',
       runtime: true,
     },
-    {id: 'java', metadata: grammars.java, path: 'grammars/java.wasm', runtime: false},
-    {id: 'kotlin', metadata: grammars.kotlin, path: 'grammars/kotlin.wasm', runtime: false},
-    {id: 'swift', metadata: grammars.swift, path: 'grammars/swift.wasm', runtime: false},
-  ] as const;
+    ...Object.entries(grammars)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, metadata]) => ({id, metadata, runtime: false})),
+  ];
   for (const asset of expected) {
     if (
       !isJsonObject(asset.metadata) ||
-      asset.metadata.path !== asset.path ||
+      typeof asset.metadata.path !== 'string' ||
       typeof asset.metadata.version !== 'string' ||
       typeof asset.metadata.source !== 'string' ||
       !asset.metadata.source.startsWith('https://github.com/') ||
@@ -468,23 +468,38 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
         ? asset.metadata.id !== asset.id
         : !Number.isInteger(asset.metadata.abi) || Number(asset.metadata.abi) <= 0)
     ) {
-      return yield* Effect.fail(new Error(`Code graph asset metadata is invalid for ${asset.path}.`));
+      return yield* Effect.fail(new Error(`Code graph asset metadata is invalid for ${asset.id}.`));
     }
-    const assetPath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.path.split('/'));
+    const assetPath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.path.split('/'));
     if (!(yield* fs.exists(assetPath)) || (yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
-      return yield* Effect.fail(new Error(`Code graph asset checksum validation failed for ${asset.path}.`));
+      return yield* Effect.fail(new Error(`Code graph asset checksum validation failed for ${asset.metadata.path}.`));
+    }
+    if (!asset.runtime) {
+      if (typeof asset.metadata.license !== 'string') {
+        return yield* Effect.fail(new Error(`Code graph asset license metadata is missing for ${asset.id}.`));
+      }
+      const licensePath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.license.split('/'));
+      if (!(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
+        return yield* Effect.fail(new Error(`Code graph asset license is missing for ${asset.metadata.license}.`));
+      }
+      if (typeof asset.metadata.builderLicense === 'string') {
+        const builderLicensePath = path.join(
+          releaseRoot,
+          'assets',
+          'code-graph',
+          ...asset.metadata.builderLicense.split('/'),
+        );
+        if (!(yield* fs.exists(builderLicensePath)) || (yield* fs.stat(builderLicensePath)).size <= 0) {
+          return yield* Effect.fail(
+            new Error(`Code graph asset builder license is missing for ${asset.metadata.builderLicense}.`),
+          );
+        }
+      }
     }
   }
-  for (const license of [
-    'tree-sitter-java.LICENSE',
-    'tree-sitter-kotlin.LICENSE',
-    'tree-sitter-swift.LICENSE',
-    'web-tree-sitter.LICENSE',
-  ]) {
-    const licensePath = path.join(releaseRoot, 'assets', 'code-graph', 'licenses', license);
-    if (!(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
-      return yield* Effect.fail(new Error(`Code graph asset license is missing for ${license}.`));
-    }
+  const runtimeLicense = path.join(releaseRoot, 'assets', 'code-graph', 'licenses', 'web-tree-sitter.LICENSE');
+  if (!(yield* fs.exists(runtimeLicense)) || (yield* fs.stat(runtimeLicense)).size <= 0) {
+    return yield* Effect.fail(new Error('Code graph asset license is missing for web-tree-sitter.LICENSE.'));
   }
 });
 

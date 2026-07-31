@@ -145,9 +145,13 @@ threadnote index rebuild
 
 ## Code graph indexing or a language pack fails
 
-The native graph supports TypeScript/JavaScript, Java, Kotlin, and Swift without invoking repository build tools.
-TypeScript stays compiler-backed; the standalone archive bundles checksum-verified Java, Kotlin, and Swift grammar
-WASM. Check the disposable graph and rebuild it with:
+The native graph supports compiler-backed TypeScript/JavaScript and structural Java, Kotlin, Swift, Bash, C, C++, C#,
+Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP, PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte,
+SystemVerilog/Verilog, Vue, Zig, Apex, Fortran, and Razor without invoking repository build tools. The standalone
+archive bundles checksum-verified grammar WASM for the AST-backed structural packs. Apex, Fortran, and Razor are
+bounded deterministic text-structural packs and do not claim AST coverage. Threadnote also has deterministic
+extractors for common schema/configuration formats and local document corpora. Check the disposable graph and rebuild
+it with:
 
 ```sh
 threadnote graph status
@@ -160,6 +164,27 @@ estimate, and adaptive retry timing. Continue useful targeted text or path inves
 the same `inspect_code_graph` call before making relationship-aware graph claims. There is no repository-size admission
 limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
 logic and ambiguous dependencies remain syntactic rather than being guessed.
+
+For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
+has no repository-size admission cap. If an elapsed-time or output budget is reached, the result says coverage is
+partial and includes a warning; it does not imply that the stored snapshot was truncated. Manager shows the same
+statistics, community drill-down, structural groups, confidence, hubs, and cross-community signals only after
+**Analyze** is selected.
+
+Document extraction is deliberately local and deterministic. PDFs, OpenXML/OpenDocument files, EPUB, text documents,
+notebooks, and text-based diagram formats contribute extractable text and links. A scanned PDF, image, audio file, or
+video is indexed as an asset with deterministic metadata only: Threadnote does not perform OCR, image understanding,
+transcription, or video analysis. An extraction diagnostic for one such asset does not mean the rest of the graph
+failed. Any corpus artifact over 64 MiB is intentionally kept as metadata only instead of being rejected or
+semantically decompressed. OpenXML, OpenDocument, and EPUB expand only selected text entries, bounded to 16 MiB per
+entry and 64 MiB cumulatively; crossing a budget falls back to asset metadata. These are per-artifact extraction
+safety budgets, not repository or graph-size limits.
+
+For a portable artifact, `threadnote graph export --format json|graphml|html|svg --output <new-file>` never overwrites
+an existing file. JSON, GraphML, and HTML default to the complete snapshot. SVG defaults to 300 nodes and 1,000 edges;
+pass `--node-limit all --edge-limit all` only when an intentionally large SVG is acceptable. Export limits affect the
+artifact, not graph admission or snapshot coverage. `threadnote graph report --output <new-file.md>` produces a
+deterministic architecture report and likewise refuses to overwrite.
 
 If doctor reports a missing or mismatched grammar asset, reinstall or update the standalone archive for the current
 platform. Threadnote never downloads parser grammars at runtime. Repair may discard and rebuild graph SQLite files, but

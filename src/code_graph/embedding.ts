@@ -8,6 +8,7 @@ import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../models/store.js';
 import {normalizeVector, searchExactVectors, type VectorSearchResult} from '../search/vector-search.js';
 import type {CodeGraphLayout} from './layout.js';
+import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphProgress, CodeGraphSnapshot, CodeGraphSymbol} from './types.js';
 import type {CodeGraphSymbolCursor} from './store.js';
 
@@ -513,9 +514,9 @@ export function selectGraphEmbeddingSymbols(symbols: readonly CodeGraphSymbol[])
   return [...new Map(selected.map(symbol => [symbol.id, symbol])).values()].sort(
     (left, right) =>
       vectorPriority(right) - vectorPriority(left) ||
-      left.path.localeCompare(right.path) ||
-      left.qualifiedName.localeCompare(right.qualifiedName) ||
-      left.id.localeCompare(right.id),
+      compareCodeUnits(left.path, right.path) ||
+      compareCodeUnits(left.qualifiedName, right.qualifiedName) ||
+      compareCodeUnits(left.id, right.id),
   );
 }
 
@@ -649,7 +650,7 @@ function mergeSearchResults(
   right: readonly VectorSearchResult[],
   limit: number,
 ): readonly VectorSearchResult[] {
-  return [...left, ...right].sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, limit);
+  return [...left, ...right].sort((a, b) => b.score - a.score || compareCodeUnits(a.id, b.id)).slice(0, limit);
 }
 
 function vectorDatabasePath(path: Path.Path, vectorRoot: string, modelId: string): string {

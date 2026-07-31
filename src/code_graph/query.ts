@@ -6,6 +6,7 @@ import {CodeGraphIndexer} from './indexer.js';
 import {worktreeOverlayState} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout, type CodeGraphLayout} from './layout.js';
+import {compareCodeUnits} from './ordering.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
@@ -248,7 +249,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   const lexicalSeeds = impact
     ? fairImpactSeeds([...lexicalGroups, recovered.nodes], seedLimit)
     : [...lexicalById.values()]
-        .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+        .sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id))
         .slice(0, seedLimit);
   const semanticEligible = !timedOut && !(impact && seedQueries?.length);
   const semanticResult = !semanticEligible
@@ -282,7 +283,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   const seeds = impact
     ? rankedSeeds.slice(0, seedLimit)
     : rankedSeeds
-        .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+        .sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id))
         .slice(0, seedLimit);
   const nodes = new Map(impact ? [] : seeds.map(node => [node.id, node] as const));
   const seedNodes = new Map(seeds.map(node => [node.id, node]));
@@ -354,7 +355,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
       const rightSeed = seedIds.has(right.id);
       if (leftSeed !== rightSeed) return leftSeed ? 1 : -1;
       if (leftSeed && rightSeed) return (seedOrder.get(left.id) ?? 0) - (seedOrder.get(right.id) ?? 0);
-      return right.score - left.score || left.path.localeCompare(right.path) || left.id.localeCompare(right.id);
+      return right.score - left.score || compareCodeUnits(left.path, right.path) || compareCodeUnits(left.id, right.id);
     },
   );
   const unresolvedSeedQueries = Math.max(0, unresolvedQueries.length - recovered.recoveredPaths);
@@ -396,7 +397,7 @@ function fairImpactSeeds(
 ): readonly CodeGraphQueryNode[] {
   const selected = new Map<string, CodeGraphQueryNode>();
   const orderedGroups = groups.map(group =>
-    [...group].sort((left, right) => right.score - left.score || left.id.localeCompare(right.id)),
+    [...group].sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id)),
   );
   for (const group of orderedGroups) {
     const representative = group.find(node => !selected.has(node.id));
@@ -405,7 +406,7 @@ function fairImpactSeeds(
   }
   const extras = orderedGroups
     .flat()
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
+    .sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id));
   for (const node of extras) {
     if (!selected.has(node.id)) selected.set(node.id, node);
     if (selected.size >= limit) break;
@@ -594,11 +595,36 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   return yield* Effect.gen(function* () {
     const nodeLimit = boundedInteger(input.options.nodeLimit, 20, 1, 200);
     const edgeLimit = boundedInteger(input.options.edgeLimit, 40, 1, 500);
-    const depth = boundedInteger(input.options.depth, input.options.operation === 'impact' ? 3 : 2, 0, 8);
+    const depth = boundedInteger(
+      input.options.depth,
+      input.options.operation === 'impact' ? 3 : input.options.operation === 'neighbors' ? 1 : 2,
+      0,
+      8,
+    );
     const allowedProvenances = selectedProvenances(input.options);
-    const selected =
-      input.options.operation === 'path'
-        ? yield* pathQuery(
+    const selected = yield* Effect.gen(function* () {
+      switch (input.options.operation) {
+        case 'node':
+          return yield* exactNodeQuery(
+            input.store,
+            input.layout.databasePath,
+            snapshot.id,
+            required(input.options.nodeId, 'node-id'),
+          );
+        case 'neighbors':
+          return yield* neighborQuery(
+            input.store,
+            input.layout.databasePath,
+            snapshot.id,
+            required(input.options.nodeId, 'node-id'),
+            input.options.direction ?? 'both',
+            nodeLimit,
+            edgeLimit,
+            depth,
+            allowedProvenances,
+          );
+        case 'path':
+          return yield* pathQuery(
             input.store,
             input.layout.databasePath,
             snapshot.id,
@@ -608,60 +634,63 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             edgeLimit,
             depth,
             allowedProvenances,
-          )
-        : input.options.operation === 'impact'
-          ? yield* traversalQuery(
-              input.store,
-              input.layout.databasePath,
-              snapshot.id,
-              required(input.options.query ?? input.options.symbol, 'query'),
-              'incoming',
-              nodeLimit,
-              edgeLimit,
-              depth,
-              allowedProvenances,
-              input.embedding,
-              input.options.threadnoteHome,
-              input.layout,
-              true,
-              input.options.seedQueries,
-              impactBaseSnapshotId(snapshot, input.options, input.baseSnapshotId),
-            )
-          : input.options.operation === 'explain'
-            ? yield* traversalQuery(
-                input.store,
-                input.layout.databasePath,
-                snapshot.id,
-                required(input.options.symbol ?? input.options.query, 'symbol'),
-                'both',
-                nodeLimit,
-                edgeLimit,
-                Math.max(1, depth),
-                allowedProvenances,
-                input.embedding,
-                input.options.threadnoteHome,
-                input.layout,
-                false,
-                undefined,
-                undefined,
-              )
-            : yield* traversalQuery(
-                input.store,
-                input.layout.databasePath,
-                snapshot.id,
-                required(input.options.query, 'query'),
-                'both',
-                nodeLimit,
-                edgeLimit,
-                Math.min(1, depth),
-                allowedProvenances,
-                input.embedding,
-                input.options.threadnoteHome,
-                input.layout,
-                false,
-                undefined,
-                undefined,
-              );
+          );
+        case 'impact':
+          return yield* traversalQuery(
+            input.store,
+            input.layout.databasePath,
+            snapshot.id,
+            required(input.options.query ?? input.options.symbol, 'query'),
+            'incoming',
+            nodeLimit,
+            edgeLimit,
+            depth,
+            allowedProvenances,
+            input.embedding,
+            input.options.threadnoteHome,
+            input.layout,
+            true,
+            input.options.seedQueries,
+            impactBaseSnapshotId(snapshot, input.options, input.baseSnapshotId),
+          );
+        case 'explain':
+          return yield* traversalQuery(
+            input.store,
+            input.layout.databasePath,
+            snapshot.id,
+            required(input.options.symbol ?? input.options.query, 'symbol'),
+            'both',
+            nodeLimit,
+            edgeLimit,
+            Math.max(1, depth),
+            allowedProvenances,
+            input.embedding,
+            input.options.threadnoteHome,
+            input.layout,
+            false,
+            undefined,
+            undefined,
+          );
+        case 'query':
+          return yield* traversalQuery(
+            input.store,
+            input.layout.databasePath,
+            snapshot.id,
+            required(input.options.query, 'query'),
+            'both',
+            nodeLimit,
+            edgeLimit,
+            Math.min(1, depth),
+            allowedProvenances,
+            input.embedding,
+            input.options.threadnoteHome,
+            input.layout,
+            false,
+            undefined,
+            undefined,
+          );
+      }
+    });
     const safeSelection = sanitizeSelection(selected);
     const finalIdentity = input.strictFreshness ? yield* resolveRepositoryIdentity(input.options.cwd) : identity;
     if (finalIdentity.repositoryId !== input.expectedRepositoryId || finalIdentity.worktreeId !== identity.worktreeId) {
@@ -764,6 +793,103 @@ function adjacentNodeIds(
   if (edge.targetId && frontier.has(edge.targetId) && edge.sourceId) adjacent.push(edge.sourceId);
   return adjacent;
 }
+
+export const exactNodeQuery = Effect.fn('codeGraph.exactNodeQuery')(function* (
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  snapshotId: string,
+  nodeId: string,
+) {
+  const symbols = yield* store.symbolsByIds(databasePath, snapshotId, [nodeId]);
+  const symbol = symbols.find(candidate => candidate.id === nodeId);
+  return symbol
+    ? {edges: [], nodes: [{...symbol, score: 1}], warnings: []}
+    : {edges: [], nodes: [], warnings: [`Code graph node "${nodeId}" was not found in the selected snapshot.`]};
+});
+
+export const neighborQuery = Effect.fn('codeGraph.neighborQuery')(function* (
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  snapshotId: string,
+  nodeId: string,
+  direction: 'both' | 'incoming' | 'outgoing',
+  nodeLimit: number,
+  edgeLimit: number,
+  depth: number,
+  allowedProvenances: readonly CodeGraphProvenance[],
+) {
+  const deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
+  const initial = yield* exactNodeQuery(store, databasePath, snapshotId, nodeId);
+  const seed = initial.nodes[0];
+  if (!seed) return initial;
+
+  const nodes = new Map<string, CodeGraphQueryNode>([[seed.id, seed]]);
+  const edges = new Map<string, CodeGraphEdge>();
+  const visited = new Set<string>([seed.id]);
+  let frontier = [seed.id];
+  let inspectedEdges = 0;
+  let limited = false;
+  let timedOut = false;
+
+  for (let currentDepth = 0; currentDepth < depth && frontier.length > 0; currentDepth += 1) {
+    if (nodes.size >= nodeLimit || inspectedEdges >= edgeLimit) {
+      limited = true;
+      break;
+    }
+    if (yield* deadlineReached(deadline)) {
+      timedOut = true;
+      break;
+    }
+    const remainingEdges = edgeLimit - inspectedEdges;
+    const adjacent = yield* store.edgesForNodes(
+      databasePath,
+      snapshotId,
+      frontier,
+      direction,
+      remainingEdges,
+      allowedProvenances,
+    );
+    inspectedEdges += adjacent.length;
+    if (adjacent.length >= remainingEdges) limited = true;
+    if (yield* deadlineReached(deadline)) {
+      timedOut = true;
+      break;
+    }
+
+    const frontierDepths = new Map(frontier.map(id => [id, currentDepth] as const));
+    const candidateIds = [
+      ...new Set(
+        adjacent.flatMap(edge => adjacentNodeIds(edge, direction, frontierDepths)).filter(id => !visited.has(id)),
+      ),
+    ];
+    const remainingNodes = nodeLimit - nodes.size;
+    if (candidateIds.length > remainingNodes) limited = true;
+    const selectedIds = candidateIds.slice(0, remainingNodes);
+    const hydrated = yield* store.symbolsByIds(databasePath, snapshotId, selectedIds);
+    if (yield* deadlineReached(deadline)) {
+      timedOut = true;
+      break;
+    }
+    const selectedIdSet = new Set(selectedIds);
+    const next = hydrated.filter(symbol => selectedIdSet.has(symbol.id) && !visited.has(symbol.id));
+    for (const symbol of next) {
+      visited.add(symbol.id);
+      nodes.set(symbol.id, {...symbol, score: 1 / (currentDepth + 2)});
+    }
+    const visibleIds = new Set(nodes.keys());
+    for (const edge of adjacent) {
+      if (edge.sourceId && edge.targetId && visibleIds.has(edge.sourceId) && visibleIds.has(edge.targetId)) {
+        edges.set(edge.id, edge);
+      }
+    }
+    frontier = next.map(symbol => symbol.id);
+  }
+
+  const warnings: string[] = [];
+  if (timedOut) warnings.push('Neighbor traversal reached its elapsed-time budget; results are partial.');
+  else if (limited) warnings.push('Neighbor traversal reached a configured result limit.');
+  return {edges: [...edges.values()], nodes: [...nodes.values()], warnings};
+});
 
 const pathQuery = Effect.fn('codeGraph.pathQuery')(function* (
   store: CodeGraphStoreShape,
@@ -904,9 +1030,18 @@ function endpointMatches(
   snapshotId: string,
   selector: EndpointSelector,
 ): Effect.Effect<readonly CodeGraphQueryNode[], unknown> {
+  if (!selector.path && isStableCodeGraphNodeId(selector.symbol)) {
+    return store
+      .symbolsByIds(databasePath, snapshotId, [selector.symbol])
+      .pipe(Effect.map(symbols => symbols.map(symbol => ({...symbol, score: 1}))));
+  }
   return selector.path
     ? store.findSymbolsByPathAndName(databasePath, snapshotId, selector.path, selector.symbol)
     : store.searchSymbols(databasePath, snapshotId, selector.symbol, 20);
+}
+
+function isStableCodeGraphNodeId(value: string): boolean {
+  return /^cgs_[a-f0-9]{32,64}$/u.test(value);
 }
 
 function parseEndpointSelector(value: string): EndpointSelector {
@@ -965,7 +1100,8 @@ export function renderCodeGraphResult(result: CodeGraphQueryResult): string {
     lines.push('', 'Nodes:');
     for (const node of result.nodes) {
       lines.push(
-        `- ${node.kind} ${node.qualifiedName} — ${node.path}:${node.span.line} (score ${node.score.toFixed(2)})`,
+        `- ${node.kind} ${node.qualifiedName} — ${node.path}:${node.span.line} ` +
+          `(id ${node.id}, score ${node.score.toFixed(2)})`,
       );
     }
   }

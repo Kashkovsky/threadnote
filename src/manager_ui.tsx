@@ -2,7 +2,13 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {GraphWorkspace, type GraphCatalog, type GraphNodeDetail, type GraphVisualization} from './manager_graph.js';
+import {
+  GraphWorkspace,
+  type GraphAnalysis,
+  type GraphCatalog,
+  type GraphNodeDetail,
+  type GraphVisualization,
+} from './manager_graph.js';
 
 type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools';
 type NavTreeTab = 'memories' | 'resources';
@@ -945,6 +951,7 @@ function App(): React.ReactElement {
           <section className="panel graph-panel is-active">
             <GraphWorkspace
               catalog={graphCatalog}
+              loadAnalysis={loadManagerGraphAnalysis}
               loadGraph={loadManagerGraph}
               loadNodeDetail={loadManagerGraphNodeDetail}
               onRefresh={() => void refreshGraphCatalog()}
@@ -1720,6 +1727,10 @@ function loadManagerGraph(repositoryId: string, projectId: string): Promise<Grap
   return api<GraphVisualization>(
     `/api/graph?repository=${encodeURIComponent(repositoryId)}&project=${encodeURIComponent(projectId)}`,
   );
+}
+
+function loadManagerGraphAnalysis(repositoryId: string): Promise<GraphAnalysis> {
+  return api<GraphAnalysis>(`/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}`);
 }
 
 function loadManagerGraphNodeDetail(repositoryId: string, nodeId: string): Promise<GraphNodeDetail> {

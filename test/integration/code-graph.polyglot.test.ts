@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe('polyglot code graph lifecycle', () => {
-  it('indexes and queries TypeScript, Java, Kotlin, and Swift through one native graph', async () => {
+  it('indexes and queries a mixed compiler, AST, structured, and bounded specialist graph', async () => {
     const root = createPolyglotRepository();
     const home = join(root, '.threadnote-test-home');
     const result = await runEffect(
@@ -68,7 +68,29 @@ describe('polyglot code graph lifecycle', () => {
     );
 
     expect(result.graph.symbols.map(symbol => symbol.language)).toEqual(
-      expect.arrayContaining(['java', 'kotlin', 'swift', 'typescript']),
+      expect.arrayContaining([
+        'apex',
+        'bash',
+        'c',
+        'cpp',
+        'csharp',
+        'dart',
+        'fortran',
+        'go',
+        'java',
+        'json',
+        'kotlin',
+        'php',
+        'python',
+        'razor',
+        'ruby',
+        'rust',
+        'sql',
+        'swift',
+        'systemverilog',
+        'terraform',
+        'typescript',
+      ]),
     );
     expect(
       result.graph.edges.find(
@@ -129,6 +151,27 @@ function createPolyglotRepository(): string {
     'src/main.ts',
     'import {typescriptHelper} from "./helper.js";\nexport function typescriptBoot() { return typescriptHelper(); }\n',
   );
+  write(root, 'src/service.py', 'class PythonService:\n  def run(self):\n    return helper()\n');
+  write(root, 'src/service.go', 'package service\ntype GoService struct{}\nfunc Run() { helper() }\n');
+  write(root, 'src/service.rs', 'pub struct RustService;\npub fn run() { helper(); }\n');
+  write(root, 'src/service.c', 'struct CService { int value; };\nint run(void) { return helper(); }\n');
+  write(root, 'src/service.cpp', 'class CppService { public: void run() { helper(); } };\n');
+  write(root, 'src/Service.cs', 'public class CSharpService { public void Run() { Helper(); } }\n');
+  write(root, 'lib/service.rb', 'class RubyService\n  def run\n    helper\n  end\nend\n');
+  write(root, 'src/service.php', '<?php class PhpService { public function run() { helper(); } }\n');
+  write(root, 'scripts/service.sh', 'run() { helper; }\n');
+  write(root, 'infra/main.tf', 'resource "example_service" "main" { name = "ready" }\n');
+  write(root, 'lib/service.dart', 'class DartService { void run() { helper(); } }\n');
+  write(root, 'rtl/service.sv', 'module service; function int run(); return helper(); endfunction endmodule\n');
+  write(
+    root,
+    'legacy/service.f90',
+    'module service\ncontains\nsubroutine run()\ncall helper()\nend subroutine run\nend module service\n',
+  );
+  write(root, 'force-app/classes/Service.cls', 'public class ApexService { public void run() {} }\n');
+  write(root, 'Pages/Service.razor', '@page "/service"\n<ChildService />\n@code { private void Run() {} }\n');
+  write(root, 'db/schema.sql', 'CREATE TABLE services (id int);\n');
+  write(root, 'config/app.json', '{"service":{"enabled":true}}\n');
   execFileSync('git', ['-C', root, 'init', '-q']);
   execFileSync('git', ['-C', root, 'add', '.']);
   execFileSync('git', [

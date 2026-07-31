@@ -1,5 +1,11 @@
 import {describe, expect, it} from 'vitest';
-import {acceptsRepositoryPath, parseGitTree, parseNameStatus} from '../../src/code_graph/inventory.js';
+import {
+  acceptsRepositoryPath,
+  parseGitTree,
+  parseNameStatus,
+  shouldOmitCorpusContent,
+} from '../../src/code_graph/inventory.js';
+import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../../src/code_graph/languages/corpus/policy.js';
 
 describe('native code graph inventory policy', () => {
   it('prunes every hidden, generated, vendor, and explicitly ignored directory before blob reads', () => {
@@ -13,6 +19,15 @@ describe('native code graph inventory policy', () => {
     expect(acceptsRepositoryPath('fixtures/drop.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('fixtures/keep.ts', ignore)).toBe(true);
     expect(acceptsRepositoryPath('../outside.ts', ignore)).toBe(false);
+  });
+
+  it('lets manifest-declared modules override only their matching broad prune prefix', () => {
+    expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt')).toBe(false);
+    expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt', '', ['pods'])).toBe(true);
+    expect(acceptsRepositoryPath('apps/pods/src/main/java/Service.java', '', ['apps/pods'])).toBe(true);
+    expect(acceptsRepositoryPath('pods/build/generated/Generated.kt', '', ['pods'])).toBe(false);
+    expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt', 'pods/**', ['pods'])).toBe(false);
+    expect(acceptsRepositoryPath('Pods/Headers/Generated.h')).toBe(false);
   });
 
   it('accepts only ordinary blob records and handles byte-safe rename/delete overlays', () => {
@@ -52,6 +67,8 @@ describe('native code graph inventory policy', () => {
 
   it('does not reject eligible source paths based on individual file size', () => {
     expect(acceptsRepositoryPath('src/generated-but-tracked.ts')).toBe(true);
+    expect(shouldOmitCorpusContent('src/generated-but-tracked.ts', Number.MAX_SAFE_INTEGER)).toBe(false);
+    expect(shouldOmitCorpusContent('recordings/architecture.mp4', CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT + 1)).toBe(true);
   });
 
   it('accepts every bundled language and workspace manifest through the generated registry', () => {
@@ -69,6 +86,7 @@ describe('native code graph inventory policy', () => {
     ]) {
       expect(acceptsRepositoryPath(path), path).toBe(true);
     }
-    expect(acceptsRepositoryPath('src/readme.txt')).toBe(false);
+    expect(acceptsRepositoryPath('src/readme.txt')).toBe(true);
+    expect(acceptsRepositoryPath('src/archive.bin')).toBe(false);
   });
 });

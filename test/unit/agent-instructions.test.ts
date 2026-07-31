@@ -40,6 +40,7 @@ describe('agent instructions', () => {
       '`gh auth login`',
       'explicit user approval',
       'use `inspect_code_graph` before broad `rg` or grep searches',
+      'returned stable `cgs_` ID with `node` for exact lookup, `neighbors` for',
       'Use text search afterward for exact literals, unsupported files, or verification',
       'do not silently skip graph search',
       'no daemon to start',

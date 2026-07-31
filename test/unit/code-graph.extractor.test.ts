@@ -80,6 +80,24 @@ describe('native code graph extraction', () => {
     expect(edges.some(edge => edge.provenance === 'model' || edge.relation === 'semantic_association')).toBe(false);
   });
 
+  it('keeps explicit document and media links as resolvable graph evidence', () => {
+    const linked = extractRepositoryFacts([
+      sourceFile(
+        'docs/architecture.md',
+        '# Retry design\n\nSee [the flow](../diagrams/retry-flow.png) and `docs/reliability.pdf`.\n',
+      ),
+    ]).flatMap(file => file.edges);
+
+    expect(linked.map(edge => edge.targetName)).toEqual(
+      expect.arrayContaining(['diagrams/retry-flow.png', 'docs/reliability.pdf']),
+    );
+    expect(
+      linked
+        .filter(edge => edge.targetName.endsWith('.png') || edge.targetName.endsWith('.pdf'))
+        .every(edge => edge.relation === 'documents' && edge.provenance === 'syntactic'),
+    ).toBe(true);
+  });
+
   it('proves imported targets through their module instead of globally unique names', () => {
     const resolved = extractRepositoryFacts([
       sourceFile('src/a.ts', 'export function collision(): string { return "a"; }\n'),

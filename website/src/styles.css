@@ -416,6 +416,7 @@ p {
 .content-section,
 .manager-teaser,
 .architecture-band,
+.graph-showcase,
 .comparison-section {
   width: min(calc(100% - 48px), var(--content));
   margin-right: auto;
@@ -1047,6 +1048,343 @@ p {
 
 .agent-trace--compact .agent-trace__body {
   min-height: 410px;
+}
+
+/* Graph search showcase */
+
+.graph-showcase {
+  width: min(calc(100% - 48px), var(--content-wide));
+  padding-top: 128px;
+  padding-bottom: 128px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-showcase__heading {
+  margin-bottom: 44px;
+}
+
+.graph-showcase__tool-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 14px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.graph-showcase__tool-switcher button {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 5px 14px;
+  min-height: 94px;
+  padding: 18px 22px;
+  color: var(--muted);
+  text-align: left;
+  background: rgba(12, 17, 24, 0.76);
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  transition:
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.graph-showcase__tool-switcher button:hover,
+.graph-showcase__tool-switcher button[aria-selected='true'] {
+  color: var(--text);
+  background: rgba(103, 232, 199, 0.055);
+}
+
+.graph-showcase__tool-switcher button[aria-selected='true'] {
+  box-shadow: inset 0 -2px var(--teal);
+}
+
+.graph-showcase__tool-switcher button > span {
+  grid-row: 1 / 3;
+  color: var(--teal);
+  font:
+    10px/1.4 'JetBrains Mono Variable',
+    monospace;
+}
+
+.graph-showcase__tool-switcher strong,
+.graph-showcase__tool-switcher small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-showcase__tool-switcher strong {
+  font:
+    14px/1.3 'JetBrains Mono Variable',
+    monospace;
+}
+
+.graph-showcase__tool-switcher small {
+  color: var(--muted);
+  font:
+    9px/1.4 'JetBrains Mono Variable',
+    monospace;
+}
+
+.graph-showcase__trace {
+  margin-bottom: 56px;
+}
+
+.graph-showcase__capabilities {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 1fr;
+  margin-bottom: 72px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.graph-showcase__capabilities article {
+  display: grid;
+  grid-template-rows: auto minmax(3.3em, auto) 1fr;
+  min-height: 260px;
+  padding: 26px;
+  background: linear-gradient(145deg, rgba(22, 29, 39, 0.58), rgba(12, 17, 24, 0.56));
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.graph-showcase__capabilities article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 45px;
+}
+
+.graph-showcase__capabilities article > div span,
+.graph-showcase__capabilities article > div small {
+  font:
+    9px/1.35 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.graph-showcase__capabilities article > div span {
+  color: var(--teal);
+}
+
+.graph-showcase__capabilities article > div small {
+  color: var(--muted);
+  text-align: right;
+}
+
+.graph-showcase__capabilities h3 {
+  margin-bottom: 14px;
+  font-size: 20px;
+  font-weight: 570;
+  line-height: 1.12;
+}
+
+.graph-showcase__capabilities p {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.graph-showcase__manager {
+  display: grid;
+  grid-template-columns: 0.76fr 1.24fr;
+  gap: 56px;
+  align-items: center;
+}
+
+.graph-showcase__manager-copy h3 {
+  max-width: 540px;
+  margin-bottom: 18px;
+  font-size: clamp(34px, 4vw, 54px);
+  font-weight: 580;
+  line-height: 1.04;
+}
+
+.graph-showcase__manager-copy > p {
+  max-width: 560px;
+  margin-bottom: 26px;
+  color: var(--text-soft);
+  font-size: 14px;
+}
+
+.graph-showcase__manager-copy > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.graph-showcase__manager-preview {
+  overflow: hidden;
+  background: #0b1016;
+  border: 1px solid #303b4a;
+  border-radius: 10px;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.38);
+}
+
+.graph-showcase__manager-preview > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 42px;
+  padding: 0 14px;
+  background: #171e28;
+  border-bottom: 1px solid #27313e;
+}
+
+.graph-showcase__manager-preview > header span,
+.graph-showcase__manager-preview > header strong {
+  font:
+    8px/1.35 'JetBrains Mono Variable',
+    monospace;
+}
+
+.graph-showcase__manager-preview > header span {
+  color: #758291;
+}
+
+.graph-showcase__manager-preview > header strong {
+  color: var(--teal);
+  font-weight: 520;
+}
+
+.graph-showcase__manager-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  min-height: 360px;
+}
+
+.graph-showcase__manager-map {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 48% 48%, rgba(103, 232, 199, 0.075), transparent 37%),
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px), #090e14;
+  background-size:
+    auto,
+    34px 34px,
+    34px 34px,
+    auto;
+}
+
+.graph-showcase__node,
+.graph-showcase__edge {
+  position: absolute;
+  display: block;
+}
+
+.graph-showcase__node {
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  background: #111923;
+  border: 2px solid var(--teal);
+  border-radius: 50%;
+  box-shadow: 0 0 22px rgba(103, 232, 199, 0.2);
+}
+
+.graph-showcase__node--one {
+  top: 46%;
+  left: 45%;
+  width: 28px;
+  height: 28px;
+  border-color: var(--violet);
+}
+
+.graph-showcase__node--two {
+  top: 22%;
+  left: 20%;
+}
+
+.graph-showcase__node--three {
+  top: 20%;
+  right: 17%;
+  border-color: var(--blue);
+}
+
+.graph-showcase__node--four {
+  bottom: 18%;
+  left: 19%;
+  border-color: var(--amber);
+}
+
+.graph-showcase__node--five {
+  right: 21%;
+  bottom: 20%;
+}
+
+.graph-showcase__edge {
+  z-index: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(103, 232, 199, 0.24), rgba(192, 140, 255, 0.58));
+  transform-origin: left center;
+}
+
+.graph-showcase__edge--one {
+  top: 28%;
+  left: 24%;
+  width: 34%;
+  transform: rotate(35deg);
+}
+
+.graph-showcase__edge--two {
+  top: 52%;
+  left: 48%;
+  width: 36%;
+  transform: rotate(-43deg);
+}
+
+.graph-showcase__edge--three {
+  bottom: 28%;
+  left: 23%;
+  width: 37%;
+  transform: rotate(-30deg);
+}
+
+.graph-showcase__edge--four {
+  top: 55%;
+  left: 50%;
+  width: 34%;
+  transform: rotate(37deg);
+}
+
+.graph-showcase__manager-body dl {
+  padding: 18px;
+  margin: 0;
+  background: #111720;
+  border-left: 1px solid #26303d;
+}
+
+.graph-showcase__manager-body dl div {
+  padding: 12px 0;
+  border-bottom: 1px solid #27313d;
+}
+
+.graph-showcase__manager-body dt,
+.graph-showcase__manager-body dd {
+  margin: 0;
+}
+
+.graph-showcase__manager-body dt {
+  margin-bottom: 5px;
+  color: #657180;
+  font:
+    7px/1.35 'JetBrains Mono Variable',
+    monospace;
+  text-transform: uppercase;
+}
+
+.graph-showcase__manager-body dd {
+  overflow-wrap: anywhere;
+  color: #b6c0ca;
+  font-size: 11px;
 }
 
 /* Feature and architecture sections */
@@ -3951,6 +4289,18 @@ p {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .graph-showcase__capabilities {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .graph-showcase__manager {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-showcase__manager-copy {
+    max-width: 720px;
+  }
+
   .architecture-band {
     grid-template-columns: 1fr;
   }
@@ -4148,6 +4498,7 @@ p {
   .content-section,
   .manager-teaser,
   .architecture-band,
+  .graph-showcase,
   .comparison-section,
   .subpage-hero {
     width: min(calc(100% - 32px), var(--content));
@@ -4272,6 +4623,52 @@ p {
 
   .feature-grid {
     grid-template-columns: 1fr;
+  }
+
+  .graph-showcase {
+    padding-top: 88px;
+    padding-bottom: 88px;
+  }
+
+  .graph-showcase__tool-switcher,
+  .graph-showcase__capabilities {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-showcase__tool-switcher button {
+    min-height: 86px;
+    padding: 16px;
+  }
+
+  .graph-showcase__capabilities article {
+    min-height: 230px;
+  }
+
+  .graph-showcase__manager {
+    gap: 34px;
+  }
+
+  .graph-showcase__manager-copy > div {
+    display: grid;
+  }
+
+  .graph-showcase__manager-body {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-showcase__manager-map {
+    min-height: 270px;
+  }
+
+  .graph-showcase__manager-body dl {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-top: 1px solid #26303d;
+    border-left: 0;
+  }
+
+  .graph-showcase__manager-body dl div {
+    padding: 10px;
   }
 
   .feature-card {

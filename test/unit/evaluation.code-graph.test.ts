@@ -1,7 +1,14 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
+import {
+  PRODUCTION_LARGE_CODE_GRAPH_PROFILE,
+  git,
+  prepareProductionCodeGraphFixture,
+  productionWorkspaceRoots,
+} from '../../scripts/code-graph-fixture.js';
 import {
   codeGraphEdgeKey,
   codeGraphEvaluationFixtureHash,
@@ -9,6 +16,7 @@ import {
   parseCodeGraphEvaluationBaselineV1,
   parseCodeGraphEvaluationFixtureV1,
 } from '../../src/evaluation/code-graph.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 const FIXTURE_ROOT = 'test/evaluation/fixtures/code-graph-v1';
 const BASELINE_ROOT = 'test/evaluation/baselines/code-graph-v1';
@@ -246,6 +254,121 @@ describe('code graph evaluation contract', () => {
     }
   });
 
+  it('stores complete whole-graph analysis measurements through the 100k-symbol scale point', () => {
+    const budgets = readJson(join(BASELINE_ROOT, 'budgets.json')) as {
+      readonly developmentPerformance: PerformanceBudget;
+      readonly scalePerformance: Readonly<Record<string, PerformanceBudget>>;
+    };
+    const cases = [
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-parity-development.json'))),
+        budget: budgets.developmentPerformance,
+        scale: undefined,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-parity-10000-development.json'))),
+        budget: budgets.scalePerformance['10000']!,
+        scale: 10_000,
+      },
+      {
+        artifact: parseBenchmarkArtifactV1(readJson(join(BASELINE_ROOT, 'performance-parity-100000-development.json'))),
+        budget: budgets.scalePerformance['100000']!,
+        scale: 100_000,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const measurement = testCase.artifact.measurements.find(
+        candidate => candidate.name === 'whole-graph-structural-analysis',
+      );
+      expect(testCase.artifact.metadata).toMatchObject({analysisCoverage: 'complete'});
+      if (testCase.scale === undefined) expect(testCase.artifact.metadata).not.toHaveProperty('scaleSymbols');
+      else expect(testCase.artifact.metadata.scaleSymbols).toBe(testCase.scale);
+      expect(measurement?.p95).toBeLessThanOrEqual(testCase.budget.wholeGraphAnalysisP95MillisecondsMaximum);
+    }
+  });
+
+  it('freezes an opt-in production-shaped large-monorepo profile without inventing a latency baseline', () => {
+    const reviewed = readJson(join(BASELINE_ROOT, 'production-large-profile.json')) as {
+      readonly fixture: {
+        readonly declarationSymbols: number;
+        readonly sourceFiles: number;
+        readonly workspaceCount: number;
+      };
+      readonly notes: readonly string[];
+      readonly profile: string;
+      readonly targets: {
+        readonly eligibleFiles: number;
+        readonly graphEdges: number;
+        readonly graphSymbols: number;
+        readonly lexicalTermRows: number;
+      };
+      readonly version: number;
+    };
+
+    expect(reviewed).toMatchObject({
+      fixture: {
+        declarationSymbols: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.declarationSymbols,
+        sourceFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles,
+        workspaceCount: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.workspaceCount,
+      },
+      profile: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.id,
+      targets: {
+        eligibleFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetEligibleFiles,
+        graphEdges: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphEdges,
+        graphSymbols: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphSymbols,
+        lexicalTermRows: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetLexicalTermRows,
+      },
+      version: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.version,
+    });
+    expect(productionWorkspaceRoots(reviewed.fixture.workspaceCount)).toEqual(
+      expect.arrayContaining([
+        'apps/application-00',
+        'apps/integrated/modules/module-00',
+        'apps/isolated/packages/package-00',
+        'libs/library-00',
+      ]),
+    );
+    expect(reviewed.notes.join(' ')).toContain('no synthetic latency baseline');
+  });
+
+  it('materializes the production profile topology across integrated and isolated nested workspaces', async () => {
+    const observed = await runEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const prepared = yield* prepareProductionCodeGraphFixture({
+            declarationSymbols: 48,
+            id: 'production-large',
+            sourceFiles: 24,
+            targetEligibleFiles: 76,
+            targetGraphEdges: 150,
+            targetGraphSymbols: 99,
+            targetLexicalTermRows: 1_000,
+            version: 1,
+            workspaceCount: 24,
+          });
+          const tracked = (yield* git(prepared.repository, ['ls-files'])).stdout.trim().split('\n');
+          return {
+            incrementalSourcePath: prepared.incrementalSourcePath,
+            queryText: prepared.queryText,
+            tracked,
+          };
+        }),
+      ),
+    );
+
+    expect(observed.incrementalSourcePath).toBe('apps/application-00/src/module-00000.ts');
+    expect(observed.queryText).toContain('FeatureOperation0000047');
+    expect(observed.tracked).toEqual(
+      expect.arrayContaining([
+        'apps/application-00/src/module-00000.ts',
+        'apps/integrated/modules/module-00/src/module-00000.ts',
+        'apps/isolated/packages/package-00/src/module-00000.ts',
+        'libs/library-00/src/module-00000.ts',
+      ]),
+    );
+  });
+
   it('stores a passing Java, Kotlin, Swift, and compiler-backed TypeScript baseline and performance gate', () => {
     const polyglotFixture = parseCodeGraphEvaluationFixtureV1(readJson(join(POLYGLOT_FIXTURE_ROOT, 'fixture.json')));
     const baseline = parseCodeGraphEvaluationBaselineV1(
@@ -287,6 +410,7 @@ interface PerformanceBudget {
   readonly hotQueryP95MillisecondsMaximum: number;
   readonly oneFileIncrementalP95MillisecondsMaximum: number;
   readonly processPeakRssBytesMaximum: number;
+  readonly wholeGraphAnalysisP95MillisecondsMaximum: number;
 }
 
 function expectBenchmarkWithinBudget(artifact: BenchmarkArtifactV1, budget: PerformanceBudget): void {

@@ -13,6 +13,7 @@ import {
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
+import {augmentRationaleFacts, CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION} from '../rationale.js';
 
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
@@ -89,7 +90,10 @@ export function createCodeGraphLanguagePackRegistry(
         packageName: Option.map(project, value => value.name),
         project,
       };
-      return matched.value.pack.extractor.extract({...file, language: matched.value.language}, context);
+      const attributed = {...file, language: matched.value.language};
+      return matched.value.pack.extractor
+        .extract(attributed, context)
+        .pipe(Effect.map(facts => augmentRationaleFacts(attributed, facts)));
     },
     isResolutionContext: path =>
       Option.match(match(path), {
@@ -112,7 +116,8 @@ export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
     .join('\n');
   return sha256HexSync(
     [
-      'code-graph-language-pack-v1',
+      'code-graph-language-pack-v2',
+      `postprocessors:${CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION}`,
       `id:${pack.id}`,
       `version:${pack.version}`,
       `extractor:${pack.extractor.version}`,

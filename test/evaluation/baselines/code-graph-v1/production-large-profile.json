@@ -1,0 +1,20 @@
+{
+  "fixture": {
+    "declarationSymbols": 752000,
+    "sourceFiles": 47880,
+    "workspaceCount": 24
+  },
+  "notes": [
+    "Opt-in and scheduled only; this profile is not materialized during pull-request tests.",
+    "Targets come from the beta.27 large-monorepo investigation and are shape checks, not portable latency budgets.",
+    "A checked performance artifact must come from a measured run; no synthetic latency baseline is accepted."
+  ],
+  "profile": "production-large",
+  "targets": {
+    "eligibleFiles": 48000,
+    "graphEdges": 2700000,
+    "graphSymbols": 800000,
+    "lexicalTermRows": 12000000
+  },
+  "version": 1
+}

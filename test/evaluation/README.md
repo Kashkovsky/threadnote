@@ -24,6 +24,12 @@ bun run bench:code-graph -- --vectors --model-home ~/.threadnote --output artifa
 bun run bench:code-graph -- --scale-symbols 10000 --fail-on-budget
 bun run bench:code-graph -- --scale-symbols 100000 --fail-on-budget
 bun run bench:code-graph -- --vectors --scale-symbols 10000 --model-home ~/.threadnote --fail-on-budget
+bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
+  --output artifacts/code-graph-dirty-overlay.json
+
+# Opt-in/nightly large-monorepo shape; expect substantial CPU, RAM, disk, and wall time.
+bun run bench:code-graph -- --profile production-large --samples 5 \
+  --output artifacts/code-graph-production-large.json
 ```
 
 The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. It gates zero
@@ -38,6 +44,35 @@ are stored as `performance-10000-development.json`, `performance-100000-developm
 scans, RSS, and disk. Code-graph embeddings use paged SQLite generations so candidate construction, reuse, and search
 do not materialize a repository-sized sidecar. The platform workflow retains full artifacts rather than pretending
 shared-runner latency is machine-independent.
+
+The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
+eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested
+workspaces. It is opt-in and intended for a dedicated scheduled runner; pull requests retain the existing reviewed
+development, 10k-symbol, and 100k-symbol suites. `--profile-files` and `--profile-symbols` may shrink the same generator
+for harness development, but only the default shape is the reviewed profile. There is intentionally no portable
+latency budget or fabricated checked result for this profile: retain the JSON artifact from each measured run and
+review it against the same hardware class.
+
+`bench:code-graph:dirty-overlay` isolates the first dirty build where Threadnote must materialize a clean commit and a
+one-file worktree overlay in the same SQLite session. It alternates the safe staging-reuse path with an explicitly
+disabled full-materialization control, requires identical graph shape, and records both total and materialization
+time. The reviewed local 10k-symbol result is stored as `dirty-overlay-development.json`; it is comparative evidence
+on one hardware class, not a portable latency gate.
+
+The general `bench:code-graph` suite separately labels its post-cold one-file edit as `one-file-reindex`. That path
+measures the normal cross-session cache reuse and records the observed materialization mode, staged-file count, and
+fallback reason. It must not be described as incremental staging reuse: until unresolved-reference provenance can be
+persisted safely, an existing clean snapshot intentionally falls back to full graph materialization.
+
+Code-graph benchmark artifacts now separate registration/lock/database setup, committed inventory/extraction, the dirty
+overlay and workspace-discovery gap, materialization, reference resolution, validation, SQLite write/checkpoint,
+promotion, and vector work using first progress transitions and explicit subphase completion events. They also record
+operation CPU deltas; boundary and cumulative peak RSS; final main SQLite, WAL, SHM, vector, sidecar, and unclassified
+derived bytes; observed SQLite/WAL/SHM peaks sampled at progress boundaries; lexical/vector row counts;
+repository-status latency; and cross-process build sidecar latency. Every measurement includes `samples`. With one cold
+or incremental run, `p50`, `p95`, and `p99` are schema-compatible copies of that one observation, not percentile
+estimates; cite it as “one observation (n=1),” never as p95. Distribution labels are valid only for measurements with
+multiple samples.
 
 Graph code search is intentionally separate from memory recall. `recall_context` evaluates durable memories and
 resources; `inspect_code_graph` evaluates current source evidence. Agents may call both, but one subsystem failing or

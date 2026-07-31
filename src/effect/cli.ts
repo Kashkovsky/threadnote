@@ -90,11 +90,13 @@ import {runIndexPurge, runIndexRebuild, runIndexStatus, runIndexVerify} from '..
 import {runProductionLogs} from './production_log.js';
 import {runReportIssue} from '../report_issue.js';
 import {
+  runCodeGraphAnalysis,
   runCodeGraphExport,
   runCodeGraphImpact,
   runCodeGraphIndex,
   runCodeGraphInspect,
   runCodeGraphPurge,
+  runCodeGraphReport,
   runCodeGraphStatus,
   runCodeGraphWatch,
 } from '../code_graph/commands.js';
@@ -303,6 +305,7 @@ const postUpdate = Command.make(
 const repair = Command.make(
   'repair',
   {
+    deep: boolean('deep', 'Run explicit full SQLite integrity, foreign-key, and derived-state cleanup checks'),
     dryRun: boolean('dry-run', 'Print the repair actions without making changes'),
     mcp: defaultString(
       'mcp',
@@ -596,6 +599,31 @@ const graphQuery = Command.make(
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
 ).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));
 
+const graphNode = Command.make(
+  'node',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
+).pipe(Command.withDescription('Read one code graph node by its exact stable ID'));
+
+const graphNeighbors = Command.make(
+  'neighbors',
+  {
+    ...graphBounds,
+    direction: defaultChoice(
+      'direction',
+      ['both', 'incoming', 'outgoing'],
+      'Relationship direction relative to each traversal frontier',
+      'both',
+    ),
+    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'neighbors'})),
+).pipe(Command.withDescription('Traverse a bounded neighborhood from one exact stable node ID'));
+
 const graphExplain = Command.make(
   'explain',
   {
@@ -609,8 +637,8 @@ const graphPath = Command.make(
   'path',
   {
     ...graphBounds,
-    from: requiredString('from', 'Starting symbol selector'),
-    to: requiredString('to', 'Target symbol selector'),
+    from: requiredString('from', 'Starting symbol, path#symbol selector, or stable cgs_ node ID'),
+    to: requiredString('to', 'Target symbol, path#symbol selector, or stable cgs_ node ID'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'path'})),
 ).pipe(Command.withDescription('Find a bounded authoritative path between two code concepts'));
@@ -629,6 +657,85 @@ const graphImpact = Command.make(
   options => withRuntimeEffect(config => runCodeGraphImpact(config, options)),
 ).pipe(Command.withDescription('Trace reverse impact from a symbol, path, or Git diff'));
 
+const graphAnalysisBounds = {
+  cwd: graphBounds.cwd,
+  includeHeuristic: graphBounds.includeHeuristic,
+  includeModelAssociations: graphBounds.includeModelAssociations,
+  json: graphBounds.json,
+} as const;
+
+const graphCommunityMemberLimit = optional(
+  describeFlag(
+    integerFlag('member-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 5_000})))),
+    'Maximum deterministic community members to return',
+  ),
+);
+
+const graphAnalyze = Command.make(
+  'analyze',
+  {
+    ...graphAnalysisBounds,
+    communityId: optionalString('community-id', 'Stable cgc_ community identifier required by the community view'),
+    memberLimit: graphCommunityMemberLimit,
+    view: defaultChoice(
+      'view',
+      ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
+      'Analysis view to render',
+      'stats',
+    ),
+  },
+  options => withRuntimeEffect(config => runCodeGraphAnalysis(config, options)),
+).pipe(
+  Command.withDescription(
+    'Analyze whole-graph statistics, structural communities, hubs, surprising links, and relationship confidence',
+  ),
+);
+
+const graphStats = Command.make('stats', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'stats'})),
+).pipe(Command.withDescription('Show whole-graph structural statistics'));
+
+const graphCommunities = Command.make('communities', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'communities'})),
+).pipe(Command.withDescription('Find deterministic structural communities and their stable IDs'));
+
+const graphCommunity = Command.make(
+  'community',
+  {
+    ...graphAnalysisBounds,
+    communityId: requiredString('community-id', 'Stable cgc_ identifier returned by graph communities'),
+    memberLimit: graphCommunityMemberLimit,
+  },
+  options => withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'community'})),
+).pipe(Command.withDescription('Inspect bounded members of one stable structural community'));
+
+const graphHubs = Command.make('hubs', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'hubs'})),
+).pipe(Command.withDescription('Rank hubs and graph-wide god nodes'));
+
+const graphGroups = Command.make('groups', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'groups'})),
+).pipe(Command.withDescription('Derive bounded high-degree fan-in and fan-out structural hyperedges'));
+
+const graphSurprises = Command.make('surprises', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'surprises'})),
+).pipe(Command.withDescription('Rank unexpected cross-community relationships'));
+
+const graphConfidence = Command.make('confidence', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'confidence'})),
+).pipe(Command.withDescription('Audit relationship confidence, provenance, and endpoint coverage'));
+
+const graphReport = Command.make(
+  'report',
+  {
+    cwd: graphBounds.cwd,
+    includeHeuristic: graphBounds.includeHeuristic,
+    includeModelAssociations: graphBounds.includeModelAssociations,
+    output: requiredString('output', 'New Markdown report path; existing files are never overwritten'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphReport(config, options)),
+).pipe(Command.withDescription('Write a deterministic architecture report with suggested graph questions'));
+
 const graphWatch = Command.make('watch', {cwd: graphBounds.cwd}, options =>
   withRuntimeEffect(config => runCodeGraphWatch(config, options)),
 ).pipe(Command.withDescription('Keep one worktree graph current in the foreground'));
@@ -637,11 +744,13 @@ const graphExport = Command.make(
   'export',
   {
     cwd: graphBounds.cwd,
-    format: defaultChoice('format', ['json', 'html'], 'Explicit export format', 'json'),
+    edgeLimit: optionalString('edge-limit', 'Maximum relationships to export, or all; defaults by format'),
+    format: defaultChoice('format', ['json', 'graphml', 'html', 'svg'], 'Explicit export format', 'json'),
+    nodeLimit: optionalString('node-limit', 'Maximum nodes to export, or all; defaults by format'),
     output: requiredString('output', 'New output file; existing files are never overwritten'),
   },
   options => withRuntimeEffect(config => runCodeGraphExport(config, options)),
-).pipe(Command.withDescription('Explicitly export a complete portable snapshot'));
+).pipe(Command.withDescription('Stream a portable JSON, GraphML, HTML, or SVG graph snapshot'));
 
 const graphPurge = Command.make(
   'purge',
@@ -649,6 +758,7 @@ const graphPurge = Command.make(
     all: boolean('all', 'Remove every disposable native code graph index'),
     cwd: graphBounds.cwd,
     dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
+    obsolete: boolean('obsolete', 'Remove only verified older graph-vN SQLite files for this checkout'),
   },
   options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
 ).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
@@ -659,9 +769,20 @@ const graphCommand = Command.make('graph').pipe(
     graphStatus,
     graphIndex,
     graphQuery,
+    graphNode,
+    graphNeighbors,
     graphExplain,
     graphPath,
     graphImpact,
+    graphAnalyze,
+    graphStats,
+    graphCommunities,
+    graphCommunity,
+    graphGroups,
+    graphHubs,
+    graphSurprises,
+    graphConfidence,
+    graphReport,
     graphWatch,
     graphExport,
     graphPurge,

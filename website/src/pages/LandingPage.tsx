@@ -1,9 +1,9 @@
-import {lazy, Suspense} from 'react';
+import {lazy, Suspense, useState} from 'react';
 import {AgentTrace} from '../components/AgentTrace';
 import {CodeBlock} from '../components/CodeBlock';
 import {Icon, type IconName} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
-import {heroScenario} from '../content/landing';
+import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../content/landing';
 import {githubUrl, setDocumentMeta, siteHref} from '../lib/site';
 
 const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
@@ -45,8 +45,8 @@ const features: Array<{
     accent: 'violet',
     label: 'Polyglot code graph',
     title: 'Ask about the code as it exists now.',
-    body: 'Query, explain, trace paths, and assess impact across TypeScript, JavaScript, Java, Kotlin, and Swift—even in large nested monorepos.',
-    detail: 'Definitions · relationships · paths · impact',
+    body: 'Inspect paths and impact, then drill into communities, structural groups, hubs, confidence, and surprising links across broad bundled language packs, schemas, and project documents—even in large nested monorepos.',
+    detail: 'Inspect · analyze · drill down · report · export',
   },
   {
     icon: 'manager',
@@ -89,10 +89,179 @@ const workflow = [
   },
 ];
 
+const graphCapabilities = [
+  {
+    number: '01',
+    label: 'Current-worktree truth',
+    title: 'The graph follows the checkout you are editing.',
+    body: 'Committed Git objects form the reusable base. Staged, unstaged, renamed, deleted, and eligible untracked files become an isolated overlay for this linked worktree.',
+  },
+  {
+    number: '02',
+    label: 'Polyglot by architecture',
+    title: 'One query can cross language and project boundaries.',
+    body: 'Compiler-backed TypeScript/JavaScript, bundled structural AST packs, and deterministic schema, configuration, documentation, and corpus packs share one provenance-aware graph contract.',
+  },
+  {
+    number: '03',
+    label: 'Large monorepos',
+    title: 'Repository size is not an admission test.',
+    body: 'SQLite paging and bounded processing batches avoid a monolithic graph document. Per-artifact corpus safety budgets keep oversized eligible files as searchable metadata-only nodes.',
+  },
+  {
+    number: '04',
+    label: 'Architecture signals',
+    title: 'Deterministic topology, with honest coverage.',
+    body: 'Weak components, stable community drill-down, structural n-ary groups, hubs and god nodes, confidence audits, and surprising links identify boundaries and blast radius. Budgets report partial coverage explicitly and the result suggests useful next questions.',
+  },
+  {
+    number: '05',
+    label: 'Rationale and outputs',
+    title: 'Carry the evidence into the next conversation.',
+    body: 'Rationale comments and ADR/RFC references become evidence nodes. Generate a deterministic Markdown report or export a pinned snapshot as JSON, GraphML, HTML, or SVG.',
+  },
+  {
+    number: '06',
+    label: 'Manager visualization',
+    title: 'Explore the graph without reading raw rows.',
+    body: 'The local Manager lets you search and walk current symbols, inspect relationship provenance, and request architecture signals on demand with mocked-data demos available publicly.',
+  },
+];
+
+function GraphSearchShowcase() {
+  const [mode, setMode] = useState<'analyze' | 'inspect'>('inspect');
+  const scenario = mode === 'inspect' ? graphInspectScenario : graphAnalyzeScenario;
+
+  return (
+    <section className="graph-showcase" id="graph-search">
+      <header className="section-heading section-heading--split graph-showcase__heading">
+        <div>
+          <span className="eyebrow">Native graph search</span>
+          <h2>Search a symbol. Read the architecture. Trust the same current snapshot.</h2>
+        </div>
+        <p>
+          Threadnote gives agents two deliberate graph surfaces. One answers a scoped source question. The other
+          summarizes whole-repository topology. Neither is mixed into historical memory recall.
+        </p>
+      </header>
+
+      <div className="graph-showcase__tool-switcher" role="tablist" aria-label="Graph MCP workflow">
+        <button
+          id="graph-inspect-tab"
+          type="button"
+          role="tab"
+          aria-selected={mode === 'inspect'}
+          aria-controls="graph-workflow-panel"
+          onClick={() => setMode('inspect')}
+        >
+          <span>01</span>
+          <strong>inspect_code_graph</strong>
+          <small>query · node · neighbors · path · impact</small>
+        </button>
+        <button
+          id="graph-analyze-tab"
+          type="button"
+          role="tab"
+          aria-selected={mode === 'analyze'}
+          aria-controls="graph-workflow-panel"
+          onClick={() => setMode('analyze')}
+        >
+          <span>02</span>
+          <strong>analyze_code_graph</strong>
+          <small>stats · communities · groups · confidence</small>
+        </button>
+      </div>
+      <div
+        id="graph-workflow-panel"
+        className="graph-showcase__trace"
+        role="tabpanel"
+        aria-labelledby={mode === 'inspect' ? 'graph-inspect-tab' : 'graph-analyze-tab'}
+      >
+        <AgentTrace key={mode} scenario={scenario} compact />
+      </div>
+
+      <div className="graph-showcase__capabilities">
+        {graphCapabilities.map(capability => (
+          <article key={capability.number}>
+            <div>
+              <span>{capability.number}</span>
+              <small>{capability.label}</small>
+            </div>
+            <h3>{capability.title}</h3>
+            <p>{capability.body}</p>
+          </article>
+        ))}
+      </div>
+
+      <div className="graph-showcase__manager">
+        <div className="graph-showcase__manager-copy">
+          <span className="eyebrow">From MCP evidence to a visual map</span>
+          <h3>Walk the same graph in Manager.</h3>
+          <p>
+            Search the active snapshot, inspect symbol and edge provenance, then request community drill-down,
+            structural groups, confidence, hub, and surprising-link signals only when you need them. The real Manager
+            remains local and reads your current checkout; the public demo uses synthetic data.
+          </p>
+          <div>
+            <a className="button" href={siteHref('manager-demo/')}>
+              Open the Manager demo
+              <Icon name="arrow" aria-hidden="true" />
+            </a>
+            <a className="button button--ghost" href={siteHref('docs/#graph-operations')}>
+              Graph search docs
+            </a>
+          </div>
+        </div>
+        <div className="graph-showcase__manager-preview" aria-label="Illustrative Manager graph analysis preview">
+          <header>
+            <span>Manager / Graph / Architecture signals</span>
+            <strong>Illustrative local snapshot</strong>
+          </header>
+          <div className="graph-showcase__manager-body">
+            <div className="graph-showcase__manager-map" aria-hidden="true">
+              <i className="graph-showcase__edge graph-showcase__edge--one" />
+              <i className="graph-showcase__edge graph-showcase__edge--two" />
+              <i className="graph-showcase__edge graph-showcase__edge--three" />
+              <i className="graph-showcase__edge graph-showcase__edge--four" />
+              <span className="graph-showcase__node graph-showcase__node--one" />
+              <span className="graph-showcase__node graph-showcase__node--two" />
+              <span className="graph-showcase__node graph-showcase__node--three" />
+              <span className="graph-showcase__node graph-showcase__node--four" />
+              <span className="graph-showcase__node graph-showcase__node--five" />
+            </div>
+            <dl>
+              <div>
+                <dt>Coverage</dt>
+                <dd>complete</dd>
+              </div>
+              <div>
+                <dt>Communities</dt>
+                <dd>14</dd>
+              </div>
+              <div>
+                <dt>Components</dt>
+                <dd>3</dd>
+              </div>
+              <div>
+                <dt>Top hub</dt>
+                <dd>PaymentGateway</dd>
+              </div>
+              <div>
+                <dt>Surprising links</dt>
+                <dd>4</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function LandingPage() {
   setDocumentMeta(
     'Your team remembers',
-    'Local-first engineering memory and polyglot code intelligence for every coding agent.',
+    'Local-first engineering memory and large-scale polyglot code graph search for every coding agent.',
   );
 
   return (
@@ -108,16 +277,16 @@ export default function LandingPage() {
             <span>Every coding agent can use it.</span>
           </h1>
           <p className="hero__lede">
-            Local-first engineering memory and code intelligence for Codex, Claude, Cursor, Copilot, and the next agent
-            you try.
+            Local-first engineering memory and large-scale polyglot graph search for Codex, Claude, Cursor, Copilot, and
+            the next agent you try.
           </p>
           <div className="hero__actions">
             <a className="button" href={siteHref('docs/#installation')}>
               Install Threadnote
               <Icon name="arrow" aria-hidden="true" />
             </a>
-            <a className="button button--ghost" href={siteHref('manager-demo/')}>
-              Explore the Manager
+            <a className="button button--ghost" href="#graph-search">
+              Explore graph search
             </a>
           </div>
           <div className="hero__install">
@@ -135,7 +304,7 @@ export default function LandingPage() {
           </div>
           <div className="hero-node hero-node--graph">
             <span>code graph</span>
-            <strong>AuthSession · 12 edges</strong>
+            <strong>inspect + analyze · current worktree</strong>
           </div>
           <div className="hero-node hero-node--share">
             <span>team share</span>
@@ -179,6 +348,8 @@ export default function LandingPage() {
         </header>
         <AgentTrace scenario={heroScenario} />
       </section>
+
+      <GraphSearchShowcase />
 
       <section className="content-section" id="features">
         <header className="section-heading section-heading--split">
@@ -273,8 +444,8 @@ export default function LandingPage() {
           <span className="eyebrow">Threadnote Manager</span>
           <h2>Your context, visible.</h2>
           <p>
-            Walk a polyglot dependency graph, inspect a memory’s lifecycle, check share health, and verify local
-            AI—without leaving the local runtime.
+            Walk a polyglot dependency graph, inspect topology signals, follow a memory’s lifecycle, check share health,
+            and verify local AI—without leaving the local runtime.
           </p>
           <a className="button button--light" href={siteHref('manager-demo/')}>
             Open interactive demo

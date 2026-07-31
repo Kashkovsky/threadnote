@@ -83,9 +83,16 @@ the observed release-runner failure, not root-cause proof and not a policy appli
 ## Native code graph
 
 Code search is a separate concern from memory recall. `recall_context` answers what the team learned, decided, or
-handed off from canonical memories and seeded resources. `inspect_code_graph` answers what current source defines,
-calls, imports, extends, documents, or may affect. An agent can call both, but graph indexing never runs as a side
-effect of recall and graph evidence cannot turn a memory no-answer into an answer.
+handed off from canonical memories and seeded resources. `inspect_code_graph` answers a scoped question about what
+current source defines, calls, imports, extends, documents, or may affect. The separate `analyze_code_graph` tool
+computes whole-repository statistics, connected components, deterministic structural communities and drill-down,
+structural n-ary groups, hubs or god nodes, confidence audits, and surprising cross-community links. An agent can call
+all three, but graph indexing never runs as a side effect of recall and graph evidence cannot turn a memory no-answer
+into an answer.
+
+Scoped inspection returns stable `cgs_` symbol identities. Exact `node` lookup and bounded directional `neighbors`
+traversal consume those identities without fuzzy matching, while `path` accepts either stable IDs or human-readable
+selectors. Relationship provenance and explicit depth, node, and edge limits remain part of every drill-down contract.
 
 The graph inventory reads committed files through bounded Git tree/blob plumbing and overlays eligible staged,
 unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. Uncached source is parsed
@@ -97,11 +104,30 @@ parser batches are reusable after interruption.
 
 A generated language-pack catalog owns classification, extraction, cache identity, verified assets, capabilities,
 workspace discovery, and resolution domains. TypeScript/JavaScript continues to use the pinned TypeScript compiler
-extractor. Java, Kotlin, and Swift use bundled, checksum-verified Tree-sitter WASM grammars and a backend-neutral
-normalized declaration/reference representation. Manifests and Markdown remain built-in data extractors. Adding a
+extractor. Java, Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP,
+PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, and Zig use bundled,
+checksum-verified Tree-sitter WASM grammars and a backend-neutral normalized declaration/reference representation.
+Apex, Fortran, and Razor use bounded deterministic text-structural packs; they do not claim AST or compiler semantics.
+Deterministic schema extractors cover SQL, JSON/JSONC, YAML, TOML, INI/properties, GraphQL, protobuf,
+MSBuild/XML/XAML, solution files, and Dockerfiles; manifests and Markdown remain built-in data extractors. Adding a
 future first-party language requires a pack plus fixtures/assets, not changes to inventory, SQLite, query, CLI, or MCP
 code. Every edge identifies its evidence and authority as declared, resolved, syntactic, heuristic, or model-derived;
 semantic similarity is never promoted to an authoritative source edge.
+
+The corpus pack emits document, section, external-resource, and asset nodes. It extracts local text and URLs from
+plain-text documentation, notebooks, HTML/XML, text-based diagram formats, PDFs, OpenXML, OpenDocument, and EPUB in
+bounded chunks. Archive expansion has per-entry and per-document safety budgets. Diagram markup is searchable but is
+not interpreted visually. Images, audio, and video retain deterministic file metadata only; there is no OCR, image
+understanding, audio transcription, or video/frame analysis. A PDF or document archive with no extractable text stays
+an explicit asset instead of producing invented content. A corpus artifact over 64 MiB is retained as a metadata-only
+asset and its content is not read for semantic extraction. For OpenXML, OpenDocument, and EPUB, only selected text
+entries are expanded, with a 16 MiB per-entry and 64 MiB cumulative expansion budget. Crossing either archive budget
+also falls back to asset metadata. These per-artifact extraction budgets bound decompression and parsing; they neither
+reject the repository nor cap stored graph size.
+
+The extraction postprocessor promotes marked `NOTE`, `WHY`, `HACK`, `RATIONALE`, `DECISION`, `SAFETY`, and
+`INVARIANT` comments and ADR/RFC citations into rationale nodes. A declared `documents` edge links each rationale to
+the nearest enclosing or preceding declaration. These nodes remain derived, untrusted repository evidence.
 
 Each local Git checkout owns a SQLite graph under
 `~/.threadnote/indexes/code-graph/repositories/<checkout-id>/`. Linked worktrees share an immutable commit snapshot;
@@ -124,15 +150,30 @@ an integrated outer module: its project retains both workspace roots and can cro
 only through declared dependencies. Java and Kotlin intentionally share the JVM resolution domain. Duplicate or
 dynamic targets remain unresolved instead of creating false edges.
 Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.
-`threadnote graph status|index|query|explain|path|impact|watch|export|purge` provides the operator surface. Doctor reports
-graph integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and
-temporary vector files.
+`threadnote graph status|index|query|node|neighbors|explain|path|impact|analyze|stats|communities|community|groups|hubs|surprises|confidence|report|watch|export|purge`
+provides the operator surface. `analyze` accepts `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`,
+`confidence`, or `full`; the named commands are shortcuts. Analysis pages SQLite facts and uses elapsed-time and
+response-output budgets rather than a repository admission cap. A budget-limited run reports partial coverage.
+`report` writes the same deterministic signals and suggested investigation questions to a new Markdown file.
+
+Exports are explicit, source-sensitive derived artifacts. JSON, GraphML, and HTML select the complete snapshot by
+default; SVG defaults to 300 nodes and 1,000 relationships for a readable overview. Every format accepts an explicit
+safe integer or `all` for node and edge output limits, and all formats stream SQLite pages rather than hydrating the
+graph. Complete HTML tables follow the requested selection while its inline visualization is a bounded overview;
+GraphML adds deterministic supplemental endpoint nodes when needed; SVG counts relationships omitted because an
+endpoint is outside the selected nodes. Output limits never truncate or gate the stored graph. Doctor reports graph
+integrity and incomplete builds; repair discards only corrupt derived databases, abandoned snapshots, and temporary
+vector files.
+
+Manager graph visualization reads bounded projections and computes topology analysis only after the user requests
+**Analyze**. The panel shows community/component counts, complete or partial coverage, high-connectivity nodes, and a
+leading cross-community signal without loading the full graph into the browser.
 
 The first query builds a graph lazily. MCP gives a cold or strict-freshness build a short bounded opportunity to
 complete; a large monorepo then receives a structured `indexing` result with phase and retry timing while a deduplicated
 session-scoped build continues. A retry uses the newly activated snapshot without tying tool latency to repository
-size. Later `query` and `explain` calls may return a ready stale snapshot immediately and disclose that freshness while
-the watcher catches up; stale `path` and `impact` return the same retryable indexing state until a current snapshot is
+size. Later `query`, `node`, `neighbors`, and `explain` calls may return a ready stale snapshot immediately and disclose
+that freshness while the watcher catches up; stale `path` and `impact` return the same retryable indexing state until a current snapshot is
 ready. One-shot CLI graph queries synchronously refresh stale snapshots because their application scope ends with the
 command. A CLI writer that encounters an active build reports a waiting phase and waits interruptibly, with dead-owner
 recovery but no arbitrary graph-lock deadline. The first MCP graph inspection starts one scoped watcher per worktree

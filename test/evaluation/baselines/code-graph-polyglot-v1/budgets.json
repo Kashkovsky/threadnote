@@ -18,7 +18,8 @@
     "derivedIndexBytesMaximum": 134217728,
     "hotQueryP95MillisecondsMaximum": 500,
     "oneFileIncrementalP95MillisecondsMaximum": 15000,
-    "processPeakRssBytesMaximum": 1610612736
+    "processPeakRssBytesMaximum": 1610612736,
+    "wholeGraphAnalysisP95MillisecondsMaximum": 2000
   },
   "notes": [
     "The fixture executes the compiler-backed TypeScript pack and bundled Java, Kotlin, and Swift WASM packs.",

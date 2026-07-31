@@ -33,9 +33,8 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
       const path = yield* Path.Path;
       const system = yield* SystemInfo;
       const configuredRoot = system.environment().THREADNOTE_CODE_GRAPH_ASSET_ROOT?.trim();
-      const assetRoot = configuredRoot
-        ? path.resolve(configuredRoot)
-        : path.join(yield* toolRoot(), 'assets', 'code-graph');
+      const root = yield* toolRoot();
+      const assetRoot = configuredRoot ? path.resolve(configuredRoot) : path.join(root, 'assets', 'code-graph');
       const runtimePath = path.join(assetRoot, RUNTIME_RELATIVE_PATH);
       const initialization = yield* Effect.cached(
         verifyAsset(fs, runtimePath, RUNTIME_SHA256, 'Tree-sitter runtime').pipe(
@@ -56,7 +55,19 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
             Effect.gen(function* () {
               const existing = languages.get(asset.relativePath);
               if (existing) return existing;
-              const languagePath = path.join(assetRoot, asset.relativePath);
+              const installedLanguagePath = path.join(assetRoot, asset.relativePath);
+              const installedLanguageExists = yield* fs
+                .exists(installedLanguagePath)
+                .pipe(
+                  Effect.mapError(
+                    cause =>
+                      new TreeSitterRuntimeError(`Could not inspect grammar asset ${installedLanguagePath}.`, {cause}),
+                  ),
+                );
+              const languagePath =
+                !configuredRoot && asset.developmentRelativePath !== undefined && !installedLanguageExists
+                  ? path.join(root, asset.developmentRelativePath)
+                  : installedLanguagePath;
               const loading = yield* Effect.cached(
                 initialization.pipe(
                   Effect.andThen(verifyAsset(fs, languagePath, asset.sha256, `${asset.version} grammar`)),

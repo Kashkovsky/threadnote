@@ -56,7 +56,13 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
-import {managerGraphCatalog, managerGraphNodeDetail, managerGraphVisualization} from './code_graph/visualization.js';
+import {
+  managerGraphAnalysis,
+  managerGraphBuildCatalog,
+  managerGraphCatalog,
+  managerGraphNodeDetail,
+  managerGraphVisualization,
+} from './code_graph/visualization.js';
 import type {
   AgentClient,
   ConsolidationAgent,
@@ -458,6 +464,10 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, 200, yield* managerGraphCatalog(context.config.agentContextHome));
     return;
   }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
+    writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome));
+    return;
+  }
   if (request.method === 'GET' && url.pathname === '/api/graph') {
     writeJson(
       response,
@@ -467,6 +477,14 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
         requiredQuery(url, 'repository'),
         url.searchParams.get('project') ?? 'all',
       ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/analysis') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphAnalysis(context.config.agentContextHome, requiredQuery(url, 'repository')),
     );
     return;
   }

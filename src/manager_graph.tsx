@@ -1,15 +1,21 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
+import {compareCodeUnits} from './code_graph/ordering.js';
 
 interface GraphProject {
+  readonly buildSystem?: string;
   readonly fileCount: number;
   readonly id: string;
+  readonly kind?: string;
   readonly label: string;
+  readonly model?: 'component' | 'facet' | 'legacy-fallback';
+  readonly provenance?: string;
   readonly symbolCount: number;
 }
 
 interface GraphSnapshot {
   readonly commit: string;
+  readonly completedAt?: string;
   readonly dirty: boolean;
   readonly edgeCount: number;
   readonly fileCount: number;
@@ -18,15 +24,58 @@ interface GraphSnapshot {
 }
 
 export interface GraphRepository {
+  readonly activatedAt?: string;
+  readonly checkoutId: string;
   readonly displayName: string;
   readonly id: string;
+  readonly label: string;
+  readonly model: 'legacy-fallback' | 'workspace';
   readonly projects: readonly GraphProject[];
-  readonly repositoryId: string;
   readonly snapshot: GraphSnapshot;
+  readonly worktreeId: string;
+}
+
+export interface GraphRepositoryGroup {
+  readonly defaultViewId: string;
+  readonly displayName: string;
+  readonly id: string;
+  readonly repositoryId: string;
+  readonly views: readonly GraphRepository[];
+}
+
+export interface GraphCatalogDiagnostic {
+  readonly checkoutId: string;
+  readonly code: 'no-ready-snapshot' | 'unreadable-database';
+  readonly message: string;
 }
 
 export interface GraphCatalog {
-  readonly repositories: readonly GraphRepository[];
+  readonly diagnostics: readonly GraphCatalogDiagnostic[];
+  readonly repositories: readonly GraphRepositoryGroup[];
+}
+
+export function resolveGraphSelection(
+  repositories: readonly GraphRepositoryGroup[],
+  currentRepositoryId: string,
+  currentViewId: string,
+): {readonly repositoryId: string; readonly viewId: string} {
+  const repository = repositories.find(candidate => candidate.id === currentRepositoryId) ?? repositories[0];
+  if (!repository) return {repositoryId: '', viewId: ''};
+  const view = repository.views.find(candidate => candidate.id === currentViewId);
+  return {
+    repositoryId: repository.id,
+    viewId: view?.id ?? repository.defaultViewId ?? repository.views[0]?.id ?? '',
+  };
+}
+
+export function graphRepositoryOptionLabel(
+  repository: GraphRepositoryGroup,
+  repositories: readonly GraphRepositoryGroup[],
+): string {
+  const collides = repositories.some(
+    candidate => candidate.id !== repository.id && candidate.displayName === repository.displayName,
+  );
+  return collides ? `${repository.displayName} · ${repository.id.slice(0, 8)}` : repository.displayName;
 }
 
 interface GraphNode {
@@ -124,6 +173,15 @@ export function graphDisplayEdges(
   });
 }
 
+export function graphAnalysisRequestIsCurrent(
+  currentSequence: number,
+  requestedSequence: number,
+  currentScope: string,
+  requestedScope: string,
+): boolean {
+  return currentSequence === requestedSequence && currentScope === requestedScope;
+}
+
 export function graphWithNodeNeighborhood(graph: GraphVisualization, detail: GraphNodeDetail): GraphVisualization {
   if (graph.mode !== 'detail') return graph;
   const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
@@ -209,6 +267,34 @@ export interface GraphVisualization {
   readonly warnings: readonly string[];
 }
 
+export interface GraphAnalysis {
+  readonly communities: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly memberCount: number;
+  }[];
+  readonly coverage: {readonly complete: boolean};
+  readonly hubs: readonly {
+    readonly classification: 'god-node' | 'hub';
+    readonly degree: number;
+    readonly node: {readonly label: string; readonly path: string};
+  }[];
+  readonly statistics: {
+    readonly analyzedEdgeCount: number;
+    readonly analyzedNodeCount: number;
+    readonly communityCount: number;
+    readonly connectedComponentCount: number;
+    readonly maximumDegree: number;
+  };
+  readonly surprisingLinks: readonly {
+    readonly relation: string;
+    readonly score: number;
+    readonly source: {readonly label: string};
+    readonly target: {readonly label: string};
+  }[];
+  readonly warnings: readonly string[];
+}
+
 interface PositionedNode extends GraphNode {
   readonly color: THREE.Color;
   readonly radius: number;
@@ -271,11 +357,13 @@ const SEARCH_FOCUS_ZOOM = {
 
 export function GraphWorkspace(props: {
   readonly catalog?: GraphCatalog;
+  readonly loadAnalysis: (repositoryId: string) => Promise<GraphAnalysis>;
   readonly loadGraph: (repositoryId: string, projectId: string) => Promise<GraphVisualization>;
   readonly loadNodeDetail: (repositoryId: string, nodeId: string) => Promise<GraphNodeDetail>;
   readonly onRefresh: () => void;
 }): React.ReactElement {
   const [repositoryId, setRepositoryId] = useState('');
+  const [viewId, setViewId] = useState('');
   const [projectId, setProjectId] = useState('all');
   const [baseGraph, setBaseGraph] = useState<GraphVisualization | undefined>();
   const [expandedNeighborhood, setExpandedNeighborhood] = useState<GraphNodeDetail | undefined>();
@@ -292,24 +380,40 @@ export function GraphWorkspace(props: {
   const nodeDetailCache = useRef(new Map<string, GraphNodeDetail>());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [analysis, setAnalysis] = useState<GraphAnalysis | undefined>();
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const analysisRequestSequence = useRef(0);
   const repositories = props.catalog?.repositories ?? [];
-  const repository = repositories.find(candidate => candidate.id === repositoryId) ?? repositories[0];
+  const repositoryGroup = repositories.find(candidate => candidate.id === repositoryId) ?? repositories[0];
+  const repository =
+    repositoryGroup?.views.find(candidate => candidate.id === viewId) ??
+    repositoryGroup?.views.find(candidate => candidate.id === repositoryGroup.defaultViewId) ??
+    repositoryGroup?.views[0];
+  const analysisScope = `${repository?.id ?? ''}:${repository?.snapshot.id ?? ''}`;
+  const analysisScopeRef = useRef(analysisScope);
+  analysisScopeRef.current = analysisScope;
   const graph = useMemo(
     () => (baseGraph && expandedNeighborhood ? graphWithNodeNeighborhood(baseGraph, expandedNeighborhood) : baseGraph),
     [baseGraph, expandedNeighborhood],
   );
   const selectedNode = graph?.nodes.find(node => node.id === selectedNodeId);
   const relations = useMemo(
-    () => [...new Set(graph?.edges.map(edge => edge.relation) ?? [])].sort((left, right) => left.localeCompare(right)),
+    () => [...new Set(graph?.edges.map(edge => edge.relation) ?? [])].sort(compareCodeUnits),
     [graph],
   );
 
   useEffect(() => {
-    if (!repositoryId || !repositories.some(candidate => candidate.id === repositoryId)) {
-      setRepositoryId(repositories[0]?.id ?? '');
+    const selection = resolveGraphSelection(repositories, repositoryId, viewId);
+    if (selection.repositoryId !== repositoryId) {
+      setRepositoryId(selection.repositoryId);
       setProjectId('all');
     }
-  }, [repositories, repositoryId]);
+    if (selection.viewId !== viewId) {
+      setViewId(selection.viewId);
+      setProjectId('all');
+    }
+  }, [repositories, repositoryId, viewId]);
 
   useEffect(() => {
     if (repository && projectId !== 'all' && !repository.projects.some(project => project.id === projectId)) {
@@ -318,7 +422,7 @@ export function GraphWorkspace(props: {
   }, [projectId, repository]);
 
   useEffect(() => {
-    if (!repositoryId) {
+    if (!repository) {
       setBaseGraph(undefined);
       setExpandedNeighborhood(undefined);
       return;
@@ -333,7 +437,7 @@ export function GraphWorkspace(props: {
     setRelationFilter('all');
     setSizeMetric('connections');
     void props
-      .loadGraph(repositoryId, projectId)
+      .loadGraph(repository.id, projectId)
       .then(next => {
         if (!cancelled) setBaseGraph(next);
       })
@@ -349,16 +453,73 @@ export function GraphWorkspace(props: {
     return () => {
       cancelled = true;
     };
-  }, [projectId, props.loadGraph, repository?.snapshot.id, repositoryId]);
+  }, [projectId, props.loadGraph, repository?.id, repository?.snapshot.id]);
 
   useEffect(() => {
-    if (!selectedNode || selectedNode.type !== 'symbol' || !repositoryId) {
+    analysisRequestSequence.current += 1;
+    setAnalysis(undefined);
+    setAnalysisError('');
+    setAnalysisLoading(false);
+    return () => {
+      analysisRequestSequence.current += 1;
+    };
+  }, [repository?.id, repository?.snapshot.id]);
+
+  const loadAnalysis = (): void => {
+    if (!repository || analysisLoading) return;
+    const requestedScope = analysisScope;
+    const requestSequence = analysisRequestSequence.current + 1;
+    analysisRequestSequence.current = requestSequence;
+    setAnalysisLoading(true);
+    setAnalysisError('');
+    void props
+      .loadAnalysis(repository.id)
+      .then(next => {
+        if (
+          graphAnalysisRequestIsCurrent(
+            analysisRequestSequence.current,
+            requestSequence,
+            analysisScopeRef.current,
+            requestedScope,
+          )
+        ) {
+          setAnalysis(next);
+        }
+      })
+      .catch(cause => {
+        if (
+          graphAnalysisRequestIsCurrent(
+            analysisRequestSequence.current,
+            requestSequence,
+            analysisScopeRef.current,
+            requestedScope,
+          )
+        ) {
+          setAnalysisError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (
+          graphAnalysisRequestIsCurrent(
+            analysisRequestSequence.current,
+            requestSequence,
+            analysisScopeRef.current,
+            requestedScope,
+          )
+        ) {
+          setAnalysisLoading(false);
+        }
+      });
+  };
+
+  useEffect(() => {
+    if (!selectedNode || selectedNode.type !== 'symbol' || !repository) {
       setNodeDetail(undefined);
       setNodeDetailLoading(false);
       setNodeDetailError('');
       return;
     }
-    const key = `${repositoryId}:${baseGraph?.repository.snapshot.id ?? ''}:${selectedNode.id}`;
+    const key = `${repository.id}:${baseGraph?.repository.snapshot.id ?? ''}:${selectedNode.id}`;
     const cached = nodeDetailCache.current.get(key);
     if (cached) {
       setNodeDetail(cached);
@@ -374,7 +535,7 @@ export function GraphWorkspace(props: {
     setNodeDetailLoading(true);
     setNodeDetailError('');
     void props
-      .loadNodeDetail(repositoryId, selectedNode.id)
+      .loadNodeDetail(repository.id, selectedNode.id)
       .then(detail => {
         if (cancelled) return;
         nodeDetailCache.current.set(key, detail);
@@ -392,7 +553,7 @@ export function GraphWorkspace(props: {
     return () => {
       cancelled = true;
     };
-  }, [baseGraph?.repository.snapshot.id, props.loadNodeDetail, repositoryId, selectedNode?.id, selectedNode?.type]);
+  }, [baseGraph?.repository.snapshot.id, props.loadNodeDetail, repository?.id, selectedNode?.id, selectedNode?.type]);
 
   const searchResults = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -404,12 +565,19 @@ export function GraphWorkspace(props: {
           node.qualifiedName?.toLowerCase().includes(needle) ||
           node.path?.toLowerCase().includes(needle),
       )
-      .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))
+      .sort((left, right) => right.degree - left.degree || compareCodeUnits(left.label, right.label))
       .slice(0, 8);
   }, [graph, search]);
 
   const chooseRepository = (nextRepositoryId: string): void => {
+    const next = repositories.find(candidate => candidate.id === nextRepositoryId);
     setRepositoryId(nextRepositoryId);
+    setViewId(next?.defaultViewId ?? next?.views[0]?.id ?? '');
+    setProjectId('all');
+  };
+
+  const chooseView = (nextViewId: string): void => {
+    setViewId(nextViewId);
     setProjectId('all');
   };
 
@@ -449,6 +617,15 @@ export function GraphWorkspace(props: {
         </button>
       </header>
 
+      {props.catalog?.diagnostics.length ? (
+        <div className="graph-catalog-diagnostics" role="status">
+          <strong>Some indexed views need attention</strong>
+          {props.catalog.diagnostics.map(diagnostic => (
+            <span key={`${diagnostic.checkoutId}:${diagnostic.code}`}>{diagnostic.message}</span>
+          ))}
+        </div>
+      ) : null}
+
       <div className="graph-toolbar">
         <label>
           <span>Repository</span>
@@ -456,27 +633,43 @@ export function GraphWorkspace(props: {
             aria-label="Repository"
             disabled={repositories.length === 0}
             onChange={event => chooseRepository(event.target.value)}
-            value={repository?.id ?? ''}
+            value={repositoryGroup?.id ?? ''}
           >
             {repositories.map(item => (
               <option key={item.id} value={item.id}>
-                {item.displayName}
+                {graphRepositoryOptionLabel(item, repositories)}
               </option>
             ))}
           </select>
         </label>
+        {repositoryGroup && repositoryGroup.views.length > 1 ? (
+          <label>
+            <span>Indexed view</span>
+            <select
+              aria-label="Indexed view"
+              onChange={event => chooseView(event.target.value)}
+              value={repository?.id ?? ''}
+            >
+              {repositoryGroup.views.map(view => (
+                <option key={view.id} value={view.id}>
+                  {view.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label>
-          <span>Project</span>
+          <span>Component</span>
           <select
-            aria-label="Project"
+            aria-label="Component"
             disabled={!repository}
             onChange={event => chooseProject(event.target.value)}
             value={projectId}
           >
-            <option value="all">All projects</option>
+            <option value="all">All components</option>
             {(repository?.projects ?? []).map(project => (
               <option key={project.id} value={project.id}>
-                {project.label} · {compactNumber(project.symbolCount)}
+                {project.label} · {graphProjectBadge(project)} · {compactNumber(project.symbolCount)}
               </option>
             ))}
           </select>
@@ -486,7 +679,7 @@ export function GraphWorkspace(props: {
           <input
             disabled={!graph}
             onChange={event => setSearch(event.target.value)}
-            placeholder={graph?.mode === 'overview' ? 'Search projects' : 'Name, path, or symbol'}
+            placeholder={graph?.mode === 'overview' ? 'Search components' : 'Name, path, or symbol'}
             type="search"
             value={search}
           />
@@ -552,7 +745,7 @@ export function GraphWorkspace(props: {
           ) : (
             <div className="graph-size-readout">
               <span>Node size</span>
-              <strong>Project symbols</strong>
+              <strong>Component symbols</strong>
             </div>
           )}
           <div className="graph-focus-control">
@@ -638,7 +831,14 @@ export function GraphWorkspace(props: {
               onSelectNode={nodeId => selectNode(nodeId, true)}
             />
           ) : graph ? (
-            <GraphSummary graph={graph} sizeMetric={sizeMetric} />
+            <GraphSummary
+              analysis={analysis}
+              analysisError={analysisError}
+              analysisLoading={analysisLoading}
+              graph={graph}
+              onAnalyze={loadAnalysis}
+              sizeMetric={sizeMetric}
+            />
           ) : (
             <div className="inspector-placeholder">
               <span className="inspector-dot" />
@@ -1140,7 +1340,11 @@ function ThreeGraph(props: {
 }
 
 function GraphSummary(props: {
+  readonly analysis?: GraphAnalysis;
+  readonly analysisError: string;
+  readonly analysisLoading: boolean;
   readonly graph: GraphVisualization;
+  readonly onAnalyze: () => void;
   readonly sizeMetric: GraphSizeMetric;
 }): React.ReactElement {
   const project =
@@ -1149,11 +1353,11 @@ function GraphSummary(props: {
       : props.graph.repository.projects.find(candidate => candidate.id === props.graph.projectId);
   return (
     <div className="graph-summary">
-      <p className="eyebrow">{props.graph.mode === 'overview' ? 'Repository overview' : 'Project working set'}</p>
+      <p className="eyebrow">{props.graph.mode === 'overview' ? 'Repository overview' : 'Component working set'}</p>
       <h3>{project?.label ?? props.graph.repository.displayName}</h3>
       <p>
         {props.graph.mode === 'overview'
-          ? 'Node size reflects indexed symbol volume. Double-click a project to explore its symbol graph.'
+          ? 'Node size reflects indexed symbol volume. Double-click a component to explore its symbol graph.'
           : `Node size reflects ${sizeMetricLabel(props.sizeMetric).toLowerCase()} among the filtered relationships.`}
       </p>
       <dl className="metric-list">
@@ -1179,16 +1383,77 @@ function GraphSummary(props: {
       </dl>
       <div className="graph-legend">
         <span>
-          <i style={{background: GRAPH_PALETTE[0]}} /> Project group
+          <i style={{background: GRAPH_PALETTE[0]}} /> Component or facet
         </span>
         <span>
           <i style={{background: SELECTED_NODE_COLOR}} /> Selected node
         </span>
         <span>
           <i className="legend-size" /> Size ·{' '}
-          {props.graph.mode === 'overview' ? 'Project symbols' : sizeMetricLabel(props.sizeMetric)}
+          {props.graph.mode === 'overview' ? 'Component symbols' : sizeMetricLabel(props.sizeMetric)}
         </span>
       </div>
+      <section className="graph-analysis-summary">
+        <header>
+          <div>
+            <p className="eyebrow">Whole-graph analysis</p>
+            <h4>Architecture signals</h4>
+          </div>
+          <button className="quiet-button" disabled={props.analysisLoading} onClick={props.onAnalyze} type="button">
+            {props.analysisLoading ? 'Analyzing…' : props.analysis ? 'Refresh' : 'Analyze'}
+          </button>
+        </header>
+        {props.analysis ? (
+          <>
+            <dl className="metric-list graph-analysis-metrics">
+              <div>
+                <dt>Communities</dt>
+                <dd>{compactNumber(props.analysis.statistics.communityCount)}</dd>
+              </div>
+              <div>
+                <dt>Components</dt>
+                <dd>{compactNumber(props.analysis.statistics.connectedComponentCount)}</dd>
+              </div>
+              <div>
+                <dt>Hubs</dt>
+                <dd>{compactNumber(props.analysis.hubs.length)}</dd>
+              </div>
+              <div>
+                <dt>Coverage</dt>
+                <dd>{props.analysis.coverage.complete ? 'Complete' : 'Partial'}</dd>
+              </div>
+            </dl>
+            {props.analysis.hubs.length > 0 ? (
+              <div className="graph-analysis-list">
+                <h5>Highest-connectivity nodes</h5>
+                {props.analysis.hubs.slice(0, 4).map(hub => (
+                  <div key={`${hub.node.path}:${hub.node.label}`}>
+                    <span>
+                      <strong>{hub.node.label}</strong>
+                      <small>{hub.node.path}</small>
+                    </span>
+                    <em>
+                      {hub.classification === 'god-node' ? 'God node' : 'Hub'} · {hub.degree}
+                    </em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {props.analysis.surprisingLinks[0] ? (
+              <p className="graph-analysis-surprise">
+                <strong>Cross-community signal:</strong> {props.analysis.surprisingLinks[0].source.label}{' '}
+                {relationLabel(props.analysis.surprisingLinks[0].relation)}{' '}
+                {props.analysis.surprisingLinks[0].target.label}
+              </p>
+            ) : null}
+            {props.analysis.warnings.length > 0 ? <p>{props.analysis.warnings[0]}</p> : null}
+          </>
+        ) : props.analysisError ? (
+          <p className="graph-analysis-error">{props.analysisError}</p>
+        ) : (
+          <p>Run deterministic communities, hub, and cross-boundary analysis on demand.</p>
+        )}
+      </section>
     </div>
   );
 }
@@ -1247,7 +1512,7 @@ function NodeInspector(props: {
       </header>
       {props.node.type === 'project' ? (
         <button className="primary-button" onClick={props.onOpenProject} type="button">
-          Explore project
+          Explore component
         </button>
       ) : (
         <div className="inspector-tabs" role="tablist" aria-label="Node details">
@@ -1507,11 +1772,11 @@ export function graphFocusLayoutTargets(
   const orderedNeighbors = [...neighborIds]
     .map(nodeId => nodesById.get(nodeId))
     .filter(node => node !== undefined)
-    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+    .sort((left, right) => compareCodeUnits(left.label, right.label) || compareCodeUnits(left.id, right.id));
   const highlightedIds = new Set([selectedNodeId, ...neighborIds]);
   const visibleObstacles = nodes
     .filter(node => !highlightedIds.has(node.id) && labelSizes.has(node.id))
-    .sort((left, right) => left.id.localeCompare(right.id))
+    .sort((left, right) => compareCodeUnits(left.id, right.id))
     .slice(0, 180);
   const focusNodes = [
     {
@@ -1713,7 +1978,7 @@ function focusNodeBoxes(
 
 function overviewLayout(nodes: readonly GraphNode[]): readonly PositionedNode[] {
   const ordered = [...nodes].sort(
-    (left, right) => (right.symbolCount ?? 0) - (left.symbolCount ?? 0) || left.label.localeCompare(right.label),
+    (left, right) => (right.symbolCount ?? 0) - (left.symbolCount ?? 0) || compareCodeUnits(left.label, right.label),
   );
   return ordered.map((node, index) => {
     const angle = index * 2.399963;
@@ -1731,7 +1996,7 @@ function detailLayout(nodes: readonly GraphNode[], sizeValues: ReadonlyMap<strin
     groups.set(group, items);
   }
   const orderedGroups = [...groups].sort(
-    ([leftName, left], [rightName, right]) => right.length - left.length || leftName.localeCompare(rightName),
+    ([leftName, left], [rightName, right]) => right.length - left.length || compareCodeUnits(leftName, rightName),
   );
   const output: PositionedNode[] = [];
   for (const [groupIndex, [, items]] of orderedGroups.entries()) {
@@ -1740,7 +2005,7 @@ function detailLayout(nodes: readonly GraphNode[], sizeValues: ReadonlyMap<strin
     const centerX = Math.cos(groupAngle) * groupRadius;
     const centerY = Math.sin(groupAngle) * groupRadius;
     const ordered = [...items].sort(
-      (left, right) => right.degree - left.degree || left.label.localeCompare(right.label),
+      (left, right) => right.degree - left.degree || compareCodeUnits(left.label, right.label),
     );
     for (const [itemIndex, node] of ordered.entries()) {
       const angle = itemIndex * 2.399963 + groupAngle;
@@ -1986,7 +2251,7 @@ function visibleLabels(
       if (right.id === selectedNodeId) return 1;
       if (highlightedNodeIds?.has(left.id) && !highlightedNodeIds.has(right.id)) return -1;
       if (highlightedNodeIds?.has(right.id) && !highlightedNodeIds.has(left.id)) return 1;
-      return right.degree - left.degree || right.radius - left.radius || left.label.localeCompare(right.label);
+      return right.degree - left.degree || right.radius - left.radius || compareCodeUnits(left.label, right.label);
     })
     .filter(node => {
       if (node.id === selectedNodeId || !highlightedNodeIds?.has(node.id)) return true;
@@ -2097,6 +2362,12 @@ function graphPointViewScale(zoom: number): number {
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, {maximumFractionDigits: 1, notation: 'compact'}).format(value);
+}
+
+function graphProjectBadge(project: GraphProject): string {
+  if (project.model === 'legacy-fallback') return 'legacy group';
+  if (project.model === 'facet') return 'facet';
+  return project.buildSystem ? `${project.buildSystem} ${project.kind ?? 'component'}` : (project.kind ?? 'component');
 }
 
 function relationLabel(value: string): string {

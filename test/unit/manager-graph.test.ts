@@ -1,14 +1,48 @@
 import {describe, expect, it} from 'vitest';
 import {
+  graphAnalysisRequestIsCurrent,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
   graphNodeSizeValues,
+  graphRepositoryOptionLabel,
   graphWithNodeNeighborhood,
+  resolveGraphSelection,
   type GraphEdge,
+  type GraphRepositoryGroup,
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
+  it('keeps a selected indexed view across refresh and falls back deterministically after removal', () => {
+    const groups: readonly GraphRepositoryGroup[] = [repositoryGroup('repo-a', ['view-new', 'view-old'], 'view-new')];
+    expect(resolveGraphSelection(groups, 'repo-a', 'view-old')).toEqual({
+      repositoryId: 'repo-a',
+      viewId: 'view-old',
+    });
+    expect(resolveGraphSelection([repositoryGroup('repo-a', ['view-new'], 'view-new')], 'repo-a', 'view-old')).toEqual({
+      repositoryId: 'repo-a',
+      viewId: 'view-new',
+    });
+    expect(resolveGraphSelection([repositoryGroup('repo-b', ['view-b'], 'view-b')], 'repo-a', 'view-old')).toEqual({
+      repositoryId: 'repo-b',
+      viewId: 'view-b',
+    });
+  });
+
+  it('disambiguates distinct logical repositories that share a display name', () => {
+    const first = {...repositoryGroup('11111111-logical', ['view-a'], 'view-a'), displayName: 'mobile-native'};
+    const second = {...repositoryGroup('22222222-logical', ['view-b'], 'view-b'), displayName: 'mobile-native'};
+    expect(graphRepositoryOptionLabel(first, [first, second])).toBe('mobile-native · 11111111');
+    expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · 22222222');
+  });
+
+  it('rejects an analysis response after its repository, snapshot, or request generation changes', () => {
+    expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-a:snapshot-1', 'repo-a:snapshot-1')).toBe(true);
+    expect(graphAnalysisRequestIsCurrent(5, 4, 'repo-a:snapshot-1', 'repo-a:snapshot-1')).toBe(false);
+    expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-b:snapshot-1', 'repo-a:snapshot-1')).toBe(false);
+    expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-a:snapshot-2', 'repo-a:snapshot-1')).toBe(false);
+  });
+
   it('centers a searched detail node and zooms into its labels', () => {
     expect(graphFocusTarget({x: 0, y: 0, zoom: 0.6}, {x: 125, y: -48}, 'detail')).toEqual({
       x: 125,
@@ -189,10 +223,12 @@ describe('manager graph focus', () => {
       ],
       projectId: 'package:threadnote',
       repository: {
+        checkoutId: 'repository',
         displayName: 'threadnote',
         id: 'repository',
+        label: 'repository',
+        model: 'workspace' as const,
         projects: [],
-        repositoryId: 'repository-id',
         snapshot: {
           commit: 'commit',
           dirty: true,
@@ -201,6 +237,7 @@ describe('manager graph focus', () => {
           id: 'snapshot',
           symbolCount: 12_000,
         },
+        worktreeId: 'worktree',
       },
       stats: {
         renderedEdges: 1,
@@ -236,6 +273,32 @@ describe('manager graph focus', () => {
     expect(graph.nodes).toHaveLength(3);
   });
 });
+
+function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: string): GraphRepositoryGroup {
+  return {
+    defaultViewId,
+    displayName: id,
+    id,
+    repositoryId: id,
+    views: viewIds.map(viewId => ({
+      checkoutId: viewId,
+      displayName: id,
+      id: viewId,
+      label: viewId,
+      model: 'workspace',
+      projects: [],
+      snapshot: {
+        commit: 'abcdef01',
+        dirty: false,
+        edgeCount: 0,
+        fileCount: 0,
+        id: `snapshot-${viewId}`,
+        symbolCount: 0,
+      },
+      worktreeId: viewId,
+    })),
+  };
+}
 
 function edge(id: string, sourceId: string, targetId: string, relation: string): GraphEdge {
   return {

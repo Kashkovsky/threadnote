@@ -334,6 +334,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
         Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
       ),
+    {mode: options.deep === true ? 'deep' : 'quick'},
   ).pipe(Effect.mapError(cause => new Error(`Native code graph repair failed: ${errorMessage(cause)}`)));
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
@@ -396,6 +397,10 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
       return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
     case 'cleaning-vectors':
       return `Checking temporary vector state for ${database}.`;
+    case 'deferred':
+      return progress.reason === 'active-build'
+        ? `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`
+        : `Deferred ${database}: run \`threadnote repair --deep\` when a full derived-store check is convenient.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
   }
@@ -404,17 +409,30 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
 function codeGraphRepairSummaryMessage(
   summary: {
     readonly databases: number;
+    readonly deferredDatabases: number;
     readonly discarded: number;
+    readonly obsoleteStoreBytes: number;
+    readonly obsoleteStoreCheckouts: number;
+    readonly obsoleteStoreFiles: number;
     readonly removedIncompleteSnapshots: number;
     readonly removedTemporaryFiles: number;
+    readonly unsafeObsoleteEntries: number;
   },
   dryRun: boolean,
 ): string {
   return (
     `${dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
+    (summary.deferredDatabases > 0 ? `${summary.deferredDatabases} deferred, ` : '') +
     `${summary.discarded} disposable rebuild(s), ` +
     `${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
-    `${summary.removedTemporaryFiles} temporary vector file(s).`
+    `${summary.removedTemporaryFiles} temporary vector file(s).` +
+    (summary.obsoleteStoreFiles > 0
+      ? ` Preserved ${summary.obsoleteStoreFiles} obsolete store file(s), ${summary.obsoleteStoreBytes} byte(s), ` +
+        `across ${summary.obsoleteStoreCheckouts} checkout(s); remove explicitly with \`threadnote graph purge --obsolete\`.`
+      : '') +
+    (summary.unsafeObsoleteEntries > 0
+      ? ` ${summary.unsafeObsoleteEntries} unsafe obsolete-shaped entry/entries require manual review.`
+      : '')
   );
 }
 

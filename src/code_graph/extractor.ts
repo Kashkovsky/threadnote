@@ -1,6 +1,7 @@
 import ts from 'typescript-compiler';
 import {Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {compareCodeUnits} from './ordering.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -575,7 +576,9 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   for (const match of content.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`/g)) {
     references.add(match[1]!);
   }
-  for (const match of content.matchAll(/\b(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|mdx?)\b/g)) {
+  for (const match of content.matchAll(
+    /\b(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|mdx?|pdf|docx|pptx|xlsx|od[stp]|png|jpe?g|gif|webp|svg|mp[34]|m4[av]|mov|webm|wav|flac)\b/gi,
+  )) {
     references.add(match[0]);
   }
   for (const target of references) {
@@ -1041,7 +1044,9 @@ function discoverResolutionAliases(
   return {
     observer,
     scopeBySourcePath: new Map(),
-    scopes: scopes.sort((left, right) => right.root.length - left.root.length || left.root.localeCompare(right.root)),
+    scopes: scopes.sort(
+      (left, right) => right.root.length - left.root.length || compareCodeUnits(left.root, right.root),
+    ),
   };
 }
 

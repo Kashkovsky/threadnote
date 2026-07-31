@@ -15,7 +15,12 @@ import {
   SynchronizedRef,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
+import {CommandExecutor} from '../effect/command.js';
+import {SystemInfo} from '../effect/system.js';
 import type {CodeGraphProgress} from './types.js';
+import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
+import {codeGraphLayout} from './layout.js';
+import {resolveRepositoryIdentity} from './repository.js';
 
 export interface CodeGraphWatchOptions {
   readonly cwd: string;
@@ -57,7 +62,10 @@ export type CodeGraphRefreshStatus =
 export interface CodeGraphWatcherShape {
   readonly ensure: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
-  readonly status: (key: string) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>>;
+  readonly status: (
+    key: string,
+    target?: Pick<CodeGraphWatchOptions, 'cwd' | 'threadnoteHome'>,
+  ) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>, unknown>;
   readonly watch: (options: CodeGraphWatchOptions) => Effect.Effect<void, unknown>;
 }
 
@@ -125,6 +133,8 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      const commandExecutor = yield* CommandExecutor;
+      const systemInfo = yield* SystemInfo;
       const indexer = yield* CodeGraphIndexer;
       const run = (
         options: CodeGraphWatchOptions,
@@ -132,7 +142,27 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         requestRefresh: () => Effect.Effect<void>,
       ) => watchRepository(fs, path, options, initialRefresh, requestRefresh);
       const refresh = (options: CodeGraphWatchOptions) => indexRepository(indexer, options).pipe(Effect.asVoid);
-      return yield* makeCodeGraphWatcher(run, refresh);
+      const watcher = yield* makeCodeGraphWatcher(run, refresh);
+      return CodeGraphWatcher.of({
+        ...watcher,
+        status: (key, target) =>
+          watcher.status(key).pipe(
+            Effect.flatMap(current => {
+              if (Option.isSome(current) || !target) return Effect.succeed(current);
+              return Effect.gen(function* () {
+                const identity = yield* resolveRepositoryIdentity(target.cwd);
+                const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
+                const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
+                return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
+              }).pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, systemInfo),
+              );
+            }),
+          ),
+      });
     }),
   );
 }
@@ -531,6 +561,45 @@ function refreshStatusAt(status: CodeGraphRefreshStatus, now: number): CodeGraph
           }),
       lastProgressAgeMilliseconds,
       phaseElapsedMilliseconds: Math.max(0, now - status.timing.phaseStartedAtMilliseconds),
+    },
+  };
+}
+
+function persistedRefreshStatus(status: ObservedCodeGraphBuildStatus): CodeGraphRefreshStatus {
+  if (status.observation.liveness === 'completed' && status.result) {
+    return {edges: status.result.edges, state: 'ready', symbols: status.result.symbols};
+  }
+  if (status.observation.liveness === 'failed' || status.observation.liveness === 'abandoned') {
+    return {
+      message:
+        status.error?.summary ??
+        (status.observation.reason === 'pid-reused'
+          ? 'Code graph build owner PID was reused; the abandoned build can be retried.'
+          : 'Code graph build owner exited before completion; retry the build.'),
+      state: 'failed',
+    };
+  }
+  const startedAtMilliseconds = Date.parse(status.timestamps.startedAt);
+  const phaseStartedAtMilliseconds = Date.parse(status.timestamps.phaseStartedAt);
+  const updatedAtMilliseconds = Date.parse(status.timestamps.updatedAt);
+  const now = Date.parse(status.timestamps.heartbeatAt) + status.observation.heartbeatAgeMilliseconds;
+  return {
+    state: 'indexing',
+    timing: {
+      buildId: status.buildId,
+      elapsedMilliseconds: Math.max(0, now - startedAtMilliseconds),
+      ...(status.eta
+        ? {
+            estimateConfidence: status.eta.confidence,
+            estimatedPhaseRemainingMilliseconds: status.eta.remainingMilliseconds,
+            estimateScope: 'phase' as const,
+          }
+        : {}),
+      lastProgressAgeMilliseconds: Math.max(0, now - updatedAtMilliseconds),
+      phaseElapsedMilliseconds: Math.max(0, now - phaseStartedAtMilliseconds),
+      phaseStartedAtMilliseconds,
+      startedAtMilliseconds,
+      updatedAtMilliseconds,
     },
   };
 }

@@ -96,6 +96,7 @@ export interface HookRunnerOptions {
 }
 
 export interface RepairOptions {
+  readonly deep?: boolean;
   readonly dryRun?: boolean;
   readonly mcp?: string;
   readonly postUpdate?: boolean;

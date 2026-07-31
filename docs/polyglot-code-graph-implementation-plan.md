@@ -1,23 +1,27 @@
 # Polyglot code graph implementation plan
 
-Status: implemented and release-gated on the Threadnote 4 development branch (2026-07-30).
+Status: implemented and release-gated on the Threadnote 4 development branch (updated 2026-07-31).
 
 ## Implementation result
 
 All architectural phases in this plan are implemented:
 
-- the generated built-in catalog currently registers documentation, manifests, TypeScript/JavaScript, Java, Kotlin,
-  and Swift packs;
+- the generated built-in catalog currently registers documentation, manifests, corpus, structured-schema,
+  TypeScript/JavaScript, Java, Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua,
+  Objective-C, PHP, PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, Zig, Apex,
+  Fortran, and Razor packs;
 - TypeScript/JavaScript remains compiler-backed, and its frozen evaluation fixture still produces the exact reviewed
   1.0 recall/MRR, 1.0 no-answer precision/recall, and zero authoritative false-edge baseline;
-- Java, Kotlin, and Swift use bundled, checksum-verified Tree-sitter WASM assets with pinned source revisions, ABIs,
-  versions, and licenses;
+- Java, Kotlin, Swift, and the other portable structural source packs use bundled, checksum-verified Tree-sitter WASM
+  assets with pinned source revisions, ABIs, versions, and licenses;
+- Apex, Fortran, and Razor use bounded deterministic text-structural extraction and make no AST coverage claim;
 - language-neutral workspace attribution and typed references cover nested and integrated Maven/Gradle, SwiftPM, and
   conservative Xcode scopes without executing repository build logic;
 - repository resolution and graph-vector construction operate through bounded SQLite pages, with transactional
   snapshot/generation activation and no repository coverage caps;
 - CLI and MCP `query`, `explain`, `path`, and `impact` operations pass the compiled standalone polyglot smoke with no
-  Node, Python, external Bun, compiler, JVM, Swift, or build tool available;
+  Node, Python, external Bun, compiler, JVM, Swift, or build tool available. Separate whole-graph analysis adds
+  statistics, structural communities, hubs, and surprising links without changing the language-pack contract;
 - the frozen polyglot fixture also produces 1.0 recall/MRR and no-answer metrics with zero authoritative false edges;
 - the 10,000-symbol production-vector gate passes with 10,103 stored symbols and 20,000 stored edges. More detailed
   dynamic build-file semantics can be added inside workspace detectors without changing the pack, index, storage,

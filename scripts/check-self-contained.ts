@@ -16,6 +16,19 @@ const EXPECTED_EFFECT_VERSION = '4.0.0-beta.99';
 const EXPECTED_NODE_LLAMA_CPP_VERSION = '3.19.1';
 const EXPECTED_TYPESCRIPT_COMPILER_VERSION = 'npm:typescript@5.9.3';
 const EXPECTED_WEB_TREE_SITTER_VERSION = '0.26.11';
+const EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION = '0.3.1';
+const EXPECTED_REPOMIX_TREE_SITTER_WASMS_VERSION = '0.1.17';
+const EXPECTED_TREE_SITTER_HCL_VERSION = '1.2.0';
+const EXPECTED_TREE_SITTER_GRAMMAR_PACKAGE_VERSIONS = {
+  '@tree-sitter-grammars/tree-sitter-lua': '0.4.1',
+  '@tree-sitter-grammars/tree-sitter-svelte': '1.0.2',
+  '@tree-sitter-grammars/tree-sitter-zig': '1.1.2',
+  'tree-sitter-elixir': '0.3.5',
+  'tree-sitter-julia': '0.23.1',
+  'tree-sitter-objc': '3.0.2',
+  'tree-sitter-scala': '0.24.0',
+  'tree-sitter-systemverilog': '0.4.0',
+} as const;
 const FORBIDDEN_LEGACY_FILES = [
   '.nvmrc',
   'bin/node-warning-filter.cjs',
@@ -42,13 +55,18 @@ const ALLOWED_LEGACY_IDENTIFIER_SOURCES = new Set([
   'src/migration/layout.ts',
   'src/storage/resource-id.ts',
 ]);
+const ALLOWED_PYTHON_LANGUAGE_PACK_SOURCES = new Set([
+  'src/code_graph/languages/catalog.generated.ts',
+  'src/code_graph/languages/generic/definitions.ts',
+  'src/code_graph/languages/tree_sitter_assets.ts',
+]);
 
 const checkSelfContained = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* path.fromFileUrl(ROOT_URL);
   const failures: string[] = [];
-  yield* validateCodeGraphAssets(fs, path, path.join(root, 'assets', 'code-graph'), failures);
+  yield* validateCodeGraphAssets(fs, path, path.join(root, 'assets', 'code-graph'), failures, root);
 
   for (const file of FORBIDDEN_LEGACY_FILES) {
     if (yield* fs.exists(path.join(root, file))) {
@@ -59,8 +77,15 @@ const checkSelfContained = Effect.gen(function* () {
   for (const file of yield* sourceFiles(fs, path, path.join(root, 'src'))) {
     const relativePath = normalizePath(path.relative(root, file));
     const content = yield* fs.readFileString(file);
-    if (/\b(?:openviking|python|pipx)\b/i.test(content) && !ALLOWED_LEGACY_RUNTIME_SOURCES.has(relativePath)) {
+    if (/\b(?:openviking|pipx)\b/i.test(content) && !ALLOWED_LEGACY_RUNTIME_SOURCES.has(relativePath)) {
       failures.push(`legacy runtime token outside migration boundary: ${relativePath}`);
+    }
+    if (
+      /\bpython\b/i.test(content) &&
+      relativePath !== 'src/migration/legacy-installations.ts' &&
+      !ALLOWED_PYTHON_LANGUAGE_PACK_SOURCES.has(relativePath)
+    ) {
+      failures.push(`Python runtime token outside migration or language-pack metadata: ${relativePath}`);
     }
     if (/(?:viking:\/\/|data\/viking)/i.test(content) && !ALLOWED_LEGACY_IDENTIFIER_SOURCES.has(relativePath)) {
       failures.push(`legacy identifier or storage path outside compatibility boundary: ${relativePath}`);
@@ -103,6 +128,20 @@ const checkSelfContained = Effect.gen(function* () {
   if (manifest.devDependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
     failures.push(`@effect/platform-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
+  if (manifest.devDependencies?.['@vscode/tree-sitter-wasm'] !== EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION) {
+    failures.push(`@vscode/tree-sitter-wasm must be pinned to ${EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION}`);
+  }
+  if (manifest.devDependencies?.['@repomix/tree-sitter-wasms'] !== EXPECTED_REPOMIX_TREE_SITTER_WASMS_VERSION) {
+    failures.push(`@repomix/tree-sitter-wasms must be pinned to ${EXPECTED_REPOMIX_TREE_SITTER_WASMS_VERSION}`);
+  }
+  if (manifest.devDependencies?.['@tree-sitter-grammars/tree-sitter-hcl'] !== EXPECTED_TREE_SITTER_HCL_VERSION) {
+    failures.push(`@tree-sitter-grammars/tree-sitter-hcl must be pinned to ${EXPECTED_TREE_SITTER_HCL_VERSION}`);
+  }
+  for (const [packageName, version] of Object.entries(EXPECTED_TREE_SITTER_GRAMMAR_PACKAGE_VERSIONS)) {
+    if (manifest.devDependencies?.[packageName] !== version) {
+      failures.push(`${packageName} must be pinned to ${version}`);
+    }
+  }
   if (allDependencies['@effect/platform-node'] || allDependencies['@effect/sql-sqlite-node']) {
     failures.push('Node Effect runtime adapters must not be dependencies.');
   }
@@ -110,8 +149,8 @@ const checkSelfContained = Effect.gen(function* () {
     failures.push('Graphify must not be a runtime or development dependency.');
   }
   const scriptCommands = Object.values(manifest.scripts ?? {}).join('\n');
-  if (/\b(?:node|npm|npx)\b/.test(scriptCommands)) {
-    failures.push('package scripts must run through Bun only.');
+  if (/\b(?:node|npm|npx|pip|pipx|python|python3)\b/.test(scriptCommands)) {
+    failures.push('package scripts must run through Bun only and must not invoke a Python runtime.');
   }
 
   for (const installer of ['scripts/install.sh', 'scripts/install.ps1'] as const) {
@@ -201,6 +240,7 @@ const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphA
   path: Path.Path,
   root: string,
   failures: string[],
+  packageRoot?: string,
 ) {
   const manifestPath = path.join(root, 'manifest.json');
   if (!(yield* fs.exists(manifestPath))) {
@@ -213,15 +253,15 @@ const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphA
     return;
   }
   const expected = [
-    {id: 'web-tree-sitter', metadata: manifest.runtime, path: 'runtime/web-tree-sitter.wasm', runtime: true},
-    {id: 'java', metadata: manifest.grammars.java, path: 'grammars/java.wasm', runtime: false},
-    {id: 'kotlin', metadata: manifest.grammars.kotlin, path: 'grammars/kotlin.wasm', runtime: false},
-    {id: 'swift', metadata: manifest.grammars.swift, path: 'grammars/swift.wasm', runtime: false},
-  ] as const;
+    {id: 'web-tree-sitter', metadata: manifest.runtime, runtime: true},
+    ...Object.entries(manifest.grammars)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, metadata]) => ({id, metadata, runtime: false})),
+  ];
   for (const asset of expected) {
     if (
       !isRecord(asset.metadata) ||
-      asset.metadata.path !== asset.path ||
+      typeof asset.metadata.path !== 'string' ||
       typeof asset.metadata.version !== 'string' ||
       typeof asset.metadata.source !== 'string' ||
       !asset.metadata.source.startsWith('https://github.com/') ||
@@ -232,24 +272,44 @@ const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphA
       failures.push(`code graph asset metadata is invalid for ${asset.id}`);
       continue;
     }
-    const assetPath = path.join(root, ...asset.path.split('/'));
-    if (!(yield* fs.exists(assetPath))) {
-      failures.push(`code graph asset is missing: ${asset.path}`);
+    const assetPath = path.join(root, ...asset.metadata.path.split('/'));
+    const packagePath =
+      !asset.runtime && packageRoot !== undefined && typeof asset.metadata.packagePath === 'string'
+        ? path.join(packageRoot, ...asset.metadata.packagePath.split('/'))
+        : undefined;
+    const verifiablePath = (yield* fs.exists(assetPath)) ? assetPath : packagePath;
+    if (verifiablePath === undefined || !(yield* fs.exists(verifiablePath))) {
+      failures.push(`code graph asset is missing: ${asset.metadata.path}`);
       continue;
     }
-    if ((yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
-      failures.push(`code graph asset checksum does not match: ${asset.path}`);
+    if ((yield* sha256FileHex(verifiablePath)) !== asset.metadata.sha256) {
+      failures.push(`code graph asset checksum does not match: ${asset.metadata.path}`);
+    }
+    if (!asset.runtime) {
+      if (typeof asset.metadata.license !== 'string') {
+        failures.push(`code graph asset license metadata is missing for ${asset.id}`);
+      } else {
+        const bundledLicense = path.join(root, ...asset.metadata.license.split('/'));
+        const packageLicense =
+          packageRoot !== undefined && typeof asset.metadata.licensePackagePath === 'string'
+            ? path.join(packageRoot, ...asset.metadata.licensePackagePath.split('/'))
+            : undefined;
+        const licensePath = (yield* fs.exists(bundledLicense)) ? bundledLicense : packageLicense;
+        if (licensePath === undefined || !(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
+          failures.push(`code graph asset license is missing: ${asset.metadata.license}`);
+        }
+      }
+      if (typeof asset.metadata.builderLicense === 'string') {
+        const builderLicense = path.join(root, ...asset.metadata.builderLicense.split('/'));
+        if (!(yield* fs.exists(builderLicense)) || (yield* fs.stat(builderLicense)).size <= 0) {
+          failures.push(`code graph asset builder license is missing: ${asset.metadata.builderLicense}`);
+        }
+      }
     }
   }
-  for (const license of [
-    'tree-sitter-java.LICENSE',
-    'tree-sitter-kotlin.LICENSE',
-    'tree-sitter-swift.LICENSE',
-    'web-tree-sitter.LICENSE',
-  ]) {
-    if (!(yield* fs.exists(path.join(root, 'licenses', license)))) {
-      failures.push(`code graph asset license is missing: ${license}`);
-    }
+  const runtimeLicense = path.join(root, 'licenses', 'web-tree-sitter.LICENSE');
+  if (!(yield* fs.exists(runtimeLicense)) || (yield* fs.stat(runtimeLicense)).size <= 0) {
+    failures.push('code graph asset license is missing: licenses/web-tree-sitter.LICENSE');
   }
 });
 

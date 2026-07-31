@@ -1,0 +1,127 @@
+{
+  "createdAt": "2026-07-31T12:45:51.339Z",
+  "environment": {
+    "architecture": "arm64",
+    "cpu": "Apple M1 Max",
+    "memoryBytes": 68719476736,
+    "operatingSystem": "macOS 27.0",
+    "runtime": "bun/1.3.14"
+  },
+  "fixture": {
+    "bodyOnlyModifiedFiles": 1,
+    "targetSymbols": 10000
+  },
+  "measurements": {
+    "full": {
+      "cpuMilliseconds": {
+        "maximum": 3930.269,
+        "mean": 3381.0516666666663,
+        "minimum": 3096.692
+      },
+      "durationMilliseconds": {
+        "maximum": 3440.360583,
+        "mean": 3356.143861,
+        "minimum": 3296.478917
+      },
+      "materializationMilliseconds": {
+        "maximum": 1139.878751,
+        "mean": 1112.2260976666666,
+        "minimum": 1091.040375
+      },
+      "stagedFiles": 102
+    },
+    "incremental": {
+      "cpuMilliseconds": {
+        "maximum": 2300.014,
+        "mean": 2209.520666666667,
+        "minimum": 2122.405
+      },
+      "durationMilliseconds": {
+        "maximum": 2423.418166,
+        "mean": 2406.992764,
+        "minimum": 2395.128459
+      },
+      "materializationMilliseconds": {
+        "maximum": 603.136375,
+        "mean": 600.7158466666666,
+        "minimum": 597.319083
+      },
+      "stagedFiles": 1
+    },
+    "improvement": {
+      "durationPercent": 28.281001539582096,
+      "materializationPercent": 45.98977240986296
+    }
+  },
+  "observations": {
+    "full": [
+      {
+        "cpuMilliseconds": 3930.269,
+        "durationMilliseconds": 3440.360583,
+        "edges": 19999,
+        "fallbackReason": "disabled",
+        "materializationMilliseconds": 1139.878751,
+        "materializationMode": "full",
+        "stagedFiles": 102,
+        "symbols": 10101,
+        "totalFiles": 102
+      },
+      {
+        "cpuMilliseconds": 3096.692,
+        "durationMilliseconds": 3331.592083,
+        "edges": 19999,
+        "fallbackReason": "disabled",
+        "materializationMilliseconds": 1091.040375,
+        "materializationMode": "full",
+        "stagedFiles": 102,
+        "symbols": 10101,
+        "totalFiles": 102
+      },
+      {
+        "cpuMilliseconds": 3116.194,
+        "durationMilliseconds": 3296.478917,
+        "edges": 19999,
+        "fallbackReason": "disabled",
+        "materializationMilliseconds": 1105.759167,
+        "materializationMode": "full",
+        "stagedFiles": 102,
+        "symbols": 10101,
+        "totalFiles": 102
+      }
+    ],
+    "incremental": [
+      {
+        "cpuMilliseconds": 2300.014,
+        "durationMilliseconds": 2423.418166,
+        "edges": 19999,
+        "materializationMilliseconds": 601.692082,
+        "materializationMode": "incremental-overlay",
+        "stagedFiles": 1,
+        "symbols": 10101,
+        "totalFiles": 102
+      },
+      {
+        "cpuMilliseconds": 2206.143,
+        "durationMilliseconds": 2402.431667,
+        "edges": 19999,
+        "materializationMilliseconds": 597.319083,
+        "materializationMode": "incremental-overlay",
+        "stagedFiles": 1,
+        "symbols": 10101,
+        "totalFiles": 102
+      },
+      {
+        "cpuMilliseconds": 2122.405,
+        "durationMilliseconds": 2395.128459,
+        "edges": 19999,
+        "materializationMilliseconds": 603.136375,
+        "materializationMode": "incremental-overlay",
+        "stagedFiles": 1,
+        "symbols": 10101,
+        "totalFiles": 102
+      }
+    ]
+  },
+  "samples": 3,
+  "version": 1
+}

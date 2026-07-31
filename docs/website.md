@@ -27,12 +27,18 @@ THREADNOTE_SITE_BASE=/threadnote/ bun run site:build
 
 The production output is `site-dist/`. It is ignored by Git and rejected if it appears inside `dist/`.
 
+The researched Graphify comparison remains in the FAQ source but is hidden in normal development and production
+builds. Set `VITE_SHOW_GRAPHIFY_COMPARISON=true` only when the comparison is ready to be shown again.
+
 ## Content and interaction contracts
 
 - Treat current source, CLI help, MCP schemas, checked-in guides, and ADRs as authoritative. The historical GitHub wiki
   describes Threadnote 3 and must not supply 4.0 commands or architecture facts.
 - Memory simulations show `recall_context` returning `threadnote://` pointers followed by `read_context`.
-- Current-source questions use the separate `inspect_code_graph` tool.
+- Scoped current-source questions use `inspect_code_graph`; whole-repository statistics, communities, hubs, and
+  surprising links use the separate `analyze_code_graph` tool.
+- The landing-page graph showcase keeps both MCP flows visible and uses fictional repository names, symbols, paths,
+  topology signals, and Manager data.
 - Publishing simulations show the preview and explicit approval boundary.
 - The Manager demo must always say that it uses mock data and does not read local files.
 - Keep useful content in the DOM when animation is disabled. Honor reduced motion and keep canvas scenes decorative.

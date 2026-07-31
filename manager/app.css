@@ -914,10 +914,30 @@ dd {
 .graph-workspace {
   display: grid;
   gap: 14px;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   padding: 20px;
+}
+
+.workspace-header {
+  grid-row: 1;
+}
+
+.graph-catalog-diagnostics {
+  background: rgba(247, 213, 107, 0.08);
+  border: 1px solid rgba(247, 213, 107, 0.28);
+  border-radius: var(--radius);
+  color: var(--muted);
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+  grid-row: 2;
+  padding: 9px 12px;
+}
+
+.graph-catalog-diagnostics strong {
+  color: #f7d56b;
 }
 
 .workspace-header {
@@ -952,10 +972,23 @@ dd {
   border-radius: var(--radius);
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(170px, 230px) minmax(170px, 230px) minmax(210px, 1fr) auto;
+  grid-row: 3;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   padding: 10px;
   position: relative;
   z-index: 4;
+}
+
+.graph-filterbar {
+  grid-row: 4;
+}
+
+.graph-body {
+  grid-row: 5;
+}
+
+.graph-notes {
+  grid-row: 6;
 }
 
 .graph-toolbar label {
@@ -1371,6 +1404,90 @@ dd {
   border: 2px solid var(--muted);
   height: 8px;
   width: 8px;
+}
+
+.graph-analysis-summary {
+  border-top: 1px solid var(--line-soft);
+  margin-top: 20px;
+  padding-top: 16px;
+}
+
+.graph-analysis-summary > header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.graph-analysis-summary h4,
+.graph-analysis-summary h5 {
+  margin: 0;
+}
+
+.graph-analysis-summary h4 {
+  font-size: 14px;
+}
+
+.graph-analysis-summary h5 {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-analysis-summary > p,
+.graph-analysis-surprise,
+.graph-analysis-error {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.graph-analysis-metrics {
+  margin-top: 12px;
+}
+
+.graph-analysis-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.graph-analysis-list > div {
+  align-items: start;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding-bottom: 7px;
+}
+
+.graph-analysis-list span {
+  display: grid;
+  min-width: 0;
+}
+
+.graph-analysis-list strong,
+.graph-analysis-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-analysis-list strong {
+  font-size: 10px;
+}
+
+.graph-analysis-list small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.graph-analysis-list em {
+  color: var(--accent);
+  font-size: 8px;
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .node-kind-row {

@@ -44,6 +44,7 @@ const build = Effect.gen(function* () {
   for (const directory of RELEASE_DIRECTORIES) {
     yield* fs.copy(path.join(root, directory), path.join(outputRoot, directory), {overwrite: true});
   }
+  yield* stageCodeGraphPackageAssets(fs, path, root, outputRoot);
   for (const file of RELEASE_FILES) {
     yield* fs.copyFile(path.join(root, file), path.join(outputRoot, file));
   }
@@ -135,6 +136,62 @@ function readPackageManifest(fs: FileSystem.FileSystem, path: string) {
       }),
     ),
   );
+}
+
+const stageCodeGraphPackageAssets = Effect.fn('build.stageCodeGraphPackageAssets')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+  outputRoot: string,
+) {
+  const manifestPath = path.join(root, 'assets', 'code-graph', 'manifest.json');
+  const manifest = yield* fs.readFileString(manifestPath).pipe(
+    Effect.flatMap(content =>
+      Effect.try({
+        try: () => JSON.parse(content) as unknown,
+        catch: cause => new Error('Could not parse the code graph asset manifest.', {cause}),
+      }),
+    ),
+  );
+  if (!isRecord(manifest) || !isRecord(manifest.grammars)) {
+    return yield* Effect.fail(new Error('Code graph asset manifest does not declare grammars.'));
+  }
+  for (const [id, value] of Object.entries(manifest.grammars).sort(([left], [right]) => left.localeCompare(right))) {
+    if (!isRecord(value) || typeof value.path !== 'string') {
+      return yield* Effect.fail(new Error(`Code graph grammar metadata is invalid for ${id}.`));
+    }
+    const target = path.join(outputRoot, 'assets', 'code-graph', ...value.path.split('/'));
+    if (!(yield* fs.exists(target))) {
+      if (typeof value.packagePath !== 'string') {
+        return yield* Effect.fail(new Error(`Code graph grammar ${id} is not vendored and has no package source.`));
+      }
+      const source = path.join(root, ...value.packagePath.split('/'));
+      if (!(yield* fs.exists(source))) {
+        return yield* Effect.fail(
+          new Error(`Code graph grammar package source is missing for ${id}: ${value.packagePath}`),
+        );
+      }
+      yield* fs.makeDirectory(path.dirname(target), {recursive: true});
+      yield* fs.copyFile(source, target);
+    }
+    if (typeof value.license === 'string') {
+      const licenseTarget = path.join(outputRoot, 'assets', 'code-graph', ...value.license.split('/'));
+      if (!(yield* fs.exists(licenseTarget)) && typeof value.licensePackagePath === 'string') {
+        const licenseSource = path.join(root, ...value.licensePackagePath.split('/'));
+        if (!(yield* fs.exists(licenseSource))) {
+          return yield* Effect.fail(
+            new Error(`Code graph grammar license package source is missing for ${id}: ${value.licensePackagePath}`),
+          );
+        }
+        yield* fs.makeDirectory(path.dirname(licenseTarget), {recursive: true});
+        yield* fs.copyFile(licenseSource, licenseTarget);
+      }
+    }
+  }
+});
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function runBuild(options: Bun.BuildConfig) {

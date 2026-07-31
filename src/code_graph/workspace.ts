@@ -1,13 +1,28 @@
 import {Effect, Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference, CodeGraphSymbol} from './types.js';
-import type {CodeGraphWorkspace, CodeGraphWorkspaceDetector, CodeGraphWorkspaceProject} from './languages/types.js';
+import type {
+  CodeGraphBuildWorkspace,
+  CodeGraphWorkspace,
+  CodeGraphWorkspaceBuildSystem,
+  CodeGraphWorkspaceComponentKind,
+  CodeGraphWorkspaceDependency,
+  CodeGraphWorkspaceDetector,
+  CodeGraphWorkspaceProject,
+  CodeGraphWorkspaceProvenance,
+} from './languages/types.js';
+import {compareCodeUnits} from './ordering.js';
 
 interface ProjectCandidate {
   readonly aliases: readonly string[];
+  readonly buildSystem: CodeGraphWorkspaceBuildSystem;
   readonly dependencyAliases: readonly string[];
+  readonly diagnostics: readonly string[];
+  readonly evidence?: string;
+  readonly kind: CodeGraphWorkspaceComponentKind;
   readonly languages: readonly string[];
   readonly name: string;
+  readonly provenance: CodeGraphWorkspaceProvenance;
   readonly resolutionDomain: string;
   readonly root: string;
   readonly sourceRoots: readonly string[];
@@ -49,57 +64,166 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
       ...projects.map(project =>
         [
           project.id,
+          project.workspaceId,
+          project.buildSystem,
+          project.kind,
+          project.provenance,
           project.name,
           project.root,
           project.resolutionDomain,
           project.dependencies.join(','),
           project.sourceRoots.join(','),
           project.workspaceRoots.join(','),
+          project.diagnostics.join(','),
         ].join('\0'),
       ),
       ...diagnostics,
     ].join('\n'),
   );
-  return {diagnostics: diagnostics.slice(0, 100), fingerprint, projects};
+  return {
+    diagnostics: diagnostics.slice(0, 100),
+    fingerprint,
+    projects,
+    workspaces: materializeBuildWorkspaces(projects, diagnostics),
+  };
 }
 
 export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace[]): CodeGraphWorkspace {
   const projects = new Map<string, CodeGraphWorkspaceProject>();
   const diagnostics: string[] = [];
   for (const workspace of workspaces) {
-    for (const project of workspace.projects) {
+    for (const inputProject of workspace.projects) {
+      const project = normalizeWorkspaceProject(inputProject);
       const existing = projects.get(project.id);
       if (!existing) {
         projects.set(project.id, project);
         continue;
       }
+      const preferred = preferredWorkspaceProject(existing, project);
       projects.set(project.id, {
-        dependencies: unique([...existing.dependencies, ...project.dependencies]).sort(),
+        buildSystem: preferred.buildSystem,
+        dependencies: uniqueStrings([...existing.dependencies, ...project.dependencies]),
+        dependencyDetails: normalizeWorkspaceDependencies([
+          ...existing.dependencyDetails,
+          ...project.dependencyDetails,
+        ]),
+        diagnostics: uniqueStrings([...existing.diagnostics, ...project.diagnostics]),
         id: project.id,
-        languages: unique([...existing.languages, ...project.languages]).sort(),
+        kind: preferred.kind,
+        languages: uniqueStrings([...existing.languages, ...project.languages]),
         name: preferredProjectName(existing.name, project.name),
-        resolutionDomain: project.resolutionDomain,
-        root: project.root,
-        sourceRoots: unique([...existing.sourceRoots, ...project.sourceRoots]).sort(),
-        workspaceRoots: unique([...existing.workspaceRoots, ...project.workspaceRoots]).sort(),
+        provenance: existing.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
+        resolutionDomain: preferred.resolutionDomain,
+        root: preferred.root,
+        sourceRoots: uniqueStrings([...existing.sourceRoots, ...project.sourceRoots]),
+        workspaceId: preferred.workspaceId,
+        workspaceRoots: uniqueStrings([...existing.workspaceRoots, ...project.workspaceRoots]),
       });
     }
     diagnostics.push(...workspace.diagnostics);
   }
   const orderedProjects = [...projects.values()].sort(
     (left, right) =>
-      left.root.localeCompare(right.root) ||
-      left.resolutionDomain.localeCompare(right.resolutionDomain) ||
-      left.id.localeCompare(right.id),
+      compareCodeUnits(left.root, right.root) ||
+      compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
+      compareCodeUnits(left.id, right.id),
   );
-  const orderedDiagnostics = unique(diagnostics).sort().slice(0, 100);
+  const orderedDiagnostics = uniqueStrings(diagnostics).slice(0, 100);
+  const buildWorkspaces = materializeBuildWorkspaces(orderedProjects, orderedDiagnostics);
   return {
     diagnostics: orderedDiagnostics,
-    fingerprint: sha256HexSync(
-      ['code-graph-workspace-set-v1', ...workspaces.map(workspace => workspace.fingerprint).sort()].join('\n'),
-    ),
+    fingerprint: mergedWorkspaceFingerprint(orderedProjects, orderedDiagnostics, buildWorkspaces),
     projects: orderedProjects,
+    workspaces: buildWorkspaces,
   };
+}
+
+function normalizeWorkspaceProject(project: CodeGraphWorkspaceProject): CodeGraphWorkspaceProject {
+  return {
+    ...project,
+    dependencies: uniqueStrings(project.dependencies),
+    dependencyDetails: normalizeWorkspaceDependencies(project.dependencyDetails),
+    diagnostics: uniqueStrings(project.diagnostics),
+    languages: uniqueStrings(project.languages),
+    sourceRoots: uniqueStrings(project.sourceRoots),
+    workspaceRoots: uniqueStrings(project.workspaceRoots),
+  };
+}
+
+function normalizeWorkspaceDependencies(
+  dependencies: readonly CodeGraphWorkspaceDependency[],
+): readonly CodeGraphWorkspaceDependency[] {
+  return uniqueBy(
+    dependencies,
+    dependency => `${dependency.targetId}\0${dependency.provenance}\0${dependency.evidence ?? ''}`,
+  ).sort(
+    (left, right) =>
+      compareCodeUnits(left.targetId, right.targetId) ||
+      compareCodeUnits(left.provenance, right.provenance) ||
+      compareCodeUnits(left.evidence ?? '', right.evidence ?? ''),
+  );
+}
+
+function preferredWorkspaceProject(
+  left: CodeGraphWorkspaceProject,
+  right: CodeGraphWorkspaceProject,
+): CodeGraphWorkspaceProject {
+  return compareWorkspaceProjectPrecedence(left, right) <= 0 ? left : right;
+}
+
+function compareWorkspaceProjectPrecedence(left: CodeGraphWorkspaceProject, right: CodeGraphWorkspaceProject): number {
+  return (
+    Number(right.provenance === 'declared') - Number(left.provenance === 'declared') ||
+    Number(left.buildSystem === 'inferred') - Number(right.buildSystem === 'inferred') ||
+    componentKindRank(left.kind) - componentKindRank(right.kind) ||
+    compareCodeUnits(left.kind, right.kind) ||
+    compareCodeUnits(left.buildSystem, right.buildSystem) ||
+    compareCodeUnits(left.workspaceId, right.workspaceId) ||
+    compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
+    compareCodeUnits(left.root, right.root) ||
+    compareCodeUnits(left.name, right.name)
+  );
+}
+
+function mergedWorkspaceFingerprint(
+  projects: readonly CodeGraphWorkspaceProject[],
+  diagnostics: readonly string[],
+  workspaces: readonly CodeGraphBuildWorkspace[],
+): string {
+  return sha256HexSync(
+    JSON.stringify({
+      diagnostics,
+      projects: projects.map(project => [
+        project.id,
+        project.workspaceId,
+        project.buildSystem,
+        project.kind,
+        project.provenance,
+        project.name,
+        project.root,
+        project.resolutionDomain,
+        project.dependencies,
+        project.dependencyDetails.map(dependency => [
+          dependency.targetId,
+          dependency.provenance,
+          dependency.evidence ?? '',
+        ]),
+        project.languages,
+        project.sourceRoots,
+        project.workspaceRoots,
+        project.diagnostics,
+      ]),
+      version: 'code-graph-workspace-set-v2',
+      workspaces: workspaces.map(workspace => [
+        workspace.id,
+        workspace.buildSystem,
+        workspace.provenance,
+        workspace.name,
+        workspace.root,
+        workspace.diagnostics,
+      ]),
+    }),
+  );
 }
 
 export function createWorkspaceAttributor(
@@ -164,9 +288,14 @@ function discoverMavenProjects(
     });
     output.push({
       aliases: [name, artifact, root],
+      buildSystem: 'maven',
       dependencyAliases: dependencies,
+      diagnostics: [],
+      evidence: file.path,
+      kind: 'module',
       languages: ['java', 'kotlin'],
       name,
+      provenance: 'declared',
       resolutionDomain: 'jvm',
       root,
       sourceRoots: conventionalJvmSourceRoots(root),
@@ -208,9 +337,14 @@ function discoverGradleProjects(
       const moduleName = modulePath.split('/').at(-1) || rootName;
       output.push({
         aliases: [gradlePath, moduleName, root],
+        buildSystem: 'gradle',
         dependencyAliases,
+        diagnostics: [],
+        evidence: settings.path,
+        kind: modulePath ? 'module' : 'project',
         languages: ['java', 'kotlin'],
         name: moduleName,
+        provenance: 'declared',
         resolutionDomain: 'jvm',
         root,
         sourceRoots: conventionalJvmSourceRoots(root),
@@ -229,9 +363,14 @@ function discoverGradleProjects(
     if (coveredBuildRoots.has(root)) continue;
     output.push({
       aliases: [root, root.split('/').at(-1) || 'root'],
+      buildSystem: 'gradle',
       dependencyAliases: buildFile.content ? gradleProjectDependencies(buildFile.content) : [],
+      diagnostics: [],
+      evidence: buildFile.path,
+      kind: 'project',
       languages: ['java', 'kotlin'],
       name: root.split('/').at(-1) || 'root',
+      provenance: 'declared',
       resolutionDomain: 'jvm',
       root,
       sourceRoots: conventionalJvmSourceRoots(root),
@@ -255,9 +394,14 @@ function discoverSwiftPackageProjects(
     if (targets.length === 0) {
       output.push({
         aliases: [packageName, packageRoot],
+        buildSystem: 'swiftpm',
         dependencyAliases: [],
+        diagnostics: [`${file.path}: targets could not be proven statically`],
+        evidence: file.path,
+        kind: 'package',
         languages: ['swift'],
         name: packageName,
+        provenance: 'declared',
         resolutionDomain: 'swift',
         root: packageRoot,
         sourceRoots: [joinPath(packageRoot, 'Sources')],
@@ -277,9 +421,14 @@ function discoverSwiftPackageProjects(
       }
       output.push({
         aliases: [target.name, sourceRoot],
+        buildSystem: 'swiftpm',
         dependencyAliases: target.dependencies,
+        diagnostics: [],
+        evidence: file.path,
+        kind: 'target',
         languages: ['swift'],
         name: target.name,
+        provenance: 'declared',
         resolutionDomain: 'swift',
         root: sourceRoot,
         sourceRoots: [sourceRoot],
@@ -306,9 +455,14 @@ function discoverXcodeProjects(
       : [];
     output.push({
       aliases: [projectName, root, ...targetNames],
+      buildSystem: 'xcode',
       dependencyAliases: [],
+      diagnostics: targetNames.length > 1 ? [`${file.path}: multiple targets share a conservative project scope`] : [],
+      evidence: file.path,
+      kind: 'project',
       languages: ['swift'],
       name: targetNames.length === 1 ? targetNames[0]! : projectName,
+      provenance: 'declared',
       resolutionDomain: 'swift',
       root,
       sourceRoots: [root],
@@ -332,9 +486,13 @@ function addFallbackProjects(files: readonly CodeGraphInventoryFile[], candidate
     if (!inferred) continue;
     candidates.push({
       aliases: [inferred.name, inferred.root],
+      buildSystem: 'inferred',
       dependencyAliases: [],
+      diagnostics: [],
+      kind: 'project',
       languages: swift ? ['swift'] : ['java', 'kotlin'],
       name: inferred.name,
+      provenance: 'inferred',
       resolutionDomain: swift ? 'swift' : 'jvm',
       root: inferred.root,
       sourceRoots: [inferred.sourceRoot],
@@ -353,23 +511,66 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
       merged.set(key, candidate);
       continue;
     }
+    const preferred = preferredProjectCandidate(existing, candidate);
     merged.set(key, {
-      aliases: unique([...existing.aliases, ...candidate.aliases]),
-      dependencyAliases: unique([...existing.dependencyAliases, ...candidate.dependencyAliases]),
-      languages: unique([...existing.languages, ...candidate.languages]),
+      aliases: unique([...existing.aliases, ...candidate.aliases]).sort(),
+      buildSystem: preferred.buildSystem,
+      dependencyAliases: unique([...existing.dependencyAliases, ...candidate.dependencyAliases]).sort(),
+      diagnostics: unique([...existing.diagnostics, ...candidate.diagnostics]).sort(),
+      evidence: preferred.evidence ?? existing.evidence ?? candidate.evidence,
+      kind: preferred.kind,
+      languages: unique([...existing.languages, ...candidate.languages]).sort(),
       name: preferredProjectName(existing.name, candidate.name),
-      resolutionDomain: candidate.resolutionDomain,
-      root: candidate.root,
+      provenance: existing.provenance === 'declared' || candidate.provenance === 'declared' ? 'declared' : 'inferred',
+      resolutionDomain: preferred.resolutionDomain,
+      root: preferred.root,
       sourceRoots: unique([...existing.sourceRoots, ...candidate.sourceRoots]).sort(),
       workspaceRoots: unique([...existing.workspaceRoots, ...candidate.workspaceRoots]).sort(),
     });
   }
   return [...merged.values()].sort(
     (left, right) =>
-      left.root.localeCompare(right.root) ||
-      left.resolutionDomain.localeCompare(right.resolutionDomain) ||
-      left.name.localeCompare(right.name),
+      compareCodeUnits(left.root, right.root) ||
+      compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
+      compareCodeUnits(left.name, right.name),
   );
+}
+
+function preferredProjectCandidate(left: ProjectCandidate, right: ProjectCandidate): ProjectCandidate {
+  return compareProjectCandidatePrecedence(left, right) <= 0 ? left : right;
+}
+
+function compareProjectCandidatePrecedence(left: ProjectCandidate, right: ProjectCandidate): number {
+  return (
+    Number(right.provenance === 'declared') - Number(left.provenance === 'declared') ||
+    evidenceDistance(left.root, left.evidence) - evidenceDistance(right.root, right.evidence) ||
+    Number(left.buildSystem === 'inferred') - Number(right.buildSystem === 'inferred') ||
+    componentKindRank(left.kind) - componentKindRank(right.kind) ||
+    compareCodeUnits(left.kind, right.kind) ||
+    compareCodeUnits(left.buildSystem, right.buildSystem) ||
+    compareCodeUnits(left.evidence ?? '\uffff', right.evidence ?? '\uffff') ||
+    compareCodeUnits(left.name, right.name)
+  );
+}
+
+function evidenceDistance(root: string, evidence: string | undefined): number {
+  if (!evidence) return Number.MAX_SAFE_INTEGER;
+  const evidenceRoot = dirname(evidence);
+  if (root === evidenceRoot) return 0;
+  if (evidenceRoot === '') return root === '' ? 0 : root.split('/').length;
+  if (!root.startsWith(`${evidenceRoot}/`)) return Number.MAX_SAFE_INTEGER;
+  return root.slice(evidenceRoot.length + 1).split('/').length;
+}
+
+function componentKindRank(kind: CodeGraphWorkspaceComponentKind): number {
+  switch (kind) {
+    case 'project':
+    case 'package':
+      return 0;
+    case 'module':
+    case 'target':
+      return 1;
+  }
 }
 
 function materializeProjects(candidates: readonly ProjectCandidate[]): readonly CodeGraphWorkspaceProject[] {
@@ -395,13 +596,21 @@ function materializeProjects(candidates: readonly ProjectCandidate[]): readonly 
       }
     }
     return {
+      buildSystem: candidate.buildSystem,
       dependencies: [...dependencies].sort(),
+      dependencyDetails: [...dependencies]
+        .sort()
+        .map(targetId => ({evidence: candidate.evidence, provenance: candidate.provenance, targetId})),
+      diagnostics: candidate.diagnostics,
       id,
+      kind: candidate.kind,
       languages: [...candidate.languages].sort(),
       name: candidate.name,
+      provenance: candidate.provenance,
       resolutionDomain: candidate.resolutionDomain,
       root: candidate.root,
       sourceRoots: [...candidate.sourceRoots].sort(),
+      workspaceId: workspaceIdentity(candidate.buildSystem, candidate.workspaceRoots[0] ?? candidate.root),
       workspaceRoots: [...candidate.workspaceRoots].sort(),
     };
   });
@@ -413,6 +622,7 @@ function attributeSymbol(symbol: CodeGraphSymbol, project: CodeGraphWorkspacePro
     ...symbol,
     lookupKeys: (symbol.lookupKeys ?? []).map(key => scopedLookupKey(key, project)),
     packageName: project.name,
+    resolutionScopeId: project.id,
   };
 }
 
@@ -477,7 +687,7 @@ function createWorkspaceProjectPathIndex(projects: readonly CodeGraphWorkspacePr
     for (const sourceRoot of project.sourceRoots) add(projectsBySourceRoot, sourceRoot, project);
   }
   for (const candidates of [...projectsByRoot.values(), ...projectsBySourceRoot.values()]) {
-    candidates.sort((left, right) => left.id.localeCompare(right.id));
+    candidates.sort((left, right) => compareCodeUnits(left.id, right.id));
   }
   return {projectsByRoot, projectsBySourceRoot};
 }
@@ -655,11 +865,62 @@ function joinPath(...components: readonly string[]): string {
   return components.filter(Boolean).join('/').replace(/\/+/g, '/').replace(/^\.\//, '');
 }
 
+function workspaceIdentity(buildSystem: CodeGraphWorkspaceBuildSystem, root: string): string {
+  return `cgw_${sha256HexSync(`workspace-v1\n${buildSystem}\n${root}`).slice(0, 32)}`;
+}
+
+function materializeBuildWorkspaces(
+  projects: readonly CodeGraphWorkspaceProject[],
+  workspaceDiagnostics: readonly string[],
+): readonly CodeGraphBuildWorkspace[] {
+  const output = new Map<string, CodeGraphBuildWorkspace>();
+  for (const project of projects) {
+    const root = project.workspaceRoots[0] ?? project.root;
+    const existing = output.get(project.workspaceId);
+    output.set(project.workspaceId, {
+      buildSystem: project.buildSystem,
+      diagnostics: unique([...(existing?.diagnostics ?? []), ...project.diagnostics]).sort(),
+      id: project.workspaceId,
+      name: existing?.name ?? root.split('/').at(-1) ?? project.name,
+      provenance: existing?.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
+      root,
+    });
+  }
+  const ordered = [...output.values()].sort(
+    (left, right) => compareCodeUnits(left.root, right.root) || compareCodeUnits(left.id, right.id),
+  );
+  if (ordered[0] && workspaceDiagnostics.length > 0) {
+    ordered[0] = {
+      ...ordered[0],
+      diagnostics: unique([...ordered[0].diagnostics, ...workspaceDiagnostics])
+        .sort()
+        .slice(0, 100),
+    };
+  }
+  return ordered;
+}
+
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return unique(values).sort(compareCodeUnits);
+}
+
+function uniqueBy<T>(values: readonly T[], key: (value: T) => string): T[] {
+  const output = new Map<string, T>();
+  for (const value of values) output.set(key(value), value);
+  return [...output.values()];
+}
+
 function preferredProjectName(left: string, right: string): string {
   if (left === right) return left;
-  return left.length < right.length ? left : right;
+  return left.length === right.length
+    ? compareCodeUnits(left, right) <= 0
+      ? left
+      : right
+    : left.length < right.length
+      ? left
+      : right;
 }

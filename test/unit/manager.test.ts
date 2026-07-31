@@ -1,3 +1,4 @@
+import {existsSync} from 'node:fs';
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -20,6 +21,7 @@ import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -405,6 +407,55 @@ describe('manager http API', () => {
     }
   });
 
+  it('serves active graph jobs without requiring a graph database read', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const seeded = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity: RepositoryIdentity = {
+          caseMode: 'sensitive',
+          checkoutId: 'f'.repeat(64),
+          displayName: 'acme/large-monorepo',
+          gitCommonDirectory: join(config.agentContextHome, 'large-repository', '.git'),
+          headCommit: '1'.repeat(40),
+          objectFormat: 'sha1',
+          remoteIdentity: 'github.com/acme/large-monorepo',
+          repoRoot: join(config.agentContextHome, 'large-repository'),
+          repositoryId: 'd'.repeat(64),
+          worktreeId: 'e'.repeat(64),
+        };
+        const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({phase: 'waiting'});
+        return {databasePath: layout.databasePath, worktreeId: identity.worktreeId};
+      }),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret'};
+      const statusResponse = await fetch(`${server.url}/api/graphs/status`, {headers});
+      const status = (await statusResponse.json()) as {
+        readonly builds: readonly {readonly state: string}[];
+        readonly queuedWorktreeIds: readonly string[];
+      };
+      expect(statusResponse.status).toBe(200);
+      expect(status.builds).toEqual([expect.objectContaining({state: 'queued'})]);
+      expect(status.queuedWorktreeIds).toEqual([seeded.worktreeId]);
+      expect(existsSync(seeded.databasePath)).toBe(false);
+
+      const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalog = (await catalogResponse.json()) as {
+        readonly builds: readonly {readonly state: string}[];
+        readonly repositories: readonly unknown[];
+      };
+      expect(catalog).toMatchObject({builds: [expect.objectContaining({state: 'queued'})], repositories: []});
+      expect(existsSync(seeded.databasePath)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('serves bounded repository and project graph visualizations', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -415,15 +466,27 @@ describe('manager http API', () => {
       const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
       const catalog = (await catalogResponse.json()) as {
         readonly repositories: readonly {
+          readonly defaultViewId: string;
           readonly displayName: string;
           readonly id: string;
-          readonly projects: readonly {readonly id: string; readonly symbolCount: number}[];
+          readonly views: readonly {
+            readonly id: string;
+            readonly projects: readonly {readonly id: string; readonly symbolCount: number}[];
+          }[];
         }[];
       };
       expect(catalogResponse.status).toBe(200);
       expect(catalog.repositories).toHaveLength(1);
-      expect(catalog.repositories[0]).toMatchObject({displayName: 'acme/platform', id: repositoryId});
-      expect(catalog.repositories[0]?.projects).toEqual(
+      expect(catalog.repositories[0]).toMatchObject({
+        defaultViewId: `${repositoryId}.${'c'.repeat(64)}`,
+        displayName: 'acme/platform',
+        id: 'b'.repeat(64),
+      });
+      expect(catalog.repositories[0]?.views[0]).toMatchObject({
+        checkoutId: repositoryId,
+        worktreeId: 'c'.repeat(64),
+      });
+      expect(catalog.repositories[0]?.views[0]?.projects).toEqual(
         expect.arrayContaining([
           expect.objectContaining({id: 'package:@acme/app', symbolCount: 2}),
           expect.objectContaining({id: 'package:@acme/core', symbolCount: 1}),
@@ -445,7 +508,7 @@ describe('manager http API', () => {
         ]),
       );
       expect(overview.edges).toEqual(
-        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'cross-project'})]),
+        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'imports'})]),
       );
 
       const detailResponse = await fetch(
@@ -523,6 +586,18 @@ describe('manager http API', () => {
           }),
         ]),
       );
+
+      const analysisResponse = await fetch(`${server.url}/api/graph/analysis?repository=${repositoryId}`, {headers});
+      const analysis = (await analysisResponse.json()) as {
+        readonly statistics: {
+          readonly analyzedEdgeCount: number;
+          readonly analyzedNodeCount: number;
+        };
+        readonly trust: {readonly classification: string};
+      };
+      expect(analysisResponse.status).toBe(200);
+      expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 2, analyzedNodeCount: 3});
+      expect(analysis.trust.classification).toBe('untrusted-repository-data');
     } finally {
       await server.close();
     }

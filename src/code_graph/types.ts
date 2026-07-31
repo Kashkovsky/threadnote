@@ -1,6 +1,6 @@
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_SET_VERSION = 'native-code-graph-6' as const;
+export const CODE_GRAPH_EXTRACTOR_SET_VERSION = 'native-code-graph-8' as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
 export type CodeGraphRelation =
@@ -37,8 +37,11 @@ export interface RepositoryIdentity {
 
 export interface CodeGraphInventoryFile {
   readonly blobId: string;
+  /** Binary source bytes are retained only for the extraction batch that requested them. */
+  readonly bytes?: Uint8Array;
   readonly content?: string;
   readonly contentHash: string;
+  readonly contentOmittedReason?: 'size-budget';
   readonly language: string;
   readonly mode: string;
   readonly path: string;
@@ -67,6 +70,7 @@ export interface CodeGraphSymbol {
   readonly path: string;
   readonly qualifiedName: string;
   readonly resolutionDomain?: string;
+  readonly resolutionScopeId?: string;
   readonly signature?: string;
   readonly span: CodeGraphSpan;
 }
@@ -148,13 +152,20 @@ export type CodeGraphProgress =
       readonly unit: 'files';
     }
   | {
+      readonly phase: 'resolving';
+      readonly subphase: 'references';
+    }
+  | {
       readonly edges: number;
       readonly phase: 'resolving';
+      readonly resolved: number;
+      readonly subphase: 'complete';
       readonly symbols: number;
     }
   | {
       readonly phase: 'activating';
       readonly snapshotId: string;
+      readonly subphase?: 'complete' | 'promoting' | 'validating-input' | 'writing-and-checkpointing';
     }
   | {
       readonly completed: number;
@@ -169,10 +180,29 @@ export interface CodeGraphIndexSummary {
   readonly diagnostics: readonly string[];
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
+  readonly materialization?: {
+    readonly fallbackReason?: CodeGraphOverlayFallbackReason;
+    readonly mode: 'full' | 'incremental-overlay' | 'reused-snapshot';
+    readonly stagedFiles: number;
+    readonly totalFiles: number;
+  };
   readonly reusedFiles: number;
   readonly skippedFiles: number;
   readonly snapshot: CodeGraphSnapshot;
 }
+
+export type CodeGraphOverlayFallbackReason =
+  | 'cache-incomplete'
+  | 'disabled'
+  | 'dynamic-aliases'
+  | 'extractor-context-changed'
+  | 'file-set-changed'
+  | 'forced-full-rebuild'
+  | 'no-materialized-changes'
+  | 'resolution-surface-changed'
+  | 'staging-identity-mismatch'
+  | 'staging-unavailable'
+  | 'workspace-changed';
 
 export interface CodeGraphQueryNode extends CodeGraphSymbol {
   readonly score: number;
@@ -182,7 +212,7 @@ export interface CodeGraphQueryResult {
   readonly edges: readonly CodeGraphEdge[];
   readonly freshness: 'current' | 'stale';
   readonly nodes: readonly CodeGraphQueryNode[];
-  readonly operation: 'explain' | 'impact' | 'path' | 'query';
+  readonly operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query';
   readonly repository: {
     readonly displayName: string;
     readonly repositoryId: string;
@@ -204,10 +234,12 @@ export interface CodeGraphQueryResult {
 export interface CodeGraphQueryOptions {
   readonly cwd: string;
   readonly depth?: number;
+  readonly direction?: 'both' | 'incoming' | 'outgoing';
   readonly edgeLimit?: number;
   readonly from?: string;
   readonly includeHeuristic?: boolean;
   readonly includeModelAssociations?: boolean;
+  readonly nodeId?: string;
   readonly nodeLimit?: number;
   readonly operation: CodeGraphQueryResult['operation'];
   readonly query?: string;

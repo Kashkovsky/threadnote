@@ -1,5 +1,6 @@
 import {Effect, Path} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
+import {compareCodeUnits} from './ordering.js';
 import {
   CodeGraphStore,
   type CodeGraphStoreShape,
@@ -8,14 +9,15 @@ import {
   type CodeGraphVisualizationScope,
 } from './store.js';
 import type {CodeGraphEdge, CodeGraphProvenance, CodeGraphSnapshot, CodeGraphSpan, CodeGraphSymbol} from './types.js';
+import {CodeGraphAnalysis} from './analysis.js';
+import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
+import {readAllCodeGraphBuildStatuses, type ObservedCodeGraphBuildStatus} from './build_status.js';
 
-const OVERVIEW_EDGE_SAMPLE = 1_200;
-const OVERVIEW_PROJECT_LIMIT = 80;
 const DETAIL_SEED_LIMIT = 500;
 const DETAIL_NODE_LIMIT = 900;
 const DETAIL_EDGE_LIMIT = 3_000;
 const NODE_DETAIL_EDGE_LIMIT = 160;
-const REPOSITORY_ID = /^[0-9a-f]{64}$/;
+const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
 const NODE_ID_MAX_LENGTH = 512;
 const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
   'declared',
@@ -28,13 +30,39 @@ const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
 export interface ManagerGraphRepository {
   readonly displayName: string;
   readonly id: string;
-  readonly projects: readonly CodeGraphVisualizationProject[];
+  readonly defaultViewId: string;
   readonly repositoryId: string;
+  readonly views: readonly ManagerGraphIndexedView[];
+}
+
+export interface ManagerGraphIndexedView {
+  readonly activatedAt?: string;
+  readonly checkoutId: string;
+  readonly displayName: string;
+  readonly id: string;
+  readonly label: string;
+  readonly model: CodeGraphVisualizationCatalog['model'];
+  readonly projects: readonly CodeGraphVisualizationProject[];
   readonly snapshot: CodeGraphSnapshot;
+  readonly worktreeId: string;
+  readonly workspaces: CodeGraphVisualizationCatalog['workspaces'];
+}
+
+export interface ManagerGraphCatalogDiagnostic {
+  readonly checkoutId: string;
+  readonly code: 'no-ready-snapshot' | 'unreadable-database';
+  readonly message: string;
 }
 
 export interface ManagerGraphCatalog {
+  readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  readonly diagnostics: readonly ManagerGraphCatalogDiagnostic[];
   readonly repositories: readonly ManagerGraphRepository[];
+}
+
+export interface ManagerGraphBuildCatalog {
+  readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  readonly queuedWorktreeIds: readonly string[];
 }
 
 export interface ManagerGraphNode {
@@ -69,7 +97,7 @@ export interface ManagerGraphVisualization {
   readonly mode: 'detail' | 'overview';
   readonly nodes: readonly ManagerGraphNode[];
   readonly projectId: string;
-  readonly repository: ManagerGraphRepository;
+  readonly repository: ManagerGraphIndexedView;
   readonly stats: {
     readonly renderedEdges: number;
     readonly renderedNodes: number;
@@ -131,42 +159,114 @@ export interface ManagerGraphNodeDetail {
 export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(function* (threadnoteHome: string) {
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
+  const builds = latestBuildStatusPerWorktree(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
-  const repositories = (yield* Effect.forEach(
+  const entries = yield* Effect.forEach(
     databases,
-    database =>
-      store.loadVisualizationCatalog(database).pipe(
-        Effect.map(catalog =>
-          catalog ? repositoryFromCatalog(path.basename(path.dirname(database)), catalog) : undefined,
+    database => {
+      const checkoutId = path.basename(path.dirname(database));
+      return store.loadVisualizationCatalogs(database).pipe(
+        Effect.map(catalogs =>
+          catalogs.length > 0
+            ? ({checkoutId, catalogs} as const)
+            : ({
+                diagnostic: {
+                  checkoutId,
+                  code: 'no-ready-snapshot',
+                  message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+                } satisfies ManagerGraphCatalogDiagnostic,
+              } as const),
         ),
-        Effect.catch(() => Effect.succeed(undefined)),
-      ),
+        Effect.catchCause(cause =>
+          Effect.succeed({
+            diagnostic: {
+              checkoutId,
+              code: 'unreadable-database',
+              message: `Checkout ${shortIdentity(checkoutId)} graph database is unreadable: ${privacySafeCatalogError(cause)}`,
+            } satisfies ManagerGraphCatalogDiagnostic,
+          } as const),
+        ),
+      );
+    },
     {concurrency: 2},
-  ))
-    .filter((repository): repository is ManagerGraphRepository => repository !== undefined)
+  );
+  const catalogEntries: Array<{catalog: CodeGraphVisualizationCatalog; checkoutId: string}> = [];
+  const diagnostics: ManagerGraphCatalogDiagnostic[] = [];
+  for (const entry of entries) {
+    if ('catalogs' in entry && entry.catalogs) {
+      catalogEntries.push(...entry.catalogs.map(catalog => ({catalog, checkoutId: entry.checkoutId})));
+    }
+    if ('diagnostic' in entry && entry.diagnostic) diagnostics.push(entry.diagnostic);
+  }
+  return {
+    builds,
+    diagnostics,
+    repositories: groupManagerGraphRepositories(catalogEntries),
+  } satisfies ManagerGraphCatalog;
+});
+
+export function groupManagerGraphRepositories(
+  entries: readonly {readonly catalog: CodeGraphVisualizationCatalog; readonly checkoutId: string}[],
+): readonly ManagerGraphRepository[] {
+  const groups = new Map<string, {displayName: string; views: ManagerGraphIndexedView[]}>();
+  for (const entry of entries) {
+    const repositoryId = entry.catalog.repository.repositoryId;
+    const group = groups.get(repositoryId) ?? {displayName: entry.catalog.repository.displayName, views: []};
+    group.views.push(repositoryFromCatalog(entry.checkoutId, entry.catalog));
+    groups.set(repositoryId, group);
+  }
+  return [...groups]
+    .map(([repositoryId, group]) => {
+      const views = group.views.sort(compareIndexedViews);
+      return {
+        defaultViewId: views[0]!.id,
+        displayName: group.displayName,
+        id: repositoryId,
+        repositoryId,
+        views,
+      } satisfies ManagerGraphRepository;
+    })
     .sort(
       (left, right) =>
-        right.snapshot.symbolCount - left.snapshot.symbolCount || left.displayName.localeCompare(right.displayName),
+        compareCodeUnits(left.displayName, right.displayName) ||
+        compareCodeUnits(left.repositoryId, right.repositoryId),
     );
-  return {repositories} satisfies ManagerGraphCatalog;
+}
+
+export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog')(function* (threadnoteHome: string) {
+  const builds = latestBuildStatusPerWorktree(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
+  return {
+    builds,
+    queuedWorktreeIds: builds
+      .filter(status => status.state === 'queued' && status.observation.liveness === 'active')
+      .map(status => status.identity.worktreeId),
+  } satisfies ManagerGraphBuildCatalog;
+});
+
+export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(function* (
+  threadnoteHome: string,
+  indexedViewId: string,
+) {
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  const analysis = yield* CodeGraphAnalysis;
+  const {catalog, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId);
+  return yield* analysis.analyze({
+    budget: {maxDurationMilliseconds: 20_000},
+    databasePath: database,
+    limits: codeGraphAnalysisLimitsForView('full'),
+    snapshot: catalog.snapshot,
+  });
 });
 
 export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualization')(function* (
   threadnoteHome: string,
-  repositoryId: string,
+  indexedViewId: string,
   requestedProjectId: string,
 ) {
-  if (!REPOSITORY_ID.test(repositoryId)) {
-    return yield* Effect.fail(new Error('Graph repository identity is invalid.'));
-  }
-  const path = yield* Path.Path;
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
   const store = yield* CodeGraphStore;
-  const databases = yield* codeGraphDatabasePaths(threadnoteHome);
-  const database = databases.find(candidate => path.basename(path.dirname(candidate)) === repositoryId);
-  if (!database) return yield* Effect.fail(new Error('Indexed graph repository was not found.'));
-  const catalog = yield* store.loadVisualizationCatalog(database);
-  if (!catalog) return yield* Effect.fail(new Error('Indexed graph repository has no ready snapshot.'));
-  const repository = repositoryFromCatalog(repositoryId, catalog);
+  const {catalog, checkoutId, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId);
+  const repository = repositoryFromCatalog(checkoutId, catalog);
   const projectId = requestedProjectId.trim() || 'all';
   if (projectId === 'all') {
     return yield* overviewVisualization(store, database, repository);
@@ -178,23 +278,16 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
 
 export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(function* (
   threadnoteHome: string,
-  repositoryId: string,
+  indexedViewId: string,
   requestedNodeId: string,
 ) {
-  if (!REPOSITORY_ID.test(repositoryId)) {
-    return yield* Effect.fail(new Error('Graph repository identity is invalid.'));
-  }
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
   const nodeId = requestedNodeId.trim();
   if (nodeId.length === 0 || nodeId.length > NODE_ID_MAX_LENGTH) {
     return yield* Effect.fail(new Error('Graph node identity is invalid.'));
   }
-  const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
-  const databases = yield* codeGraphDatabasePaths(threadnoteHome);
-  const database = databases.find(candidate => path.basename(path.dirname(candidate)) === repositoryId);
-  if (!database) return yield* Effect.fail(new Error('Indexed graph repository was not found.'));
-  const catalog = yield* store.loadVisualizationCatalog(database);
-  if (!catalog) return yield* Effect.fail(new Error('Indexed graph repository has no ready snapshot.'));
+  const {catalog, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId);
   const symbols = yield* store.symbolsByIds(database, catalog.snapshot.id, [nodeId]);
   const symbol = symbols.find(candidate => candidate.id === nodeId);
   if (!symbol) return yield* Effect.fail(new Error('Indexed graph node was not found.'));
@@ -263,38 +356,22 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
 function overviewVisualization(
   store: CodeGraphStoreShape,
   database: string,
-  repository: ManagerGraphRepository,
+  repository: ManagerGraphIndexedView,
 ): Effect.Effect<ManagerGraphVisualization, unknown> {
   return Effect.gen(function* () {
-    const projects = repository.projects.slice(0, OVERVIEW_PROJECT_LIMIT);
+    const projects = repository.projects;
     const visibleProjects = new Map(projects.map(project => [project.id, project]));
-    const sampledEdges = yield* store.loadEdgePage(database, repository.snapshot.id, undefined, OVERVIEW_EDGE_SAMPLE);
-    const endpointIds = [...new Set(sampledEdges.flatMap(edge => [edge.sourceId, edge.targetId]).filter(isString))];
-    const symbols = yield* store.symbolsByIds(database, repository.snapshot.id, endpointIds);
-    const symbolsById = new Map(symbols.map(symbol => [symbol.id, symbol]));
-    const aggregateEdges = new Map<string, {confidence: number; count: number; sourceId: string; targetId: string}>();
-    for (const edge of sampledEdges) {
-      const source = edge.sourceId ? symbolsById.get(edge.sourceId) : undefined;
-      const target = edge.targetId ? symbolsById.get(edge.targetId) : undefined;
-      if (!source || !target) continue;
-      const sourceId = projectIdForSymbol(source);
-      const targetId = projectIdForSymbol(target);
-      if (sourceId === targetId || !visibleProjects.has(sourceId) || !visibleProjects.has(targetId)) continue;
-      const id = `${sourceId}\0${targetId}`;
-      const existing = aggregateEdges.get(id);
-      aggregateEdges.set(id, {
-        confidence: Math.max(existing?.confidence ?? 0, edge.confidence),
-        count: (existing?.count ?? 0) + 1,
-        sourceId,
-        targetId,
-      });
-    }
-    const edges = [...aggregateEdges].map(([id, edge]) => ({
-      ...edge,
-      id,
-      provenance: 'aggregate' as const,
-      relation: 'cross-project' as const,
-    }));
+    const edges = (yield* store.loadVisualizationScopeEdges(database, repository.snapshot.id))
+      .filter(edge => visibleProjects.has(edge.sourceId) && visibleProjects.has(edge.targetId))
+      .map(edge => ({
+        confidence: edge.confidence,
+        count: edge.count,
+        id: `${edge.type}\0${edge.sourceId}\0${edge.targetId}\0${edge.provenance}\0${edge.relation}`,
+        provenance: edge.provenance,
+        relation: edge.relation,
+        sourceId: edge.sourceId,
+        targetId: edge.targetId,
+      }));
     const connections = connectionCounts(edges);
     const nodes = projects.map(project => ({
       degree: connections.get(project.id) ?? 0,
@@ -306,15 +383,10 @@ function overviewVisualization(
       symbolCount: project.symbolCount,
       type: 'project' as const,
     }));
-    const warnings: string[] = [];
-    if (repository.projects.length > projects.length) {
-      warnings.push(`Showing the ${projects.length} largest of ${repository.projects.length} projects.`);
-    }
-    if (repository.snapshot.edgeCount > sampledEdges.length) {
-      warnings.push(
-        `Project relationships are sampled from ${sampledEdges.length.toLocaleString()} indexed edges to keep the overview responsive.`,
-      );
-    }
+    const warnings =
+      repository.model === 'legacy-fallback'
+        ? ['This snapshot predates typed workspace catalogs; rebuild it to replace legacy package/folder groups.']
+        : [];
     return {
       edges,
       mode: 'overview',
@@ -335,7 +407,7 @@ function overviewVisualization(
 function detailVisualization(
   store: CodeGraphStoreShape,
   database: string,
-  repository: ManagerGraphRepository,
+  repository: ManagerGraphIndexedView,
   project: CodeGraphVisualizationProject,
 ): Effect.Effect<ManagerGraphVisualization, unknown> {
   return Effect.gen(function* () {
@@ -411,23 +483,52 @@ function detailVisualization(
   });
 }
 
-function repositoryFromCatalog(id: string, catalog: CodeGraphVisualizationCatalog): ManagerGraphRepository {
+function repositoryFromCatalog(checkoutId: string, catalog: CodeGraphVisualizationCatalog): ManagerGraphIndexedView {
+  const viewId = `${checkoutId}.${catalog.viewWorktreeId}`;
   return {
+    ...(catalog.activatedAt ? {activatedAt: catalog.activatedAt} : {}),
+    checkoutId,
     displayName: catalog.repository.displayName,
-    id,
+    id: viewId,
+    label: indexedViewLabel(checkoutId, catalog),
+    model: catalog.model,
     projects: catalog.projects,
-    repositoryId: catalog.repository.repositoryId,
     snapshot: catalog.snapshot,
+    worktreeId: catalog.viewWorktreeId,
+    workspaces: catalog.workspaces,
   };
 }
 
+const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(function* (
+  threadnoteHome: string,
+  indexedViewId: string,
+) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const [checkoutId, worktreeId] = indexedViewId.split('.', 2) as [string, string | undefined];
+  const databases = yield* codeGraphDatabasePaths(threadnoteHome);
+  const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
+  if (!database) return yield* Effect.fail(new Error('Indexed graph checkout was not found.'));
+  const catalog = worktreeId
+    ? (yield* store.loadVisualizationCatalogs(database)).find(candidate => candidate.viewWorktreeId === worktreeId)
+    : yield* store.loadVisualizationCatalog(database);
+  if (!catalog) return yield* Effect.fail(new Error('Indexed graph view has no ready snapshot.'));
+  return {catalog, checkoutId, database};
+});
+
 function scopeFromProjectId(projectId: string): CodeGraphVisualizationScope {
+  if (projectId.startsWith('cgp_')) return {type: 'component', value: projectId};
+  if (projectId === 'facet:unscoped-documentation') return {type: 'documentation-facet'};
   if (projectId.startsWith('package:')) return {type: 'package', value: projectId.slice('package:'.length)};
   if (projectId.startsWith('path:')) return {type: 'path', value: projectId.slice('path:'.length)};
   return {type: 'all'};
 }
 
 function projectIdForSymbol(symbol: CodeGraphSymbol): string {
+  if (symbol.resolutionScopeId) return symbol.resolutionScopeId;
+  if (symbol.language === 'markdown' || ['document', 'heading', 'section'].includes(symbol.kind)) {
+    return 'facet:unscoped-documentation';
+  }
   const packageName = symbol.packageName?.trim();
   if (packageName) return `package:${packageName}`;
   return `path:${symbol.path.split('/')[0] || '(root)'}`;
@@ -466,4 +567,45 @@ function connectionCounts(edges: readonly Pick<ManagerGraphEdge, 'sourceId' | 't
 
 function isString(value: string | undefined): value is string {
   return typeof value === 'string';
+}
+
+function latestBuildStatusPerWorktree(
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+): readonly ObservedCodeGraphBuildStatus[] {
+  const latest = new Map<string, ObservedCodeGraphBuildStatus>();
+  for (const status of statuses) {
+    if (!latest.has(status.identity.worktreeId)) latest.set(status.identity.worktreeId, status);
+  }
+  return [...latest.values()];
+}
+
+function compareIndexedViews(left: ManagerGraphIndexedView, right: ManagerGraphIndexedView): number {
+  const leftTime = Date.parse(left.activatedAt ?? left.snapshot.completedAt ?? '') || 0;
+  const rightTime = Date.parse(right.activatedAt ?? right.snapshot.completedAt ?? '') || 0;
+  return (
+    rightTime - leftTime || compareCodeUnits(right.snapshot.id, left.snapshot.id) || compareCodeUnits(left.id, right.id)
+  );
+}
+
+function indexedViewLabel(checkoutId: string, catalog: CodeGraphVisualizationCatalog): string {
+  const commit = catalog.snapshot.commit.slice(0, 8) || 'no-commit';
+  const state = catalog.snapshot.dirty ? 'dirty' : 'clean';
+  const indexed = catalog.activatedAt ?? catalog.snapshot.completedAt;
+  const indexedLabel = indexed ? new Date(indexed).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'time unknown';
+  return `${commit} · ${state} · ${indexedLabel} · checkout ${shortIdentity(checkoutId)} · worktree ${shortIdentity(catalog.viewWorktreeId)}`;
+}
+
+function shortIdentity(value: string): string {
+  return value.slice(-8) || 'unknown';
+}
+
+function privacySafeCatalogError(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return (
+    message
+      .replaceAll(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s'"`<>]|\\ )+/g, '<local-path>')
+      .replaceAll(/\s+/g, ' ')
+      .trim()
+      .slice(0, 240) || 'unknown database error'
+  );
 }

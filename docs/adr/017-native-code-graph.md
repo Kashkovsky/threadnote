@@ -1,6 +1,6 @@
 # ADR 017: Native code graph authority and snapshots
 
-Status: accepted for implementation
+Status: accepted and implemented
 Date: 2026-07-29
 
 ## Decision
@@ -40,11 +40,23 @@ available. Vector projection includes every eligible high-value symbol and is pr
 batches. It is scale-gated with the pinned production embedding model and a lexical-disjoint semantic positive control.
 
 Language support is provided through a generated first-party pack catalog. TypeScript/JavaScript preserves its pinned
-compiler-backed extractor. Java, Kotlin, and Swift use bundled Tree-sitter WASM grammars whose source revision, ABI,
-version, checksum, and license are verified in source, standalone packaging, and update validation. Packs emit a
-language-neutral declaration/reference representation. Maven, Gradle, SwiftPM, Xcode, and existing package metadata
-feed a static workspace model; repository build logic is never executed. Java and Kotlin share a JVM resolution
-domain, while nested/integrated projects connect only through unique declared dependencies.
+compiler-backed extractor. Java, Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua,
+Objective-C, PHP, PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, and Zig use
+bundled Tree-sitter WASM grammars whose source revision, ABI, version, checksum, and license are verified in source,
+standalone packaging, and update validation. Apex, Fortran, and Razor use bounded deterministic text-structural packs
+without an AST claim. Packs emit a language-neutral declaration/reference representation and advertise their actual
+capabilities; structural coverage is not described as compiler semantics. Maven, Gradle, SwiftPM, Xcode, and existing
+package metadata feed a static workspace model; repository build logic is never executed. Java and Kotlin share a JVM
+resolution domain, while nested/integrated projects connect only through unique declared dependencies.
+
+Deterministic packs also extract structured schema/configuration declarations and local document-corpus facts. PDFs,
+OpenXML, OpenDocument, EPUB, plain-text documentation, notebooks, and text-based diagram formats contribute
+extractable text and links. Images, audio, and video retain deterministic asset metadata; visual interpretation, OCR,
+transcription, and video/frame analysis are outside this decision. Corpus inputs over 64 MiB remain metadata-only
+assets; selected OpenXML, OpenDocument, and EPUB entries have 16 MiB per-entry and 64 MiB cumulative expansion
+budgets. These per-artifact extraction budgets do not admit, reject, or truncate a repository graph. Marked rationale
+comments and ADR/RFC references become derived rationale nodes with declared `documents` edges to their nearest source
+owner.
 
 Every relationship records evidence and exactly one authority tier:
 
@@ -59,8 +71,8 @@ reported rather than guessed. Bare identifiers are promoted to resolved relation
 module resolution prove the target; local shadowing remains syntactic evidence.
 
 Normal users and agents do not run an indexing setup workflow. The first graph inspection builds a snapshot lazily.
-Within MCP, `query` and `explain` prefer bounded latency and may briefly return the latest ready snapshot with explicit
-stale metadata while the session watcher catches up. A cold build or stale strict `path`/`impact` operation gets only a
+Within MCP, `query`, exact `node`/`neighbors` drill-down, and `explain` prefer bounded latency and may briefly return the
+latest ready snapshot with explicit stale metadata while the session watcher catches up. A cold build or stale strict `path`/`impact` operation gets only a
 short foreground opportunity; if it is still running, MCP returns structured indexing phase and retry timing while the
 deduplicated session refresh continues. One-shot CLI graph queries synchronously refresh stale snapshots because they
 have no persistent session scope. Concurrent CLI writers report that another build is active and wait interruptibly;
@@ -71,17 +83,28 @@ Memory/resource recall never invokes code-graph indexing or retrieval.
 
 ## Query contract
 
-Graph retrieval uses exact/lexical and optional vector seeds followed by relation-aware bounded traversal. Every
-operation has node, edge, depth, fan-out, elapsed-time, and output limits. Hub penalties keep ubiquitous utilities from
-flooding results. Returned evidence includes repository, commit, dirty-overlay state, relative source path and line,
-provenance, confidence, and freshness.
+Graph retrieval uses exact/lexical and optional vector seeds followed by relation-aware bounded traversal. Scoped
+inspection has node, edge, depth, fan-out, elapsed-time, and output limits. Hub penalties keep ubiquitous utilities
+from flooding results. Returned evidence includes repository, commit, dirty-overlay state, relative source path and
+line, provenance, confidence, and freshness.
 
-`recall_context` remains exclusively responsible for memories and seeded resources. A separate
-`inspect_code_graph` MCP tool provides `query`, `explain`, `path`, and `impact` over current source; impact accepts
-either an explicit symbol/path query or a Git base ref whose changed paths become the impact seeds. Agents may
-explicitly call both tools and combine their evidence, but neither subsystem changes the other's no-answer or
-freshness contract. CLI commands provide status, forced indexing, the same graph queries, foreground watch, explicit
-export, purge, doctor, and repair.
+Whole-graph analysis separately pages the selected SQLite snapshot to compute statistics, weakly connected
+components, deterministic structural communities with stable drill-down IDs, bounded structural n-ary groups, hubs or
+god nodes, surprising cross-community links, and confidence audits. It has no repository-size admission cap.
+Elapsed-time and response-output budgets produce explicit partial-coverage metadata, and complete results suggest
+focused follow-up questions. Manager invokes this analysis only on user request. Deterministic Markdown reports and
+JSON, GraphML, HTML, and SVG exports are derived, source-sensitive views; streaming output limits do not alter or cap
+the stored graph.
+
+`recall_context` remains exclusively responsible for memories and seeded resources. The `inspect_code_graph` MCP tool
+provides `query`, exact stable-ID `node` and directional `neighbors` drill-down, `explain`, `path`, and `impact` over
+scoped current source; `path` accepts stable IDs as unambiguous endpoints, and impact accepts either an explicit
+symbol/path query or a Git base ref whose changed paths become the impact seeds. The separate `analyze_code_graph` MCP
+tool provides `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`, `confidence`, and `full`
+whole-repository views.
+Agents may explicitly call all tools and combine their evidence, but no subsystem changes another's no-answer or
+freshness contract. CLI commands provide status, forced indexing, the same inspections and analyses, deterministic
+reports, foreground watch, explicit export, purge, doctor, and repair.
 
 ## Evaluation contract
 
@@ -99,7 +122,9 @@ production, tests, install, update, repair, and release artifacts must not invok
 - Worktrees share immutable facts without copying mutable graph directories.
 - Git object identity, not checkout location or file timestamps, defines committed freshness.
 - SQLite schema changes rebuild derived data rather than migrate canonical content.
-- TypeScript/JavaScript remains compiler-backed while portable structural packs extend coverage without external
-  toolchains.
+- TypeScript/JavaScript remains compiler-backed while 25 checksum-verified WASM packs and three bounded
+  text-structural packs extend source coverage without external toolchains.
+- Local document and media inventory is explicit about extractable text versus metadata-only coverage.
+- Whole-graph analysis and portable exports page SQLite without imposing a graph admission cap.
 - Exact/lexical graph retrieval remains deterministic when models are unavailable.
 - A graph can be purged or disabled without changing memories, resources, Git repositories, or model files.

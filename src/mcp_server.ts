@@ -123,6 +123,12 @@ import {CodeGraphQueryService, renderCodeGraphResult} from './code_graph/query.j
 import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
 import type {CodeGraphProgress} from './code_graph/types.js';
 import {CodeGraphWatcher, type CodeGraphRefreshStatus, type CodeGraphWatcherShape} from './code_graph/watcher.js';
+import {CodeGraphAnalysis} from './code_graph/analysis.js';
+import {
+  codeGraphAnalysisLimitsForView,
+  renderCodeGraphAnalysis,
+  type CodeGraphAnalysisView,
+} from './code_graph/analysis_render.js';
 
 interface RuntimeConfig {
   readonly account: string;
@@ -186,6 +192,10 @@ const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
 const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 30_000;
+// Leave enough room for the adapter to serialize a structured retry response
+// before a client enforcing the documented 30-second envelope gives up.
+const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 25_000;
+const MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS = 1_000;
 
 const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
   if (mcpStartupVersion === undefined) {
@@ -224,7 +234,7 @@ export const mcpServerEffect = Effect.gen(function* () {
       });
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
-        'For non-trivial work call `recall_context` with project and absolute `callerCwd`; read `threadnote://` pointers. Call `inspect_code_graph` before broad `rg`/grep; reserve text search for exact literals or useful independent work while a cold graph builds. Retry `state=indexing` after `retryAfterMilliseconds` before relationship-aware graph claims. Write durable knowledge and handoffs directly; use stable project/topic and replace duplicates. Use `review_session_context` only for additional candidates approved by the user. Do not store secrets, customer data, or raw logs. Confirm publishes; never publish handoffs/preferences.';
+        'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -736,36 +746,51 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, fallback, or useful independent work while a cold graph builds. Use query for definitions/concepts, explain for one symbol, path for connections, and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance. A cold large-repository call may return state=indexing with measured phase progress, an optional phase-scoped estimate, and adaptive retryAfterMilliseconds; continue independent investigation and retry before making relationship-aware graph claims.',
+        'Graph-first inspection of Threadnote’s local, snapshot-aware native code graph. For non-trivial source investigation, use this before broad rg/grep; reserve text search for exact literals, unsupported files, verification, fallback, or useful independent work while a cold graph builds. Use query for definitions/concepts, node to round-trip one exact stable cgs_ ID, neighbors for bounded directional adjacency from an ID, explain for a symbol selector, path for the shortest authoritative connection (including cgs_ endpoints), and impact for reverse dependencies or changes since a Git base. Results distinguish declared, resolved, syntactic, heuristic, and model provenance. A cold large-repository call may return state=indexing with measured phase progress, an optional phase-scoped estimate, and adaptive retryAfterMilliseconds. A budgeted inspection may return state=timed-out and remains retryable after that delay. Continue independent investigation and retry before making relationship-aware graph claims.',
       inputSchema: {
         base: McpInput.string('Git base ref for operation=impact when query is omitted; defaults to HEAD~1'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
         depth: McpInput.integer('Maximum traversal depth', {minimum: 0, maximum: 8}),
+        direction: McpInput.literals(
+          ['both', 'incoming', 'outgoing'],
+          'Relationship direction for operation=neighbors; defaults to both',
+        ),
         edgeLimit: McpInput.integer('Maximum returned relationships', {minimum: 1, maximum: 500}),
-        from: McpInput.string('Starting symbol for operation=path'),
+        from: McpInput.string('Starting symbol, path#symbol selector, or stable cgs_ node ID for operation=path'),
         includeHeuristic: McpInput.boolean('Include lower-confidence heuristic relationships; defaults to false'),
         includeModelAssociations: McpInput.boolean('Include model-derived semantic associations; defaults to false'),
+        nodeId: McpInput.string('Exact stable cgs_ node ID for operation=node or operation=neighbors'),
         nodeLimit: McpInput.integer('Maximum returned nodes', {minimum: 1, maximum: 200}),
-        operation: McpInput.literals(['query', 'explain', 'path', 'impact'], 'Required graph operation'),
+        operation: McpInput.literals(
+          ['query', 'node', 'neighbors', 'explain', 'path', 'impact'],
+          'Required graph operation',
+        ),
         query: McpInput.string('Concept, symbol, module, path, or impact selector'),
         symbol: McpInput.string('Symbol selector for operation=explain'),
-        to: McpInput.string('Target symbol for operation=path'),
+        to: McpInput.string('Target symbol, path#symbol selector, or stable cgs_ node ID for operation=path'),
       },
     },
     ({
       base,
       callerCwd,
       depth,
+      direction,
       edgeLimit,
       from,
       includeHeuristic,
       includeModelAssociations,
+      nodeId,
       nodeLimit,
       operation,
       query,
       symbol,
       to,
     }) => {
+      let timeoutContext = Option.none<{
+        readonly key: string;
+        readonly target: {readonly cwd: string; readonly threadnoteHome: string};
+        readonly watcher: CodeGraphWatcherShape;
+      }>();
       const checkedCwd = requiredText(callerCwd, 'inspect_code_graph', 'callerCwd', {
         callerCwd: '/workspace/project',
         operation: 'query',
@@ -792,38 +817,49 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
             : undefined;
         const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
-        yield* watcher.ensure({
+        const refreshTarget = {
           cwd: identity.repoRoot,
-          key: identity.worktreeId,
           threadnoteHome: config.agentContextHome,
+        };
+        timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
+        yield* watcher.ensure({
+          ...refreshTarget,
+          key: identity.worktreeId,
         });
         const service = yield* CodeGraphQueryService;
         let status = yield* service.status(config.agentContextHome, checkedCwd.value);
         let refreshStarted = false;
         if (status.stale) {
           refreshStarted = yield* watcher.refresh({
-            cwd: identity.repoRoot,
+            ...refreshTarget,
             key: identity.worktreeId,
-            threadnoteHome: config.agentContextHome,
           });
         }
         const strictFreshness = operation === 'impact' || operation === 'path';
         if (!status.readySnapshot || (status.stale && strictFreshness)) {
-          if (refreshStarted) yield* waitForCodeGraphRefresh(watcher, identity.worktreeId);
+          if (refreshStarted) {
+            yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
+          }
           status = yield* service.status(config.agentContextHome, checkedCwd.value);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
-            const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId));
+            const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
             return codeGraphRefreshResult(operation, refreshStatus);
           }
+        }
+        const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
+        if (refreshStatus?.state === 'failed' || refreshStatus?.state === 'indexing') {
+          return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
           baseCommit: changes?.baseCommit,
           cwd: checkedCwd.value,
           depth,
+          direction,
           edgeLimit,
           from,
           includeHeuristic,
           includeModelAssociations,
+          nodeId,
           nodeLimit,
           operation,
           query: requestedQuery || changes?.paths.join(' '),
@@ -839,8 +875,124 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         };
       }).pipe(
         Effect.timeoutOrElse({
+          duration: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS,
+          orElse: () => codeGraphQueryTimeoutResultFor(operation, timeoutContext),
+        }),
+        Effect.catch(error =>
+          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    'analyze_code_graph',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
+      description:
+        'Whole-graph architecture analysis over Threadnote’s current local SQLite snapshot. Use stats for composition and connectivity, communities for deterministic subsystem IDs, community with communityId for bounded member drill-down, groups for derived high-degree fan-in/fan-out structural hyperedges, hubs for high-blast-radius god nodes, surprises for unusual cross-community links, confidence to audit numeric confidence, provenance, and endpoint coverage, and full for a compact combined report. Every operation returns deterministic suggested architecture questions. This is separate from inspect_code_graph: inspect answers a scoped source question; analyze summarizes topology. Repository size is not admission-capped; elapsed-time and response-output budgets produce explicit partial-coverage warnings instead of failing large monorepos.',
+      inputSchema: {
+        callerCwd: McpInput.string('Required absolute repository or worktree path'),
+        communityId: McpInput.string('Stable cgc_ identifier required for the community operation'),
+        includeHeuristic: McpInput.boolean('Include lower-confidence heuristic relationships; defaults to false'),
+        includeModelAssociations: McpInput.boolean('Include model-derived semantic associations; defaults to false'),
+        memberLimit: McpInput.integer('Maximum deterministic community members; defaults to 100', {
+          minimum: 0,
+          maximum: 5_000,
+        }),
+        operation: McpInput.literals(
+          ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
+          'Required whole-graph analysis operation',
+        ),
+      },
+    },
+    ({callerCwd, communityId, includeHeuristic, includeModelAssociations, memberLimit, operation}) => {
+      const checkedCwd = requiredText(callerCwd, 'analyze_code_graph', 'callerCwd', {
+        callerCwd: '/workspace/project',
+        operation: 'stats',
+      });
+      if (!checkedCwd.ok) return checkedCwd.error;
+      if (!operation) {
+        return argumentError(
+          'analyze_code_graph requires operation. Example: {"operation":"stats","callerCwd":"/workspace/project"}',
+        );
+      }
+      const checkedCommunityId = communityId?.trim();
+      if (operation === 'community' && !checkedCommunityId?.match(/^cgc_[a-f0-9]{32}$/)) {
+        return argumentError('analyze_code_graph operation=community requires communityId from a communities result.');
+      }
+      return Effect.gen(function* () {
+        const path = yield* Path.Path;
+        if (!path.isAbsolute(checkedCwd.value)) {
+          return argumentError('analyze_code_graph callerCwd must be an absolute workspace path.');
+        }
+        const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
+        const watcher = yield* CodeGraphWatcher;
+        yield* watcher.ensure({
+          cwd: identity.repoRoot,
+          key: identity.worktreeId,
+          threadnoteHome: config.agentContextHome,
+        });
+        const query = yield* CodeGraphQueryService;
+        let status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        const refreshStarted = status.stale
+          ? yield* watcher.refresh({
+              cwd: identity.repoRoot,
+              key: identity.worktreeId,
+              threadnoteHome: config.agentContextHome,
+            })
+          : false;
+        if (refreshStarted) {
+          yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, {
+            cwd: identity.repoRoot,
+            threadnoteHome: config.agentContextHome,
+          });
+        }
+        if (status.stale) status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        if (!status.readySnapshot || status.stale) {
+          return codeGraphAnalysisRefreshResult(
+            operation,
+            Option.getOrUndefined(
+              yield* watcher.status(identity.worktreeId, {
+                cwd: identity.repoRoot,
+                threadnoteHome: config.agentContextHome,
+              }),
+            ),
+          );
+        }
+        const analysis = yield* CodeGraphAnalysis;
+        const result = yield* analysis.analyze({
+          allowedProvenances: [
+            'declared',
+            'resolved',
+            'syntactic',
+            ...(includeHeuristic ? (['heuristic'] as const) : []),
+            ...(includeModelAssociations ? (['model'] as const) : []),
+          ],
+          budget: {maxDurationMilliseconds: MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS - 5_000},
+          ...(checkedCommunityId === undefined ? {} : {communityId: checkedCommunityId}),
+          databasePath: status.databasePath,
+          limits: codeGraphAnalysisLimitsForView(operation, memberLimit),
+          snapshot: status.readySnapshot,
+        });
+        const structuredContent = {
+          operation,
+          repository: {
+            displayName: status.identity.displayName,
+            repositoryId: status.identity.repositoryId,
+          },
+          result,
+          type: 'code-graph-analysis',
+          version: 1,
+        };
+        return {
+          content: [{type: 'text' as const, text: renderCodeGraphAnalysis(result, operation)}],
+          structuredContent,
+        };
+      }).pipe(
+        Effect.timeoutOrElse({
           duration: MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS,
-          orElse: () => Effect.succeed(codeGraphQueryTimeoutResult(operation)),
+          orElse: () => Effect.succeed(codeGraphAnalysisTimeoutResult(operation)),
         }),
         Effect.catch(error =>
           Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
@@ -850,20 +1002,78 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
   );
 }
 
+function codeGraphAnalysisRefreshResult(
+  operation: CodeGraphAnalysisView,
+  status: CodeGraphRefreshStatus | undefined,
+): CallToolResult {
+  if (status?.state === 'failed') {
+    const message = status.message.slice(0, 1_000);
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Code graph background indexing failed: ${message}\n` +
+            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry analyze_code_graph.',
+        },
+      ],
+      isError: true,
+      structuredContent: {message, operation, state: 'failed', type: 'code-graph-analysis-state', version: 1},
+    };
+  }
+  const progress = status?.state === 'indexing' ? status.progress : undefined;
+  const retryAfterMilliseconds = codeGraphRetryAfterMilliseconds(status);
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          `Code graph indexing is continuing in the background (${codeGraphProgressSummary(progress) ?? 'queued'}). ` +
+          `Retry analyze_code_graph in about ${retryAfterMilliseconds / 1_000} seconds.`,
+      },
+    ],
+    structuredContent: {
+      operation,
+      ...(progress ? {progress} : {}),
+      retryAfterMilliseconds,
+      state: 'indexing',
+      type: 'code-graph-analysis-state',
+      version: 1,
+    },
+  };
+}
+
+function codeGraphAnalysisTimeoutResult(operation: CodeGraphAnalysisView): CallToolResult {
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          `Whole-graph analysis exceeded Threadnote's ${MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS / 1_000}-second MCP envelope. ` +
+          'Run `threadnote graph analyze --view ' +
+          `${operation}` +
+          '` in a terminal for the longer CLI budget.',
+      },
+    ],
+    structuredContent: {operation, state: 'timed-out', type: 'code-graph-analysis-state', version: 1},
+  };
+}
+
 const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(function* (
   watcher: CodeGraphWatcherShape,
   key: string,
+  target: {readonly cwd: string; readonly threadnoteHome: string},
 ) {
   const attempts = Math.ceil(MCP_CODE_GRAPH_INITIAL_WAIT_MILLISECONDS / MCP_CODE_GRAPH_POLL_MILLISECONDS);
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const status = yield* watcher.status(key);
+    const status = yield* watcher.status(key, target);
     if (Option.isSome(status) && status.value.state !== 'indexing') return;
     yield* Effect.sleep(MCP_CODE_GRAPH_POLL_MILLISECONDS);
   }
 });
 
 function codeGraphRefreshResult(
-  operation: 'explain' | 'impact' | 'path' | 'query',
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
   if (status?.state === 'failed') {
@@ -923,24 +1133,49 @@ function codeGraphRefreshResult(
   };
 }
 
-function codeGraphQueryTimeoutResult(operation: 'explain' | 'impact' | 'path' | 'query'): CallToolResult {
+const codeGraphQueryTimeoutResultFor = Effect.fn('mcpServer.codeGraphQueryTimeoutResultFor')(function* (
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+  context: Option.Option<{
+    readonly key: string;
+    readonly target: {readonly cwd: string; readonly threadnoteHome: string};
+    readonly watcher: CodeGraphWatcherShape;
+  }>,
+) {
+  if (Option.isNone(context)) return codeGraphQueryTimeoutResult(operation);
+  const status = yield* context.value.watcher.status(context.value.key, context.value.target).pipe(
+    Effect.timeoutOrElse({
+      duration: MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS,
+      orElse: () => Effect.succeed(Option.none<CodeGraphRefreshStatus>()),
+    }),
+    Effect.catch(() => Effect.succeed(Option.none<CodeGraphRefreshStatus>())),
+  );
+  return codeGraphQueryTimeoutResult(operation, Option.getOrUndefined(status));
+});
+
+export function codeGraphQueryTimeoutResult(
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+  status?: CodeGraphRefreshStatus,
+): CallToolResult {
+  if (status?.state === 'failed' || status?.state === 'indexing') {
+    return codeGraphRefreshResult(operation, status);
+  }
   return {
     content: [
       {
         type: 'text',
         text:
-          `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS / 1_000}-second ` +
-          'server budget and was stopped before the MCP client timeout. Retry the same request once. If it repeats, ' +
-          'run `threadnote graph status`, then `threadnote doctor --dry-run`, and report the bounded diagnostic.',
+          `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
+          'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
+          'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
+          '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
       },
     ],
-    isError: true,
     structuredContent: {
       operation,
       retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS,
-      state: 'timed_out',
+      state: 'timed-out',
       type: 'code-graph-query-state',
-      version: 1,
+      version: 2,
     },
   };
 }

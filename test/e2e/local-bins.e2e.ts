@@ -177,6 +177,7 @@ describe('built self-contained distribution', () => {
 
     const pathResult = await runCliJson<{
       readonly edges?: ReadonlyArray<{readonly relation?: string; readonly targetName?: string}>;
+      readonly nodes?: ReadonlyArray<{readonly id?: string; readonly name?: string}>;
       readonly operation?: string;
     }>([
       'graph',
@@ -192,6 +193,52 @@ describe('built self-contained distribution', () => {
     expect(pathResult.operation).toBe('path');
     expect(pathResult.edges).toEqual(
       expect.arrayContaining([expect.objectContaining({relation: 'calls', targetName: 'withExclusiveFileLock'})]),
+    );
+    const runApplicationId = pathResult.nodes?.find(node => node.name === 'runApplication')?.id;
+    const lockId = pathResult.nodes?.find(node => node.name === 'withExclusiveFileLock')?.id;
+    expect(runApplicationId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
+    expect(lockId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
+    if (!runApplicationId || !lockId) throw new Error('Expected packaged graph fixture node IDs.');
+
+    const exactNode = await runCliJson<{
+      readonly nodes?: ReadonlyArray<{readonly id?: string; readonly name?: string}>;
+      readonly operation?: string;
+    }>(['graph', 'node', '--cwd', graphRepository, '--node-id', lockId, '--json']);
+    expect(exactNode).toMatchObject({
+      nodes: [expect.objectContaining({id: lockId, name: 'withExclusiveFileLock'})],
+      operation: 'node',
+    });
+
+    const neighbors = await runCliJson<{
+      readonly edges?: ReadonlyArray<{readonly provenance?: string; readonly targetId?: string}>;
+      readonly nodes?: ReadonlyArray<{readonly id?: string}>;
+      readonly operation?: string;
+    }>([
+      'graph',
+      'neighbors',
+      '--cwd',
+      graphRepository,
+      '--node-id',
+      lockId,
+      '--direction',
+      'incoming',
+      '--depth',
+      '1',
+      '--json',
+    ]);
+    expect(neighbors.operation).toBe('neighbors');
+    expect(neighbors.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: lockId})]));
+    expect(neighbors.edges).toEqual(
+      expect.arrayContaining([expect.objectContaining({provenance: 'resolved', targetId: lockId})]),
+    );
+
+    const stableIdPath = await runCliJson<{
+      readonly edges?: ReadonlyArray<{readonly relation?: string; readonly targetId?: string}>;
+      readonly operation?: string;
+    }>(['graph', 'path', '--cwd', graphRepository, '--from', runApplicationId, '--to', lockId, '--json']);
+    expect(stableIdPath.operation).toBe('path');
+    expect(stableIdPath.edges).toEqual(
+      expect.arrayContaining([expect.objectContaining({relation: 'calls', targetId: lockId})]),
     );
 
     const semanticQuery = 'serialize concurrent tasks via mutual exclusion';
@@ -248,12 +295,22 @@ describe('built self-contained distribution', () => {
     ).toContain('Exported');
     const exported = JSON.parse(await readFile(exportPath, 'utf8')) as {
       readonly edges?: readonly unknown[];
-      readonly symbols?: readonly unknown[];
+      readonly nodes?: readonly unknown[];
+      readonly schema?: string;
+      readonly summary?: {
+        readonly edges?: {readonly written?: number};
+        readonly nodes?: {readonly written?: number};
+      };
+      readonly type?: string;
       readonly version?: number;
     };
+    expect(exported.type).toBe('threadnote-code-graph-export');
+    expect(exported.schema).toBe('threadnote.code-graph-export');
     expect(exported.version).toBe(1);
-    expect(exported.symbols?.length).toBeGreaterThan(0);
+    expect(exported.nodes?.length).toBeGreaterThan(0);
     expect(exported.edges?.length).toBeGreaterThan(0);
+    expect(exported.summary?.nodes?.written).toBe(exported.nodes?.length);
+    expect(exported.summary?.edges?.written).toBe(exported.edges?.length);
     await expect(
       runCli(['graph', 'export', '--cwd', graphRepository, '--format', 'json', '--output', exportPath]),
     ).rejects.toThrow(/already exists/);
@@ -878,6 +935,7 @@ describe('built self-contained distribution', () => {
           'recall_context',
           'remember_context',
           'inspect_code_graph',
+          'analyze_code_graph',
           'obsidian_publish',
           'health',
           'grep',
@@ -948,6 +1006,24 @@ describe('built self-contained distribution', () => {
         repository: {displayName: 'code-graph-repository'},
       });
       expect(JSON.stringify(graph.structuredContent)).toContain('withExclusiveFileLock');
+      const graphAnalysis = await client.callTool(
+        {
+          arguments: {callerCwd: graphRepository, operation: 'stats'},
+          name: 'analyze_code_graph',
+        },
+        undefined,
+        {timeout: realModelTimeoutMs},
+      );
+      expect(graphAnalysis.isError).not.toBe(true);
+      expect(graphAnalysis.structuredContent).toMatchObject({
+        operation: 'stats',
+        result: {
+          statistics: {
+            analyzedEdgeCount: expect.any(Number),
+            analyzedNodeCount: expect.any(Number),
+          },
+        },
+      });
       const preview = await client.callTool({
         arguments: {projection: projectionId, uri: memoryUri},
         name: 'obsidian_publish',

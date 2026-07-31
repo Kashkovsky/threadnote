@@ -22,19 +22,33 @@ export function codeGraphRepositoriesRoot(path: Path.Path, threadnoteHome: strin
   return path.join(threadnoteHome, 'indexes', 'code-graph', 'repositories');
 }
 
+export function codeGraphRepositoryRoot(path: Path.Path, threadnoteHome: string, checkoutId: string): string {
+  assertCheckoutId(checkoutId);
+  return path.join(codeGraphRepositoriesRoot(path, threadnoteHome), checkoutId);
+}
+
+export function codeGraphRepositoryLockPath(path: Path.Path, threadnoteHome: string, checkoutId: string): string {
+  assertCheckoutId(checkoutId);
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', `${checkoutId}.lock`);
+}
+
 export function codeGraphLayout(
   path: Path.Path,
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
 ): CodeGraphLayout {
-  const repositoryRoot = path.join(codeGraphRepositoriesRoot(path, threadnoteHome), checkoutId);
+  const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
   return {
     databasePath: path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`),
-    lockPath: path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', `${checkoutId}.lock`),
+    lockPath: codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
     repositoryRoot,
     staleMarkerPath: path.join(repositoryRoot, 'stale', `${worktreeId}.stale`),
     vectorRoot: path.join(repositoryRoot, 'vectors'),
     worktreeId,
   };
+}
+
+function assertCheckoutId(checkoutId: string): void {
+  if (!/^[0-9a-f]{64}$/.test(checkoutId)) throw new Error('Code graph checkout identity is invalid.');
 }

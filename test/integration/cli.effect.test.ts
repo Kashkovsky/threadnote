@@ -39,14 +39,43 @@ describe('Effect CLI', () => {
   it('exposes code graph search as a dedicated command family', async () => {
     const graph = await runCli(['graph', '--help']);
     const query = await runCli(['graph', 'query', '--help']);
+    const node = await runCli(['graph', 'node', '--help']);
+    const neighbors = await runCli(['graph', 'neighbors', '--help']);
+    const analyze = await runCli(['graph', 'analyze', '--help']);
+    const exportHelp = await runCli(['graph', 'export', '--help']);
+    const purge = await runCli(['graph', 'purge', '--help']);
 
     expect(graph.stdout).toContain('status');
     expect(graph.stdout).toContain('index');
     expect(graph.stdout).toContain('explain');
+    expect(graph.stdout).toContain('node');
+    expect(graph.stdout).toContain('neighbors');
     expect(graph.stdout).toContain('path');
     expect(graph.stdout).toContain('impact');
+    expect(graph.stdout).toContain('communities');
+    expect(graph.stdout).toContain('community');
+    expect(graph.stdout).toContain('groups');
+    expect(graph.stdout).toContain('report');
     expect(query.stdout).toContain('--query string');
     expect(query.stdout).toContain('--cwd string');
+    expect(node.stdout).toContain('--node-id string');
+    expect(neighbors.stdout).toContain('--node-id string');
+    expect(neighbors.stdout).toContain('--direction choice');
+    expect(neighbors.stdout).toContain('choices: both, incoming, outgoing');
+    expect(neighbors.stdout).toContain('--depth integer');
+    expect(analyze.stdout).toContain('--view choice');
+    expect(analyze.stdout).toContain(
+      'choices: stats, communities, community, groups, hubs, surprises, confidence, full',
+    );
+    expect(analyze.stdout).toContain('--community-id string');
+    const community = await runCli(['graph', 'community', '--help']);
+    expect(community.stdout).toContain('--community-id string');
+    expect(community.stdout).toContain('--member-limit integer');
+    expect(exportHelp.stdout).toContain('--format choice');
+    expect(exportHelp.stdout).toContain('choices: json, graphml, html, svg');
+    expect(exportHelp.stdout).toContain('--node-limit string');
+    expect(exportHelp.stdout).toContain('--edge-limit string');
+    expect(purge.stdout).toContain('--obsolete');
   });
 
   it('includes eligible untracked files in Git-base impact analysis', async () => {

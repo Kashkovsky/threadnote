@@ -3,6 +3,8 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
+import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
+import {compareCodeUnits} from './ordering.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
 
 interface GitTreeEntry {
@@ -48,6 +50,19 @@ const PRUNED_DIRECTORIES = new Set([
 ]);
 const CAT_FILE_BATCH_ENTRIES = 128;
 const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
+const COMPACT_RESOLUTION_CONTEXT_NAMES = new Set([
+  'build.gradle',
+  'build.gradle.kts',
+  'go.mod',
+  'gradle.properties',
+  'package.json',
+  'package.swift',
+  'pom.xml',
+  'project.pbxproj',
+  'settings.gradle',
+  'settings.gradle.kts',
+  'tsconfig.json',
+]);
 
 export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(function* (
   identity: RepositoryIdentity,
@@ -64,10 +79,11 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           timeoutMs: 0,
         })).stdout,
       );
+  const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, allTreeEntries, languagePacks);
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
   const acceptedByPolicy = allTreeEntries.filter(entry =>
-    acceptsRepositoryPathWithRules(entry.path, ignoreRules, languagePacks),
+    acceptsRepositoryPathWithRules(entry.path, ignoreRules, languagePacks, declaredWorkspace.roots),
   );
   const ignoredByGit = yield* ignoredPaths(
     identity.repoRoot,
@@ -82,6 +98,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     excluded,
     options.cachedCommittedFileKeys ?? new Set(),
     languagePacks,
+    declaredWorkspace.files,
     options.onContentBatch,
     options.onProgress,
   );
@@ -102,16 +119,17 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           ignoreRules,
           options.cachedCommittedFileKeys ?? new Set(),
           languagePacks,
+          declaredWorkspace.roots,
           options.onContentBatch,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
   for (const changed of overlay.changed) filesByPath.delete(changed);
   for (const file of overlay.files) filesByPath.set(file.path, file);
-  const files = [...filesByPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+  const files = [...filesByPath.values()].sort((left, right) => compareCodeUnits(left.path, right.path));
   const parsedPaths = new Set([...committed.parsedPaths, ...overlay.parsedPaths]);
   const skipped = excluded + committed.skipped + overlay.skipped;
   return {
-    committedFiles: [...committed.files].sort((left, right) => left.path.localeCompare(right.path)),
+    committedFiles: [...committed.files].sort((left, right) => compareCodeUnits(left.path, right.path)),
     committedParsedFiles: committed.files.reduce(
       (total, file) => total + (committed.parsedPaths.has(file.path) ? 1 : 0),
       0,
@@ -129,6 +147,19 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const allTreeEntries = isZeroObjectId(identity.headCommit)
+    ? []
+    : parseGitTree(
+        (yield* runCommandEffect('git', ['-C', identity.repoRoot, 'ls-tree', '-r', '-l', '-z', identity.headCommit], {
+          maxOutputBytes: 0,
+          timeoutMs: 0,
+        })).stdout,
+      );
+  const declaredWorkspace = yield* discoverDeclaredSourceRoots(
+    identity,
+    allTreeEntries,
+    BUILTIN_LANGUAGE_PACK_REGISTRY,
+  );
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const overlay = yield* readDirtyOverlay(
     identity,
@@ -137,6 +168,7 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
     compileThreadnoteIgnore(threadnoteIgnore),
     new Set(),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
+    declaredWorkspace.roots,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -154,11 +186,78 @@ export function parseGitTree(output: string): readonly GitTreeEntry[] {
   return entries;
 }
 
-export function acceptsRepositoryPath(value: string, threadnoteIgnore = ''): boolean {
+/**
+ * Resolve manifest-declared source roots before applying broad vendor/build-name pruning.
+ *
+ * A directory called `pods`, `build`, or `out` is usually generated, but those are also
+ * legal module names. Only a checked-in workspace/build manifest can override the matching
+ * directory prefix; nested generated directories remain pruned. Hidden directories and
+ * node_modules never participate in this bootstrap pass.
+ */
+const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceRoots')(function* (
+  identity: RepositoryIdentity,
+  entries: readonly GitTreeEntry[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+) {
+  const contexts = entries.filter(entry => {
+    if (entry.size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT || !languagePacks.isResolutionContext(entry.path)) {
+      return false;
+    }
+    const directories = entry.path.split('/').slice(0, -1);
+    return !directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules');
+  });
+  if (contexts.length === 0) return {files: new Map<string, CodeGraphInventoryFile>(), roots: []};
+
+  const files: CodeGraphInventoryFile[] = [];
+  for (const batch of chunkTreeEntries(contexts)) {
+    const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
+    const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
+      input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
+      maxOutputBytes: expectedBytes,
+      timeoutMs: 0,
+    });
+    const blobs = parseGitCatFileBatch(result.stdout, batch);
+    for (let index = 0; index < batch.length; index += 1) {
+      const entry = batch[index]!;
+      const bytes = blobs[index];
+      if (!bytes || appearsGitLfsPointer(bytes) || appearsBinary(bytes)) continue;
+      files.push(
+        retainResolutionContext(
+          {
+            ...inventoryFileForCommittedEntry(
+              entry,
+              committedContentHash(identity.objectFormat, entry.blobId),
+              languagePacks,
+            ),
+            content: decodeUtf8(bytes),
+          },
+          languagePacks,
+        ),
+      );
+    }
+  }
+  const workspace = yield* languagePacks.discoverWorkspace(files);
+  const roots = [
+    ...new Set(
+      workspace.projects
+        .flatMap(project => [project.root, ...project.sourceRoots])
+        .map(normalizeRepositoryPath)
+        .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === '')),
+    ),
+  ].sort(compareCodeUnits);
+  return {files: new Map(files.map(file => [file.path, file])), roots};
+});
+
+export function acceptsRepositoryPath(
+  value: string,
+  threadnoteIgnore = '',
+  declaredSourceRoots: readonly string[] = [],
+): boolean {
   return acceptsRepositoryPathWithRules(
     value,
     compileThreadnoteIgnore(threadnoteIgnore),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
+    declaredSourceRoots,
   );
 }
 
@@ -166,6 +265,7 @@ function acceptsRepositoryPathWithRules(
   value: string,
   ignoreRules: readonly CompiledIgnoreRule[],
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredSourceRoots: readonly string[] = [],
 ): boolean {
   const path = normalizeRepositoryPath(value);
   if (!path || path.startsWith('/') || path.split('/').some(segment => segment === '..' || segment === '')) {
@@ -174,7 +274,12 @@ function acceptsRepositoryPathWithRules(
   const segments = path.split('/');
   const directories = segments.slice(0, -1);
   if (
-    directories.some(directory => directory.startsWith('.') || PRUNED_DIRECTORIES.has(directory.toLowerCase())) ||
+    directories.some((directory, index) => {
+      if (directory.startsWith('.')) return true;
+      if (!PRUNED_DIRECTORIES.has(directory.toLowerCase())) return false;
+      const prefix = directories.slice(0, index + 1).join('/');
+      return !declaredSourceRoots.some(root => root === prefix || root.startsWith(`${prefix}/`));
+    }) ||
     isIgnoredByThreadnote(path, ignoreRules)
   ) {
     return false;
@@ -236,6 +341,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   excluded: number,
   cachedCommittedFileKeys: ReadonlySet<string>,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  preloadedResolutionContexts: ReadonlyMap<string, CodeGraphInventoryFile>,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
   onProgress?: CodeGraphInventoryOptions['onProgress'],
 ) {
@@ -244,15 +350,32 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   let completed = 0;
   const parsedPaths = new Set<string>();
   const needsContent: Array<GitTreeEntry & {readonly parse: boolean}> = [];
+  const metadataOnlyContent: CodeGraphInventoryFile[] = [];
   for (const entry of entries) {
     const contentHash = committedContentHash(identity.objectFormat, entry.blobId);
     const cached = cachedCommittedFileKeys.has(cacheKey(entry.path, contentHash, languagePacks));
-    if (cached && !languagePacks.isResolutionContext(entry.path)) {
+    const preloaded = preloadedResolutionContexts.get(entry.path);
+    if (preloaded && cached) {
+      files.push(preloaded);
+      completed += 1;
+    } else if (cached && !languagePacks.isResolutionContext(entry.path)) {
       files.push(inventoryFileForCommittedEntry(entry, contentHash, languagePacks));
+      completed += 1;
+    } else if (!cached && shouldOmitCorpusContent(entry.path, entry.size, languagePacks)) {
+      const metadata = {
+        ...inventoryFileForCommittedEntry(entry, contentHash, languagePacks),
+        contentOmittedReason: 'size-budget',
+      } satisfies CodeGraphInventoryFile;
+      metadataOnlyContent.push(metadata);
+      files.push(retainResolutionContext(metadata, languagePacks));
+      parsedPaths.add(entry.path);
       completed += 1;
     } else {
       needsContent.push({...entry, parse: !cached});
     }
+  }
+  for (let offset = 0; offset < metadataOnlyContent.length; offset += CAT_FILE_BATCH_ENTRIES) {
+    yield* onContentBatch?.(metadataOnlyContent.slice(offset, offset + CAT_FILE_BATCH_ENTRIES)) ?? Effect.void;
   }
   yield* onProgress?.({
     accepted: files.length,
@@ -275,12 +398,13 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     for (let index = 0; index < batch.length; index += 1) {
       const entry = batch[index]!;
       const bytes = blobs[index];
-      if (!bytes || appearsBinary(bytes) || appearsGitLfsPointer(bytes)) {
+      if (!bytes || appearsGitLfsPointer(bytes)) {
         skipped += 1;
         continue;
       }
-      const content = decodeUtf8(bytes);
-      if (content === undefined) {
+      const content = appearsBinary(bytes) ? undefined : decodeUtf8(bytes);
+      const acceptsBinary = acceptsBinaryContent(entry.path, languagePacks);
+      if (content === undefined && !acceptsBinary) {
         skipped += 1;
         continue;
       }
@@ -290,7 +414,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
           committedContentHash(identity.objectFormat, entry.blobId),
           languagePacks,
         ),
-        content,
+        ...(content === undefined ? {bytes} : {content}),
       } satisfies CodeGraphInventoryFile;
       if (entry.parse) contentBatch.push(hydrated);
       const retained = retainResolutionContext(hydrated, languagePacks);
@@ -367,6 +491,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   ignoreRules: readonly CompiledIgnoreRule[],
   cachedFileKeys: ReadonlySet<string>,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredSourceRoots: readonly string[],
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -403,6 +528,50 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   for (const value of untracked) {
     changes.changed.add(value);
   }
+  const overlayContextFiles: CodeGraphInventoryFile[] = [];
+  for (const relative of [...changes.changed].sort()) {
+    if (!languagePacks.isResolutionContext(relative)) continue;
+    const directories = relative.split('/').slice(0, -1);
+    if (directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules')) {
+      continue;
+    }
+    const opened = yield* materializeContainedStableRegularFile(
+      fs,
+      path,
+      repositoryRoot,
+      relative,
+      size => size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
+    ).pipe(Effect.option);
+    if (opened._tag === 'None' || opened.value.bytes === undefined) continue;
+    if (appearsGitLfsPointer(opened.value.bytes) || appearsBinary(opened.value.bytes)) continue;
+    const matched = languagePacks.match(relative);
+    overlayContextFiles.push(
+      retainResolutionContext(
+        {
+          blobId: `worktree:${opened.value.contentHash}`,
+          content: decodeUtf8(opened.value.bytes),
+          contentHash: opened.value.contentHash,
+          language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
+          mode: '100644',
+          path: relative,
+          size: opened.value.size,
+          source: 'worktree',
+        },
+        languagePacks,
+      ),
+    );
+  }
+  const overlayWorkspace =
+    overlayContextFiles.length === 0 ? undefined : yield* languagePacks.discoverWorkspace(overlayContextFiles);
+  const effectiveDeclaredSourceRoots = [
+    ...new Set([
+      ...declaredSourceRoots,
+      ...(overlayWorkspace?.projects.flatMap(project => [project.root, ...project.sourceRoots]) ?? []),
+    ]),
+  ]
+    .map(normalizeRepositoryPath)
+    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
+    .sort(compareCodeUnits);
   const files: CodeGraphInventoryFile[] = [];
   let skipped = 0;
   const parsedPaths = new Set<string>();
@@ -435,23 +604,46 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       containment === '..' ||
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment) ||
-      !acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks)
+      !acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks, effectiveDeclaredSourceRoots)
     ) {
       markSkipped(relative);
       continue;
     }
-    const opened = yield* readContainedStableRegularFile(fs, path, repositoryRoot, relative).pipe(Effect.option);
+    const opened = yield* materializeContainedStableRegularFile(fs, path, repositoryRoot, relative, size =>
+      shouldOmitCorpusContent(relative, size, languagePacks),
+    ).pipe(Effect.option);
     if (opened._tag === 'None') {
       markSkipped(relative);
       continue;
     }
-    const bytes = opened.value;
-    if (appearsBinary(bytes) || appearsGitLfsPointer(bytes)) {
+    const materialized = opened.value;
+    const matched = languagePacks.match(relative);
+    if (materialized.bytes === undefined) {
+      const metadata = {
+        blobId: `worktree:${materialized.contentHash}`,
+        contentHash: materialized.contentHash,
+        contentOmittedReason: 'size-budget',
+        language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
+        mode: '100644',
+        path: relative,
+        size: materialized.size,
+        source: 'worktree',
+      } satisfies CodeGraphInventoryFile;
+      if (!cachedFileKeys.has(cacheKey(relative, materialized.contentHash, languagePacks))) {
+        if (contentBatch.length >= CAT_FILE_BATCH_ENTRIES) yield* flushContentBatch();
+        contentBatch.push(metadata);
+      }
+      files.push(retainResolutionContext(metadata, languagePacks));
+      continue;
+    }
+    const bytes = materialized.bytes;
+    if (appearsGitLfsPointer(bytes)) {
       markSkipped(relative);
       continue;
     }
-    const content = decodeUtf8(bytes);
-    if (content === undefined) {
+    const content = appearsBinary(bytes) ? undefined : decodeUtf8(bytes);
+    const acceptsBinary = acceptsBinaryContent(relative, languagePacks);
+    if (content === undefined && !acceptsBinary) {
       markSkipped(relative);
       continue;
     }
@@ -461,11 +653,10 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
     ) {
       yield* flushContentBatch();
     }
-    const contentHash = sha256HexSync(bytes);
-    const matched = languagePacks.match(relative);
+    const contentHash = materialized.contentHash;
     const hydrated = {
-      blobId: `worktree:${sha256HexSync(bytes)}`,
-      content,
+      blobId: `worktree:${contentHash}`,
+      ...(content === undefined ? {bytes} : {content}),
       contentHash,
       language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
       mode: '100644',
@@ -557,15 +748,43 @@ function retainResolutionContext(
     file.content === undefined
       ? undefined
       : (compactResolutionContext(name, file.content) ??
-        (languagePacks.isResolutionContext(file.path) ? file.content : undefined));
+        (languagePacks.isResolutionContext(file.path) && !COMPACT_RESOLUTION_CONTEXT_NAMES.has(name)
+          ? file.content
+          : undefined));
   if (content !== undefined) {
     return {...file, content};
   }
-  const {content: _content, ...metadata} = file;
+  const {bytes: _bytes, content: _content, contentOmittedReason: _contentOmittedReason, ...metadata} = file;
   return metadata;
 }
 
+function isCorpusContent(path: string, languagePacks: CodeGraphLanguagePackRegistryShape): boolean {
+  return Option.match(languagePacks.match(path), {
+    onNone: () => false,
+    onSome: value => value.role === 'corpus',
+  });
+}
+
+export function shouldOmitCorpusContent(
+  path: string,
+  size: number,
+  languagePacks: CodeGraphLanguagePackRegistryShape = BUILTIN_LANGUAGE_PACK_REGISTRY,
+): boolean {
+  return size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT && isCorpusContent(path, languagePacks);
+}
+
+function acceptsBinaryContent(path: string, languagePacks: CodeGraphLanguagePackRegistryShape): boolean {
+  return isCorpusContent(path, languagePacks);
+}
+
 function compactResolutionContext(name: string, content: string): string | undefined {
+  if (name === 'go.mod') return compactGoModule(content);
+  if (name === 'pom.xml') return compactMavenManifest(content);
+  if (name === 'settings.gradle' || name === 'settings.gradle.kts') return compactGradleSettings(content);
+  if (name === 'build.gradle' || name === 'build.gradle.kts') return compactGradleBuild(content);
+  if (name === 'gradle.properties') return '';
+  if (name === 'package.swift') return compactSwiftPackage(content);
+  if (name === 'project.pbxproj') return compactXcodeProject(content);
   if (name !== 'package.json' && name !== 'tsconfig.json') return undefined;
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
@@ -609,6 +828,104 @@ function compactResolutionContext(name: string, content: string): string | undef
   } catch {
     return undefined;
   }
+}
+
+function compactGoModule(content: string): string {
+  const output: string[] = [];
+  let inRequireBlock = false;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.replace(/\/\/.*$/, '').trim();
+    if (!line) continue;
+    if (/^module\s+\S+/.test(line)) {
+      output.push(line);
+      continue;
+    }
+    if (/^require\s*\($/.test(line)) {
+      inRequireBlock = true;
+      continue;
+    }
+    if (inRequireBlock && line === ')') {
+      inRequireBlock = false;
+      continue;
+    }
+    if (inRequireBlock && /^\S+\s+v\S+/.test(line)) {
+      output.push(line);
+      continue;
+    }
+    if (/^require\s+\S+\s+v\S+/.test(line)) output.push(line);
+  }
+  return `${output.join('\n')}\n`;
+}
+
+function compactMavenManifest(content: string): string | undefined {
+  const project = content.replace(/<parent\b[\s\S]*?<\/parent>/i, '');
+  const group = compactXmlTag(project, 'groupId');
+  const artifact = compactXmlTag(project, 'artifactId');
+  if (!artifact) return undefined;
+  const modules = compactXmlTags(content, 'module');
+  const dependencies = [...content.matchAll(/<dependency\b[\s\S]*?<\/dependency>/gi)].flatMap(match => {
+    const dependencyArtifact = compactXmlTag(match[0], 'artifactId');
+    if (!dependencyArtifact) return [];
+    const dependencyGroup = compactXmlTag(match[0], 'groupId');
+    return [
+      `<dependency>${dependencyGroup ? `<groupId>${dependencyGroup}</groupId>` : ''}<artifactId>${dependencyArtifact}</artifactId></dependency>`,
+    ];
+  });
+  return [
+    '<project>',
+    group ? `<groupId>${group}</groupId>` : '',
+    `<artifactId>${artifact}</artifactId>`,
+    modules.length > 0 ? `<modules>${modules.map(module => `<module>${module}</module>`).join('')}</modules>` : '',
+    dependencies.length > 0 ? `<dependencies>${dependencies.join('')}</dependencies>` : '',
+    '</project>',
+  ].join('');
+}
+
+function compactGradleSettings(content: string): string {
+  return `${content
+    .split(/\r?\n/)
+    .filter(line => /\brootProject\.name\b|^\s*include\b|\.projectDir\s*=/.test(line))
+    .join('\n')}\n`;
+}
+
+function compactGradleBuild(content: string): string {
+  return `${content
+    .split(/\r?\n/)
+    .filter(line => /\bproject\s*\(/.test(line))
+    .join('\n')}\n`;
+}
+
+function compactSwiftPackage(content: string): string | undefined {
+  const packageName = /\bPackage\s*\(\s*name\s*:\s*"([^"]+)"/m.exec(content)?.[1];
+  const starts = [...content.matchAll(/\.(target|executableTarget|testTarget)\s*\(\s*name\s*:\s*"([^"]+)"/g)];
+  if (!packageName && starts.length === 0) return undefined;
+  const targets = starts.map((match, index) => {
+    const body = content.slice(match.index, starts[index + 1]?.index ?? content.length);
+    const path = /\bpath\s*:\s*"([^"]+)"/.exec(body)?.[1];
+    const dependencies = /\bdependencies\s*:\s*\[([\s\S]*?)\]/.exec(body)?.[1] ?? '';
+    const names = [...dependencies.matchAll(/"([^"]+)"/g)].map(value => value[1]!);
+    return `.${match[1]}(name: ${JSON.stringify(match[2])}, dependencies: [${names
+      .map(name => JSON.stringify(name))
+      .join(', ')}]${path ? `, path: ${JSON.stringify(path)}` : ''})`;
+  });
+  return `let package = Package(name: ${JSON.stringify(packageName ?? 'Package')}, targets: [${targets.join(', ')}])\n`;
+}
+
+function compactXcodeProject(content: string): string {
+  const targets = [...content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
+    match[1]!.trim(),
+  );
+  return `${targets.map(target => `isa = PBXNativeTarget; name = ${JSON.stringify(target)};`).join('\n')}\n`;
+}
+
+function compactXmlTag(content: string, tag: string): string | undefined {
+  return new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*([^<]+?)\\s*</${tag}>`, 'i').exec(content)?.[1]?.trim();
+}
+
+function compactXmlTags(content: string, tag: string): readonly string[] {
+  return [...content.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*([^<]+?)\\s*</${tag}>`, 'gi'))].map(match =>
+    match[1]!.trim(),
+  );
 }
 
 function packageEntryForResolution(exportsValue: unknown, mainValue: unknown): string | undefined {
@@ -767,6 +1084,97 @@ export function readContainedStableRegularFile(
     }
     return opened.bytes;
   }).pipe(Effect.mapError(cause => new Error(`Could not safely read repository path ${relative}.`, {cause})));
+}
+
+interface StableContainedMaterialization {
+  readonly bytes?: Uint8Array;
+  readonly contentHash: string;
+  readonly size: number;
+}
+
+/**
+ * Safely materialize a worktree file, or hash it through a fixed-size buffer when
+ * policy says its content should remain metadata-only. This keeps dirty large
+ * corpus artifacts from allocating their full size while preserving an exact
+ * content fingerprint and the same symlink/race interlocks as ordinary reads.
+ */
+function materializeContainedStableRegularFile(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoryRoot: string,
+  relative: string,
+  omitContent: (size: number) => boolean,
+): Effect.Effect<StableContainedMaterialization, Error, SystemInfo> {
+  const target = path.join(repositoryRoot, ...relative.split('/'));
+  return Effect.gen(function* () {
+    yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
+    const canonicalBefore = yield* fs.realPath(target);
+    if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
+      return yield* Effect.fail(new Error(`Repository file resolves outside its root: ${relative}`));
+    }
+    const linkTarget = yield* fs.readLink(target).pipe(
+      Effect.map(Option.some),
+      Effect.catch(() => Effect.succeed(Option.none<string>())),
+    );
+    if (Option.isSome(linkTarget)) {
+      return yield* Effect.fail(new Error(`Refusing to read a symbolic repository file: ${relative}`));
+    }
+    const pathInfoBefore = yield* fs.stat(target);
+    if (pathInfoBefore.type !== 'File') {
+      return yield* Effect.fail(new Error(`Refusing to read a non-regular repository file: ${relative}`));
+    }
+    const materialized = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(target, {flag: 'r'});
+        const openedInfoBefore = yield* file.stat;
+        const openedPath = yield* openedFilePath(fs, file);
+        const pathInfoOpened = yield* fs.stat(target);
+        if (!sameRegularFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
+          return yield* Effect.fail(new Error(`Repository file changed while it was opened: ${relative}`));
+        }
+        if (Option.isSome(openedPath) && !isContainedPath(path, repositoryRoot, openedPath.value)) {
+          return yield* Effect.fail(new Error(`Opened repository file is outside its root: ${relative}`));
+        }
+        const size = Number(openedInfoBefore.size);
+        if (!Number.isSafeInteger(size) || size < 0) {
+          return yield* Effect.fail(new Error(`Repository file size cannot be represented safely: ${relative}`));
+        }
+        const hasher = new Bun.CryptoHasher('sha256');
+        const bytes = omitContent(size) ? undefined : new Uint8Array(size);
+        const buffer = bytes ?? new Uint8Array(Math.min(1_048_576, Math.max(1, size)));
+        let offset = 0;
+        while (offset < size) {
+          const view = bytes ? bytes.subarray(offset) : buffer.subarray(0, Math.min(buffer.byteLength, size - offset));
+          const read = Number(yield* file.read(view));
+          if (read <= 0) {
+            return yield* Effect.fail(new Error(`Repository file ended while it was being read: ${relative}`));
+          }
+          hasher.update(view.subarray(0, read));
+          offset += read;
+        }
+        const openedInfoAfter = yield* file.stat;
+        const linkTargetAfter = yield* fs.readLink(target).pipe(
+          Effect.map(Option.some),
+          Effect.catch(() => Effect.succeed(Option.none<string>())),
+        );
+        const pathInfoAfter = yield* fs.stat(target);
+        if (
+          Option.isSome(linkTargetAfter) ||
+          !sameRegularFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
+          openedInfoBefore.size !== openedInfoAfter.size
+        ) {
+          return yield* Effect.fail(new Error(`Repository file changed while it was being read: ${relative}`));
+        }
+        return {bytes, contentHash: hasher.digest('hex'), size} satisfies StableContainedMaterialization;
+      }),
+    );
+    yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
+    const canonicalAfter = yield* fs.realPath(target);
+    if (!isContainedPath(path, repositoryRoot, canonicalAfter)) {
+      return yield* Effect.fail(new Error(`Repository file escaped its root while reading: ${relative}`));
+    }
+    return materialized;
+  }).pipe(Effect.mapError(cause => new Error(`Could not safely materialize repository path ${relative}.`, {cause})));
 }
 
 const validateRepositoryAncestors = Effect.fn('codeGraph.validateRepositoryAncestors')(function* (

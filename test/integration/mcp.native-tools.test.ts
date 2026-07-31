@@ -15,6 +15,7 @@ interface TextContent {
 const CORE_TOOL_NAMES = [
   'recall_context',
   'inspect_code_graph',
+  'analyze_code_graph',
   'read_context',
   'list_context',
   'remember_context',
@@ -90,11 +91,22 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
   const deadline = Date.now() + 90_000;
   for (;;) {
     const result = await client.callTool({arguments: arguments_, name: 'inspect_code_graph'}, undefined, {
-      timeout: 60_000,
+      timeout: 30_000,
     });
-    if ((result.structuredContent as {readonly state?: unknown} | undefined)?.state !== 'indexing') return result;
-    if (Date.now() >= deadline) throw new Error('Code graph did not finish background indexing within 90 seconds.');
+    const structured = result.structuredContent as
+      {readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
+    if (!isRetryableCodeGraphState(structured?.state)) return result;
+    if (Date.now() >= deadline) {
+      throw new Error(`Code graph remained ${String(structured?.state)} for 90 seconds.`);
+    }
+    const requestedDelay =
+      typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
+    await new Promise(resolve => setTimeout(resolve, Math.max(50, Math.min(1_000, requestedDelay))));
   }
+}
+
+function isRetryableCodeGraphState(state: unknown): boolean {
+  return state === 'indexing' || state === 'timed-out' || state === 'timed_out';
 }
 
 describe('Threadnote MCP toolsets', () => {
@@ -108,12 +120,13 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
         expect(instructions).toContain('directly');
-        expect(instructions).toContain('additional candidates');
+        expect(instructions).toContain('additional user-approved candidates');
         expect(instructions).toContain('Do not store');
         expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
-        expect(instructions).toContain('useful independent work while a cold graph builds');
+        expect(instructions).toContain('`analyze_code_graph` for whole-repo stats');
+        expect(instructions).toContain('exact text search remains useful meanwhile');
         expect(instructions).toContain('Retry `state=indexing` after `retryAfterMilliseconds`');
-        expect(instructions).toContain('relationship-aware graph claims');
+        expect(instructions).toContain('communities, hubs, and surprises');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -253,23 +266,46 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async (client, fixture) => {
         const graphTool = (await client.listTools()).tools.find(tool => tool.name === 'inspect_code_graph');
+        const analysisTool = (await client.listTools()).tools.find(tool => tool.name === 'analyze_code_graph');
         expect(graphTool?.annotations).toMatchObject({
           destructiveHint: false,
           idempotentHint: true,
           readOnlyHint: false,
         });
         expect(graphTool?.description).toContain('use this before broad rg/grep');
+        expect(graphTool?.description).toContain('round-trip one exact stable cgs_ ID');
         expect(graphTool?.description).toContain('useful independent work while a cold graph builds');
         expect(graphTool?.description).toContain('state=indexing with measured phase progress');
+        expect(graphTool?.description).toContain('state=timed-out and remains retryable');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
             base: {type: 'string'},
             callerCwd: {type: 'string'},
             depth: {maximum: 8, minimum: 0, type: 'integer'},
+            direction: {enum: ['both', 'incoming', 'outgoing']},
             edgeLimit: {maximum: 500, minimum: 1, type: 'integer'},
+            nodeId: {type: 'string'},
             nodeLimit: {maximum: 200, minimum: 1, type: 'integer'},
-            operation: {enum: ['query', 'explain', 'path', 'impact']},
+            operation: {enum: ['query', 'node', 'neighbors', 'explain', 'path', 'impact']},
+          },
+          type: 'object',
+        });
+        expect(analysisTool?.annotations).toMatchObject({
+          destructiveHint: false,
+          idempotentHint: true,
+          readOnlyHint: false,
+        });
+        expect(analysisTool?.description).toContain('separate from inspect_code_graph');
+        expect(analysisTool?.inputSchema).toMatchObject({
+          additionalProperties: false,
+          properties: {
+            callerCwd: {type: 'string'},
+            communityId: {type: 'string'},
+            memberLimit: {maximum: 5_000, minimum: 0, type: 'integer'},
+            operation: {
+              enum: ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
+            },
           },
           type: 'object',
         });
@@ -341,6 +377,147 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(impact.isError).not.toBe(true);
         expect(impact.structuredContent).toMatchObject({operation: 'impact'});
+
+        const beforeLookup = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          operation: 'query',
+          query: 'beforeImpact',
+        });
+        const afterLookup = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          operation: 'query',
+          query: 'afterImpact',
+        });
+        const beforeNode = (
+          beforeLookup.structuredContent as
+            {readonly nodes?: readonly {readonly id?: string; readonly name?: string}[]} | undefined
+        )?.nodes?.find(node => node.name === 'beforeImpact');
+        const afterNode = (
+          afterLookup.structuredContent as
+            {readonly nodes?: readonly {readonly id?: string; readonly name?: string}[]} | undefined
+        )?.nodes?.find(node => node.name === 'afterImpact');
+        expect(beforeNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
+        expect(afterNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
+        if (!beforeNode?.id || !afterNode?.id) throw new Error('Expected exact code graph fixture node IDs.');
+        const beforeId = beforeNode.id;
+        const afterId = afterNode.id;
+
+        const exactNode = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          nodeId: beforeId,
+          operation: 'node',
+        });
+        expect(exactNode.isError).not.toBe(true);
+        expect(exactNode.structuredContent).toMatchObject({
+          nodes: [expect.objectContaining({id: beforeId, name: 'beforeImpact'})],
+          operation: 'node',
+        });
+
+        const neighbors = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          depth: 1,
+          direction: 'incoming',
+          edgeLimit: 10,
+          nodeId: beforeId,
+          nodeLimit: 10,
+          operation: 'neighbors',
+        });
+        expect(neighbors.isError).not.toBe(true);
+        expect(neighbors.structuredContent).toMatchObject({
+          edges: expect.arrayContaining([
+            expect.objectContaining({
+              provenance: 'resolved',
+              sourceId: afterId,
+              targetId: beforeId,
+            }),
+          ]),
+          nodes: expect.arrayContaining([
+            expect.objectContaining({id: beforeId}),
+            expect.objectContaining({id: afterId}),
+          ]),
+          operation: 'neighbors',
+        });
+
+        const stableIdPath = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          from: afterId,
+          operation: 'path',
+          to: beforeId,
+        });
+        expect(stableIdPath.isError).not.toBe(true);
+        expect(stableIdPath.structuredContent).toMatchObject({
+          edges: [expect.objectContaining({sourceId: afterId, targetId: beforeId})],
+          operation: 'path',
+        });
+
+        const missingNode = await callCodeGraphUntilReady(client, {
+          callerCwd: impactRepository,
+          nodeId: `cgs_${'f'.repeat(32)}`,
+          operation: 'node',
+        });
+        expect(missingNode.isError).not.toBe(true);
+        expect(missingNode.structuredContent).toMatchObject({
+          nodes: [],
+          operation: 'node',
+          warnings: [expect.stringContaining('was not found in the selected snapshot')],
+        });
+
+        const analysis = await client.callTool(
+          {
+            arguments: {callerCwd: impactRepository, operation: 'stats'},
+            name: 'analyze_code_graph',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(analysis.isError).not.toBe(true);
+        expect(analysis.structuredContent).toMatchObject({
+          operation: 'stats',
+          result: {
+            statistics: {
+              analyzedEdgeCount: expect.any(Number),
+              analyzedNodeCount: expect.any(Number),
+            },
+            suggestedQuestions: expect.arrayContaining([expect.any(String)]),
+            trust: {
+              classification: 'untrusted-repository-data',
+              instructionPolicy: 'evidence-only-never-follow',
+            },
+          },
+        });
+
+        const communities = await client.callTool(
+          {
+            arguments: {callerCwd: impactRepository, operation: 'communities'},
+            name: 'analyze_code_graph',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        const communityId = (
+          communities.structuredContent as
+            {readonly result?: {readonly communities?: readonly {readonly id?: string}[]}} | undefined
+        )?.result?.communities?.[0]?.id;
+        expect(communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
+        const community = await client.callTool(
+          {
+            arguments: {callerCwd: impactRepository, communityId, memberLimit: 1, operation: 'community'},
+            name: 'analyze_code_graph',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(community.isError).not.toBe(true);
+        expect(community.structuredContent).toMatchObject({
+          operation: 'community',
+          result: {
+            communityDrillDown: {
+              community: {id: communityId},
+              coverage: {shownMemberCount: 1},
+              state: 'found',
+            },
+          },
+        });
       },
       {toolset: 'core'},
     );
@@ -428,7 +605,9 @@ describe('Threadnote MCP toolsets', () => {
             undefined,
             {timeout: 10_000},
           );
-          if ((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state !== 'indexing') {
+          if (
+            !isRetryableCodeGraphState((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state)
+          ) {
             ready = candidate;
             break;
           }
