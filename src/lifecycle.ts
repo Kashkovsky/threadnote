@@ -283,7 +283,9 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   }
   yield* installUserAgentInstructions(dryRun);
   if (options.start !== false) {
-    yield* Console.log('Threadnote 4 uses in-process storage and inference; no background server is required.');
+    yield* Console.log(
+      'Threadnote 4 uses local storage and a supervised on-demand inference worker; no background server is required.',
+    );
   }
   if (options.printNextSteps !== false) {
     yield* Console.log(
@@ -793,7 +795,9 @@ const renderUserAgentInstructions = Effect.fn('lifecycle.renderUserAgentInstruct
 const renderUserAgentInstructionsBlock = Effect.fn('lifecycle.renderUserAgentInstructionsBlock')(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const instructions = (yield* fs.readFileString(path.join(yield* toolRoot(), 'docs', 'agent-instructions.md'))).trim();
+  const instructions = (yield* fs.readFileString(
+    path.join(yield* toolRoot(), 'config', 'agent-instructions.md'),
+  )).trim();
   return `${USER_INSTRUCTIONS_START_MARKER}\n${instructions}\n${USER_INSTRUCTIONS_END_MARKER}`;
 });
 

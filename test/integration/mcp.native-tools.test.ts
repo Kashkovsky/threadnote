@@ -143,6 +143,7 @@ describe('Threadnote MCP toolsets', () => {
           properties: {
             callerCwd: {type: 'string'},
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
+            project: {type: 'string'},
             query: {type: 'string'},
             threshold: {maximum: 1, minimum: 0, type: 'number'},
           },
@@ -164,7 +165,7 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async client => {
         const result = await client.callTool(
-          {arguments: {query: 'threadnote recall ranking'}, name: 'recall_context'},
+          {arguments: {project: 'threadnote', query: 'threadnote recall ranking'}, name: 'recall_context'},
           undefined,
           {timeout: 5000},
         );
@@ -177,6 +178,72 @@ describe('Threadnote MCP toolsets', () => {
           results: expect.any(Array),
         });
         expect(result.structuredContent).not.toHaveProperty('codeGraph');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('keeps an explicit recall project ahead of conflicting caller workspace inference', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const workspace = join(fixture.root, 'workspace');
+        await mkdir(workspace, {recursive: true});
+        execFileSync('git', ['init', '-q'], {cwd: workspace});
+        execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:example/workspace.git'], {cwd: workspace});
+        await writeFile(
+          join(fixture.home, 'seed-manifest.yaml'),
+          [
+            'version: 1',
+            'projects:',
+            '  - name: workspace',
+            `    path: ${JSON.stringify(workspace)}`,
+            '    uri: threadnote://resources/repos/workspace',
+            '    seed: []',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+
+        await callText(client, 'remember_context', {
+          kind: 'handoff',
+          project: 'requested-project',
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Current repo latest handoff: requested-project explicit-project-anchor.',
+          topic: 'project-precedence',
+        });
+        await callText(client, 'remember_context', {
+          kind: 'handoff',
+          project: 'workspace',
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Current repo latest handoff: workspace caller-workspace-anchor.',
+          topic: 'project-precedence',
+        });
+
+        const result = await client.callTool(
+          {
+            arguments: {
+              callerCwd: workspace,
+              nodeLimit: 12,
+              project: 'requested-project',
+              query: 'current repo latest handoff project precedence',
+              threshold: 0,
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(result.isError).not.toBe(true);
+        const uris = (
+          result.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
+        )?.results?.map(item => item.uri);
+        const requestedUri =
+          'threadnote://user/test-user/memories/handoffs/active/requested-project/project-precedence.md';
+        const workspaceUri = 'threadnote://user/test-user/memories/handoffs/active/workspace/project-precedence.md';
+        expect(uris?.[0]).toBe(requestedUri);
+        expect(uris?.indexOf(requestedUri)).toBeLessThan(uris?.indexOf(workspaceUri) ?? Number.POSITIVE_INFINITY);
       },
       {toolset: 'core'},
     );

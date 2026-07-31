@@ -30,6 +30,9 @@ jobs:
       - run: bun run lint
       - run: bun run prettier:check
       - run: bun run typecheck
+      - run: bun run site:build
+        env:
+          THREADNOTE_SITE_BASE: /threadnote/
       - run: bun run build
       - run: bun run check:self-contained
       - run: bun run test:coverage

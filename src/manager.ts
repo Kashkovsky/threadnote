@@ -216,17 +216,16 @@ interface BulkItemResult {
 }
 
 const STATIC_FILES: Readonly<
-  Record<string, {readonly contentType: string; readonly path: string; readonly root?: 'docs' | 'manager'}>
+  Record<string, {readonly contentType: string; readonly directory?: 'assets/brand' | 'manager'; readonly path: string}>
 > = {
   '/': {contentType: 'text/html; charset=utf-8', path: 'index.html'},
   '/index.html': {contentType: 'text/html; charset=utf-8', path: 'index.html'},
   '/app.css': {contentType: 'text/css; charset=utf-8', path: 'app.css'},
   '/app.js': {contentType: 'text/javascript; charset=utf-8', path: 'app.js'},
-  '/threadnote-logo.svg': {contentType: 'image/svg+xml; charset=utf-8', path: 'threadnote-logo.svg', root: 'docs'},
-  '/threadnote-logo-inverted.svg': {
+  '/threadnote-logo.svg': {
     contentType: 'image/svg+xml; charset=utf-8',
-    path: 'threadnote-logo-inverted.svg',
-    root: 'docs',
+    directory: 'assets/brand',
+    path: 'threadnote-logo.svg',
   },
 };
 
@@ -750,12 +749,11 @@ const serveStatic = Effect.fn('manager.serveStatic')(function* (
   response: ManagerResponseSink,
 ) {
   const file = STATIC_FILES[url.pathname] ?? STATIC_FILES['/'];
-  const content = yield* readFile(yield* pathJoin(yield* toolRoot(), file.root ?? 'manager', file.path));
-  const headers: Record<string, string> = {'content-type': file.contentType};
-  if (file.root !== 'docs') {
-    headers['cache-control'] = 'no-store';
-  }
-  response.response = HttpServerResponse.uint8Array(content, {status: 200, headers});
+  const content = yield* readFile(yield* pathJoin(yield* toolRoot(), file.directory ?? 'manager', file.path));
+  response.response = HttpServerResponse.uint8Array(content, {
+    status: 200,
+    headers: {'cache-control': 'no-store', 'content-type': file.contentType},
+  });
 });
 
 const readTree: (

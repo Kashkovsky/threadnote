@@ -3,10 +3,18 @@ import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 
 async function agentInstructions(): Promise<string> {
-  return readFile(join(process.cwd(), 'docs', 'agent-instructions.md'), 'utf8');
+  return readFile(join(process.cwd(), 'config', 'agent-instructions.md'), 'utf8');
 }
 
 describe('agent instructions', () => {
+  it('keeps the packaged runtime template aligned with the contributor-facing copy', async () => {
+    const [runtime, documentation] = await Promise.all([
+      agentInstructions(),
+      readFile(join(process.cwd(), 'docs', 'agent-instructions.md'), 'utf8'),
+    ]);
+    expect(runtime).toBe(documentation);
+  });
+
   it('keeps the always-loaded guidance compact', async () => {
     const instructions = await agentInstructions();
     expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(5_000);

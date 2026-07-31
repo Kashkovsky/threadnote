@@ -1,0 +1,369 @@
+import {lazy, Suspense} from 'react';
+import {AgentTrace} from '../components/AgentTrace';
+import {CodeBlock} from '../components/CodeBlock';
+import {Icon, type IconName} from '../components/Icons';
+import {SiteShell} from '../components/SiteShell';
+import {heroScenario} from '../content/landing';
+import {githubUrl, setDocumentMeta, siteHref} from '../lib/site';
+
+const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
+
+const features: Array<{
+  icon: IconName;
+  accent: string;
+  label: string;
+  title: string;
+  body: string;
+  detail: string;
+}> = [
+  {
+    icon: 'memory',
+    accent: 'teal',
+    label: 'Durable memory',
+    title: 'The useful part survives the chat.',
+    body: 'Decisions, handoffs, workflows, and lessons become scoped Markdown with stable URIs—not another transcript dump.',
+    detail: 'Recall → inspect pointer → read canonical record',
+  },
+  {
+    icon: 'local',
+    accent: 'teal',
+    label: 'Local AI',
+    title: 'Core recall works out of the box.',
+    body: 'A verified embedding model installs by default. A supervised local worker adds semantic recall while lexical search stays ready to fail open.',
+    detail: 'No Python · no daemon · no OpenViking',
+  },
+  {
+    icon: 'team',
+    accent: 'blue',
+    label: 'Cross-team sharing',
+    title: 'Share the conclusion, not the private session.',
+    body: 'Preview, scan, and publish selected durable memory through a Git-backed team store. Teammates sync it into local Threadnote, then recall it from any compatible agent.',
+    detail: 'Explicit boundary · conflict-safe · auditable',
+  },
+  {
+    icon: 'graph',
+    accent: 'violet',
+    label: 'Polyglot code graph',
+    title: 'Ask about the code as it exists now.',
+    body: 'Query, explain, trace paths, and assess impact across TypeScript, JavaScript, Java, Kotlin, and Swift—even in large nested monorepos.',
+    detail: 'Definitions · relationships · paths · impact',
+  },
+  {
+    icon: 'manager',
+    accent: 'magenta',
+    label: 'Manager',
+    title: 'See the system, not just its output.',
+    body: 'Explore graph topology, memory health, shares, models, tools, and diagnostics in a focused local control plane.',
+    detail: 'Three.js graph · inspectable evidence',
+  },
+  {
+    icon: 'obsidian',
+    accent: 'amber',
+    label: 'Obsidian bridge',
+    title: 'Human notes and agent memory can meet safely.',
+    body: 'Allowlist vault notes for recall or publish selected memories into a drift-protected generated view. No plugin required.',
+    detail: 'Explicit imports · one-way projections',
+  },
+];
+
+const workflow = [
+  {
+    number: '01',
+    title: 'Recall what was learned',
+    body: 'Threadnote ranks scoped memories and returns small, explainable pointers.',
+  },
+  {
+    number: '02',
+    title: 'Inspect what exists',
+    body: 'The code graph answers current-source questions without mixing them into historical recall.',
+  },
+  {
+    number: '03',
+    title: 'Do the work',
+    body: 'The agent starts with the decisions, files, tests, blockers, and next step already in view.',
+  },
+  {
+    number: '04',
+    title: 'Preserve the outcome',
+    body: 'Update a stable durable memory, leave a concise handoff, and optionally publish the reusable part.',
+  },
+];
+
+export default function LandingPage() {
+  setDocumentMeta(
+    'Your team remembers',
+    'Local-first engineering memory and polyglot code intelligence for every coding agent.',
+  );
+
+  return (
+    <SiteShell page="home" fullBleed>
+      <section className="hero section-grid">
+        <div className="hero__copy">
+          <div className="hero__version">
+            <span className="status-dot" />
+            Threadnote 4 · self-contained
+          </div>
+          <h1>
+            Your team remembers.
+            <span>Every coding agent can use it.</span>
+          </h1>
+          <p className="hero__lede">
+            Local-first engineering memory and code intelligence for Codex, Claude, Cursor, Copilot, and the next agent
+            you try.
+          </p>
+          <div className="hero__actions">
+            <a className="button" href={siteHref('docs/#installation')}>
+              Install Threadnote
+              <Icon name="arrow" aria-hidden="true" />
+            </a>
+            <a className="button button--ghost" href={siteHref('manager-demo/')}>
+              Explore the Manager
+            </a>
+          </div>
+          <div className="hero__install">
+            <code>curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</code>
+            <span>macOS & Linux · standalone runtime</span>
+          </div>
+        </div>
+        <div className="hero__visual">
+          <Suspense fallback={<div className="thread-scene thread-scene--fallback" />}>
+            <ThreadScene />
+          </Suspense>
+          <div className="hero-node hero-node--memory">
+            <span>memory</span>
+            <strong>auth-contract.md</strong>
+          </div>
+          <div className="hero-node hero-node--graph">
+            <span>code graph</span>
+            <strong>AuthSession · 12 edges</strong>
+          </div>
+          <div className="hero-node hero-node--share">
+            <span>team share</span>
+            <strong>mobile-platform</strong>
+          </div>
+          <div className="hero__caption">
+            <span>Historical knowledge</span>
+            <i />
+            <span>Current source</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="trust-strip" aria-label="Threadnote runtime guarantees">
+        <div>
+          <strong>Standalone installation</strong>
+          <span>Executable and pinned native runtime</span>
+        </div>
+        <div>
+          <strong>Private by default</strong>
+          <span>Canonical home at ~/.threadnote</span>
+        </div>
+        <div>
+          <strong>Core model installed automatically</strong>
+          <span>Verified BGE Small embeddings</span>
+        </div>
+        <div>
+          <strong>No service to babysit</strong>
+          <span>No Python, daemon, or external server</span>
+        </div>
+      </section>
+
+      <section className="content-section content-section--trace">
+        <header className="section-heading">
+          <span className="eyebrow">Context that can show its work</span>
+          <h2>One prompt. Two kinds of evidence. No context archaeology.</h2>
+          <p>
+            Memory explains what people learned and decided. The graph explains what the current worktree contains.
+            Agents call both deliberately.
+          </p>
+        </header>
+        <AgentTrace scenario={heroScenario} />
+      </section>
+
+      <section className="content-section" id="features">
+        <header className="section-heading section-heading--split">
+          <div>
+            <span className="eyebrow">A durable context layer</span>
+            <h2>Built for the whole engineering thread.</h2>
+          </div>
+          <p>
+            Threadnote sits between your repositories, local tools, team knowledge, and coding agents—without trying to
+            replace any of them.
+          </p>
+        </header>
+        <div className="feature-grid">
+          {features.map((feature, index) => (
+            <article className={`feature-card feature-card--${feature.accent}`} key={feature.label}>
+              <div className="feature-card__top">
+                <span className="feature-card__index">0{index + 1}</span>
+                <Icon name={feature.icon} aria-hidden="true" />
+              </div>
+              <span className="eyebrow">{feature.label}</span>
+              <h3>{feature.title}</h3>
+              <p>{feature.body}</p>
+              <code>{feature.detail}</code>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="architecture-band">
+        <div className="architecture-band__copy">
+          <span className="eyebrow">Private by architecture</span>
+          <h2>Your machine is the default trust boundary.</h2>
+          <p>
+            Canonical Markdown, SQLite indexes, models, graph snapshots, and share metadata live under{' '}
+            <code>~/.threadnote</code>. Derived indexes can be rebuilt. Sharing is an explicit previewed action.
+          </p>
+          <a className="text-link" href={siteHref('docs/#architecture')}>
+            Read the architecture
+            <Icon name="arrow" aria-hidden="true" />
+          </a>
+        </div>
+        <div className="architecture-map" aria-label="Threadnote data flow">
+          <div className="architecture-map__boundary">
+            <span>Your machine</span>
+            <div className="architecture-map__core">
+              <small>~/.threadnote</small>
+              <strong>Canonical memory</strong>
+              <strong>SQLite indexes</strong>
+              <strong>Local models</strong>
+              <strong>Code snapshots</strong>
+            </div>
+            <div className="architecture-map__agents">
+              <span>Codex</span>
+              <span>Claude</span>
+              <span>Cursor</span>
+              <span>Copilot</span>
+            </div>
+          </div>
+          <div className="architecture-map__external">
+            <div>
+              <span>Explicit</span>
+              <strong>Team share</strong>
+            </div>
+            <div>
+              <span>Allowlisted</span>
+              <strong>Obsidian</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="content-section">
+        <header className="section-heading">
+          <span className="eyebrow">The daily loop</span>
+          <h2>Start informed. Finish with a clean thread.</h2>
+        </header>
+        <ol className="workflow-list">
+          {workflow.map(item => (
+            <li key={item.number}>
+              <span>{item.number}</span>
+              <div>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section className="manager-teaser">
+        <div className="manager-teaser__copy">
+          <span className="eyebrow">Threadnote Manager</span>
+          <h2>Your context, visible.</h2>
+          <p>
+            Walk a polyglot dependency graph, inspect a memory’s lifecycle, check share health, and verify local
+            AI—without leaving the local runtime.
+          </p>
+          <a className="button button--light" href={siteHref('manager-demo/')}>
+            Open interactive demo
+            <Icon name="arrow" aria-hidden="true" />
+          </a>
+        </div>
+        <div className="manager-teaser__window">
+          <div className="manager-teaser__chrome">
+            <span />
+            <span />
+            <span />
+            <code>localhost · Manager</code>
+          </div>
+          <div className="manager-teaser__app">
+            <aside>
+              <strong>TN</strong>
+              <span className="is-active">Graph</span>
+              <span>Memory</span>
+              <span>Shares</span>
+              <span>Doctor</span>
+            </aside>
+            <div className="manager-teaser__canvas">
+              <svg viewBox="0 0 620 300" aria-hidden="true">
+                <g className="preview-lines">
+                  <path d="M90 150 220 82 330 152 475 70" />
+                  <path d="M90 150 215 245 330 152 500 226" />
+                  <path d="M220 82 325 45 475 70" />
+                  <path d="M215 245 360 255 500 226" />
+                </g>
+                <g className="preview-nodes">
+                  <circle cx="90" cy="150" r="13" />
+                  <circle cx="220" cy="82" r="10" />
+                  <circle cx="215" cy="245" r="11" />
+                  <circle cx="330" cy="152" r="16" />
+                  <circle cx="325" cy="45" r="8" />
+                  <circle cx="475" cy="70" r="12" />
+                  <circle cx="360" cy="255" r="9" />
+                  <circle cx="500" cy="226" r="13" />
+                </g>
+              </svg>
+              <div className="manager-teaser__legend">
+                <span>
+                  <i className="dot dot--ts" /> TypeScript
+                </span>
+                <span>
+                  <i className="dot dot--kt" /> Kotlin
+                </span>
+                <span>
+                  <i className="dot dot--swift" /> Swift
+                </span>
+              </div>
+            </div>
+            <div className="manager-teaser__detail">
+              <span>SYMBOL</span>
+              <h3>AuthSession</h3>
+              <code>libs/auth/session.ts:18</code>
+              <dl>
+                <div>
+                  <dt>Inbound</dt>
+                  <dd>7</dd>
+                </div>
+                <div>
+                  <dt>Outbound</dt>
+                  <dd>5</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="content-section content-section--cta">
+        <div className="cta-panel">
+          <span className="eyebrow">Keep the long thread</span>
+          <h2>Give your next agent the context your last one earned.</h2>
+          <CodeBlock
+            label="macOS & Linux"
+            code="curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh"
+          />
+          <div className="cta-panel__actions">
+            <a className="button" href={siteHref('docs/')}>
+              Read the docs
+            </a>
+            <a className="button button--ghost" href={githubUrl}>
+              View on GitHub
+            </a>
+          </div>
+        </div>
+      </section>
+    </SiteShell>
+  );
+}

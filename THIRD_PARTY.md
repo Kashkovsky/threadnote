@@ -7,7 +7,7 @@ Python, OpenViking, or a separate memory server.
 
 Direct runtime software and packages bundled into the published JavaScript retain their own licenses:
 
-- `node-llama-cpp` (MIT), used in-process with prebuilt `llama.cpp` binaries for local GGUF inference
+- `node-llama-cpp` (MIT), used in a supervised local worker with prebuilt `llama.cpp` binaries for GGUF inference
 - Bun (MIT), embedded into each compiled executable
 - `effect`, `@effect/platform-bun`, `@effect/ai-openai-compat`, `@effect/sql-sqlite-bun`, and `@effect/vitest` (MIT)
 - `@modelcontextprotocol/sdk` (MIT)
@@ -25,6 +25,13 @@ Grammar and parser license copies, source revisions, ABIs, and SHA-256 checksums
 `assets/code-graph/`. Consult those files and each installed package's metadata for the authoritative terms. The
 pinned MIT-licensed BGE Small embedding model is installed automatically by `threadnote install`; other model files
 require an explicit `threadnote models install` action. Catalog entries identify every model source and license.
+
+## Public website
+
+The separately deployed GitHub Pages website is not part of the standalone release. Its build uses Vite and
+`@vitejs/plugin-react` (MIT), and it self-hosts Spline Sans and JetBrains Mono through Fontsource packages. The font
+packages and font files are distributed under the SIL Open Font License 1.1. A copy is included with the website
+assets.
 
 ## Historical migration compatibility
 

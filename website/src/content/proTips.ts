@@ -1,0 +1,432 @@
+import type {TraceScenario} from '../components/AgentTrace.js';
+
+export type ProTip = {
+  id: string;
+  number: string;
+  category: 'team' | 'continuity' | 'operations' | 'graph';
+  title: string;
+  summary: string;
+  why: string;
+  practice: string[];
+  scenario: TraceScenario;
+};
+
+export const proTips: ProTip[] = [
+  {
+    id: 'share-before-pr',
+    number: '01',
+    category: 'team',
+    title: 'Share the feature memory before the PR.',
+    summary: 'Give reviewers the design constraints and trade-offs that cannot fit cleanly in the diff.',
+    why: 'A curated durable memory makes intent discoverable before review begins, while the PR remains the source of truth for code.',
+    practice: [
+      'Update one stable feature memory instead of creating a timeline of duplicates.',
+      'Preview the exact shared bytes and resolve any reported leak before publishing.',
+      'Reference the team, project, and topic in the PR; another user’s local threadnote:// URI is not portable.',
+    ],
+    scenario: {
+      eyebrow: 'Review with context',
+      title: 'The reviewer sees why—not only what',
+      description: 'A durable feature record is curated, previewed, and shared before review.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'The auth refresh PR is ready. Give reviewers the design context.',
+        },
+        {
+          kind: 'tool',
+          actor: 'remember_context',
+          text: '{"kind":"durable","project":"mobile","topic":"auth-refresh","replaceUri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","text":"Refresh tokens rotate inside one coordinator. Review callers against the rotation window and staged rollout constraints."}',
+          meta: 'stable identity · updated in place',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Updated durable feature memory',
+          evidence: ['threadnote://…/mobile/auth-refresh.md'],
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","team":"mobile-team","preview":true}',
+          meta: 'exact shared bytes · no write',
+        },
+        {
+          kind: 'action',
+          actor: 'You',
+          text: 'Approve the exact preview for publication.',
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","team":"mobile-team","preview":false}',
+          meta: 'approved publish · committed and pushed',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Published mobile-team · mobile · auth-refresh',
+          evidence: ['threadnote://user/alice/memories/shared/mobile-team/durable/projects/mobile/auth-refresh.md'],
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"mobile","query":"auth-refresh rotation window rollout constraints","callerCwd":"/repo/mobile"}',
+          meta: 'reviewer auto-syncs, then recalls',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Reviewer agent',
+          text: 'The PR names mobile-team · mobile · auth-refresh. I recalled the shared decision locally and will review the diff against its rotation-window and rollout invariants.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'parallel-team',
+    number: '02',
+    category: 'team',
+    title: 'Work in parallel without losing the shared edge.',
+    summary: 'Publish reusable decisions while keeping branch-specific handoffs local to each teammate.',
+    why: 'Shared durable memory synchronizes the contract; local handoffs preserve the mechanics of each worktree.',
+    practice: [
+      'Use the same project and topic identity for the shared contract.',
+      'Never publish handoffs, private logs, or raw customer material.',
+      'Recall at task start so auto-sync pulls the newest curated team memory.',
+    ],
+    scenario: {
+      eyebrow: 'Parallel implementation',
+      title: 'Web and mobile move on one contract',
+      description: 'Two agents synchronize a decision while their branch state remains separate.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'Alice',
+          text: 'Publish the finalized session envelope for the mobile team.',
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/session-envelope.md","team":"mobile-team","preview":true}',
+          meta: 'exact shared bytes · no write',
+        },
+        {
+          kind: 'action',
+          actor: 'Alice',
+          text: 'Approve this preview for the mobile team.',
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/session-envelope.md","team":"mobile-team","preview":false}',
+          meta: 'approved publish · Git-backed',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Published revision 8f2c1d',
+          evidence: ['threadnote://user/alice/memories/shared/mobile-team/durable/projects/mobile/session-envelope.md'],
+        },
+        {
+          kind: 'user',
+          actor: 'Bob',
+          text: 'Implement the Android consumer using our current contract.',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"mobile","query":"session envelope Android","callerCwd":"/repo/android"}',
+          meta: 'auto-sync then recall',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Bob’s agent',
+          text: 'The shared contract now includes nonce rotation. I’ll keep Android branch status in a separate local handoff.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'on-call',
+    number: '03',
+    category: 'operations',
+    title: 'Turn an incident into the next on-caller’s head start.',
+    summary: 'Preserve the privacy-safe diagnosis, signals, mitigations, and follow-up—not the production transcript.',
+    why: 'The next incident starts with known failure modes and verified commands instead of institutional archaeology.',
+    practice: [
+      'Remove customer data, credentials, raw logs, and ephemeral identifiers.',
+      'Publish only a sanitized durable pattern or runbook amendment; keep the incident record and handoff personal.',
+      'Record what ruled hypotheses in or out, what mitigation worked, and which repository runbook remains authoritative.',
+    ],
+    scenario: {
+      eyebrow: 'On-call continuity',
+      title: 'A familiar symptom gets a faster answer',
+      description: 'A sanitized durable pattern turns last month’s incident learning into shared evidence.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'Previous on-caller',
+          text: 'Preserve the reusable retry-storm diagnosis for the next rotation.',
+        },
+        {
+          kind: 'tool',
+          actor: 'remember_context',
+          text: '{"kind":"durable","project":"checkout","topic":"retry-storm-pattern","text":"A deploy-time latency spike plus a draining queue and doubled retries previously indicated retry amplification. Verify the three safe checks in the current repository runbook before mitigating."}',
+          meta: 'sanitized learning · no raw incident log',
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/checkout/retry-storm-pattern.md","team":"platform-on-call","preview":true}',
+          meta: 'exact shared bytes · no write',
+        },
+        {
+          kind: 'action',
+          actor: 'Previous on-caller',
+          text: 'Approve the sanitized durable pattern.',
+        },
+        {
+          kind: 'tool',
+          actor: 'share_publish',
+          text: '{"uri":"threadnote://user/alice/memories/durable/projects/checkout/retry-storm-pattern.md","team":"platform-on-call","preview":false}',
+          meta: 'approved durable publish',
+        },
+        {
+          kind: 'user',
+          actor: 'Next on-caller',
+          text: 'Checkout latency jumped after a deploy. Have we seen this shape before?',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"checkout","query":"latency after deploy queue saturation","callerCwd":"/repo/checkout"}',
+          meta: 'auto-sync · scope · lifecycle · authority',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Found the shared durable retry-storm pattern',
+          evidence: [
+            'threadnote://user/on-caller/memories/shared/platform-on-call/durable/projects/checkout/retry-storm-pattern.md',
+          ],
+        },
+        {
+          kind: 'tool',
+          actor: 'read_context',
+          text: '{"uri":"threadnote://user/on-caller/memories/shared/platform-on-call/durable/projects/checkout/retry-storm-pattern.md"}',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'A similar deploy amplified retries while the queue drained. The durable pattern lists three safe checks; I’ll verify them against the current repository runbook before proposing a mitigation.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'switch-agents',
+    number: '04',
+    category: 'continuity',
+    title: 'Start in one agent. Continue in another.',
+    summary: 'A concise handoff carries exact status, checks, blockers, and next steps across agent boundaries.',
+    why: 'The handoff is tool-neutral and lives outside either chat, so changing interfaces does not reset the work.',
+    practice: [
+      'Store the handoff before switching agents or allowing a long session to compact.',
+      'Include commands and outcomes, not raw terminal output.',
+      'Keep durable design knowledge separate from temporary branch status.',
+    ],
+    scenario: {
+      eyebrow: 'Agent portability',
+      title: 'Codex hands a live branch to Claude',
+      description: 'The next agent begins from a structured handoff rather than a copied transcript.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You · Codex',
+          text: 'Save the current state. I’m continuing in another agent.',
+        },
+        {
+          kind: 'tool',
+          actor: 'remember_context',
+          text: '{"kind":"handoff","project":"billing","topic":"retry-policy","text":"Parser and unit tests pass. The jitter-boundary property test still fails; reproduce and fix that boundary next."}',
+          meta: 'status · checks · blocker · next step',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Stored active handoff',
+          evidence: ['threadnote://…/handoffs/active/billing/retry-policy.md'],
+        },
+        {
+          kind: 'user',
+          actor: 'You · Claude',
+          text: 'Continue the billing retry-policy work.',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"billing","query":"latest retry policy handoff","callerCwd":"/repo/billing"}',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Claude',
+          text: 'The parser and unit tests pass. One property test still exposes a jitter-boundary bug; I’ll start there.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'resume-later',
+    number: '05',
+    category: 'continuity',
+    title: 'Resume a feature a month later.',
+    summary:
+      'Stable durable memory preserves the decisions; archived handoffs preserve the historical trail without competing in active recall.',
+    why: 'Time changes relevance, but it should not erase the reasoning that shaped the feature.',
+    practice: [
+      'Write durable records around contracts and non-obvious constraints.',
+      'Archive completed handoffs so current work ranks above historical status.',
+      'Update the same URI when a decision changes and record what superseded it.',
+    ],
+    scenario: {
+      eyebrow: 'Long-running work',
+      title: 'Thirty days later, the why is still intact',
+      description: 'Lifecycle-aware recall separates lasting decisions from old branch status.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Restart the offline sync feature. What still matters from last month?',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"mobile","query":"offline sync decisions handoff","callerCwd":"/repo/mobile"}',
+          meta: 'durable boosted · archived handoff demoted',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: '2 durable decisions, 1 archived handoff',
+          evidence: ['threadnote://…/offline-sync-contract.md', 'threadnote://…/offline-conflict-policy.md'],
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'The durable constraints still apply: operations are idempotent and server order wins only after vector-clock comparison. The archived handoff is historical, so I’ll verify its file references against the graph.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'graph-operations',
+    number: '06',
+    category: 'graph',
+    title: 'Choose the graph operation that matches the question.',
+    summary:
+      'Query finds candidates, explain expands one symbol, path connects two endpoints, and impact shows downstream change risk.',
+    why: 'A precise operation produces smaller, stronger evidence than broad repository search—especially in a monorepo.',
+    practice: [
+      'Start with query when you do not know the symbol name.',
+      'Use explain for definitions plus immediate relationships.',
+      'Use path for a concrete flow and impact before changing a symbol or comparing a Git base.',
+    ],
+    scenario: {
+      eyebrow: 'Graph search',
+      title: 'From product language to a verified change surface',
+      description: 'The agent narrows a fuzzy request before touching the monorepo.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Find the request retry flow and tell me what breaks if we change it.',
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · query',
+          text: '{"operation":"query","query":"request retry flow","callerCwd":"/monorepo/app"}',
+          meta: 'lexical + symbol vectors',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Top symbol: RequestRetryCoordinator',
+          evidence: ['libs/networking/src/RequestRetryCoordinator.ts:41'],
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · explain',
+          text: '{"operation":"explain","symbol":"RequestRetryCoordinator","callerCwd":"/monorepo/app"}',
+          meta: 'definition + typed relationships',
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · impact',
+          text: '{"operation":"impact","query":"RequestRetryCoordinator","callerCwd":"/monorepo/app"}',
+          meta: 'downstream consumers',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'The coordinator is used by the web API client and background sync worker. I found five authoritative consumers; two heuristic edges are labeled separately.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'memory-plus-graph',
+    number: '07',
+    category: 'graph',
+    title: 'Use memory and graph together—never interchangeably.',
+    summary:
+      'Recall answers what was learned. Graph search answers what the current Git snapshot and worktree contain.',
+    why: 'A month-old file path can be useful historical evidence but must not masquerade as current-source truth.',
+    practice: [
+      'Pass the relevant callerCwd so repository and worktree scope are correct.',
+      'Read recalled URIs before relying on their content.',
+      'Prefer declared and resolved graph edges; keep heuristic evidence visibly labeled.',
+    ],
+    scenario: {
+      eyebrow: 'Two evidence planes',
+      title: 'The decision survived; the implementation moved',
+      description: 'Memory supplies intent and the graph corrects a stale historical file pointer.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Why is token refresh isolated, and where is it implemented now?',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context',
+          text: '{"project":"identity","query":"token refresh isolation","callerCwd":"/repo/identity"}',
+          meta: 'historical decision',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Decision: isolate refresh to prevent concurrent rotation',
+          evidence: ['threadnote://…/identity/refresh-isolation.md'],
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · query',
+          text: '{"operation":"query","query":"refresh token rotation","callerCwd":"/repo/identity"}',
+          meta: 'current dirty worktree',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Implementation moved from auth/session.ts to token/RefreshCoordinator.ts',
+          evidence: ['packages/token/src/RefreshCoordinator.ts:27'],
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'The concurrency decision still holds, but its file pointer is stale. Current source places the coordinator in the token package; I’ll update the durable memory after the change.',
+        },
+      ],
+    },
+  },
+];

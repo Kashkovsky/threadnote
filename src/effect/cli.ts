@@ -225,7 +225,7 @@ const install = Command.make(
   {
     dryRun: boolean('dry-run', 'Print the actions without making changes'),
     force: boolean('force', 'Re-assert the Threadnote-owned layout and configuration'),
-    start: negatedBoolean('start', 'Skip the in-process runtime readiness message'),
+    start: negatedBoolean('start', 'Skip the local runtime readiness message'),
     withHooks: boolean(
       'with-hooks',
       'Also install agent-side hooks for deterministic handoff snapshots and context preload',
@@ -396,7 +396,7 @@ const localAiInstall = Command.make(
     force: boolean('force', 'Re-download and re-verify the managed model'),
     model: optionalString('model', 'Verified model to install: gemma-4-E4B-it-Q4_0'),
     modelPath: optionalString('model-path', 'Deprecated; unmanaged GGUF paths are rejected'),
-    start: negatedBoolean('start', 'Deprecated compatibility flag; inference is in-process'),
+    start: negatedBoolean('start', 'Deprecated compatibility flag; inference starts locally on demand'),
   },
   options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
 ).pipe(Command.withDescription('Deprecated alias for models install/select generation'));
@@ -417,13 +417,13 @@ const localAiStart = Command.make(
   'start',
   {dryRun: boolean('dry-run', 'Print the local AI start action without running it')},
   options => withRuntimeEffect(config => runLocalAiStart(config, options)),
-).pipe(Command.withDescription('Verify the selected in-process generation model'));
+).pipe(Command.withDescription('Verify the selected local generation model'));
 
 const localAiStop = Command.make(
   'stop',
   {dryRun: boolean('dry-run', 'Print the local AI stop action without running it')},
   options => withRuntimeEffect(config => runLocalAiStop(config, options)),
-).pipe(Command.withDescription('Explain in-process model resource lifetime'));
+).pipe(Command.withDescription('Explain local-model worker resource lifetime'));
 
 const localAiStatus = Command.make('status', {}, () => withRuntimeEffect(config => runLocalAiStatus(config))).pipe(
   Command.withDescription('Show local model installation and health'),
@@ -453,7 +453,7 @@ const localAiUninstall = Command.make(
 ).pipe(Command.withDescription('Remove local AI configuration and optionally its managed model'));
 
 const localAi = Command.make('local-ai').pipe(
-  Command.withDescription('Deprecated compatibility aliases for in-process model management'),
+  Command.withDescription('Deprecated compatibility aliases for local model management'),
   Command.withSubcommands([
     localAiInstall,
     localAiEnable,

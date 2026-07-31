@@ -249,7 +249,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     server,
     config,
     'recall_context',
-    'Search memories and seeded project guidance. Include the repo/project in the query; pass absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
+    'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
   );
   if (toolset === 'full') {
     registerSearchTool(
@@ -370,7 +370,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        'Publish a personal durable memory to the team shared repo. Scrubs sensitive data, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
+        'Publish a personal durable memory to the team shared repo. Scans for sensitive data, optionally redacts soft leaks, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
       inputSchema: {
         message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
         preview: McpInput.boolean(
@@ -1520,6 +1520,7 @@ function registerSearchTool(
         callerCwd: McpInput.string(
           'Optional absolute caller workspace path used to resolve this/current branch queries',
         ),
+        project: McpInput.string('Optional stable project/repo namespace; inferred from callerCwd when omitted'),
         nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 100}),
         includeArchived: McpInput.boolean('Include archived memories in recall results'),
         threshold: McpInput.number(
@@ -1531,7 +1532,7 @@ function registerSearchTool(
         ),
       },
     },
-    ({callerCwd, includeArchived, nodeLimit, query, threshold, uri, workset}) => {
+    ({callerCwd, includeArchived, nodeLimit, project, query, threshold, uri, workset}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -1542,6 +1543,7 @@ function registerSearchTool(
       }
       return runRecallTool(config, {
         callerCwd,
+        project: project?.trim() || undefined,
         query: checkedQuery.value,
         pinnedUri: checkedUri.value,
         nodeLimit,
@@ -1563,6 +1565,7 @@ interface RecallToolParams {
   readonly includeArchived: boolean;
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
+  readonly project: string | undefined;
   readonly query: string;
   readonly threshold: string | undefined;
   readonly workset: string | undefined;
@@ -1600,13 +1603,19 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       cwd: params.callerCwd,
       includeProcessCwd: false,
     });
-    const queryProject = params.pinnedUri ? undefined : yield* inferProjectFromQuery(config.manifestPath, params.query);
-    const project =
-      queryProject ?? (params.pinnedUri ? undefined : yield* inferProjectFromQuery(config.manifestPath, projectQuery));
-    const projectMemoryName = params.pinnedUri
+    const explicitProjectName = params.pinnedUri ? undefined : params.project;
+    const queryProject = params.pinnedUri
       ? undefined
-      : yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false});
-    const recallProjectName = project?.name ?? projectMemoryName;
+      : yield* inferProjectFromQuery(config.manifestPath, explicitProjectName ?? params.query);
+    const project =
+      queryProject ??
+      (params.pinnedUri || explicitProjectName
+        ? undefined
+        : yield* inferProjectFromQuery(config.manifestPath, projectQuery));
+    const inferredProjectMemoryName = params.pinnedUri
+      ? undefined
+      : (project?.name ?? (yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
+    const recallProjectName = explicitProjectName ?? inferredProjectMemoryName;
     const threshold = params.threshold ?? (yield* recallScoreThreshold());
     const explicitWorkset = params.workset ? yield* requireWorkset(config.manifestPath, params.workset) : undefined;
     const passes: Array<readonly RecallHit[]> = [];
@@ -1640,7 +1649,13 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       }
     }
 
-    const exactMatches = yield* collectExactMemoryMatches(config, query, params.includeArchived, project);
+    const exactMatches = yield* collectExactMemoryMatches(
+      config,
+      query,
+      params.includeArchived,
+      recallProjectName,
+      project,
+    );
     const environment = (yield* SystemInfo).environment();
     const effectAiResult = yield* resolveEffectAiConfiguration(config, environment).pipe(Effect.result);
     const effectAi = Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
@@ -1851,13 +1866,14 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
+  projectName: string | undefined,
   project: ProjectManifest | undefined,
 ) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return [];
   }
-  const scopes = exactMemoryScopes(config, includeArchived, query, project);
+  const scopes = exactMemoryScopes(config, includeArchived, query, projectName, project);
   return yield* loadRecallExactMatches(config, {
     includeInactive: includeArchived,
     limitPerTerm: 25,
@@ -2961,13 +2977,14 @@ function exactMemoryScopes(
   config: RuntimeConfig,
   includeArchived: boolean,
   query: string,
+  projectName: string | undefined,
   project: ProjectManifest | undefined,
 ): readonly string[] {
   return exactMemoryScopeUris({
     agentMemoriesUri: `threadnote://agent/${uriSegment(config.agentId)}/memories`,
     includeArchived,
     intents: exactRecallScopeIntents(query),
-    projectName: project ? uriSegment(project.name) : undefined,
+    projectName: projectName ? uriSegment(projectName) : undefined,
     projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
     userBase: `threadnote://user/${uriSegment(config.user)}/memories`,
   });

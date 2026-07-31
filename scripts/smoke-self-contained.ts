@@ -57,6 +57,8 @@ const smokeSelfContained = Effect.scoped(
       return yield* Effect.fail(new Error(`Standalone release reported an unexpected version:\n${version}`));
     }
 
+    yield* run(['install', '--dry-run', '--no-start']);
+
     const runtime = yield* run(['models', 'runtime']);
     if (!/node-llama-cpp:\s+prebuilt/i.test(runtime)) {
       return yield* Effect.fail(new Error(`Native runtime was not loaded from the release payload:\n${runtime}`));

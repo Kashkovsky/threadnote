@@ -758,7 +758,7 @@ function App(): React.ReactElement {
       <aside className={`sidebar ${panel === 'memory' ? 'has-context' : ''}`}>
         <div className="brand">
           <div className="brand-title">
-            <img alt="" className="brand-logo" src="/threadnote-logo-inverted.svg" />
+            <img alt="" className="brand-logo" src="/threadnote-logo.svg" />
             <div>
               <h1>Threadnote</h1>
               <p>{state ? `${state.config.user} · ${state.config.account}` : 'Loading manager'}</p>

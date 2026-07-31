@@ -9,7 +9,8 @@ interface PackageManifest {
 }
 
 const ROOT_URL = new URL('..', import.meta.url);
-const RELEASE_DIRECTORIES = ['assets', 'config', 'docs', 'manager'] as const;
+const RELEASE_DIRECTORIES = ['assets', 'config', 'manager'] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
 const OPTIONAL_NATIVE_PACKAGE = /^@node-llama-cpp\//;
@@ -34,6 +35,12 @@ const build = Effect.gen(function* () {
   const executablePath = path.join(outputRoot, executableName);
 
   yield* fs.makeDirectory(outputRoot, {recursive: true});
+  for (const directory of FORBIDDEN_RELEASE_DIRECTORIES) {
+    const releasePath = path.join(outputRoot, directory);
+    if (yield* fs.exists(releasePath)) {
+      yield* fs.remove(releasePath, {recursive: true});
+    }
+  }
   for (const directory of RELEASE_DIRECTORIES) {
     yield* fs.copy(path.join(root, directory), path.join(outputRoot, directory), {overwrite: true});
   }

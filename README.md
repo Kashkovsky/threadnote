@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/threadnote-logo.svg" alt="Threadnote logo" width="200">
+  <img src="./assets/brand/threadnote-logo.svg" alt="Threadnote logo" width="112">
 </p>
 
 # Threadnote
@@ -13,16 +13,17 @@ publish a hard-won architecture decision; Bob's Claude Code, Cursor, or Copilot 
 next task. No copy-pasted handoff, vendor lock-in, or shared chat window required.
 
 Personal working state stays local. Only curated durable knowledge or reusable artifacts that you explicitly publish
-enter the team's Git-backed memory, with a preview, secret scrubber, and history. Persistence across sessions is the
-foundation; the differentiator is useful context moving safely between **different users and different agents**.
+enter the team's Git-backed memory, with an exact preview, secret scanner, explicit soft-leak redaction, and history.
+Persistence across sessions is the foundation; the differentiator is useful context moving safely between
+**different users and different agents**.
 
 Threadnote 4 is a self-contained native executable with an embedded Bun runtime. Canonical content, local models,
 indexes, locks, logs, migration receipts, and sharing metadata are owned under `~/.threadnote`—no separately installed
 runtime, Python service, external memory platform, or background daemon required.
 
-**Walkthrough:** https://kashkovsky.github.io/threadnote/
+**Website:** https://kashkovsky.github.io/threadnote/
 
-**Wiki:** https://github.com/Kashkovsky/threadnote/wiki
+**Documentation:** https://kashkovsky.github.io/threadnote/docs/
 
 ## The Value
 
@@ -35,12 +36,13 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 ```
 
 - **Cross-user and cross-agent.** Teammates share one knowledge layer without standardizing on one AI vendor.
-- **Explicit, reviewable sharing.** Publish one durable memory or reusable artifact; preview and scrub it before it
-  lands in Git.
+- **Explicit, reviewable sharing.** Publish one durable memory or reusable artifact; preview and scan the exact shared
+  bytes before they land in Git, and explicitly redact soft leaks when needed.
 - **Private by default.** Personal handoffs, preferences, incidents, and unpublished memories stay on the local
   machine.
-- **Targeted local recall.** A pinned BGE Small model runs in process through `node-llama-cpp`; agents load selected
-  `threadnote://` records instead of replaying the entire memory history or sending it to a hosted embedding service.
+- **Targeted local recall.** A pinned BGE Small model runs in a supervised local worker through `node-llama-cpp`;
+  agents load selected `threadnote://` records instead of replaying the entire memory history or sending it to a hosted
+  embedding service.
 - **Current-code relationships.** A separate native code-graph tool finds definitions, paths, calls, inheritance, and
   change impact across TypeScript/JavaScript, Java, Kotlin, and Swift from the current Git commit plus this worktree's
   dirty overlay—without Python, Graphify, an external compiler, or a daemon.
@@ -163,9 +165,9 @@ also integrated into the outer monorepo can resolve only its explicitly declared
 dynamic relationships stay syntactic.
 
 Exact and normalized SQLite lexical search always work. If the core embedding model is installed—as it is by default—
-Threadnote also maintains code-symbol vectors in a paged, snapshot-atomic SQLite generation through the same in-process
-`node-llama-cpp` runtime. Vector construction, reuse, and exact search operate in fixed pages rather than decoding one
-repository-sized sidecar. Every relationship is labeled declared, resolved, syntactic, heuristic, or model-derived
+Threadnote also maintains code-symbol vectors in a paged, snapshot-atomic SQLite generation through the same
+supervised local-model worker. Vector construction, reuse, and exact search operate in fixed pages rather than decoding
+one repository-sized sidecar. Every relationship is labeled declared, resolved, syntactic, heuristic, or model-derived
 and includes a repository-relative evidence location. `threadnote doctor` checks graph integrity; `threadnote repair`
 cleans only disposable graph state.
 
@@ -257,7 +259,7 @@ See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, d
 ## Recall
 
 `threadnote install` automatically downloads, verifies, and selects the pinned 36.7 MB BGE Small embedding model.
-Recall combines its in-process `node-llama-cpp` vectors with deterministic lexical, field, scope, lifecycle, authority,
+Recall combines local `node-llama-cpp` vectors with deterministic lexical, field, scope, lifecycle, authority,
 time, graph, and feedback signals. The lexical path remains available as a fail-open fallback if native inference is
 temporarily unavailable.
 
@@ -318,7 +320,8 @@ Contributors need Bun `1.3.14`. Run `bun install --frozen-lockfile`, then `bun r
 See the [architecture](docs/architecture.md), [Effect boundaries](docs/effect.md),
 [evaluation contract](test/evaluation/README.md), [4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md),
 [Obsidian bridge](docs/obsidian.md), [sharing](docs/share.md), [release signing](docs/releasing.md),
-[troubleshooting](docs/troubleshooting.md), and [contribution guide](CONTRIBUTION.md).
+[website guide](docs/website.md), [troubleshooting](docs/troubleshooting.md), and
+[contribution guide](CONTRIBUTION.md).
 
 ## License
 

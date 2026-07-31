@@ -26,6 +26,7 @@ const FORBIDDEN_LEGACY_FILES = [
   'scripts/check-node-version.cjs',
   'scripts/local-ai-server.py',
 ] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;
 const ALLOWED_LEGACY_RUNTIME_SOURCES = new Set([
   'src/effect/cli.ts',
   'src/lifecycle.ts',
@@ -125,11 +126,18 @@ const checkSelfContained = Effect.gen(function* () {
 
   const releaseMetadata = path.join(root, 'dist', 'release.json');
   if (yield* fs.exists(path.join(root, 'dist'))) {
+    for (const directory of FORBIDDEN_RELEASE_DIRECTORIES) {
+      if (yield* fs.exists(path.join(root, 'dist', directory))) {
+        failures.push(`standalone build output contains website content: dist/${directory}`);
+      }
+    }
     for (const required of [
       releaseMetadata,
       path.join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote'),
       path.join(root, 'dist', 'runtime', 'node-llama-cpp.js'),
       path.join(root, 'dist', 'runtime', 'native'),
+      path.join(root, 'dist', 'config', 'agent-instructions.md'),
+      path.join(root, 'dist', 'assets', 'brand', 'threadnote-logo.svg'),
       path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
       path.join(root, 'dist', 'assets', 'code-graph', 'runtime', 'web-tree-sitter.wasm'),
       path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'java.wasm'),

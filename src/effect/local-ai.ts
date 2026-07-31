@@ -97,12 +97,12 @@ export const runLocalAiEnable = Effect.fn('localAi.compat.enable')(function* (
   }
   const selected = models[0]!;
   if (options.dryRun) {
-    yield* Console.log(`Would select ${selected.definition.id} for in-process generation.`);
+    yield* Console.log(`Would select ${selected.definition.id} for local generation.`);
     return;
   }
   const catalog = yield* LocalModelCatalog;
   yield* selectLocalModel(config.agentContextHome, catalog, 'generation', selected.definition.id);
-  yield* Console.log(`Selected ${selected.definition.id} for in-process generation.`);
+  yield* Console.log(`Selected ${selected.definition.id} for local generation.`);
 });
 
 export const runLocalAiDisable = Effect.fn('localAi.compat.disable')(function* (
@@ -124,8 +124,8 @@ export const runLocalAiStart = Effect.fn('localAi.compat.start')(function* (
   const selected = yield* requireSelectedGeneration(config);
   yield* Console.log(
     options.dryRun
-      ? `Would verify ${selected.manifest.id}; inference starts in process on demand.`
-      : `${selected.manifest.id} is ready. Threadnote 4 starts inference in process on demand; there is no server to start.`,
+      ? `Would verify ${selected.manifest.id}; inference starts in a supervised local worker on demand.`
+      : `${selected.manifest.id} is ready. Threadnote 4 starts a supervised local inference worker on demand; there is no server to start.`,
   );
 });
 
@@ -147,16 +147,16 @@ export const runLocalAiStop = Effect.fn('localAi.compat.stop')(function* (
 export const runLocalAiStatus = Effect.fn('localAi.compat.status')(function* (config: RuntimeConfig) {
   const selected = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
   if (!selected) {
-    yield* Console.log('No in-process generation model is selected.');
+    yield* Console.log('No local generation model is selected.');
     return;
   }
-  yield* Console.log(`${selected.manifest.id}\tselected\tin-process\t${selected.path}`);
+  yield* Console.log(`${selected.manifest.id}\tselected\tlocal-worker\t${selected.path}`);
 });
 
 export const localAiDoctorCheck = Effect.fn('localAi.compat.doctorCheck')(function* (config: RuntimeConfig) {
   const selected = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
   return selected
-    ? {detail: `${selected.manifest.id}; in-process`, name: 'local generation model', status: 'ok' as const}
+    ? {detail: `${selected.manifest.id}; local worker`, name: 'local generation model', status: 'ok' as const}
     : {
         detail: 'optional; no generation model selected',
         name: 'local generation model',

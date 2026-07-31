@@ -93,8 +93,8 @@ threadnote projection publish engineering-memory \
 
 # Repeat --uri to publish several selected memories.
 threadnote projection publish engineering-memory \
-  --uri <first-viking-memory-uri> \
-  --uri <second-viking-memory-uri> \
+  --uri <first-threadnote-memory-uri> \
+  --uri <second-threadnote-memory-uri> \
   --apply
 
 # Refresh only memories already selected for this projection.
@@ -147,7 +147,7 @@ threadnote open \
 If the memory appears in multiple projections, choose one:
 
 ```bash
-threadnote open <viking-uri> --projection engineering-memory
+threadnote open <threadnote-uri> --projection engineering-memory
 ```
 
 Threadnote prefers the official Obsidian CLI and falls back to the registered
