@@ -1,5 +1,5 @@
 import {expect, it} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Option, Path} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {captureConsole} from '../../src/effect/console.js';
@@ -309,7 +309,7 @@ describe('native memory workflow', () => {
           preferredUriScopes: ['threadnote://resources/repos/zeta'],
           query: 'common recall term',
           readRecords: () => Effect.succeed([]),
-          semanticScores: null,
+          semanticResult: Option.none(),
         });
 
         expect(result.expansionCandidates.map(candidate => candidate.uri)).toContain(

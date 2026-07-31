@@ -91,6 +91,7 @@ import {runProductionLogs} from './production_log.js';
 import {runReportIssue} from '../report_issue.js';
 import {
   runCodeGraphAnalysis,
+  runCodeGraphCompact,
   runCodeGraphExport,
   runCodeGraphImpact,
   runCodeGraphIndex,
@@ -100,6 +101,7 @@ import {
   runCodeGraphStatus,
   runCodeGraphWatch,
 } from '../code_graph/commands.js';
+import {runProcessDiagnostics} from '../process_diagnostics.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -206,6 +208,16 @@ const manage = Command.make(
   },
   options => withRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
+
+const processes = Command.make(
+  'processes',
+  {
+    json: boolean('json', 'Emit versioned machine-readable JSON'),
+  },
+  options => withRuntimeEffect(config => runProcessDiagnostics(config, options)),
+).pipe(
+  Command.withDescription('Show privacy-safe roles, relationships, age, operations, and memory for live processes'),
+);
 
 const doctor = Command.make(
   'doctor',
@@ -763,6 +775,17 @@ const graphPurge = Command.make(
   options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
 ).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
 
+const graphCompact = Command.make(
+  'compact',
+  {
+    cwd: graphBounds.cwd,
+    dryRun: boolean('dry-run', 'Inspect and verify compaction without changing the active database'),
+    force: boolean('force', 'Compact even when reclaimable space is below the reviewed threshold'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphCompact(config, options)),
+).pipe(Command.withDescription('Safely reclaim free pages in the active code graph database'));
+
 const graphCommand = Command.make('graph').pipe(
   Command.withDescription('Index and inspect the self-contained native code graph'),
   Command.withSubcommands([
@@ -785,6 +808,7 @@ const graphCommand = Command.make('graph').pipe(
     graphReport,
     graphWatch,
     graphExport,
+    graphCompact,
     graphPurge,
   ]),
 );
@@ -1426,6 +1450,7 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 
 const topLevelCommandRegistrations = [
   registerTopLevelCommand('manage', manage),
+  registerTopLevelCommand('processes', processes, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('doctor', doctor),
   registerTopLevelCommand('install', install),
   registerTopLevelCommand('version', version),

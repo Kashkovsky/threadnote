@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'vitest';
-import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
+import {augmentRationaleFacts, captureRationaleInputs} from '../../src/code_graph/rationale.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 describe('code graph rationale extraction', () => {
@@ -49,6 +49,32 @@ describe('code graph rationale extraction', () => {
     };
     const facts: CodeGraphFileFacts = {diagnostics: [], edges: [], path: file.path, symbols: []};
     expect(augmentRationaleFacts(file, facts)).toBe(facts);
+  });
+
+  test('derives rationale from compact cached inputs after full source content is released', () => {
+    const content = 'export function retry() {\n  // WHY: Backoff prevents coordinated retries.\n}\n';
+    const file: CodeGraphInventoryFile = {
+      blobId: 'blob',
+      content,
+      contentHash: 'hash',
+      language: 'typescript',
+      mode: '100644',
+      path: 'src/retry.ts',
+      size: content.length,
+      source: 'commit',
+    };
+    const facts: CodeGraphFileFacts = {diagnostics: [], edges: [], path: file.path, symbols: [symbol('retry', 1, 3)]};
+    const cached = JSON.parse(JSON.stringify(captureRationaleInputs(file, facts))) as CodeGraphFileFacts;
+    const retainedFile: CodeGraphInventoryFile = {...file, content: undefined};
+
+    const fresh = augmentRationaleFacts(file, cached);
+    const rehydrated = augmentRationaleFacts(retainedFile, cached);
+
+    expect(rehydrated.symbols).toEqual(fresh.symbols);
+    expect(rehydrated.edges).toEqual(fresh.edges);
+    expect(rehydrated.symbols).toEqual(
+      expect.arrayContaining([expect.objectContaining({kind: 'rationale', path: 'src/retry.ts'})]),
+    );
   });
 });
 

@@ -1,6 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {join} from 'node:path';
-import {Effect, Layer, Result} from 'effect';
+import {Effect, Layer, Option, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {InferenceInterrupted} from '../../src/effect/ai/errors.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
@@ -15,6 +15,7 @@ import {
   purgeVectorIndex,
   rebuildVectorIndex,
   selectedSemanticScores,
+  VectorCorpusGenerationChanged,
   vectorIndexDatabaseFilename,
   vectorIndexMatchesGeneration,
   vectorIndexStatus,
@@ -458,6 +459,298 @@ describe('vector index generations', () => {
     }
   });
 
+  it('rejects an older corpus waiter after a newer generation wins the vector lock', async () => {
+    const home = await mkdtemp('threadnote-vector-generation-fence-');
+    let releaseEmbedding!: () => void;
+    let reportEmbeddingStarted!: () => void;
+    const embeddingStarted = new Promise<void>(resolve => {
+      reportEmbeddingStarted = resolve;
+    });
+    let embeddingCalls = 0;
+    const currentGeneration = 'lexical-generation-2';
+    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const runtimeLayer = Layer.succeed(
+      LocalModelRuntime,
+      LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        embedMany: ({inputs, manifest: requested}) => {
+          embeddingCalls += 1;
+          return Effect.promise(
+            () =>
+              new Promise<readonly (readonly number[])[]>(resolve => {
+                reportEmbeddingStarted();
+                releaseEmbedding = () => resolve(inputs.map(() => unitVector(requested.dimensions ?? 0, 0)));
+              }),
+          );
+        },
+        generate: () => Effect.die(new Error('Unexpected generation')),
+        rerank: () => Effect.die(new Error('Unexpected reranking')),
+      }),
+    );
+    const ensure = (corpusGeneration: string, text: string) =>
+      runEffect(
+        ensureVectorIndex(
+          {agentContextHome: home},
+          manifest,
+          [{text, uri: 'threadnote://resources/repos/generation.md'}],
+          {corpusGeneration, currentCorpusGeneration: generationFence},
+        ).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+      );
+
+    try {
+      const newer = ensure(currentGeneration, '# Current\n\nNewest corpus content.');
+      await embeddingStarted;
+      const older = runEffect(
+        ensureVectorIndex(
+          {agentContextHome: home},
+          manifest,
+          [{text: '# Stale\n\nOlder corpus content.', uri: 'threadnote://resources/repos/generation.md'}],
+          {
+            corpusGeneration: 'lexical-generation-1',
+            currentCorpusGeneration: generationFence,
+          },
+        ).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+      );
+
+      releaseEmbedding();
+      await expect(newer).resolves.toMatchObject({ready: true});
+      const olderResult = await older;
+      expect(Result.isFailure(olderResult)).toBe(true);
+      if (Result.isFailure(olderResult)) {
+        expect(olderResult.failure).toBeInstanceOf(VectorCorpusGenerationChanged);
+      }
+      expect(embeddingCalls).toBe(1);
+      expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+      expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, 'lexical-generation-1'))).toBe(false);
+    } finally {
+      releaseEmbedding?.();
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('aborts a stale lock owner before admitting the queued current generation', async () => {
+    const home = await mkdtemp('threadnote-vector-stale-owner-fence-');
+    let currentGeneration = 'lexical-generation-1';
+    let releaseFirstEmbedding!: () => void;
+    let reportFirstEmbeddingStarted!: () => void;
+    const firstEmbeddingStarted = new Promise<void>(resolve => {
+      reportFirstEmbeddingStarted = resolve;
+    });
+    let embeddingCalls = 0;
+    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const runtimeLayer = Layer.succeed(
+      LocalModelRuntime,
+      LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        embedMany: ({inputs, manifest: requested}) => {
+          embeddingCalls += 1;
+          const vectors = inputs.map(() => unitVector(requested.dimensions ?? 0, 0));
+          if (embeddingCalls !== 1) return Effect.succeed(vectors);
+          return Effect.promise(
+            () =>
+              new Promise<readonly (readonly number[])[]>(resolve => {
+                reportFirstEmbeddingStarted();
+                releaseFirstEmbedding = () => resolve(vectors);
+              }),
+          );
+        },
+        generate: () => Effect.die(new Error('Unexpected generation')),
+        rerank: () => Effect.die(new Error('Unexpected reranking')),
+      }),
+    );
+    const documents = [
+      {text: '# Stable\n\nIdentical canonical content.', uri: 'threadnote://resources/repos/generation.md'},
+    ];
+    const ensure = (corpusGeneration: string) =>
+      runEffect(
+        ensureVectorIndex({agentContextHome: home}, manifest, documents, {
+          corpusGeneration,
+          currentCorpusGeneration: generationFence,
+        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+      );
+
+    try {
+      const stale = ensure(currentGeneration);
+      await firstEmbeddingStarted;
+      currentGeneration = 'lexical-generation-2';
+      const current = ensure(currentGeneration);
+      releaseFirstEmbedding();
+
+      const [staleResult, currentResult] = await Promise.all([stale, current]);
+      expect(Result.isFailure(staleResult)).toBe(true);
+      if (Result.isFailure(staleResult)) {
+        expect(staleResult.failure).toBeInstanceOf(VectorCorpusGenerationChanged);
+      }
+      expect(Result.isSuccess(currentResult)).toBe(true);
+      expect(embeddingCalls).toBe(2);
+      expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+      const database = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(database.query('SELECT corpus_generation, state FROM vector_generations').all()).toEqual([
+          {corpus_generation: currentGeneration, state: 'ready'},
+        ]);
+      } finally {
+        database.close();
+      }
+    } finally {
+      releaseFirstEmbedding?.();
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('rolls back its own pointer when the lexical generation advances after vector activation', async () => {
+    const home = await mkdtemp('threadnote-vector-post-activation-fence-');
+    let currentGeneration = 'lexical-generation-1';
+    let advanceDuringActivation = true;
+    let fenceChecks = 0;
+    const generationFence = () =>
+      Effect.sync(() => {
+        fenceChecks += 1;
+        if (advanceDuringActivation && vectorPointerIsExternallyVisible(home)) {
+          currentGeneration = 'lexical-generation-2';
+        }
+        return Option.some(currentGeneration);
+      });
+    const runtimeLayer = fakeRuntimeLayer(() => 0);
+    const documents = [
+      {text: '# Stable\n\nIdentical canonical content.', uri: 'threadnote://resources/repos/generation.md'},
+    ];
+    const ensure = (corpusGeneration: string) =>
+      runEffect(
+        ensureVectorIndex({agentContextHome: home}, manifest, documents, {
+          corpusGeneration,
+          currentCorpusGeneration: generationFence,
+        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+      );
+
+    try {
+      const staleResult = await ensure('lexical-generation-1');
+      expect(Result.isFailure(staleResult)).toBe(true);
+      if (Result.isFailure(staleResult)) {
+        expect(staleResult.failure).toBeInstanceOf(VectorCorpusGenerationChanged);
+      }
+      expect(fenceChecks).toBeGreaterThan(0);
+      const rolledBack = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(rolledBack.query('SELECT COUNT(*) AS count FROM vector_pointer').get()).toEqual({count: 0});
+        expect(rolledBack.query('SELECT corpus_generation, state FROM vector_generations').all()).toEqual([
+          {corpus_generation: 'lexical-generation-1', state: 'building'},
+        ]);
+      } finally {
+        rolledBack.close();
+      }
+
+      advanceDuringActivation = false;
+      fenceChecks = 0;
+      const currentResult = await ensure(currentGeneration);
+      expect(Result.isSuccess(currentResult)).toBe(true);
+      expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+      const recovered = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(recovered.query('SELECT corpus_generation, state FROM vector_generations').all()).toEqual([
+          {corpus_generation: currentGeneration, state: 'ready'},
+        ]);
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('rejects semantic scores when the vector generation changes during query inference', async () => {
+    const home = await mkdtemp('threadnote-vector-score-generation-fence-');
+    let currentGeneration = 'lexical-generation-1';
+    let delayQuery = false;
+    let releaseQuery!: () => void;
+    let reportQueryStarted!: () => void;
+    const queryStarted = new Promise<void>(resolve => {
+      reportQueryStarted = resolve;
+    });
+    const generationFence = () => Effect.succeed(Option.some(currentGeneration));
+    const runtimeLayer = Layer.succeed(
+      LocalModelRuntime,
+      LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        embedMany: ({inputs, manifest: requested}) => {
+          const vectors = inputs.map(() => unitVector(requested.dimensions ?? 0, 0));
+          if (!delayQuery || !inputs.some(input => input.includes('generation-race-query'))) {
+            return Effect.succeed(vectors);
+          }
+          return Effect.promise(
+            () =>
+              new Promise<readonly (readonly number[])[]>(resolve => {
+                reportQueryStarted();
+                releaseQuery = () => resolve(vectors);
+              }),
+          );
+        },
+        generate: () => Effect.die(new Error('Unexpected generation')),
+        rerank: () => Effect.die(new Error('Unexpected reranking')),
+      }),
+    );
+    const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer));
+
+    try {
+      await runEffect(
+        withRuntime(
+          Effect.gen(function* () {
+            const catalog = yield* LocalModelCatalog;
+            yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+            yield* rebuildVectorIndex(
+              {agentContextHome: home},
+              manifest,
+              [
+                {
+                  text: '# First generation\n\nConsistent semantic content.',
+                  uri: 'threadnote://resources/repos/generation.md',
+                },
+              ],
+              {corpusGeneration: currentGeneration, currentCorpusGeneration: generationFence},
+            );
+          }),
+        ),
+      );
+
+      delayQuery = true;
+      const scoring = runEffect(
+        withRuntime(
+          selectedSemanticScores({agentContextHome: home}, 'generation-race-query', {
+            corpusGeneration: 'lexical-generation-1',
+            currentCorpusGeneration: generationFence,
+          }).pipe(Effect.result),
+        ),
+      );
+      await queryStarted;
+      currentGeneration = 'lexical-generation-2';
+      await runEffect(
+        withRuntime(
+          rebuildVectorIndex(
+            {agentContextHome: home},
+            manifest,
+            [
+              {
+                text: '# Second generation\n\nNewer consistent semantic content.',
+                uri: 'threadnote://resources/repos/generation.md',
+              },
+            ],
+            {corpusGeneration: currentGeneration, currentCorpusGeneration: generationFence},
+          ),
+        ),
+      );
+      releaseQuery();
+
+      const result = await scoring;
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure).toBeInstanceOf(VectorCorpusGenerationChanged);
+      expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+    } finally {
+      releaseQuery?.();
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it('resumes an interrupted rebuild from its checksummed staging checkpoint', async () => {
     const home = await mkdtemp('threadnote-vector-resume-');
     const candidates = Array.from({length: 300}, (_, index) => ({
@@ -632,4 +925,17 @@ function unitVector(dimensions: number, index: number): readonly number[] {
 
 function vectorDatabasePath(home: string): string {
   return join(home, 'indexes', 'vectors', manifest.id, vectorIndexDatabaseFilename());
+}
+
+function vectorPointerIsExternallyVisible(home: string): boolean {
+  let database: Database | undefined;
+  try {
+    database = new Database(vectorDatabasePath(home), {readonly: true});
+    const row = database.query('SELECT COUNT(*) AS count FROM vector_pointer').get() as {readonly count: number};
+    return Number(row.count) > 0;
+  } catch {
+    return false;
+  } finally {
+    database?.close();
+  }
 }

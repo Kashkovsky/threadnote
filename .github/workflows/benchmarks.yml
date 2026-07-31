@@ -7,6 +7,7 @@ on:
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/benchmark-recall-vectors.ts'
       - 'scripts/code-graph-fixture.ts'
       - 'scripts/evaluate-recall.ts'
@@ -33,6 +34,11 @@ on:
     inputs:
       include_100k:
         description: Run the 100k scale-boundary suite on Linux
+        required: false
+        type: boolean
+        default: false
+      include_production_large:
+        description: Run the n=1 48k-file production-large graph profile on the pinned Linux runner class
         required: false
         type: boolean
         default: false
@@ -338,6 +344,42 @@ jobs:
           path: artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
           if-no-files-found: error
           retention-days: 30
+
+  code-graph-production-large:
+    name: Code graph production-large · n=1 · pinned Linux class
+    if: github.event_name == 'schedule' || inputs.include_production_large
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+      THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture one production-large observation with phase and storage telemetry
+        timeout-minutes: 320
+        run: >-
+          bun run bench:code-graph --
+          --profile production-large
+          --samples 1
+          --warmups 0
+          --output artifacts/code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        timeout-minutes: 10
+        with:
+          name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/code-graph-production-large-n1-*.json
+          if-no-files-found: warn
+          retention-days: 90
 
   recall-10k:
     name: Recall 10k · ${{ matrix.os }}

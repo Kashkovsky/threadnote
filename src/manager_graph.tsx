@@ -11,6 +11,14 @@ interface GraphProject {
   readonly model?: 'component' | 'facet' | 'legacy-fallback';
   readonly provenance?: string;
   readonly symbolCount: number;
+  readonly workspaceId?: string;
+}
+
+interface GraphWorkspaceDescriptor {
+  readonly buildSystem: string;
+  readonly id: string;
+  readonly name: string;
+  readonly root: string;
 }
 
 interface GraphSnapshot {
@@ -24,6 +32,13 @@ interface GraphSnapshot {
 }
 
 export interface GraphRepository {
+  readonly accounting: {
+    readonly attributedSymbols: number;
+    readonly componentSymbols: number;
+    readonly fallbackSymbols: number;
+    readonly omittedSymbols: number;
+    readonly totalSymbols: number;
+  };
   readonly activatedAt?: string;
   readonly checkoutId: string;
   readonly displayName: string;
@@ -33,6 +48,7 @@ export interface GraphRepository {
   readonly projects: readonly GraphProject[];
   readonly snapshot: GraphSnapshot;
   readonly worktreeId: string;
+  readonly workspaces: readonly GraphWorkspaceDescriptor[];
 }
 
 export interface GraphRepositoryGroup {
@@ -50,8 +66,80 @@ export interface GraphCatalogDiagnostic {
 }
 
 export interface GraphCatalog {
+  readonly builds: readonly GraphBuildStatus[];
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
   readonly repositories: readonly GraphRepositoryGroup[];
+  readonly waiterCount: number;
+  readonly waiters: readonly GraphBuildStatus[];
+}
+
+export interface GraphBuildStatus {
+  readonly buildId: string;
+  readonly coordination?: {
+    readonly lockVerified: boolean;
+    readonly progressSilent?: boolean;
+    readonly role: 'history' | 'owner' | 'waiter';
+  };
+  readonly counters: {
+    readonly accepted?: number;
+    readonly completed?: number;
+    readonly edges?: number;
+    readonly excluded?: number;
+    readonly reused?: number;
+    readonly skipped?: number;
+    readonly symbols?: number;
+    readonly total?: number;
+    readonly unit?: string;
+  };
+  readonly error?: {readonly summary: string};
+  readonly eta?: {readonly confidence: 'high' | 'low' | 'medium'; readonly remainingMilliseconds: number};
+  readonly identity: {
+    readonly checkoutId: string;
+    readonly commit: string;
+    readonly repositoryId: string;
+    readonly worktreeId: string;
+  };
+  readonly observation: {
+    readonly heartbeatAgeMilliseconds: number;
+    readonly liveness: 'abandoned' | 'active' | 'completed' | 'failed' | 'stalled';
+  };
+  readonly owner: {readonly processId: number};
+  readonly phase: string;
+  readonly request?: {readonly key: string};
+  readonly result?: {readonly snapshotId: string};
+  readonly state: 'completed' | 'failed' | 'queued' | 'running';
+  readonly subphase?: string;
+  readonly timestamps: {
+    readonly heartbeatAt: string;
+    readonly lastProgressAt: string;
+    readonly startedAt: string;
+  };
+}
+
+export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): number {
+  return builds.some(build => build.state === 'queued' || build.state === 'running') ? 1_000 : 15_000;
+}
+
+export function graphStatusRequiresCatalogRefresh(
+  catalog: GraphCatalog | undefined,
+  builds: readonly GraphBuildStatus[],
+): boolean {
+  const indexedSnapshotIds = new Set(
+    catalog?.repositories.flatMap(repository => repository.views.map(view => view.snapshot.id)) ?? [],
+  );
+  return builds.some(
+    build =>
+      build.state === 'completed' && build.result !== undefined && !indexedSnapshotIds.has(build.result.snapshotId),
+  );
+}
+
+export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: readonly GraphBuildStatus[]): number {
+  return waiters.filter(
+    waiter =>
+      waiter.identity.checkoutId === build.identity.checkoutId &&
+      waiter.identity.worktreeId === build.identity.worktreeId &&
+      waiter.request?.key === build.request?.key,
+  ).length;
 }
 
 export function resolveGraphSelection(
@@ -402,6 +490,9 @@ export function GraphWorkspace(props: {
     () => [...new Set(graph?.edges.map(edge => edge.relation) ?? [])].sort(compareCodeUnits),
     [graph],
   );
+  const activeBuilds = (props.catalog?.builds ?? []).filter(
+    build => build.state === 'queued' || build.state === 'running' || build.state === 'failed',
+  );
 
   useEffect(() => {
     const selection = resolveGraphSelection(repositories, repositoryId, viewId);
@@ -617,14 +708,28 @@ export function GraphWorkspace(props: {
         </button>
       </header>
 
-      {props.catalog?.diagnostics.length ? (
-        <div className="graph-catalog-diagnostics" role="status">
-          <strong>Some indexed views need attention</strong>
-          {props.catalog.diagnostics.map(diagnostic => (
-            <span key={`${diagnostic.checkoutId}:${diagnostic.code}`}>{diagnostic.message}</span>
-          ))}
-        </div>
-      ) : null}
+      <div className="graph-notices">
+        {activeBuilds.length > 0 ? (
+          <div className="graph-build-status" aria-live="polite">
+            {activeBuilds.map(build => (
+              <GraphBuildProgress
+                build={build}
+                key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
+                waiterCount={graphWaiterCountForBuild(build, props.catalog?.waiters ?? [])}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {props.catalog?.diagnostics.length ? (
+          <div className="graph-catalog-diagnostics" role="status">
+            <strong>Some indexed views need attention</strong>
+            {props.catalog.diagnostics.map(diagnostic => (
+              <span key={`${diagnostic.checkoutId}:${diagnostic.code}`}>{diagnostic.message}</span>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <div className="graph-toolbar">
         <label>
@@ -667,11 +772,28 @@ export function GraphWorkspace(props: {
             value={projectId}
           >
             <option value="all">All components</option>
-            {(repository?.projects ?? []).map(project => (
-              <option key={project.id} value={project.id}>
-                {project.label} · {graphProjectBadge(project)} · {compactNumber(project.symbolCount)}
-              </option>
-            ))}
+            {(repository?.workspaces ?? []).map(workspace => {
+              const projects = repository?.projects.filter(project => project.workspaceId === workspace.id) ?? [];
+              return projects.length > 0 ? (
+                <optgroup
+                  key={workspace.id}
+                  label={`${workspace.name} · ${workspace.buildSystem} · ${workspace.root || 'repository root'}`}
+                >
+                  {projects.map(project => (
+                    <option key={project.id} value={project.id}>
+                      {project.label} · {graphProjectBadge(project)} · {compactNumber(project.symbolCount)}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null;
+            })}
+            {(repository?.projects ?? [])
+              .filter(project => !project.workspaceId)
+              .map(project => (
+                <option key={project.id} value={project.id}>
+                  {project.label} · {graphProjectBadge(project)} · {compactNumber(project.symbolCount)}
+                </option>
+              ))}
           </select>
         </label>
         <label className="graph-search">
@@ -789,7 +911,9 @@ export function GraphWorkspace(props: {
               <span>Loading indexed repositories…</span>
             </div>
           ) : repositories.length === 0 ? (
-            <GraphEmptyState />
+            <GraphEmptyState
+              building={activeBuilds.some(build => build.state === 'queued' || build.state === 'running')}
+            />
           ) : error ? (
             <div className="graph-empty">
               <span className="empty-orbit" aria-hidden="true" />
@@ -1380,6 +1504,15 @@ function GraphSummary(props: {
             {props.graph.repository.snapshot.dirty ? ' + dirty' : ''}
           </dd>
         </div>
+        {props.graph.mode === 'overview' ? (
+          <div>
+            <dt>Overview coverage</dt>
+            <dd>
+              {compactNumber(props.graph.repository.accounting.attributedSymbols)} /{' '}
+              {compactNumber(props.graph.repository.accounting.totalSymbols)}
+            </dd>
+          </div>
+        ) : null}
       </dl>
       <div className="graph-legend">
         <span>
@@ -1710,15 +1843,82 @@ function NodeInspector(props: {
   );
 }
 
-function GraphEmptyState(): React.ReactElement {
+function GraphBuildProgress(props: {
+  readonly build: GraphBuildStatus;
+  readonly waiterCount: number;
+}): React.ReactElement {
+  const {build} = props;
+  const completed = build.counters.completed;
+  const total = build.counters.total;
+  const percentage =
+    completed !== undefined && total !== undefined && total > 0
+      ? Math.max(0, Math.min(100, (completed / total) * 100))
+      : undefined;
+  const elapsed = Math.max(0, Date.now() - Date.parse(build.timestamps.startedAt));
+  const lastProgress = Math.max(0, Date.now() - Date.parse(build.timestamps.lastProgressAt));
+  const progressSilent = build.coordination?.progressSilent === true || lastProgress > 15_000;
+  const eta = lastProgress <= 15_000 ? build.eta : undefined;
+  const role = build.coordination?.role === 'owner' ? 'Builder' : build.state === 'queued' ? 'Queued' : 'Build';
+  return (
+    <article className={`graph-build-card is-${build.state} is-${build.observation.liveness}`}>
+      <header>
+        <strong>
+          {role} · {build.phase}/{build.subphase ?? 'working'}
+        </strong>
+        <span>{formatBuildDuration(elapsed)} elapsed</span>
+      </header>
+      {percentage === undefined ? null : (
+        <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
+          <i style={{width: `${percentage}%`}} />
+        </div>
+      )}
+      <p>
+        {completed === undefined || total === undefined
+          ? 'Preparing phase counters'
+          : `${completed.toLocaleString()} / ${total.toLocaleString()} ${build.counters.unit ?? 'items'}`}
+        {' · '}last progress {formatBuildDuration(lastProgress)} ago
+        {progressSilent && build.coordination?.role === 'owner'
+          ? ' · progress is silent; lock owner is still alive'
+          : ''}
+      </p>
+      <footer>
+        <span>PID {build.owner.processId}</span>
+        {eta ? (
+          <span>
+            ETA {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}
+          </span>
+        ) : build.eta ? (
+          <span>ETA paused while progress is silent</span>
+        ) : null}
+        {props.waiterCount > 0 ? <span>{props.waiterCount} waiting process(es)</span> : null}
+        {build.error ? <span className="graph-build-error">{build.error.summary}</span> : null}
+      </footer>
+    </article>
+  );
+}
+
+function GraphEmptyState(props: {readonly building: boolean}): React.ReactElement {
   return (
     <div className="graph-empty">
       <span className="empty-orbit" aria-hidden="true" />
-      <h3>No indexed repositories yet</h3>
-      <p>Build a native graph from a repository, then refresh this workspace.</p>
-      <code>threadnote graph index</code>
+      <h3>{props.building ? 'Building the first repository graph' : 'No indexed repositories yet'}</h3>
+      <p>
+        {props.building
+          ? 'The newest phase and counters appear above. A ready snapshot will open here automatically.'
+          : 'Build a native graph from a repository, then refresh this workspace.'}
+      </p>
+      {props.building ? null : <code>threadnote graph index</code>}
     </div>
   );
+}
+
+function formatBuildDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds)) return 'unknown';
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 function buildGraphLayout(

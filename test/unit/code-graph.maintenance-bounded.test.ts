@@ -1,6 +1,7 @@
-import {Clock, Deferred, Effect, Fiber, FileSystem} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
+import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
@@ -19,7 +20,6 @@ describe('bounded code graph maintenance', () => {
     const checkoutId = 'a'.repeat(64);
     const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
     const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-    const lockPath = join(home, 'locks', 'indexes', 'code-graph', `${checkoutId}.lock`);
     await mkdir(repositoryRoot, {recursive: true});
     await writeFile(databasePath, 'this file must never be opened while its build lock is active');
     const progress: string[] = [];
@@ -27,6 +27,8 @@ describe('bounded code graph maintenance', () => {
     const result = await runEffect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const lockPath = codeGraphWorktreeLockPath(path, home, checkoutId, 'b'.repeat(64));
         const acquired = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         const owner = yield* Effect.forkChild(

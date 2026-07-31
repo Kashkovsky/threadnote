@@ -1,7 +1,11 @@
 import {Option} from 'effect';
 import type {Node} from 'web-tree-sitter';
 import {sha256HexSync} from '../../../crypto/sha256.js';
-import {extractTreeSitterFacts, type TreeSitterLanguageDefinition} from '../../tree_sitter/extractor.js';
+import {
+  extractTreeSitterFacts,
+  TREE_SITTER_EXTRACTOR_POLICY_VERSION,
+  type TreeSitterLanguageDefinition,
+} from '../../tree_sitter/extractor.js';
 import {SWIFT_GRAMMAR} from '../tree_sitter_assets.js';
 import type {CodeGraphLanguagePack} from '../types.js';
 
@@ -82,7 +86,7 @@ const definition: TreeSitterLanguageDefinition = {
 };
 
 const extractorVersion = sha256HexSync(
-  `tree-sitter-swift-v1\n${SWIFT_GRAMMAR.sha256}\n${DECLARATIONS}\n${METADATA}\n${REFERENCES}`,
+  `tree-sitter-swift-v1\n${TREE_SITTER_EXTRACTOR_POLICY_VERSION}\n${SWIFT_GRAMMAR.sha256}\n${DECLARATIONS}\n${METADATA}\n${REFERENCES}`,
 );
 
 export const codeGraphLanguagePack: CodeGraphLanguagePack = {

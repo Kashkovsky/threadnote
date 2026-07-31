@@ -15,12 +15,14 @@ import {
 } from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 import {Database} from 'bun:sqlite';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphExport} from '../../src/code_graph/commands.js';
+import {readAllCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from '../../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   inventoryRepository,
   readContainedStableRegularFile,
@@ -33,6 +35,7 @@ import {
   repairCodeGraphIndexes,
 } from '../../src/code_graph/maintenance.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -540,6 +543,7 @@ describe('native code graph lifecycle', () => {
       }),
     );
     const latestHash = snapshotFileHash(databasePath, latest.snapshot.id, sourcePath);
+    await runEffect(repairCodeGraphIndexes(home, false));
     const database = new Database(databasePath, {readonly: true});
     let cachedHashes: string[];
     try {
@@ -1115,7 +1119,7 @@ describe('native code graph lifecycle', () => {
   it('indexes a manifest-declared Android module named pods while pruning generated CocoaPods output', async () => {
     const root = temporaryDirectory('threadnote-code-graph-declared-pods-');
     git(root, ['init', '-q']);
-    mkdirSync(join(root, 'modules', 'pods', 'src', 'main', 'kotlin'), {recursive: true});
+    mkdirSync(join(root, 'modules', 'pods', 'src', 'main', 'kotlin', 'io', 'coda', 'pods'), {recursive: true});
     mkdirSync(join(root, 'ios', 'Pods', 'Headers'), {recursive: true});
     writeFileSync(
       join(root, 'settings.gradle.kts'),
@@ -1127,7 +1131,10 @@ describe('native code graph lifecycle', () => {
       ].join('\n'),
     );
     writeFileSync(join(root, 'modules', 'pods', 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
-    writeFileSync(join(root, 'modules', 'pods', 'src', 'main', 'kotlin', 'PodsService.kt'), 'class PodsService\n');
+    writeFileSync(
+      join(root, 'modules', 'pods', 'src', 'main', 'kotlin', 'io', 'coda', 'pods', 'PodsService.kt'),
+      'package io.coda.pods\nclass PodsService\n',
+    );
     writeFileSync(join(root, 'ios', 'Pods', 'Headers', 'Generated.h'), 'void generated(void);\n');
     git(root, ['add', '.']);
     git(root, [
@@ -1148,7 +1155,7 @@ describe('native code graph lifecycle', () => {
     );
     const paths = inventory.files.map(file => file.path);
 
-    expect(paths).toContain('modules/pods/src/main/kotlin/PodsService.kt');
+    expect(paths).toContain('modules/pods/src/main/kotlin/io/coda/pods/PodsService.kt');
     expect(paths).not.toContain('ios/Pods/Headers/Generated.h');
 
     writeFileSync(
@@ -1595,8 +1602,13 @@ describe('native code graph lifecycle', () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
     const identity = await runEffect(resolveRepositoryIdentity(root));
-    const lock = join(home, 'locks', 'indexes', 'code-graph', `${identity.checkoutId}.lock`);
-    mkdirSync(join(home, 'locks', 'indexes', 'code-graph'), {recursive: true});
+    const lock = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        return codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).lockPath;
+      }),
+    );
+    mkdirSync(join(lock, '..'), {recursive: true});
     writeFileSync(lock, `${process.pid}:active-code-graph-build\n`, {mode: 0o600});
 
     const summary = await runEffect(
@@ -1618,6 +1630,190 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(summary.snapshot.state).toBe('ready');
+  });
+
+  it('coalesces ten independent runtimes after lock contention without sequential inventory passes', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    let releaseOwner!: () => void;
+    let reportOwnerScanning!: () => void;
+    const ownerRelease = new Promise<void>(resolve => (releaseOwner = resolve));
+    const ownerScanning = new Promise<void>(resolve => (reportOwnerScanning = resolve));
+    let inventoryPasses = 0;
+
+    const owner = runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({
+          cwd: root,
+          onProgress: progress => {
+            if (progress.phase !== 'scanning' || progress.completed !== 0) return Effect.void;
+            inventoryPasses += 1;
+            reportOwnerScanning();
+            return Effect.promise(() => ownerRelease);
+          },
+          threadnoteHome: home,
+        });
+      }),
+    );
+    await ownerScanning;
+
+    const waiterSignals = Array.from({length: 9}, () => {
+      let queued!: () => void;
+      return {promise: new Promise<void>(resolve => (queued = resolve)), queued};
+    });
+    const waiters = waiterSignals.map(signal =>
+      runEffect(
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          return yield* indexer.index({
+            cwd: root,
+            onProgress: progress => {
+              if (progress.phase === 'waiting') signal.queued();
+              if (progress.phase === 'scanning' && progress.completed === 0) inventoryPasses += 1;
+              return Effect.void;
+            },
+            threadnoteHome: home,
+          });
+        }),
+      ),
+    );
+    await Promise.all(waiterSignals.map(signal => signal.promise));
+    releaseOwner();
+    const [ownerSummary, ...waiterSummaries] = await Promise.all([owner, ...waiters]);
+
+    expect(inventoryPasses).toBe(1);
+    expect(new Set(waiterSummaries.map(summary => summary.snapshot.id))).toEqual(new Set([ownerSummary.snapshot.id]));
+    expect(
+      waiterSummaries.every(
+        summary =>
+          summary.materialization?.mode === 'reused-snapshot' &&
+          summary.materialization.stagedFiles === 0 &&
+          summary.materialization.totalFiles === ownerSummary.snapshot.fileCount,
+      ),
+    ).toBe(true);
+  });
+
+  it('coalesces independent operating-system processes into one inventory pass', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const gate = join(root, '.release-code-graph-owner');
+    const firstMarker = join(root, '.first-code-graph-process');
+    const secondMarker = join(root, '.second-code-graph-process');
+    const first = startCodeGraphIndexProcess(root, home, gate, firstMarker);
+    let second: ReturnType<typeof startCodeGraphIndexProcess> | undefined;
+    try {
+      await waitForPath(`${firstMarker}.scanning`);
+      second = startCodeGraphIndexProcess(root, home, gate, secondMarker);
+      await waitForPath(`${secondMarker}.waiting`);
+      writeFileSync(gate, 'release\n');
+      const [firstOutput, secondOutput] = await Promise.all([first.done, second.done]);
+      const firstSummary = codeGraphProcessSummary(firstOutput);
+      const secondSummary = codeGraphProcessSummary(secondOutput);
+      const inventoryPasses = [
+        ...codeGraphProcessProgress(firstOutput),
+        ...codeGraphProcessProgress(secondOutput),
+      ].filter(progress => progress.phase === 'scanning' && progress.completed === 0);
+
+      expect(inventoryPasses).toHaveLength(1);
+      expect(existsSync(`${secondMarker}.scanning`)).toBe(false);
+      expect(secondSummary.snapshot.id).toBe(firstSummary.snapshot.id);
+      expect(secondSummary.materialization).toMatchObject({mode: 'reused-snapshot', stagedFiles: 0});
+    } finally {
+      if (first.running()) first.kill();
+      if (second?.running()) second.kill();
+    }
+  });
+
+  it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
+    const root = createFixtureRepository();
+    git(root, ['branch', 'graph-process-a']);
+    git(root, ['branch', 'graph-process-b']);
+    const worktreeRoot = temporaryDirectory('threadnote-code-graph-process-worktrees-');
+    const worktreeA = join(worktreeRoot, 'worktree-a');
+    const worktreeB = join(worktreeRoot, 'worktree-b');
+    git(root, ['worktree', 'add', worktreeA, 'graph-process-a']);
+    git(root, ['worktree', 'add', worktreeB, 'graph-process-b']);
+    replaceFunction(worktreeA, 'ensureVectorIndex', 'ensureConcurrentBranchA');
+    replaceFunction(worktreeB, 'ensureVectorIndex', 'ensureConcurrentBranchB');
+    const home = join(root, '.threadnote-test-home');
+    const gateA = join(root, '.release-worktree-a');
+    const gateB = join(root, '.release-worktree-b');
+    const markerA = join(root, '.worktree-process-a');
+    const markerB = join(root, '.worktree-process-b');
+    const first = startCodeGraphIndexProcess(worktreeA, home, gateA, markerA);
+    let second: ReturnType<typeof startCodeGraphIndexProcess> | undefined;
+    try {
+      await waitForPath(`${markerA}.scanning`);
+      second = startCodeGraphIndexProcess(worktreeB, home, gateB, markerB);
+      await waitForPath(`${markerB}.scanning`);
+      const observed = await runEffect(Effect.map(readAllCodeGraphBuildStatuses(home), selectCodeGraphBuildStatuses));
+      expect(observed.waiters).toEqual([]);
+      expect(observed.builds.filter(build => build.coordination?.role === 'owner')).toHaveLength(2);
+      expect(new Set(observed.builds.map(build => build.identity.worktreeId)).size).toBe(2);
+      const checkoutId = observed.builds[0]?.identity.checkoutId;
+      if (!checkoutId) throw new Error('Linked-worktree builders did not publish a checkout identity.');
+      expect(await runEffect(compactCodeGraphStorage(home, checkoutId, {dryRun: false, force: true}))).toMatchObject({
+        action: 'deferred',
+        reason: 'active-build',
+      });
+
+      writeFileSync(gateA, 'release\n');
+      writeFileSync(gateB, 'release\n');
+      const [firstOutput, secondOutput] = await Promise.all([first.done, second.done]);
+      const summaryA = codeGraphProcessSummary(firstOutput);
+      const summaryB = codeGraphProcessSummary(secondOutput);
+      expect(summaryA.identity.checkoutId).toBe(summaryB.identity.checkoutId);
+      expect(summaryA.identity.worktreeId).not.toBe(summaryB.identity.worktreeId);
+      expect(summaryA.snapshot.id).not.toBe(summaryB.snapshot.id);
+
+      const [queryA, queryB] = await runEffect(
+        Effect.gen(function* () {
+          const query = yield* CodeGraphQueryService;
+          return yield* Effect.all(
+            [
+              query.inspect({
+                cwd: worktreeA,
+                operation: 'query',
+                query: 'ensureConcurrentBranchA',
+                refresh: false,
+                threadnoteHome: home,
+              }),
+              query.inspect({
+                cwd: worktreeB,
+                operation: 'query',
+                query: 'ensureConcurrentBranchB',
+                refresh: false,
+                threadnoteHome: home,
+              }),
+            ],
+            {concurrency: 2},
+          );
+        }),
+      );
+      expect(queryA.nodes.some(node => node.name === 'ensureConcurrentBranchA')).toBe(true);
+      expect(queryA.nodes.some(node => node.name === 'ensureConcurrentBranchB')).toBe(false);
+      expect(queryB.nodes.some(node => node.name === 'ensureConcurrentBranchB')).toBe(true);
+      expect(queryB.nodes.some(node => node.name === 'ensureConcurrentBranchA')).toBe(false);
+
+      const database = new Database(codeGraphDatabasePath(home, summaryA), {readonly: true});
+      try {
+        const overlays = database
+          .query<{readonly base_snapshot_id: unknown; readonly worktree_id: string}, []>(
+            "SELECT base_snapshot_id, worktree_id FROM snapshots WHERE dirty = 1 AND state = 'ready' ORDER BY worktree_id",
+          )
+          .all();
+        expect(overlays).toHaveLength(2);
+        expect(new Set(overlays.map(row => row.worktree_id)).size).toBe(2);
+        expect(new Set(overlays.map(row => row.base_snapshot_id)).size).toBe(1);
+        expect(overlays[0]?.base_snapshot_id).toMatch(/^cgsn_/);
+      } finally {
+        database.close();
+      }
+    } finally {
+      if (first.running()) first.kill();
+      if (second?.running()) second.kill();
+    }
   });
 
   it('rejects a derived repository symlink before opening SQLite', async () => {
@@ -1981,6 +2177,12 @@ describe('native code graph lifecycle', () => {
         yield* Effect.sync(() => {
           const database = new Database(before.databasePath);
           try {
+            const active = database
+              .query<{readonly content_hash: string; readonly path: string}, []>(
+                'SELECT content_hash, path FROM snapshot_files ORDER BY path LIMIT 1',
+              )
+              .get();
+            if (!active) throw new Error('Ready graph did not retain a file for cache maintenance coverage.');
             database
               .query(
                 'INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -1990,6 +2192,17 @@ describe('native code graph lifecycle', () => {
                 'orphaned-extractor',
                 'orphaned.ts',
                 '{"diagnostics":[],"edges":[],"path":"orphaned.ts","symbols":[]}',
+                new Date().toISOString(),
+              );
+            database
+              .query(
+                'INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at) VALUES (?, ?, ?, ?, ?)',
+              )
+              .run(
+                active.content_hash,
+                'obsolete-extractor-generation',
+                active.path,
+                JSON.stringify({diagnostics: [], edges: [], path: active.path, symbols: []}),
                 new Date().toISOString(),
               );
           } finally {
@@ -2388,6 +2601,78 @@ function temporaryDirectory(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   temporaryRoots.push(root);
   return root;
+}
+
+interface CodeGraphIndexProcessResult {
+  readonly done: Promise<string>;
+  readonly kill: () => void;
+  readonly running: () => boolean;
+}
+
+function startCodeGraphIndexProcess(
+  repository: string,
+  home: string,
+  releaseGate: string,
+  marker: string,
+): CodeGraphIndexProcessResult {
+  const helper = join(import.meta.dirname, '../helpers/code-graph-index-process.ts');
+  const child = spawn(process.execPath, [helper, repository, home, releaseGate, marker], {
+    cwd: process.cwd(),
+    env: {...process.env, NODE_ENV: 'test'},
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', chunk => (stdout += String(chunk)));
+  child.stderr?.on('data', chunk => (stderr += String(chunk)));
+  const done = new Promise<string>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`Code graph child exited ${code ?? signal}: ${stderr || stdout}`));
+    });
+  });
+  return {
+    done,
+    kill: () => child.kill(),
+    running: () => child.exitCode === null && child.signalCode === null,
+  };
+}
+
+async function waitForPath(path: string, timeoutMilliseconds = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for child process marker: ${path}`);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+function codeGraphProcessProgress(output: string): readonly {readonly completed?: number; readonly phase: string}[] {
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as {readonly progress?: {readonly completed?: number; readonly phase: string}})
+    .flatMap(message => (message.progress ? [message.progress] : []));
+}
+
+function codeGraphProcessSummary(output: string): {
+  readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
+  readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
+  readonly snapshot: {readonly id: string};
+} {
+  const summary = output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as {readonly summary?: unknown; readonly type?: string})
+    .find(message => message.type === 'summary')?.summary;
+  if (!summary || typeof summary !== 'object') throw new Error(`Child process did not emit a summary: ${output}`);
+  return summary as {
+    readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
+    readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
+    readonly snapshot: {readonly id: string};
+  };
 }
 
 function git(cwd: string, args: readonly string[]): void {

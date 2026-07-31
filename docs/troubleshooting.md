@@ -126,6 +126,17 @@ Install and repair also retire the old 3.x Python local-AI daemon after migratio
 after its legacy receipt, loopback health response, PID, launch ID, model ID, and token-derived proof all agree.
 Unverified or unresponsive PIDs are left untouched with a warning.
 
+## Threadnote shows several processes or uses more memory than expected
+
+Each active stdio client owns one MCP process, and semantic work lazily starts one crash-isolated local-model worker
+below that parent. Run `threadnote processes` to see a bounded privacy-safe inventory with role, parent PID, age,
+current operation, and RSS. The output excludes command lines, working directories, repository names, prompts, and
+model input.
+
+An unused model worker unloads after five minutes by default. Set
+`THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS=<milliseconds>` before starting the client to use a different idle
+window; `0` disables idle eviction. Closing the stdio client closes both its MCP server and worker.
+
 ## An index rebuild was interrupted
 
 Re-run `threadnote repair` or `threadnote index rebuild`. The lexical and vector SQLite databases are disposable and

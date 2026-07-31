@@ -200,6 +200,98 @@ describe('isolated local model runtime', () => {
     }).pipe(Effect.provide(runtimeLayer(spawn)));
   });
 
+  it.effect('evicts an idle worker and lazily respawns exactly one worker for concurrent requests', () => {
+    const processes: FakeWorkerProcess[] = [];
+    const spawn: LocalModelWorkerSpawner = () => {
+      const generation = processes.length + 1;
+      const worker = new FakeWorkerProcess(request => {
+        worker.respond(
+          request,
+          request.payload.inputs.map((input: string) => [input.length, generation]),
+        );
+      });
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const runtime = yield* LocalModelRuntime;
+      expect(
+        yield* runtime.embedMany({
+          inputs: ['first'],
+          manifest: embeddingManifest,
+          modelPath: '/models/embedding.gguf',
+        }),
+      ).toEqual([[5, 1]]);
+
+      yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 30)));
+      expect(processes).toHaveLength(1);
+      expect(processes[0]!.inputClosed).toBe(true);
+
+      const results = yield* Effect.all(
+        ['second', 'third'].map(input =>
+          runtime.embedMany({
+            inputs: [input],
+            manifest: embeddingManifest,
+            modelPath: '/models/embedding.gguf',
+          }),
+        ),
+        {concurrency: 'unbounded'},
+      );
+      expect(results).toEqual([[[6, 2]], [[5, 2]]]);
+      expect(processes).toHaveLength(2);
+      expect(processes[1]!.writes).toHaveLength(2);
+    }).pipe(Effect.provide(runtimeLayer(spawn, 1_000, 1_024, 10)));
+  });
+
+  it.effect('waits for idle eviction to release native resources before spawning a replacement', () => {
+    const processes: FakeWorkerProcess[] = [];
+    let releaseEviction = () => {};
+    const evictionGate = new Promise<void>(resolve => {
+      releaseEviction = resolve;
+    });
+    const spawn: LocalModelWorkerSpawner = () => {
+      const generation = processes.length + 1;
+      const worker = new FakeWorkerProcess(
+        request => {
+          worker.respond(
+            request,
+            request.payload.inputs.map((input: string) => [input.length, generation]),
+          );
+        },
+        undefined,
+        generation === 1 ? () => evictionGate : undefined,
+      );
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const runtime = yield* LocalModelRuntime;
+      yield* runtime.embedMany({
+        inputs: ['first'],
+        manifest: embeddingManifest,
+        modelPath: '/models/embedding.gguf',
+      });
+      yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 30)));
+      expect(processes[0]?.inputClosed).toBe(true);
+
+      const pending = Effect.runPromise(
+        runtime.embedMany({
+          inputs: ['second'],
+          manifest: embeddingManifest,
+          modelPath: '/models/embedding.gguf',
+        }),
+      );
+      yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 20)));
+      expect(processes).toHaveLength(1);
+
+      releaseEviction();
+      expect(yield* Effect.promise(() => pending)).toEqual([[6, 2]]);
+      expect(processes).toHaveLength(2);
+    }).pipe(Effect.provide(runtimeLayer(spawn, 1_000, 1_024, 10)));
+  });
+
   it.effect('serializes concurrent operations through the persistent worker', () => {
     const processes: FakeWorkerProcess[] = [];
     let active = 0;
@@ -357,8 +449,14 @@ describe('isolated local model runtime', () => {
   );
 });
 
-function runtimeLayer(spawnWorker: LocalModelWorkerSpawner, requestDeadlineMs = 1_000, responseLimitBytes = 1024) {
+function runtimeLayer(
+  spawnWorker: LocalModelWorkerSpawner,
+  requestDeadlineMs = 1_000,
+  responseLimitBytes = 1024,
+  idleTimeoutMs = 0,
+) {
   return isolatedLocalModelRuntimeLayer({
+    idleTimeoutMs,
     maxStderrBytes: 128,
     requestDeadlineMs,
     responseLimitBytes,

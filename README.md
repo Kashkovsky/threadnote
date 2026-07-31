@@ -189,7 +189,14 @@ threadnote graph surprises
 threadnote graph report --output architecture-report.md
 threadnote graph export --format graphml --output code-graph.graphml
 threadnote graph index --full
+threadnote graph compact --dry-run
 ```
+
+`graph status` reports active SQLite database, WAL, and SHM bytes plus page/freelist and reclaimable-byte diagnostics.
+When both 512 MiB and 20% of the database are reclaimable it recommends explicit compaction. `graph compact` takes
+zero-wait maintenance and checkout locks, verifies the active snapshot before and after SQLite's transactional
+`VACUUM`, and defers safely during a build. Preview it with `--dry-run`; `--force` is available below the reviewed
+threshold.
 
 Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, and conservative Xcode metadata form a static
 workspace model; repository build scripts are never executed. Nested workspaces remain distinct, while an app that is

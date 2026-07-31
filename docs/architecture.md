@@ -14,8 +14,10 @@ server, database server, or background daemon.
   `node-llama-cpp` payload.
 - Bun bytecode compilation, minification, and linked source maps are enabled for standalone executables.
 - Each CLI, MCP, or manager process owns one root Effect runtime and one root scope.
-- The parent lazily starts one persistent local-model worker. The worker owns a minimal Effect runtime, keeps model
-  sessions warm, serves serialized stdio requests, and exits with its parent.
+- The parent lazily starts one local-model worker. The worker owns a minimal Effect runtime, keeps model sessions warm
+  for a reviewed five-minute idle window, serves serialized stdio requests, and exits with its parent. Set
+  `THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS=0` to disable idle eviction, or a non-negative millisecond value to
+  tune it for a constrained host.
 - MCP uses stdio. The manager starts a temporary loopback HTTP server only for the foreground manager session.
 - `node-llama-cpp` is isolated behind one Threadnote adapter and may load only a compatible prebuilt binary.
   Only the local-model worker loads that adapter; Threadnote does not silently compile llama.cpp or invoke Python.
@@ -30,7 +32,7 @@ flowchart TD
     Runtime --> Recall["hybrid recall"]
     Runtime --> CodeGraph["native code graph"]
     Runtime --> Supervisor["LocalModelRuntime<br/>worker supervisor"]
-    Supervisor --> Worker["persistent local-model worker<br/>node-llama-cpp"]
+    Supervisor --> Worker["idle-evicted local-model worker<br/>node-llama-cpp"]
     Recall --> Supervisor
     CodeGraph --> Supervisor
     Recall --> Lexical["SQLite lexical index"]
@@ -45,15 +47,15 @@ flowchart TD
 
 `~/.threadnote` is the only runtime-owned home.
 
-| Path                                   | Purpose                                                                          | Authority               |
-| -------------------------------------- | -------------------------------------------------------------------------------- | ----------------------- |
-| `data/<account>/`                      | Canonical resources, personal memories, and ingested shared memories             | Authoritative           |
-| `models/`                              | Verified, immutable GGUF model files and role selection                          | Re-downloadable state   |
-| `indexes/lexical/active-v3.sqlite`     | Normalized metadata, postings, statistics, and trigram exact search              | Derived and disposable  |
-| `indexes/vectors/<model>/`             | Paged content-addressed Float32 vectors and transactional active metadata        | Derived and disposable  |
-| `indexes/code-graph/repositories/`     | Git-snapshot-aware source symbols, relationships, lexical terms, and vectors     | Derived and disposable  |
-| `share/`                               | Team configuration and isolated Git worktrees/gitdirs                            | Operational integration |
-| `migration/`, `locks/`, `logs/`, `tmp` | Receipts, bounded cross-process coordination, diagnostics, and temporary staging | Operational state       |
+| Path                                               | Purpose                                                                      | Authority               |
+| -------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------- |
+| `data/<account>/`                                  | Canonical resources, personal memories, and ingested shared memories         | Authoritative           |
+| `models/`                                          | Verified, immutable GGUF model files and role selection                      | Re-downloadable state   |
+| `indexes/lexical/active-v3.sqlite`                 | Normalized metadata, postings, statistics, and trigram exact search          | Derived and disposable  |
+| `indexes/vectors/<model>/`                         | Paged content-addressed Float32 vectors and transactional active metadata    | Derived and disposable  |
+| `indexes/code-graph/repositories/`                 | Git-snapshot-aware source symbols, relationships, lexical terms, and vectors | Derived and disposable  |
+| `share/`                                           | Team configuration and isolated Git worktrees/gitdirs                        | Operational integration |
+| `migration/`, `locks/`, `logs/`, `runtime/`, `tmp` | Receipts, bounded coordination, process diagnostics, and staging             | Operational state       |
 
 Ordinary files and stable `threadnote://` identifiers remain authoritative. SQLite and vector formats may be replaced
 or rebuilt without migrating canonical content.
@@ -74,11 +76,19 @@ verify, select, and preserve it automatically. Reranking and structured generati
 inference is temporarily unavailable, recall fails open to deterministic lexical results and doctor reports the
 missing core capability.
 
-The worker is lazy and remains alive for its parent process to reuse loaded models. A transport crash, exit, protocol
-fault, closed input, or request deadline causes the parent to discard it and retry the operation once with a fresh
-worker. A repeated fault is returned as a typed bounded failure. On Darwin arm64, the built-in BGE Small manifest
-requests zero GPU layers. The packaged Metal addon still initializes its backend, so this is a targeted mitigation for
-the observed release-runner failure, not root-cause proof and not a policy applied to optional models.
+Concurrent agents may rebuild recall indexes from different linked worktrees at the same time. Every vector build and
+search is therefore fenced to the ready lexical corpus generation that requested it: an older waiter cannot activate
+its vectors after a newer corpus is published, and a search rechecks the generation after query inference and its
+SQLite read. A generation change retries the complete candidate load against the new corpus within a fixed bound,
+then preserves the existing lexical-only fail-open behavior rather than combining scores from different generations.
+
+The worker is lazy and remains alive for up to five idle minutes so its parent can reuse loaded models. Idle eviction
+closes the worker and unloads model contexts; the next semantic request uses a concurrency-safe single-flight respawn.
+A transport crash, exit, protocol fault, closed input, or request deadline causes the parent to discard it and retry
+the operation once with a fresh worker. A repeated fault is returned as a typed bounded failure. On Darwin arm64, the
+built-in BGE Small manifest requests zero GPU layers. The packaged Metal addon still initializes its backend, so this
+is a targeted mitigation for the observed release-runner failure, not root-cause proof and not a policy applied to
+optional models.
 
 ## Native code graph
 
@@ -132,14 +142,25 @@ the nearest enclosing or preceding declaration. These nodes remain derived, untr
 Each local Git checkout owns a SQLite graph under
 `~/.threadnote/indexes/code-graph/repositories/<checkout-id>/`. Linked worktrees share an immutable commit snapshot;
 dirty overlays store only changed facts and deletion markers, while active pointers remain worktree-scoped. Independent
-clones of the same remote have separate operational stores. Builds stage, revalidate, and promote transactionally;
-dirty activation stages complete current rows in bounded batches and compares them with the immutable base through
-indexed SQL joins instead of issuing per-symbol or per-edge comparison queries. One scoped SQLite connection serves all
-store calls in a logical query or export. Concurrent readers pin snapshots with bounded leases instead of taking the
-writer lock. Repository registration uses a short process-aware maintenance lease and a writer-intent marker so repair
-and purge cannot remove a graph being created, without serializing extraction or model work across repositories.
-Code-symbol vectors use a per-model `vectors-v2.sqlite`: construction, fingerprint reuse, activation, pruning, and
-exact search are paged, and worktree pointers switch generations transactionally. No repository-sized symbol array or
+clones of the same remote have separate operational stores. Clean snapshots atomically record a versioned reusable-base
+receipt with normalized symbol, alias, and named-re-export provenance. An eligible cross-session edit stages only its
+changed files and resolves them through indexed joins against that persisted clean base; activation writes a direct
+delta instead of hydrating the repository-wide graph into temporary tables. File-set, workspace, extractor, cache,
+receipt, dynamic-alias, or declaration/lookup-surface changes conservatively use full materialization. Extractor
+generation 9 intentionally performs one clean rebuild when upgrading this contract, and a monotonic SQLite publication
+guard prevents an overlapping older process from republishing a generation-8 snapshot.
+
+Builds stage, revalidate, and promote transactionally. Linked worktrees may scan and extract concurrently; a short
+checkout-scoped publication section serializes only activation, readback, and pointer promotion. An atomic bounded
+activation lease keeps a just-written snapshot alive through that section. One scoped SQLite connection serves all
+store calls in a logical query or export. Parser-fact garbage collection is maintenance-only: repair first publishes
+its writer intent and drains every linked-worktree build lock, so one builder cannot delete another builder's
+not-yet-activated facts. Concurrent readers pin snapshots with bounded leases instead of taking the writer lock.
+Repository registration uses a short process-aware maintenance lease and a writer-intent marker so repair and purge
+cannot remove a graph being created, without serializing extraction or model work across repositories. Code-symbol
+vectors use a per-model `vectors-v2.sqlite`: a stale-recoverable checkout/model writer lock serializes construction,
+rechecks reusable generations after contention, and protects activation and pruning, while exact search remains
+concurrent and paged. Worktree pointers switch generations transactionally. No repository-sized symbol array or
 decoded vector sidecar is required. Missing models fail open to indexed SQLite lexical postings.
 
 One Git checkout is one graph scope, including monorepos. Nested package manifests assign symbols to the deepest
@@ -168,6 +189,13 @@ vector files.
 Manager graph visualization reads bounded projections and computes topology analysis only after the user requests
 **Analyze**. The panel shows community/component counts, complete or partial coverage, high-connectivity nodes, and a
 leading cross-community signal without loading the full graph into the browser.
+
+`threadnote processes` reports a bounded, privacy-safe process inventory: PID/parent relationships, role, age, current
+operation, and RSS only. It never includes command lines, working directories, repository names, prompts, or model
+input. MCP, Manager, local-model workers, and transient graph builder/waiter activity write private role records under
+`~/.threadnote/runtime/processes/`; PID/start-identity validation removes stale records. Threadnote also sets a
+best-effort process title, while the private registry remains authoritative on Bun/OS combinations that do not expose
+mutable titles.
 
 The first query builds a graph lazily. MCP gives a cold or strict-freshness build a short bounded opportunity to
 complete; a large monorepo then receives a structured `indexing` result with phase and retry timing while a deduplicated

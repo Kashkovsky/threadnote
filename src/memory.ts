@@ -64,6 +64,7 @@ import {
   recallSelectionQueries,
   recallSelectionAnchorIds,
   selectedRecallCandidateUris,
+  type RecallSemanticScoresResult,
 } from './recall/runtime.js';
 import {loadRecallExactMatches} from './recall/index.js';
 import type {
@@ -1364,31 +1365,44 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
   const expansionQueries: string[] = [];
   const recallLimit = nodeLimit ?? 12;
-  const semanticResult = dryRun ? undefined : yield* loadRecallSemanticScoresResult(config, query, recallLimit);
-  if (semanticResult && Option.isSome(semanticResult.warning)) {
-    yield* Console.warn(semanticResult.warning.value);
-  }
-  const semanticScores = semanticResult ? Option.getOrNull(semanticResult.scores) : null;
+  let semanticResult = dryRun
+    ? Option.none<RecallSemanticScoresResult>()
+    : Option.some(yield* loadRecallSemanticScoresResult(config, query, recallLimit));
+  const surfacedSemanticWarnings = new Set<string>();
+  const surfaceSemanticWarning = (result: RecallSemanticScoresResult) =>
+    Option.match(result.warning, {
+      onNone: () => Effect.void,
+      onSome: warning =>
+        surfacedSemanticWarnings.has(warning)
+          ? Effect.void
+          : Effect.sync(() => surfacedSemanticWarnings.add(warning)).pipe(Effect.andThen(Console.warn(warning))),
+    });
+  if (Option.isSome(semanticResult)) yield* surfaceSemanticWarning(semanticResult.value);
   const rerankerCache = createRecallRerankerCache();
   const prepareSections = (candidateUris?: readonly string[]) =>
-    prepareRecallSections(config, {
-      allowExactRescue: options.threshold === undefined,
-      allowedUriScopes: explicitUri ? [explicitUri] : undefined,
-      candidateUris,
-      exactMatches,
-      feedbackQuery: options.query,
-      includeInactive: includeArchived,
-      limit: recallLimit,
-      minimumScore: hybridMinimumScore,
-      passes,
-      preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
-      project: recallProjectName,
-      query,
-      queryVariants: expansionQueries,
-      readRecords: uris => readMemoryRecordsByUri(config, uris),
-      rerankerCache,
-      seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
-      semanticScores,
+    Effect.gen(function* () {
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: options.threshold === undefined,
+        allowedUriScopes: explicitUri ? [explicitUri] : undefined,
+        candidateUris,
+        exactMatches,
+        feedbackQuery: options.query,
+        includeInactive: includeArchived,
+        limit: recallLimit,
+        minimumScore: hybridMinimumScore,
+        passes,
+        preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
+        project: recallProjectName,
+        query,
+        queryVariants: expansionQueries,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        rerankerCache,
+        seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+        semanticResult,
+      });
+      semanticResult = Option.some(prepared.semanticResult);
+      yield* surfaceSemanticWarning(prepared.semanticResult);
+      return prepared;
     });
   let recallSections = yield* prepareSections();
   const shouldAttemptAiExpansion = !dryRun && shouldExpandRecall(recallSections.confidence);

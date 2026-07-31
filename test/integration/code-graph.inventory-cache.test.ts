@@ -49,7 +49,11 @@ describe('code graph inventory cache rehydration', () => {
     expect(firstByPath.get('go.mod')?.content).toContain('module example.com/cache-fixture');
     expect(firstByPath.get('go.mod')?.content).toContain('example.com/cache-dependency v1.2.3');
     expect(firstByPath.get('package.json')?.content).toBe(
-      JSON.stringify({main: './src/entry.ts', name: '@fixture/root'}),
+      JSON.stringify({
+        dependencies: {'@fixture/library': 'workspace:*'},
+        main: './src/entry.ts',
+        name: '@fixture/root',
+      }),
     );
     expect(firstByPath.get('tsconfig.json')?.content).toContain('"@alias/*"');
 

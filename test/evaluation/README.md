@@ -27,8 +27,8 @@ bun run bench:code-graph -- --vectors --scale-symbols 10000 --model-home ~/.thre
 bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
   --output artifacts/code-graph-dirty-overlay.json
 
-# Opt-in/nightly large-monorepo shape; expect substantial CPU, RAM, disk, and wall time.
-bun run bench:code-graph -- --profile production-large --samples 5 \
+# Opt-in/scheduled large-monorepo shape; expect substantial CPU, RAM, disk, and wall time.
+bun run bench:code-graph -- --profile production-large --samples 1 --warmups 0 \
   --output artifacts/code-graph-production-large.json
 ```
 
@@ -47,11 +47,13 @@ shared-runner latency is machine-independent.
 
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested
-workspaces. It is opt-in and intended for a dedicated scheduled runner; pull requests retain the existing reviewed
+workspaces. It runs weekly or through the explicit `include_production_large` workflow input on the pinned
+`ubuntu-24.04` runner class; pull requests retain the existing reviewed
 development, 10k-symbol, and 100k-symbol suites. `--profile-files` and `--profile-symbols` may shrink the same generator
 for harness development, but only the default shape is the reviewed profile. There is intentionally no portable
 latency budget or fabricated checked result for this profile: retain the JSON artifact from each measured run and
-review it against the same hardware class.
+review it only when `sameRunnerComparisonKey` matches. The cold and incremental builds and their phases are explicitly
+labelled n=1; the artifact never presents them as a latency distribution.
 
 `bench:code-graph:dirty-overlay` isolates the first dirty build where Threadnote must materialize a clean commit and a
 one-file worktree overlay in the same SQLite session. It alternates the safe staging-reuse path with an explicitly
@@ -61,8 +63,17 @@ on one hardware class, not a portable latency gate.
 
 The general `bench:code-graph` suite separately labels its post-cold one-file edit as `one-file-reindex`. That path
 measures the normal cross-session cache reuse and records the observed materialization mode, staged-file count, and
-fallback reason. It must not be described as incremental staging reuse: until unresolved-reference provenance can be
-persisted safely, an existing clean snapshot intentionally falls back to full graph materialization.
+fallback reason. An eligible edit now reuses the persisted clean base through a versioned receipt containing normalized
+symbol, alias, and named-re-export provenance, and writes a direct changed-file delta without hydrating the clean graph
+into temporary staging tables. Eligibility requires compatible extractor, workspace, and file-set fingerprints; a
+complete fact cache and receipt; an unchanged declaration/lookup surface; and no changed dynamic aliases. File-set,
+workspace, resolution-surface, cache, receipt, or staging-identity changes conservatively fall back to full
+materialization and remain explicit in the recorded reason.
+
+The reusable receipt and named-barrel resolution contract ships as extractor generation `native-code-graph-9`.
+Upgrading from generation 8 therefore performs one intentional clean rebuild before persisted-base deltas become
+eligible. SQLite records a monotonic minimum extractor generation so an older process that overlaps an update cannot
+publish a generation-8 snapshot after generation 9 has initialized the checkout store.
 
 Code-graph benchmark artifacts now separate registration/lock/database setup, committed inventory/extraction, the dirty
 overlay and workspace-discovery gap, materialization, reference resolution, validation, SQLite write/checkpoint,
@@ -73,6 +84,22 @@ repository-status latency; and cross-process build sidecar latency. Every measur
 or incremental run, `p50`, `p95`, and `p99` are schema-compatible copies of that one observation, not percentile
 estimates; cite it as “one observation (n=1),” never as p95. Distribution labels are valid only for measurements with
 multiple samples.
+
+The production-large workflow additionally starts a 25 ms external sampler before it constructs the fixture, then
+hands continuous coverage across bootstrap, cold-index, and incremental-index samplers. Each sampler must publish a
+parseable readiness marker before the parent enters the measured phase. It records per-phase process CPU/RSS and
+DB/WAL/SHM peaks plus SQLite temporary-file peaks from an isolated temp root, including
+`activating/writing-and-checkpointing`. This is observed sampling, not an assertion that an interval cannot miss a
+shorter transient. Linux validates the sampled parent using `/proc` start time so PID reuse cannot be mistaken for the
+original benchmark. Other platforms mark external CPU/RSS telemetry unavailable instead of emitting fabricated zero
+measurements; storage sampling remains available.
+
+Each sampler atomically checkpoints its evidence into the workflow's artifact directory once per second and on parent
+exit. A separate run-lifecycle checkpoint records the current benchmark phase and ends as `complete` or `failed` when
+the process can finalize normally. If the process is killed, the last `running` phase and the sampler's
+`parent-exited` checkpoint remain. Sampler shutdown is bounded and escalates to process termination if the stop signal
+cannot be written or honored. The production step reserves at least 30 minutes before the job deadline, and artifact
+upload runs with `if: always()`, so failure and timeout evidence is retained whenever the runner itself remains alive.
 
 Graph code search is intentionally separate from memory recall. `recall_context` evaluates durable memories and
 resources; `inspect_code_graph` evaluates current source evidence. Agents may call both, but one subsystem failing or

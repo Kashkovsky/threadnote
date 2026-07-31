@@ -1,6 +1,7 @@
-import {Clock, Crypto, Effect, FileSystem, Path, Ref, Semaphore} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Semaphore} from 'effect';
+import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {codeGraphRepositoriesRoot, type CodeGraphLayout} from './layout.js';
+import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
 import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot, RepositoryIdentity} from './types.js';
 
 export const CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION = 1 as const;
@@ -46,6 +47,10 @@ export interface CodeGraphBuildStatus {
     readonly runtimeVersion: string;
   };
   readonly phase: CodeGraphProgress['phase'];
+  readonly request?: {
+    /** Privacy-safe identity for callers waiting on the same source and extraction pipeline. */
+    readonly key: string;
+  };
   readonly result?: {
     readonly dirty: boolean;
     readonly edges: number;
@@ -67,11 +72,23 @@ export interface CodeGraphBuildStatus {
 }
 
 export interface ObservedCodeGraphBuildStatus extends CodeGraphBuildStatus {
+  readonly coordination?: {
+    readonly lockVerified: boolean;
+    readonly progressSilent?: boolean;
+    readonly role: 'history' | 'owner' | 'waiter';
+  };
   readonly observation: {
     readonly heartbeatAgeMilliseconds: number;
     readonly liveness: CodeGraphBuildLiveness;
     readonly reason?: 'heartbeat-stale' | 'owner-exited' | 'pid-reused';
   };
+}
+
+export interface CodeGraphBuildStatusSelection {
+  /** One authoritative owner or most useful terminal status per worktree. */
+  readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  /** Live lock contenders, retained separately from the authoritative owner. */
+  readonly waiters: readonly ObservedCodeGraphBuildStatus[];
 }
 
 export interface CodeGraphBuildReporter {
@@ -83,12 +100,22 @@ export interface CodeGraphBuildReporter {
 }
 
 interface ReporterState {
+  readonly completionForecasts: readonly CompletionForecast[];
+  readonly intervalSamplesMilliseconds: readonly number[];
   readonly lastCompleted?: number;
   readonly lastPersistedAtMilliseconds: number;
   readonly lastSampleAtMilliseconds?: number;
+  readonly rateForecastErrorSamples: readonly number[];
+  readonly rateSamples: readonly number[];
+  readonly realizedCompletionErrorSamples: readonly number[];
   readonly sampleCount: number;
   readonly smoothedUnitsPerMillisecond?: number;
   readonly status: CodeGraphBuildStatus;
+}
+
+interface CompletionForecast {
+  readonly issuedAtMilliseconds: number;
+  readonly predictedCompletionAtMilliseconds: number;
 }
 
 interface ProcessObservation {
@@ -117,6 +144,7 @@ const VALID_STATES = new Set<CodeGraphBuildState>(['completed', 'failed', 'queue
 export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeReporter')(function* (
   identity: RepositoryIdentity,
   layout: CodeGraphLayout,
+  request?: {readonly key: string},
 ) {
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
@@ -129,7 +157,12 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   const file = codeGraphBuildStatusPath(path, layout, identity.worktreeId, buildId);
   let writeSequence = 0;
   const state = yield* Ref.make<ReporterState>({
+    completionForecasts: [],
+    intervalSamplesMilliseconds: [],
     lastPersistedAtMilliseconds: 0,
+    rateForecastErrorSamples: [],
+    rateSamples: [],
+    realizedCompletionErrorSamples: [],
     sampleCount: 0,
     status: {
       buildId,
@@ -147,6 +180,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         runtimeVersion: boundedText(system.runtimeVersion, 64),
       },
       phase: 'registering',
+      ...(request ? {request} : {}),
       schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
       state: 'running',
       subphase: 'registration',
@@ -181,7 +215,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           const persisted = {...next, lastPersistedAtMilliseconds: now};
           yield* Ref.set(state, persisted);
           writeSequence += 1;
-          yield* writeCodeGraphBuildStatus(fs, path, file, persisted.status, writeSequence);
+          yield* writeCodeGraphBuildStatus(fs, path, file, persisted.status, writeSequence, writeSequence === 1);
         }),
       )
       .pipe(Effect.catch(() => Effect.void));
@@ -255,10 +289,21 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         if (current.status.state === 'completed' || current.status.state === 'failed') return;
         yield* persist((latest, now) => {
           const timestamp = new Date(now).toISOString();
+          const silenceMilliseconds = Math.max(0, now - Date.parse(latest.status.timestamps.lastProgressAt));
+          const confidence = latest.status.eta
+            ? calibratedCodeGraphEtaConfidence({
+                intervalSamplesMilliseconds: latest.intervalSamplesMilliseconds,
+                rateForecastErrorSamples: latest.rateForecastErrorSamples,
+                rateSamples: latest.rateSamples,
+                realizedCompletionErrorSamples: latest.realizedCompletionErrorSamples,
+                silenceMilliseconds,
+              })
+            : undefined;
           return {
             ...latest,
             status: {
               ...latest.status,
+              eta: latest.status.eta && confidence ? {...latest.status.eta, confidence} : undefined,
               timestamps: {...latest.status.timestamps, heartbeatAt: timestamp, updatedAt: timestamp},
             },
           };
@@ -268,7 +313,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     progress: progress =>
       persist(
         (current, now) => observeProgress(current, progress, now),
-        current => current.status.phase !== progress.phase || current.status.subphase !== progressSubphase(progress),
+        current =>
+          current.status.phase !== progress.phase ||
+          current.status.subphase !== progressSubphase(progress) ||
+          (measuredProgress(progress)?.completed ?? -1) >= (measuredProgress(progress)?.total ?? 0),
       ),
   } satisfies CodeGraphBuildReporter;
 });
@@ -278,7 +326,8 @@ export const readCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readC
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  return yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
+  const statuses = yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
+  return yield* annotateCheckoutBuildCoordination(fs, path, layout, statuses);
 });
 
 export const readAllCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readAll')(function* (
@@ -290,7 +339,10 @@ export const readAllCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.re
   if (!(yield* regularDirectory(fs, root))) return [];
   const statuses = yield* Effect.forEach(
     (yield* fs.readDirectory(root)).filter(name => HASH_ID.test(name)).sort(),
-    checkoutId => readBuildStatusesBelow(fs, path, path.join(root, checkoutId, STATUS_DIRECTORY)),
+    checkoutId =>
+      readBuildStatusesBelow(fs, path, path.join(root, checkoutId, STATUS_DIRECTORY)).pipe(
+        Effect.flatMap(statuses => annotateBuildCoordinationByWorktree(fs, path, threadnoteHome, checkoutId, statuses)),
+      ),
     {concurrency: 8},
   );
   return statuses.flat().sort(compareObservedBuildStatus);
@@ -353,27 +405,66 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
   const previousAt = phaseChanged ? undefined : current.lastSampleAtMilliseconds;
   let rate = phaseChanged ? undefined : current.smoothedUnitsPerMillisecond;
   let sampleCount = phaseChanged ? 0 : current.sampleCount;
+  let rateSamples = phaseChanged ? [] : [...current.rateSamples];
+  let rateForecastErrorSamples = phaseChanged ? [] : [...current.rateForecastErrorSamples];
+  let intervalSamplesMilliseconds = phaseChanged ? [] : [...current.intervalSamplesMilliseconds];
+  let completionForecasts = phaseChanged ? [] : [...current.completionForecasts];
+  let realizedCompletionErrorSamples = [...current.realizedCompletionErrorSamples];
+  if ((phaseChanged || (measured && measured.completed >= measured.total)) && current.completionForecasts.length > 0) {
+    realizedCompletionErrorSamples = current.completionForecasts.reduce(
+      (samples, forecast) => appendEtaSample(samples, realizedCompletionError(forecast, now)),
+      realizedCompletionErrorSamples,
+    );
+    completionForecasts = [];
+  }
   if (measured && previousCompleted !== undefined && previousAt !== undefined && now > previousAt) {
     const delta = measured.completed - previousCompleted;
     if (delta > 0) {
+      const interval = now - previousAt;
       const observed = delta / (now - previousAt);
+      if (rate !== undefined && rate > 0) {
+        rateForecastErrorSamples = appendEtaSample(
+          rateForecastErrorSamples,
+          Math.abs(observed - rate) / Math.max(observed, rate),
+        );
+      }
+      rateSamples = appendEtaSample(rateSamples, observed);
+      intervalSamplesMilliseconds = appendEtaSample(intervalSamplesMilliseconds, interval);
       rate = rate === undefined ? observed : rate * 0.65 + observed * 0.35;
       sampleCount += 1;
     }
   }
   const remaining = measured && rate && rate > 0 ? Math.max(0, measured.total - measured.completed) / rate : undefined;
+  const confidence = calibratedCodeGraphEtaConfidence({
+    intervalSamplesMilliseconds,
+    rateForecastErrorSamples,
+    rateSamples,
+    realizedCompletionErrorSamples,
+    silenceMilliseconds: previousAt === undefined ? 0 : Math.max(0, now - previousAt),
+  });
   const eta =
-    remaining === undefined || sampleCount < 2
+    remaining === undefined || confidence === undefined
       ? undefined
       : {
-          confidence: sampleCount >= 6 ? ('high' as const) : sampleCount >= 3 ? ('medium' as const) : ('low' as const),
+          confidence,
           remainingMilliseconds: Math.ceil(remaining / 1_000) * 1_000,
           scope: 'phase' as const,
         };
+  if (remaining !== undefined && measured && measured.completed < measured.total) {
+    completionForecasts = appendCompletionForecast(completionForecasts, {
+      issuedAtMilliseconds: now,
+      predictedCompletionAtMilliseconds: now + remaining,
+    });
+  }
   return {
     ...current,
+    completionForecasts,
+    intervalSamplesMilliseconds,
     lastCompleted: measured?.completed,
     lastSampleAtMilliseconds: measured ? now : undefined,
+    rateForecastErrorSamples,
+    rateSamples,
+    realizedCompletionErrorSamples,
     sampleCount,
     smoothedUnitsPerMillisecond: rate,
     status: {
@@ -392,6 +483,88 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
       },
     },
   };
+}
+
+const ETA_CALIBRATION_WINDOW = 12;
+
+/**
+ * Converts recent measured throughput into a deliberately conservative ETA
+ * confidence. High confidence requires low rate variance, low one-step rate
+ * forecast error, and low realized phase-completion error. A long silent
+ * interval always degrades it.
+ */
+export function calibratedCodeGraphEtaConfidence(input: {
+  readonly intervalSamplesMilliseconds: readonly number[];
+  readonly rateForecastErrorSamples: readonly number[];
+  readonly rateSamples: readonly number[];
+  readonly realizedCompletionErrorSamples: readonly number[];
+  readonly silenceMilliseconds: number;
+}): 'high' | 'low' | 'medium' | undefined {
+  if (input.rateSamples.length < 3) return undefined;
+  const typicalInterval = median(input.intervalSamplesMilliseconds) ?? 0;
+  if (input.silenceMilliseconds > Math.max(5_000, typicalInterval * 4)) return 'low';
+  const variation = coefficientOfVariation(input.rateSamples);
+  const rateForecastError = mean(input.rateForecastErrorSamples);
+  const completionError = mean(input.realizedCompletionErrorSamples);
+  if (
+    input.rateSamples.length >= 8 &&
+    input.rateForecastErrorSamples.length >= 6 &&
+    input.realizedCompletionErrorSamples.length >= 3 &&
+    variation <= 0.2 &&
+    rateForecastError <= 0.25 &&
+    completionError <= 0.25
+  ) {
+    return 'high';
+  }
+  if (
+    input.rateSamples.length >= 4 &&
+    input.rateForecastErrorSamples.length >= 2 &&
+    variation <= 0.5 &&
+    rateForecastError <= 0.5
+  ) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function appendEtaSample(samples: readonly number[], sample: number): number[] {
+  return [...samples, sample].slice(-ETA_CALIBRATION_WINDOW);
+}
+
+function appendCompletionForecast(
+  forecasts: readonly CompletionForecast[],
+  forecast: CompletionForecast,
+): CompletionForecast[] {
+  return [...forecasts, forecast].slice(-ETA_CALIBRATION_WINDOW);
+}
+
+function realizedCompletionError(forecast: CompletionForecast, completedAtMilliseconds: number): number {
+  const predictedDuration = Math.max(1, forecast.predictedCompletionAtMilliseconds - forecast.issuedAtMilliseconds);
+  const actualDuration = Math.max(1, completedAtMilliseconds - forecast.issuedAtMilliseconds);
+  return (
+    Math.abs(forecast.predictedCompletionAtMilliseconds - completedAtMilliseconds) /
+    Math.max(predictedDuration, actualDuration)
+  );
+}
+
+function coefficientOfVariation(values: readonly number[]): number {
+  const average = mean(values);
+  if (average <= 0) return Number.POSITIVE_INFINITY;
+  const variance = values.reduce((total, value) => total + (value - average) ** 2, 0) / values.length;
+  return Math.sqrt(variance) / average;
+}
+
+function mean(values: readonly number[]): number {
+  return values.length === 0
+    ? Number.POSITIVE_INFINITY
+    : values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function median(values: readonly number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle];
 }
 
 function progressSubphase(progress: CodeGraphProgress): string {
@@ -470,10 +643,15 @@ function writeCodeGraphBuildStatus(
   file: string,
   status: CodeGraphBuildStatus,
   sequence: number,
+  initializeDirectory: boolean,
 ) {
   return Effect.gen(function* () {
     const directory = path.dirname(file);
-    yield* ensurePrivateRegularDirectory(fs, path, directory);
+    if (initializeDirectory) {
+      yield* ensurePrivateRegularDirectory(fs, path, directory);
+    } else if (!(yield* regularDirectory(fs, directory))) {
+      return yield* Effect.fail(new Error('Code graph build status directory was removed.'));
+    }
     if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') {
       return yield* Effect.fail(new Error('Code graph build status path is a symbolic link.'));
     }
@@ -593,6 +771,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (value.eta !== undefined && !eta) return undefined;
   const result = parseResult(value.result);
   if (value.result !== undefined && !result) return undefined;
+  const request = parseRequest(value.request);
+  if (value.request !== undefined && !request) return undefined;
   return {
     buildId: value.buildId,
     counters,
@@ -611,6 +791,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       runtimeVersion: value.owner.runtimeVersion,
     },
     phase: value.phase as CodeGraphProgress['phase'],
+    ...(request ? {request} : {}),
     ...(result ? {result} : {}),
     schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
     state: value.state as CodeGraphBuildState,
@@ -624,6 +805,10 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       updatedAt: timestamps.updatedAt,
     },
   };
+}
+
+function parseRequest(value: unknown): CodeGraphBuildStatus['request'] | undefined {
+  return isRecord(value) && typeof value.key === 'string' && HASH_ID.test(value.key) ? {key: value.key} : undefined;
 }
 
 function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
@@ -721,17 +906,127 @@ function regularDirectory(fs: FileSystem.FileSystem, directory: string) {
 }
 
 function compareObservedBuildStatus(left: ObservedCodeGraphBuildStatus, right: ObservedCodeGraphBuildStatus): number {
-  const priority = (status: ObservedCodeGraphBuildStatus) =>
-    status.observation.liveness === 'active'
-      ? status.state === 'running'
-        ? 0
-        : 1
-      : status.observation.liveness === 'stalled' || status.observation.liveness === 'abandoned'
-        ? 2
-        : 3;
+  const priority = (status: ObservedCodeGraphBuildStatus) => {
+    if (status.coordination?.role === 'owner') return 0;
+    if (status.observation.liveness === 'active') return status.state === 'running' ? 1 : 2;
+    if (status.observation.liveness === 'completed') return 3;
+    if (status.observation.liveness === 'failed') return 4;
+    if (status.observation.liveness === 'stalled') return status.state === 'running' ? 5 : 6;
+    return 7;
+  };
   return (
     priority(left) - priority(right) || Date.parse(right.timestamps.updatedAt) - Date.parse(left.timestamps.updatedAt)
   );
+}
+
+export function selectCodeGraphBuildStatuses(
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+): CodeGraphBuildStatusSelection {
+  const byWorktree = new Map<string, ObservedCodeGraphBuildStatus[]>();
+  for (const status of statuses) {
+    const key = `${status.identity.checkoutId}\0${status.identity.worktreeId}`;
+    const current = byWorktree.get(key) ?? [];
+    current.push(status);
+    byWorktree.set(key, current);
+  }
+  const builds: ObservedCodeGraphBuildStatus[] = [];
+  const waiters: ObservedCodeGraphBuildStatus[] = [];
+  for (const group of byWorktree.values()) {
+    group.sort(compareObservedBuildStatus);
+    const owner = group.find(status => status.coordination?.role === 'owner');
+    builds.push(owner ?? group[0]!);
+    waiters.push(
+      ...group.filter(
+        status =>
+          status.coordination?.role === 'waiter' &&
+          (status.observation.liveness === 'active' || status.observation.liveness === 'stalled'),
+      ),
+    );
+  }
+  return {
+    builds: builds.sort(compareObservedBuildStatus),
+    waiters: waiters.sort(compareObservedBuildStatus),
+  };
+}
+
+function annotateBuildCoordination(
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+  lockOwner: FileLockOwner | undefined,
+): readonly ObservedCodeGraphBuildStatus[] {
+  return statuses.map(status => {
+    const terminal = status.state === 'completed' || status.state === 'failed';
+    const progressSilent = status.observation.liveness === 'stalled';
+    const ownsLock =
+      !terminal &&
+      status.observation.liveness !== 'abandoned' &&
+      lockOwner !== undefined &&
+      sameProcessOwner(status, lockOwner);
+    const role = ownsLock
+      ? ('owner' as const)
+      : !terminal && status.state === 'queued'
+        ? ('waiter' as const)
+        : 'history';
+    const observation =
+      ownsLock && progressSilent
+        ? {heartbeatAgeMilliseconds: status.observation.heartbeatAgeMilliseconds, liveness: 'active' as const}
+        : status.observation;
+    return {
+      ...status,
+      coordination: {lockVerified: ownsLock, ...(progressSilent ? {progressSilent} : {}), role},
+      observation,
+    };
+  });
+}
+
+function annotateCheckoutBuildCoordination(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  layout: CodeGraphLayout,
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+) {
+  return Effect.forEach(
+    groupBuildStatusesByWorktree(statuses),
+    ([worktreeId, worktreeStatuses]) =>
+      readExclusiveFileLockOwner(fs, path.join(layout.worktreeLockRoot, `${worktreeId}.lock`)).pipe(
+        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
+      ),
+    {concurrency: 8},
+  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
+}
+
+function annotateBuildCoordinationByWorktree(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+) {
+  return Effect.forEach(
+    groupBuildStatusesByWorktree(statuses),
+    ([worktreeId, worktreeStatuses]) =>
+      readExclusiveFileLockOwner(fs, codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId)).pipe(
+        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
+      ),
+    {concurrency: 8},
+  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
+}
+
+function groupBuildStatusesByWorktree(
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+): readonly (readonly [string, readonly ObservedCodeGraphBuildStatus[]])[] {
+  const groups = new Map<string, ObservedCodeGraphBuildStatus[]>();
+  for (const status of statuses) {
+    const group = groups.get(status.identity.worktreeId) ?? [];
+    group.push(status);
+    groups.set(status.identity.worktreeId, group);
+  }
+  return [...groups].sort(([left], [right]) => left.localeCompare(right));
+}
+
+function sameProcessOwner(status: ObservedCodeGraphBuildStatus, lockOwner: FileLockOwner): boolean {
+  if (status.owner.processId !== lockOwner.processId) return false;
+  if (!status.owner.processStartIdentity || !lockOwner.processStartIdentity) return true;
+  return status.owner.processStartIdentity === lockOwner.processStartIdentity;
 }
 
 function privacySafeError(cause: unknown): string {

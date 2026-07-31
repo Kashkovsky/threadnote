@@ -25,7 +25,7 @@ export function createTextStructuralLanguagePack(options: TextStructuralLanguage
               cause,
             }),
         }),
-      version: sha256HexSync(`threadnote-text-structural-v1\n${options.id}\n${options.version}`),
+      version: sha256HexSync(`threadnote-text-structural-v2-stable-identities\n${options.id}\n${options.version}`),
     },
     files: options.files,
     id: options.id,

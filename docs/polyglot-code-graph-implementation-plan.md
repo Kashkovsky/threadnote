@@ -189,10 +189,13 @@ Dynamic build logic that cannot be proven statically produces diagnostics and co
 
 Each file fact cache key includes only its applicable:
 
-- pack ID and version;
+- pack ID and parser/extractor version;
 - parser runtime and grammar checksum;
-- query and extraction-policy checksum;
-- relevant workspace/context fingerprint.
+- query and extraction-policy checksum.
+
+Resolver versions, workspace attribution, and postprocessors such as rationale extraction use a separate derivation
+identity. That identity participates in the snapshot identity, so a derived-policy change rebuilds the graph while
+reusing unchanged parser facts. It must not be folded back into the per-file parser cache key.
 
 Updating one pack must not invalidate unrelated languages. Snapshot extractor identity hashes only packs active in the
 repository and relevant workspace context. One-file edits reuse all unaffected cached facts.

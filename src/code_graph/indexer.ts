@@ -1,20 +1,32 @@
-import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
+import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
 import {createPackageAttributor, createResolutionAttributor, extractRepositoryFileFacts} from './extractor.js';
 import {inventoryRepository, worktreeOverlayState, type CodeGraphInventoryOptions} from './inventory.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
   CodeGraphLanguagePackRegistry,
+  packDerivationIdentity,
   type CodeGraphLanguagePackRegistryShape,
 } from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
-import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
+import {
+  codeGraphMaintenanceIntentActive,
+  withCodeGraphDatabaseWriteLock,
+  withCodeGraphMaintenanceRegistration,
+} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
-import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
+import {
+  CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  CodeGraphStore,
+  type CodeGraphReusableReexport,
+  type CodeGraphReusableReexportSeed,
+  type CodeGraphStoreShape,
+} from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphFileFacts,
@@ -22,6 +34,8 @@ import {
   type CodeGraphInventoryFile,
   type CodeGraphOverlayFallbackReason,
   type CodeGraphProgress,
+  type CodeGraphReference,
+  type CodeGraphRelation,
   type CodeGraphSnapshot,
   type CodeGraphSymbol,
   type RepositoryIdentity,
@@ -35,7 +49,7 @@ import {
 } from './embedding.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import {createWorkspaceAttributor} from './workspace.js';
-import {makeCodeGraphBuildReporter} from './build_status.js';
+import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
@@ -48,6 +62,7 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
 
 interface CommittedBaseResult {
   readonly diagnostics: readonly string[];
+  readonly leaseToken: Option.Option<string>;
   readonly snapshot: CodeGraphSnapshot;
   readonly stagingReusable: boolean;
 }
@@ -57,6 +72,7 @@ type IncrementalOverlayAssessment =
       readonly facts: readonly CodeGraphFileFacts[];
       readonly files: readonly CodeGraphInventoryFile[];
       readonly mode: 'eligible';
+      readonly reuse: 'persisted-base' | 'staged-base';
     }
   | {
       readonly mode: 'fallback';
@@ -100,31 +116,37 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
             );
-            yield* withCodeGraphMaintenanceRegistration(
+            const requestedOverlay = request.force ? undefined : yield* worktreeOverlayState(initialIdentity);
+            const requestKey = requestedOverlay
+              ? codeGraphBuildRequestKey(initialIdentity, requestedOverlay, languagePacks)
+              : undefined;
+            const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                   return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
                 }
                 yield* fs.makeDirectory(layout.repositoryRoot, {recursive: true, mode: 0o700});
+                const reporter = yield* makeCodeGraphBuildReporter(
+                  initialIdentity,
+                  layout,
+                  requestKey ? {key: requestKey} : undefined,
+                );
                 yield* request.onProgress?.({phase: 'registering'}) ?? Effect.void;
+                return reporter;
               }),
             );
-            const reporter = yield* makeCodeGraphBuildReporter(initialIdentity, layout);
             yield* Effect.forkScoped(reporter.heartbeat);
             const options: CodeGraphIndexOptions = {
               ...request,
               onProgress: progress =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
-            return yield* withExclusiveFileLock(
+            return yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
-              {
-                ...CODE_GRAPH_LOCK_OPTIONS,
-                onContention: () =>
-                  (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
-              },
+              () => (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+              'index-repository',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                   return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
@@ -147,7 +169,39 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           new Error('Repository identity changed while waiting for the graph lock.'),
                         );
                       }
+                      if (identity.headCommit !== initialIdentity.headCommit) {
+                        return yield* Effect.fail(new WorktreeChangedDuringIndex());
+                      }
                       const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
+                      if (requestKey && requestedOverlay) {
+                        const currentOverlay = yield* worktreeOverlayState(identity);
+                        if (!sameOverlayState(currentOverlay, requestedOverlay)) {
+                          return yield* Effect.fail(new WorktreeChangedDuringIndex());
+                        }
+                        const completedByOwner = yield* completedConcurrentSnapshot(
+                          store,
+                          layout,
+                          identity,
+                          currentOverlay,
+                          requestKey,
+                        );
+                        if (completedByOwner) {
+                          return yield* reuseReadySnapshot({
+                            activeWorktreeIds,
+                            embedding,
+                            identity,
+                            layout,
+                            onProgress: options.onProgress,
+                            reusedFiles: completedByOwner.fileCount,
+                            skippedFiles: 0,
+                            snapshot: completedByOwner,
+                            startedAt,
+                            store,
+                            threadnoteHome: options.threadnoteHome,
+                            totalFiles: completedByOwner.fileCount,
+                          });
+                        }
+                      }
                       const cachedCommittedFileKeys = options.force
                         ? new Set<string>()
                         : yield* cachedFileKeys(store, layout.databasePath, languagePacks);
@@ -170,52 +224,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
                       const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
                       if (!options.force && existing?.id === snapshotId) {
-                        yield* store.reconcileWorktrees(layout.databasePath, activeWorktreeIds);
-                        const diagnostics: string[] = [];
-                        const vectorCheck = yield* embedding
-                          .check(options.threadnoteHome, layout, existing.id)
-                          .pipe(
-                            Effect.catch(cause =>
-                              Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const),
-                            ),
-                          );
-                        const symbols =
-                          vectorCheck.state === 'ready'
-                            ? []
-                            : embeddingSymbolSource(store, layout.databasePath, existing.id);
-                        const repaired = yield* embedding
-                          .ensure(options.threadnoteHome, layout, existing, symbols, {
-                            activeWorktreeIds,
-                            onProgress: options.onProgress,
-                          })
-                          .pipe(
-                            Effect.catch(cause =>
-                              Effect.succeed({
-                                embedded: 0,
-                                ready: false,
-                                reason: messageOf(cause),
-                                reused: 0,
-                              } satisfies CodeGraphEmbeddingStatus),
-                            ),
-                          );
-                        if (!repaired.ready) {
-                          diagnostics.push(
-                            `Vector graph retrieval unavailable: ${repaired.reason ?? 'unknown reason'}`,
-                          );
-                        }
-                        return {
-                          diagnostics,
-                          durationMs: (yield* Clock.currentTimeMillis) - startedAt,
+                        return yield* reuseReadySnapshot({
+                          activeWorktreeIds,
+                          embedding,
                           identity,
-                          materialization: {
-                            mode: 'reused-snapshot',
-                            stagedFiles: 0,
-                            totalFiles: inventory.files.length,
-                          },
+                          layout,
+                          onProgress: options.onProgress,
                           reusedFiles: inventory.files.length - inventory.parsedFiles,
                           skippedFiles: inventory.skipped,
                           snapshot: existing,
-                        } satisfies CodeGraphIndexSummary;
+                          startedAt,
+                          store,
+                          threadnoteHome: options.threadnoteHome,
+                          totalFiles: inventory.files.length,
+                        });
                       }
                       const committedBase = inventory.dirty
                         ? yield* ensureCommittedBase({
@@ -275,11 +297,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             .pipe(Effect.andThen(Effect.fail(cause))),
                         ),
                       );
-                    }).pipe(
-                      Effect.onError(() =>
-                        store.pruneCachedFacts(layout.databasePath).pipe(Effect.catch(() => Effect.void)),
-                      ),
-                    ),
+                    }),
                   )
                   .pipe(
                     Effect.tap(summary => reporter.complete(summary)),
@@ -311,18 +329,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
             );
-            yield* withCodeGraphMaintenanceRegistration(
+            const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                   return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
                 }
                 yield* fs.makeDirectory(layout.repositoryRoot, {recursive: true, mode: 0o700});
+                return yield* makeCodeGraphBuildReporter({...initialIdentity, headCommit: request.commit}, layout);
               }),
-            );
-            const reporter = yield* makeCodeGraphBuildReporter(
-              {...initialIdentity, headCommit: request.commit},
-              layout,
             );
             yield* Effect.forkScoped(reporter.heartbeat);
             const options = {
@@ -330,14 +345,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               onProgress: (progress: CodeGraphProgress) =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
-            return yield* withExclusiveFileLock(
+            return yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
-              {
-                ...CODE_GRAPH_LOCK_OPTIONS,
-                onContention: () =>
-                  (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
-              },
+              () => (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+              'ensure-commit',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
                   return yield* Effect.fail(new Error('Code graph repository root is a symbolic link.'));
@@ -393,11 +405,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         2 * 60_000,
                       );
                       return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
-                    }).pipe(
-                      Effect.onError(() =>
-                        store.pruneCachedFacts(layout.databasePath).pipe(Effect.catch(() => Effect.void)),
-                      ),
-                    ),
+                    }),
                   )
                   .pipe(
                     Effect.tap(lease => reporter.completeSnapshot(lease.snapshot)),
@@ -419,6 +427,136 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       });
     }),
   );
+}
+
+function withCodeGraphProcessLock<A, E, R>(
+  fs: FileSystem.FileSystem,
+  lockPath: string,
+  onContention: () => Effect.Effect<void>,
+  builderOperation: string,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return withThreadnoteProcessActivity(
+    'graph-waiter',
+    'repository-lock',
+    withExclusiveFileLock(
+      fs,
+      lockPath,
+      {...CODE_GRAPH_LOCK_OPTIONS, onContention},
+      withThreadnoteProcessActivity('graph-builder', builderOperation, effect),
+    ),
+  );
+}
+
+const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnapshot')(function* (
+  store: CodeGraphStoreShape,
+  layout: CodeGraphLayout,
+  identity: RepositoryIdentity,
+  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
+  requestKey: string,
+) {
+  const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+  if (
+    !ready ||
+    ready.commit !== identity.headCommit ||
+    ready.dirty !== overlay.dirty ||
+    (overlay.dirty && ready.overlayFingerprint !== overlay.fingerprint)
+  ) {
+    return undefined;
+  }
+  const statuses = yield* readCodeGraphBuildStatuses(layout);
+  return statuses.some(
+    status =>
+      status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId === ready.id,
+  )
+    ? ready
+    : undefined;
+});
+
+const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (input: {
+  readonly activeWorktreeIds: ReadonlySet<string>;
+  readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly identity: RepositoryIdentity;
+  readonly layout: CodeGraphLayout;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly reusedFiles: number;
+  readonly skippedFiles: number;
+  readonly snapshot: CodeGraphSnapshot;
+  readonly startedAt: number;
+  readonly store: CodeGraphStoreShape;
+  readonly threadnoteHome: string;
+  readonly totalFiles: number;
+}) {
+  yield* input.store.reconcileWorktrees(input.layout.databasePath, input.activeWorktreeIds);
+  const diagnostics: string[] = [];
+  const vectorCheck = yield* input.embedding
+    .check(input.threadnoteHome, input.layout, input.snapshot.id)
+    .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
+  const symbols =
+    vectorCheck.state === 'ready'
+      ? []
+      : embeddingSymbolSource(input.store, input.layout.databasePath, input.snapshot.id);
+  const repaired = yield* input.embedding
+    .ensure(input.threadnoteHome, input.layout, input.snapshot, symbols, {
+      activeWorktreeIds: input.activeWorktreeIds,
+      onProgress: input.onProgress,
+    })
+    .pipe(
+      Effect.catch(cause =>
+        Effect.succeed({
+          embedded: 0,
+          ready: false,
+          reason: messageOf(cause),
+          reused: 0,
+        } satisfies CodeGraphEmbeddingStatus),
+      ),
+    );
+  if (!repaired.ready) {
+    diagnostics.push(`Vector graph retrieval unavailable: ${repaired.reason ?? 'unknown reason'}`);
+  }
+  return {
+    diagnostics,
+    durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
+    identity: input.identity,
+    materialization: {
+      mode: 'reused-snapshot',
+      stagedFiles: 0,
+      totalFiles: input.totalFiles,
+    },
+    reusedFiles: input.reusedFiles,
+    skippedFiles: input.skippedFiles,
+    snapshot: input.snapshot,
+  } satisfies CodeGraphIndexSummary;
+});
+
+function codeGraphBuildRequestKey(
+  identity: Pick<RepositoryIdentity, 'checkoutId' | 'headCommit' | 'repositoryId' | 'worktreeId'>,
+  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): string {
+  const parserIdentities = languagePacks.cacheIdentities.join('\n');
+  const derivationIdentities = languagePacks.packs.map(packDerivationIdentity).sort(compareCodeUnits).join('\n');
+  return sha256HexSync(
+    [
+      'code-graph-build-request-v1',
+      CODE_GRAPH_EXTRACTOR_SET_VERSION,
+      identity.repositoryId,
+      identity.checkoutId,
+      overlay.dirty ? identity.worktreeId : 'shared-commit',
+      identity.headCommit,
+      overlay.dirty ? (overlay.fingerprint ?? 'dirty-without-fingerprint') : 'clean',
+      'ignore-policy:3',
+      parserIdentities,
+      derivationIdentities,
+    ].join('\n'),
+  );
+}
+
+function sameOverlayState(
+  left: {readonly dirty: boolean; readonly fingerprint?: string},
+  right: {readonly dirty: boolean; readonly fingerprint?: string},
+): boolean {
+  return left.dirty === right.dirty && (!left.dirty || left.fingerprint === right.fingerprint);
 }
 
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
@@ -450,7 +588,22 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
     input.forceGeneration,
   );
   const existing = yield* input.store.readySnapshotById(input.layout.databasePath, snapshotId);
-  if (existing) return {diagnostics: [], snapshot: existing, stagingReusable: false} satisfies CommittedBaseResult;
+  if (existing) {
+    const lease = yield* input.store
+      .acquireSnapshotLease(input.layout.databasePath, existing.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
+      .pipe(Effect.option);
+    if (Option.isSome(lease)) {
+      const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
+        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+      );
+      return {
+        diagnostics: [],
+        leaseToken: Option.some(leaseToken),
+        snapshot: existing,
+        stagingReusable: false,
+      } satisfies CommittedBaseResult;
+    }
+  }
   const building: CodeGraphSnapshot = {
     commit: input.identity.headCommit,
     dirty: false,
@@ -480,6 +633,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   );
   return {
     diagnostics: summary.diagnostics,
+    leaseToken: Option.none(),
     snapshot: summary.snapshot,
     stagingReusable: true,
   } satisfies CommittedBaseResult;
@@ -506,11 +660,8 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly threadnoteHome: string;
 }) {
   const workspace = yield* input.languagePacks.discoverWorkspace(input.inventory.files);
-  const attributePackages = createPackageAttributor(input.inventory.files);
-  const attributeWorkspace = createWorkspaceAttributor(workspace);
-  const attributeResolution = createResolutionAttributor(input.inventory.files);
   const attributeFacts = (facts: readonly CodeGraphFileFacts[]) =>
-    attributeResolution(attributeWorkspace(attributePackages(facts)));
+    deriveCachedCodeGraphFacts(input.inventory.files, workspace, facts);
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
   const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
@@ -527,12 +678,20 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       total: incrementalAssessment.files.length,
       unit: 'files',
     }) ?? Effect.void;
-    incrementalApplied = yield* input.store.replaceStagedModifiedFiles(
-      input.layout.databasePath,
-      input.committedBase!.snapshot.id,
-      incrementalAssessment.files,
-      incrementalAssessment.facts,
-    );
+    incrementalApplied =
+      incrementalAssessment.reuse === 'persisted-base'
+        ? yield* input.store.preparePersistedIncrementalActivation(
+            input.layout.databasePath,
+            input.committedBase!.snapshot.id,
+            incrementalAssessment.files,
+            incrementalAssessment.facts,
+          )
+        : yield* input.store.replaceStagedModifiedFiles(
+            input.layout.databasePath,
+            input.committedBase!.snapshot.id,
+            incrementalAssessment.files,
+            incrementalAssessment.facts,
+          );
     if (incrementalApplied) {
       materializedFiles = incrementalAssessment.files.length;
       for (const diagnostic of [
@@ -570,7 +729,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
           new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
         );
       }
-      const facts = attributeFacts(files.map(file => cached.get(file.path)!));
+      const facts = attributeFacts(
+        files.map(file => input.languagePacks.postprocessFile(file, cached.get(file.path)!)),
+      );
       if (extractionDiagnostics.length < 100) {
         extractionDiagnostics.push(
           ...facts.flatMap(file => file.diagnostics).slice(0, 100 - extractionDiagnostics.length),
@@ -617,29 +778,55 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     snapshotId: ready.id,
     subphase: 'writing-and-checkpointing',
   }) ?? Effect.void;
-  yield* input.store.activateStaged(
-    input.layout.databasePath,
-    input.identity,
-    ready,
-    input.languagePacks.cacheIdentities,
-    input.activatePointer,
+  const activatedReady = yield* withCodeGraphDatabaseWriteLock(
+    input.threadnoteHome,
+    input.identity.checkoutId,
+    Effect.gen(function* () {
+      const activationLease = yield* Effect.acquireRelease(
+        input.store.activateStaged(
+          input.layout.databasePath,
+          input.identity,
+          ready,
+          !ready.dirty
+            ? {
+                fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
+                workspaceFingerprint: workspace.fingerprint,
+              }
+            : undefined,
+          CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+        ),
+        lease =>
+          Option.match(lease, {
+            onNone: () => Effect.void,
+            onSome: token =>
+              input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+          }),
+      );
+      const activated = yield* input.store.readySnapshotById(input.layout.databasePath, ready.id);
+      if (!activated) {
+        return yield* Effect.fail(new Error('Activated code graph snapshot could not be read back from its store.'));
+      }
+      yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
+      if (input.activatePointer) {
+        yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ??
+          Effect.void;
+        // Progress callbacks are user-controlled effects and may yield long enough for
+        // the worktree to change. Revalidate on both sides of pointer promotion so a
+        // mutation observed in this window triggers the bounded retry.
+        yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
+        yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, input.activeWorktreeIds);
+        yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
+        if (Option.isSome(activationLease)) {
+          yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
+        }
+      }
+      if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
+        yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
+      }
+      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'complete'}) ?? Effect.void;
+      return activated;
+    }),
   );
-  const activatedReady = yield* input.store.readySnapshotById(input.layout.databasePath, ready.id);
-  if (!activatedReady) {
-    return yield* Effect.fail(new Error('Activated code graph snapshot could not be read back from its store.'));
-  }
-  yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-  if (input.activatePointer) {
-    yield* input.onProgress?.({phase: 'activating', snapshotId: activatedReady.id, subphase: 'promoting'}) ??
-      Effect.void;
-    // Progress callbacks are user-controlled effects and may yield long enough for
-    // the worktree to change. Revalidate on both sides of pointer promotion so a
-    // mutation observed in this window triggers the bounded retry.
-    yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-    yield* input.store.promote(input.layout.databasePath, input.identity, activatedReady.id, input.activeWorktreeIds);
-    yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-  }
-  yield* input.onProgress?.({phase: 'activating', snapshotId: activatedReady.id, subphase: 'complete'}) ?? Effect.void;
   const embedding = input.ensureVectors
     ? yield* input.embedding
         .ensure(
@@ -673,7 +860,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       ...(input.inventory.dirty
         ? [
             incrementalApplied
-              ? `Dirty overlay reused clean staging for ${materializedFiles.toLocaleString()} modified file(s).`
+              ? incrementalAssessment?.mode === 'eligible' && incrementalAssessment.reuse === 'persisted-base'
+                ? `Dirty overlay reused persisted clean base for ${materializedFiles.toLocaleString()} modified file(s).`
+                : `Dirty overlay reused clean staging for ${materializedFiles.toLocaleString()} modified file(s).`
               : `Dirty overlay used full materialization: ${overlayFallbackDescription(fallbackReason ?? 'staging-unavailable')}.`,
           ]
         : []),
@@ -710,15 +899,28 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     return {mode: 'fallback', reason: 'disabled'} satisfies IncrementalOverlayAssessment;
   }
   if (input.force) return {mode: 'fallback', reason: 'forced-full-rebuild'} satisfies IncrementalOverlayAssessment;
-  if (!input.committedBase?.stagingReusable) {
+  if (!input.committedBase)
     return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
-  }
   if (input.building.extractorSet !== input.committedBase.snapshot.extractorSet) {
     return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayAssessment;
   }
   const committedWorkspace = yield* input.languagePacks.discoverWorkspace(input.inventory.committedFiles);
   if (committedWorkspace.fingerprint !== workspace.fingerprint) {
     return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayAssessment;
+  }
+  let reuse: 'persisted-base' | 'staged-base' = 'staged-base';
+  if (!input.committedBase.stagingReusable) {
+    const receipt = yield* input.store.reusableBaseReceipt(input.layout.databasePath, input.committedBase.snapshot.id);
+    if (
+      !receipt ||
+      receipt.formatVersion !== CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION ||
+      receipt.resolutionSurfaceVersion !== 1 ||
+      receipt.workspaceFingerprint !== committedWorkspace.fingerprint ||
+      receipt.fileSetFingerprint !== reusableBaseFileSetFingerprint(input.inventory.committedFiles)
+    ) {
+      return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
+    }
+    reuse = 'persisted-base';
   }
   const committedByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file]));
   const effectiveByPath = new Map(input.inventory.files.map(file => [file.path, file]));
@@ -758,12 +960,12 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
   const committedFacts = attributeInventoryFacts(
     input.inventory.committedFiles,
     committedWorkspace,
-    committedFiles.map(file => committedCache.get(file.path)!),
+    committedFiles.map(file => input.languagePacks.postprocessFile(file, committedCache.get(file.path)!)),
   );
   const effectiveFacts = attributeInventoryFacts(
     input.inventory.files,
     workspace,
-    modifiedFiles.map(file => effectiveCache.get(file.path)!),
+    modifiedFiles.map(file => input.languagePacks.postprocessFile(file, effectiveCache.get(file.path)!)),
   );
   if (hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts)) {
     return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayAssessment;
@@ -777,15 +979,175 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
   ) {
     return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayAssessment;
   }
-  return {facts: effectiveFacts, files: modifiedFiles, mode: 'eligible'} satisfies IncrementalOverlayAssessment;
+  let reusableFacts = effectiveFacts;
+  if (reuse === 'persisted-base') {
+    const seeds = reusableReexportSeeds(effectiveFacts);
+    if (seeds.length > 0) {
+      const reexports = yield* input.store.reusableReexports(
+        input.layout.databasePath,
+        input.committedBase.snapshot.id,
+        seeds,
+      );
+      if (reexports === undefined) {
+        return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
+      }
+      reusableFacts = enrichPersistedTypeScriptReexports(effectiveFacts, reexports);
+    }
+  }
+  return {facts: reusableFacts, files: modifiedFiles, mode: 'eligible', reuse} satisfies IncrementalOverlayAssessment;
 });
+
+function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
+  const seeds = facts.flatMap(file =>
+    (file.references ?? []).flatMap(reference =>
+      reference.resolutionDomain === 'typescript'
+        ? reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey))
+        : [],
+    ),
+  );
+  return uniqueByKey(seeds, seed => `${seed.path}\0${seed.name}`);
+}
+
+function enrichPersistedTypeScriptReexports(
+  facts: readonly CodeGraphFileFacts[],
+  reexports: readonly CodeGraphReusableReexport[],
+): readonly CodeGraphFileFacts[] {
+  if (reexports.length === 0) return facts;
+  const provenance = new Map<string, CodeGraphReusableReexport[]>();
+  for (const reexport of reexports) {
+    const key = `${reexport.sourcePath}\0${reexport.localName}`;
+    const values = provenance.get(key) ?? [];
+    values.push(reexport);
+    provenance.set(key, values);
+  }
+  return facts.map(file => {
+    if (!file.references) return file;
+    return {
+      ...file,
+      references: file.references.map(reference => enrichPersistedTypeScriptReference(reference, provenance)),
+    };
+  });
+}
+
+function enrichPersistedTypeScriptReference(
+  reference: CodeGraphReference,
+  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
+): CodeGraphReference {
+  if (
+    reference.resolutionDomain !== 'typescript' ||
+    !['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(reference.relation)
+  ) {
+    return reference;
+  }
+  const parsedTargets = uniqueByKey(
+    reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey)),
+    target => `${target.path}\0${target.name}`,
+  );
+  if (!parsedTargets.some(target => provenance.has(`${target.path}\0${target.name}`))) return reference;
+  const targets = uniqueByKey(
+    parsedTargets.flatMap(target => terminalPersistedReexportTargets(target, provenance)),
+    target => `${target.path}\0${target.name}`,
+  );
+  if (targets.length === 0) return reference;
+  const generated = typeScriptLookupTiersForTargets(targets, reference.relation, reference.arity);
+  const nonPathKeys = reference.lookupTiers.map(tier =>
+    tier.filter(key => parseTypeScriptPathNameLookupKey(key).length === 0),
+  );
+  const tierCount = Math.max(generated.length, nonPathKeys.length);
+  return {
+    ...reference,
+    lookupTiers: Array.from({length: tierCount}, (_, index) => [
+      ...(generated[index] ?? []),
+      ...(nonPathKeys[index] ?? []),
+    ]).filter(tier => tier.length > 0),
+  };
+}
+
+function terminalPersistedReexportTargets(
+  target: CodeGraphReusableReexportSeed,
+  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
+  visited: ReadonlySet<string> = new Set(),
+): readonly CodeGraphReusableReexportSeed[] {
+  const key = `${target.path}\0${target.name}`;
+  if (visited.has(key)) return [];
+  const next = provenance.get(key) ?? [];
+  if (next.length === 0) return [target];
+  const nextVisited = new Set(visited);
+  nextVisited.add(key);
+  const terminals = next.flatMap(reexport =>
+    terminalPersistedReexportTargets({name: reexport.importedName, path: reexport.targetPath}, provenance, nextVisited),
+  );
+  return terminals.length > 0 ? terminals : [target];
+}
+
+function typeScriptLookupTiersForTargets(
+  targets: readonly CodeGraphReusableReexportSeed[],
+  relation: CodeGraphRelation,
+  arity?: number,
+): readonly (readonly string[])[] {
+  const perTarget = targets.map(target => {
+    const base = `typescript:path:${encodeURIComponent(target.path)}:name:${encodeURIComponent(target.name)}`;
+    return (relation === 'calls' || relation === 'constructs') && arity !== undefined
+      ? [[`${base}:implementation`], [`${base}:arity:${arity}`], [base]]
+      : [[`${base}:merge-canonical`], [base]];
+  });
+  const tierCount = Math.max(0, ...perTarget.map(tiers => tiers.length));
+  return Array.from({length: tierCount}, (_, index) =>
+    uniqueStrings(perTarget.flatMap(tiers => tiers[index] ?? [])),
+  ).filter(tier => tier.length > 0);
+}
+
+function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
+  const match = /^typescript:path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
+  if (!match) return [];
+  try {
+    return [{name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)}];
+  } catch {
+    return [];
+  }
+}
+
+function uniqueByKey<A>(values: readonly A[], keyOf: (value: A) => string): readonly A[] {
+  const output = new Map<string, A>();
+  for (const value of values) {
+    const key = keyOf(value);
+    if (!output.has(key)) output.set(key, value);
+  }
+  return [...output.values()];
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
+}
+
+export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventoryFile[]): string {
+  return sha256HexSync(
+    `reusable-base-file-set-v1\n${files
+      .map(file => `${file.path}\0${file.language}\0${file.mode}`)
+      .sort(compareCodeUnits)
+      .join('\n')}`,
+  );
+}
 
 function attributeInventoryFacts(
   files: readonly CodeGraphInventoryFile[],
   workspace: CodeGraphWorkspace,
   facts: readonly CodeGraphFileFacts[],
 ): readonly CodeGraphFileFacts[] {
-  return createResolutionAttributor(files)(createWorkspaceAttributor(workspace)(createPackageAttributor(files)(facts)));
+  return deriveCachedCodeGraphFacts(files, workspace, facts);
+}
+
+/**
+ * Rehydrates parser-only cached facts into the current repository derivation.
+ * Resolution must precede workspace scoping because raw parser references can
+ * intentionally defer their lookup tiers until the whole file set is known.
+ */
+export function deriveCachedCodeGraphFacts(
+  files: readonly CodeGraphInventoryFile[],
+  workspace: CodeGraphWorkspace,
+  facts: readonly CodeGraphFileFacts[],
+): readonly CodeGraphFileFacts[] {
+  return createWorkspaceAttributor(workspace)(createResolutionAttributor(files)(createPackageAttributor(files)(facts)));
 }
 
 function hasDynamicAliases(facts: readonly CodeGraphFileFacts[]): boolean {
@@ -812,6 +1174,8 @@ export function hasSameCodeGraphResolutionSurface(
 }
 
 function symbolResolutionSurface(symbol: CodeGraphSymbol): string {
+  // Signature, content, documentation, and spans are replaced with the changed file's facts but do not affect
+  // cross-file endpoint resolution. The current resolver's complete lookup contract is serialized below.
   return JSON.stringify({
     arity: symbol.arity,
     exported: symbol.exported,
@@ -825,7 +1189,6 @@ function symbolResolutionSurface(symbol: CodeGraphSymbol): string {
     qualifiedName: symbol.qualifiedName,
     resolutionDomain: symbol.resolutionDomain,
     resolutionScopeId: symbol.resolutionScopeId,
-    signature: symbol.signature,
   });
 }
 
@@ -863,7 +1226,7 @@ function cacheContentBatch(
   treeSitter: TreeSitterRuntimeShape,
 ) {
   return (files: Parameters<typeof extractRepositoryFileFacts>[0]) =>
-    Effect.forEach(files, file => languagePacks.extractFile(file), {concurrency: 1}).pipe(
+    Effect.forEach(files, file => languagePacks.extractRawFile(file), {concurrency: 1}).pipe(
       Effect.provideService(TreeSitterRuntime, treeSitter),
       Effect.flatMap(facts => {
         const factsByPath = new Map(facts.map(file => [file.path, file]));
@@ -931,9 +1294,11 @@ export function extractorSetIdentity(
     .map(file => `${file.path}\0${file.contentHash}`)
     .sort()
     .join('\n');
-  const activePacks = languagePacks.activeCacheIdentities(files.map(file => file.path)).join('\n');
+  const paths = files.map(file => file.path);
+  const activeParsers = languagePacks.activeCacheIdentities(paths).join('\n');
+  const activeDerivations = languagePacks.activeDerivationIdentities(paths).join('\n');
   return sha256HexSync(
-    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-language-packs:\n${activePacks}\nignore-policy:3\nresolution-context:\n${context}`,
+    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-parser-packs:\n${activeParsers}\nactive-derivations:\n${activeDerivations}\nignore-policy:3\nresolution-context:\n${context}`,
   );
 }
 
@@ -983,6 +1348,7 @@ const CODE_GRAPH_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: Number.POSITIVE_INFINITY,
 } as const;
 
+const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
 const FACT_MATERIALIZATION_BATCH_FILES = 128;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
 

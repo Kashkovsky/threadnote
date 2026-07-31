@@ -6,6 +6,9 @@ import {
   graphFocusTarget,
   graphNodeSizeValues,
   graphRepositoryOptionLabel,
+  graphStatusPollDelay,
+  graphStatusRequiresCatalogRefresh,
+  graphWaiterCountForBuild,
   graphWithNodeNeighborhood,
   resolveGraphSelection,
   type GraphEdge,
@@ -13,6 +16,45 @@ import {
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
+  it('polls active graph builds within the two-second Manager freshness contract', () => {
+    expect(graphStatusPollDelay([])).toBe(15_000);
+    expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
+    expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
+    expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(15_000);
+  });
+
+  it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {
+    const catalog = {
+      builds: [],
+      diagnostics: [],
+      repositories: [repositoryGroup('repository', ['known-snapshot'], 'known-snapshot')],
+      waiterCount: 0,
+      waiters: [],
+    };
+    expect(
+      graphStatusRequiresCatalogRefresh(catalog, [
+        {...graphBuildStatus('completed'), result: {snapshotId: 'new-snapshot'}},
+      ]),
+    ).toBe(true);
+    expect(
+      graphStatusRequiresCatalogRefresh(catalog, [
+        {...graphBuildStatus('completed'), result: {snapshotId: 'snapshot-known-snapshot'}},
+      ]),
+    ).toBe(false);
+
+    const owner = {...graphBuildStatus('running'), request: {key: 'request-a'}};
+    const matching = {...graphBuildStatus('queued'), buildId: 'waiter-a', request: {key: 'request-a'}};
+    const otherCheckout = {
+      ...graphBuildStatus('queued'),
+      buildId: 'waiter-b',
+      identity: {...graphBuildStatus('queued').identity, checkoutId: 'other-checkout'},
+      request: {key: 'request-a'},
+    };
+    const otherRequest = {...graphBuildStatus('queued'), buildId: 'waiter-c', request: {key: 'request-b'}};
+    expect(graphWaiterCountForBuild(owner, [matching, otherCheckout, otherRequest])).toBe(1);
+    expect(graphWaiterCountForBuild(graphBuildStatus('running'), [matching])).toBe(0);
+  });
+
   it('keeps a selected indexed view across refresh and falls back deterministically after removal', () => {
     const groups: readonly GraphRepositoryGroup[] = [repositoryGroup('repo-a', ['view-new', 'view-old'], 'view-new')];
     expect(resolveGraphSelection(groups, 'repo-a', 'view-old')).toEqual({
@@ -223,6 +265,13 @@ describe('manager graph focus', () => {
       ],
       projectId: 'package:threadnote',
       repository: {
+        accounting: {
+          attributedSymbols: 12_000,
+          componentSymbols: 12_000,
+          fallbackSymbols: 0,
+          omittedSymbols: 0,
+          totalSymbols: 12_000,
+        },
         checkoutId: 'repository',
         displayName: 'threadnote',
         id: 'repository',
@@ -238,6 +287,7 @@ describe('manager graph focus', () => {
           symbolCount: 12_000,
         },
         worktreeId: 'worktree',
+        workspaces: [],
       },
       stats: {
         renderedEdges: 1,
@@ -281,6 +331,13 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
     id,
     repositoryId: id,
     views: viewIds.map(viewId => ({
+      accounting: {
+        attributedSymbols: 0,
+        componentSymbols: 0,
+        fallbackSymbols: 0,
+        omittedSymbols: 0,
+        totalSymbols: 0,
+      },
       checkoutId: viewId,
       displayName: id,
       id: viewId,
@@ -296,7 +353,30 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
         symbolCount: 0,
       },
       worktreeId: viewId,
+      workspaces: [],
     })),
+  };
+}
+
+function graphBuildStatus(state: 'completed' | 'failed' | 'queued' | 'running') {
+  const timestamp = '2026-07-31T12:00:00.000Z';
+  return {
+    buildId: `build-${state}`,
+    counters: {},
+    identity: {
+      checkoutId: 'checkout',
+      commit: 'abcdef01',
+      repositoryId: 'repository',
+      worktreeId: 'worktree',
+    },
+    observation: {
+      heartbeatAgeMilliseconds: 0,
+      liveness: state === 'completed' ? ('completed' as const) : ('active' as const),
+    },
+    owner: {processId: 42},
+    phase: state === 'queued' ? 'waiting' : 'scanning',
+    state,
+    timestamps: {heartbeatAt: timestamp, lastProgressAt: timestamp, startedAt: timestamp},
   };
 }
 

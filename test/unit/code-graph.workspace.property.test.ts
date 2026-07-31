@@ -5,8 +5,12 @@ import type {
   CodeGraphWorkspaceDependency,
   CodeGraphWorkspaceProject,
 } from '../../src/code_graph/languages/types.js';
-import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
-import {discoverManifestWorkspace, mergeCodeGraphWorkspaces} from '../../src/code_graph/workspace.js';
+import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import {
+  createWorkspaceAttributor,
+  discoverManifestWorkspace,
+  mergeCodeGraphWorkspaces,
+} from '../../src/code_graph/workspace.js';
 
 const files = [
   workspaceFile(
@@ -82,6 +86,7 @@ const sharedProjectArbitrary = FC.record({
     'gradle',
     'inferred',
     'maven',
+    'node',
     'swiftpm',
     'xcode',
   ),
@@ -124,6 +129,101 @@ describe('code graph workspace properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
+  it('discovers npm, Bun, pnpm, and TypeScript-reference package hierarchy without hiding nested polyglot workspaces', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile(
+        'package.json',
+        JSON.stringify({
+          name: 'threadnote-root',
+          packageManager: 'bun@1.3.0',
+          workspaces: ['packages/*', 'apps/*'],
+        }),
+        'npm-manifest',
+      ),
+      workspaceFile('pnpm-workspace.yaml', "packages:\n  - 'tools/*'\n", 'pnpm-workspace'),
+      workspaceFile(
+        'tsconfig.json',
+        `{
+          // TypeScript project references are JSONC in real monorepos.
+          "references": [
+            {"path": "./packages/core",},
+            {"path": "./apps/web",},
+          ],
+        }`,
+        'typescript-config',
+      ),
+      workspaceFile('src/index.ts', 'export const root = true', 'typescript'),
+      workspaceFile('packages/core/package.json', JSON.stringify({name: '@acme/core'}), 'npm-manifest'),
+      workspaceFile('packages/core/src/index.ts', 'export const core = true', 'typescript'),
+      workspaceFile(
+        'apps/web/package.json',
+        JSON.stringify({dependencies: {'@acme/core': 'workspace:*'}, name: '@acme/web'}),
+        'npm-manifest',
+      ),
+      workspaceFile('apps/web/src/index.ts', 'export const web = true', 'typescript'),
+      workspaceFile('tools/release/package.json', JSON.stringify({name: '@acme/release'}), 'npm-manifest'),
+      workspaceFile('tools/release/src/index.ts', 'export const release = true', 'typescript'),
+      workspaceFile('apps/web/settings.gradle.kts', 'rootProject.name = "mobile"'),
+      workspaceFile('apps/web/src/main/kotlin/App.kt', 'class App', 'kotlin'),
+    ]);
+    const nodeProjects = workspace.projects.filter(project => project.buildSystem === 'node');
+    const root = nodeProjects.find(project => project.root === '')!;
+    const core = nodeProjects.find(project => project.root === 'packages/core')!;
+    const web = nodeProjects.find(project => project.root === 'apps/web')!;
+    const release = nodeProjects.find(project => project.root === 'tools/release')!;
+
+    expect(nodeProjects.map(project => project.name)).toEqual([
+      'threadnote-root',
+      '@acme/web',
+      '@acme/core',
+      '@acme/release',
+    ]);
+    expect(new Set([root.workspaceId, core.workspaceId, web.workspaceId, release.workspaceId]).size).toBe(1);
+    expect(root.dependencies).toEqual(expect.arrayContaining([core.id, web.id]));
+    expect(web.dependencies).toContain(core.id);
+    expect(workspace.projects).toContainEqual(expect.objectContaining({buildSystem: 'gradle', root: 'apps/web'}));
+
+    const attributed = createWorkspaceAttributor(workspace)([
+      facts('src/index.ts', [workspaceSymbol('root-ts', 'src/index.ts', 'root', 'typescript', 'typescript')]),
+      facts('apps/web/src/index.ts', [
+        workspaceSymbol('web-ts', 'apps/web/src/index.ts', 'web', 'typescript', 'typescript'),
+      ]),
+      facts('apps/web/src/main/kotlin/App.kt', [
+        workspaceSymbol('web-jvm', 'apps/web/src/main/kotlin/App.kt', 'App', 'jvm', 'kotlin'),
+      ]),
+    ]);
+    const attributedSymbols = attributed.flatMap(file => file.symbols);
+    expect(attributedSymbols.find(symbol => symbol.id === 'root-ts')?.resolutionScopeId).toBe(root.id);
+    expect(attributedSymbols.find(symbol => symbol.id === 'web-ts')?.resolutionScopeId).toBe(web.id);
+    expect(attributedSymbols.find(symbol => symbol.id === 'web-jvm')?.resolutionScopeId).toBe(
+      workspace.projects.find(project => project.buildSystem === 'gradle' && project.root === 'apps/web')?.id,
+    );
+  });
+
+  it('uses a pnpm workspace without a root package and never lets a later positive override an exclusion', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile(
+        'pnpm-workspace.yaml',
+        "packages:\n  - 'packages/*'\n  - '!packages/private-*'\n  - 'packages/private-tools'\n",
+        'pnpm-workspace',
+      ),
+      workspaceFile('packages/core/package.json', JSON.stringify({name: '@acme/core'}), 'npm-manifest'),
+      workspaceFile('packages/core/src/index.ts', 'export const core = true', 'typescript'),
+      workspaceFile(
+        'packages/private-tools/package.json',
+        JSON.stringify({name: '@acme/private-tools'}),
+        'npm-manifest',
+      ),
+      workspaceFile('packages/private-tools/src/index.ts', 'export const internal = true', 'typescript'),
+    ]);
+    const core = workspace.projects.find(project => project.name === '@acme/core')!;
+    const privateTools = workspace.projects.find(project => project.name === '@acme/private-tools')!;
+
+    expect(core.workspaceRoots).toEqual(['']);
+    expect(privateTools.workspaceRoots).toEqual(['packages/private-tools']);
+    expect(core.workspaceId).not.toBe(privateTools.workspaceId);
+  });
+
   it.prop(
     'merges duplicate detector projects commutatively, associatively, and idempotently',
     {fragments: FC.array(workspaceFragmentArbitrary, {maxLength: 8, minLength: 2})},
@@ -154,5 +254,31 @@ function workspaceFile(path: string, content: string, language = 'text'): CodeGr
     path,
     size: new TextEncoder().encode(content).byteLength,
     source: 'commit',
+  };
+}
+
+function facts(path: string, symbols: readonly CodeGraphSymbol[]): CodeGraphFileFacts {
+  return {diagnostics: [], edges: [], path, symbols};
+}
+
+function workspaceSymbol(
+  id: string,
+  path: string,
+  name: string,
+  resolutionDomain: string,
+  language: string,
+): CodeGraphSymbol {
+  return {
+    contentHash: `hash:${path}`,
+    exported: true,
+    id,
+    kind: 'function',
+    language,
+    lookupKeys: [`${resolutionDomain}:path:${path}:name:${name}`],
+    name,
+    path,
+    qualifiedName: name,
+    resolutionDomain,
+    span: {column: 1, endColumn: 1, endLine: 1, line: 1},
   };
 }

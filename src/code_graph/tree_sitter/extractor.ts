@@ -44,6 +44,11 @@ export interface TreeSitterReferenceInput {
   readonly targetName: string;
 }
 
+export const TREE_SITTER_EXTRACTOR_POLICY_VERSION =
+  'tree-sitter-extractor-v3-unified-source-spans-unique-symbol-identities';
+
+type NodeSpan = (node: Node) => CodeGraphSpan;
+
 export interface TreeSitterLanguageDefinition {
   readonly asset: VerifiedLanguageAsset;
   readonly declarationQuery: string;
@@ -91,6 +96,7 @@ export function extractTreeSitterFacts(
     const runtime = yield* TreeSitterRuntime;
     return yield* runtime
       .withParsedSource(definition.asset, file.content!, parsed => {
+        const spanForNode = createNodeSpan(file.content!);
         const queries = [
           new Query(parsed.language, definition.metadataQuery),
           new Query(parsed.language, definition.declarationQuery),
@@ -104,6 +110,7 @@ export function extractTreeSitterFacts(
             file,
             metadata,
             declarationMatches(definition, queries[1].matches(parsed.root)),
+            spanForNode,
           );
           const owners = createDeclarationOwnerIndex(declarations);
           const symbols = [moduleSymbol, ...declarations.map(declaration => declaration.symbol)];
@@ -111,7 +118,7 @@ export function extractTreeSitterFacts(
           const references: CodeGraphReference[] = [];
           for (const declaration of declarations) {
             const parent = owners.find(declaration.node, declaration.symbol.id)?.symbol ?? moduleSymbol;
-            edges.push(resolvedEdge(parent, declaration.symbol, 'contains', declaration.node, file.path));
+            edges.push(resolvedEdge(parent, declaration.symbol, 'contains', declaration.node, file.path, spanForNode));
           }
           for (const match of queries[2].matches(parsed.root)) {
             const capture = match.captures.find(candidate => candidate.name.startsWith('reference.'));
@@ -131,7 +138,7 @@ export function extractTreeSitterFacts(
               targetName,
             };
             if (definition.ignoreReference?.(input) === true) continue;
-            const edge = unresolvedEdge(owner, targetName, relation, capture.node, file.path);
+            const edge = unresolvedEdge(owner, targetName, relation, capture.node, file.path, spanForNode, arity);
             edges.push(edge);
             references.push({
               arity: Option.getOrUndefined(arity),
@@ -211,9 +218,11 @@ function materializeDeclarations(
   file: CodeGraphInventoryFile,
   metadata: TreeSitterMetadata,
   declarations: readonly Declaration[],
+  spanForNode: NodeSpan,
 ): readonly MaterializedDeclaration[] {
   const output: MaterializedDeclaration[] = [];
   const open: MaterializedDeclaration[] = [];
+  const identityOccurrences = new Map<string, number>();
   for (const declaration of declarations) {
     while (open.length > 0 && !containsNode(open.at(-1)!.node, declaration.node)) {
       open.pop();
@@ -240,12 +249,22 @@ function materializeDeclarations(
       declaration.kind === 'subscript'
         ? `${Option.getOrElse(arity, () => -1)}:${sha256HexSync(signature).slice(0, 12)}`
         : '';
+    const identityKey = `${declaration.kind}\0${qualifiedName}\0${discriminator}`;
+    const occurrence = identityOccurrences.get(identityKey) ?? 0;
+    identityOccurrences.set(identityKey, occurrence + 1);
     const symbol: CodeGraphSymbol = {
       arity: Option.getOrUndefined(arity),
       contentHash: file.contentHash,
       documentation: leadingDocumentation(declaration.node),
       exported: definition.exported(declaration.node),
-      id: treeSitterSymbolId(file.path, file.language, declaration.kind, qualifiedName, discriminator),
+      id: allocatedTreeSitterSymbolId(
+        file.path,
+        file.language,
+        declaration.kind,
+        qualifiedName,
+        discriminator,
+        occurrence,
+      ),
       kind: declaration.kind,
       language: file.language,
       lookupKeys,
@@ -255,7 +274,7 @@ function materializeDeclarations(
       qualifiedName,
       resolutionDomain: definition.resolutionDomain,
       signature: signature || undefined,
-      span: nodeSpan(declaration.node),
+      span: spanForNode(declaration.node),
     };
     const materialized = {...declaration, symbol};
     output.push(materialized);
@@ -417,6 +436,12 @@ function referenceArity(node: Node): Option.Option<number> {
           : current;
       return Option.some(argumentsNode?.namedChildren.length ?? 0);
     }
+    if (/^(?:call_expression|method_invocation|object_creation_expression)$/.test(current.type)) {
+      const argumentsNode = findFirstDescendant(current, candidate =>
+        /^(?:argument_list|value_arguments)$/.test(candidate.type),
+      );
+      if (argumentsNode) return Option.some(argumentsNode.namedChildren.length);
+    }
     if (/declaration$/.test(current.type)) break;
   }
   return Option.none();
@@ -438,12 +463,13 @@ function resolvedEdge(
   relation: CodeGraphRelation,
   evidence: Node,
   path: string,
+  spanForNode: NodeSpan,
 ): CodeGraphEdge {
   const provenance: CodeGraphProvenance = 'syntactic';
   return {
     confidence: 0.75,
     evidencePath: path,
-    evidenceSpan: nodeSpan(evidence),
+    evidenceSpan: spanForNode(evidence),
     id: treeSitterEdgeId(source.id, source.name, relation, target.id, target.name, provenance, path),
     provenance,
     relation,
@@ -460,13 +486,24 @@ function unresolvedEdge(
   relation: CodeGraphRelation,
   evidence: Node,
   path: string,
+  spanForNode: NodeSpan,
+  arity: Option.Option<number>,
 ): CodeGraphEdge {
   const provenance: CodeGraphProvenance = 'syntactic';
   return {
     confidence: 0.75,
     evidencePath: path,
-    evidenceSpan: nodeSpan(evidence),
-    id: treeSitterEdgeId(source.id, source.name, relation, undefined, targetName, provenance, path),
+    evidenceSpan: spanForNode(evidence),
+    id: treeSitterEdgeId(
+      source.id,
+      source.name,
+      relation,
+      undefined,
+      targetName,
+      provenance,
+      path,
+      Option.isSome(arity) ? `arity:${arity.value}` : undefined,
+    ),
     provenance,
     relation,
     sourceId: source.id,
@@ -508,12 +545,33 @@ function leadingDocumentation(node: Node): string | undefined {
   return documentation ? documentation.slice(0, 1_024) : undefined;
 }
 
-function nodeSpan(node: Node): CodeGraphSpan {
-  return {
-    column: node.startPosition.column + 1,
-    endColumn: node.endPosition.column + 1,
-    endLine: node.endPosition.row + 1,
-    line: node.startPosition.row + 1,
+function createNodeSpan(content: string): NodeSpan {
+  const lineStarts = [0];
+  for (let cursor = 0; cursor < content.length; cursor += 1) {
+    const character = content[cursor];
+    if (character === '\r') {
+      if (content[cursor + 1] === '\n') cursor += 1;
+      lineStarts.push(cursor + 1);
+    } else if (character === '\n' || character === '\u2028' || character === '\u2029') {
+      lineStarts.push(cursor + 1);
+    }
+  }
+  const positionAt = (rawOffset: number): {readonly column: number; readonly line: number} => {
+    const offset = Math.max(0, Math.min(content.length, rawOffset));
+    let lower = 0;
+    let upper = lineStarts.length;
+    while (lower < upper) {
+      const middle = lower + Math.floor((upper - lower) / 2);
+      if (lineStarts[middle]! <= offset) lower = middle + 1;
+      else upper = middle;
+    }
+    const lineIndex = Math.max(0, lower - 1);
+    return {column: offset - lineStarts[lineIndex]! + 1, line: lineIndex + 1};
+  };
+  return node => {
+    const from = positionAt(node.startIndex);
+    const to = positionAt(node.endIndex);
+    return {column: from.column, endColumn: to.column, endLine: to.line, line: from.line};
   };
 }
 
@@ -530,6 +588,20 @@ function treeSitterSymbolId(
   )}`;
 }
 
+function allocatedTreeSitterSymbolId(
+  path: string,
+  language: string,
+  kind: string,
+  qualifiedName: string,
+  discriminator: string,
+  occurrence: number,
+): string {
+  if (occurrence === 0) return treeSitterSymbolId(path, language, kind, qualifiedName, discriminator);
+  return `cgs_${sha256HexSync(
+    `symbol-v3\n${path}\n${language}\n${kind}\n${qualifiedName}\n${discriminator}\noccurrence:${occurrence}`,
+  ).slice(0, 32)}`;
+}
+
 function treeSitterEdgeId(
   sourceId: string | undefined,
   sourceName: string,
@@ -538,9 +610,12 @@ function treeSitterEdgeId(
   targetName: string,
   provenance: string,
   path: string,
+  discriminator?: string,
 ): string {
   return `cge_${sha256HexSync(
-    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}`,
+    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}${
+      discriminator === undefined ? '' : `\n${discriminator}`
+    }`,
   ).slice(0, 32)}`;
 }
 

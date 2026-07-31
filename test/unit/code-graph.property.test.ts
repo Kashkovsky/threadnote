@@ -73,11 +73,14 @@ const boundedNeighborCaseArbitrary = FC.record({
 });
 
 const layout: CodeGraphLayout = {
+  checkoutId: 'property-checkout',
+  databaseWriteLockPath: '/property/database-write.lock',
   databasePath: '/property/graph.sqlite',
   lockPath: '/property/graph.lock',
   repositoryRoot: '/property',
   staleMarkerPath: '/property/stale',
   vectorRoot: '/property/vectors',
+  worktreeLockRoot: '/property/worktree-locks',
   worktreeId: 'property-worktree',
 };
 

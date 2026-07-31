@@ -23,12 +23,16 @@ import {
 } from './local-model-runtime.js';
 import type {LlamaCppDiagnostics} from './llama-cpp-engine.js';
 import {SystemInfo, type SystemInfoShape} from '../system.js';
+import {withThreadnoteProcessActivity} from '../../process_diagnostics.js';
 
 export const LOCAL_MODEL_WORKER_ARGUMENT = '--threadnote-local-model-worker';
 
 const DEFAULT_REQUEST_DEADLINE_MS = 120_000;
 const DEFAULT_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES = 32 * 1024;
+export const DEFAULT_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS = 5 * 60_000;
+export const LOCAL_MODEL_WORKER_IDLE_TIMEOUT_ENV = 'THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS';
+const LOCAL_MODEL_PROCESS_ACTIVITY_IDLE_DELAY_MS = 250;
 const WORKER_SHUTDOWN_DEADLINE_MS = 1_000;
 const EMBEDDING_BATCH_SIZE = 32;
 const PROTOCOL_VERSION = 1;
@@ -92,6 +96,8 @@ export type LocalModelWorkerSpawner = (
 ) => LocalModelWorkerProcess | Promise<LocalModelWorkerProcess>;
 
 export interface IsolatedLocalModelRuntimeOptions {
+  /** Milliseconds to keep an unused native worker resident. Set to 0 to disable idle eviction. */
+  readonly idleTimeoutMs?: number;
   readonly maxStderrBytes?: number;
   readonly responseLimitBytes?: number;
   readonly requestDeadlineMs?: number;
@@ -262,10 +268,17 @@ export async function serveWorker(runtime: LocalModelRuntimeShape, io: LocalMode
 }
 
 class LocalModelWorkerPool {
+  private activeRequests = 0;
+  private closed = false;
   private connection = Option.none<LocalModelWorkerConnection>();
   private readonly deadlineMs: number;
+  private evictingConnection: Promise<void> | undefined;
+  private idleGeneration = 0;
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly idleTimeoutMs: number;
   private readonly maxStderrBytes: number;
   private readonly responseLimitBytes: number;
+  private spawningConnection: Promise<LocalModelWorkerConnection> | undefined;
   private readonly spawnWorker: LocalModelWorkerSpawner;
   private sequence = 0;
 
@@ -274,12 +287,26 @@ class LocalModelWorkerPool {
     options: IsolatedLocalModelRuntimeOptions,
   ) {
     this.deadlineMs = positiveInteger(options.requestDeadlineMs, DEFAULT_REQUEST_DEADLINE_MS);
+    this.idleTimeoutMs = nonNegativeInteger(
+      options.idleTimeoutMs ?? parseInteger(system.environment()[LOCAL_MODEL_WORKER_IDLE_TIMEOUT_ENV]),
+      DEFAULT_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS,
+    );
     this.maxStderrBytes = positiveInteger(options.maxStderrBytes, DEFAULT_STDERR_LIMIT_BYTES);
     this.responseLimitBytes = positiveInteger(options.responseLimitBytes, DEFAULT_RESPONSE_LIMIT_BYTES);
     this.spawnWorker = options.spawnWorker ?? spawnBunWorker;
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    this.cancelIdleEviction();
+    await this.evictingConnection?.catch(() => undefined);
+    const spawning = this.spawningConnection;
+    if (spawning) {
+      const connection = await spawning.catch(() => undefined);
+      if (connection && (Option.isNone(this.connection) || this.connection.value !== connection)) {
+        await connection.close();
+      }
+    }
     if (Option.isNone(this.connection)) return;
     const connection = this.connection.value;
     this.connection = Option.none();
@@ -287,38 +314,67 @@ class LocalModelWorkerPool {
   }
 
   async request(operation: WorkerOperation, payload: unknown, signal: AbortSignal): Promise<WorkerResponse> {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      let connection = Option.none<LocalModelWorkerConnection>();
-      try {
-        const activeConnection = await this.activeConnection(operation);
-        connection = Option.some(activeConnection);
-        const id = `${this.system.processId}-${++this.sequence}`;
-        return await activeConnection.request(
-          {
-            id,
-            operation,
-            payload,
-            protocol: PROTOCOL_VERSION,
-          },
-          this.deadlineMs,
-          signal,
-        );
-      } catch (cause: unknown) {
-        if (Option.isSome(connection)) await this.discard(connection.value);
-        if (!(cause instanceof LocalModelWorkerTransportError) || attempt === 1 || signal.aborted) throw cause;
+    if (this.closed) throw transportError(operation, 'exit');
+    this.activeRequests += 1;
+    this.cancelIdleEviction();
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let connection = Option.none<LocalModelWorkerConnection>();
+        try {
+          const activeConnection = await this.activeConnection(operation);
+          connection = Option.some(activeConnection);
+          const id = `${this.system.processId}-${++this.sequence}`;
+          return await activeConnection.request(
+            {
+              id,
+              operation,
+              payload,
+              protocol: PROTOCOL_VERSION,
+            },
+            this.deadlineMs,
+            signal,
+          );
+        } catch (cause: unknown) {
+          if (Option.isSome(connection)) await this.discard(connection.value);
+          if (!(cause instanceof LocalModelWorkerTransportError) || attempt === 1 || signal.aborted) throw cause;
+        }
       }
+      throw transportError(operation, 'exit');
+    } finally {
+      this.activeRequests -= 1;
+      this.scheduleIdleEviction();
     }
-    throw transportError(operation, 'exit');
   }
 
   private async activeConnection(operation: WorkerOperation): Promise<LocalModelWorkerConnection> {
+    if (this.closed) throw transportError(operation, 'exit');
     if (Option.isSome(this.connection) && !this.connection.value.isClosed) return this.connection.value;
+    const eviction = this.evictingConnection;
+    if (eviction) await eviction.catch(() => undefined);
+    if (this.closed) throw transportError(operation, 'exit');
+    if (Option.isSome(this.connection) && !this.connection.value.isClosed) return this.connection.value;
+    if (this.spawningConnection) return this.spawningConnection;
+    const spawning = this.spawnConnection(operation);
+    this.spawningConnection = spawning;
+    try {
+      return await spawning;
+    } finally {
+      if (this.spawningConnection === spawning) this.spawningConnection = undefined;
+    }
+  }
+
+  private async spawnConnection(operation: WorkerOperation): Promise<LocalModelWorkerConnection> {
     try {
       const process = await this.spawnWorker(workerSpawnOptions(this.system));
       const connection = new LocalModelWorkerConnection(process, this.maxStderrBytes, this.responseLimitBytes);
+      if (this.closed) {
+        await connection.close();
+        throw transportError(operation, 'exit');
+      }
       this.connection = Option.some(connection);
       return connection;
-    } catch {
+    } catch (cause: unknown) {
+      if (cause instanceof LocalModelWorkerTransportError) throw cause;
       throw transportError(operation, 'spawn');
     }
   }
@@ -326,6 +382,40 @@ class LocalModelWorkerPool {
   private async discard(connection: LocalModelWorkerConnection): Promise<void> {
     if (Option.isSome(this.connection) && this.connection.value === connection) this.connection = Option.none();
     await connection.close();
+  }
+
+  private cancelIdleEviction(): void {
+    this.idleGeneration += 1;
+    if (this.idleTimer !== undefined) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+  }
+
+  private scheduleIdleEviction(): void {
+    if (this.closed || this.idleTimeoutMs === 0 || this.activeRequests !== 0 || Option.isNone(this.connection)) {
+      return;
+    }
+    const connection = this.connection.value;
+    const generation = ++this.idleGeneration;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (
+        this.closed ||
+        this.activeRequests !== 0 ||
+        generation !== this.idleGeneration ||
+        Option.isNone(this.connection) ||
+        this.connection.value !== connection
+      ) {
+        return;
+      }
+      this.connection = Option.none();
+      const eviction = connection.close();
+      this.evictingConnection = eviction;
+      const clearEviction = () => {
+        if (this.evictingConnection === eviction) this.evictingConnection = undefined;
+      };
+      void eviction.then(clearEviction, clearEviction);
+    }, this.idleTimeoutMs);
+    this.idleTimer.unref?.();
   }
 }
 
@@ -567,7 +657,12 @@ function developmentStandaloneScript(system: SystemInfoShape): Option.Option<str
 async function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Promise<WorkerResponse> {
   const request = decodeWorkerRequest(line);
   if (Option.isNone(request)) return protocolFailure('invalid');
-  const effect = dispatchWorkerRequest(runtime, request.value);
+  const effect = withThreadnoteProcessActivity(
+    'local-model-worker',
+    workerOperationLabel(request.value.operation),
+    dispatchWorkerRequest(runtime, request.value),
+    {idleTransitionDelayMilliseconds: LOCAL_MODEL_PROCESS_ACTIVITY_IDLE_DELAY_MS},
+  );
   const exit = await Effect.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) {
     return {
@@ -586,6 +681,10 @@ async function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): 
     ok: false,
     protocol: PROTOCOL_VERSION,
   };
+}
+
+function workerOperationLabel(operation: WorkerOperation): string {
+  return operation === 'embedMany' ? 'embed-many' : operation;
 }
 
 function dispatchWorkerRequest(
@@ -993,6 +1092,16 @@ function genericWorkerCause(reason: WorkerFailureReason): Error {
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function parseInteger(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function completesBeforeDeadline(promise: Promise<unknown>, deadlineMs: number): Promise<boolean> {

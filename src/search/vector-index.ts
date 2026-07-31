@@ -1,7 +1,7 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Clock, Crypto, Effect, FileSystem, Path, Result, Schema} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Result, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {LocalModelRuntime, type LocalModelRuntimeShape} from '../effect/ai/local-model-runtime.js';
+import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
@@ -85,6 +85,15 @@ export class VectorIndexCorrupt extends Schema.TaggedErrorClass<VectorIndexCorru
   modelId: Schema.String,
 }) {}
 
+export class VectorCorpusGenerationChanged extends Schema.TaggedErrorClass<VectorCorpusGenerationChanged>()(
+  'VectorCorpusGenerationChanged',
+  {
+    message: Schema.String,
+    modelId: Schema.String,
+    requestedGeneration: Schema.String,
+  },
+) {}
+
 export type VectorIndexProgress =
   | {
       readonly completed: number;
@@ -97,16 +106,62 @@ export type VectorIndexProgress =
       readonly phase: 'activating';
     };
 
-interface VectorIndexBuildOptions {
+interface VectorCorpusGenerationOptions<R> {
   readonly corpusGeneration?: string;
+  readonly currentCorpusGeneration?: () => Effect.Effect<Option.Option<string>, unknown, R>;
+}
+
+interface VectorIndexBuildOptions<R> extends VectorCorpusGenerationOptions<R> {
   readonly onProgress?: (progress: VectorIndexProgress) => Effect.Effect<void, unknown>;
 }
 
-export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
+interface SemanticScoreOptions<R> extends VectorCorpusGenerationOptions<R> {
+  readonly limit?: number;
+}
+
+const verifyCurrentCorpusGeneration = Effect.fn('vectorIndex.verifyCurrentCorpusGeneration')(function* <R = never>(
+  manifest: LocalModelManifest,
+  options: VectorCorpusGenerationOptions<R>,
+) {
+  if (options.currentCorpusGeneration === undefined) return;
+  const requestedGeneration = options.corpusGeneration;
+  if (requestedGeneration === undefined) {
+    return yield* Effect.fail(new Error('A vector corpus-generation fence requires a requested generation.'));
+  }
+  const currentGeneration = yield* options.currentCorpusGeneration();
+  if (Option.isSome(currentGeneration) && currentGeneration.value === requestedGeneration) return;
+  return yield* Effect.fail(
+    new VectorCorpusGenerationChanged({
+      message: 'The lexical recall corpus changed while vector work was in progress.',
+      modelId: manifest.id,
+      requestedGeneration,
+    }),
+  );
+});
+
+const verifySelectedCorpusGeneration = Effect.fn('vectorIndex.verifySelectedCorpusGeneration')(function* <R = never>(
+  active: VectorGenerationRow,
+  manifest: LocalModelManifest,
+  options: VectorCorpusGenerationOptions<R>,
+) {
+  const requestedGeneration = options.corpusGeneration;
+  if (requestedGeneration !== undefined && active.corpus_generation !== requestedGeneration) {
+    return yield* Effect.fail(
+      new VectorCorpusGenerationChanged({
+        message: 'The active vector index no longer matches the requested lexical recall corpus.',
+        modelId: manifest.id,
+        requestedGeneration,
+      }),
+    );
+  }
+  yield* verifyCurrentCorpusGeneration(manifest, options);
+});
+
+export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* <R = never>(
   config: {readonly agentContextHome: string},
   manifest: LocalModelManifest,
   candidates: readonly RecallCandidate[],
-  options: VectorIndexBuildOptions = {},
+  options: VectorIndexBuildOptions<R> = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -115,11 +170,11 @@ export const rebuildVectorIndex = Effect.fn('vectorIndex.rebuild')(function* (
   );
 });
 
-export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* (
+export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* <R = never>(
   config: {readonly agentContextHome: string},
   manifest: LocalModelManifest,
   candidates: readonly RecallCandidate[],
-  options: VectorIndexBuildOptions = {},
+  options: VectorIndexBuildOptions<R> = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -128,6 +183,7 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* (
     Effect.catch(() => Effect.succeed(undefined)),
   );
   if (current) {
+    yield* verifyCurrentCorpusGeneration(manifest, options);
     return current;
   }
   return yield* withVectorIndexLock(fs, path, config.agentContextHome, manifest.id, () =>
@@ -136,6 +192,7 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* (
         Effect.catch(() => Effect.succeed(undefined)),
       );
       if (lockedCurrent) {
+        yield* verifyCurrentCorpusGeneration(manifest, options);
         return lockedCurrent;
       }
       return yield* rebuildVectorIndexUnlocked(config, manifest, candidates, options, chunks);
@@ -152,11 +209,11 @@ export const vectorIndexMatchesGeneration = Effect.fn('vectorIndex.matchesGenera
   return active ? generationMatchesCorpus(active, manifest, corpusGeneration) : false;
 });
 
-const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* (
+const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* <R = never>(
   home: string,
   manifest: LocalModelManifest,
   chunks: readonly RecallChunk[],
-  options: VectorIndexBuildOptions,
+  options: VectorIndexBuildOptions<R>,
 ) {
   const active = yield* readActiveVectorGeneration(home, manifest);
   if (!active) return undefined;
@@ -176,13 +233,14 @@ const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function
   } satisfies VectorIndexStatus;
 });
 
-const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(function* (
+const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(function* <R = never>(
   config: {readonly agentContextHome: string},
   manifest: LocalModelManifest,
   candidates: readonly RecallCandidate[],
-  options: VectorIndexBuildOptions = {},
+  options: VectorIndexBuildOptions<R> = {},
   preparedChunks?: readonly RecallChunk[],
 ) {
+  yield* verifyCurrentCorpusGeneration(manifest, options);
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
     return yield* Effect.fail(new Error(`Model ${manifest.id} is not an embedding model.`));
   }
@@ -205,6 +263,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
     JSON.stringify({
       chunkerVersion: RECALL_CHUNKER_VERSION,
       chunks: chunks.map(chunk => ({fingerprint: chunk.fingerprint, id: chunk.id, uri: chunk.uri})),
+      corpusGeneration: options.corpusGeneration ?? null,
       dimensions: manifest.dimensions,
       modelSha256: manifest.sha256,
       promptPrefix: manifest.promptPrefixes?.document ?? '',
@@ -230,20 +289,6 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
       }
       yield* sql`DELETE FROM vector_generations WHERE state = 'building' AND job_id <> ${jobId}`;
       yield* prepareDesiredChunks(sql, desiredChunks);
-      if (active) {
-        yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
-        return yield* updateActiveVectorGeneration(
-          sql,
-          active,
-          jobId,
-          options.corpusGeneration,
-          manifest,
-          desiredChunks,
-          runtime,
-          installed.path,
-          options,
-        );
-      }
 
       let building: VectorGenerationRow | undefined = yield* selectGenerationByJob(sql, jobId);
       if (building && !generationIsCompatible(building, manifest)) {
@@ -301,7 +346,14 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
           total: 0,
         }) ?? Effect.void;
         yield* options.onProgress?.({chunkCount: reusableChunkCount, phase: 'activating'}) ?? Effect.void;
-        yield* activateVectorGeneration(sql, building.generation, reusableChunkCount);
+        yield* activateVectorGenerationFenced(
+          sql,
+          building.generation,
+          reusableChunkCount,
+          options.corpusGeneration,
+          manifest,
+          options,
+        );
         yield* pruneVectorGenerations(sql, building.generation);
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         return vectorStatus(building, manifest.id, reusableChunkCount, 0, reusableChunkCount);
@@ -336,6 +388,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
             manifest,
             modelPath: installed.path,
           });
+          yield* verifyCurrentCorpusGeneration(manifest, options);
           const rows = batch.map(
             (chunk, index) =>
               [
@@ -365,7 +418,14 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
         );
       }
       yield* options.onProgress?.({chunkCount: finalChunkCount, phase: 'activating'}) ?? Effect.void;
-      yield* activateVectorGeneration(sql, building.generation, finalChunkCount);
+      yield* activateVectorGenerationFenced(
+        sql,
+        building.generation,
+        finalChunkCount,
+        options.corpusGeneration,
+        manifest,
+        options,
+      );
       yield* pruneVectorGenerations(sql, building.generation);
       yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
       return vectorStatus(building, manifest.id, finalChunkCount, embeddedChunkCount, reusableChunkCount);
@@ -375,10 +435,10 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   return status;
 });
 
-export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticScores')(function* (
+export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticScores')(function* <R = never>(
   config: {readonly agentContextHome: string},
   query: string,
-  options: {readonly limit?: number} = {},
+  options: SemanticScoreOptions<R> = {},
 ) {
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = selection.roles.embedding;
@@ -395,57 +455,80 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
   const status = yield* store.status(config.agentContextHome, manifest);
   if (!status.installed) return undefined;
 
-  return yield* useVectorDatabaseReadOnly(
+  const activeBeforeInference = yield* readActiveVectorGeneration(config.agentContextHome, manifest);
+  if (!activeBeforeInference) return undefined;
+  yield* verifySelectedCorpusGeneration(activeBeforeInference, manifest, options);
+  const normalizedQuery =
+    activeBeforeInference.chunk_count === 0
+      ? Option.none<readonly number[]>()
+      : Option.some(
+          normalizeVector(
+            (yield* runtime.embedMany({
+              inputs: [`${manifest.promptPrefixes?.query ?? ''}${query}`],
+              manifest,
+              modelPath: status.path,
+            }))[0]!,
+          ),
+        );
+
+  const scores = yield* useVectorDatabaseReadOnly(
     databasePath,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* validateVectorDatabase(sql);
-      const active = yield* selectActiveGeneration(sql);
-      if (!active || !generationIsCompatible(active, manifest)) return undefined;
-      if (active.chunk_count === 0) return new Map<string, number>();
-      const [queryVector] = yield* runtime.embedMany({
-        inputs: [`${manifest.promptPrefixes?.query ?? ''}${query}`],
-        manifest,
-        modelPath: status.path,
-      });
-      const normalizedQuery = normalizeVector(queryVector!);
-      const limit = Math.min(active.chunk_count, options.limit ?? 500);
-      let cursor = '';
-      let best: readonly SemanticChunkMatch[] = [];
-      for (;;) {
-        const rows = yield* sql.unsafe<VectorRow>(
-          `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
-           FROM vector_chunks AS chunk
-           JOIN vector_values AS value ON value.id = chunk.vector_id
-           WHERE chunk.generation = ? AND chunk.chunk_id > ?
-           ORDER BY chunk.chunk_id
-           LIMIT ?`,
-          [active.generation, cursor, VECTOR_INDEX_PAGE_SIZE],
-        );
-        if (rows.length === 0) break;
-        const pageMatches = yield* Effect.try({
-          try: () => searchEncodedVectorRows(normalizedQuery, rows, active.dimensions, limit),
-          catch: cause =>
-            new VectorIndexCorrupt({
-              message: cause instanceof Error ? cause.message : String(cause),
-              modelId: manifest.id,
-            }),
-        });
-        best = mergeSemanticMatches(best, pageMatches, limit);
-        cursor = rows.at(-1)!.chunk_id;
-        if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
-      }
-      const scores = new Map<string, number>();
-      for (const result of best) {
-        scores.set(result.uri, Math.max(scores.get(result.uri) ?? 0, Math.max(0, result.score)));
-      }
-      return scores;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* validateVectorDatabase(sql);
+          const active = yield* selectActiveGeneration(sql);
+          if (!active || !generationIsCompatible(active, manifest)) return undefined;
+          yield* verifySelectedCorpusGeneration(active, manifest, options);
+          if (active.chunk_count === 0) return new Map<string, number>();
+          if (Option.isNone(normalizedQuery)) {
+            return yield* Effect.fail(new Error('The active vector corpus changed shape during semantic scoring.'));
+          }
+          const limit = Math.min(active.chunk_count, options.limit ?? 500);
+          let cursor = '';
+          let best: readonly SemanticChunkMatch[] = [];
+          for (;;) {
+            const rows = yield* sql.unsafe<VectorRow>(
+              `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
+               FROM vector_chunks AS chunk
+               JOIN vector_values AS value ON value.id = chunk.vector_id
+               WHERE chunk.generation = ? AND chunk.chunk_id > ?
+               ORDER BY chunk.chunk_id
+               LIMIT ?`,
+              [active.generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+            );
+            if (rows.length === 0) break;
+            const pageMatches = yield* Effect.try({
+              try: () => searchEncodedVectorRows(normalizedQuery.value, rows, active.dimensions, limit),
+              catch: cause =>
+                new VectorIndexCorrupt({
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  modelId: manifest.id,
+                }),
+            });
+            best = mergeSemanticMatches(best, pageMatches, limit);
+            cursor = rows.at(-1)!.chunk_id;
+            if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
+          }
+          const scores = new Map<string, number>();
+          for (const result of best) {
+            scores.set(result.uri, Math.max(scores.get(result.uri) ?? 0, Math.max(0, result.score)));
+          }
+          return scores;
+        }),
+      );
     }),
   ).pipe(
     // Effect's generator inference does not retain the tagged error introduced by
     // the paged synchronous scorer, so make the public failure channel explicit.
-    Effect.mapError(error => error as typeof error | VectorIndexCorrupt),
+    Effect.mapError(error => error as typeof error | VectorCorpusGenerationChanged | VectorIndexCorrupt),
   );
+  // The SQLite transaction pins the vector snapshot. Re-check the independently
+  // changing lexical corpus after releasing that read snapshot so a long paged
+  // scan cannot return scores for a corpus that was superseded mid-query.
+  yield* verifyCurrentCorpusGeneration(manifest, options);
+  return scores;
 });
 
 export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
@@ -813,157 +896,6 @@ const prepareDesiredChunks = Effect.fn('vectorIndex.prepareDesiredChunks')(funct
   }
 });
 
-const updateActiveVectorGeneration = Effect.fn('vectorIndex.updateActiveGeneration')(function* (
-  sql: SqlClient.SqlClient,
-  active: VectorGenerationRow,
-  jobId: string,
-  corpusGeneration: string | undefined,
-  manifest: LocalModelManifest,
-  chunks: readonly DesiredVectorChunk[],
-  runtime: LocalModelRuntimeShape,
-  modelPath: string,
-  options: VectorIndexBuildOptions,
-) {
-  const dimensions = manifest.dimensions!;
-  yield* pruneUnreferencedVectorValuesExceptDesired(sql);
-  const missing: DesiredVectorChunk[] = [];
-  for (let pageStart = 0; pageStart < chunks.length; pageStart += VECTOR_INDEX_PAGE_SIZE) {
-    const page = chunks.slice(pageStart, pageStart + VECTOR_INDEX_PAGE_SIZE);
-    const validKeys = yield* selectValidVectorKeys(
-      sql,
-      page.map(chunk => chunk.vectorKey),
-      dimensions,
-    );
-    missing.push(...page.filter(chunk => !validKeys.has(chunk.vectorKey)));
-  }
-  const reusableChunkCount = chunks.length - missing.length;
-
-  let embeddedChunkCount = 0;
-  yield* options.onProgress?.({
-    completed: embeddedChunkCount,
-    phase: 'embedding',
-    reused: reusableChunkCount,
-    total: missing.length,
-  }) ?? Effect.void;
-  for (let start = 0; start < missing.length; start += VECTOR_INDEX_EMBED_BATCH_SIZE) {
-    const batch = missing.slice(start, start + VECTOR_INDEX_EMBED_BATCH_SIZE);
-    const vectors = yield* runtime.embedMany({
-      inputs: batch.map(chunk => `${manifest.promptPrefixes?.document ?? ''}${chunk.content}`),
-      manifest,
-      modelPath,
-    });
-    yield* insertVectorValues(
-      sql,
-      batch.map(
-        (chunk, index) => [chunk.vectorKey, encodeVector(normalizeVector(vectors[index]!), dimensions)] as const,
-      ),
-    );
-    embeddedChunkCount += batch.length;
-    yield* options.onProgress?.({
-      completed: embeddedChunkCount,
-      phase: 'embedding',
-      reused: reusableChunkCount,
-      total: missing.length,
-    }) ?? Effect.void;
-  }
-
-  const available = yield* countDesiredChunksWithVectors(sql);
-  if (available !== chunks.length) {
-    return yield* Effect.fail(
-      new Error(`Vector generation ${active.generation} has ${available}/${chunks.length} reusable values.`),
-    );
-  }
-  yield* options.onProgress?.({chunkCount: chunks.length, phase: 'activating'}) ?? Effect.void;
-  const createdAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-  yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* removeUndesiredVectorRows(sql, active.generation);
-      yield* synchronizeDesiredVectorRows(sql, active.generation);
-      yield* sql`
-        UPDATE vector_generations
-        SET
-          job_id = ${jobId},
-          corpus_generation = ${corpusGeneration ?? null},
-          chunk_count = ${chunks.length},
-          created_at = ${createdAt}
-        WHERE generation = ${active.generation}
-      `;
-    }),
-  );
-  yield* pruneVectorGenerations(sql, active.generation);
-  yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
-  return vectorStatus(
-    {
-      ...active,
-      chunk_count: chunks.length,
-      corpus_generation: corpusGeneration ?? null,
-      created_at: createdAt,
-      job_id: jobId,
-    },
-    manifest.id,
-    chunks.length,
-    embeddedChunkCount,
-    reusableChunkCount,
-  );
-});
-
-const selectValidVectorKeys = Effect.fn('vectorIndex.selectValidVectorKeys')(function* (
-  sql: SqlClient.SqlClient,
-  vectorKeys: readonly string[],
-  dimensions: number,
-) {
-  const uniqueKeys = [...new Set(vectorKeys)];
-  if (uniqueKeys.length === 0) return new Set<string>();
-  const rows = yield* sql.unsafe<{readonly vector: unknown; readonly vector_key: string}>(
-    `SELECT vector_key, vector
-     FROM vector_values
-     WHERE vector_key IN (${uniqueKeys.map(() => '?').join(', ')})`,
-    uniqueKeys,
-  );
-  const valid = new Set<string>();
-  for (const row of rows) {
-    try {
-      validateEncodedVector(row.vector, dimensions);
-      valid.add(row.vector_key);
-    } catch {
-      // A corrupt value is treated as missing and replaced before activation.
-    }
-  }
-  return valid;
-});
-
-const countDesiredChunksWithVectors = Effect.fn('vectorIndex.countDesiredChunksWithVectors')(function* (
-  sql: SqlClient.SqlClient,
-) {
-  const rows = yield* sql.unsafe<{readonly count: number}>(
-    `SELECT COUNT(*) AS count
-     FROM desired_vector_chunks AS desired
-     JOIN vector_values AS value ON value.vector_key = desired.vector_key`,
-  );
-  return Number(rows[0]?.count ?? 0);
-});
-
-const synchronizeDesiredVectorRows = Effect.fn('vectorIndex.synchronizeDesiredRows')(function* (
-  sql: SqlClient.SqlClient,
-  generation: string,
-) {
-  yield* sql.unsafe(
-    `INSERT INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
-     SELECT ?, desired.chunk_id, desired.uri, desired.fingerprint, value.id
-     FROM desired_vector_chunks AS desired
-     JOIN vector_values AS value ON value.vector_key = desired.vector_key
-     WHERE true
-     ON CONFLICT(generation, chunk_id) DO UPDATE SET
-       uri = excluded.uri,
-       fingerprint = excluded.fingerprint,
-       vector_id = excluded.vector_id
-     WHERE vector_chunks.uri <> excluded.uri
-        OR vector_chunks.fingerprint <> excluded.fingerprint
-        OR vector_chunks.vector_id <> excluded.vector_id`,
-    [generation],
-  );
-});
-
 const removeUndesiredVectorRows = Effect.fn('vectorIndex.removeUndesiredRows')(function* (
   sql: SqlClient.SqlClient,
   generation: string,
@@ -1099,24 +1031,6 @@ function insertVectorValues(sql: SqlClient.SqlClient, rows: readonly (readonly [
   });
 }
 
-const pruneUnreferencedVectorValuesExceptDesired = Effect.fn('vectorIndex.pruneUnreferencedValuesExceptDesired')(
-  function* (sql: SqlClient.SqlClient) {
-    yield* sql.unsafe(
-      `DELETE FROM vector_values
-     WHERE NOT EXISTS (
-       SELECT 1
-       FROM vector_chunks
-       WHERE vector_chunks.vector_id = vector_values.id
-     )
-       AND NOT EXISTS (
-         SELECT 1
-         FROM desired_vector_chunks
-         WHERE desired_vector_chunks.vector_key = vector_values.vector_key
-       )`,
-    );
-  },
-);
-
 const pruneUnreferencedVectorValues = Effect.fn('vectorIndex.pruneUnreferencedValues')(function* (
   sql: SqlClient.SqlClient,
 ) {
@@ -1138,18 +1052,29 @@ const countVectorRows = Effect.fn('vectorIndex.countRows')(function* (sql: SqlCl
   return Number(rows[0]?.count ?? 0);
 });
 
-const activateVectorGeneration = Effect.fn('vectorIndex.activateGeneration')(function* (
+const activateVectorGenerationFenced = Effect.fn('vectorIndex.activateGenerationFenced')(function* <R = never>(
   sql: SqlClient.SqlClient,
   generation: string,
   chunkCount: number,
+  corpusGeneration: string | undefined,
+  manifest: LocalModelManifest,
+  options: VectorCorpusGenerationOptions<R>,
 ) {
+  yield* verifyCurrentCorpusGeneration(manifest, options);
   yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* sql`
         UPDATE vector_generations
-        SET state = 'ready', chunk_count = ${chunkCount}
+        SET
+          state = 'ready',
+          chunk_count = ${chunkCount},
+          corpus_generation = ${corpusGeneration ?? null}
         WHERE generation = ${generation}
       `;
+      // Keep the vector write transaction open across the last pre-commit
+      // observation. The post-commit check below handles the remaining
+      // cross-database gap without ever pruning the previous generation first.
+      yield* verifyCurrentCorpusGeneration(manifest, options);
       yield* sql`
         INSERT INTO vector_pointer (singleton, generation)
         VALUES (1, ${generation})
@@ -1157,6 +1082,16 @@ const activateVectorGeneration = Effect.fn('vectorIndex.activateGeneration')(fun
       `;
     }),
   );
+  const postActivationFence = yield* verifyCurrentCorpusGeneration(manifest, options).pipe(Effect.result);
+  if (Result.isFailure(postActivationFence)) {
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql.unsafe('DELETE FROM vector_pointer WHERE singleton = 1 AND generation = ?', [generation]);
+        yield* sql`UPDATE vector_generations SET state = 'building' WHERE generation = ${generation}`;
+      }),
+    );
+    return yield* Effect.fail(postActivationFence.failure);
+  }
 });
 
 const pruneVectorGenerations = Effect.fn('vectorIndex.pruneGenerations')(function* (

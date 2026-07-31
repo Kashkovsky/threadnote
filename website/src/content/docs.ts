@@ -709,6 +709,7 @@ threadnote index status`,
               'Confidence and no-answer gates prevent weak semantic-only results from being presented as answers.',
               'Ranking output explains why each result matched and warns when evidence is lexical-only or untrusted.',
               'The lexical path remains available if local inference is temporarily unavailable.',
+              'Concurrent refreshes are generation-fenced. If the corpus keeps changing during semantic scoring, Threadnote retries with a fresh lexical snapshot and can return lexical-only results instead of mixing generations.',
               'Recall returns pointers, so an agent loads selected records instead of replaying all history.',
             ],
           },
@@ -778,6 +779,30 @@ threadnote index status`,
           {
             type: 'paragraph',
             text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. Use both when a task needs historical rationale and current source evidence.',
+          },
+        ],
+      },
+      {
+        id: 'concurrent-agents',
+        title: 'Concurrent agents and linked worktrees',
+        summary: 'Run several agents against one repository without sharing dirty source state between worktrees.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Threadnote supports Conductor-style orchestrators and other workflows that run multiple agents in linked Git worktrees. Sessions using the same Threadnote home—~/.threadnote by default—share canonical memory, while graph state is scoped more narrowly: each linked worktree has its own dirty overlay and active pointer. One agent can recall the same durable decision without seeing another worktree’s uncommitted source as current-code evidence.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Always pass the absolute callerCwd for the agent’s own worktree so repository, branch, and graph scope are unambiguous.',
+              'Use distinct handoff topics for independent tasks. Reuse a project/topic identity only when the agents intentionally update the same current record.',
+              'Linked worktrees may extract graph facts concurrently; Threadnote serializes the short publication step and prevents a stale waiter from replacing a newer active generation.',
+              'Graph maintenance and parser-cache cleanup wait for active linked-worktree builders before changing shared derived state.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used.',
           },
         ],
       },
@@ -1170,11 +1195,20 @@ threadnote share conflict resolve <id> --take shared`,
             code: `threadnote graph status
 threadnote graph index
 threadnote graph index --full
-threadnote graph watch`,
+threadnote graph watch
+threadnote graph compact --dry-run`,
           },
           {
             type: 'paragraph',
             text: 'Eligible bytes, files, projects, symbols, edges, lexical terms, and vectors are not truncated by repository-size admission caps. Content parsing and SQLite activation run in bounded batches to reduce peak memory, and completed parser batches plus immutable commit snapshots are reusable after interruption. Individual query responses remain intentionally bounded by their node, edge, and result limits.',
+          },
+          {
+            type: 'paragraph',
+            text: 'When an orchestrator runs agents in several linked worktrees, extraction can proceed concurrently. Each worktree keeps an isolated dirty overlay; only the short publication step is serialized. Maintenance waits for active builders before compacting or cleaning shared parser facts.',
+          },
+          {
+            type: 'paragraph',
+            text: 'graph status reports exact active database, WAL, and SHM bytes and, when no build owns the checkout, page count, freelist pages, and reclaimable bytes. Threadnote recommends graph compact once at least 512 MiB and 20% are reclaimable. The explicit command uses zero-wait maintenance/build locks, pre/post verification, and SQLite transactional VACUUM; use --dry-run to preview or --force below the threshold.',
           },
           {
             type: 'paragraph',
@@ -1299,7 +1333,7 @@ threadnote graph export --format svg --output code-graph.svg`,
               'Java and Kotlin share the JVM resolution domain.',
               'Ambiguous and dynamic dependencies remain syntactic instead of becoming false resolved edges.',
               'Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.',
-              'Linked worktrees can share an immutable commit snapshot, but every dirty overlay and active pointer is worktree-scoped.',
+              'Linked worktrees can share an immutable commit snapshot, but every dirty overlay and active pointer is worktree-scoped so concurrent agents cannot leak uncommitted source state across branches.',
               'Independent clones of the same remote keep separate operational stores.',
             ],
           },

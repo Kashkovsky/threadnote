@@ -1,7 +1,7 @@
 import {mkdir, mkdtemp, rm, utimes, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect, Layer} from 'effect';
+import {Effect, Layer, Option} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 const inference = vi.hoisted(() => ({rerank: vi.fn()}));
@@ -18,7 +18,7 @@ import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
-import {loadRecallIndex} from '../../src/recall/index.js';
+import {loadRecallIndex, loadRecallIndexData} from '../../src/recall/index.js';
 import {
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
@@ -63,7 +63,7 @@ describe('recall runtime orchestration', () => {
         query: 'reranker cache anchor',
         readRecords: () => Effect.succeed([]),
         rerankerCache,
-        semanticScores: null,
+        semanticResult: Option.none(),
       });
 
     await Effect.runPromise(
@@ -71,6 +71,51 @@ describe('recall runtime orchestration', () => {
     );
 
     expect(inference.rerank).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops stale semantic scores when the ranked lexical snapshot has advanced', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-recall-semantic-generation-'));
+    homes.push(home);
+    const resource = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'generation.md');
+    await mkdir(join(resource, '..'), {recursive: true});
+    await writeFile(resource, '# Generation one\n\nold semantic ranking anchor');
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'seed-manifest.yaml'),
+      user: 'tester',
+    };
+
+    const first = await Effect.runPromise(
+      loadRecallIndexData(config, {forceRefresh: true, includeInactive: false}).pipe(Effect.provide(ApplicationLayer)),
+    );
+    await writeFile(resource, '# Generation two\n\ncurrent lexical ranking anchor');
+    const second = await Effect.runPromise(
+      loadRecallIndexData(config, {forceRefresh: true, includeInactive: false}).pipe(Effect.provide(ApplicationLayer)),
+    );
+    expect(second.generation).not.toBe(first.generation);
+
+    const prepared = await Effect.runPromise(
+      prepareRecallSections(config, {
+        allowExactRescue: false,
+        exactMatches: [],
+        feedbackQuery: 'ranking anchor',
+        includeInactive: false,
+        limit: 5,
+        passes: [],
+        query: 'ranking anchor',
+        readRecords: () => Effect.succeed([]),
+        semanticResult: Option.some({
+          corpusGeneration: Option.some(first.generation),
+          scores: Option.some(new Map([[first.candidates[0]!.uri, 1]])),
+          warning: Option.none(),
+        }),
+      }).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(Option.isNone(prepared.semanticResult.corpusGeneration)).toBe(true);
+    expect(Option.isNone(prepared.semanticResult.scores)).toBe(true);
   });
 
   it('keeps top-level lexical recall available when semantic inference dies', async () => {

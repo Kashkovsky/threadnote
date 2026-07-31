@@ -924,6 +924,76 @@ dd {
   grid-row: 1;
 }
 
+.graph-notices {
+  display: grid;
+  gap: 8px;
+  grid-row: 2;
+}
+
+.graph-notices:empty {
+  display: none;
+}
+
+.graph-build-status {
+  display: grid;
+  gap: 8px;
+}
+
+.graph-build-card {
+  background: rgba(103, 232, 199, 0.06);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+}
+
+.graph-build-card.is-failed {
+  background: rgba(255, 98, 120, 0.06);
+  border-color: rgba(255, 98, 120, 0.3);
+}
+
+.graph-build-card > header,
+.graph-build-card > footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  justify-content: space-between;
+}
+
+.graph-build-card > header strong {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.graph-build-card > header span,
+.graph-build-card > footer span,
+.graph-build-card > p {
+  color: var(--muted);
+  font-size: 10px;
+  margin: 0;
+}
+
+.graph-build-meter {
+  background: rgba(103, 232, 199, 0.1);
+  border-radius: 999px;
+  height: 5px;
+  overflow: hidden;
+}
+
+.graph-build-meter i {
+  background: var(--accent);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 220ms ease;
+}
+
+.graph-build-error {
+  color: #ff8799 !important;
+}
+
 .graph-catalog-diagnostics {
   background: rgba(247, 213, 107, 0.08);
   border: 1px solid rgba(247, 213, 107, 0.28);
@@ -932,7 +1002,6 @@ dd {
   display: grid;
   font-size: 10px;
   gap: 4px;
-  grid-row: 2;
   padding: 9px 12px;
 }
 

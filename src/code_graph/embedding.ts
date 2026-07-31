@@ -1,13 +1,15 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Clock, Context, Effect, FileSystem, Layer, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, FileSystem, Layer, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {SystemInfo} from '../effect/system.js';
 import {LocalModelRuntime, type LocalModelRuntimeShape} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelCatalogShape, type LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../models/store.js';
 import {normalizeVector, searchExactVectors, type VectorSearchResult} from '../search/vector-search.js';
-import type {CodeGraphLayout} from './layout.js';
+import {codeGraphVectorWriteLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphProgress, CodeGraphSnapshot, CodeGraphSymbol} from './types.js';
 import type {CodeGraphSymbolCursor} from './store.js';
@@ -17,6 +19,11 @@ const CODE_GRAPH_VECTOR_DATABASE_VERSION = 2;
 const CODE_GRAPH_SEMANTIC_MINIMUM_SCORE = 0.64;
 const EMBED_BATCH_SIZE = 128;
 const VECTOR_PAGE_SIZE = 400;
+const CODE_GRAPH_VECTOR_WRITE_LOCK_OPTIONS = {
+  retryIntervalMilliseconds: 100,
+  staleAfterMilliseconds: 120_000,
+  waitTimeoutMilliseconds: Number.POSITIVE_INFINITY,
+} as const;
 
 interface VectorGenerationRow {
   readonly count: number;
@@ -101,6 +108,8 @@ export class CodeGraphEmbeddingIndex extends Context.Service<CodeGraphEmbeddingI
       const catalog = yield* LocalModelCatalog;
       const modelStore = yield* LocalModelStore;
       const runtime = yield* LocalModelRuntime;
+      const crypto = yield* Crypto.Crypto;
+      const system = yield* SystemInfo;
       return CodeGraphEmbeddingIndex.of({
         check: (threadnoteHome, layout, snapshotId) =>
           checkGraphVectors({catalog, fs, layout, modelStore, path, snapshotId, threadnoteHome}).pipe(
@@ -121,7 +130,12 @@ export class CodeGraphEmbeddingIndex extends Context.Service<CodeGraphEmbeddingI
             snapshot,
             symbols,
             threadnoteHome,
-          }).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.provideService(Path.Path, path)),
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+          ),
         search: (threadnoteHome, layout, snapshotId, query, limit) =>
           searchGraphVectors({
             catalog,
@@ -205,54 +219,67 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
 
   const root = input.path.join(input.layout.vectorRoot, selected.manifest.id);
   const databasePath = vectorDatabasePath(input.path, input.layout.vectorRoot, selected.manifest.id);
+  const writeLockPath = codeGraphVectorWriteLockPath(
+    input.path,
+    input.threadnoteHome,
+    input.layout.checkoutId,
+    sha256HexSync(selected.manifest.id),
+  );
   const worktreeId = requiredWorktreeId(input.layout);
   yield* input.fs.makeDirectory(root, {recursive: true, mode: 0o700});
-  const status = yield* useVectorDatabase(
-    databasePath,
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* initializeVectorDatabase(sql);
-      yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
-      if (input.activeWorktreeIds) {
-        yield* reconcileVectorPointers(sql, new Set([...input.activeWorktreeIds, worktreeId]));
-      }
+  const status = yield* withExclusiveFileLock(
+    input.fs,
+    writeLockPath,
+    CODE_GRAPH_VECTOR_WRITE_LOCK_OPTIONS,
+    useVectorDatabase(
+      databasePath,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* initializeVectorDatabase(sql);
+        // A stale building generation can only remain after the previous lock
+        // owner exited. Deleting it while holding this lock cannot invalidate a
+        // live linked-worktree writer.
+        yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
+        if (input.activeWorktreeIds) {
+          yield* reconcileVectorPointers(sql, new Set([...input.activeWorktreeIds, worktreeId]));
+        }
 
-      const active = yield* selectActiveGeneration(sql, worktreeId);
-      if (
-        !input.force &&
-        active?.snapshot_id === input.snapshot.id &&
-        active.model_sha256 === selected.manifest.sha256 &&
-        active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
-        active.dimensions === selected.manifest.dimensions
-      ) {
-        yield* pruneVectorGenerations(sql);
-        return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: active.count};
-      }
+        const active = yield* selectActiveGeneration(sql, worktreeId);
+        if (
+          !input.force &&
+          active?.snapshot_id === input.snapshot.id &&
+          active.model_sha256 === selected.manifest.sha256 &&
+          active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
+          active.dimensions === selected.manifest.dimensions
+        ) {
+          yield* pruneVectorGenerations(sql);
+          return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: active.count};
+        }
 
-      const exact = input.force
-        ? undefined
-        : yield* selectGenerationForSnapshot(
-            sql,
-            input.snapshot.id,
-            selected.manifest.sha256,
-            selected.manifest.dimensions!,
-          );
-      if (exact) {
-        yield* activateVectorGeneration(sql, worktreeId, exact.generation);
-        yield* pruneVectorGenerations(sql);
-        return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: exact.count};
-      }
+        const exact = input.force
+          ? undefined
+          : yield* selectGenerationForSnapshot(
+              sql,
+              input.snapshot.id,
+              selected.manifest.sha256,
+              selected.manifest.dimensions!,
+            );
+        if (exact) {
+          yield* activateVectorGeneration(sql, worktreeId, exact.generation);
+          yield* pruneVectorGenerations(sql);
+          return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: exact.count};
+        }
 
-      const reusable = input.force
-        ? undefined
-        : active &&
-            active.model_sha256 === selected.manifest.sha256 &&
-            active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
-            active.dimensions === selected.manifest.dimensions
-          ? active
-          : yield* selectMostRecentCompatibleGeneration(sql, selected.manifest.sha256, selected.manifest.dimensions!);
-      const generation = `${yield* Clock.currentTimeMillis}-${worktreeId.slice(-8)}-${input.snapshot.id.slice(-8)}`;
-      yield* sql`
+        const reusable = input.force
+          ? undefined
+          : active &&
+              active.model_sha256 === selected.manifest.sha256 &&
+              active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
+              active.dimensions === selected.manifest.dimensions
+            ? active
+            : yield* selectMostRecentCompatibleGeneration(sql, selected.manifest.sha256, selected.manifest.dimensions!);
+        const generation = `${yield* Clock.currentTimeMillis}-${worktreeId.slice(-8)}-${input.snapshot.id.slice(-8)}`;
+        yield* sql`
         INSERT INTO vector_generations (
           generation, snapshot_id, model_id, model_sha256, dimensions,
           template_version, count, state, created_at
@@ -263,40 +290,43 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
         )
       `;
 
-      const build = buildVectorGeneration({
-        generation,
-        onProgress: input.onProgress,
-        reusableGeneration: reusable?.generation,
-        runtime: input.runtime,
-        selected,
-        snapshot: input.snapshot,
-        source: input.symbols,
-        sql,
-      }).pipe(
-        Effect.tap(result =>
-          sql.withTransaction(
-            Effect.gen(function* () {
-              yield* sql`
+        const build = buildVectorGeneration({
+          generation,
+          onProgress: input.onProgress,
+          reusableGeneration: reusable?.generation,
+          runtime: input.runtime,
+          selected,
+          snapshot: input.snapshot,
+          source: input.symbols,
+          sql,
+        }).pipe(
+          Effect.tap(result =>
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
                 UPDATE vector_generations
                 SET count = ${result.count}, state = 'ready'
                 WHERE generation = ${generation}
               `;
-              yield* activateVectorGeneration(sql, worktreeId, generation);
-            }),
+                yield* activateVectorGeneration(sql, worktreeId, generation);
+              }),
+            ),
           ),
-        ),
-        Effect.onError(() => sql`DELETE FROM vector_generations WHERE generation = ${generation}`.pipe(Effect.ignore)),
-      );
-      const built = yield* build;
-      yield* pruneVectorGenerations(sql);
-      yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
-      return {
-        embedded: built.embedded,
-        modelId: selected.manifest.id,
-        ready: true,
-        reused: built.reused,
-      };
-    }),
+          Effect.onError(() =>
+            sql`DELETE FROM vector_generations WHERE generation = ${generation}`.pipe(Effect.ignore),
+          ),
+        );
+        const built = yield* build;
+        yield* pruneVectorGenerations(sql);
+        yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
+        return {
+          embedded: built.embedded,
+          modelId: selected.manifest.id,
+          ready: true,
+          reused: built.reused,
+        };
+      }),
+    ),
   );
   yield* removeLegacyVectorSidecars(input.fs, input.path, root);
   return status;

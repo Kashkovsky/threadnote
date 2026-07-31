@@ -142,15 +142,16 @@ export default function ThreadScene() {
         };
         document.addEventListener('visibilitychange', onVisibility);
 
-        const clock = new THREE.Clock();
+        const timer = new THREE.Timer();
         const stop = () => {
           window.cancelAnimationFrame(frame);
           frame = 0;
         };
-        const render = () => {
+        const render = (timestamp: number) => {
           frame = 0;
           if (disposed || !inViewport || !pageVisible) return;
-          const elapsed = clock.getElapsedTime();
+          timer.update(timestamp);
+          const elapsed = timer.getElapsed();
           group.rotation.y = Math.sin(elapsed * 0.24) * 0.12;
           group.rotation.x = Math.cos(elapsed * 0.18) * 0.035;
           nodes.forEach((node, index) => {
@@ -166,6 +167,7 @@ export default function ThreadScene() {
         };
         const start = () => {
           if (!frame && !disposed && inViewport && pageVisible) {
+            timer.reset();
             frame = window.requestAnimationFrame(render);
           }
         };
@@ -178,6 +180,7 @@ export default function ThreadScene() {
           resizeObserver.disconnect();
           intersectionObserver?.disconnect();
           document.removeEventListener('visibilitychange', onVisibility);
+          timer.dispose();
           nodeGeometry.dispose();
           pulseGeometry.dispose();
           lineGeometry.dispose();

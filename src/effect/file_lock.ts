@@ -20,12 +20,31 @@ export class FileLockTimeout extends Error {
   }
 }
 
-interface FileLockOwner {
+export interface FileLockOwner {
   readonly processId: number;
   readonly processStartIdentity?: string;
   readonly token: string;
   readonly version: 1;
 }
+
+/**
+ * Reads the privacy-safe owner identity of an existing lock without attempting
+ * recovery or changing the lock. Callers use this to report which process owns
+ * a long-running operation; absence includes malformed, missing, oversized, and
+ * symbolic-link lock files.
+ */
+export const readExclusiveFileLockOwner = Effect.fn('fileLock.readOwner')(function* (
+  fs: FileSystem.FileSystem,
+  lockPath: string,
+) {
+  return yield* Effect.gen(function* () {
+    if (!(yield* fs.exists(lockPath))) return Option.none<FileLockOwner>();
+    if (Option.isSome(yield* fs.readLink(lockPath).pipe(Effect.option))) return Option.none<FileLockOwner>();
+    const info = yield* fs.stat(lockPath);
+    if (info.type !== 'File' || Number(info.size) > 4_096) return Option.none<FileLockOwner>();
+    return Option.fromUndefinedOr(fileLockOwner((yield* fs.readFileString(lockPath)).trim()));
+  }).pipe(Effect.catch(() => Effect.succeed(Option.none<FileLockOwner>())));
+});
 
 export function isFileLockTimeout(cause: unknown): cause is FileLockTimeout {
   return cause instanceof FileLockTimeout;

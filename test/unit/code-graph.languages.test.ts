@@ -827,22 +827,50 @@ describe('polyglot code graph language packs', () => {
     });
   });
 
-  it('changes only the updated language cache identity', () => {
-    const changedRegistry = createCodeGraphLanguagePackRegistry(
+  it('separates parser cache identities from derived graph policy identities', () => {
+    const policyChangedRegistry = createCodeGraphLanguagePackRegistry(
       BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
         pack.id === 'swift' ? {...pack, version: `${pack.version}-next`} : pack,
       ),
     );
+    const parserChangedRegistry = createCodeGraphLanguagePackRegistry(
+      BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
+        pack.id === 'swift'
+          ? {...pack, extractor: {...pack.extractor, version: `${pack.extractor.version}-next`}}
+          : pack,
+      ),
+    );
     const originalTypeScript = Option.getOrThrow(BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentityForPath('src/service.ts'));
-    const changedTypeScript = Option.getOrThrow(changedRegistry.cacheIdentityForPath('src/service.ts'));
+    const changedTypeScript = Option.getOrThrow(parserChangedRegistry.cacheIdentityForPath('src/service.ts'));
     const originalSwift = Option.getOrThrow(
       BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentityForPath('Sources/App/Main.swift'),
     );
-    const changedSwift = Option.getOrThrow(changedRegistry.cacheIdentityForPath('Sources/App/Main.swift'));
+    const policyChangedSwift = Option.getOrThrow(policyChangedRegistry.cacheIdentityForPath('Sources/App/Main.swift'));
+    const parserChangedSwift = Option.getOrThrow(parserChangedRegistry.cacheIdentityForPath('Sources/App/Main.swift'));
 
     expect(changedTypeScript).toBe(originalTypeScript);
-    expect(changedSwift).not.toBe(originalSwift);
-    expect(changedRegistry.activeCacheIdentities(['src/service.ts'])).toEqual([originalTypeScript]);
+    expect(policyChangedSwift).toBe(originalSwift);
+    expect(parserChangedSwift).not.toBe(originalSwift);
+    expect(parserChangedRegistry.activeCacheIdentities(['src/service.ts'])).toEqual([originalTypeScript]);
+    expect(policyChangedRegistry.activeDerivationIdentities(['Sources/App/Main.swift'])).not.toEqual(
+      BUILTIN_LANGUAGE_PACK_REGISTRY.activeDerivationIdentities(['Sources/App/Main.swift']),
+    );
+  });
+
+  it('keeps rationale derivation out of cached parser facts', async () => {
+    const file = inventoryFile('src/rationale.ts', '// WHY: preserve parser facts\nexport function run(): void {}\n');
+    const provideRuntime = <A, E>(effect: Effect.Effect<A, E, TreeSitterRuntime>) =>
+      effect.pipe(
+        Effect.provide(TreeSitterRuntime.layer),
+        Effect.provide(SystemInfo.layer),
+        Effect.provide(BunServices.layer),
+      );
+    const raw = await Effect.runPromise(provideRuntime(BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file)));
+    const derived = BUILTIN_LANGUAGE_PACK_REGISTRY.postprocessFile(file, raw);
+
+    expect(raw.symbols.some(symbol => symbol.kind === 'rationale')).toBe(false);
+    expect(derived.symbols.some(symbol => symbol.kind === 'rationale')).toBe(true);
+    expect(derived).toEqual(await Effect.runPromise(provideRuntime(BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file))));
   });
 });
 

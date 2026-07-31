@@ -94,7 +94,7 @@ const graphCapabilities = [
     number: '01',
     label: 'Current-worktree truth',
     title: 'The graph follows the checkout you are editing.',
-    body: 'Committed Git objects form the reusable base. Staged, unstaged, renamed, deleted, and eligible untracked files become an isolated overlay for this linked worktree.',
+    body: 'Committed Git objects form the reusable base. Staged, unstaged, renamed, deleted, and eligible untracked files become an isolated overlay for this linked worktree—even when an orchestrator is running other agents beside it.',
   },
   {
     number: '02',

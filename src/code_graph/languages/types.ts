@@ -65,7 +65,7 @@ export interface CodeGraphWorkspaceProject {
   readonly workspaceRoots: readonly string[];
 }
 
-export type CodeGraphWorkspaceBuildSystem = 'gradle' | 'inferred' | 'maven' | 'swiftpm' | 'xcode';
+export type CodeGraphWorkspaceBuildSystem = 'gradle' | 'inferred' | 'maven' | 'node' | 'swiftpm' | 'xcode';
 export type CodeGraphWorkspaceComponentKind = 'module' | 'package' | 'project' | 'target';
 export type CodeGraphWorkspaceProvenance = 'declared' | 'inferred';
 

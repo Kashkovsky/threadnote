@@ -153,7 +153,14 @@ Each local Git checkout gets an isolated graph root shared by its linked worktre
   locks/
     indexes/
       code-graph/
-        <checkout-id>.lock
+        maintenance.lock
+        maintenance.intent
+        <checkout-id>.lock              # checkout maintenance
+        database-writes/
+          <checkout-id>.lock            # short SQLite publication phase
+        worktrees/
+          <checkout-id>/
+            <worktree-id>.lock          # inventory/extraction build owner
 ```
 
 Checkout IDs are hashes of the resolved Git common directory. Absolute checkout paths are never copied into graph
@@ -462,10 +469,14 @@ command owns one subscription for the command lifetime. Neither is a daemon.
 
 ### Locks and transactions
 
-- one writer lock per repository;
+- one build lock per linked worktree coalesces same-worktree callers while allowing different worktrees to inventory
+  and extract concurrently;
+- one short checkout-scoped database-publication lock serializes snapshot activation, readback, and pointer promotion;
+- checkout maintenance publishes a global intent, waits for every linked-worktree build lock, and then takes the same
+  database-publication lock before repair, purge, or VACUUM;
 - concurrent readers continue using ready snapshots;
-- a second writer reports a waiting phase, waits interruptibly without an arbitrary graph-build deadline, and rechecks
-  freshness after acquiring the lock;
+- a second same-worktree builder reports a waiting phase, waits interruptibly without an arbitrary graph-build
+  deadline, and rechecks freshness after acquiring the lock;
 - extraction checkpoints are keyed by content hash and extractor version;
 - graph snapshot activation is transactional;
 - an immutable vector generation is associated with a worktree in a later transaction only after every row is ready;

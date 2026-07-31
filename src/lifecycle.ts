@@ -14,6 +14,7 @@ import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstal
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {
+  currentRecallCorpusGeneration,
   loadRecallIndexData,
   recallIndexStatus,
   type RecallIndexProgress,
@@ -361,6 +362,7 @@ const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(funct
         );
         const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
           corpusGeneration: index.generation,
+          currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
           onProgress: state => updateProgress(vectorProgressMessage(state)),
         });
         return {documentCount: index.candidates.length, vectors};

@@ -1,19 +1,25 @@
-import {Cause, Clock, Console, Effect, Option} from 'effect';
+import {Cause, Clock, Console, Effect, Option, Result} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import type {MemoryRecord} from '../memory_document.js';
 import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
 import {rerankWithSelectedLocalModel} from '../models/inference.js';
-import {LocalModelCatalog} from '../models/catalog.js';
+import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore} from '../models/store.js';
 import {loadRecallFeedback} from './feedback.js';
-import {loadRecallIndexData, loadRecallIndexDataBatch, recallUriMatchesScopes} from './index.js';
+import {
+  currentRecallCorpusGeneration,
+  loadRecallIndexData,
+  loadRecallIndexDataBatch,
+  recallUriMatchesScopes,
+} from './index.js';
 import type {RecallCandidate} from './rank.js';
 import {
   ensureVectorIndex,
   rebuildVectorIndex,
   selectedSemanticScores,
-  type VectorIndexCorrupt,
+  VectorCorpusGenerationChanged,
+  VectorIndexCorrupt,
   vectorIndexMatchesGeneration,
 } from '../search/vector-index.js';
 
@@ -41,7 +47,7 @@ interface PrepareRecallSectionsInput<R> {
   readonly readRecords: (uris: readonly string[]) => Effect.Effect<readonly MemoryRecord[], unknown, R>;
   readonly rerankerCache?: RecallRerankerCache;
   readonly seedUris?: readonly string[];
-  readonly semanticScores?: ReadonlyMap<string, number> | null;
+  readonly semanticResult?: Option.Option<RecallSemanticScoresResult>;
 }
 
 const INDEX_CANDIDATE_MULTIPLIER = 10;
@@ -56,6 +62,7 @@ const MAX_DETERMINISTIC_QUERY_VARIANTS = 3;
 const MINIMUM_QUERY_VARIANT_TERMS = 2;
 const NATIVE_RERANK_CANDIDATE_LIMIT = 32;
 const NATIVE_RERANK_DOCUMENT_LIMIT = 4_000;
+const SEMANTIC_GENERATION_RETRY_LIMIT = 2;
 
 export interface RecallRerankerCache {
   readonly scores: Map<string, number>;
@@ -102,10 +109,33 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   config: RecallRuntimeConfig,
   input: PrepareRecallSectionsInput<R>,
 ) {
-  const semanticScores =
-    input.semanticScores === undefined
-      ? yield* loadRecallSemanticScores(config, input.query, input.limit)
-      : (input.semanticScores ?? undefined);
+  let semanticResult =
+    input.semanticResult === undefined
+      ? yield* loadRecallSemanticScoresResult(config, input.query, input.limit)
+      : Option.getOrElse(input.semanticResult, emptyRecallSemanticScoresResult);
+  for (let retry = 0; ; retry += 1) {
+    const prepared = yield* prepareRecallSectionsAttempt(config, input, semanticResult);
+    if (yield* semanticResultMatchesLexicalSnapshot(config, semanticResult, prepared.generations)) {
+      return {...prepared.sections, semanticResult};
+    }
+    if (retry >= SEMANTIC_GENERATION_RETRY_LIMIT) {
+      const lexicalOnly = yield* prepareRecallSectionsAttempt(
+        config,
+        input,
+        emptyRecallSemanticScoresResult(semanticResult.warning),
+      );
+      return {...lexicalOnly.sections, semanticResult: emptyRecallSemanticScoresResult(semanticResult.warning)};
+    }
+    semanticResult = yield* loadRecallSemanticScoresResult(config, input.query, input.limit);
+  }
+});
+
+const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(function* <R>(
+  config: RecallRuntimeConfig,
+  input: PrepareRecallSectionsInput<R>,
+  semanticResult: RecallSemanticScoresResult,
+) {
+  const semanticScores = Option.getOrUndefined(semanticResult.scores);
   const rankingUris = [
     ...new Set([
       ...input.passes.flatMap(pass => pass.map(hit => hit.uri.replace(/#.*$/, ''))),
@@ -144,6 +174,9 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     {concurrency: 2},
   );
   const flattenedRecallIndexes = recallIndexes;
+  const generations = [
+    ...new Set(flattenedRecallIndexes.flatMap(index => (index?.generation ? [index.generation] : []))),
+  ];
   const recallIndex = flattenedRecallIndexes.find(index => index !== undefined);
   const recallIndexCandidateSets = flattenedRecallIndexes.map(index => index?.candidates ?? []);
   const semanticCandidates = mergeRecallIndexCandidates(recallIndexCandidateSets).map(candidate => {
@@ -180,13 +213,37 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     records,
     seedUris: input.seedUris,
   });
-  return {...sections, expansionCandidates};
+  return {generations, sections: {...sections, expansionCandidates}};
 });
 
 export interface RecallSemanticScoresResult {
+  readonly corpusGeneration: Option.Option<string>;
   readonly scores: Option.Option<ReadonlyMap<string, number>>;
   readonly warning: Option.Option<string>;
 }
+
+function emptyRecallSemanticScoresResult(warning: Option.Option<string> = Option.none()): RecallSemanticScoresResult {
+  return {
+    corpusGeneration: Option.none(),
+    scores: Option.none(),
+    warning,
+  };
+}
+
+const semanticResultMatchesLexicalSnapshot = Effect.fn('recall.semanticResultMatchesLexicalSnapshot')(function* (
+  config: RecallRuntimeConfig,
+  semanticResult: RecallSemanticScoresResult,
+  snapshotGenerations: readonly string[],
+) {
+  if (Option.isNone(semanticResult.scores)) return true;
+  if (Option.isNone(semanticResult.corpusGeneration)) return false;
+  const semanticGeneration = semanticResult.corpusGeneration.value;
+  if (snapshotGenerations.length !== 1 || snapshotGenerations[0] !== semanticGeneration) {
+    return false;
+  }
+  const currentGeneration = yield* currentRecallCorpusGeneration(config);
+  return Option.isSome(currentGeneration) && currentGeneration.value === semanticGeneration;
+});
 
 export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScoresResult')(function* (
   config: RecallRuntimeConfig,
@@ -203,41 +260,86 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
     const store = yield* LocalModelStore;
     const installed = yield* store.status(config.agentContextHome, manifest);
     if (!installed.installed) return undefined;
-    const snapshot = yield* loadRecallIndexData(config, {
-      includeInactive: false,
-      limit: 0,
-      query: '',
-    });
-    if (!(yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, snapshot.generation))) {
-      const index = yield* loadRecallIndexData(config, {includeInactive: false});
-      yield* ensureVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
-    }
     const semanticLimit = Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER);
-    return yield* selectedSemanticScores(config, query, {limit: semanticLimit}).pipe(
-      Effect.mapError(error => error as typeof error | VectorIndexCorrupt),
-      Effect.catchTag('VectorIndexCorrupt', () =>
-        Effect.gen(function* () {
-          const index = yield* loadRecallIndexData(config, {includeInactive: false});
-          yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
-          return yield* selectedSemanticScores(config, query, {limit: semanticLimit});
-        }),
-      ),
-    );
+    return yield* loadCurrentSemanticScores(config, manifest, query, semanticLimit);
   }).pipe(
-    Effect.map(
-      scores =>
-        ({
-          scores: Option.fromNullishOr(scores),
-          warning: Option.none(),
-        }) satisfies RecallSemanticScoresResult,
+    Effect.map(snapshot =>
+      snapshot === undefined
+        ? emptyRecallSemanticScoresResult()
+        : ({
+            corpusGeneration: Option.some(snapshot.corpusGeneration),
+            scores: Option.fromNullishOr(snapshot.scores),
+            warning: Option.none(),
+          } satisfies RecallSemanticScoresResult),
     ),
     Effect.catchCause(cause =>
       Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
-        : Effect.succeed({
-            scores: Option.none(),
-            warning: Option.some(semanticRecallFailureWarning(cause)),
-          } satisfies RecallSemanticScoresResult),
+        : Effect.succeed(emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(cause)))),
+    ),
+  );
+});
+
+const loadCurrentSemanticScores = Effect.fn('recall.loadCurrentSemanticScores')(function* (
+  config: RecallRuntimeConfig,
+  manifest: LocalModelManifest,
+  query: string,
+  limit: number,
+) {
+  for (let retry = 0; retry <= SEMANTIC_GENERATION_RETRY_LIMIT; retry += 1) {
+    const attempt = yield* loadSemanticScoresAttempt(config, manifest, query, limit).pipe(Effect.result);
+    if (Result.isSuccess(attempt)) return attempt.success;
+    if (attempt.failure instanceof VectorCorpusGenerationChanged && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
+      continue;
+    }
+    return yield* Effect.fail(attempt.failure);
+  }
+  return yield* Effect.die(new Error('Semantic generation retry loop exhausted without a result.'));
+});
+
+const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(function* (
+  config: RecallRuntimeConfig,
+  manifest: LocalModelManifest,
+  query: string,
+  limit: number,
+) {
+  const fence = () => currentRecallCorpusGeneration(config);
+  const snapshot = yield* loadRecallIndexData(config, {
+    includeInactive: false,
+    limit: 0,
+    query: '',
+  });
+  let corpusGeneration = snapshot.generation;
+  if (!(yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, corpusGeneration))) {
+    const index = yield* loadRecallIndexData(config, {includeInactive: false});
+    corpusGeneration = index.generation;
+    yield* ensureVectorIndex(config, manifest, index.candidates, {
+      corpusGeneration,
+      currentCorpusGeneration: fence,
+    });
+  }
+  return yield* selectedSemanticScores(config, query, {
+    corpusGeneration,
+    currentCorpusGeneration: fence,
+    limit,
+  }).pipe(
+    Effect.map(scores => ({corpusGeneration, scores})),
+    Effect.catchIf(
+      (error): error is VectorIndexCorrupt => error instanceof VectorIndexCorrupt,
+      () =>
+        Effect.gen(function* () {
+          const index = yield* loadRecallIndexData(config, {includeInactive: false});
+          yield* rebuildVectorIndex(config, manifest, index.candidates, {
+            corpusGeneration: index.generation,
+            currentCorpusGeneration: fence,
+          });
+          const scores = yield* selectedSemanticScores(config, query, {
+            corpusGeneration: index.generation,
+            currentCorpusGeneration: fence,
+            limit,
+          });
+          return {corpusGeneration: index.generation, scores};
+        }),
     ),
   );
 });

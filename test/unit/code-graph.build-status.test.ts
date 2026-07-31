@@ -4,14 +4,18 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS,
   CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS,
+  calibratedCodeGraphEtaConfidence,
   makeCodeGraphBuildReporter,
   observeCodeGraphBuildStatus,
   readCodeGraphBuildStatuses,
+  selectCodeGraphBuildStatuses,
 } from '../../src/code_graph/build_status.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
+import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {captureConsole} from '../../src/effect/console.js';
+import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphSnapshot,
@@ -26,6 +30,57 @@ describe('code graph cross-process build status', () => {
 
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('calibrates ETA confidence from variance, prediction error, and silent intervals', () => {
+    const stable = {
+      intervalSamplesMilliseconds: Array.from({length: 8}, () => 1_000),
+      rateForecastErrorSamples: Array.from({length: 7}, () => 0.05),
+      rateSamples: [1, 1.02, 0.99, 1.01, 1, 0.98, 1.02, 1],
+      realizedCompletionErrorSamples: Array.from({length: 6}, () => 0.08),
+      silenceMilliseconds: 1_000,
+    };
+    expect(calibratedCodeGraphEtaConfidence(stable)).toBe('high');
+    expect(
+      calibratedCodeGraphEtaConfidence({
+        ...stable,
+        rateForecastErrorSamples: [0.9, 0.1, 0.8, 0.2, 0.95, 0.05, 0.7],
+        rateSamples: [0.1, 2, 0.2, 3, 0.1, 2.5, 0.3, 4],
+        realizedCompletionErrorSamples: [0.9, 0.8, 0.95, 0.7],
+      }),
+    ).toBe('low');
+    expect(calibratedCodeGraphEtaConfidence({...stable, silenceMilliseconds: 60_000})).toBe('low');
+    expect(calibratedCodeGraphEtaConfidence({...stable, rateSamples: stable.rateSamples.slice(0, 2)})).toBeUndefined();
+  });
+
+  it('withholds high ETA confidence until a reporter observes accurate phase completion forecasts', async () => {
+    const confidenceFor = async (delays: readonly number[]) => {
+      const home = await mkdtemp('threadnote-graph-eta-reporter-');
+      homes.push(home);
+      return runEffect(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+          yield* reporter.progress({completed: 0, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
+          for (const [index, delay] of delays.entries()) {
+            yield* Effect.sleep(delay);
+            yield* reporter.progress({
+              completed: index + 1,
+              phase: 'materializing',
+              reused: 0,
+              total: 10,
+              unit: 'files',
+            });
+          }
+          return (yield* readCodeGraphBuildStatuses(layout))[0]?.eta?.confidence;
+        }),
+      );
+    };
+
+    expect(await confidenceFor(Array.from({length: 10}, () => 30))).toBe('high');
+    expect(await confidenceFor([5, 90, 5, 100, 5, 80, 5, 110, 5, 90])).toBe('low');
   });
 
   it('keeps active owner and queued observer jobs separate and atomically readable', async () => {
@@ -150,6 +205,114 @@ describe('code graph cross-process build status', () => {
     ).toMatchObject({liveness: 'abandoned', reason: 'owner-exited'});
   });
 
+  it('keeps a lock-verified CPU-bound owner authoritative while counting live waiters separately', async () => {
+    const home = await mkdtemp('threadnote-graph-build-selection-');
+    homes.push(home);
+    const statuses = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const running = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* running.progress({
+          completed: 12,
+          phase: 'scanning',
+          accepted: 12,
+          excluded: 0,
+          skipped: 0,
+          total: 100,
+          unit: 'files',
+        });
+        const waiting = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* waiting.progress({phase: 'waiting'});
+        return yield* readCodeGraphBuildStatuses(layout);
+      }),
+    );
+    const running = statuses.find(status => status.state === 'running')!;
+    const waiting = statuses.find(status => status.state === 'queued')!;
+    const owner = {
+      ...running,
+      coordination: {lockVerified: true, role: 'owner' as const},
+      observation: {
+        heartbeatAgeMilliseconds: 60_000,
+        liveness: 'stalled' as const,
+        reason: 'heartbeat-stale' as const,
+      },
+    };
+    const waiter = {
+      ...waiting,
+      coordination: {lockVerified: false, role: 'waiter' as const},
+      observation: {heartbeatAgeMilliseconds: 10, liveness: 'active' as const},
+    };
+
+    const selected = selectCodeGraphBuildStatuses([waiter, owner]);
+
+    expect(selected.builds).toEqual([owner]);
+    expect(selected.waiters).toEqual([waiter]);
+
+    const completed = {
+      ...owner,
+      coordination: {lockVerified: false, role: 'history' as const},
+      observation: {heartbeatAgeMilliseconds: 1_000, liveness: 'completed' as const},
+      state: 'completed' as const,
+    };
+    const abandoned = {
+      ...owner,
+      coordination: {lockVerified: false, role: 'history' as const},
+      observation: {
+        heartbeatAgeMilliseconds: 120_000,
+        liveness: 'abandoned' as const,
+        reason: 'owner-exited' as const,
+      },
+    };
+    expect(selectCodeGraphBuildStatuses([abandoned, completed]).builds).toEqual([completed]);
+
+    const otherCheckout = {
+      ...owner,
+      buildId: `${owner.buildId.slice(0, -1)}0`,
+      identity: {...owner.identity, checkoutId: 'f'.repeat(64)},
+    };
+    expect(selectCodeGraphBuildStatuses([owner, otherCheckout]).builds).toHaveLength(2);
+  });
+
+  it('uses the validated lock lease to keep a progress-silent owner live', async () => {
+    const home = await mkdtemp('threadnote-graph-build-lock-liveness-');
+    homes.push(home);
+    const owner = await runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({completed: 1, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
+        const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+        const statusPath = path.join(directory, (yield* fs.readDirectory(directory))[0]!);
+        const status = JSON.parse(yield* fs.readFileString(statusPath)) as {
+          timestamps: Record<string, string>;
+        };
+        const stale = new Date(Date.now() - CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS - 5_000).toISOString();
+        yield* fs.writeFileString(
+          statusPath,
+          `${JSON.stringify({...status, timestamps: {...status.timestamps, heartbeatAt: stale}})}\n`,
+        );
+        return yield* withExclusiveFileLock(
+          fs,
+          layout.lockPath,
+          {
+            retryIntervalMilliseconds: 5,
+            staleAfterMilliseconds: 1_000,
+            waitTimeoutMilliseconds: 1_000,
+          },
+          Effect.map(readCodeGraphBuildStatuses(layout), statuses => statuses[0]!),
+        );
+      }),
+    );
+
+    expect(owner.coordination).toEqual({lockVerified: true, progressSilent: true, role: 'owner'});
+    expect(owner.observation).toMatchObject({liveness: 'active'});
+  });
+
   it('retains a bounded privacy-safe terminal result without source paths', async () => {
     const home = await mkdtemp('threadnote-graph-build-terminal-');
     homes.push(home);
@@ -205,12 +368,19 @@ describe('code graph cross-process build status', () => {
         const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* reporter.progress({completed: 3, phase: 'materializing', reused: 2, total: 10, unit: 'files'});
         yield* fs.writeFileString(path.join(layout.repositoryRoot, 'graph-v2.sqlite'), 'obsolete graph\n');
+        yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
+        const startedAt = Date.now();
         const output = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
-        return {databasePath: layout.databasePath, output: output.output.trim()};
+        return {
+          databasePath: layout.databasePath,
+          elapsedMilliseconds: Date.now() - startedAt,
+          output: output.output.trim(),
+        };
       }),
     );
 
     expect(existsSync(result.databasePath)).toBe(false);
+    expect(result.elapsedMilliseconds).toBeLessThan(2_000);
     const status = JSON.parse(result.output) as Record<string, unknown>;
     expect(status).toMatchObject({
       build: {counters: {completed: 3, reused: 2, total: 10}, state: 'running'},
@@ -218,6 +388,58 @@ describe('code graph cross-process build status', () => {
       type: 'code-graph-status',
       version: 2,
     });
+  });
+
+  it('does not let another worktree sidecar hide the current ready snapshot', async () => {
+    const home = await mkdtemp('threadnote-graph-status-ready-');
+    homes.push(home);
+    const repository = join(home, 'repository');
+    await mkdir(repository, {recursive: true});
+    await writeFile(join(repository, 'source.ts'), 'export const readyValue = 1;\n');
+    runGit(repository, ['init', '--quiet']);
+    runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+    runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+    runGit(repository, ['add', 'source.ts']);
+    runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'manifest.yaml'),
+      user: 'tester',
+    };
+
+    const output = await runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const indexer = yield* CodeGraphIndexer;
+        const summary = yield* indexer.index({cwd: repository, threadnoteHome: home});
+        const currentLayout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
+        yield* fs.remove(path.join(currentLayout.repositoryRoot, 'build-status', summary.identity.worktreeId), {
+          force: true,
+          recursive: true,
+        });
+        const otherIdentity = {...summary.identity, worktreeId: 'e'.repeat(64)};
+        const otherLayout = codeGraphLayout(path, home, otherIdentity.checkoutId, otherIdentity.worktreeId);
+        const other = yield* makeCodeGraphBuildReporter(otherIdentity, otherLayout);
+        yield* other.completeSnapshot({...summary.snapshot, worktreeId: otherIdentity.worktreeId});
+        return (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output.trim();
+      }),
+    );
+    const status = JSON.parse(output) as {
+      readonly build?: unknown;
+      readonly builds: readonly {readonly identity: {readonly worktreeId: string}}[];
+      readonly readySnapshot?: {readonly id: string};
+      readonly stale: boolean;
+    };
+
+    expect(status.build).toBeUndefined();
+    expect(status.builds).toEqual([
+      expect.objectContaining({identity: expect.objectContaining({worktreeId: 'e'.repeat(64)})}),
+    ]);
+    expect(status.readySnapshot?.id).toMatch(/^cgsn_/);
+    expect(status.stale).toBe(false);
   });
 });
 

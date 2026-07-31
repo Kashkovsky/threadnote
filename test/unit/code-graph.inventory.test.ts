@@ -25,6 +25,14 @@ describe('native code graph inventory policy', () => {
     expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt')).toBe(false);
     expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt', '', ['pods'])).toBe(true);
     expect(acceptsRepositoryPath('apps/pods/src/main/java/Service.java', '', ['apps/pods'])).toBe(true);
+    expect(
+      acceptsRepositoryPath(
+        'apps/pods/src/main/java/io/coda/pods/Service.java',
+        '',
+        ['apps/pods'],
+        ['apps/pods/src/main/java'],
+      ),
+    ).toBe(true);
     expect(acceptsRepositoryPath('pods/build/generated/Generated.kt', '', ['pods'])).toBe(false);
     expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt', 'pods/**', ['pods'])).toBe(false);
     expect(acceptsRepositoryPath('Pods/Headers/Generated.h')).toBe(false);

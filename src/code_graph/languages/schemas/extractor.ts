@@ -16,6 +16,7 @@ interface MutableStructuredFacts {
   readonly diagnostics: string[];
   readonly edges: CodeGraphEdge[];
   readonly file: CodeGraphInventoryFile;
+  readonly identityOccurrences: Map<string, number>;
   readonly module: CodeGraphSymbol;
   readonly packageName: string | undefined;
   readonly symbols: CodeGraphSymbol[];
@@ -73,6 +74,7 @@ export function extractStructuredSchemaFacts(
 
 function createFacts(file: CodeGraphInventoryFile, context: CodeGraphExtractionContext): MutableStructuredFacts {
   const packageName = Option.getOrUndefined(context.packageName);
+  const identityOccurrences = new Map<string, number>();
   const module = structuredSymbol(
     file,
     packageName,
@@ -81,8 +83,10 @@ function createFacts(file: CodeGraphInventoryFile, context: CodeGraphExtractionC
     file.path,
     0,
     Math.min(file.content!.length, 1),
+    file.path,
+    identityOccurrences,
   );
-  return {diagnostics: [], edges: [], file, module, packageName, symbols: [module]};
+  return {diagnostics: [], edges: [], file, identityOccurrences, module, packageName, symbols: [module]};
 }
 
 function extractObjectConfig(facts: MutableStructuredFacts): void {
@@ -98,8 +102,8 @@ function extractObjectConfig(facts: MutableStructuredFacts): void {
       {json: true, schema: yaml.FAILSAFE_SCHEMA},
     );
   } else {
-    const source = facts.file.language === 'jsonc' ? stripJsonComments(content) : content;
-    documents = [JSON.parse(source.replace(/,\s*([}\]])/g, '$1')) as unknown];
+    const source = facts.file.language === 'jsonc' ? normalizeJsonc(content) : content;
+    documents = [JSON.parse(source) as unknown];
   }
   const seen = new WeakSet<object>();
   let searchFrom = 0;
@@ -123,9 +127,10 @@ function extractObjectConfig(facts: MutableStructuredFacts): void {
         parent,
         Array.isArray(value) ? 'item' : 'property',
         key,
-        `${facts.file.path}#${qualifiedPath.join('.')}`,
+        structuredPath(facts.file.path, qualifiedPath),
         offset,
         offset + Math.max(1, key.length),
+        `${facts.file.path}#${qualifiedPath.join('.')}`,
       );
       visit(child, symbol, qualifiedPath, depth + 1);
     }
@@ -141,22 +146,43 @@ function extractObjectConfig(facts: MutableStructuredFacts): void {
 function extractToml(facts: MutableStructuredFacts): void {
   const content = facts.file.content!;
   let table = facts.module;
+  let tableIdentityQualifiedName = facts.file.path;
   for (const line of linesWithOffsets(content)) {
     const tableMatch = /^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?$/.exec(line.text);
     if (tableMatch) {
       const name = tableMatch[1]!.trim();
-      table = addDeclaration(facts, facts.module, 'table', name, `${facts.file.path}#${name}`, line.start, line.end);
+      table = addDeclaration(
+        facts,
+        facts.module,
+        'table',
+        name,
+        structuredPath(facts.file.path, [name]),
+        line.start,
+        line.end,
+        `${facts.file.path}#${name}`,
+      );
+      tableIdentityQualifiedName = `${facts.file.path}#${name}`;
       continue;
     }
     const keyMatch = /^\s*([A-Za-z0-9_.-]+)\s*=/.exec(line.text);
     if (!keyMatch) continue;
     const name = keyMatch[1]!;
-    addDeclaration(facts, table, 'property', name, `${table.qualifiedName}.${name}`, line.start, line.end);
+    addDeclaration(
+      facts,
+      table,
+      'property',
+      name,
+      structuredChild(table.qualifiedName, name),
+      line.start,
+      line.end,
+      `${tableIdentityQualifiedName}.${name}`,
+    );
   }
 }
 
 function extractKeyValueConfig(facts: MutableStructuredFacts): void {
   let section = facts.module;
+  let sectionIdentityQualifiedName = facts.file.path;
   for (const line of linesWithOffsets(facts.file.content!)) {
     const sectionMatch = /^\s*\[([^\]]+)\]\s*$/.exec(line.text);
     if (sectionMatch) {
@@ -166,16 +192,27 @@ function extractKeyValueConfig(facts: MutableStructuredFacts): void {
         facts.module,
         'section',
         name,
-        `${facts.file.path}#${name}`,
+        structuredPath(facts.file.path, [name]),
         line.start,
         line.end,
+        `${facts.file.path}#${name}`,
       );
+      sectionIdentityQualifiedName = `${facts.file.path}#${name}`;
       continue;
     }
     const keyMatch = /^\s*(?:export\s+)?([A-Za-z_][\w.-]*)\s*(?:=|:)/.exec(line.text);
     if (!keyMatch) continue;
     const name = keyMatch[1]!;
-    addDeclaration(facts, section, 'property', name, `${section.qualifiedName}.${name}`, line.start, line.end);
+    addDeclaration(
+      facts,
+      section,
+      'property',
+      name,
+      structuredChild(section.qualifiedName, name),
+      line.start,
+      line.end,
+      `${sectionIdentityQualifiedName}.${name}`,
+    );
   }
 }
 
@@ -219,22 +256,40 @@ function extractGraphql(facts: MutableStructuredFacts): void {
 
 function extractProtobuf(facts: MutableStructuredFacts): void {
   const content = facts.file.content!;
-  const namespace = /^\s*package\s+([\w.]+)\s*;/m.exec(content)?.[1];
-  const expression = /(?:^|[;{}\r\n])\s*(message|enum|service|rpc|oneof)\s+([A-Za-z_]\w*)/gi;
-  for (const match of content.matchAll(expression)) {
+  const declarationsSource = maskCStyleNonCode(content, true);
+  const commentsMaskedSource = maskCStyleNonCode(content, false);
+  const namespace = /^\s*package\s+([\w.]+)\s*;/m.exec(declarationsSource)?.[1];
+  const token = /\b(message|enum|service|rpc|oneof)\s+([A-Za-z_]\w*)|[{}]/gi;
+  const scopes: Array<CodeGraphSymbol | undefined> = [];
+  let pendingScope: CodeGraphSymbol | undefined;
+  for (const match of declarationsSource.matchAll(token)) {
+    const text = match[0];
+    if (text === '{') {
+      scopes.push(pendingScope);
+      pendingScope = undefined;
+      continue;
+    }
+    if (text === '}') {
+      scopes.pop();
+      pendingScope = undefined;
+      continue;
+    }
     const name = match[2]!;
+    const kind = match[1]!.toLowerCase();
     const offset = match.index ?? 0;
-    addDeclaration(
+    const parent = [...scopes].reverse().find((scope): scope is CodeGraphSymbol => scope !== undefined) ?? facts.module;
+    const parentQualifiedName = parent === facts.module ? namespace : parent.qualifiedName;
+    pendingScope = addDeclaration(
       facts,
-      facts.module,
-      match[1]!.toLowerCase(),
+      parent,
+      kind,
       name,
-      namespace ? `${namespace}.${name}` : name,
+      parentQualifiedName ? `${parentQualifiedName}.${name}` : name,
       offset,
-      offset + match[0].length,
+      offset + text.length,
     );
   }
-  for (const match of content.matchAll(/^\s*import\s+(?:public\s+|weak\s+)?["']([^"']+)["']\s*;/gim)) {
+  for (const match of commentsMaskedSource.matchAll(/^\s*import\s+(?:public\s+|weak\s+)?["']([^"']+)["']\s*;/gim)) {
     addUnresolvedEdge(
       facts,
       facts.module,
@@ -314,8 +369,19 @@ function addDeclaration(
   qualifiedName: string,
   start: number,
   end: number,
+  identityQualifiedName: string = qualifiedName,
 ): CodeGraphSymbol {
-  const symbol = structuredSymbol(facts.file, facts.packageName, kind, name, qualifiedName, start, end);
+  const symbol = structuredSymbol(
+    facts.file,
+    facts.packageName,
+    kind,
+    name,
+    qualifiedName,
+    start,
+    end,
+    identityQualifiedName,
+    facts.identityOccurrences,
+  );
   facts.symbols.push(symbol);
   facts.edges.push(resolvedEdge(facts.file, parent, symbol, 'contains', 'syntactic', start, end));
   return symbol;
@@ -329,11 +395,23 @@ function structuredSymbol(
   qualifiedName: string,
   start: number,
   end: number,
+  identityQualifiedName: string,
+  identityOccurrences: Map<string, number>,
 ): CodeGraphSymbol {
+  const identityKey = `${kind}\n${identityQualifiedName}`;
+  const occurrence = identityOccurrences.get(identityKey) ?? 0;
+  identityOccurrences.set(identityKey, occurrence + 1);
   return {
     contentHash: file.contentHash,
     exported: true,
-    id: `cgs_${sha256HexSync(`structured-symbol-v1\n${file.path}\n${file.language}\n${kind}\n${qualifiedName}`).slice(0, 32)}`,
+    id:
+      occurrence === 0
+        ? `cgs_${sha256HexSync(
+            `structured-symbol-v1\n${file.path}\n${file.language}\n${kind}\n${identityQualifiedName}`,
+          ).slice(0, 32)}`
+        : `cgs_${sha256HexSync(
+            `structured-symbol-v2\n${file.path}\n${file.language}\n${kind}\n${qualifiedName}\n${occurrence}`,
+          ).slice(0, 32)}`,
     kind,
     language: file.language,
     name,
@@ -343,6 +421,18 @@ function structuredSymbol(
     resolutionDomain: 'structured-schema',
     span: textSpan(file.content!, start, end),
   };
+}
+
+function structuredPath(filePath: string, segments: readonly string[]): string {
+  return `${filePath}#/${segments.map(escapeStructuredSegment).join('/')}`;
+}
+
+function structuredChild(parent: string, name: string): string {
+  return `${parent}/${escapeStructuredSegment(name)}`;
+}
+
+function escapeStructuredSegment(value: string): string {
+  return value.replaceAll('~', '~0').replaceAll('/', '~1');
 }
 
 function resolvedEdge(
@@ -397,15 +487,13 @@ function edgeId(path: string, source: string, relation: string, target: string, 
 function textSpan(content: string, start: number, end: number): CodeGraphSpan {
   const boundedStart = Math.max(0, Math.min(content.length, start));
   const boundedEnd = Math.max(boundedStart, Math.min(content.length, end));
-  const before = content.slice(0, boundedStart);
-  const through = content.slice(0, boundedEnd);
-  const line = before.split('\n').length;
-  const endLine = through.split('\n').length;
+  const from = sourcePositionAt(content, boundedStart);
+  const to = sourcePositionAt(content, boundedEnd);
   return {
-    column: boundedStart - before.lastIndexOf('\n'),
-    endColumn: boundedEnd - through.lastIndexOf('\n'),
-    endLine,
-    line,
+    column: from.column,
+    endColumn: to.column,
+    endLine: to.line,
+    line: from.line,
   };
 }
 
@@ -414,11 +502,43 @@ function linesWithOffsets(
 ): readonly {readonly end: number; readonly start: number; readonly text: string}[] {
   const output: Array<{end: number; start: number; text: string}> = [];
   let start = 0;
-  for (const text of content.split(/\r?\n/)) {
-    output.push({end: start + text.length, start, text});
-    start += text.length + 1;
+  let cursor = 0;
+  while (cursor < content.length) {
+    const width = lineTerminatorWidth(content, cursor);
+    if (width === 0) {
+      cursor += 1;
+      continue;
+    }
+    output.push({end: cursor, start, text: content.slice(start, cursor)});
+    cursor += width;
+    start = cursor;
   }
+  output.push({end: content.length, start, text: content.slice(start)});
   return output;
+}
+
+function sourcePositionAt(content: string, offset: number): {readonly column: number; readonly line: number} {
+  let column = 1;
+  let cursor = 0;
+  let line = 1;
+  while (cursor < offset) {
+    const width = lineTerminatorWidth(content, cursor);
+    if (width > 0) {
+      cursor += width;
+      column = 1;
+      line += 1;
+    } else {
+      cursor += 1;
+      column += 1;
+    }
+  }
+  return {column, line};
+}
+
+function lineTerminatorWidth(content: string, offset: number): number {
+  const character = content[offset];
+  if (character === '\r') return content[offset + 1] === '\n' ? 2 : 1;
+  return character === '\n' || character === '\u2028' || character === '\u2029' ? 1 : 0;
 }
 
 function findConfigKey(content: string, key: string, from: number): number {
@@ -428,14 +548,16 @@ function findConfigKey(content: string, key: string, from: number): number {
 }
 
 function stripJsonComments(value: string): string {
-  let output = '';
-  let inString = false;
+  return maskCStyleNonCode(value, false);
+}
+
+function normalizeJsonc(value: string): string {
+  const output = stripJsonComments(value).split('');
   let escaped = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const current = value[index]!;
-    const next = value[index + 1];
+  let inString = false;
+  for (let index = 0; index < output.length; index += 1) {
+    const current = output[index]!;
     if (inString) {
-      output += current;
       if (escaped) escaped = false;
       else if (current === '\\') escaped = true;
       else if (current === '"') inString = false;
@@ -443,26 +565,68 @@ function stripJsonComments(value: string): string {
     }
     if (current === '"') {
       inString = true;
-      output += current;
+      continue;
+    }
+    if (current !== ',') continue;
+    let lookahead = index + 1;
+    while (lookahead < output.length && /\s/u.test(output[lookahead]!)) lookahead += 1;
+    if (output[lookahead] === '}' || output[lookahead] === ']') output[index] = ' ';
+  }
+  if (output[0] === '\uFEFF') output[0] = ' ';
+  return output.join('');
+}
+
+function maskCStyleNonCode(value: string, maskStrings: boolean): string {
+  const output = value.split('');
+  let mode: 'block-comment' | 'code' | 'line-comment' | 'string' = 'code';
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const current = value[index]!;
+    const next = value[index + 1];
+    if (mode === 'line-comment') {
+      if (isLineTerminator(current)) mode = 'code';
+      else output[index] = ' ';
+      continue;
+    }
+    if (mode === 'block-comment') {
+      if (current === '*' && next === '/') {
+        output[index] = ' ';
+        output[index + 1] = ' ';
+        index += 1;
+        mode = 'code';
+      } else if (!isLineTerminator(current)) output[index] = ' ';
+      continue;
+    }
+    if (mode === 'string') {
+      if (maskStrings && !isLineTerminator(current)) output[index] = ' ';
+      if (escaped) escaped = false;
+      else if (current === '\\') escaped = true;
+      else if (current === quote) mode = 'code';
       continue;
     }
     if (current === '/' && next === '/') {
-      while (index < value.length && value[index] !== '\n') index += 1;
-      output += '\n';
-      continue;
-    }
-    if (current === '/' && next === '*') {
-      index += 2;
-      while (index < value.length - 1 && !(value[index] === '*' && value[index + 1] === '/')) {
-        output += value[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
+      output[index] = ' ';
+      output[index + 1] = ' ';
       index += 1;
-      continue;
+      mode = 'line-comment';
+    } else if (current === '/' && next === '*') {
+      output[index] = ' ';
+      output[index + 1] = ' ';
+      index += 1;
+      mode = 'block-comment';
+    } else if (current === '"' || current === "'") {
+      if (maskStrings) output[index] = ' ';
+      quote = current;
+      escaped = false;
+      mode = 'string';
     }
-    output += current;
   }
-  return output;
+  return output.join('');
+}
+
+function isLineTerminator(character: string): boolean {
+  return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
 }
 
 function normalizeSqlIdentifier(value: string): string {

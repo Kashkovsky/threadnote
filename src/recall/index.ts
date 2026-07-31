@@ -477,6 +477,13 @@ export const recallIndexStatus = Effect.fn('recall.indexStatus')(function* (
   );
 });
 
+export const currentRecallCorpusGeneration = Effect.fn('recall.currentCorpusGeneration')(function* (
+  config: RecallIndexConfig,
+) {
+  const status = yield* recallIndexStatus(config, false);
+  return status.ready ? Option.fromUndefinedOr(status.generation) : Option.none<string>();
+});
+
 export const clearRecallIndexMemoryCache = Effect.fn('recall.clearMemoryCache')(function* () {
   // SQLite owns its page cache and every operation uses a scoped connection.
   yield* Effect.void;

@@ -13,10 +13,16 @@ import {
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
-import {augmentRationaleFacts, CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION} from '../rationale.js';
+import {
+  augmentRationaleFacts,
+  captureRationaleInputs,
+  CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION,
+  CODE_GRAPH_RATIONALE_INPUT_VERSION,
+} from '../rationale.js';
 
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
+  readonly activeDerivationIdentities: (paths: readonly string[]) => readonly string[];
   readonly cacheIdentities: readonly string[];
   readonly cacheIdentityForPath: (path: string) => Option.Option<string>;
   readonly discoverWorkspace: (
@@ -26,8 +32,13 @@ export interface CodeGraphLanguagePackRegistryShape {
     file: CodeGraphInventoryFile,
     projects?: readonly CodeGraphWorkspaceProject[],
   ) => Effect.Effect<CodeGraphFileFacts, CodeGraphLanguagePackError, TreeSitterRuntime>;
+  readonly extractRawFile: (
+    file: CodeGraphInventoryFile,
+    projects?: readonly CodeGraphWorkspaceProject[],
+  ) => Effect.Effect<CodeGraphFileFacts, CodeGraphLanguagePackError, TreeSitterRuntime>;
   readonly isResolutionContext: (path: string) => boolean;
   readonly match: (path: string) => Option.Option<CodeGraphLanguageMatch>;
+  readonly postprocessFile: (file: CodeGraphInventoryFile, facts: CodeGraphFileFacts) => CodeGraphFileFacts;
   readonly packs: readonly CodeGraphLanguagePack[];
 }
 
@@ -74,27 +85,21 @@ export function createCodeGraphLanguagePackRegistry(
   return {
     activeCacheIdentities: paths =>
       [...new Set(paths.flatMap(path => Option.toArray(Option.map(match(path), value => value.cacheIdentity))))].sort(),
+    activeDerivationIdentities: paths =>
+      [
+        ...new Set(
+          paths.flatMap(path => Option.toArray(Option.map(match(path), value => packDerivationIdentity(value.pack)))),
+        ),
+      ].sort(),
     cacheIdentityForPath: path => Option.map(match(path), value => value.cacheIdentity),
     cacheIdentities: [...new Set(entries.map(entry => entry.cacheIdentity))].sort(),
     discoverWorkspace: files =>
       Effect.forEach(workspaceDetectors, detector => detector.detect(files), {
         concurrency: 1,
       }).pipe(Effect.map(mergeCodeGraphWorkspaces)),
-    extractFile: (file, projects = []) => {
-      const matched = match(file.path);
-      if (Option.isNone(matched)) {
-        return Effect.fail(new CodeGraphLanguagePackError(`No code graph language pack accepts ${file.path}.`));
-      }
-      const project = projectForPath(projects, file.path);
-      const context: CodeGraphExtractionContext = {
-        packageName: Option.map(project, value => value.name),
-        project,
-      };
-      const attributed = {...file, language: matched.value.language};
-      return matched.value.pack.extractor
-        .extract(attributed, context)
-        .pipe(Effect.map(facts => augmentRationaleFacts(attributed, facts)));
-    },
+    extractFile: (file, projects = []) =>
+      extractRawFile(file, projects).pipe(Effect.map(facts => postprocessFile(file, facts))),
+    extractRawFile,
     isResolutionContext: path =>
       Option.match(match(path), {
         onNone: () => false,
@@ -102,12 +107,35 @@ export function createCodeGraphLanguagePackRegistry(
       }),
     match,
     packs: [...packs],
+    postprocessFile,
   };
+
+  function postprocessFile(file: CodeGraphInventoryFile, facts: CodeGraphFileFacts): CodeGraphFileFacts {
+    const matched = match(file.path);
+    const attributed = Option.isSome(matched) ? {...file, language: matched.value.language} : file;
+    return augmentRationaleFacts(attributed, facts);
+  }
+
+  function extractRawFile(file: CodeGraphInventoryFile, projects: readonly CodeGraphWorkspaceProject[] = []) {
+    const matched = match(file.path);
+    if (Option.isNone(matched)) {
+      return Effect.fail(new CodeGraphLanguagePackError(`No code graph language pack accepts ${file.path}.`));
+    }
+    const project = projectForPath(projects, file.path, matched.value.pack.resolutionStrategy.domain);
+    const context: CodeGraphExtractionContext = {
+      packageName: Option.map(project, value => value.name),
+      project,
+    };
+    const attributed = {...file, language: matched.value.language};
+    return matched.value.pack.extractor
+      .extract(attributed, context)
+      .pipe(Effect.map(facts => captureRationaleInputs(attributed, facts)));
+  }
 }
 
 export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
   const matchers = pack.files
-    .map(matcher => `${matcher.kind}:${matcher.value.toLowerCase()}:${matcher.language}:${matcher.role}`)
+    .map(matcher => `${matcher.kind}:${matcher.value.toLowerCase()}:${matcher.language}`)
     .sort()
     .join('\n');
   const assets = pack.assets
@@ -116,15 +144,32 @@ export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
     .join('\n');
   return sha256HexSync(
     [
-      'code-graph-language-pack-v2',
-      `postprocessors:${CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION}`,
+      'code-graph-language-pack-v3',
+      'parser-facts-v1',
+      `derivation-inputs:${CODE_GRAPH_RATIONALE_INPUT_VERSION}`,
       `id:${pack.id}`,
-      `version:${pack.version}`,
       `extractor:${pack.extractor.version}`,
-      `resolver:${pack.resolutionStrategy.domain}:${pack.resolutionStrategy.version}`,
       `parser-runtime:${pack.assets.length > 0 ? TREE_SITTER_RUNTIME_CACHE_IDENTITY : 'pack-owned'}`,
       `files:\n${matchers}`,
       `assets:\n${assets}`,
+    ].join('\n'),
+  );
+}
+
+export function packDerivationIdentity(pack: CodeGraphLanguagePack): string {
+  const matchers = pack.files
+    .map(matcher => `${matcher.kind}:${matcher.value.toLowerCase()}:${matcher.language}:${matcher.role}`)
+    .sort()
+    .join('\n');
+  return sha256HexSync(
+    [
+      'code-graph-language-pack-derivation-v1',
+      `postprocessors:${CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION}`,
+      `id:${pack.id}`,
+      `version:${pack.version}`,
+      `resolver:${pack.resolutionStrategy.domain}:${pack.resolutionStrategy.version}`,
+      `capabilities:${[...pack.capabilities].sort().join(',')}`,
+      `files:\n${matchers}`,
     ].join('\n'),
   );
 }

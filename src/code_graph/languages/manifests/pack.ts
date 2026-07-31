@@ -13,10 +13,11 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         try: () => extractFileFacts(file),
         catch: cause => new CodeGraphLanguagePackError(`Could not extract manifest facts from ${file.path}.`, {cause}),
       }),
-    version: sha256HexSync('threadnote-manifest-extractors-v2'),
+    version: sha256HexSync('threadnote-manifest-extractors-v3-node-workspaces'),
   },
   files: [
     {kind: 'basename', language: 'npm-manifest', role: 'manifest', value: 'package.json'},
+    {kind: 'basename', language: 'pnpm-workspace', role: 'workspace', value: 'pnpm-workspace.yaml'},
     {kind: 'basename', language: 'typescript-config', role: 'workspace', value: 'tsconfig.json'},
     {kind: 'basename', language: 'go-manifest', role: 'manifest', value: 'go.mod'},
     {kind: 'basename', language: 'maven-manifest', role: 'manifest', value: 'pom.xml'},
@@ -34,7 +35,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     },
   ],
   id: 'manifests',
-  resolutionStrategy: {domain: 'workspace', version: 'static-manifests-v1'},
-  version: '1.0.0',
+  resolutionStrategy: {domain: 'workspace', version: 'static-manifests-v2-node-workspaces'},
+  version: '1.1.0',
   workspaceDetector: Option.some(manifestWorkspaceDetector),
 };

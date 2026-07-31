@@ -148,8 +148,68 @@ export const proTips: ProTip[] = [
     },
   },
   {
-    id: 'on-call',
+    id: 'orchestrated-worktrees',
     number: '03',
+    category: 'continuity',
+    title: 'Give every parallel agent its own worktree.',
+    summary: 'Share local memory while keeping each agent’s dirty source graph isolated to its checkout.',
+    why: 'Conductor-style orchestrators can run several agents against linked worktrees without one branch’s uncommitted files becoming another branch’s current-code evidence.',
+    practice: [
+      'Pass each agent’s absolute worktree path as callerCwd on recall and graph calls.',
+      'Use a distinct handoff topic for each independent task; share a topic only when agents intentionally update one record.',
+      'Let Threadnote coordinate graph publication and maintenance—do not copy or share derived index files between worktrees.',
+    ],
+    scenario: {
+      eyebrow: 'Multi-agent orchestration',
+      title: 'Two agents, one repository, isolated current code',
+      description: 'Both agents recall the same decision while each graph call follows its own linked worktree.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Implement the API and mobile parts of session refresh in parallel.',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context · API agent',
+          text: '{"project":"identity","query":"session refresh contract","callerCwd":"/repo/.worktrees/refresh-api"}',
+          meta: 'shared canonical memory · API worktree scope',
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · API agent',
+          text: '{"operation":"query","query":"session refresh endpoint","callerCwd":"/repo/.worktrees/refresh-api"}',
+          meta: 'API dirty overlay only',
+        },
+        {
+          kind: 'tool',
+          actor: 'recall_context · mobile agent',
+          text: '{"project":"identity","query":"session refresh contract","callerCwd":"/repo/.worktrees/refresh-mobile"}',
+          meta: 'same canonical memory · mobile worktree scope',
+        },
+        {
+          kind: 'tool',
+          actor: 'inspect_code_graph · mobile agent',
+          text: '{"operation":"query","query":"session refresh coordinator","callerCwd":"/repo/.worktrees/refresh-mobile"}',
+          meta: 'mobile dirty overlay only',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Both agents recalled one contract; each source result came from its own current worktree.',
+          evidence: ['apps/api/src/RefreshEndpoint.ts:38', 'apps/mobile/src/RefreshCoordinator.kt:52'],
+        },
+        {
+          kind: 'assistant',
+          actor: 'Orchestrator',
+          text: 'The agents share the refresh contract, but their uncommitted code remains isolated. I’ll keep API and mobile status in separate handoff topics.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'on-call',
+    number: '04',
     category: 'operations',
     title: 'Turn an incident into the next on-caller’s head start.',
     summary: 'Preserve the privacy-safe diagnosis, signals, mitigations, and follow-up—not the production transcript.',
@@ -226,7 +286,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'switch-agents',
-    number: '04',
+    number: '05',
     category: 'continuity',
     title: 'Start in one agent. Continue in another.',
     summary: 'A concise handoff carries exact status, checks, blockers, and next steps across agent boundaries.',
@@ -278,7 +338,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'resume-later',
-    number: '05',
+    number: '06',
     category: 'continuity',
     title: 'Resume a feature a month later.',
     summary:
@@ -321,7 +381,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'graph-operations',
-    number: '06',
+    number: '07',
     category: 'graph',
     title: 'Choose the graph operation that matches the question.',
     summary:
@@ -376,7 +436,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'memory-plus-graph',
-    number: '07',
+    number: '08',
     category: 'graph',
     title: 'Use memory and graph together—never interchangeably.',
     summary:

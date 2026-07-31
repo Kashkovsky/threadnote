@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, Exit, FileSystem, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
@@ -33,8 +33,35 @@ import {
   prepareProductionCodeGraphFixture,
   type ProductionCodeGraphFixtureProfile,
 } from './code-graph-fixture.js';
+import {
+  parseCodeGraphBenchmarkSamplerArtifact,
+  type CodeGraphBenchmarkSamplerArtifact,
+} from './code-graph-benchmark-sampler.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
+const EXTERNAL_SAMPLER_READY_TIMEOUT_MS = 5_000;
+const EXTERNAL_SAMPLER_STOP_TIMEOUT_MS = 5_000;
+const EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS = 1_000;
+
+interface PreparedCodeGraphBenchmarkFixture {
+  readonly home: string;
+  readonly incrementalSourcePath?: string;
+  readonly profile?: ProductionCodeGraphFixtureProfile;
+  readonly queryText?: string;
+  readonly repository: string;
+}
+
+export interface CodeGraphBenchmarkRunCheckpoint {
+  readonly phase: string;
+  readonly state: 'complete' | 'failed' | 'running';
+  readonly updatedAt: string;
+  readonly version: 1;
+}
+
+interface CodeGraphBenchmarkRunCheckpointHandle {
+  readonly mark: (phase: string) => Effect.Effect<void, unknown>;
+  readonly finish: (state: 'complete' | 'failed') => Effect.Effect<void, never>;
+}
 
 const benchmarkCodeGraph = Effect.scoped(
   Effect.gen(function* () {
@@ -42,16 +69,44 @@ const benchmarkCodeGraph = Effect.scoped(
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
     const options = parseArguments(yield* scriptArguments());
+    const runCheckpoint =
+      options.profile === 'production-large' && options.outputPath
+        ? yield* Effect.acquireRelease(
+            makeBenchmarkRunCheckpoint(`${options.outputPath}.run.json`),
+            (checkpoint, exit) => checkpoint.finish(Exit.isSuccess(exit) ? 'complete' : 'failed'),
+          )
+        : undefined;
     const fixturePath = yield* path.fromFileUrl(
       new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
-    const prepared =
+    const bootstrapRoot =
+      options.profile === 'production-large'
+        ? yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-benchmark-bootstrap-'})
+        : undefined;
+    const bootstrapSampler =
+      options.profile === 'production-large' && bootstrapRoot
+        ? yield* Effect.acquireRelease(
+            startExternalSampler(
+              fs,
+              path,
+              bootstrapRoot,
+              path.join(bootstrapRoot, 'sqlite-temp'),
+              path.join(bootstrapRoot, 'not-created.sqlite'),
+              benchmarkSamplerCheckpointPath(path, bootstrapRoot, options.outputPath, 'bootstrap'),
+              'bootstrap',
+            ),
+            (sampler, exit) => sampler.stop(Exit.isSuccess(exit) ? 'complete' : 'aborted').pipe(Effect.ignore),
+          )
+        : undefined;
+    const prepared: PreparedCodeGraphBenchmarkFixture =
       options.profile === 'production-large'
         ? yield* prepareProductionCodeGraphFixture(productionProfile(options), options.vectors)
         : options.scaleSymbols === undefined
           ? yield* prepareCodeGraphFixture(options.fixture)
           : yield* prepareGeneratedCodeGraphFixture(options.scaleSymbols, options.vectors);
+    yield* runCheckpoint?.mark('preparing-runtime') ?? Effect.void;
+    yield* bootstrapSampler?.markPhase('preparing-runtime') ?? Effect.void;
     const embeddingModelId = options.vectors
       ? yield* prepareBenchmarkEmbedding(prepared.home, options.modelHome)
       : undefined;
@@ -73,20 +128,46 @@ const benchmarkCodeGraph = Effect.scoped(
       benchmarkIdentity.checkoutId,
       benchmarkIdentity.worktreeId,
     );
+    const samplerRoot = path.join(prepared.home, 'benchmark-telemetry');
+    const sqliteTemporaryRoot = path.join(samplerRoot, 'sqlite-temp');
+    if (options.profile === 'production-large') {
+      yield* fs.makeDirectory(sqliteTemporaryRoot, {recursive: true});
+      process.env.SQLITE_TMPDIR = sqliteTemporaryRoot;
+    }
     const coldStarted = yield* Clock.currentTimeNanos;
     const coldProcessStarted = processTelemetry();
-    const coldTimeline = new IndexPhaseTimeline(coldStarted);
+    const coldTimeline = new IndexPhaseTimeline(coldStarted, coldProcessStarted);
     const coldStoragePeak = new SqliteStoragePeakTelemetry();
+    const coldSampler =
+      options.profile === 'production-large'
+        ? yield* Effect.acquireRelease(
+            startExternalSampler(
+              fs,
+              path,
+              samplerRoot,
+              sqliteTemporaryRoot,
+              benchmarkLayout.databasePath,
+              benchmarkSamplerCheckpointPath(path, samplerRoot, options.outputPath, 'cold'),
+              'cold',
+            ),
+            (sampler, exit) => sampler.stop(Exit.isSuccess(exit) ? 'complete' : 'aborted').pipe(Effect.ignore),
+          )
+        : undefined;
+    const bootstrapExternalTelemetry = bootstrapSampler ? yield* bootstrapSampler.stop() : undefined;
+    yield* runCheckpoint?.mark('cold-index') ?? Effect.void;
     const cold = yield* indexer.index({
       cwd: prepared.repository,
       onProgress: progress =>
         observeIndexProgress(coldTimeline, progress).pipe(
+          Effect.andThen(coldSampler?.mark(progress) ?? Effect.void),
           Effect.andThen(observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath)),
         ),
       threadnoteHome: prepared.home,
     });
     const coldFinished = yield* Clock.currentTimeNanos;
-    coldTimeline.finish(coldFinished);
+    coldTimeline.finish(coldFinished, processTelemetry());
+    yield* runCheckpoint?.mark('hot-query-and-mutation') ?? Effect.void;
+    yield* coldSampler?.markPhase('hot-query-and-mutation') ?? Effect.void;
     yield* observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath);
     const coldProcessFinished = processTelemetry();
     if (options.vectors) {
@@ -153,18 +234,38 @@ const benchmarkCodeGraph = Effect.scoped(
     );
     const incrementalStarted = yield* Clock.currentTimeNanos;
     const incrementalProcessStarted = processTelemetry();
-    const incrementalTimeline = new IndexPhaseTimeline(incrementalStarted);
+    const incrementalTimeline = new IndexPhaseTimeline(incrementalStarted, incrementalProcessStarted);
     const incrementalStoragePeak = new SqliteStoragePeakTelemetry();
+    const incrementalSampler =
+      options.profile === 'production-large'
+        ? yield* Effect.acquireRelease(
+            startExternalSampler(
+              fs,
+              path,
+              samplerRoot,
+              sqliteTemporaryRoot,
+              benchmarkLayout.databasePath,
+              benchmarkSamplerCheckpointPath(path, samplerRoot, options.outputPath, 'incremental'),
+              'incremental',
+            ),
+            (sampler, exit) => sampler.stop(Exit.isSuccess(exit) ? 'complete' : 'aborted').pipe(Effect.ignore),
+          )
+        : undefined;
+    const coldExternalTelemetry = coldSampler ? yield* coldSampler.stop() : undefined;
+    yield* runCheckpoint?.mark('incremental-index') ?? Effect.void;
     const incremental = yield* indexer.index({
       cwd: prepared.repository,
       onProgress: progress =>
         observeIndexProgress(incrementalTimeline, progress).pipe(
+          Effect.andThen(incrementalSampler?.mark(progress) ?? Effect.void),
           Effect.andThen(observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath)),
         ),
       threadnoteHome: prepared.home,
     });
     const incrementalFinished = yield* Clock.currentTimeNanos;
-    incrementalTimeline.finish(incrementalFinished);
+    incrementalTimeline.finish(incrementalFinished, processTelemetry());
+    yield* runCheckpoint?.mark('post-incremental-query-and-analysis') ?? Effect.void;
+    yield* incrementalSampler?.markPhase('post-incremental-query-and-analysis') ?? Effect.void;
     yield* observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath);
     const incrementalProcessFinished = processTelemetry();
     if (
@@ -265,6 +366,8 @@ const benchmarkCodeGraph = Effect.scoped(
       [git(['rev-parse', 'HEAD']), git(['status', '--porcelain']), system.hardwareInfo()],
       {concurrency: 3},
     );
+    const incrementalExternalTelemetry = incrementalSampler ? yield* incrementalSampler.stop() : undefined;
+    yield* runCheckpoint?.mark('finalizing-artifact') ?? Effect.void;
     const artifact: BenchmarkArtifactV1 = {
       createdAt: new Date().toISOString(),
       environment: {
@@ -289,14 +392,19 @@ const benchmarkCodeGraph = Effect.scoped(
         runnerVersion: '1',
       },
       measurements: [
+        ...externalSamplerMeasurements('bootstrap', bootstrapExternalTelemetry),
         benchmarkMeasurement('cold-index', 'milliseconds', [
           Number(coldFinished - coldStarted) / NANOSECONDS_PER_MILLISECOND,
         ]),
         ...indexPhaseMeasurements('cold', coldTimeline, options.vectors),
+        ...indexPhaseResourceMeasurements('cold', coldTimeline),
+        ...externalSamplerMeasurements('cold', coldExternalTelemetry),
         benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [
           Number(incrementalFinished - incrementalStarted) / NANOSECONDS_PER_MILLISECOND,
         ]),
         ...indexPhaseMeasurements('one-file-reindex', incrementalTimeline, options.vectors),
+        ...indexPhaseResourceMeasurements('one-file-reindex', incrementalTimeline),
+        ...externalSamplerMeasurements('one-file-reindex', incrementalExternalTelemetry),
         benchmarkMeasurement(
           options.vectors ? 'hot-semantic-vector-query' : 'hot-exact-lexical-query',
           'milliseconds',
@@ -329,6 +437,20 @@ const benchmarkCodeGraph = Effect.scoped(
         ]),
         benchmarkMeasurement('incremental-sqlite-wal-peak-observed', 'bytes', [incrementalStoragePeak.sqliteWalBytes]),
         benchmarkMeasurement('incremental-sqlite-shm-peak-observed', 'bytes', [incrementalStoragePeak.sqliteShmBytes]),
+        ...(coldExternalTelemetry
+          ? [
+              benchmarkMeasurement('cold-sqlite-temp-peak-observed', 'bytes', [
+                externalTelemetryPeak(coldExternalTelemetry, 'temporaryPeakBytes'),
+              ]),
+            ]
+          : []),
+        ...(incrementalExternalTelemetry
+          ? [
+              benchmarkMeasurement('incremental-sqlite-temp-peak-observed', 'bytes', [
+                externalTelemetryPeak(incrementalExternalTelemetry, 'temporaryPeakBytes'),
+              ]),
+            ]
+          : []),
         benchmarkMeasurement('vector-index-disk', 'bytes', [storage.vectorBytes]),
         benchmarkMeasurement('build-status-sidecar-disk', 'bytes', [storage.buildStatusBytes]),
         benchmarkMeasurement('derived-index-unclassified-disk', 'bytes', [storage.unclassifiedRepositoryBytes]),
@@ -365,12 +487,27 @@ const benchmarkCodeGraph = Effect.scoped(
         observedBuildStatusRecords: observedStatusRecords,
         percentileInterpretation:
           'samples=1 is one observation; p50/p95/p99 fields are identical summaries, not percentile estimates',
+        observationLabel:
+          'Cold index, incremental index, and every per-phase measurement are n=1 observations, not statistical estimates.',
         phaseMeasurement: 'first progress transition and explicit subphase completion boundaries',
         queries: options.scaleSymbols === undefined && prepared.profile === undefined ? fixture.queries.length : 1,
         retrievalMode: options.vectors ? 'pinned-production-vectors' : 'lexical-only',
         rssMeasurement:
           'boundary RSS plus process-lifetime resourceUsage.maxRSS; peak is cumulative, not phase-isolated',
         statusSamples,
+        sameRunnerComparisonKey: benchmarkComparisonKey({
+          architecture: system.architecture,
+          cpu: hardware.cpuModel,
+          memoryBytes: hardware.memoryBytes,
+          operatingSystem: hardware.operatingSystem,
+          runnerClass: process.env.THREADNOTE_BENCHMARK_RUNNER_CLASS?.trim() || 'local-unclassified',
+        }),
+        runnerClass: process.env.THREADNOTE_BENCHMARK_RUNNER_CLASS?.trim() || 'local-unclassified',
+        runnerIdentity: process.env.THREADNOTE_BENCHMARK_RUNNER_ID?.trim() || 'local',
+        sampler:
+          options.profile === 'production-large'
+            ? externalSamplerDescription(coldExternalTelemetry ?? bootstrapExternalTelemetry)
+            : 'progress-boundary storage sampling',
         vectorEnabled: options.vectors,
         vectorRows,
         ...(embeddingModelId ? {embeddingModelId} : {}),
@@ -447,47 +584,49 @@ type IndexPhasePoint =
 
 class IndexPhaseTimeline {
   readonly #points = new Map<IndexPhasePoint, bigint>();
+  readonly #resources = new Map<IndexPhasePoint, ProcessTelemetry>();
 
-  constructor(startedAt: bigint) {
+  constructor(startedAt: bigint, telemetry: ProcessTelemetry) {
     this.#points.set('start', startedAt);
+    this.#resources.set('start', telemetry);
   }
 
-  observe(progress: CodeGraphProgress, at: bigint): void {
+  observe(progress: CodeGraphProgress, at: bigint, telemetry: ProcessTelemetry): void {
     switch (progress.phase) {
       case 'registering':
-        this.#first('registering:start', at);
+        this.#first('registering:start', at, telemetry);
         break;
       case 'waiting':
-        this.#first('waiting:start', at);
+        this.#first('waiting:start', at, telemetry);
         break;
       case 'scanning':
-        this.#first('scanning:start', at);
-        if (progress.completed >= progress.total) this.#points.set('scanning:complete', at);
+        this.#first('scanning:start', at, telemetry);
+        if (progress.completed >= progress.total) this.#set('scanning:complete', at, telemetry);
         break;
       case 'materializing':
-        this.#first('materializing:start', at);
-        if (progress.completed >= progress.total) this.#points.set('materializing:complete', at);
+        this.#first('materializing:start', at, telemetry);
+        if (progress.completed >= progress.total) this.#set('materializing:complete', at, telemetry);
         break;
       case 'resolving':
-        if (progress.subphase === 'references') this.#first('resolving:references', at);
-        else this.#points.set('resolving:complete', at);
+        if (progress.subphase === 'references') this.#first('resolving:references', at, telemetry);
+        else this.#set('resolving:complete', at, telemetry);
         break;
       case 'activating':
-        if (progress.subphase === 'validating-input') this.#first('activating:validating-input', at);
+        if (progress.subphase === 'validating-input') this.#first('activating:validating-input', at, telemetry);
         else if (progress.subphase === 'writing-and-checkpointing') {
-          this.#first('activating:writing-and-checkpointing', at);
-        } else if (progress.subphase === 'promoting') this.#first('activating:promoting', at);
-        else if (progress.subphase === 'complete') this.#points.set('activating:complete', at);
+          this.#first('activating:writing-and-checkpointing', at, telemetry);
+        } else if (progress.subphase === 'promoting') this.#first('activating:promoting', at, telemetry);
+        else if (progress.subphase === 'complete') this.#set('activating:complete', at, telemetry);
         break;
       case 'embedding':
-        this.#first('embedding:start', at);
-        if (progress.completed >= progress.total) this.#points.set('embedding:complete', at);
+        this.#first('embedding:start', at, telemetry);
+        if (progress.completed >= progress.total) this.#set('embedding:complete', at, telemetry);
         break;
     }
   }
 
-  finish(at: bigint): void {
-    this.#points.set('finish', at);
+  finish(at: bigint, telemetry: ProcessTelemetry): void {
+    this.#set('finish', at, telemetry);
   }
 
   duration(from: IndexPhasePoint, to: IndexPhasePoint, ...fallbackTo: readonly IndexPhasePoint[]): number {
@@ -499,13 +638,36 @@ class IndexPhaseTimeline {
     return Math.max(0, Number((end ?? start) - start) / NANOSECONDS_PER_MILLISECOND);
   }
 
-  #first(point: IndexPhasePoint, at: bigint): void {
-    if (!this.#points.has(point)) this.#points.set(point, at);
+  resources(
+    from: IndexPhasePoint,
+    to: IndexPhasePoint,
+    ...fallbackTo: readonly IndexPhasePoint[]
+  ): {readonly cpuMilliseconds: number; readonly rssBoundaryPeakBytes: number} {
+    const started = this.#resources.get(from);
+    const finished = [to, ...fallbackTo, 'finish' as const]
+      .map(point => this.#resources.get(point))
+      .find((candidate): candidate is ProcessTelemetry => candidate !== undefined);
+    if (!started || !finished) return {cpuMilliseconds: 0, rssBoundaryPeakBytes: 0};
+    return {
+      cpuMilliseconds: cpuMilliseconds(started, finished).total,
+      rssBoundaryPeakBytes: Math.max(started.rssBytes, finished.rssBytes),
+    };
+  }
+
+  #first(point: IndexPhasePoint, at: bigint, telemetry: ProcessTelemetry): void {
+    if (!this.#points.has(point)) this.#set(point, at, telemetry);
+  }
+
+  #set(point: IndexPhasePoint, at: bigint, telemetry: ProcessTelemetry): void {
+    this.#points.set(point, at);
+    this.#resources.set(point, telemetry);
   }
 }
 
 function observeIndexProgress(timeline: IndexPhaseTimeline, progress: CodeGraphProgress): Effect.Effect<void> {
-  return Clock.currentTimeNanos.pipe(Effect.tap(at => Effect.sync(() => timeline.observe(progress, at))));
+  return Clock.currentTimeNanos.pipe(
+    Effect.tap(at => Effect.sync(() => timeline.observe(progress, at, processTelemetry()))),
+  );
 }
 
 function indexPhaseMeasurements(
@@ -553,6 +715,73 @@ function indexPhaseMeasurements(
       timeline.duration('embedding:start', 'embedding:complete', 'finish'),
     ]),
   ];
+}
+
+function indexPhaseResourceMeasurements(
+  prefix: 'cold' | 'one-file-reindex',
+  timeline: IndexPhaseTimeline,
+): ReturnType<typeof benchmarkMeasurement>[] {
+  const phases = [
+    ['registration', 'start', 'scanning:start', 'materializing:start'],
+    ['inventory-and-extraction', 'scanning:start', 'scanning:complete', 'materializing:start'],
+    ['materialization', 'materializing:start', 'resolving:references', 'activating:validating-input'],
+    ['reference-resolution', 'resolving:references', 'resolving:complete', 'activating:validating-input'],
+    ['activation', 'activating:validating-input', 'activating:complete', 'finish'],
+    ['vector-index', 'embedding:start', 'embedding:complete', 'finish'],
+  ] as const satisfies readonly (readonly [string, IndexPhasePoint, IndexPhasePoint, IndexPhasePoint])[];
+  return phases.flatMap(([name, from, to, fallback]) => {
+    const resources = timeline.resources(from, to, fallback);
+    return [
+      benchmarkMeasurement(`${prefix}-${name}-process-cpu-n1`, 'milliseconds', [resources.cpuMilliseconds]),
+      benchmarkMeasurement(`${prefix}-${name}-boundary-rss-n1`, 'bytes', [resources.rssBoundaryPeakBytes]),
+    ];
+  });
+}
+
+function externalSamplerMeasurements(
+  prefix: 'bootstrap' | 'cold' | 'one-file-reindex',
+  artifact: CodeGraphBenchmarkSamplerArtifact | undefined,
+): ReturnType<typeof benchmarkMeasurement>[] {
+  if (!artifact) return [];
+  return Object.entries(artifact.phases).flatMap(([phase, sample]) => {
+    const name =
+      phase
+        .replace(/[^a-z0-9]+/gi, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'unknown';
+    const processMeasurements =
+      artifact.processTelemetry.availability === 'available' &&
+      sample.cpuMilliseconds !== undefined &&
+      sample.rssPeakBytes !== undefined
+        ? [
+            benchmarkMeasurement(`${prefix}-${name}-external-process-cpu-n1`, 'milliseconds', [sample.cpuMilliseconds]),
+            benchmarkMeasurement(`${prefix}-${name}-external-rss-peak-observed-n1`, 'bytes', [sample.rssPeakBytes]),
+          ]
+        : [];
+    return [
+      ...processMeasurements,
+      benchmarkMeasurement(`${prefix}-${name}-sqlite-main-peak-observed-n1`, 'bytes', [sample.databasePeakBytes]),
+      benchmarkMeasurement(`${prefix}-${name}-sqlite-wal-peak-observed-n1`, 'bytes', [sample.walPeakBytes]),
+      benchmarkMeasurement(`${prefix}-${name}-sqlite-shm-peak-observed-n1`, 'bytes', [sample.shmPeakBytes]),
+      benchmarkMeasurement(`${prefix}-${name}-sqlite-temp-peak-observed-n1`, 'bytes', [sample.temporaryPeakBytes]),
+    ];
+  });
+}
+
+function externalTelemetryPeak(
+  artifact: CodeGraphBenchmarkSamplerArtifact,
+  field: 'databasePeakBytes' | 'shmPeakBytes' | 'temporaryPeakBytes' | 'walPeakBytes',
+): number {
+  return Math.max(0, ...Object.values(artifact.phases).map(phase => phase[field]));
+}
+
+function externalSamplerDescription(artifact: CodeGraphBenchmarkSamplerArtifact | undefined): string {
+  const storage = 'DB/WAL/SHM and isolated SQLite temp-root bytes';
+  if (!artifact) return `external 25ms sampler; process telemetry unavailable; ${storage}`;
+  return artifact.processTelemetry.availability === 'available'
+    ? `external 25ms sampler; Linux /proc CPU/RSS with start-time identity validation; ${storage}`
+    : `external 25ms sampler; process CPU/RSS unavailable on ${artifact.platform} ` +
+        `(${artifact.processTelemetry.reason}); ${storage}`;
 }
 
 interface ProcessTelemetry {
@@ -619,6 +848,221 @@ function observeSqliteStoragePeak(
     Effect.tap(([main, wal, shm]) => Effect.sync(() => telemetry.observe(main, wal, shm))),
     Effect.asVoid,
   );
+}
+
+interface ExternalSamplerHandle {
+  readonly mark: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly markPhase: (phase: string) => Effect.Effect<void, unknown>;
+  readonly stop: (state?: 'aborted' | 'complete') => Effect.Effect<CodeGraphBenchmarkSamplerArtifact, Error | unknown>;
+}
+
+export function parseCodeGraphBenchmarkRunCheckpoint(value: unknown): CodeGraphBenchmarkRunCheckpoint {
+  if (typeof value !== 'object' || value === null) throw new Error('Benchmark run checkpoint must be an object.');
+  const checkpoint = value as Partial<CodeGraphBenchmarkRunCheckpoint>;
+  if (
+    checkpoint.version !== 1 ||
+    !['complete', 'failed', 'running'].includes(checkpoint.state ?? '') ||
+    typeof checkpoint.phase !== 'string' ||
+    !/^[a-z][a-z0-9-]{0,63}$/.test(checkpoint.phase) ||
+    typeof checkpoint.updatedAt !== 'string' ||
+    !Number.isFinite(Date.parse(checkpoint.updatedAt))
+  ) {
+    throw new Error('Benchmark run checkpoint is invalid.');
+  }
+  return checkpoint as CodeGraphBenchmarkRunCheckpoint;
+}
+
+const makeBenchmarkRunCheckpoint = Effect.fn('benchmarkCodeGraph.makeRunCheckpoint')(function* (outputPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const write = (phase: string, state: CodeGraphBenchmarkRunCheckpoint['state']) => {
+    const checkpoint = parseCodeGraphBenchmarkRunCheckpoint({
+      phase,
+      state,
+      updatedAt: new Date().toISOString(),
+      version: 1,
+    });
+    return atomicWrite(outputPath, `${JSON.stringify(checkpoint)}\n`).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(SystemInfo, system),
+    );
+  };
+  yield* write('preparing-fixture', 'running');
+  return {
+    finish: state => write('finished', state).pipe(Effect.catch(() => Effect.void)),
+    mark: phase => write(phase, 'running'),
+  } satisfies CodeGraphBenchmarkRunCheckpointHandle;
+});
+
+function benchmarkSamplerCheckpointPath(
+  path: Path.Path,
+  samplerRoot: string,
+  outputPath: string | undefined,
+  name: 'bootstrap' | 'cold' | 'incremental',
+): string {
+  return outputPath ? `${outputPath}.${name}.sampler.json` : path.join(samplerRoot, `${name}.checkpoint.json`);
+}
+
+export const startExternalSampler = Effect.fn('benchmarkCodeGraph.startExternalSampler')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  samplerRoot: string,
+  temporaryRoot: string,
+  databasePath: string,
+  checkpointPath: string,
+  name: 'bootstrap' | 'cold' | 'incremental',
+) {
+  yield* fs.makeDirectory(samplerRoot, {recursive: true});
+  const phasePath = path.join(samplerRoot, `${name}.phase`);
+  const stopPath = path.join(samplerRoot, `${name}.stop`);
+  const outputPath = path.join(samplerRoot, `${name}.json`);
+  const readyPath = path.join(samplerRoot, `${name}.ready`);
+  yield* Effect.all(
+    [
+      fs.remove(stopPath, {force: true}),
+      fs.remove(outputPath, {force: true}),
+      fs.remove(readyPath, {force: true}),
+      fs.remove(checkpointPath, {force: true}),
+      fs.writeFileString(phasePath, name === 'bootstrap' ? 'preparing-fixture' : 'start'),
+    ],
+    {concurrency: 3},
+  );
+  const samplerScript = yield* path.fromFileUrl(new URL('./code-graph-benchmark-sampler.ts', import.meta.url));
+  const subprocess = Bun.spawn({
+    cmd: [
+      process.execPath,
+      samplerScript,
+      '--pid',
+      String(process.pid),
+      '--database',
+      databasePath,
+      '--temp-root',
+      temporaryRoot,
+      '--phase',
+      phasePath,
+      '--stop',
+      stopPath,
+      '--output',
+      outputPath,
+      '--checkpoint-output',
+      checkpointPath,
+      '--interval-ms',
+      '25',
+      '--checkpoint-ms',
+      '1000',
+      '--ready',
+      readyPath,
+    ],
+    stderr: 'pipe',
+    stdout: 'ignore',
+  });
+  yield* waitForExternalSamplerReady(fs, readyPath, subprocess).pipe(
+    Effect.onError(() => terminateExternalSampler(subprocess)),
+  );
+  let currentPhase = name === 'bootstrap' ? 'preparing-fixture' : 'start';
+  let stopped = false;
+  const markPhase = (phase: string) => {
+    if (phase === currentPhase) return Effect.void;
+    currentPhase = phase;
+    return fs.writeFileString(phasePath, phase);
+  };
+  return {
+    mark: progress => {
+      const phase = `${progress.phase}:${'subphase' in progress && progress.subphase ? progress.subphase : 'progress'}`;
+      return markPhase(phase);
+    },
+    markPhase,
+    stop: (state = 'complete') =>
+      Effect.gen(function* () {
+        if (!stopped) {
+          yield* fs.writeFileString(phasePath, 'finish').pipe(Effect.catch(() => Effect.void));
+          const stopSignal = yield* Effect.exit(fs.writeFileString(stopPath, state));
+          if (Exit.isFailure(stopSignal)) {
+            yield* terminateExternalSampler(subprocess);
+            return yield* Effect.fail(
+              new Error('Could not signal the code graph benchmark sampler to stop; it was terminated.'),
+            );
+          }
+          stopped = true;
+        }
+        let exitCode = yield* Effect.promise(() => subprocessExitWithin(subprocess, EXTERNAL_SAMPLER_STOP_TIMEOUT_MS));
+        if (exitCode === undefined) {
+          yield* terminateExternalSampler(subprocess);
+          exitCode = yield* Effect.promise(() =>
+            subprocessExitWithin(subprocess, EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS),
+          );
+          return yield* Effect.fail(
+            new Error(
+              `Code graph benchmark sampler did not stop within ${EXTERNAL_SAMPLER_STOP_TIMEOUT_MS} ms; ` +
+                `it was terminated${exitCode === undefined ? ' without confirming exit' : ''}.`,
+            ),
+          );
+        }
+        if (exitCode !== 0) {
+          const stderr = subprocess.stderr ? yield* Effect.promise(() => new Response(subprocess.stderr).text()) : '';
+          return yield* Effect.fail(
+            new Error(`Code graph benchmark sampler exited with ${exitCode}: ${stderr.trim() || 'no diagnostic'}`),
+          );
+        }
+        return parseCodeGraphBenchmarkSamplerArtifact(JSON.parse(yield* fs.readFileString(outputPath)));
+      }),
+  } satisfies ExternalSamplerHandle;
+});
+
+const waitForExternalSamplerReady = Effect.fn('benchmarkCodeGraph.waitForExternalSamplerReady')(function* (
+  fs: FileSystem.FileSystem,
+  readyPath: string,
+  subprocess: ReturnType<typeof Bun.spawn>,
+) {
+  const startedAt = yield* Clock.currentTimeMillis;
+  while (!(yield* fs.exists(readyPath))) {
+    if (subprocess.exitCode !== null) {
+      return yield* Effect.fail(new Error(`Code graph benchmark sampler exited before becoming ready.`));
+    }
+    if ((yield* Clock.currentTimeMillis) - startedAt >= EXTERNAL_SAMPLER_READY_TIMEOUT_MS) {
+      return yield* Effect.fail(
+        new Error(`Code graph benchmark sampler was not ready within ${EXTERNAL_SAMPLER_READY_TIMEOUT_MS} ms.`),
+      );
+    }
+    yield* Effect.sleep(10);
+  }
+});
+
+const terminateExternalSampler = Effect.fn('benchmarkCodeGraph.terminateExternalSampler')(function* (
+  subprocess: ReturnType<typeof Bun.spawn>,
+) {
+  if (subprocess.exitCode !== null) return;
+  subprocess.kill();
+  if (
+    (yield* Effect.promise(() => subprocessExitWithin(subprocess, EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS))) !== undefined
+  ) {
+    return;
+  }
+  subprocess.kill(9);
+  yield* Effect.promise(() => subprocessExitWithin(subprocess, EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS));
+});
+
+function subprocessExitWithin(
+  subprocess: ReturnType<typeof Bun.spawn>,
+  timeoutMilliseconds: number,
+): Promise<number | undefined> {
+  if (subprocess.exitCode !== null) return Promise.resolve(subprocess.exitCode);
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMilliseconds);
+    timer.unref?.();
+    void subprocess.exited.then(
+      code => {
+        clearTimeout(timer);
+        resolve(code);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(-1);
+      },
+    );
+  });
 }
 
 const codeGraphStorageTelemetry = Effect.fn('benchmarkCodeGraph.storageTelemetry')(function* (
@@ -834,6 +1278,18 @@ function productionProfileIdentity(profile: ProductionCodeGraphFixtureProfile, v
   );
 }
 
+function benchmarkComparisonKey(input: {
+  readonly architecture: string;
+  readonly cpu: string;
+  readonly memoryBytes: number;
+  readonly operatingSystem: string;
+  readonly runnerClass: string;
+}): string {
+  return [input.runnerClass, input.operatingSystem, input.architecture, input.cpu, input.memoryBytes]
+    .map(value => String(value).trim().replace(/\s+/g, ' '))
+    .join('|');
+}
+
 function enforceBudget(artifact: BenchmarkArtifactV1, value: unknown, scaleSymbols: number | undefined): void {
   if (typeof value !== 'object' || value === null) throw new Error('Code graph budget file must be an object.');
   const record = value as {
@@ -924,4 +1380,4 @@ function required(value: string | undefined, option: string): string {
   return value;
 }
 
-BunRuntime.runMain(benchmarkCodeGraph.pipe(Effect.provide(ApplicationLayer)));
+if (import.meta.main) BunRuntime.runMain(benchmarkCodeGraph.pipe(Effect.provide(ApplicationLayer)));

@@ -93,7 +93,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           Effect.gen(function* () {
             yield* store.prepareActivation(databasePath, []);
             yield* store.stageActivationFacts(databasePath, [], []);
-            yield* store.activateStaged(databasePath, identity, requested, 'timestamp-test', false);
+            yield* store.activateStaged(databasePath, identity, requested);
           }),
         );
       }).pipe(Effect.provide(storeLayer)),
@@ -139,14 +139,14 @@ describe('Manager logical repository and workspace catalogs', () => {
           Effect.gen(function* () {
             yield* store.prepareActivation(databasePath, originalFiles);
             yield* store.stageActivationFacts(databasePath, [originalSymbol], []);
-            yield* store.activateStaged(databasePath, identity, base, 'staging-identity-test', false);
+            yield* store.activateStaged(databasePath, identity, base);
             const replaced = yield* store.replaceStagedModifiedFiles(
               databasePath,
               'not-the-active-staging-id',
               [modifiedFile],
               [modifiedFacts],
             );
-            yield* store.activateStaged(databasePath, identity, overlay, 'staging-identity-test', false);
+            yield* store.activateStaged(databasePath, identity, overlay);
             return {graph: yield* store.loadGraph(databasePath, overlay.id), replaced};
           }),
         );
@@ -172,9 +172,9 @@ describe('Manager logical repository and workspace catalogs', () => {
     const catalogs = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        yield* store.activate(databasePath, firstIdentity, first, [], [], [], 'worktree-test', false);
+        yield* store.activate(databasePath, firstIdentity, first, [], [], []);
         yield* store.promote(databasePath, firstIdentity, first.id, new Set([firstIdentity.worktreeId]));
-        yield* store.activate(databasePath, secondIdentity, second, [], [], [], 'worktree-test', false);
+        yield* store.activate(databasePath, secondIdentity, second, [], [], []);
         yield* store.promote(
           databasePath,
           secondIdentity,
@@ -211,7 +211,7 @@ describe('Manager logical repository and workspace catalogs', () => {
             yield* store.prepareActivation(databasePath, files);
             yield* store.stageWorkspaceCatalog(databasePath, workspace);
             yield* store.stageActivationFacts(databasePath, symbols, edges);
-            yield* store.activateStaged(databasePath, identity, snapshot, 'workspace-test', false);
+            yield* store.activateStaged(databasePath, identity, snapshot);
             yield* store.promote(databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
           }),
         );
@@ -231,6 +231,19 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(result.catalog?.projects).toContainEqual(
       expect.objectContaining({id: 'facet:unscoped-documentation', kind: 'documentation', model: 'facet'}),
     );
+    expect(result.catalog?.projects).toContainEqual(
+      expect.objectContaining({id: 'package:threadnote', label: 'threadnote', symbolCount: 1}),
+    );
+    expect(result.catalog?.projects).toContainEqual(
+      expect.objectContaining({id: 'path:scripts', label: 'scripts', symbolCount: 1}),
+    );
+    expect(result.catalog?.accounting).toEqual({
+      attributedSymbols: symbols.length,
+      componentSymbols: 3,
+      fallbackSymbols: 3,
+      omittedSymbols: 0,
+      totalSymbols: symbols.length,
+    });
     expect(result.unscoped.map(symbol => symbol.id)).toEqual(['symbol-doc']);
     expect(result.scopeEdges).toEqual(
       expect.arrayContaining([
@@ -243,6 +256,16 @@ describe('Manager logical repository and workspace catalogs', () => {
           count: 1,
           sourceId: 'cgp_component_a',
           targetId: 'cgp_component_b',
+          type: 'source-relationship',
+        }),
+        expect.objectContaining({
+          sourceId: 'package:threadnote',
+          targetId: 'cgp_component_a',
+          type: 'source-relationship',
+        }),
+        expect.objectContaining({
+          sourceId: 'path:scripts',
+          targetId: 'package:threadnote',
           type: 'source-relationship',
         }),
       ]),
@@ -364,6 +387,12 @@ function symbolFixtures(): readonly CodeGraphSymbol[] {
     symbol('symbol-a-2', 'apps/a/src/main/kotlin/A2.kt', 'A2', 'kotlin', 'cgp_component_a'),
     symbol('symbol-b', 'apps/b/src/main/kotlin/B.kt', 'B', 'kotlin', 'cgp_component_b'),
     symbol('symbol-doc', 'notes/design.md', 'Design', 'markdown'),
+    {
+      ...symbol('symbol-root-ts', 'src/index.ts', 'index', 'typescript'),
+      packageName: 'threadnote',
+      resolutionDomain: 'typescript',
+    },
+    {...symbol('symbol-script', 'scripts/release.ts', 'release', 'typescript'), resolutionDomain: 'typescript'},
   ];
 }
 
@@ -388,7 +417,12 @@ function edgeFixtures(): readonly CodeGraphEdge[] {
   const intra = Array.from({length: 1_201}, (_, index) =>
     edge(`edge-${index.toString().padStart(4, '0')}`, 'symbol-a-1', 'symbol-a-2'),
   );
-  return [...intra, edge('edge-zzzz-cross', 'symbol-a-1', 'symbol-b')];
+  return [
+    ...intra,
+    edge('edge-zzzz-cross', 'symbol-a-1', 'symbol-b'),
+    edge('edge-zzzz-root-component', 'symbol-root-ts', 'symbol-a-1'),
+    edge('edge-zzzz-script-root', 'symbol-script', 'symbol-root-ts'),
+  ];
 }
 
 function edge(id: string, sourceId: string, targetId: string): CodeGraphEdge {
@@ -448,6 +482,13 @@ function catalogFixture(
   viewWorktreeId: string,
 ): CodeGraphVisualizationCatalog {
   return {
+    accounting: {
+      attributedSymbols: symbolCount,
+      componentSymbols: symbolCount,
+      fallbackSymbols: 0,
+      omittedSymbols: 0,
+      totalSymbols: symbolCount,
+    },
     activatedAt,
     model: 'workspace',
     projects: [],

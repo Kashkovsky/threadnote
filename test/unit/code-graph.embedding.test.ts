@@ -1,10 +1,11 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import type {CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
-import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
+import {LocalModelRuntime, type LocalModelRuntimeShape} from '../../src/effect/ai/local-model-runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
@@ -153,9 +154,88 @@ describe('native code graph vector generations', () => {
       await rm(home, {force: true, recursive: true});
     }
   });
+
+  it('serializes linked-worktree vector writers without deleting a live generation', async () => {
+    const home = await mkdtemp('threadnote-code-graph-vector-concurrency-');
+    let activeEmbeddings = 0;
+    let embedCalls = 0;
+    let maximumActiveEmbeddings = 0;
+    let releaseFirst!: () => void;
+    let reportFirstStarted!: () => void;
+    const firstRelease = new Promise<void>(resolve => (releaseFirst = resolve));
+    const firstStarted = new Promise<void>(resolve => (reportFirstStarted = resolve));
+    const runtime = LocalModelRuntime.of({
+      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+      embedMany: ({inputs, manifest: requested}) =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            activeEmbeddings += 1;
+            maximumActiveEmbeddings = Math.max(maximumActiveEmbeddings, activeEmbeddings);
+            embedCalls += 1;
+            if (embedCalls === 1) reportFirstStarted();
+            return embedCalls;
+          }),
+          call =>
+            (call === 1 ? Effect.promise(() => firstRelease) : Effect.void).pipe(
+              Effect.as(inputs.map(input => unitVector(requested.dimensions ?? 0, input.includes('alpha') ? 0 : 1))),
+            ),
+          () =>
+            Effect.sync(() => {
+              activeEmbeddings -= 1;
+            }),
+        ),
+      generate: () => Effect.die(new Error('Unexpected generation')),
+      rerank: () => Effect.die(new Error('Unexpected reranking')),
+    });
+    try {
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const path = yield* Path.Path;
+            const catalog = yield* LocalModelCatalog;
+            yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+            const vectors = yield* CodeGraphEmbeddingIndex;
+            const firstLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+            const secondLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'd'.repeat(64));
+            const first = yield* Effect.forkScoped(
+              vectors.ensure(home, firstLayout, snapshot('snapshot-concurrent-one'), [
+                symbol('alpha-concurrent', 'AlphaConcurrent', 'alpha concurrent symbol'),
+              ]),
+            );
+            yield* Effect.promise(() => firstStarted);
+            const second = yield* Effect.forkScoped(
+              vectors.ensure(home, secondLayout, snapshot('snapshot-concurrent-two'), [
+                symbol('beta-concurrent', 'BetaConcurrent', 'beta concurrent symbol'),
+              ]),
+            );
+            yield* Effect.sleep(100);
+            const callsWhileFirstWasBlocked = embedCalls;
+            yield* Effect.sync(releaseFirst);
+            const summaries = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+            return {callsWhileFirstWasBlocked, summaries};
+          }),
+        ).pipe(
+          Effect.provide(
+            Layer.merge(testEmbeddingLayer([], runtime), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
+          ),
+          Effect.provide(BunServices.layer),
+        ),
+      );
+
+      expect(result.callsWhileFirstWasBlocked).toBe(1);
+      expect(maximumActiveEmbeddings).toBe(1);
+      expect(result.summaries).toEqual([
+        expect.objectContaining({embedded: 1, ready: true}),
+        expect.objectContaining({embedded: 1, ready: true}),
+      ]);
+    } finally {
+      releaseFirst?.();
+      await rm(home, {force: true, recursive: true});
+    }
+  });
 });
 
-function testEmbeddingLayer(embeddedBatches: number[]) {
+function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalModelRuntimeShape) {
   const modelStoreLayer = Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
@@ -168,20 +248,23 @@ function testEmbeddingLayer(embeddedBatches: number[]) {
   );
   const runtimeLayer = Layer.succeed(
     LocalModelRuntime,
-    LocalModelRuntime.of({
-      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-      embedMany: ({inputs, manifest: requested}) => {
-        embeddedBatches.push(inputs.length);
-        return Effect.succeed(
-          inputs.map(input => unitVector(requested.dimensions ?? 0, input.toLowerCase().includes('alpha') ? 0 : 1)),
-        );
-      },
-      generate: () => Effect.die(new Error('Unexpected generation')),
-      rerank: () => Effect.die(new Error('Unexpected reranking')),
-    }),
+    runtimeOverride ??
+      LocalModelRuntime.of({
+        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        embedMany: ({inputs, manifest: requested}) => {
+          embeddedBatches.push(inputs.length);
+          return Effect.succeed(
+            inputs.map(input => unitVector(requested.dimensions ?? 0, input.toLowerCase().includes('alpha') ? 0 : 1)),
+          );
+        },
+        generate: () => Effect.die(new Error('Unexpected generation')),
+        rerank: () => Effect.die(new Error('Unexpected reranking')),
+      }),
   );
   return CodeGraphEmbeddingIndex.layer.pipe(
-    Layer.provide(Layer.mergeAll(LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS), modelStoreLayer, runtimeLayer)),
+    Layer.provide(
+      Layer.mergeAll(LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS), modelStoreLayer, runtimeLayer, SystemInfo.layer),
+    ),
   );
 }
 

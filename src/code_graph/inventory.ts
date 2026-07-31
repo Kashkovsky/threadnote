@@ -83,7 +83,13 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
   const acceptedByPolicy = allTreeEntries.filter(entry =>
-    acceptsRepositoryPathWithRules(entry.path, ignoreRules, languagePacks, declaredWorkspace.roots),
+    acceptsRepositoryPathWithRules(
+      entry.path,
+      ignoreRules,
+      languagePacks,
+      declaredWorkspace.projectRoots,
+      declaredWorkspace.sourceRoots,
+    ),
   );
   const ignoredByGit = yield* ignoredPaths(
     identity.repoRoot,
@@ -119,7 +125,8 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           ignoreRules,
           options.cachedCommittedFileKeys ?? new Set(),
           languagePacks,
-          declaredWorkspace.roots,
+          declaredWorkspace.projectRoots,
+          declaredWorkspace.sourceRoots,
           options.onContentBatch,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
@@ -145,6 +152,15 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
 export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(function* (
   identity: RepositoryIdentity,
 ) {
+  // Clean worktrees are overwhelmingly the common status/query path. Avoid a
+  // full tree inventory and manifest hydration when Git can prove there is no
+  // tracked or untracked worktree change at all.
+  const porcelain = yield* runCommandEffect(
+    'git',
+    ['-C', identity.repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'],
+    {maxOutputBytes: 0, timeoutMs: 0},
+  );
+  if (porcelain.stdout.length === 0) return {dirty: false, fingerprint: undefined};
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const allTreeEntries = isZeroObjectId(identity.headCommit)
@@ -168,7 +184,8 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
     compileThreadnoteIgnore(threadnoteIgnore),
     new Set(),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
-    declaredWorkspace.roots,
+    declaredWorkspace.projectRoots,
+    declaredWorkspace.sourceRoots,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -206,7 +223,9 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
     const directories = entry.path.split('/').slice(0, -1);
     return !directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules');
   });
-  if (contexts.length === 0) return {files: new Map<string, CodeGraphInventoryFile>(), roots: []};
+  if (contexts.length === 0) {
+    return {files: new Map<string, CodeGraphInventoryFile>(), projectRoots: [], sourceRoots: []};
+  }
 
   const files: CodeGraphInventoryFile[] = [];
   for (const batch of chunkTreeEntries(contexts)) {
@@ -237,26 +256,36 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
     }
   }
   const workspace = yield* languagePacks.discoverWorkspace(files);
-  const roots = [
+  const projectRoots = [
     ...new Set(
       workspace.projects
-        .flatMap(project => [project.root, ...project.sourceRoots])
+        .map(project => project.root)
         .map(normalizeRepositoryPath)
         .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === '')),
     ),
   ].sort(compareCodeUnits);
-  return {files: new Map(files.map(file => [file.path, file])), roots};
+  const sourceRoots = [
+    ...new Set(
+      workspace.projects
+        .flatMap(project => project.sourceRoots)
+        .map(normalizeRepositoryPath)
+        .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === '')),
+    ),
+  ].sort(compareCodeUnits);
+  return {files: new Map(files.map(file => [file.path, file])), projectRoots, sourceRoots};
 });
 
 export function acceptsRepositoryPath(
   value: string,
   threadnoteIgnore = '',
+  declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
 ): boolean {
   return acceptsRepositoryPathWithRules(
     value,
     compileThreadnoteIgnore(threadnoteIgnore),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
+    declaredProjectRoots,
     declaredSourceRoots,
   );
 }
@@ -265,6 +294,7 @@ function acceptsRepositoryPathWithRules(
   value: string,
   ignoreRules: readonly CompiledIgnoreRule[],
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
 ): boolean {
   const path = normalizeRepositoryPath(value);
@@ -278,7 +308,8 @@ function acceptsRepositoryPathWithRules(
       if (directory.startsWith('.')) return true;
       if (!PRUNED_DIRECTORIES.has(directory.toLowerCase())) return false;
       const prefix = directories.slice(0, index + 1).join('/');
-      return !declaredSourceRoots.some(root => root === prefix || root.startsWith(`${prefix}/`));
+      if (declaredSourceRoots.some(root => prefix === root || prefix.startsWith(`${root}/`))) return false;
+      return !declaredProjectRoots.some(root => root === prefix || root.startsWith(`${prefix}/`));
     }) ||
     isIgnoredByThreadnote(path, ignoreRules)
   ) {
@@ -491,6 +522,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   ignoreRules: readonly CompiledIgnoreRule[],
   cachedFileKeys: ReadonlySet<string>,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredProjectRoots: readonly string[],
   declaredSourceRoots: readonly string[],
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
@@ -563,11 +595,14 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   }
   const overlayWorkspace =
     overlayContextFiles.length === 0 ? undefined : yield* languagePacks.discoverWorkspace(overlayContextFiles);
+  const effectiveDeclaredProjectRoots = [
+    ...new Set([...declaredProjectRoots, ...(overlayWorkspace?.projects.map(project => project.root) ?? [])]),
+  ]
+    .map(normalizeRepositoryPath)
+    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
+    .sort(compareCodeUnits);
   const effectiveDeclaredSourceRoots = [
-    ...new Set([
-      ...declaredSourceRoots,
-      ...(overlayWorkspace?.projects.flatMap(project => [project.root, ...project.sourceRoots]) ?? []),
-    ]),
+    ...new Set([...declaredSourceRoots, ...(overlayWorkspace?.projects.flatMap(project => project.sourceRoots) ?? [])]),
   ]
     .map(normalizeRepositoryPath)
     .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
@@ -604,7 +639,13 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       containment === '..' ||
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment) ||
-      !acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks, effectiveDeclaredSourceRoots)
+      !acceptsRepositoryPathWithRules(
+        relative,
+        ignoreRules,
+        languagePacks,
+        effectiveDeclaredProjectRoots,
+        effectiveDeclaredSourceRoots,
+      )
     ) {
       markSkipped(relative);
       continue;
@@ -791,9 +832,40 @@ function compactResolutionContext(name: string, content: string): string | undef
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
     if (name === 'package.json') {
       const entry = packageEntryForResolution(parsed.exports, parsed.main);
+      const dependencySections = Object.fromEntries(
+        ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap(section => {
+          const value = parsed[section];
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+          return [
+            [
+              section,
+              Object.fromEntries(
+                Object.entries(value as Record<string, unknown>).flatMap(([dependency, version]) =>
+                  typeof version === 'string' ? [[dependency, version]] : [],
+                ),
+              ),
+            ],
+          ];
+        }),
+      );
       return JSON.stringify({
+        ...dependencySections,
         ...(entry === undefined ? {} : {main: entry}),
         ...(typeof parsed.name === 'string' ? {name: parsed.name} : {}),
+        ...(typeof parsed.packageManager === 'string' ? {packageManager: parsed.packageManager} : {}),
+        ...(Array.isArray(parsed.workspaces)
+          ? {workspaces: parsed.workspaces.filter((value): value is string => typeof value === 'string')}
+          : parsed.workspaces && typeof parsed.workspaces === 'object'
+            ? {
+                workspaces: {
+                  packages: Array.isArray((parsed.workspaces as Record<string, unknown>).packages)
+                    ? ((parsed.workspaces as Record<string, unknown>).packages as unknown[]).filter(
+                        (value): value is string => typeof value === 'string',
+                      )
+                    : [],
+                },
+              }
+            : {}),
       });
     }
     const compilerOptions =
@@ -823,6 +895,16 @@ function compactResolutionContext(name: string, content: string): string | undef
           ? parsed[field].filter((value): value is string => typeof value === 'string')
           : parsed[field];
       }
+    }
+    if (Array.isArray(parsed.references)) {
+      compact.references = parsed.references.flatMap(reference =>
+        reference &&
+        typeof reference === 'object' &&
+        !Array.isArray(reference) &&
+        typeof (reference as Record<string, unknown>).path === 'string'
+          ? [{path: (reference as Record<string, unknown>).path}]
+          : [],
+      );
     }
     return JSON.stringify(compact);
   } catch {

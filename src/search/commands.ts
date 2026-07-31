@@ -2,7 +2,7 @@ import {Console, Effect} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {LocalModelCatalog} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
-import {loadRecallIndexData} from '../recall/index.js';
+import {currentRecallCorpusGeneration, loadRecallIndexData} from '../recall/index.js';
 import {purgeVectorIndex, rebuildVectorIndex, vectorIndexStatus} from './vector-index.js';
 
 export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
@@ -23,6 +23,7 @@ export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
   yield* Console.log(`Embedding ${index.candidates.length} canonical document(s) with ${manifest.id}.`);
   const result = yield* rebuildVectorIndex(config, manifest, index.candidates, {
     corpusGeneration: index.generation,
+    currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
   });
   yield* Console.log(
     `Activated vector generation ${result.generation}: ${result.chunkCount} chunk(s), ${result.dimensions} dimensions.`,

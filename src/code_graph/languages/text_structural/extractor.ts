@@ -17,6 +17,7 @@ interface MutableTextFacts {
   readonly domain: string;
   readonly edges: CodeGraphEdge[];
   readonly file: CodeGraphInventoryFile;
+  readonly identityOccurrences: Map<string, number>;
   readonly module: CodeGraphSymbol;
   readonly packageName: string | undefined;
   readonly references: CodeGraphReference[];
@@ -259,6 +260,7 @@ function createFacts(
   domain: string,
 ): MutableTextFacts {
   const packageName = Option.getOrUndefined(context.packageName);
+  const identityOccurrences = new Map<string, number>();
   const module = textSymbol(
     file,
     packageName,
@@ -269,8 +271,19 @@ function createFacts(
     0,
     Math.min(1, file.content!.length),
     true,
+    identityOccurrences,
   );
-  return {diagnostics: [], domain, edges: [], file, module, packageName, references: [], symbols: [module]};
+  return {
+    diagnostics: [],
+    domain,
+    edges: [],
+    file,
+    identityOccurrences,
+    module,
+    packageName,
+    references: [],
+    symbols: [module],
+  };
 }
 
 function addDeclaration(
@@ -294,6 +307,7 @@ function addDeclaration(
     start,
     end,
     exported,
+    facts.identityOccurrences,
   );
   facts.symbols.push(symbol);
   facts.edges.push(resolvedEdge(facts, parent, symbol, 'contains', start, end));
@@ -310,13 +324,19 @@ function textSymbol(
   start: number,
   end: number,
   exported: boolean,
+  identityOccurrences: Map<string, number>,
 ): CodeGraphSymbol {
   const normalizedQualifiedName = normalizeLookupName(qualifiedName);
   const normalizedName = normalizeLookupName(name).split('.').at(-1) ?? normalizeLookupName(name);
+  const identityKey = `${kind}\n${qualifiedName}`;
+  const occurrence = identityOccurrences.get(identityKey) ?? 0;
+  identityOccurrences.set(identityKey, occurrence + 1);
   return {
     contentHash: file.contentHash,
     exported,
-    id: `cgs_${sha256HexSync(`text-structural-symbol-v1\n${file.path}\n${file.language}\n${kind}\n${qualifiedName}\n${start}`).slice(0, 32)}`,
+    id: `cgs_${sha256HexSync(
+      `text-structural-symbol-v2\n${file.path}\n${file.language}\n${kind}\n${qualifiedName}\n${occurrence}`,
+    ).slice(0, 32)}`,
     kind,
     language: file.language,
     lookupKeys: [`${domain}:q:${normalizedQualifiedName}`, `${domain}:name:${normalizedName}`],
@@ -407,13 +427,13 @@ function textEdgeId(path: string, source: string, relation: string, target: stri
 function textSpan(content: string, start: number, end: number): CodeGraphSpan {
   const boundedStart = Math.max(0, Math.min(content.length, start));
   const boundedEnd = Math.max(boundedStart, Math.min(content.length, end));
-  const before = content.slice(0, boundedStart);
-  const through = content.slice(0, boundedEnd);
+  const from = sourcePositionAt(content, boundedStart);
+  const to = sourcePositionAt(content, boundedEnd);
   return {
-    column: boundedStart - before.lastIndexOf('\n'),
-    endColumn: boundedEnd - through.lastIndexOf('\n'),
-    endLine: through.split('\n').length,
-    line: before.split('\n').length,
+    column: from.column,
+    endColumn: to.column,
+    endLine: to.line,
+    line: from.line,
   };
 }
 
@@ -422,11 +442,43 @@ function linesWithOffsets(
 ): readonly {readonly end: number; readonly start: number; readonly text: string}[] {
   const output: Array<{end: number; start: number; text: string}> = [];
   let start = 0;
-  for (const text of content.split(/\r?\n/)) {
-    output.push({end: start + text.length, start, text});
-    start += text.length + 1;
+  let cursor = 0;
+  while (cursor < content.length) {
+    const width = lineTerminatorWidth(content, cursor);
+    if (width === 0) {
+      cursor += 1;
+      continue;
+    }
+    output.push({end: cursor, start, text: content.slice(start, cursor)});
+    cursor += width;
+    start = cursor;
   }
+  output.push({end: content.length, start, text: content.slice(start)});
   return output;
+}
+
+function sourcePositionAt(content: string, offset: number): {readonly column: number; readonly line: number} {
+  let column = 1;
+  let cursor = 0;
+  let line = 1;
+  while (cursor < offset) {
+    const width = lineTerminatorWidth(content, cursor);
+    if (width > 0) {
+      cursor += width;
+      column = 1;
+      line += 1;
+    } else {
+      cursor += 1;
+      column += 1;
+    }
+  }
+  return {column, line};
+}
+
+function lineTerminatorWidth(content: string, offset: number): number {
+  const character = content[offset];
+  if (character === '\r') return content[offset + 1] === '\n' ? 2 : 1;
+  return character === '\n' || character === '\u2028' || character === '\u2029' ? 1 : 0;
 }
 
 function stripLineComment(value: string, marker: string): string {

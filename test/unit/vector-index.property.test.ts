@@ -3,15 +3,18 @@ import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {Effect, Layer} from 'effect';
+import {Effect, Layer, Option, Result} from 'effect';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {chunkRecallDocument, type RecallChunk} from '../../src/search/chunker.js';
 import {
+  ensureVectorIndex,
   purgeVectorIndex,
   rebuildVectorIndex,
+  VectorCorpusGenerationChanged,
   vectorIndexDatabaseFilename,
+  vectorIndexMatchesGeneration,
   vectorIndexStatus,
 } from '../../src/search/vector-index.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
@@ -64,6 +67,16 @@ const vectorCorpusScenario = FC.record({
   removal,
   ...extraOperations,
 ]);
+const generationRequestScenario = FC.record({
+  initial: FC.integer({max: 3, min: 0}),
+  operations: FC.array(
+    FC.oneof(
+      FC.record({generation: FC.integer({max: 3, min: 0}), kind: FC.constant('advance' as const)}),
+      FC.record({generation: FC.integer({max: 3, min: 0}), kind: FC.constant('ensure' as const)}),
+    ),
+    {maxLength: 8, minLength: 1},
+  ),
+});
 
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
@@ -77,6 +90,47 @@ const modelStoreLayer = Layer.succeed(
 );
 
 describe('SQLite vector index properties', () => {
+  it.effect.prop(
+    'preserves the pointer model across sequential generation advances and fenced ensures',
+    {
+      scenario: generationRequestScenario,
+    },
+    ({scenario}) =>
+      Effect.promise(async () => {
+        const home = await mkdtemp('threadnote-vector-generation-property-');
+        const runtimeLayer = deterministicRuntimeLayer(() => undefined);
+        let currentGeneration = generationName(scenario.initial);
+        try {
+          const initial = await ensureGeneration(home, currentGeneration, currentGeneration, runtimeLayer);
+          expect(Result.isSuccess(initial)).toBe(true);
+          expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+
+          for (const operation of scenario.operations) {
+            if (operation.kind === 'advance') {
+              currentGeneration = generationName(operation.generation);
+              continue;
+            }
+            const requestedGeneration = generationName(operation.generation);
+            const before = await generationPointerState(home);
+            const result = await ensureGeneration(home, requestedGeneration, currentGeneration, runtimeLayer);
+            if (requestedGeneration === currentGeneration) {
+              expect(Result.isSuccess(result)).toBe(true);
+              expect(await runEffect(vectorIndexMatchesGeneration(home, manifest, currentGeneration))).toBe(true);
+            } else {
+              expect(Result.isFailure(result)).toBe(true);
+              if (Result.isFailure(result)) {
+                expect(result.failure).toBeInstanceOf(VectorCorpusGenerationChanged);
+              }
+              expect(await generationPointerState(home)).toEqual(before);
+            }
+          }
+        } finally {
+          await rm(home, {force: true, recursive: true});
+        }
+      }),
+    {fastCheck: {numRuns: 16}, timeout: 60_000},
+  );
+
   it.effect.prop(
     'matches a corpus model across arbitrary incremental updates and clean rebuilds',
     {
@@ -136,6 +190,42 @@ describe('SQLite vector index properties', () => {
     {fastCheck: {numRuns: 6}, timeout: 60_000},
   );
 });
+
+async function ensureGeneration(
+  home: string,
+  requestedGeneration: string,
+  currentGeneration: string,
+  runtimeLayer: ReturnType<typeof deterministicRuntimeLayer>,
+) {
+  return runEffect(
+    ensureVectorIndex(
+      {agentContextHome: home},
+      manifest,
+      [
+        {
+          text: `# ${requestedGeneration}\n\nStable property-test corpus for ${requestedGeneration}.`,
+          uri: `threadnote://resources/repos/property/${requestedGeneration}.md`,
+        },
+      ],
+      {
+        corpusGeneration: requestedGeneration,
+        currentCorpusGeneration: () => Effect.succeed(Option.some(currentGeneration)),
+      },
+    ).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+  );
+}
+
+function generationName(id: number): string {
+  return `lexical-generation-${id}`;
+}
+
+async function generationPointerState(home: string): Promise<readonly boolean[]> {
+  return Promise.all(
+    Array.from({length: 4}, (_unused, generation) =>
+      runEffect(vectorIndexMatchesGeneration(home, manifest, generationName(generation))),
+    ),
+  );
+}
 
 function baselineModel(): Map<number, VectorDocumentState> {
   return new Map([

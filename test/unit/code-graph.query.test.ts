@@ -71,11 +71,14 @@ const stableEdge: CodeGraphEdge = {
 };
 
 const layout: CodeGraphLayout = {
+  checkoutId: 'fixture-checkout',
+  databaseWriteLockPath: '/fixture/database-write.lock',
   databasePath: '/fixture/graph.sqlite',
   lockPath: '/fixture/graph.lock',
   repositoryRoot: '/fixture',
   staleMarkerPath: '/fixture/stale',
   vectorRoot: '/fixture/vectors',
+  worktreeLockRoot: '/fixture/worktree-locks',
   worktreeId: 'fixture-worktree',
 };
 

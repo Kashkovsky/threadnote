@@ -11,7 +11,11 @@ import {
 import type {CodeGraphEdge, CodeGraphProvenance, CodeGraphSnapshot, CodeGraphSpan, CodeGraphSymbol} from './types.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
-import {readAllCodeGraphBuildStatuses, type ObservedCodeGraphBuildStatus} from './build_status.js';
+import {
+  readAllCodeGraphBuildStatuses,
+  selectCodeGraphBuildStatuses,
+  type ObservedCodeGraphBuildStatus,
+} from './build_status.js';
 
 const DETAIL_SEED_LIMIT = 500;
 const DETAIL_NODE_LIMIT = 900;
@@ -36,6 +40,7 @@ export interface ManagerGraphRepository {
 }
 
 export interface ManagerGraphIndexedView {
+  readonly accounting: CodeGraphVisualizationCatalog['accounting'];
   readonly activatedAt?: string;
   readonly checkoutId: string;
   readonly displayName: string;
@@ -58,11 +63,15 @@ export interface ManagerGraphCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
   readonly diagnostics: readonly ManagerGraphCatalogDiagnostic[];
   readonly repositories: readonly ManagerGraphRepository[];
+  readonly waiterCount: number;
+  readonly waiters: readonly ObservedCodeGraphBuildStatus[];
 }
 
 export interface ManagerGraphBuildCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
   readonly queuedWorktreeIds: readonly string[];
+  readonly waiterCount: number;
+  readonly waiters: readonly ObservedCodeGraphBuildStatus[];
 }
 
 export interface ManagerGraphNode {
@@ -159,7 +168,7 @@ export interface ManagerGraphNodeDetail {
 export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(function* (threadnoteHome: string) {
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
-  const builds = latestBuildStatusPerWorktree(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
+  const buildSelection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const entries = yield* Effect.forEach(
     databases,
@@ -199,9 +208,11 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     if ('diagnostic' in entry && entry.diagnostic) diagnostics.push(entry.diagnostic);
   }
   return {
-    builds,
+    builds: buildSelection.builds,
     diagnostics,
     repositories: groupManagerGraphRepositories(catalogEntries),
+    waiterCount: buildSelection.waiters.length,
+    waiters: buildSelection.waiters,
   } satisfies ManagerGraphCatalog;
 });
 
@@ -234,12 +245,12 @@ export function groupManagerGraphRepositories(
 }
 
 export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog')(function* (threadnoteHome: string) {
-  const builds = latestBuildStatusPerWorktree(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
+  const selection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
   return {
-    builds,
-    queuedWorktreeIds: builds
-      .filter(status => status.state === 'queued' && status.observation.liveness === 'active')
-      .map(status => status.identity.worktreeId),
+    builds: selection.builds,
+    queuedWorktreeIds: [...new Set(selection.waiters.map(status => status.identity.worktreeId))],
+    waiterCount: selection.waiters.length,
+    waiters: selection.waiters,
   } satisfies ManagerGraphBuildCatalog;
 });
 
@@ -383,10 +394,17 @@ function overviewVisualization(
       symbolCount: project.symbolCount,
       type: 'project' as const,
     }));
-    const warnings =
-      repository.model === 'legacy-fallback'
-        ? ['This snapshot predates typed workspace catalogs; rebuild it to replace legacy package/folder groups.']
-        : [];
+    const warnings: string[] = [];
+    if (repository.model === 'legacy-fallback') {
+      warnings.push(
+        'This snapshot predates typed workspace catalogs; rebuild it to replace legacy package/folder groups.',
+      );
+    }
+    if (repository.accounting.omittedSymbols > 0) {
+      warnings.push(
+        `${repository.accounting.omittedSymbols.toLocaleString()} indexed symbols could not be attributed to an overview scope.`,
+      );
+    }
     return {
       edges,
       mode: 'overview',
@@ -486,6 +504,7 @@ function detailVisualization(
 function repositoryFromCatalog(checkoutId: string, catalog: CodeGraphVisualizationCatalog): ManagerGraphIndexedView {
   const viewId = `${checkoutId}.${catalog.viewWorktreeId}`;
   return {
+    accounting: catalog.accounting,
     ...(catalog.activatedAt ? {activatedAt: catalog.activatedAt} : {}),
     checkoutId,
     displayName: catalog.repository.displayName,
@@ -567,16 +586,6 @@ function connectionCounts(edges: readonly Pick<ManagerGraphEdge, 'sourceId' | 't
 
 function isString(value: string | undefined): value is string {
   return typeof value === 'string';
-}
-
-function latestBuildStatusPerWorktree(
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-): readonly ObservedCodeGraphBuildStatus[] {
-  const latest = new Map<string, ObservedCodeGraphBuildStatus>();
-  for (const status of statuses) {
-    if (!latest.has(status.identity.worktreeId)) latest.set(status.identity.worktreeId, status);
-  }
-  return [...latest.values()];
 }
 
 function compareIndexedViews(left: ManagerGraphIndexedView, right: ManagerGraphIndexedView): number {

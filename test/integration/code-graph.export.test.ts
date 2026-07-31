@@ -35,7 +35,7 @@ describe('SQLite code graph export integration', () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        yield* store.activate(databasePath, identity, snapshot, files, symbols, edges, 'integration-export', false);
+        yield* store.activate(databasePath, identity, snapshot, files, symbols, edges);
         const firstJson = yield* capture(databasePath, snapshot, 'json', 1);
         const secondJson = yield* capture(databasePath, snapshot, 'json', 2);
         const graphml = yield* capture(databasePath, snapshot, 'graphml', 1);
@@ -77,16 +77,7 @@ describe('SQLite code graph export integration', () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        yield* store.activate(
-          databasePath,
-          identity,
-          snapshot,
-          storedFiles(),
-          storedSymbols(),
-          storedEdges(),
-          'integration-export',
-          false,
-        );
+        yield* store.activate(databasePath, identity, snapshot, storedFiles(), storedSymbols(), storedEdges());
         const lease = yield* store.acquireSnapshotLease(databasePath, snapshot.id, 1_000);
         yield* store.renewSnapshotLease(databasePath, lease, 5_000);
         yield* store.releaseSnapshotLease(databasePath, lease);

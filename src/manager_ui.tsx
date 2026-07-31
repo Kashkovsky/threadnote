@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   GraphWorkspace,
+  graphStatusPollDelay,
+  graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
   type GraphCatalog,
   type GraphNodeDetail,
@@ -155,6 +157,7 @@ function App(): React.ReactElement {
   const [panel, setPanel] = useState<PanelName>('graph');
   const [state, setState] = useState<StateResponse | undefined>();
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
+  const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
   const [tree, setTree] = useState<TreeNode | undefined>();
   const [resourceTree, setResourceTree] = useState<TreeNode | undefined>();
   const [shares, setShares] = useState<readonly ShareSummary[]>([]);
@@ -209,6 +212,41 @@ function App(): React.ReactElement {
     if (panel === 'doctor') {
       void loadDoctor(false);
     }
+  }, [panel]);
+
+  useEffect(() => {
+    if (panel !== 'graph') return;
+    let cancelled = false;
+    let timer: number | undefined;
+    let observedActiveBuild = false;
+    const poll = async (): Promise<void> => {
+      try {
+        const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>('/api/graphs/status');
+        if (cancelled) return;
+        const active = status.builds.some(build => build.state === 'queued' || build.state === 'running');
+        const refreshCatalog =
+          (observedActiveBuild && !active) || graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds);
+        if (refreshCatalog) {
+          const refreshed = await api<GraphCatalog>('/api/graphs');
+          if (cancelled) return;
+          graphCatalogRef.current = refreshed;
+          setGraphCatalog(refreshed);
+        } else if (graphCatalogRef.current) {
+          const merged = {...graphCatalogRef.current, ...status};
+          graphCatalogRef.current = merged;
+          setGraphCatalog(merged);
+        }
+        observedActiveBuild = active;
+        timer = window.setTimeout(() => void poll(), graphStatusPollDelay(status.builds));
+      } catch {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 15_000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [panel]);
 
   useEffect(() => {
@@ -271,14 +309,17 @@ function App(): React.ReactElement {
     setTree(nextTree.tree);
     setResourceTree(nextTree.resourcesTree);
     setShares(nextShares.shares);
+    graphCatalogRef.current = nextGraphs;
     setGraphCatalog(nextGraphs);
     toastMessage('Refreshed');
   }
 
-  async function refreshGraphCatalog(): Promise<void> {
+  async function refreshGraphCatalog(notify = true): Promise<void> {
     try {
-      setGraphCatalog(await api<GraphCatalog>('/api/graphs'));
-      toastMessage('Graph indexes refreshed');
+      const next = await api<GraphCatalog>('/api/graphs');
+      graphCatalogRef.current = next;
+      setGraphCatalog(next);
+      if (notify) toastMessage('Graph indexes refreshed');
     } catch (cause) {
       toastMessage(errorMessage(cause));
     }
@@ -954,7 +995,7 @@ function App(): React.ReactElement {
               loadAnalysis={loadManagerGraphAnalysis}
               loadGraph={loadManagerGraph}
               loadNodeDetail={loadManagerGraphNodeDetail}
-              onRefresh={() => void refreshGraphCatalog()}
+              onRefresh={() => void refreshGraphCatalog(true)}
             />
           </section>
         ) : null}

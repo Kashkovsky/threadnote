@@ -99,6 +99,48 @@ describe('CodeGraphWatcher', () => {
     expect(starts).toBe(2);
   });
 
+  it('starts a replacement watcher after the previous run fails', async () => {
+    const starts = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const count = yield* Ref.make(0);
+          const firstStarted = yield* Deferred.make<void>();
+          const firstRelease = yield* Deferred.make<void>();
+          const firstStopped = yield* Deferred.make<void>();
+          const secondStarted = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () =>
+              Ref.updateAndGet(count, value => value + 1).pipe(
+                Effect.tap(value =>
+                  value === 1 ? Deferred.succeed(firstStarted, undefined) : Deferred.succeed(secondStarted, undefined),
+                ),
+                Effect.flatMap(value =>
+                  value === 1
+                    ? Deferred.await(firstRelease).pipe(
+                        Effect.andThen(Effect.fail(new Error('transient watcher failure'))),
+                      )
+                    : Effect.never,
+                ),
+                Effect.ensuring(Deferred.succeed(firstStopped, undefined)),
+              ),
+            () => Effect.void,
+          );
+
+          yield* watcher.ensure(options);
+          yield* Deferred.await(firstStarted);
+          yield* Deferred.succeed(firstRelease, undefined);
+          yield* Deferred.await(firstStopped);
+          yield* Effect.yieldNow;
+          yield* watcher.ensure(options);
+          yield* Deferred.await(secondStarted);
+          return yield* Ref.get(count);
+        }),
+      ),
+    );
+
+    expect(starts).toBe(2);
+  });
+
   it('deduplicates background refreshes and exposes progress until the graph is ready', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(

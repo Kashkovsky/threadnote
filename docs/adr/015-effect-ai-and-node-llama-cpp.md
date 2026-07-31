@@ -7,10 +7,12 @@ Date: 2026-07-27
 
 Local inference uses the N-API-compatible `node-llama-cpp` 3.19.1 package in a supervised worker launched from the
 same standalone Threadnote executable. The CLI, MCP, or manager parent process never loads the native addon. The worker
-is lazy and persistent for its parent process, so model sessions remain warm without turning inference into a daemon
-or separately installed service. Core embedding is required Threadnote functionality; reranking and structured
-generation are optional roles. Release archives include exactly one target-compatible prebuilt native payload;
-runtime builds and binary downloads remain disabled. No domain module imports the addon directly.
+is lazy and stays warm for a five-minute idle window, after which it unloads; the next request lazily respawns exactly
+one worker. The timeout is configurable through `THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS`, with `0` disabling
+eviction, without turning inference into a daemon or separately installed service. Core embedding is required
+Threadnote functionality; reranking and structured generation are optional roles. Release archives include exactly
+one target-compatible prebuilt native payload; runtime builds and binary downloads remain disabled. No domain module
+imports the addon directly.
 
 Effect’s unstable `EmbeddingModel` is the embedding harness. Threadnote owns small typed services for reranking and
 JSON-schema generation, composed behind `LocalModelRuntime`. The parent Layer serializes requests over a versioned

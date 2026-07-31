@@ -138,16 +138,7 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
       const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
-      yield* store.activate(
-        layout.databasePath,
-        identity,
-        snapshot,
-        files,
-        symbols,
-        edges,
-        CODE_GRAPH_EXTRACTOR_SET_VERSION,
-        false,
-      );
+      yield* store.activate(layout.databasePath, identity, snapshot, files, symbols, edges);
       yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
     }),
   );

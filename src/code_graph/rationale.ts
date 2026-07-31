@@ -1,22 +1,32 @@
 import {sha256HexSync} from '../crypto/sha256.js';
-import type {CodeGraphEdge, CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
+import type {
+  CodeGraphEdge,
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphRationaleInput,
+  CodeGraphSymbol,
+} from './types.js';
 
+export const CODE_GRAPH_RATIONALE_INPUT_VERSION = 'rationale-input-v1' as const;
 export const CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION = 'rationale-v1' as const;
 
 const RATIONALE_MARKER =
   /(?:^|\s)(?:\/\/|\/\*+|\*|#|--|<!--)\s*(NOTE|WHY|HACK|RATIONALE|DECISION|SAFETY|INVARIANT)\s*[:-]\s*(.+?)(?:\*\/|-->)?\s*$/i;
 const DESIGN_REFERENCE = /\b(?:ADR|RFC)[- #:]?\d{2,6}\b/gi;
 
-interface RationaleCandidate {
-  readonly documentation: string;
-  readonly line: number;
-  readonly marker: string;
-  readonly name: string;
+export function captureRationaleInputs(file: CodeGraphInventoryFile, facts: CodeGraphFileFacts): CodeGraphFileFacts {
+  if (file.content === undefined) return facts;
+  const rationale = rationaleCandidates(file.content);
+  if (rationale.length === 0) return facts;
+  return {
+    ...facts,
+    derivationInputs: {...facts.derivationInputs, rationale},
+  };
 }
 
 export function augmentRationaleFacts(file: CodeGraphInventoryFile, facts: CodeGraphFileFacts): CodeGraphFileFacts {
-  if (file.content === undefined) return facts;
-  const candidates = rationaleCandidates(file.content);
+  const candidates =
+    facts.derivationInputs?.rationale ?? (file.content === undefined ? [] : rationaleCandidates(file.content));
   if (candidates.length === 0) return facts;
   const symbols = [...facts.symbols];
   const edges = [...facts.edges];
@@ -29,8 +39,8 @@ export function augmentRationaleFacts(file: CodeGraphInventoryFile, facts: CodeG
   return {...facts, edges, symbols};
 }
 
-function rationaleCandidates(content: string): readonly RationaleCandidate[] {
-  const output: RationaleCandidate[] = [];
+function rationaleCandidates(content: string): readonly CodeGraphRationaleInput[] {
+  const output: CodeGraphRationaleInput[] = [];
   const seen = new Set<string>();
   content.split('\n').forEach((line, index) => {
     const marker = RATIONALE_MARKER.exec(line);
@@ -59,7 +69,11 @@ function rationaleCandidates(content: string): readonly RationaleCandidate[] {
   return output;
 }
 
-function rationaleSymbol(file: CodeGraphInventoryFile, candidate: RationaleCandidate, index: number): CodeGraphSymbol {
+function rationaleSymbol(
+  file: CodeGraphInventoryFile,
+  candidate: CodeGraphRationaleInput,
+  index: number,
+): CodeGraphSymbol {
   const qualifiedName = `${file.path}#rationale-${candidate.line}-${index + 1}`;
   return {
     contentHash: file.contentHash,
@@ -80,7 +94,7 @@ function rationaleSymbol(file: CodeGraphInventoryFile, candidate: RationaleCandi
 
 function rationaleOwners(
   symbols: readonly CodeGraphSymbol[],
-  candidate: RationaleCandidate,
+  candidate: CodeGraphRationaleInput,
 ): readonly CodeGraphSymbol[] {
   const enclosing = symbols
     .filter(

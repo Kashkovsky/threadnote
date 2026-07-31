@@ -52,16 +52,17 @@ const symbolArbitrary = FC.record({
 
 describe('code graph incremental-overlay properties', () => {
   it.prop(
-    'accepts body-only metadata changes but rejects every declaration and lookup surface mutation',
+    'accepts non-resolution metadata changes but rejects every declaration and lookup surface mutation',
     {symbol: symbolArbitrary},
     ({symbol}) => {
-      const bodyOnly: CodeGraphSymbol = {
+      const metadataOnly: CodeGraphSymbol = {
         ...symbol,
         contentHash: `changed:${symbol.contentHash}`,
         documentation: `changed:${symbol.documentation ?? ''}`,
+        signature: changedOptional(symbol.signature),
         span: {...symbol.span, endLine: symbol.span.endLine + 1},
       };
-      expect(hasSameCodeGraphResolutionSurface([symbol], [bodyOnly])).toBe(true);
+      expect(hasSameCodeGraphResolutionSurface([symbol], [metadataOnly])).toBe(true);
 
       const mutations: readonly CodeGraphSymbol[] = [
         {...symbol, arity: symbol.arity === undefined ? 0 : symbol.arity + 1},
@@ -76,7 +77,6 @@ describe('code graph incremental-overlay properties', () => {
         {...symbol, qualifiedName: `changed:${symbol.qualifiedName}`},
         {...symbol, resolutionDomain: changedOptional(symbol.resolutionDomain)},
         {...symbol, resolutionScopeId: changedOptional(symbol.resolutionScopeId)},
-        {...symbol, signature: changedOptional(symbol.signature)},
       ];
       expect(mutations.every(mutated => !hasSameCodeGraphResolutionSurface([symbol], [mutated]))).toBe(true);
     },

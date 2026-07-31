@@ -23,7 +23,12 @@ import {
   type CodeGraphAnalysisView,
 } from './analysis_render.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
-import {readCodeGraphBuildStatuses, type ObservedCodeGraphBuildStatus} from './build_status.js';
+import {
+  readCodeGraphBuildStatuses,
+  selectCodeGraphBuildStatuses,
+  type ObservedCodeGraphBuildStatus,
+} from './build_status.js';
+import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 
 interface CwdOption {
   readonly cwd?: string;
@@ -53,14 +58,16 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const identity = yield* resolveRepositoryIdentity(cwd);
   const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
   const obsoleteStores = yield* inspectObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId);
-  const buildStatuses = latestBuildStatusPerWorktree(yield* readCodeGraphBuildStatuses(layout));
+  const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);
+  const selection = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
+  const buildStatuses = selection.builds;
   if (buildStatuses.length > 0) {
+    const query = yield* CodeGraphQueryService;
+    const ready = yield* query.statusForIdentity(config.agentContextHome, identity);
     const current =
       buildStatuses.find(status => status.identity.worktreeId === identity.worktreeId) ??
       buildStatuses.find(status => status.observation.liveness === 'active');
-    const queuedWorktreeIds = buildStatuses
-      .filter(status => status.state === 'queued' && status.observation.liveness === 'active')
-      .map(status => status.identity.worktreeId);
+    const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
     const status = {
       build: current,
       builds: buildStatuses,
@@ -68,7 +75,11 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       identity,
       obsoleteStores,
       queuedWorktreeIds,
-      stale: current?.identity.commit !== identity.headCommit.slice(0, 12),
+      readySnapshot: ready.readySnapshot,
+      stale: ready.stale,
+      storage,
+      waiterCount: selection.waiters.length,
+      waiters: selection.waiters,
     };
     if (options.json) {
       yield* Console.log(JSON.stringify({type: 'code-graph-status', version: 2, ...status}));
@@ -77,12 +88,14 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     yield* Console.log(`Repository: ${identity.displayName}`);
     yield* Console.log(`Database: ${layout.databasePath}`);
     yield* renderObsoleteStoreStatus(obsoleteStores);
+    yield* renderActiveStorageStatus(storage);
     if (!current) {
       yield* Console.log(`Build status: ${buildStatuses.length} other worktree build(s) observed.`);
+      yield* renderReadySnapshotStatus(ready);
       return;
     }
     yield* Console.log(
-      `Build: ${current.state} · ${current.observation.liveness} · ${current.phase}/${current.subphase ?? 'unknown'}`,
+      `Build: ${current.state} · ${current.observation.liveness}${current.coordination?.progressSilent ? ' (progress silent)' : ''} · ${current.phase}/${current.subphase ?? 'unknown'}`,
     );
     yield* Console.log(
       `Owner: PID ${current.owner.processId} · Bun ${current.owner.runtimeVersion} · ` +
@@ -90,10 +103,13 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     );
     const counters = renderBuildCounters(current);
     if (counters) yield* Console.log(`Progress: ${counters}`);
-    if (current.eta) {
+    const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
+    if (current.eta && lastProgressAge <= 15_000) {
       yield* Console.log(
         `Phase ETA: about ${formatStatusDuration(current.eta.remainingMilliseconds)} (${current.eta.confidence} confidence)`,
       );
+    } else if (current.eta) {
+      yield* Console.log('Phase ETA: paused while progress is silent.');
     }
     if (current.result) {
       yield* Console.log(
@@ -102,18 +118,24 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       );
     }
     if (current.error) yield* Console.log(`Error: ${current.error.summary}`);
-    if (queuedWorktreeIds.length > 0) yield* Console.log(`Queued worktrees: ${queuedWorktreeIds.length}`);
+    if (selection.waiters.length > 0) {
+      yield* Console.log(
+        `Waiters: ${selection.waiters.length} process(es) across ${queuedWorktreeIds.length} worktree(s)`,
+      );
+    }
+    if (!current.result) yield* renderReadySnapshotStatus(ready);
     return;
   }
   const query = yield* CodeGraphQueryService;
-  const status = yield* query.status(config.agentContextHome, cwd);
+  const status = yield* query.statusForIdentity(config.agentContextHome, identity);
   if (options.json) {
-    yield* Console.log(JSON.stringify({type: 'code-graph-status', version: 1, ...status, obsoleteStores}));
+    yield* Console.log(JSON.stringify({type: 'code-graph-status', version: 1, ...status, obsoleteStores, storage}));
     return;
   }
   yield* Console.log(`Repository: ${status.identity.displayName}`);
   yield* Console.log(`Database: ${status.databasePath}`);
   yield* renderObsoleteStoreStatus(obsoleteStores);
+  yield* renderActiveStorageStatus(storage);
   yield* Console.log(
     `Language packs: ${status.languagePacks
       .map(pack => `${pack.id}@${pack.version} [${pack.languages.join(', ')}]`)
@@ -134,14 +156,22 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   );
 });
 
-function latestBuildStatusPerWorktree(
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-): readonly ObservedCodeGraphBuildStatus[] {
-  const latest = new Map<string, ObservedCodeGraphBuildStatus>();
-  for (const status of statuses) {
-    if (!latest.has(status.identity.worktreeId)) latest.set(status.identity.worktreeId, status);
-  }
-  return [...latest.values()];
+function renderReadySnapshotStatus(status: {
+  readonly readySnapshot?: {
+    readonly edgeCount: number;
+    readonly fileCount: number;
+    readonly id: string;
+    readonly symbolCount: number;
+  };
+  readonly stale: boolean;
+}): Effect.Effect<void> {
+  return status.readySnapshot
+    ? Console.log(
+        `Current-worktree ready snapshot: ${status.readySnapshot.id} · ${status.readySnapshot.fileCount} files · ` +
+          `${status.readySnapshot.symbolCount} symbols · ${status.readySnapshot.edgeCount} edges · ` +
+          `${status.stale ? 'stale' : 'current'}`,
+      )
+    : Console.log('Current-worktree ready snapshot: none');
 }
 
 function renderObsoleteStoreStatus(inventory: ObsoleteCodeGraphStoreInventory): Effect.Effect<void> {
@@ -159,6 +189,53 @@ function renderObsoleteStoreStatus(inventory: ObsoleteCodeGraphStoreInventory): 
         : '') +
       '; remove verified files explicitly with `threadnote graph purge --obsolete`.',
   );
+}
+
+function renderActiveStorageStatus(storage: CodeGraphStorage): Effect.Effect<void> {
+  if (storage.state === 'missing') return Effect.void;
+  return Effect.gen(function* () {
+    yield* Console.log(
+      `Storage: ${formatBytes(storage.databaseBytes)} database · ${formatBytes(storage.walBytes)} WAL · ` +
+        `${formatBytes(storage.shmBytes)} SHM · ${formatBytes(storage.totalBytes)} total`,
+    );
+    if (storage.pageStorage.state === 'deferred') {
+      yield* Console.log('Page storage: deferred while an active graph build owns the checkout lock.');
+      return;
+    }
+    if (storage.pageStorage.state === 'unavailable') {
+      yield* Console.log(
+        'Page storage: unavailable because the database is busy or unreadable; exact file sizes remain valid.',
+      );
+      return;
+    }
+    const page = storage.pageStorage;
+    yield* Console.log(
+      `Reclaimable: ${formatBytes(page.reclaimableBytes)} (${formatPercent(page.reclaimableRatio)}; ` +
+        `${page.freelistPages}/${page.pageCount} pages at ${page.pageSize} byte(s)/page)`,
+    );
+    yield* Console.log(
+      `Compaction: ${page.threshold.recommended ? 'recommended' : 'not needed'}; threshold is ` +
+        `${formatBytes(page.threshold.minimumReclaimableBytes)} and ` +
+        `${formatPercent(page.threshold.minimumReclaimableRatio)} free.`,
+    );
+  });
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'unknown';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'] as const;
+  let value = bytes / 1024;
+  let unit: (typeof units)[number] = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index]!;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function formatPercent(ratio: number): string {
+  return `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(1)}%`;
 }
 
 function renderBuildCounters(status: ObservedCodeGraphBuildStatus): string | undefined {
@@ -441,6 +518,49 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
   }
   const repositoryRoot = yield* service.purge(config.agentContextHome, cwd);
   yield* Console.log(`Removed derived code graph indexes: ${repositoryRoot}`);
+});
+
+export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(function* (
+  config: RuntimeConfig,
+  options: CwdOption & {readonly dryRun?: boolean; readonly force?: boolean; readonly json?: boolean},
+) {
+  const cwd = yield* commandCwd(options.cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  const summary = yield* compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
+    dryRun: options.dryRun === true,
+    force: options.force,
+  });
+  if (options.json) {
+    yield* Console.log(JSON.stringify({type: 'code-graph-compaction', version: 1, ...summary}));
+    return;
+  }
+  switch (summary.action) {
+    case 'deferred':
+      yield* Console.log(
+        `Code graph compaction deferred: ${
+          summary.reason === 'active-build'
+            ? 'an active build owns this checkout'
+            : 'another maintenance task is active'
+        }.`,
+      );
+      return;
+    case 'missing':
+      yield* Console.log('No active code graph database exists for this checkout.');
+      return;
+    case 'not-needed':
+      yield* Console.log('Code graph compaction is below the reviewed reclaimable-space threshold.');
+      if (summary.before) yield* renderActiveStorageStatus(summary.before);
+      return;
+    case 'would-compact':
+      yield* Console.log(
+        `Would compact the active code graph and reclaim about ${formatBytes(summary.reclaimedBytes)}.`,
+      );
+      if (summary.before) yield* renderActiveStorageStatus(summary.before);
+      return;
+    case 'compacted':
+      yield* Console.log(`Compacted the active code graph and reclaimed ${formatBytes(summary.reclaimedBytes)}.`);
+      if (summary.after) yield* renderActiveStorageStatus(summary.after);
+  }
 });
 
 export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function* (

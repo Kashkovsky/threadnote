@@ -6,8 +6,11 @@ interface WorkflowJob {
   readonly if?: string;
   readonly 'runs-on'?: string;
   readonly steps?: readonly {
+    readonly if?: string;
     readonly run?: string;
+    readonly 'timeout-minutes'?: number;
     readonly uses?: string;
+    readonly with?: Readonly<Record<string, string>>;
   }[];
   readonly strategy?: {
     readonly matrix?: {
@@ -22,6 +25,9 @@ interface BenchmarkWorkflow {
   readonly on: {
     readonly pull_request?: {
       readonly paths?: readonly string[];
+    };
+    readonly workflow_dispatch?: {
+      readonly inputs?: Readonly<Record<string, unknown>>;
     };
   };
 }
@@ -41,6 +47,7 @@ describe('platform benchmark workflow', () => {
       expect.arrayContaining([
         '.github/workflows/benchmarks.yml',
         'scripts/benchmark-code-graph.ts',
+        'scripts/code-graph-benchmark-sampler.ts',
         'scripts/benchmark-recall-vectors.ts',
         'scripts/evaluate-recall.ts',
         'src/code_graph/**',
@@ -79,5 +86,33 @@ describe('platform benchmark workflow', () => {
     for (const jobName of ['code-graph-100k', 'code-graph-vectors-100k', 'recall-100k']) {
       expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'schedule'");
     }
+  });
+
+  it('runs the production-large n=1 profile only by schedule or explicit opt-in and retains its artifact', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const job = workflow.jobs['code-graph-production-large']!;
+    const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
+    const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
+    const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+
+    expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_production_large');
+    expect(job.if).toContain("github.event_name == 'schedule'");
+    expect(job.if).toContain('inputs.include_production_large');
+    expect(job['runs-on']).toBe('ubuntu-24.04');
+    expect(job['timeout-minutes']).toBe(360);
+    expect(command).toContain('--profile production-large');
+    expect(command).toContain('--samples 1');
+    expect(command).toContain('--warmups 0');
+    expect(command).toContain('code-graph-production-large-n1-');
+    const captureTimeout = capture?.['timeout-minutes'];
+    expect(captureTimeout).toBeDefined();
+    expect(job['timeout-minutes']! - (captureTimeout ?? 0)).toBeGreaterThanOrEqual(30);
+    expect(upload?.uses).toBe('actions/upload-artifact@v7');
+    expect(upload?.if).toBe('always()');
+    expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(10);
+    expect(upload?.with?.path).toBe('artifacts/code-graph-production-large-n1-*.json');
+    expect(upload?.with?.['if-no-files-found']).toBe('warn');
   });
 });

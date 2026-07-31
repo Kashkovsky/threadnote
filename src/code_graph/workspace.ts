@@ -51,6 +51,7 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
   const diagnostics: string[] = [];
   const fileIndex = createWorkspaceFileIndex(files);
   const candidates = [
+    ...discoverNodeProjects(files, diagnostics, fileIndex),
     ...discoverMavenProjects(files, diagnostics, fileIndex),
     ...discoverGradleProjects(files, diagnostics, fileIndex),
     ...discoverSwiftPackageProjects(files, diagnostics),
@@ -86,6 +87,216 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
     projects,
     workspaces: materializeBuildWorkspaces(projects, diagnostics),
   };
+}
+
+interface NodePackageManifest {
+  readonly dependencyAliases: readonly string[];
+  readonly file: CodeGraphInventoryFile;
+  readonly name: string;
+  readonly root: string;
+  readonly workspacePatterns: readonly string[];
+}
+
+function discoverNodeProjects(
+  files: readonly CodeGraphInventoryFile[],
+  diagnostics: string[],
+  fileIndex: WorkspaceFileIndex,
+): readonly ProjectCandidate[] {
+  const manifests = files
+    .filter(candidate => basename(candidate.path).toLowerCase() === 'package.json' && candidate.content !== undefined)
+    .flatMap(file => {
+      try {
+        const parsed: unknown = JSON.parse(file.content!);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          diagnostics.push(`${file.path}: package manifest is not an object`);
+          return [];
+        }
+        const manifest = parsed as Record<string, unknown>;
+        const root = dirname(file.path);
+        const name =
+          typeof manifest.name === 'string' && manifest.name.trim()
+            ? manifest.name.trim()
+            : root.split('/').at(-1) || 'root';
+        return [
+          {
+            dependencyAliases: packageDependencyNames(manifest),
+            file,
+            name,
+            root,
+            workspacePatterns: packageWorkspacePatterns(manifest),
+          } satisfies NodePackageManifest,
+        ];
+      } catch (cause) {
+        diagnostics.push(`${file.path}: invalid package.json (${messageOf(cause)})`);
+        return [];
+      }
+    })
+    .sort((left, right) => compareCodeUnits(left.root, right.root));
+  const pnpmPatterns = new Map<string, readonly string[]>();
+  for (const file of files.filter(candidate => basename(candidate.path).toLowerCase() === 'pnpm-workspace.yaml')) {
+    if (file.content !== undefined) pnpmPatterns.set(dirname(file.path), pnpmWorkspacePatterns(file.content));
+  }
+  return manifests.map(manifest => {
+    const declaringWorkspaceRoot = [
+      ...manifests.flatMap(candidate =>
+        candidate.root === manifest.root || candidate.workspacePatterns.length === 0
+          ? []
+          : [{patterns: candidate.workspacePatterns, root: candidate.root}],
+      ),
+      ...[...pnpmPatterns].map(([root, patterns]) => ({patterns, root})),
+    ]
+      .filter(candidate => {
+        const relative = relativeContainedPath(candidate.root, manifest.root);
+        return relative !== undefined && relative !== '' && workspacePatternsInclude(candidate.patterns, relative);
+      })
+      .sort((left, right) => right.root.length - left.root.length || compareCodeUnits(left.root, right.root))[0]?.root;
+    const workspaceRoot = declaringWorkspaceRoot ?? manifest.root;
+    const tsconfig = fileIndex.fileByPath.get(joinPath(manifest.root, 'tsconfig.json'));
+    const referenceRoots = tsconfig?.content ? typescriptReferenceRoots(manifest.root, tsconfig.content) : [];
+    const referencedPackageNames = referenceRoots.flatMap(referenceRoot => {
+      const target = manifests.find(candidate => candidate.root === referenceRoot);
+      return target ? [target.name] : [];
+    });
+    return {
+      aliases: unique([manifest.name, manifest.root, ...referenceRoots]),
+      buildSystem: 'node',
+      dependencyAliases: unique([...manifest.dependencyAliases, ...referenceRoots, ...referencedPackageNames]),
+      diagnostics: [],
+      evidence: manifest.file.path,
+      kind: 'package',
+      languages: ['javascript', 'typescript'],
+      name: manifest.name,
+      provenance: 'declared',
+      resolutionDomain: 'typescript',
+      root: manifest.root,
+      sourceRoots: [manifest.root],
+      workspaceRoots: [workspaceRoot],
+    } satisfies ProjectCandidate;
+  });
+}
+
+function packageDependencyNames(manifest: Record<string, unknown>): readonly string[] {
+  return unique(
+    ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap(section => {
+      const dependencies = manifest[section];
+      return dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies)
+        ? Object.keys(dependencies)
+        : [];
+    }),
+  ).sort(compareCodeUnits);
+}
+
+function packageWorkspacePatterns(manifest: Record<string, unknown>): readonly string[] {
+  const workspaces = manifest.workspaces;
+  if (Array.isArray(workspaces)) return workspaces.filter((value): value is string => typeof value === 'string');
+  if (!workspaces || typeof workspaces !== 'object') return [];
+  const packages = (workspaces as Record<string, unknown>).packages;
+  return Array.isArray(packages) ? packages.filter((value): value is string => typeof value === 'string') : [];
+}
+
+function pnpmWorkspacePatterns(content: string): readonly string[] {
+  const patterns: string[] = [];
+  let packages = false;
+  for (const rawLine of content.split(/\r?\n/)) {
+    if (/^\s*packages\s*:/.test(rawLine)) {
+      packages = true;
+      continue;
+    }
+    if (packages && /^\S/.test(rawLine)) break;
+    if (!packages) continue;
+    const match = /^\s*-\s*["']?([^"'#]+?)["']?\s*(?:#.*)?$/.exec(rawLine);
+    if (match?.[1]) patterns.push(match[1].trim());
+  }
+  return unique(patterns).sort(compareCodeUnits);
+}
+
+function typescriptReferenceRoots(root: string, content: string): readonly string[] {
+  try {
+    const parsed: unknown = JSON.parse(stripJsonCommentsAndTrailingCommas(content));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+    const references = (parsed as Record<string, unknown>).references;
+    if (!Array.isArray(references)) return [];
+    return unique(
+      references.flatMap(reference => {
+        if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
+        const value = (reference as Record<string, unknown>).path;
+        if (typeof value !== 'string') return [];
+        const normalized = normalizeContainedPath(root, value.replace(/(?:\/tsconfig(?:\.json)?)$/i, ''));
+        return normalized === undefined ? [] : [normalized];
+      }),
+    ).sort(compareCodeUnits);
+  } catch {
+    return [];
+  }
+}
+
+function workspacePatternsInclude(patterns: readonly string[], relative: string): boolean {
+  const included = patterns.some(
+    pattern => !pattern.trim().startsWith('!') && workspacePatternMatches(pattern, relative),
+  );
+  const excluded = patterns.some(pattern => {
+    const normalized = pattern.trim();
+    return normalized.startsWith('!') && workspacePatternMatches(normalized.slice(1), relative);
+  });
+  return included && !excluded;
+}
+
+function relativeContainedPath(parent: string, child: string): string | undefined {
+  if (parent === '') return child;
+  if (child === parent) return '';
+  return child.startsWith(`${parent}/`) ? child.slice(parent.length + 1) : undefined;
+}
+
+function workspacePatternMatches(pattern: string, relative: string): boolean {
+  const normalized = pattern.trim().replace(/^\.\//, '').replace(/\/$/, '');
+  if (!normalized) return false;
+  const escaped = normalized
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replaceAll('**', '\u0000')
+    .replaceAll('*', '[^/]*')
+    .replaceAll('?', '[^/]')
+    .replaceAll('\u0000', '.*');
+  return new RegExp(`^${escaped}$`).test(relative);
+}
+
+function stripJsonCommentsAndTrailingCommas(content: string): string {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]!;
+    const next = content[index + 1];
+    if (inString) {
+      output += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      output += character;
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      while (index < content.length && content[index] !== '\n') index += 1;
+      output += '\n';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      index += 2;
+      while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) index += 1;
+      index += 1;
+      continue;
+    }
+    if (character === ',') {
+      let lookahead = index + 1;
+      while (/\s/.test(content[lookahead] ?? '')) lookahead += 1;
+      if (content[lookahead] === '}' || content[lookahead] === ']') continue;
+    }
+    output += character;
+  }
+  return output;
 }
 
 export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace[]): CodeGraphWorkspace {
@@ -233,12 +444,20 @@ export function createWorkspaceAttributor(
   const findProject = createWorkspaceProjectLookup(workspace.projects);
   return facts =>
     facts.map(file => {
-      const project = findProject(file.path);
-      if (Option.isNone(project)) return file;
       return {
         ...file,
-        references: file.references?.map(reference => attributeReference(reference, project.value, projectsById)),
-        symbols: file.symbols.map(symbol => attributeSymbol(symbol, project.value)),
+        references: file.references?.map(reference =>
+          Option.match(findProject(file.path, reference.resolutionDomain), {
+            onNone: () => reference,
+            onSome: project => attributeReference(reference, project, projectsById),
+          }),
+        ),
+        symbols: file.symbols.map(symbol =>
+          Option.match(findProject(file.path, symbol.resolutionDomain), {
+            onNone: () => symbol,
+            onSome: project => attributeSymbol(symbol, project),
+          }),
+        ),
       };
     });
 }
@@ -246,19 +465,20 @@ export function createWorkspaceAttributor(
 export function projectForPath(
   projects: readonly CodeGraphWorkspaceProject[],
   filePath: string,
+  resolutionDomain?: string,
 ): Option.Option<CodeGraphWorkspaceProject> {
-  return createWorkspaceProjectLookup(projects)(filePath);
+  return createWorkspaceProjectLookup(projects)(filePath, resolutionDomain);
 }
 
 export function createWorkspaceProjectLookup(
   projects: readonly CodeGraphWorkspaceProject[],
-): (filePath: string) => Option.Option<CodeGraphWorkspaceProject> {
+): (filePath: string, resolutionDomain?: string) => Option.Option<CodeGraphWorkspaceProject> {
   const index = workspaceProjectPathIndexes.get(projects) ?? createWorkspaceProjectPathIndex(projects);
   if (!workspaceProjectPathIndexes.has(projects)) workspaceProjectPathIndexes.set(projects, index);
-  return filePath =>
+  return (filePath, resolutionDomain) =>
     Option.fromUndefinedOr(
-      nearestPrefixProject(index.projectsBySourceRoot, filePath) ??
-        nearestPrefixProject(index.projectsByRoot, filePath),
+      nearestPrefixProject(index.projectsBySourceRoot, filePath, resolutionDomain) ??
+        nearestPrefixProject(index.projectsByRoot, filePath, resolutionDomain),
     );
 }
 
@@ -695,13 +915,23 @@ function createWorkspaceProjectPathIndex(projects: readonly CodeGraphWorkspacePr
 function nearestPrefixProject(
   projectsByPrefix: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>,
   filePath: string,
+  resolutionDomain?: string,
 ): CodeGraphWorkspaceProject | undefined {
   let prefix = filePath;
   for (;;) {
-    const project = projectsByPrefix.get(prefix)?.[0];
+    const candidates = projectsByPrefix.get(prefix) ?? [];
+    const project =
+      resolutionDomain === undefined
+        ? candidates[0]
+        : candidates.find(candidate => candidate.resolutionDomain === resolutionDomain);
     if (project) return project;
     const separator = prefix.lastIndexOf('/');
-    if (separator < 0) return projectsByPrefix.get('')?.[0];
+    if (separator < 0) {
+      const roots = projectsByPrefix.get('') ?? [];
+      return resolutionDomain === undefined
+        ? roots[0]
+        : roots.find(candidate => candidate.resolutionDomain === resolutionDomain);
+    }
     prefix = prefix.slice(0, separator);
   }
 }
@@ -923,4 +1153,8 @@ function preferredProjectName(left: string, right: string): string {
     : left.length < right.length
       ? left
       : right;
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

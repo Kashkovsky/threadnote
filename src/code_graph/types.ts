@@ -1,6 +1,7 @@
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_SET_VERSION = 'native-code-graph-8' as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 9 as const;
+export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
 export type CodeGraphRelation =
@@ -89,11 +90,24 @@ export interface CodeGraphEdge {
 }
 
 export interface CodeGraphFileFacts {
+  /** Compact parser-time inputs retained for derivations that run after source content is released. */
+  readonly derivationInputs?: CodeGraphDerivationInputs;
   readonly diagnostics: readonly string[];
   readonly edges: readonly CodeGraphEdge[];
   readonly path: string;
   readonly references?: readonly CodeGraphReference[];
   readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export interface CodeGraphDerivationInputs {
+  readonly rationale?: readonly CodeGraphRationaleInput[];
+}
+
+export interface CodeGraphRationaleInput {
+  readonly documentation: string;
+  readonly line: number;
+  readonly marker: string;
+  readonly name: string;
 }
 
 export interface CodeGraphReference {

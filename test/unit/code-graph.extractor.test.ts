@@ -1,5 +1,6 @@
 import {readFileSync, readdirSync, statSync} from 'node:fs';
 import {join, relative} from 'node:path';
+import * as FC from 'effect/testing/FastCheck';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
@@ -8,6 +9,8 @@ import {
   extractRepositoryFacts,
   extractRepositoryFileFacts,
 } from '../../src/code_graph/extractor.js';
+import {deriveCachedCodeGraphFacts} from '../../src/code_graph/indexer.js';
+import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 const REPOSITORY = join(import.meta.dirname, '../evaluation/fixtures/code-graph-v1/repository');
@@ -65,6 +68,36 @@ describe('native code graph extraction', () => {
     const streamed = attributed.flatMap(file => resolver.resolve([file]));
 
     expect(streamed).toEqual(facts);
+  });
+
+  it('rehydrates deferred raw references before applying Node workspace scopes', () => {
+    const cachedFiles = [
+      sourceFile('package.json', '{"name":"cached-workspace"}\n'),
+      sourceFile('dependency.ts', 'export function dependency(): number { return 1; }\n'),
+      sourceFile(
+        'consumer.ts',
+        'import {dependency} from "./dependency.js";\n' +
+          'export function consumer(): number { return dependency(); }\n',
+      ),
+    ];
+    const raw = extractRepositoryFileFacts(cachedFiles);
+    expect(
+      raw.find(file => file.path === 'consumer.ts')?.references?.find(reference => reference.relation === 'calls')
+        ?.lookupTiers,
+    ).toEqual([]);
+
+    const derived = deriveCachedCodeGraphFacts(cachedFiles, discoverManifestWorkspace(cachedFiles), raw);
+    const callReference = derived
+      .find(file => file.path === 'consumer.ts')
+      ?.references?.find(reference => reference.relation === 'calls');
+    const dependency = derived.flatMap(file => file.symbols).find(symbol => symbol.name === 'dependency');
+    const resolved = createRepositoryFactResolver(derived, cachedFiles).resolve(derived);
+
+    expect(callReference?.lookupTiers.flat().some(key => dependency?.lookupKeys?.includes(key))).toBe(true);
+    expect(callReference?.lookupTiers.flat().every(key => key.includes(':cgp_'))).toBe(true);
+    expect(
+      resolved.flatMap(file => file.edges).find(edge => edge.sourceName === 'consumer' && edge.relation === 'calls'),
+    ).toMatchObject({provenance: 'resolved', targetId: dependency?.id, targetName: 'dependency'});
   });
 
   it('indexes documentation without promoting prose similarity to a source dependency', () => {
@@ -126,6 +159,60 @@ describe('native code graph extraction', () => {
     expect(collisionTarget?.path).toBe('src/b.ts');
     expect(missingCall).toMatchObject({provenance: 'syntactic'});
     expect(missingCall?.targetId).toBeUndefined();
+  });
+
+  it('resolves randomized TypeScript overload groups without collapsing their symbols', () => {
+    FC.assert(
+      FC.property(
+        FC.uniqueArray(FC.integer({max: 4, min: 0}), {maxLength: 5, minLength: 2}),
+        FC.integer({max: 100, min: 0}),
+        (generatedArities, selectedIndex) => {
+          const arities = [...generatedArities].sort((left, right) => left - right);
+          const selectedArity = arities[selectedIndex % arities.length]!;
+          const secondArity = arities[(selectedIndex + 1) % arities.length]!;
+          const resolved = extractRepositoryFacts([
+            sourceFile('src/overloads.ts', overloadFixture(arities)),
+            sourceFile('src/use-overloads.ts', overloadUseFixture(selectedArity, secondArity)),
+          ]);
+          const symbols = resolved.flatMap(file => file.symbols);
+          const edges = resolved.flatMap(file => file.edges);
+          const parseSymbols = symbols.filter(symbol => symbol.path === 'src/overloads.ts' && symbol.name === 'parse');
+          const decodeSymbols = symbols.filter(
+            symbol => symbol.path === 'src/overloads.ts' && symbol.name === 'decode',
+          );
+          const implementation = parseSymbols.find(symbol => symbol.signature?.includes('...values'));
+          const selectedDeclaration = decodeSymbols.find(symbol => symbol.arity === selectedArity);
+          const secondDeclaration = decodeSymbols.find(symbol => symbol.arity === secondArity);
+          const call = (sourceName: string, targetName: string) =>
+            edges.find(
+              edge => edge.sourceName === sourceName && edge.relation === 'calls' && edge.targetName === targetName,
+            );
+
+          expect(new Set(parseSymbols.map(symbol => symbol.id)).size).toBe(arities.length + 1);
+          expect(new Set(decodeSymbols.map(symbol => symbol.id)).size).toBe(arities.length);
+          expect(implementation).toBeDefined();
+          expect(selectedDeclaration).toBeDefined();
+          expect(secondDeclaration).toBeDefined();
+          expect(call('useLocal', 'parse')).toMatchObject({
+            provenance: 'resolved',
+            targetId: implementation?.id,
+          });
+          expect(call('useImported', 'parse')).toMatchObject({
+            provenance: 'resolved',
+            targetId: implementation?.id,
+          });
+          const declaredCalls = edges.filter(
+            edge => edge.sourceName === 'useDeclared' && edge.relation === 'calls' && edge.targetName === 'decode',
+          );
+          expect(declaredCalls).toHaveLength(2);
+          expect(new Set(declaredCalls.map(edge => edge.id)).size).toBe(2);
+          expect(new Set(declaredCalls.map(edge => edge.targetId))).toEqual(
+            new Set([selectedDeclaration?.id, secondDeclaration?.id]),
+          );
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('scopes repeated TypeScript path aliases to the importing package', () => {
@@ -499,4 +586,29 @@ function sourceFile(path: string, content: string): CodeGraphInventoryFile {
     size: new TextEncoder().encode(content).byteLength,
     source: 'commit',
   };
+}
+
+function overloadFixture(arities: readonly number[]): string {
+  const declarations = (name: string, prefix: string) =>
+    arities.map(arity => {
+      const parameters = Array.from({length: arity}, (_, index) => `value${index}: number`).join(', ');
+      return `${prefix} function ${name}(${parameters}): string;`;
+    });
+  return [
+    ...declarations('parse', 'export'),
+    'export function parse(...values: readonly number[]): string { return values.join(","); }',
+    ...declarations('decode', 'export declare'),
+    'export function useLocal(): string { return parse(1); }',
+    '',
+  ].join('\n');
+}
+
+function overloadUseFixture(firstArity: number, secondArity: number): string {
+  const argumentsList = (arity: number) => Array.from({length: arity}, (_, index) => String(index)).join(', ');
+  return [
+    'import {decode, parse} from "./overloads.js";',
+    'export function useImported(): string { return parse(1); }',
+    `export function useDeclared(): string { return decode(${argumentsList(firstArity)}) + decode(${argumentsList(secondArity)}); }`,
+    '',
+  ].join('\n');
 }

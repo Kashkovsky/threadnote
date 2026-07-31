@@ -23,7 +23,13 @@ interface ExtractionContext {
 interface MutableFacts {
   readonly diagnostics: string[];
   readonly edges: CodeGraphEdge[];
+  readonly references?: CodeGraphReference[];
   readonly symbols: CodeGraphSymbol[];
+}
+
+interface SymbolIdentityAllocator {
+  readonly groupOccurrences: Map<string, number>;
+  readonly signatureOccurrences: Map<string, number>;
 }
 
 interface PackageInfo {
@@ -134,19 +140,27 @@ export function createResolutionAttributor(
   const existingPaths = new Set(files.map(file => file.path));
   const aliases = discoverResolutionAliases(files, {});
   const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
-  return facts =>
-    facts.map(file => {
+  return facts => {
+    const factsByPath = new Map(facts.map(file => [file.path, file]));
+    return facts.map(file => {
       const imports = collectImportBindings([file]).get(file.path);
       const edges = file.edges.map(normalizeLocallyBoundEdge);
-      const typedEdgeIds = new Set(file.references?.map(reference => reference.edgeId) ?? []);
-      const references = [
-        ...(file.references ?? []),
-        ...file.edges.flatMap(edge =>
-          typedEdgeIds.has(edge.id)
-            ? []
-            : referenceForLegacyEdge(edge, imports, existingPaths, packages, aliases, resolutionCache),
-        ),
-      ];
+      const declaredReferences = new Map(file.references?.map(reference => [reference.edgeId, reference]) ?? []);
+      const references = file.edges.flatMap((edge, index) => {
+        if (parseLocallyBoundTarget(edge.targetName) !== undefined) return [];
+        const declared = declaredReferences.get(edge.id);
+        if (declared !== undefined && declared.lookupTiers.length > 0) return [declared];
+        return referenceForLegacyEdge(
+          edges[index]!,
+          imports,
+          existingPaths,
+          packages,
+          aliases,
+          resolutionCache,
+          declared?.arity,
+          factsByPath,
+        );
+      });
       return {
         ...file,
         diagnostics: [
@@ -160,6 +174,7 @@ export function createResolutionAttributor(
         symbols: file.symbols.map(addNormalizedLookupKeys),
       };
     });
+  };
 }
 
 function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
@@ -188,7 +203,7 @@ function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
         : [];
   return {
     ...symbol,
-    lookupKeys: uniqueStrings([...lookupKeys, ...globalLookupKeys(symbol)]),
+    lookupKeys: uniqueStrings([...(symbol.lookupKeys ?? []), ...lookupKeys, ...globalLookupKeys(symbol)]),
     resolutionDomain,
   };
 }
@@ -226,6 +241,8 @@ function referenceForLegacyEdge(
   packages: PackageIndex,
   aliases: ResolutionAliasIndex,
   cache: ResolutionCache,
+  arity?: number,
+  factsByPath?: ReadonlyMap<string, CodeGraphFileFacts>,
 ): readonly CodeGraphReference[] {
   if (edge.targetId || parseLocallyBoundTarget(edge.targetName) !== undefined) return [];
   const binding = parseImportBindingTarget(edge.targetName);
@@ -233,12 +250,23 @@ function referenceForLegacyEdge(
     if (binding.imported === '*' || binding.imported === 'default') return [];
     const targetPath = resolveModulePath(edge.evidencePath, binding.specifier, existingPaths, packages, aliases, cache);
     if (targetPath === undefined) return [];
+    const aliasLookupKeys =
+      edge.relation === 'reexports'
+        ? [
+            typescriptCallableKey(edge.evidencePath, binding.local, 'name', 'implementation'),
+            typescriptNameKey(edge.evidencePath, binding.local),
+          ]
+        : undefined;
     return [
-      referenceForEdge(edge, 'typescript', [[typescriptNameKey(targetPath, binding.imported)]], {
-        aliasLookupKeys:
-          edge.relation === 'reexports' ? [typescriptNameKey(edge.evidencePath, binding.local)] : undefined,
-        exportedOnly: true,
-      }),
+      referenceForEdge(
+        edge,
+        'typescript',
+        [
+          [typescriptCallableKey(targetPath, binding.imported, 'name', 'implementation')],
+          [typescriptNameKey(targetPath, binding.imported)],
+        ],
+        {aliasLookupKeys, exportedOnly: true},
+      ),
     ];
   }
   if (edge.relation === 'imports' || edge.relation === 'reexports') {
@@ -275,17 +303,91 @@ function referenceForLegacyEdge(
     return targetPath === undefined
       ? []
       : [
-          referenceForEdge(edge, 'typescript', [[typescriptNameKey(targetPath, imported.imported)]], {
-            exportedOnly: true,
-          }),
+          referenceForEdge(
+            edge,
+            'typescript',
+            typescriptReferenceLookupTiersForTargets(
+              factsByPath === undefined
+                ? [{name: imported.imported, path: targetPath}]
+                : transitiveTypeScriptReexportTargets(
+                    targetPath,
+                    imported.imported,
+                    factsByPath,
+                    existingPaths,
+                    packages,
+                    aliases,
+                    cache,
+                  ),
+              edge.relation,
+              arity,
+            ),
+            {arity, exportedOnly: true},
+          ),
         ];
   }
   if (edge.targetName.startsWith('this.') || edge.targetName.includes('.')) return [];
   return [
-    referenceForEdge(edge, 'typescript', [
-      [`typescript:path:${lookupComponent(edge.evidencePath)}:qualified:${lookupComponent(edge.targetName)}`],
-    ]),
+    referenceForEdge(
+      edge,
+      'typescript',
+      typescriptReferenceLookupTiers(edge.evidencePath, edge.targetName, 'qualified', edge.relation, arity),
+      {arity},
+    ),
   ];
+}
+
+interface TypeScriptReexportTarget {
+  readonly name: string;
+  readonly path: string;
+}
+
+function transitiveTypeScriptReexportTargets(
+  path: string,
+  name: string,
+  factsByPath: ReadonlyMap<string, CodeGraphFileFacts>,
+  existingPaths: ReadonlySet<string>,
+  packages: PackageIndex,
+  aliases: ResolutionAliasIndex,
+  cache: ResolutionCache,
+  visited: ReadonlySet<string> = new Set(),
+): readonly TypeScriptReexportTarget[] {
+  const visitKey = `${path}\0${name}`;
+  if (visited.has(visitKey)) return [];
+  const nextVisited = new Set(visited);
+  nextVisited.add(visitKey);
+  const targets = (factsByPath.get(path)?.edges ?? []).flatMap(edge => {
+    if (edge.relation !== 'reexports') return [];
+    const binding = parseImportBindingTarget(edge.targetName);
+    if (!binding || binding.local !== name || binding.imported === '*' || binding.imported === 'default') return [];
+    const targetPath = resolveModulePath(path, binding.specifier, existingPaths, packages, aliases, cache);
+    if (targetPath === undefined) return [];
+    return transitiveTypeScriptReexportTargets(
+      targetPath,
+      binding.imported,
+      factsByPath,
+      existingPaths,
+      packages,
+      aliases,
+      cache,
+      nextVisited,
+    );
+  });
+  if (targets.length === 0) return [{name, path}];
+  return uniqueByKey(targets, target => `${target.path}\0${target.name}`);
+}
+
+function typescriptReferenceLookupTiersForTargets(
+  targets: readonly TypeScriptReexportTarget[],
+  relation: CodeGraphRelation,
+  arity?: number,
+): readonly (readonly string[])[] {
+  const perTarget = targets.map(target =>
+    typescriptReferenceLookupTiers(target.path, target.name, 'name', relation, arity),
+  );
+  const tierCount = Math.max(0, ...perTarget.map(tiers => tiers.length));
+  return Array.from({length: tierCount}, (_, tier) =>
+    uniqueStrings(perTarget.flatMap(tiers => tiers[tier] ?? [])),
+  ).filter(tier => tier.length > 0);
 }
 
 function referenceForEdge(
@@ -294,11 +396,13 @@ function referenceForEdge(
   lookupTiers: readonly (readonly string[])[],
   options: {
     readonly aliasLookupKeys?: readonly string[];
+    readonly arity?: number;
     readonly exportedOnly?: boolean;
   } = {},
 ): CodeGraphReference {
   return {
     aliasLookupKeys: options.aliasLookupKeys,
+    ...(options.arity === undefined ? {} : {arity: options.arity}),
     edgeId: edge.id,
     evidencePath: edge.evidencePath,
     evidenceSpan: edge.evidenceSpan,
@@ -317,12 +421,57 @@ function typescriptNameKey(path: string, name: string): string {
   return `typescript:path:${lookupComponent(path)}:name:${lookupComponent(name)}`;
 }
 
+function typescriptQualifiedKey(path: string, qualifiedName: string): string {
+  return `typescript:path:${lookupComponent(path)}:qualified:${lookupComponent(qualifiedName)}`;
+}
+
+function typescriptCallableKey(
+  path: string,
+  value: string,
+  scope: 'name' | 'qualified',
+  discriminator: `arity:${number}` | 'implementation',
+): string {
+  return `${scope === 'name' ? typescriptNameKey(path, value) : typescriptQualifiedKey(path, value)}:${discriminator}`;
+}
+
+function typescriptMergeCanonicalKey(path: string, value: string, scope: 'name' | 'qualified'): string {
+  return `${scope === 'name' ? typescriptNameKey(path, value) : typescriptQualifiedKey(path, value)}:merge-canonical`;
+}
+
+function typescriptReferenceLookupTiers(
+  path: string,
+  value: string,
+  scope: 'name' | 'qualified',
+  relation: CodeGraphRelation,
+  arity?: number,
+): readonly (readonly string[])[] {
+  const base = scope === 'name' ? typescriptNameKey(path, value) : typescriptQualifiedKey(path, value);
+  return (relation === 'calls' || relation === 'constructs') && arity !== undefined
+    ? [
+        [typescriptCallableKey(path, value, scope, 'implementation')],
+        [typescriptCallableKey(path, value, scope, `arity:${arity}`)],
+        [base],
+      ]
+    : [[typescriptMergeCanonicalKey(path, value, scope)], [base]];
+}
+
 function lookupComponent(value: string): string {
   return encodeURIComponent(value);
 }
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
+}
+
+function uniqueByKey<A>(values: readonly A[], key: (value: A) => string): readonly A[] {
+  const output = new Map<string, A>();
+  for (const value of values) {
+    const valueKey = key(value);
+    if (!output.has(valueKey)) {
+      output.set(valueKey, value);
+    }
+  }
+  return [...output.values()];
 }
 
 export function extractFileFacts(
@@ -353,15 +502,19 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
     true,
     scriptKindForPath(context.path),
   );
-  const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
+  const facts: MutableFacts = {diagnostics: [], edges: [], references: [], symbols: []};
   const moduleSymbol = makeSymbol(context, sourceFile, 'module', context.path, context.path, true);
+  const symbolIdentities: SymbolIdentityAllocator = {
+    groupOccurrences: new Map(),
+    signatureOccurrences: new Map(),
+  };
   facts.symbols.push(moduleSymbol);
   const declarationStack: CodeGraphSymbol[] = [moduleSymbol];
   const declarationByNode = new Map<ts.Node, CodeGraphSymbol>([[sourceFile, moduleSymbol]]);
   const localBindings = collectLocalBindings(sourceFile);
 
   const visit = (node: ts.Node): void => {
-    const declaration = declarationForNode(node, sourceFile, context, declarationStack);
+    const declaration = declarationForNode(node, sourceFile, context, declarationStack, symbolIdentities);
     let pushed = false;
     if (declaration) {
       facts.symbols.push(declaration);
@@ -428,10 +581,11 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
       }
     } else if (ts.isCallExpression(node)) {
       const target = relationshipExpressionName(node.expression, localBindings);
-      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'calls', 'syntactic');
+      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'calls', 'syntactic', node.arguments.length);
     } else if (ts.isNewExpression(node)) {
       const target = relationshipExpressionName(node.expression, localBindings);
-      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'constructs', 'syntactic');
+      if (target)
+        addUnresolvedEdge(facts, context, node, owner, target, 'constructs', 'syntactic', node.arguments?.length ?? 0);
     } else if (ts.isHeritageClause(node)) {
       const relation: CodeGraphRelation = node.token === ts.SyntaxKind.ImplementsKeyword ? 'implements' : 'extends';
       for (const type of node.types) {
@@ -458,7 +612,13 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
       `${context.path}${position ? `:${position}` : ''}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`,
     );
   }
-  return {diagnostics: facts.diagnostics, edges: facts.edges, path: context.path, symbols: facts.symbols};
+  return {
+    diagnostics: facts.diagnostics,
+    edges: facts.edges,
+    path: context.path,
+    references: facts.references,
+    symbols: facts.symbols,
+  };
 }
 
 function declarationForNode(
@@ -466,6 +626,7 @@ function declarationForNode(
   sourceFile: ts.SourceFile,
   context: ExtractionContext,
   stack: readonly CodeGraphSymbol[],
+  identities: SymbolIdentityAllocator,
 ): CodeGraphSymbol | undefined {
   if (DECLARATION_KINDS.has(node.kind) && 'name' in node) {
     const nameNode = (node as ts.NamedDeclaration).name;
@@ -478,6 +639,7 @@ function declarationForNode(
       qualify(stack, nameNode.text),
       hasExportModifier(node),
       node,
+      identities,
     );
   }
   if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
@@ -489,6 +651,7 @@ function declarationForNode(
       qualify(stack, node.name.text),
       hasExportModifier(node.parent.parent),
       node,
+      identities,
     );
   }
   if (
@@ -500,10 +663,19 @@ function declarationForNode(
   ) {
     const name = propertyName(node.name);
     if (!name) return undefined;
-    return makeSymbol(context, sourceFile, 'method', name, qualify(stack, name), false, node);
+    return makeSymbol(context, sourceFile, 'method', name, qualify(stack, name), false, node, identities);
   }
   if (ts.isConstructorDeclaration(node)) {
-    return makeSymbol(context, sourceFile, 'constructor', 'constructor', qualify(stack, 'constructor'), false, node);
+    return makeSymbol(
+      context,
+      sourceFile,
+      'constructor',
+      'constructor',
+      qualify(stack, 'constructor'),
+      false,
+      node,
+      identities,
+    );
   }
   return undefined;
 }
@@ -628,7 +800,8 @@ export function createRepositoryFactResolver(
     resolve: facts => {
       const importsByPath = collectImportBindings(facts);
       return facts.map(fileFacts => {
-        const typedReferences = new Map(fileFacts.references?.map(reference => [reference.edgeId, reference]) ?? []);
+        const declaredReferences = new Map(fileFacts.references?.map(reference => [reference.edgeId, reference]) ?? []);
+        const imports = importsByPath.get(fileFacts.path);
         return {
           ...fileFacts,
           diagnostics: [
@@ -639,7 +812,11 @@ export function createRepositoryFactResolver(
           ],
           edges: fileFacts.edges.map(edge => {
             if (edge.targetId) return edge;
-            const typedReference = typedReferences.get(edge.id);
+            const declaredReference = declaredReferences.get(edge.id);
+            const typedReference =
+              declaredReference !== undefined && declaredReference.lookupTiers.length > 0
+                ? declaredReference
+                : undefined;
             const locallyBound = parseLocallyBoundTarget(edge.targetName);
             if (locallyBound) {
               return {
@@ -690,12 +867,13 @@ export function createRepositoryFactResolver(
                         : resolveSourceRelationshipTarget(
                             edge,
                             byPathAndName,
-                            importsByPath.get(edge.evidencePath),
+                            imports,
                             factsByPath,
                             existingPaths,
                             packages,
                             aliases,
                             resolutionCache,
+                            declaredReference?.arity,
                           );
             if (!resolved) return edge;
             const provenance: CodeGraphProvenance =
@@ -792,6 +970,7 @@ function resolveSourceRelationshipTarget(
   packages: PackageIndex,
   aliases: ResolutionAliasIndex,
   cache: ResolutionCache,
+  arity?: number,
 ): CodeGraphSymbol | undefined {
   if (!['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(edge.relation)) {
     return undefined;
@@ -807,14 +986,38 @@ function resolveSourceRelationshipTarget(
       packages,
       aliases,
       cache,
+      {arity, relation: edge.relation},
     );
   }
   if (edge.targetName.startsWith('this.')) return undefined;
   const localName = edge.targetName;
   if (localName.includes('.')) return undefined;
-  return uniqueSymbol(
-    byPathAndName.get(`${edge.evidencePath}\0${localName}`)?.filter(symbol => symbol.qualifiedName === localName),
+  return selectTypeScriptCallableCandidate(
+    byPathAndName.get(`${edge.evidencePath}\0${localName}`)?.filter(symbol => symbol.qualifiedName === localName) ?? [],
+    {arity, relation: edge.relation},
   );
+}
+
+interface TypeScriptCallableResolution {
+  readonly arity?: number;
+  readonly relation?: CodeGraphRelation;
+}
+
+function selectTypeScriptCallableCandidate(
+  candidates: readonly CodeGraphSymbol[],
+  options: TypeScriptCallableResolution,
+): CodeGraphSymbol | undefined {
+  if ((options.relation === 'calls' || options.relation === 'constructs') && options.arity !== undefined) {
+    const implementations = candidates.filter(symbol =>
+      symbol.lookupKeys?.some(key => key.endsWith(':implementation')),
+    );
+    if (implementations.length === 1) return implementations[0];
+    if (implementations.length > 1) return undefined;
+    const matchingArity = candidates.filter(symbol => symbol.arity === options.arity);
+    if (matchingArity.length === 1) return matchingArity[0];
+    if (matchingArity.length > 1) return undefined;
+  }
+  return uniqueSymbol(candidates);
 }
 
 function resolveImportedSymbol(
@@ -826,10 +1029,13 @@ function resolveImportedSymbol(
   packages: PackageIndex,
   aliases: ResolutionAliasIndex,
   cache: ResolutionCache,
+  options: TypeScriptCallableResolution = {},
   visited: ReadonlySet<string> = new Set(),
 ): CodeGraphSymbol | undefined {
   if (binding.imported === '*' || binding.imported === 'default') return undefined;
-  const cacheKey = `${sourcePath}\0${binding.specifier}\0${binding.imported}`;
+  const cacheKey = `${sourcePath}\0${binding.specifier}\0${binding.imported}\0${options.relation ?? ''}\0${
+    options.arity ?? ''
+  }`;
   if (visited.size === 0) {
     const cached = cache.importedSymbols.get(cacheKey);
     if (cached) return Option.getOrUndefined(cached);
@@ -842,13 +1048,12 @@ function resolveImportedSymbol(
   const visitKey = `${targetPath}\0${binding.imported}`;
   if (visited.has(visitKey)) return undefined;
   const direct = (byPathAndName.get(`${targetPath}\0${binding.imported}`) ?? []).filter(symbol => symbol.exported);
-  if (direct.length === 1) {
-    if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.some(direct[0]!));
-    return direct[0];
-  }
-  if (direct.length > 1) {
-    if (visited.size === 0) cache.importedSymbols.set(cacheKey, Option.none());
-    return undefined;
+  if (direct.length > 0) {
+    const selected = selectTypeScriptCallableCandidate(direct, options);
+    if (visited.size === 0) {
+      cache.importedSymbols.set(cacheKey, selected === undefined ? Option.none() : Option.some(selected));
+    }
+    return selected;
   }
   const nextVisited = new Set(visited);
   nextVisited.add(visitKey);
@@ -865,6 +1070,7 @@ function resolveImportedSymbol(
       packages,
       aliases,
       cache,
+      options,
       nextVisited,
     );
     if (resolved) {
@@ -1163,27 +1369,119 @@ function makeSymbol(
   qualifiedName: string,
   exported: boolean,
   node: ts.Node = sourceFile,
+  identities?: SymbolIdentityAllocator,
 ): CodeGraphSymbol {
   const start = node.getStart(sourceFile, false);
   const end = node.getEnd();
+  const arity = typeScriptDeclarationArity(node);
   const signature = sourceFile.text
     .slice(start, Math.min(end, start + 300))
     .split(/[{\n]/, 1)[0]
     ?.trim();
+  const identity =
+    identities === undefined
+      ? {groupOccurrence: 0, id: symbolId(context.path, context.language, kind, qualifiedName)}
+      : allocateSymbolIdentity(context.path, context.language, kind, qualifiedName, signature ?? '', identities);
+  const lookupKeys = typeScriptSymbolLookupKeys(
+    context.path,
+    kind,
+    name,
+    qualifiedName,
+    arity,
+    isTypeScriptCallableImplementation(node),
+    identity.groupOccurrence === 0 && isTypeScriptMergeableKind(kind),
+  );
   return {
+    ...(arity === undefined ? {} : {arity}),
     contentHash: context.contentHash,
     documentation: leadingDocumentation(sourceFile, node),
     exported,
-    id: symbolId(context.path, context.language, kind, qualifiedName),
+    id: identity.id,
     kind,
     language: context.language,
+    lookupKeys,
     name,
     packageName: context.packageName,
     path: context.path,
     qualifiedName,
+    resolutionDomain: 'typescript',
     signature: signature || undefined,
     span: spanFor(sourceFile, start, end),
   };
+}
+
+function typeScriptDeclarationArity(node: ts.Node): number | undefined {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isMethodSignature(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    return node.parameters.length;
+  }
+  if (
+    ts.isVariableDeclaration(node) &&
+    node.initializer !== undefined &&
+    (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+  ) {
+    return node.initializer.parameters.length;
+  }
+  return undefined;
+}
+
+function isTypeScriptCallableImplementation(node: ts.Node): boolean {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    return node.body !== undefined;
+  }
+  return (
+    ts.isVariableDeclaration(node) &&
+    node.initializer !== undefined &&
+    (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+  );
+}
+
+function typeScriptSymbolLookupKeys(
+  path: string,
+  kind: string,
+  name: string,
+  qualifiedName: string,
+  arity: number | undefined,
+  implementation: boolean,
+  mergeCanonical: boolean,
+): readonly string[] {
+  const keys = [typescriptNameKey(path, name), typescriptQualifiedKey(path, qualifiedName)];
+  if (kind === 'module') keys.push(`typescript:module:${lookupComponent(path)}`);
+  if (arity !== undefined) {
+    keys.push(
+      typescriptCallableKey(path, name, 'name', `arity:${arity}`),
+      typescriptCallableKey(path, qualifiedName, 'qualified', `arity:${arity}`),
+    );
+  }
+  if (implementation) {
+    keys.push(
+      typescriptCallableKey(path, name, 'name', 'implementation'),
+      typescriptCallableKey(path, qualifiedName, 'qualified', 'implementation'),
+    );
+  }
+  if (mergeCanonical) {
+    keys.push(
+      typescriptMergeCanonicalKey(path, name, 'name'),
+      typescriptMergeCanonicalKey(path, qualifiedName, 'qualified'),
+    );
+  }
+  return uniqueStrings(keys);
+}
+
+function isTypeScriptMergeableKind(kind: string): boolean {
+  return kind === 'interface' || kind === 'enum';
 }
 
 function makeTextSymbol(
@@ -1245,20 +1543,46 @@ function addUnresolvedEdge(
   targetName: string,
   relation: CodeGraphRelation,
   provenance: CodeGraphProvenance,
+  arity?: number,
 ): void {
   const sourceFile = node.getSourceFile();
   const evidenceSpan = spanFor(sourceFile, node.getStart(sourceFile, false), node.getEnd());
-  facts.edges.push({
+  const edge: CodeGraphEdge = {
     confidence: 0.75,
     evidencePath: context.path,
     evidenceSpan,
-    id: edgeId(source.id, source.name, relation, undefined, targetName, provenance, context.path),
+    id: edgeId(
+      source.id,
+      source.name,
+      relation,
+      undefined,
+      targetName,
+      provenance,
+      context.path,
+      arity === undefined ? undefined : `arity:${arity}`,
+    ),
     provenance,
     relation,
     sourceId: source.id,
     sourceName: source.name,
     targetName,
-  });
+  };
+  facts.edges.push(edge);
+  if (arity !== undefined) {
+    facts.references?.push({
+      arity,
+      edgeId: edge.id,
+      evidencePath: edge.evidencePath,
+      evidenceSpan: edge.evidenceSpan,
+      lookupTiers: [],
+      provenance: edge.provenance,
+      relation: edge.relation,
+      resolutionDomain: 'typescript',
+      sourceId: edge.sourceId,
+      sourceName: edge.sourceName,
+      targetName: edge.targetName,
+    });
+  }
 }
 
 function addTextEdge(
@@ -1311,6 +1635,31 @@ function symbolId(path: string, language: string, kind: string, qualifiedName: s
   return `cgs_${sha256HexSync(`symbol-v1\n${path}\n${language}\n${kind}\n${qualifiedName}`).slice(0, 32)}`;
 }
 
+function allocateSymbolIdentity(
+  path: string,
+  language: string,
+  kind: string,
+  qualifiedName: string,
+  signature: string,
+  identities: SymbolIdentityAllocator,
+): {readonly groupOccurrence: number; readonly id: string} {
+  const groupKey = `${kind}\n${qualifiedName}`;
+  const groupOccurrence = identities.groupOccurrences.get(groupKey) ?? 0;
+  identities.groupOccurrences.set(groupKey, groupOccurrence + 1);
+  const signatureKey = `${groupKey}\n${signature}`;
+  const signatureOccurrence = identities.signatureOccurrences.get(signatureKey) ?? 0;
+  identities.signatureOccurrences.set(signatureKey, signatureOccurrence + 1);
+  if (groupOccurrence === 0) {
+    return {groupOccurrence, id: symbolId(path, language, kind, qualifiedName)};
+  }
+  return {
+    groupOccurrence,
+    id: `cgs_${sha256HexSync(
+      `symbol-v2\n${path}\n${language}\n${kind}\n${qualifiedName}\n${signature}\n${signatureOccurrence}`,
+    ).slice(0, 32)}`,
+  };
+}
+
 function edgeId(
   sourceId: string | undefined,
   sourceName: string,
@@ -1319,9 +1668,12 @@ function edgeId(
   targetName: string,
   provenance: string,
   path: string,
+  discriminator?: string,
 ): string {
   return `cge_${sha256HexSync(
-    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}`,
+    `edge-v1\n${sourceId ?? sourceName}\n${relation}\n${targetId ?? targetName}\n${provenance}\n${path}${
+      discriminator === undefined ? '' : `\n${discriminator}`
+    }`,
   ).slice(0, 32)}`;
 }
 
