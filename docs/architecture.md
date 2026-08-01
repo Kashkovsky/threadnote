@@ -109,8 +109,10 @@ unstaged, deleted, renamed, and untracked worktree files after containment and i
 into the SQLite-backed content-addressed fact cache in bounded batches, and ordinary source text is released before the
 next batch. Package and workspace configuration is retained only as compact resolution metadata. Repository admission
 and graph coverage are not capped by file bytes, file count, resolution metadata, symbols, edges, lexical terms, or
-vectors. Fixed-size parser and SQLite batches bound transient work without truncating the stored graph, and completed
-parser batches are reusable after interruption.
+vectors. A bounded cross-process parser pool feeds one backpressured SQLite writer; fixed-size parse and persistence
+batches bound transient work without truncating the stored graph, and completed parser batches are reusable after
+interruption. Build status exposes Git read-batch timing plus per-language and per-file extraction and persistence
+progress.
 
 A generated language-pack catalog owns classification, extraction, cache identity, verified assets, capabilities,
 workspace discovery, and resolution domains. TypeScript/JavaScript continues to use the pinned TypeScript compiler
@@ -119,7 +121,8 @@ PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, 
 checksum-verified Tree-sitter WASM grammars and a backend-neutral normalized declaration/reference representation.
 Apex, Fortran, and Razor use bounded deterministic text-structural packs; they do not claim AST or compiler semantics.
 Deterministic schema extractors cover SQL, JSON/JSONC, YAML, TOML, INI/properties, GraphQL, protobuf,
-MSBuild/XML/XAML, solution files, and Dockerfiles; manifests and Markdown remain built-in data extractors. Adding a
+MSBuild/XML/XAML, solution files, Dockerfiles, and Bazel/Starlark build metadata; manifests and Markdown remain built-in
+data extractors. Adding a
 future first-party language requires a pack plus fixtures/assets, not changes to inventory, SQLite, query, CLI, or MCP
 code. Every edge identifies its evidence and authority as declared, resolved, syntactic, heuristic, or model-derived;
 semantic similarity is never promoted to an authoritative source edge.
@@ -135,6 +138,12 @@ entries are expanded, with a 16 MiB per-entry and 64 MiB cumulative expansion bu
 also falls back to asset metadata. These per-artifact extraction budgets bound decompression and parsing; they neither
 reject the repository nor cap stored graph size.
 
+Generated roots (`node_modules`, `dist`, `build`, `out`, hidden caches, and `bazel-*`) are pruned before Git blob or
+worktree content hydration, even below broad monorepo package roots. Large generic structured files use bounded or
+shallow extraction. Recognized snapshots, golden files, fixtures, datasets, and animation payloads are hashed through a
+fixed-size buffer and become file/module metadata only; their payload is never sent to a parser. Dedicated manifests,
+schemas, and configurations remain eligible for their richer extractors.
+
 The extraction postprocessor promotes marked `NOTE`, `WHY`, `HACK`, `RATIONALE`, `DECISION`, `SAFETY`, and
 `INVARIANT` comments and ADR/RFC citations into rationale nodes. A declared `documents` edge links each rationale to
 the nearest enclosing or preceding declaration. These nodes remain derived, untrusted repository evidence.
@@ -147,8 +156,9 @@ receipt with normalized symbol, alias, and named-re-export provenance. An eligib
 changed files and resolves them through indexed joins against that persisted clean base; activation writes a direct
 delta instead of hydrating the repository-wide graph into temporary tables. File-set, workspace, extractor, cache,
 receipt, dynamic-alias, or declaration/lookup-surface changes conservatively use full materialization. Extractor
-generation 9 intentionally performs one clean rebuild when upgrading this contract, and a monotonic SQLite publication
-guard prevents an overlapping older process from republishing a generation-8 snapshot.
+generation 10 intentionally performs one clean rebuild for the worker-isolation and large-file eligibility contract,
+and a monotonic SQLite publication guard prevents an overlapping older process from republishing a generation-9
+snapshot.
 
 Builds stage, revalidate, and promote transactionally. Linked worktrees may scan and extract concurrently; a short
 checkout-scoped publication section serializes only activation, readback, and pointer promotion. An atomic bounded
@@ -165,7 +175,8 @@ decoded vector sidecar is required. Missing models fail open to indexed SQLite l
 
 One Git checkout is one graph scope, including monorepos. Nested package manifests assign symbols to the deepest
 containing project/source root. Static detectors cover npm/TypeScript metadata, Maven modules, Gradle projects and
-conventional Android/Kotlin Multiplatform source sets, SwiftPM targets, and conservative Xcode project scope. These
+conventional Android/Kotlin Multiplatform source sets, SwiftPM targets, conservative Xcode project scope, and Bazel
+workspaces/packages declared by `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, and `.bazelrc`. These
 scopes disambiguate resolution; they are not graph partitions. A nested app can remain its own workspace and also be
 an integrated outer module: its project retains both workspace roots and can cross into outer `libs/` or inner modules
 only through declared dependencies. Java and Kotlin intentionally share the JVM resolution domain. Duplicate or

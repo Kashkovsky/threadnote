@@ -4,7 +4,7 @@ import {sha256HexSync} from '../../../crypto/sha256.js';
 import {extractFileFacts} from '../../extractor.js';
 import {CodeGraphLanguagePackError, type CodeGraphLanguagePack} from '../types.js';
 
-const EXTRACTOR_POLICY_VERSION = 'typescript-compiler-v3-overload-safe-identities-and-resolution';
+const EXTRACTOR_POLICY_VERSION = 'typescript-compiler-v5-bounded-deduplicated-relationship-surface';
 
 export const codeGraphLanguagePack: CodeGraphLanguagePack = {
   assets: [],

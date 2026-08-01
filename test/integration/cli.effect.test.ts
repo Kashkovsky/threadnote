@@ -78,6 +78,42 @@ describe('Effect CLI', () => {
     expect(purge.stdout).toContain('--obsolete');
   });
 
+  it('keeps graph index JSON parseable while streaming structured progress to stderr', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-json-progress-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"json-progress"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function indexedSymbol(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const result = await runCli(['graph', 'index', '--home', home, '--cwd', root, '--json']);
+      const summary = JSON.parse(result.stdout) as {readonly snapshot?: {readonly fileCount?: number}};
+      const progress = result.stderr
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line) as {readonly phase?: string; readonly type?: string});
+
+      expect(summary.snapshot?.fileCount).toBe(2);
+      expect(progress.length).toBeGreaterThan(0);
+      expect(progress.every(event => event.type === 'code-graph-progress')).toBe(true);
+      expect(progress.some(event => event.phase === 'scanning')).toBe(true);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
   it('includes eligible untracked files in Git-base impact analysis', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-'));
     const home = join(root, '.threadnote-test-home');

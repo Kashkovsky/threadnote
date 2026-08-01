@@ -2,6 +2,10 @@ import {defineConfig} from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Test files use isolated Threadnote homes, so the production home-scoped
+    // parser-slot locks cannot bound child processes across Vitest workers.
+    // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
+    env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
     environment: 'node',
     hookTimeout: 30_000,
     include: ['test/**/*.test.ts'],

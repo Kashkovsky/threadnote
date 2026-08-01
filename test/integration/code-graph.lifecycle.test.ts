@@ -1201,7 +1201,7 @@ describe('native code graph lifecycle', () => {
       readonly {
         readonly bytes?: Uint8Array;
         readonly content?: string;
-        readonly contentOmittedReason?: 'size-budget';
+        readonly contentOmittedReason?: 'metadata-only' | 'size-budget';
         readonly path: string;
       }[]
     > = [];
@@ -1647,7 +1647,8 @@ describe('native code graph lifecycle', () => {
         return yield* indexer.index({
           cwd: root,
           onProgress: progress => {
-            if (progress.phase !== 'scanning' || progress.completed !== 0) return Effect.void;
+            if (progress.phase !== 'scanning' || progress.completed !== 0 || progress.activity !== undefined)
+              return Effect.void;
             inventoryPasses += 1;
             reportOwnerScanning();
             return Effect.promise(() => ownerRelease);
@@ -1670,7 +1671,8 @@ describe('native code graph lifecycle', () => {
             cwd: root,
             onProgress: progress => {
               if (progress.phase === 'waiting') signal.queued();
-              if (progress.phase === 'scanning' && progress.completed === 0) inventoryPasses += 1;
+              if (progress.phase === 'scanning' && progress.completed === 0 && progress.activity === undefined)
+                inventoryPasses += 1;
               return Effect.void;
             },
             threadnoteHome: home,
@@ -1713,7 +1715,7 @@ describe('native code graph lifecycle', () => {
       const inventoryPasses = [
         ...codeGraphProcessProgress(firstOutput),
         ...codeGraphProcessProgress(secondOutput),
-      ].filter(progress => progress.phase === 'scanning' && progress.completed === 0);
+      ].filter(progress => progress.phase === 'scanning' && progress.completed === 0 && !('activity' in progress));
 
       expect(inventoryPasses).toHaveLength(1);
       expect(existsSync(`${secondMarker}.scanning`)).toBe(false);

@@ -8,7 +8,7 @@ import {Effect, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
-import type {CodeGraphIndexSummary} from '../../src/code_graph/types.js';
+import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('cross-session code graph increments', () => {
@@ -251,8 +251,8 @@ describe('cross-session code graph increments', () => {
       );
       expect(state?.id).toBe(current.summary.snapshot.id);
       expect(extractorGenerationState(current.databasePath, current.summary.snapshot.id)).toEqual({
-        generation: 9,
-        minimum: 9,
+        generation: CODE_GRAPH_EXTRACTOR_GENERATION,
+        minimum: CODE_GRAPH_EXTRACTOR_GENERATION,
       });
     } finally {
       rmSync(root, {force: true, recursive: true});

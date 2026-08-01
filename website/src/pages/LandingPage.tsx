@@ -100,13 +100,13 @@ const graphCapabilities = [
     number: '02',
     label: 'Polyglot by architecture',
     title: 'One query can cross language and project boundaries.',
-    body: 'Compiler-backed TypeScript/JavaScript, bundled structural AST packs, and deterministic schema, configuration, documentation, and corpus packs share one provenance-aware graph contract.',
+    body: 'Compiler-backed TypeScript/JavaScript, bundled structural AST packs, Bazel/Starlark metadata, and deterministic schema, configuration, documentation, and corpus packs share one provenance-aware graph contract.',
   },
   {
     number: '03',
     label: 'Large monorepos',
     title: 'Repository size is not an admission test.',
-    body: 'SQLite paging and bounded processing batches avoid a monolithic graph document. Per-artifact corpus safety budgets keep oversized eligible files as searchable metadata-only nodes.',
+    body: 'A bounded parser pool feeds one backpressured SQLite writer. Generated roots are pruned before reads, while oversized and low-signal snapshot data becomes lightweight metadata instead of parser work.',
   },
   {
     number: '04',

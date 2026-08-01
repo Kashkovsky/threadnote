@@ -25,7 +25,28 @@ export interface CodeGraphBuildCounters {
   readonly unit?: 'files' | 'symbols';
 }
 
+export interface CodeGraphBuildActivity {
+  readonly batchCompleted: number;
+  readonly batchTotal: number;
+  readonly bytes: number;
+  readonly degraded?: boolean;
+  readonly language: string;
+  readonly parseMilliseconds?: number;
+  readonly persistMilliseconds?: number;
+  readonly relations?: number;
+  readonly stage: 'extracting' | 'persisting' | 'reading';
+  readonly symbols?: number;
+}
+
+export interface CodeGraphBuildTimings {
+  readonly extractionMilliseconds: number;
+  readonly persistenceMilliseconds: number;
+  readonly readingMilliseconds: number;
+}
+
 export interface CodeGraphBuildStatus {
+  /** Privacy-safe in-flight activity; repository paths and content are intentionally omitted. */
+  readonly activity?: CodeGraphBuildActivity;
   readonly buildId: string;
   readonly counters: CodeGraphBuildCounters;
   readonly error?: {readonly summary: string};
@@ -61,6 +82,7 @@ export interface CodeGraphBuildStatus {
   readonly schemaVersion: typeof CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION;
   readonly state: CodeGraphBuildState;
   readonly subphase?: string;
+  readonly timings?: CodeGraphBuildTimings;
   readonly timestamps: {
     readonly completedAt?: string;
     readonly heartbeatAt: string;
@@ -229,6 +251,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         ...current,
         status: {
           ...current.status,
+          activity: undefined,
           counters: {
             edges: snapshot.edgeCount,
             reused: reusedFiles,
@@ -247,6 +270,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           },
           state: 'completed',
           subphase: 'ready',
+          timings: undefined,
           timestamps: {
             ...current.status.timestamps,
             completedAt: timestamp,
@@ -268,10 +292,12 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           ...current,
           status: {
             ...current.status,
+            activity: undefined,
             error: {summary: privacySafeError(cause)},
             eta: undefined,
             state: 'failed',
             subphase: 'failed',
+            timings: undefined,
             timestamps: {
               ...current.status.timestamps,
               completedAt: timestamp,
@@ -313,10 +339,15 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     progress: progress =>
       persist(
         (current, now) => observeProgress(current, progress, now),
-        current =>
-          current.status.phase !== progress.phase ||
-          current.status.subphase !== progressSubphase(progress) ||
-          (measuredProgress(progress)?.completed ?? -1) >= (measuredProgress(progress)?.total ?? 0),
+        current => {
+          const measured = measuredProgress(progress);
+          const persistedCompleted = current.status.counters.completed ?? -1;
+          return (
+            current.status.phase !== progress.phase ||
+            (progress.phase === 'scanning' && measured !== undefined && measured.completed > persistedCompleted) ||
+            (measured?.completed ?? -1) >= (measured?.total ?? 0)
+          );
+        },
       ),
   } satisfies CodeGraphBuildReporter;
 });
@@ -469,11 +500,13 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
     smoothedUnitsPerMillisecond: rate,
     status: {
       ...current.status,
+      activity: progressActivity(progress),
       counters: progressCounters(progress),
       eta,
       phase: progress.phase,
       state: progress.phase === 'waiting' ? 'queued' : 'running',
       subphase: progressSubphase(progress),
+      timings: progress.phase === 'scanning' ? progress.timings : undefined,
       timestamps: {
         ...current.status.timestamps,
         heartbeatAt: timestamp,
@@ -579,10 +612,27 @@ function progressSubphase(progress: CodeGraphProgress): string {
     case 'registering':
       return 'registration';
     case 'scanning':
-      return 'inventory';
+      return progress.activity?.stage ?? 'inventory';
     case 'waiting':
       return 'repository-lock';
   }
+}
+
+function progressActivity(progress: CodeGraphProgress): CodeGraphBuildActivity | undefined {
+  if (progress.phase !== 'scanning' || !progress.activity) return undefined;
+  const activity = progress.activity;
+  return {
+    batchCompleted: activity.batchCompleted,
+    batchTotal: activity.batchTotal,
+    bytes: activity.bytes,
+    ...(activity.degraded === undefined ? {} : {degraded: activity.degraded}),
+    language: boundedText(activity.language, 64),
+    ...(activity.parseMilliseconds === undefined ? {} : {parseMilliseconds: activity.parseMilliseconds}),
+    ...(activity.persistMilliseconds === undefined ? {} : {persistMilliseconds: activity.persistMilliseconds}),
+    ...(activity.relations === undefined ? {} : {relations: activity.relations}),
+    stage: activity.stage,
+    ...(activity.symbols === undefined ? {} : {symbols: activity.symbols}),
+  };
 }
 
 function progressCounters(progress: CodeGraphProgress): CodeGraphBuildCounters {
@@ -761,6 +811,10 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   }
   const counters = parseCounters(value.counters);
   if (!counters) return undefined;
+  const activity = parseActivity(value.activity);
+  if (value.activity !== undefined && !activity) return undefined;
+  const timings = parseTimings(value.timings);
+  if (value.timings !== undefined && !timings) return undefined;
   const ownerStart = value.owner.processStartIdentity;
   if (ownerStart !== undefined && !isText(ownerStart, 256)) return undefined;
   const subphase = value.subphase;
@@ -774,6 +828,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   const request = parseRequest(value.request);
   if (value.request !== undefined && !request) return undefined;
   return {
+    ...(activity ? {activity} : {}),
     buildId: value.buildId,
     counters,
     ...(error ? {error} : {}),
@@ -796,6 +851,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
     state: value.state as CodeGraphBuildState,
     ...(subphase ? {subphase} : {}),
+    ...(timings ? {timings} : {}),
     timestamps: {
       ...(timestamps.completedAt ? {completedAt: timestamps.completedAt} : {}),
       heartbeatAt: timestamps.heartbeatAt,
@@ -805,6 +861,59 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       updatedAt: timestamps.updatedAt,
     },
   };
+}
+
+function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.batchCompleted) ||
+    !Number.isSafeInteger(value.batchTotal) ||
+    Number(value.batchCompleted) < 0 ||
+    Number(value.batchTotal) < 0 ||
+    Number(value.batchCompleted) > Number(value.batchTotal) ||
+    !Number.isSafeInteger(value.bytes) ||
+    Number(value.bytes) < 0 ||
+    !isText(value.language, 64) ||
+    !['extracting', 'persisting', 'reading'].includes(String(value.stage)) ||
+    (value.degraded !== undefined && typeof value.degraded !== 'boolean')
+  ) {
+    return undefined;
+  }
+  for (const key of ['relations', 'symbols'] as const) {
+    if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return undefined;
+  }
+  for (const key of ['parseMilliseconds', 'persistMilliseconds'] as const) {
+    if (value[key] !== undefined && !isNonNegativeFinite(value[key])) return undefined;
+  }
+  return {
+    batchCompleted: Number(value.batchCompleted),
+    batchTotal: Number(value.batchTotal),
+    bytes: Number(value.bytes),
+    ...(typeof value.degraded === 'boolean' ? {degraded: value.degraded} : {}),
+    language: value.language,
+    ...(value.parseMilliseconds === undefined ? {} : {parseMilliseconds: Number(value.parseMilliseconds)}),
+    ...(value.persistMilliseconds === undefined ? {} : {persistMilliseconds: Number(value.persistMilliseconds)}),
+    ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
+    stage: value.stage as CodeGraphBuildActivity['stage'],
+    ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
+  };
+}
+
+function parseTimings(value: unknown): CodeGraphBuildTimings | undefined {
+  return isRecord(value) &&
+    isNonNegativeFinite(value.extractionMilliseconds) &&
+    isNonNegativeFinite(value.persistenceMilliseconds) &&
+    isNonNegativeFinite(value.readingMilliseconds)
+    ? {
+        extractionMilliseconds: Number(value.extractionMilliseconds),
+        persistenceMilliseconds: Number(value.persistenceMilliseconds),
+        readingMilliseconds: Number(value.readingMilliseconds),
+      }
+    : undefined;
+}
+
+function isNonNegativeFinite(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function parseRequest(value: unknown): CodeGraphBuildStatus['request'] | undefined {

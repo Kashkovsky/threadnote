@@ -190,6 +190,38 @@ describe('code graph corpus extraction', () => {
     expect(facts.diagnostics[0]).toContain('pixels were not interpreted');
   });
 
+  test('indexes textless SVG geometry as metadata without expanding path data into corpus text', async () => {
+    const startedAt = performance.now();
+    const facts = await extractCorpusFile(
+      textFile(
+        'diagrams/generated.svg',
+        `<svg viewBox="0 0 10 10"><!-- no <text> element --><path d="${'M0 0 L10 10 '.repeat(100_000)}"/></svg>`,
+      ),
+    );
+    const duration = performance.now() - startedAt;
+
+    expect(facts.symbols).toHaveLength(1);
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Generated'});
+    expect(facts.symbols[0]?.documentation).not.toContain('M0 0');
+    expect(facts.diagnostics.join('\n')).toContain('SVG has no text elements');
+    expect(duration).toBeLessThan(1_000);
+  });
+
+  test('retains text-bearing SVG diagrams as searchable corpus', async () => {
+    const facts = await extractCorpusFile(
+      textFile(
+        'diagrams/retry.svg',
+        '<svg><svg:title>Retry architecture</svg:title><text>Backoff queue</text><path d="M0 0 L10 10"/></svg>',
+      ),
+    );
+    const documentation = facts.symbols.map(symbol => symbol.documentation ?? '').join('\n');
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'document', name: 'Retry'});
+    expect(documentation).toContain('Retry architecture');
+    expect(documentation).toContain('Backoff queue');
+    expect(facts.diagnostics).toEqual([]);
+  });
+
   test('keeps an oversized artifact searchable without materializing or interpreting its bytes', async () => {
     const facts = await extractCorpusFile({
       blobId: 'large-video',
@@ -204,6 +236,24 @@ describe('code graph corpus extraction', () => {
 
     expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Architecture Review'});
     expect(facts.diagnostics[0]).toContain('per-artifact extraction safety budget');
+  });
+
+  test('keeps intentionally non-hydrated binary media searchable with an accurate diagnostic', async () => {
+    const facts = await extractCorpusFile({
+      blobId: 'metadata-video',
+      contentHash: 'metadata-video-hash',
+      contentOmittedReason: 'metadata-only',
+      language: 'video',
+      mode: '100644',
+      path: 'recordings/demo.webm',
+      size: 32 * 1_024 * 1_024,
+      source: 'commit',
+    });
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'asset', name: 'Demo'});
+    expect(facts.symbols[0]?.signature).toContain('33554432 bytes');
+    expect(facts.diagnostics[0]).toContain('binary media content was not loaded');
+    expect(facts.diagnostics[0]).not.toContain('64 MiB');
   });
 
   test('registers documents and media as corpus files while keeping manifest precedence', () => {

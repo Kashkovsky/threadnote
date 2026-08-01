@@ -2,6 +2,8 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
 import {LOCAL_MODEL_WORKER_ARGUMENT, nativeLocalModelWorkerServer} from './effect/ai/isolated-local-model-runtime.js';
+import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, codeGraphParserWorkerServer} from './code_graph/parser_worker.js';
+import {TreeSitterRuntime} from './code_graph/tree_sitter/runtime.js';
 import {ApplicationLayer} from './effect/runtime.js';
 import {SystemInfo} from './effect/system.js';
 import {inspectCliInvocation} from './effect/cli.js';
@@ -17,22 +19,28 @@ import {cliEffect} from './threadnote.js';
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
 const arguments_ = process.argv.slice(2);
 const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
+const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
-const cliOperation = isLocalModelWorker || isMcpServer ? undefined : inspectCliInvocation(arguments_).operation;
+const cliOperation =
+  isLocalModelWorker || isCodeGraphParserWorker || isMcpServer ? undefined : inspectCliInvocation(arguments_).operation;
 const processRole: ThreadnoteProcessRole = isLocalModelWorker
   ? 'local-model-worker'
-  : isMcpServer
-    ? 'mcp'
-    : cliOperation === 'manage'
-      ? 'manager'
-      : 'cli';
+  : isCodeGraphParserWorker
+    ? 'graph-parser-worker'
+    : isMcpServer
+      ? 'mcp'
+      : cliOperation === 'manage'
+        ? 'manager'
+        : 'cli';
 const processOperation = isLocalModelWorker
   ? 'model-stdio'
-  : isMcpServer
-    ? 'mcp-server'
-    : cliOperation === 'manage'
-      ? 'manager-ui'
-      : cliOperation;
+  : isCodeGraphParserWorker
+    ? 'parser-stdio'
+    : isMcpServer
+      ? 'mcp-server'
+      : cliOperation === 'manage'
+        ? 'manager-ui'
+        : cliOperation;
 const mainProgram = isMcpServer ? Effect.scoped(mcpServerEffect) : cliEffect(arguments_);
 const processHome = threadnoteHomeForProcess(arguments_, process.env).pipe(
   Effect.tap(home =>
@@ -61,15 +69,31 @@ const program = isLocalModelWorker
       Effect.provide(SystemInfo.layer),
       Effect.provide(BunServices.layer),
     )
-  : processHome.pipe(
-      Effect.flatMap(processHome =>
-        withStandaloneProcessLease(
-          withThreadnoteProcessRegistration(processHome, processRole, mainProgram, processOperation),
+  : isCodeGraphParserWorker
+    ? processHome.pipe(
+        Effect.flatMap(processHome =>
+          withStandaloneProcessLease(
+            withThreadnoteProcessRegistration(
+              processHome,
+              processRole,
+              Effect.scoped(codeGraphParserWorkerServer),
+              processOperation,
+            ),
+          ),
         ),
-      ),
-      Effect.provide(ApplicationLayer),
-    );
+        Effect.provide(TreeSitterRuntime.layer),
+        Effect.provide(SystemInfo.layer),
+        Effect.provide(BunServices.layer),
+      )
+    : processHome.pipe(
+        Effect.flatMap(processHome =>
+          withStandaloneProcessLease(
+            withThreadnoteProcessRegistration(processHome, processRole, mainProgram, processOperation),
+          ),
+        ),
+        Effect.provide(ApplicationLayer),
+      );
 
 BunRuntime.runMain(program, {
-  disableErrorReporting: isLocalModelWorker || !isMcpServer,
+  disableErrorReporting: isLocalModelWorker || isCodeGraphParserWorker || !isMcpServer,
 });

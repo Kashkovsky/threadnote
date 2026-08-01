@@ -22,6 +22,7 @@ interface ExtractionContext {
 
 interface MutableFacts {
   readonly diagnostics: string[];
+  readonly edgeIdentities?: Set<string>;
   readonly edges: CodeGraphEdge[];
   readonly references?: CodeGraphReference[];
   readonly symbols: CodeGraphSymbol[];
@@ -75,6 +76,8 @@ interface ResolutionAliasIndex {
 }
 
 const TYPESCRIPT_EXTENSIONS = /\.(?:[cm]?[jt]s|[jt]sx)$/i;
+export const TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT = 4_000;
+const TYPESCRIPT_FULL_TRAVERSAL_CHARACTER_LIMIT = 2 * 1_024 * 1_024;
 const DECLARATION_KINDS = new Set([
   ts.SyntaxKind.ClassDeclaration,
   ts.SyntaxKind.EnumDeclaration,
@@ -502,7 +505,13 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
     true,
     scriptKindForPath(context.path),
   );
-  const facts: MutableFacts = {diagnostics: [], edges: [], references: [], symbols: []};
+  const facts: MutableFacts = {
+    diagnostics: [],
+    edgeIdentities: new Set(),
+    edges: [],
+    references: [],
+    symbols: [],
+  };
   const moduleSymbol = makeSymbol(context, sourceFile, 'module', context.path, context.path, true);
   const symbolIdentities: SymbolIdentityAllocator = {
     groupOccurrences: new Map(),
@@ -511,7 +520,25 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
   facts.symbols.push(moduleSymbol);
   const declarationStack: CodeGraphSymbol[] = [moduleSymbol];
   const declarationByNode = new Map<ts.Node, CodeGraphSymbol>([[sourceFile, moduleSymbol]]);
-  const localBindings = collectLocalBindings(sourceFile);
+  const surfaceOnly = content.length > TYPESCRIPT_FULL_TRAVERSAL_CHARACTER_LIMIT;
+  const localBindings = surfaceOnly ? new Map<ts.Node, ReadonlySet<string>>() : collectLocalBindings(sourceFile);
+  let dynamicRelationships = 0;
+  let dynamicRelationshipsBounded = surfaceOnly;
+
+  const addDynamicRelationship = (
+    node: ts.CallExpression | ts.NewExpression,
+    owner: CodeGraphSymbol,
+    relation: 'calls' | 'constructs',
+  ): void => {
+    if (surfaceOnly || dynamicRelationships >= TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT) {
+      dynamicRelationshipsBounded = true;
+      return;
+    }
+    const target = relationshipExpressionName(node.expression, localBindings);
+    if (!target) return;
+    dynamicRelationships += 1;
+    addUnresolvedEdge(facts, context, node, owner, target, relation, 'syntactic', node.arguments?.length ?? 0);
+  };
 
   const visit = (node: ts.Node): void => {
     const declaration = declarationForNode(node, sourceFile, context, declarationStack, symbolIdentities);
@@ -580,12 +607,9 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
         }
       }
     } else if (ts.isCallExpression(node)) {
-      const target = relationshipExpressionName(node.expression, localBindings);
-      if (target) addUnresolvedEdge(facts, context, node, owner, target, 'calls', 'syntactic', node.arguments.length);
+      addDynamicRelationship(node, owner, 'calls');
     } else if (ts.isNewExpression(node)) {
-      const target = relationshipExpressionName(node.expression, localBindings);
-      if (target)
-        addUnresolvedEdge(facts, context, node, owner, target, 'constructs', 'syntactic', node.arguments?.length ?? 0);
+      addDynamicRelationship(node, owner, 'constructs');
     } else if (ts.isHeritageClause(node)) {
       const relation: CodeGraphRelation = node.token === ts.SyntaxKind.ImplementsKeyword ? 'implements' : 'extends';
       for (const type of node.types) {
@@ -597,7 +621,8 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
       if (target) addUnresolvedEdge(facts, context, node, moduleSymbol, target, 'exports', 'syntactic');
     }
 
-    ts.forEachChild(node, visit);
+    if (surfaceOnly || dynamicRelationshipsBounded) forEachTypeScriptStructuralChild(node, visit);
+    else ts.forEachChild(node, visit);
     if (pushed) declarationStack.pop();
   };
   ts.forEachChild(sourceFile, visit);
@@ -612,6 +637,15 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
       `${context.path}${position ? `:${position}` : ''}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`,
     );
   }
+  if (dynamicRelationshipsBounded) {
+    facts.diagnostics.push(
+      surfaceOnly
+        ? `${context.path}: large TypeScript/JavaScript source used declaration-surface extraction; ` +
+            'module declarations, imports, reexports, and inheritance were preserved while call and construct facts were omitted'
+        : `${context.path}: call and construct relationships were bounded at ${TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT}; ` +
+            'module declarations, imports, reexports, and inheritance were preserved',
+    );
+  }
   return {
     diagnostics: facts.diagnostics,
     edges: facts.edges,
@@ -619,6 +653,20 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
     references: facts.references,
     symbols: facts.symbols,
   };
+}
+
+function forEachTypeScriptStructuralChild(node: ts.Node, visit: (node: ts.Node) => void): void {
+  ts.forEachChild(node, child => {
+    if (
+      ts.isExpression(child) &&
+      !ts.isArrowFunction(child) &&
+      !ts.isClassExpression(child) &&
+      !ts.isFunctionExpression(child)
+    ) {
+      return;
+    }
+    visit(child);
+  });
 }
 
 function declarationForNode(
@@ -1567,6 +1615,8 @@ function addUnresolvedEdge(
     sourceName: source.name,
     targetName,
   };
+  if (facts.edgeIdentities?.has(edge.id)) return;
+  facts.edgeIdentities?.add(edge.id);
   facts.edges.push(edge);
   if (arity !== undefined) {
     facts.references?.push({

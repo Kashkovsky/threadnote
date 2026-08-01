@@ -170,11 +170,19 @@ threadnote doctor --dry-run
 threadnote graph index --full
 ```
 
+Interactive indexing shows each Git read batch, then each extraction file and language with parse timing, followed by
+the persistence batches. Long pauses can therefore be attributed to input, parsing, or SQLite publication instead of
+appearing as an undifferentiated spinner. Generated roots such as `node_modules`, `dist`, `build`, `out`, hidden caches, and
+`bazel-*` are pruned before reads. Snapshot/golden/fixture structured data is fingerprinted without hydrating its
+payload and retained as file/module metadata only; manifests, schemas, and configs still use their dedicated parsers.
+
 A large cold MCP inspection can return `state: "indexing"` with measured phase progress, an optional phase-scoped
 estimate, and adaptive retry timing. Continue useful targeted text or path investigation while it builds, then retry
 the same `inspect_code_graph` call before making relationship-aware graph claims. There is no repository-size admission
 limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
-logic and ambiguous dependencies remain syntactic rather than being guessed.
+logic and ambiguous dependencies remain syntactic rather than being guessed. Bazel workspaces, packages, targets,
+loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, and `.bazelrc`;
+Threadnote never invokes Bazel or evaluates Starlark macros.
 
 For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
 has no repository-size admission cap. If an elapsed-time or output budget is reached, the result says coverage is

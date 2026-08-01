@@ -8,15 +8,17 @@ import type {
   CodeGraphInventoryFile,
   CodeGraphProvenance,
   CodeGraphRelation,
-  CodeGraphSpan,
   CodeGraphSymbol,
 } from '../../types.js';
+import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from '../source_line_index.js';
+import {isLowSignalStructuredPath, isRecognizedStructuredPath} from './policy.js';
 
 interface MutableStructuredFacts {
   readonly diagnostics: string[];
   readonly edges: CodeGraphEdge[];
   readonly file: CodeGraphInventoryFile;
   readonly identityOccurrences: Map<string, number>;
+  readonly lineIndex: SourceLineIndex | undefined;
   readonly module: CodeGraphSymbol;
   readonly packageName: string | undefined;
   readonly symbols: CodeGraphSymbol[];
@@ -24,14 +26,25 @@ interface MutableStructuredFacts {
 
 const MAX_STRUCTURED_SYMBOLS = 4_000;
 const MAX_STRUCTURED_DEPTH = 32;
-
+const MAX_FULL_OBJECT_CONFIG_CHARACTERS = 4 * 1_024 * 1_024;
+const MAX_RECOGNIZED_FULL_OBJECT_CONFIG_CHARACTERS = 16 * 1_024 * 1_024;
+const MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS = 1 * 1_024 * 1_024;
+const MAX_SHALLOW_OBJECT_CONFIG_DEPTH = 2;
+const MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS = 128;
 export function extractStructuredSchemaFacts(
   file: CodeGraphInventoryFile,
   context: CodeGraphExtractionContext,
 ): CodeGraphFileFacts {
-  if (file.content === undefined)
+  const omittedLowSignalContent =
+    file.content === undefined && file.contentOmittedReason === 'metadata-only' && isLowSignalStructuredPath(file.path);
+  if (file.content === undefined && !omittedLowSignalContent)
     throw new Error(`Repository content for ${file.path} was not loaded before extraction.`);
-  const facts = createFacts(file, context);
+  const objectPolicy = ['json', 'jsonc', 'yaml'].includes(file.language)
+    ? omittedLowSignalContent
+      ? 'metadata'
+      : objectConfigPolicy(file.path, file.content!.length)
+    : undefined;
+  const facts = createFacts(file, context, objectPolicy === 'metadata');
   try {
     switch (file.language) {
       case 'sql':
@@ -40,7 +53,7 @@ export function extractStructuredSchemaFacts(
       case 'json':
       case 'jsonc':
       case 'yaml':
-        extractObjectConfig(facts);
+        extractObjectConfig(facts, objectPolicy ?? 'full');
         break;
       case 'toml':
         extractToml(facts);
@@ -72,9 +85,15 @@ export function extractStructuredSchemaFacts(
   return {diagnostics: facts.diagnostics, edges: facts.edges, path: file.path, symbols: facts.symbols};
 }
 
-function createFacts(file: CodeGraphInventoryFile, context: CodeGraphExtractionContext): MutableStructuredFacts {
+function createFacts(
+  file: CodeGraphInventoryFile,
+  context: CodeGraphExtractionContext,
+  metadataOnly: boolean,
+): MutableStructuredFacts {
   const packageName = Option.getOrUndefined(context.packageName);
   const identityOccurrences = new Map<string, number>();
+  const contentLength = file.content?.length ?? 0;
+  const lineIndex = metadataOnly ? undefined : createSourceLineIndex(file.content!);
   const module = structuredSymbol(
     file,
     packageName,
@@ -82,15 +101,26 @@ function createFacts(file: CodeGraphInventoryFile, context: CodeGraphExtractionC
     file.path,
     file.path,
     0,
-    Math.min(file.content!.length, 1),
+    Math.min(contentLength, 1),
     file.path,
     identityOccurrences,
+    lineIndex,
   );
-  return {diagnostics: [], edges: [], file, identityOccurrences, module, packageName, symbols: [module]};
+  return {diagnostics: [], edges: [], file, identityOccurrences, lineIndex, module, packageName, symbols: [module]};
 }
 
-function extractObjectConfig(facts: MutableStructuredFacts): void {
+function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<typeof objectConfigPolicy>): void {
   const content = facts.file.content!;
+  if (policy === 'metadata') {
+    facts.diagnostics.push(
+      `${facts.file.path}: low-signal or large unknown structured data was indexed as module metadata only`,
+    );
+    return;
+  }
+  if (policy === 'shallow') {
+    extractShallowObjectConfig(facts);
+    return;
+  }
   let documents: readonly unknown[];
   if (facts.file.language === 'yaml') {
     documents = [];
@@ -106,33 +136,39 @@ function extractObjectConfig(facts: MutableStructuredFacts): void {
     documents = [JSON.parse(source) as unknown];
   }
   const seen = new WeakSet<object>();
-  let searchFrom = 0;
+  const locateConfigKey = createConfigKeyLocator(content, facts.file.language);
   const visit = (value: unknown, parent: CodeGraphSymbol, path: readonly string[], depth: number): void => {
     if (depth > MAX_STRUCTURED_DEPTH || facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) return;
     if (typeof value !== 'object' || value === null) return;
     if (seen.has(value)) return;
     seen.add(value);
-    const entries = Array.isArray(value)
-      ? value.flatMap((entry, index) =>
-          typeof entry === 'object' && entry !== null ? [[String(index), entry] as const] : [],
-        )
-      : Object.entries(value as Record<string, unknown>);
-    for (const [key, child] of entries) {
-      if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) break;
+    const addChild = (key: string, child: unknown, item: boolean) => {
+      if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) return;
       const qualifiedPath = [...path, key];
-      const offset = findConfigKey(content, key, searchFrom);
-      searchFrom = Math.max(searchFrom, offset + key.length);
+      const location = locateConfigKey(key);
       const symbol = addDeclaration(
         facts,
         parent,
-        Array.isArray(value) ? 'item' : 'property',
+        item ? 'item' : 'property',
         key,
         structuredPath(facts.file.path, qualifiedPath),
-        offset,
-        offset + Math.max(1, key.length),
+        location.start,
+        location.end,
         `${facts.file.path}#${qualifiedPath.join('.')}`,
       );
       visit(child, symbol, qualifiedPath, depth + 1);
+    };
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length && facts.symbols.length < MAX_STRUCTURED_SYMBOLS; index += 1) {
+        const child = value[index];
+        if (typeof child === 'object' && child !== null) addChild(String(index), child, true);
+      }
+      return;
+    }
+    for (const key in value as Record<string, unknown>) {
+      if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) break;
+      if (!Object.hasOwn(value, key)) continue;
+      addChild(key, (value as Record<string, unknown>)[key], false);
     }
   };
   documents.forEach((document, index) =>
@@ -141,6 +177,266 @@ function extractObjectConfig(facts: MutableStructuredFacts): void {
   if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) {
     facts.diagnostics.push(`${facts.file.path}: structured declarations were bounded at ${MAX_STRUCTURED_SYMBOLS}`);
   }
+}
+
+interface ConfigKeyLocation {
+  readonly end: number;
+  readonly key: string;
+  readonly start: number;
+}
+
+function createConfigKeyLocator(
+  content: string,
+  language: string,
+): (key: string) => {readonly end: number; readonly start: number} {
+  const locations = language === 'yaml' ? yamlKeyLocations(content) : jsonKeyLocations(content);
+  let cursor = 0;
+  return key => {
+    for (let index = cursor; index < locations.length; index += 1) {
+      const location = locations[index]!;
+      if (location.key !== key) continue;
+      cursor = index + 1;
+      return {end: location.end, start: location.start};
+    }
+    cursor = locations.length;
+    return {end: content.length, start: content.length};
+  };
+}
+
+function jsonKeyLocations(content: string): readonly ConfigKeyLocation[] {
+  const locations: ConfigKeyLocation[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    if (content[cursor] === '/' && content[cursor + 1] === '/') {
+      cursor = skipLine(content, cursor + 2, content.length);
+      continue;
+    }
+    if (content[cursor] === '/' && content[cursor + 1] === '*') {
+      cursor = skipBlockComment(content, cursor + 2, content.length);
+      continue;
+    }
+    if (content[cursor] !== '"') {
+      cursor += 1;
+      continue;
+    }
+    const token = jsonStringAt(content, cursor, content.length);
+    if (token === undefined) break;
+    const after = skipJsonTrivia(content, token.end, content.length);
+    if (content[after] === ':') locations.push({end: token.end - 1, key: token.value, start: cursor + 1});
+    cursor = token.end;
+  }
+  return locations;
+}
+
+function yamlKeyLocations(content: string): readonly ConfigKeyLocation[] {
+  const locations: ConfigKeyLocation[] = [];
+  for (const line of linesWithOffsets(content)) {
+    const match = /^\s*(?:-\s+)?(?:"([^"]+)"|'([^']+)'|([^:#][^:]*?))\s*:(?:\s|$)/.exec(line.text);
+    const raw = match?.[1] ?? match?.[2] ?? match?.[3];
+    const key = raw?.trim();
+    if (!key) continue;
+    const start = line.start + Math.max(0, line.text.indexOf(raw!));
+    locations.push({end: start + raw!.length, key, start});
+  }
+  return locations;
+}
+
+function objectConfigPolicy(path: string, contentLength: number): 'full' | 'metadata' | 'shallow' {
+  if (isLowSignalStructuredPath(path)) return 'metadata';
+  if (isRecognizedStructuredPath(path)) {
+    return contentLength <= MAX_RECOGNIZED_FULL_OBJECT_CONFIG_CHARACTERS ? 'full' : 'shallow';
+  }
+  return contentLength <= MAX_FULL_OBJECT_CONFIG_CHARACTERS ? 'full' : 'metadata';
+}
+
+function extractShallowObjectConfig(facts: MutableStructuredFacts): void {
+  if (facts.file.language === 'yaml') extractShallowYaml(facts);
+  else extractShallowJson(facts);
+  facts.diagnostics.push(
+    `${facts.file.path}: large structured ${facts.file.language} used bounded shallow extraction ` +
+      `(first ${MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS} characters, depth ${MAX_SHALLOW_OBJECT_CONFIG_DEPTH}, ` +
+      `${MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS} declarations); dedicated manifests remain fully extracted`,
+  );
+}
+
+function extractShallowJson(facts: MutableStructuredFacts): void {
+  const content = facts.file.content!;
+  const limit = Math.min(content.length, MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS);
+  const containers: Array<{
+    readonly kind: 'array' | 'object';
+    readonly path: readonly string[];
+    readonly symbol: CodeGraphSymbol;
+    readonly suppressed: boolean;
+  }> = [];
+  let pending:
+    {readonly path: readonly string[]; readonly symbol: CodeGraphSymbol; readonly valuePending: boolean} | undefined;
+  let cursor = 0;
+  while (cursor < limit && facts.symbols.length - 1 < MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS) {
+    const character = content[cursor]!;
+    if (/\s/u.test(character)) {
+      cursor += 1;
+      continue;
+    }
+    if (character === '/' && content[cursor + 1] === '/') {
+      cursor = skipLine(content, cursor + 2, limit);
+      continue;
+    }
+    if (character === '/' && content[cursor + 1] === '*') {
+      cursor = skipBlockComment(content, cursor + 2, limit);
+      continue;
+    }
+    if (character === '"') {
+      const token = jsonStringAt(content, cursor, limit);
+      if (token === undefined) break;
+      const parent = containers.at(-1);
+      const after = skipJsonTrivia(content, token.end, limit);
+      if (
+        parent?.kind === 'object' &&
+        !parent.suppressed &&
+        parent.path.length < MAX_SHALLOW_OBJECT_CONFIG_DEPTH &&
+        content[after] === ':'
+      ) {
+        const path = [...parent.path, token.value];
+        const symbol = addDeclaration(
+          facts,
+          parent.symbol,
+          'property',
+          token.value,
+          structuredPath(facts.file.path, path),
+          cursor,
+          token.end,
+          `${facts.file.path}#${path.join('.')}`,
+        );
+        pending = {path, symbol, valuePending: true};
+        cursor = after + 1;
+        continue;
+      }
+      if (pending?.valuePending) pending = undefined;
+      cursor = token.end;
+      continue;
+    }
+    if (character === '{' || character === '[') {
+      const parent = containers.at(-1);
+      const inherited = pending?.valuePending ? pending : undefined;
+      containers.push({
+        kind: character === '{' ? 'object' : 'array',
+        path: inherited?.path ?? parent?.path ?? [],
+        suppressed: parent?.suppressed === true || parent?.kind === 'array',
+        symbol: inherited?.symbol ?? parent?.symbol ?? facts.module,
+      });
+      pending = undefined;
+      cursor += 1;
+      continue;
+    }
+    if (character === '}' || character === ']') {
+      containers.pop();
+      pending = undefined;
+      cursor += 1;
+      continue;
+    }
+    if (character === ',') pending = undefined;
+    else if (pending?.valuePending && character !== ':') pending = undefined;
+    cursor += 1;
+  }
+}
+
+function extractShallowYaml(facts: MutableStructuredFacts): void {
+  const content = facts.file.content!;
+  const limit = Math.min(content.length, MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS);
+  const scopes: Array<{readonly indent: number; readonly path: readonly string[]; readonly symbol: CodeGraphSymbol}> = [
+    {indent: -1, path: [], symbol: facts.module},
+  ];
+  let start = 0;
+  while (start < limit && facts.symbols.length - 1 < MAX_SHALLOW_OBJECT_CONFIG_SYMBOLS) {
+    let end = start;
+    while (end < limit && !isLineTerminator(content[end]!)) end += 1;
+    const line = content.slice(start, end);
+    const match = /^(\s*)(?!-\s)(?:["']([^"']+)["']|([^:#][^:]*?))\s*:(?:\s|$)/.exec(line);
+    if (match) {
+      const indent = yamlIndent(match[1]!);
+      const key = (match[2] ?? match[3] ?? '').trim();
+      while (scopes.length > 1 && scopes.at(-1)!.indent >= indent) scopes.pop();
+      const parent = scopes.at(-1)!;
+      if (key && parent.path.length < MAX_SHALLOW_OBJECT_CONFIG_DEPTH) {
+        const path = [...parent.path, key];
+        const keyOffset = start + line.indexOf(match[2] ?? match[3] ?? key);
+        const symbol = addDeclaration(
+          facts,
+          parent.symbol,
+          'property',
+          key,
+          structuredPath(facts.file.path, path),
+          keyOffset,
+          keyOffset + Math.max(1, key.length),
+          `${facts.file.path}#${path.join('.')}`,
+        );
+        if (/:\s*(?:#.*)?$/.test(line)) scopes.push({indent, path, symbol});
+      }
+    }
+    if (end >= limit) break;
+    start = end + lineTerminatorWidth(content, end);
+  }
+}
+
+function jsonStringAt(
+  content: string,
+  start: number,
+  limit: number,
+): {readonly end: number; readonly value: string} | undefined {
+  let escaped = false;
+  for (let cursor = start + 1; cursor < limit; cursor += 1) {
+    const character = content[cursor]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character !== '"') continue;
+    const end = cursor + 1;
+    try {
+      const value: unknown = JSON.parse(content.slice(start, end));
+      return typeof value === 'string' ? {end, value} : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function skipJsonTrivia(content: string, offset: number, limit: number): number {
+  let cursor = offset;
+  while (cursor < limit) {
+    if (/\s/u.test(content[cursor]!)) cursor += 1;
+    else if (content[cursor] === '/' && content[cursor + 1] === '/') cursor = skipLine(content, cursor + 2, limit);
+    else if (content[cursor] === '/' && content[cursor + 1] === '*')
+      cursor = skipBlockComment(content, cursor + 2, limit);
+    else break;
+  }
+  return cursor;
+}
+
+function skipLine(content: string, offset: number, limit: number): number {
+  let cursor = offset;
+  while (cursor < limit && !isLineTerminator(content[cursor]!)) cursor += 1;
+  return cursor;
+}
+
+function skipBlockComment(content: string, offset: number, limit: number): number {
+  let cursor = offset;
+  while (cursor < limit - 1) {
+    if (content[cursor] === '*' && content[cursor + 1] === '/') return cursor + 2;
+    cursor += 1;
+  }
+  return limit;
+}
+
+function yamlIndent(value: string): number {
+  let width = 0;
+  for (const character of value) width += character === '\t' ? 2 : 1;
+  return width;
 }
 
 function extractToml(facts: MutableStructuredFacts): void {
@@ -381,9 +677,10 @@ function addDeclaration(
     end,
     identityQualifiedName,
     facts.identityOccurrences,
+    requiredLineIndex(facts),
   );
   facts.symbols.push(symbol);
-  facts.edges.push(resolvedEdge(facts.file, parent, symbol, 'contains', 'syntactic', start, end));
+  facts.edges.push(resolvedEdge(facts, parent, symbol, 'contains', 'syntactic', start, end));
   return symbol;
 }
 
@@ -397,6 +694,7 @@ function structuredSymbol(
   end: number,
   identityQualifiedName: string,
   identityOccurrences: Map<string, number>,
+  lineIndex: SourceLineIndex | undefined,
 ): CodeGraphSymbol {
   const identityKey = `${kind}\n${identityQualifiedName}`;
   const occurrence = identityOccurrences.get(identityKey) ?? 0;
@@ -419,7 +717,10 @@ function structuredSymbol(
     path: file.path,
     qualifiedName,
     resolutionDomain: 'structured-schema',
-    span: textSpan(file.content!, start, end),
+    span:
+      lineIndex === undefined
+        ? {column: 1, endColumn: Math.max(1, end - start + 1), endLine: 1, line: 1}
+        : sourceSpan(lineIndex, start, end),
   };
 }
 
@@ -436,7 +737,7 @@ function escapeStructuredSegment(value: string): string {
 }
 
 function resolvedEdge(
-  file: CodeGraphInventoryFile,
+  facts: MutableStructuredFacts,
   source: CodeGraphSymbol,
   target: CodeGraphSymbol,
   relation: CodeGraphRelation,
@@ -446,9 +747,9 @@ function resolvedEdge(
 ): CodeGraphEdge {
   return {
     confidence: provenance === 'declared' ? 1 : 0.75,
-    evidencePath: file.path,
-    evidenceSpan: textSpan(file.content!, start, end),
-    id: edgeId(file.path, source.id, relation, target.id, provenance),
+    evidencePath: facts.file.path,
+    evidenceSpan: sourceSpan(requiredLineIndex(facts), start, end),
+    id: edgeId(facts.file.path, source.id, relation, target.id, provenance),
     provenance,
     relation,
     sourceId: source.id,
@@ -470,7 +771,7 @@ function addUnresolvedEdge(
   facts.edges.push({
     confidence: provenance === 'declared' ? 1 : 0.75,
     evidencePath: facts.file.path,
-    evidenceSpan: textSpan(facts.file.content!, start, end),
+    evidenceSpan: sourceSpan(requiredLineIndex(facts), start, end),
     id: edgeId(facts.file.path, source.id, relation, targetName, provenance),
     provenance,
     relation,
@@ -484,17 +785,9 @@ function edgeId(path: string, source: string, relation: string, target: string, 
   return `cge_${sha256HexSync(`structured-edge-v1\n${path}\n${source}\n${relation}\n${target}\n${provenance}`).slice(0, 32)}`;
 }
 
-function textSpan(content: string, start: number, end: number): CodeGraphSpan {
-  const boundedStart = Math.max(0, Math.min(content.length, start));
-  const boundedEnd = Math.max(boundedStart, Math.min(content.length, end));
-  const from = sourcePositionAt(content, boundedStart);
-  const to = sourcePositionAt(content, boundedEnd);
-  return {
-    column: from.column,
-    endColumn: to.column,
-    endLine: to.line,
-    line: from.line,
-  };
+function requiredLineIndex(facts: MutableStructuredFacts): SourceLineIndex {
+  if (facts.lineIndex === undefined) throw new Error('structured metadata-only extraction cannot emit source spans');
+  return facts.lineIndex;
 }
 
 function linesWithOffsets(
@@ -517,34 +810,10 @@ function linesWithOffsets(
   return output;
 }
 
-function sourcePositionAt(content: string, offset: number): {readonly column: number; readonly line: number} {
-  let column = 1;
-  let cursor = 0;
-  let line = 1;
-  while (cursor < offset) {
-    const width = lineTerminatorWidth(content, cursor);
-    if (width > 0) {
-      cursor += width;
-      column = 1;
-      line += 1;
-    } else {
-      cursor += 1;
-      column += 1;
-    }
-  }
-  return {column, line};
-}
-
 function lineTerminatorWidth(content: string, offset: number): number {
   const character = content[offset];
   if (character === '\r') return content[offset + 1] === '\n' ? 2 : 1;
   return character === '\n' || character === '\u2028' || character === '\u2029' ? 1 : 0;
-}
-
-function findConfigKey(content: string, key: string, from: number): number {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`(?:["']${escaped}["']|^|[\\s{,])${escaped}(?=\\s*[:=])`, 'm').exec(content.slice(from));
-  return match ? from + match.index + Math.max(0, match[0].lastIndexOf(key)) : Math.min(content.length, from);
 }
 
 function stripJsonComments(value: string): string {

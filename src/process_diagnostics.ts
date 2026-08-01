@@ -9,7 +9,8 @@ const PROCESS_REGISTRATION_LIMIT_BYTES = 16 * 1024;
 const PROCESS_MEMORY_QUERY_TIMEOUT_MS = 5_000;
 const SAFE_OPERATION = /^[a-z][a-z0-9-]{0,47}$/;
 
-export type ThreadnoteProcessRole = 'cli' | 'graph-builder' | 'graph-waiter' | 'local-model-worker' | 'manager' | 'mcp';
+export type ThreadnoteProcessRole =
+  'cli' | 'graph-builder' | 'graph-parser-worker' | 'graph-waiter' | 'local-model-worker' | 'manager' | 'mcp';
 
 interface ProcessRegistrationFile {
   readonly baseRole: ThreadnoteProcessRole;
@@ -174,11 +175,17 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
     live.push(value);
   }
 
-  const memoryByProcess = processMemoryBytes(
-    live.map(value => value.processId),
-    system.platform,
-    system.environment(),
+  const memoryByProcess = new Map(
+    processMemoryBytes(
+      live.map(value => value.processId),
+      system.platform,
+      system.environment(),
+    ),
   );
+  if (live.some(value => value.processId === system.processId) && !memoryByProcess.has(system.processId)) {
+    const rssBytes = system.memoryUsage().rss;
+    if (Number.isSafeInteger(rssBytes) && rssBytes >= 0) memoryByProcess.set(system.processId, rssBytes);
+  }
   const roleByProcess = new Map(live.map(value => [value.processId, value.role] as const));
   const now = Date.now();
   const sorted = live
@@ -423,6 +430,7 @@ function isThreadnoteProcessRole(value: unknown): value is ThreadnoteProcessRole
   return (
     value === 'cli' ||
     value === 'graph-builder' ||
+    value === 'graph-parser-worker' ||
     value === 'graph-waiter' ||
     value === 'local-model-worker' ||
     value === 'manager' ||

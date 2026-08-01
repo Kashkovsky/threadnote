@@ -117,7 +117,7 @@ const questions = [
   {
     question: 'Do large monorepos have a hard graph-size cap?',
     answer:
-      'There is no repository-size admission cap. Threadnote 4 stores graph generations in SQLite instead of one monolithic JSON document, and bounded content and activation batches reduce peak memory. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
+      'There is no repository-size admission cap. Threadnote 4 stores graph generations in SQLite instead of one monolithic JSON document; a bounded parser pool, one backpressured writer, generated-root pruning, and metadata-only snapshot data bound transient work. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
   },
   {
     question: 'Can I use Obsidian without giving it the whole memory store?',

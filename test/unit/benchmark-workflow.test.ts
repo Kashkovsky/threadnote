@@ -3,10 +3,12 @@ import {JSON_SCHEMA, load} from 'js-yaml';
 import {describe, expect, it} from 'vitest';
 
 interface WorkflowJob {
+  readonly env?: Readonly<Record<string, string>>;
   readonly if?: string;
   readonly 'runs-on'?: string;
   readonly steps?: readonly {
     readonly if?: string;
+    readonly env?: Readonly<Record<string, string>>;
     readonly run?: string;
     readonly 'timeout-minutes'?: number;
     readonly uses?: string;
@@ -106,6 +108,11 @@ describe('platform benchmark workflow', () => {
     expect(command).toContain('--samples 1');
     expect(command).toContain('--warmups 0');
     expect(command).toContain('code-graph-production-large-n1-');
+    expect(job.env).toBeUndefined();
+    expect(capture?.env).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-${{ runner.arch }}',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+    });
     const captureTimeout = capture?.['timeout-minutes'];
     expect(captureTimeout).toBeDefined();
     expect(job['timeout-minutes']! - (captureTimeout ?? 0)).toBeGreaterThanOrEqual(30);
@@ -113,6 +120,29 @@ describe('platform benchmark workflow', () => {
     expect(upload?.if).toBe('always()');
     expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(10);
     expect(upload?.with?.path).toBe('artifacts/code-graph-production-large-n1-*.json');
+    expect(upload?.with?.['if-no-files-found']).toBe('warn');
+  });
+
+  it('runs the large-monorepo heavy-tail regression only by schedule or explicit opt-in', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const job = workflow.jobs['code-graph-heavy-tail']!;
+    const capture = job.steps?.find(step => step.run?.includes('bench:code-graph:heavy-tail'));
+    const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+
+    expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_heavy_tail');
+    expect(job.if).toContain("github.event_name == 'schedule'");
+    expect(job.if).toContain('inputs.include_heavy_tail');
+    expect(job['runs-on']).toBe('ubuntu-24.04');
+    expect(job['timeout-minutes']).toBe(180);
+    expect(capture?.run).toContain('bench:code-graph:heavy-tail');
+    expect(capture?.env).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-${{ runner.arch }}',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+    });
+    expect(upload?.if).toBe('always()');
+    expect(upload?.with?.path).toBe('artifacts/code-graph-heavy-tail-*.json');
     expect(upload?.with?.['if-no-files-found']).toBe('warn');
   });
 });

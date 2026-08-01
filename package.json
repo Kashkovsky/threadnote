@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.0.0-beta.29",
+  "version": "4.0.0-beta.30",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -52,6 +52,7 @@
     "bench:recall:vectors": "bun scripts/benchmark-recall-vectors.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
     "bench:code-graph": "bun scripts/benchmark-code-graph.ts",
+    "bench:code-graph:heavy-tail": "bun scripts/benchmark-code-graph-heavy-tail.ts",
     "bench:code-graph:dirty-overlay": "bun scripts/benchmark-code-graph-dirty-overlay.ts",
     "eval:code-graph": "bun scripts/evaluate-code-graph.ts",
     "mcp-server": "bun src/standalone.ts mcp-server",

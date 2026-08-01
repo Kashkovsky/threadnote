@@ -3,7 +3,7 @@ import {
   acceptsRepositoryPath,
   parseGitTree,
   parseNameStatus,
-  shouldOmitCorpusContent,
+  shouldOmitRepositoryContent,
 } from '../../src/code_graph/inventory.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../../src/code_graph/languages/corpus/policy.js';
 
@@ -36,6 +36,27 @@ describe('native code graph inventory policy', () => {
     expect(acceptsRepositoryPath('pods/build/generated/Generated.kt', '', ['pods'])).toBe(false);
     expect(acceptsRepositoryPath('pods/src/main/kotlin/Service.kt', 'pods/**', ['pods'])).toBe(false);
     expect(acceptsRepositoryPath('Pods/Headers/Generated.h')).toBe(false);
+  });
+
+  it('does not let broad package source roots re-include nested build output', () => {
+    for (const directory of ['bazel-bin', 'bazel-out', 'bazel-testlogs', 'bazel-workspace', 'build', 'dist', 'out']) {
+      expect(
+        acceptsRepositoryPath(`packages/app/${directory}/generated.js`, '', ['packages/app'], ['packages/app']),
+        directory,
+      ).toBe(false);
+    }
+
+    expect(acceptsRepositoryPath('packages/app/dist/source.ts', '', ['packages/app'], ['packages/app/dist'])).toBe(
+      true,
+    );
+    expect(
+      acceptsRepositoryPath(
+        'packages/app/dist/source.ts',
+        'packages/app/dist/**',
+        ['packages/app'],
+        ['packages/app/dist'],
+      ),
+    ).toBe(false);
   });
 
   it('accepts only ordinary blob records and handles byte-safe rename/delete overlays', () => {
@@ -75,8 +96,31 @@ describe('native code graph inventory policy', () => {
 
   it('does not reject eligible source paths based on individual file size', () => {
     expect(acceptsRepositoryPath('src/generated-but-tracked.ts')).toBe(true);
-    expect(shouldOmitCorpusContent('src/generated-but-tracked.ts', Number.MAX_SAFE_INTEGER)).toBe(false);
-    expect(shouldOmitCorpusContent('recordings/architecture.mp4', CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT + 1)).toBe(true);
+    expect(shouldOmitRepositoryContent('src/generated-but-tracked.ts', Number.MAX_SAFE_INTEGER)).toBe(false);
+    expect(shouldOmitRepositoryContent('recordings/architecture.mp4', CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT + 1)).toBe(
+      true,
+    );
+  });
+
+  it('keeps binary media metadata-only without loading its blob', () => {
+    for (const path of ['assets/photo.png', 'recordings/demo.mp4', 'audio/incident.mp3']) {
+      expect(shouldOmitRepositoryContent(path, 32), path).toBe(true);
+    }
+    expect(shouldOmitRepositoryContent('docs/architecture.pdf', 32)).toBe(false);
+    expect(shouldOmitRepositoryContent('diagrams/architecture.svg', 32)).toBe(false);
+  });
+
+  it('does not hydrate low-signal structured test data', () => {
+    for (const path of [
+      'test/__snapshots__/screen.json',
+      'tests/golden/render.yaml',
+      'fixtures/events.jsonc',
+      'assets/animations/loading.json',
+    ]) {
+      expect(shouldOmitRepositoryContent(path, 25 * 1_024 * 1_024), path).toBe(true);
+    }
+    expect(shouldOmitRepositoryContent('config/runtime.json', 25 * 1_024 * 1_024)).toBe(false);
+    expect(shouldOmitRepositoryContent('schemas/events.yaml', 25 * 1_024 * 1_024)).toBe(false);
   });
 
   it('accepts every bundled language and workspace manifest through the generated registry', () => {

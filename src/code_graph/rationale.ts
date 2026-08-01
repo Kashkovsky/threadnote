@@ -13,6 +13,7 @@ export const CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION = 'rationale-v1' as const;
 const RATIONALE_MARKER =
   /(?:^|\s)(?:\/\/|\/\*+|\*|#|--|<!--)\s*(NOTE|WHY|HACK|RATIONALE|DECISION|SAFETY|INVARIANT)\s*[:-]\s*(.+?)(?:\*\/|-->)?\s*$/i;
 const DESIGN_REFERENCE = /\b(?:ADR|RFC)[- #:]?\d{2,6}\b/gi;
+const RATIONALE_PREFILTER = /\b(?:NOTE|WHY|HACK|RATIONALE|DECISION|SAFETY|INVARIANT|ADR|RFC)\b/i;
 
 export function captureRationaleInputs(file: CodeGraphInventoryFile, facts: CodeGraphFileFacts): CodeGraphFileFacts {
   if (file.content === undefined) return facts;
@@ -40,32 +41,43 @@ export function augmentRationaleFacts(file: CodeGraphInventoryFile, facts: CodeG
 }
 
 function rationaleCandidates(content: string): readonly CodeGraphRationaleInput[] {
+  // Most source and almost all large data files have no rationale marker. Avoid
+  // allocating an array containing every line merely to prove that fact.
+  if (!RATIONALE_PREFILTER.test(content)) return [];
   const output: CodeGraphRationaleInput[] = [];
   const seen = new Set<string>();
-  content.split('\n').forEach((line, index) => {
+  let lineNumber = 1;
+  let offset = 0;
+  while (offset <= content.length) {
+    const newline = content.indexOf('\n', offset);
+    const end = newline < 0 ? content.length : newline;
+    const line = content.slice(offset, end);
     const marker = RATIONALE_MARKER.exec(line);
     if (marker) {
       const name = marker[1]!.toUpperCase();
       const documentation = marker[2]!.trim();
-      const key = `${index + 1}\0${name}\0${documentation}`;
+      const key = `${lineNumber}\0${name}\0${documentation}`;
       if (!seen.has(key)) {
         seen.add(key);
-        output.push({documentation, line: index + 1, marker: name, name: `${name}: ${shortName(documentation)}`});
+        output.push({documentation, line: lineNumber, marker: name, name: `${name}: ${shortName(documentation)}`});
       }
     }
     for (const reference of line.matchAll(DESIGN_REFERENCE)) {
       const name = reference[0]!.replace(/[ #:-]+/, '-').toUpperCase();
-      const key = `${index + 1}\0REFERENCE\0${name}`;
+      const key = `${lineNumber}\0REFERENCE\0${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
       output.push({
         documentation: line.trim(),
-        line: index + 1,
+        line: lineNumber,
         marker: 'REFERENCE',
         name,
       });
     }
-  });
+    if (newline < 0) break;
+    offset = newline + 1;
+    lineNumber += 1;
+  }
   return output;
 }
 

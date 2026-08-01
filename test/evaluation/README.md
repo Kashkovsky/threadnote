@@ -30,6 +30,15 @@ bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
 # Opt-in/scheduled large-monorepo shape; expect substantial CPU, RAM, disk, and wall time.
 bun run bench:code-graph -- --profile production-large --samples 1 --warmups 0 \
   --output artifacts/code-graph-production-large.json
+
+# Opt-in/scheduled heavy-tail regression: pathological TS, 25 MiB low-signal JSON, 4,000 textless SVGs,
+# interruption/resume, and deterministic workers=1 versus workers=4 graph output.
+bun run bench:code-graph:heavy-tail -- \
+  --output artifacts/code-graph-heavy-tail.json
+
+# Fast harness smoke; exercises the same orchestration and assertions with a reduced generated fixture.
+bun run bench:code-graph:heavy-tail -- --smoke \
+  --output artifacts/code-graph-heavy-tail-smoke.json
 ```
 
 The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. It gates zero
@@ -55,6 +64,17 @@ latency budget or fabricated checked result for this profile: retain the JSON ar
 review it only when `sameRunnerComparisonKey` matches. The cold and incremental builds and their phases are explicitly
 labelled n=1; the artifact never presents them as a latency distribution.
 
+`heavy-tail-profile.json` is the complementary beta.29 regression shape. It checks the file classes that a uniform
+symbol-count generator cannot represent: call-heavy and multi-megabyte generated TypeScript, one 25 MiB test snapshot
+JSON, and 4,000 textless SVG assets. The harness builds clean graphs with one and four parser workers, interrupts a
+third build only after parser facts are durable, then resumes it from the same home. All three completed graphs must
+have the same normalized digest. The resumed run must reuse the interrupted cache; low-signal JSON must remain one
+small metadata fact; TypeScript imports/exports/tail declarations and one metadata symbol per SVG must survive. The
+checked profile is a reviewed workload contract, not a fabricated latency result. Compare wall time, aggregate
+per-language parse/persist timing, RSS, and cache bytes only within the same artifact and runner class.
+`heavy-tail-development.json` retains the first reviewed full-shape observation on the documented local hardware. It
+is evidence that the harness and contracts passed, not an absolute release threshold for other machines.
+
 `bench:code-graph:dirty-overlay` isolates the first dirty build where Threadnote must materialize a clean commit and a
 one-file worktree overlay in the same SQLite session. It alternates the safe staging-reuse path with an explicitly
 disabled full-materialization control, requires identical graph shape, and records both total and materialization
@@ -74,6 +94,10 @@ The reusable receipt and named-barrel resolution contract ships as extractor gen
 Upgrading from generation 8 therefore performs one intentional clean rebuild before persisted-base deltas become
 eligible. SQLite records a monotonic minimum extractor generation so an older process that overlaps an update cannot
 publish a generation-8 snapshot after generation 9 has initialized the checkout store.
+
+The bounded parser-worker pool, generated-root correction, and metadata-only low-signal structured-data policy advance
+the current extractor generation to `native-code-graph-10`. That transition performs one clean rebuild and extends the
+same monotonic publication guard to overlapping generation-9 processes.
 
 Code-graph benchmark artifacts now separate registration/lock/database setup, committed inventory/extraction, the dirty
 overlay and workspace-discovery gap, materialization, reference resolution, validation, SQLite write/checkpoint,

@@ -166,6 +166,56 @@ describe('code graph cross-process build status', () => {
     });
   });
 
+  it('persists completed scan batches immediately without leaking the in-flight path', async () => {
+    const home = await mkdtemp('threadnote-graph-build-scan-progress-');
+    homes.push(home);
+    const secretPath = 'customers/private-project/internal/architecture.ts';
+    const status = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({
+          accepted: 8,
+          activity: {
+            batchCompleted: 1,
+            batchTotal: 8,
+            bytes: 4_096,
+            language: 'typescript',
+            parseMilliseconds: 12.5,
+            path: secretPath,
+            stage: 'extracting',
+          },
+          completed: 0,
+          excluded: 2,
+          phase: 'scanning',
+          skipped: 0,
+          timings: {
+            extractionMilliseconds: 12.5,
+            persistenceMilliseconds: 0,
+            readingMilliseconds: 1.5,
+          },
+          total: 10,
+          unit: 'files',
+        });
+        yield* reporter.progress({
+          accepted: 8,
+          completed: 8,
+          excluded: 2,
+          phase: 'scanning',
+          skipped: 0,
+          total: 10,
+          unit: 'files',
+        });
+        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+      }),
+    );
+
+    expect(status.counters).toMatchObject({completed: 8, total: 10});
+    expect(JSON.stringify(status)).not.toContain(secretPath);
+  });
+
   it('validates owner start identity before trusting a live PID and detects stale heartbeats', async () => {
     const home = await mkdtemp('threadnote-graph-build-owner-');
     homes.push(home);

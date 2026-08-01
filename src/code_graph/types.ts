@@ -1,6 +1,6 @@
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_GENERATION = 9 as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 10 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
@@ -42,7 +42,7 @@ export interface CodeGraphInventoryFile {
   readonly bytes?: Uint8Array;
   readonly content?: string;
   readonly contentHash: string;
-  readonly contentOmittedReason?: 'size-budget';
+  readonly contentOmittedReason?: 'metadata-only' | 'size-budget';
   readonly language: string;
   readonly mode: string;
   readonly path: string;
@@ -151,10 +151,30 @@ export type CodeGraphProgress =
     }
   | {
       readonly accepted: number;
+      readonly activity?: {
+        /** Batch-local progress; repository-derived paths never enter persisted build status. */
+        readonly batchCompleted: number;
+        readonly batchTotal: number;
+        readonly bytes: number;
+        readonly degraded?: boolean;
+        readonly factsBytes?: number;
+        readonly language: string;
+        readonly parseMilliseconds?: number;
+        readonly path: string;
+        readonly persistMilliseconds?: number;
+        readonly relations?: number;
+        readonly stage: 'extracting' | 'persisting' | 'reading';
+        readonly symbols?: number;
+      };
       readonly completed: number;
       readonly excluded: number;
       readonly phase: 'scanning';
       readonly skipped: number;
+      readonly timings?: {
+        readonly extractionMilliseconds: number;
+        readonly persistenceMilliseconds: number;
+        readonly readingMilliseconds: number;
+      };
       readonly total: number;
       readonly unit: 'files';
     }

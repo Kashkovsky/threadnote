@@ -16,7 +16,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         signal => extractCorpusFile(file, {signal}),
         cause => new CodeGraphLanguagePackError(`Could not extract corpus facts from ${file.path}.`, {cause}),
       ),
-    version: sha256HexSync('threadnote-corpus-extractor-v1'),
+    version: sha256HexSync('threadnote-corpus-extractor-v3-text-aware-svg-and-metadata-only-media'),
   },
   files: [
     ...extensions(

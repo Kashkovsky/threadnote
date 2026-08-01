@@ -65,6 +65,15 @@ export async function extractCorpusFile(
   options: CorpusExtractionOptions = {},
 ): Promise<CodeGraphFileFacts> {
   const extension = extensionOf(file.path);
+  if (file.contentOmittedReason === 'metadata-only') {
+    return buildFacts(file, {
+      diagnostics: [`${file.path}: binary media content was not loaded; indexed as deterministic asset metadata.`],
+      kind: 'asset',
+      metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
+      sections: [],
+      urls: [],
+    });
+  }
   if (file.contentOmittedReason === 'size-budget' || file.size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT) {
     return buildFacts(file, {
       diagnostics: [
@@ -88,7 +97,9 @@ export async function extractCorpusFile(
               ? extractMediaAsset(file, extension, 'audio')
               : VIDEO_EXTENSIONS.has(extension)
                 ? extractMediaAsset(file, extension, 'video')
-                : extractTextDocument(file, extension);
+                : extension === '.svg'
+                  ? extractSvg(file)
+                  : extractTextDocument(file, extension);
     return buildFacts(file, extracted);
   } catch (cause) {
     if (options.signal?.aborted) throw options.signal.reason ?? cause;
@@ -112,6 +123,42 @@ function extractTextDocument(file: CodeGraphInventoryFile, extension: string): E
     sections: sectionize(text, basename(file.path)),
     urls: extractUrls(text),
   };
+}
+
+function extractSvg(file: CodeGraphInventoryFile): ExtractedCorpus {
+  const source = requireText(file);
+  if (!svgHasTextElements(source)) {
+    return {
+      diagnostics: [`${file.path}: SVG has no text elements; indexed as deterministic asset metadata.`],
+      kind: 'asset',
+      metadata: ['format svg', `${file.size} bytes`],
+      sections: [],
+      urls: [],
+    };
+  }
+  return extractTextDocument(file, '.svg');
+}
+
+function svgHasTextElements(source: string): boolean {
+  let cursor = 0;
+  while (cursor < source.length) {
+    const opening = source.indexOf('<', cursor);
+    if (opening < 0) return false;
+    if (source.startsWith('<!--', opening)) {
+      const closing = source.indexOf('-->', opening + 4);
+      cursor = closing < 0 ? source.length : closing + 3;
+      continue;
+    }
+    let nameStart = opening + 1;
+    if (source[nameStart] === '/') nameStart += 1;
+    while (/\s/u.test(source[nameStart] ?? '')) nameStart += 1;
+    let nameEnd = nameStart;
+    while (/[A-Za-z0-9_.:-]/.test(source[nameEnd] ?? '')) nameEnd += 1;
+    const localName = source.slice(nameStart, nameEnd).split(':').at(-1)?.toLowerCase();
+    if (localName === 'text' || localName === 'title' || localName === 'desc') return true;
+    cursor = Math.max(opening + 1, nameEnd);
+  }
+  return false;
 }
 
 async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractionOptions): Promise<ExtractedCorpus> {

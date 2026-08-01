@@ -7,9 +7,11 @@ on:
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/benchmark-code-graph-heavy-tail.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/benchmark-recall-vectors.ts'
       - 'scripts/code-graph-fixture.ts'
+      - 'scripts/code-graph-heavy-tail-fixture.ts'
       - 'scripts/evaluate-recall.ts'
       - 'src/code_graph/**'
       - 'src/crypto/**'
@@ -39,6 +41,11 @@ on:
         default: false
       include_production_large:
         description: Run the n=1 48k-file production-large graph profile on the pinned Linux runner class
+        required: false
+        type: boolean
+        default: false
+      include_heavy_tail:
+        description: Run the pathological TypeScript, 25 MiB JSON, SVG, interruption, and worker-determinism suite
         required: false
         type: boolean
         default: false
@@ -350,9 +357,6 @@ jobs:
     if: github.event_name == 'schedule' || inputs.include_production_large
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
-      THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
 
     steps:
       - uses: actions/checkout@v7
@@ -365,6 +369,9 @@ jobs:
 
       - name: Capture one production-large observation with phase and storage telemetry
         timeout-minutes: 320
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
         run: >-
           bun run bench:code-graph --
           --profile production-large
@@ -378,6 +385,39 @@ jobs:
         with:
           name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: artifacts/code-graph-production-large-n1-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  code-graph-heavy-tail:
+    name: Code graph large-monorepo heavy tail · pinned Linux class
+    if: github.event_name == 'schedule' || inputs.include_heavy_tail
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture pathological files, parser determinism, and interruption resume
+        timeout-minutes: 160
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+        run: >-
+          bun run bench:code-graph:heavy-tail --
+          --output artifacts/code-graph-heavy-tail-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        timeout-minutes: 10
+        with:
+          name: code-graph-heavy-tail-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/code-graph-heavy-tail-*.json
           if-no-files-found: warn
           retention-days: 90
 

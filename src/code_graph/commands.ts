@@ -103,6 +103,29 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     );
     const counters = renderBuildCounters(current);
     if (counters) yield* Console.log(`Progress: ${counters}`);
+    if (current.activity) {
+      const activity = current.activity;
+      const details = [
+        `${activity.stage} ${activity.language}`,
+        formatBytes(activity.bytes),
+        `batch ${activity.batchCompleted}/${activity.batchTotal}`,
+        activity.parseMilliseconds === undefined
+          ? undefined
+          : `parse ${formatMilliseconds(activity.parseMilliseconds)}`,
+        activity.persistMilliseconds === undefined
+          ? undefined
+          : `persist ${formatMilliseconds(activity.persistMilliseconds)}`,
+        activity.degraded ? 'metadata fallback' : undefined,
+      ].filter((value): value is string => value !== undefined);
+      yield* Console.log(`Current activity: ${details.join(' · ')}`);
+    }
+    if (current.timings) {
+      yield* Console.log(
+        `Phase timings: read ${formatMilliseconds(current.timings.readingMilliseconds)} · ` +
+          `parse ${formatMilliseconds(current.timings.extractionMilliseconds)} · ` +
+          `persist ${formatMilliseconds(current.timings.persistenceMilliseconds)}`,
+      );
+    }
     const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
     if (current.eta && lastProgressAge <= 15_000) {
       yield* Console.log(
@@ -276,7 +299,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       cwd,
       force: options.full,
       onProgress: progress =>
-        Console.log(
+        Console.error(
           JSON.stringify({
             type: 'code-graph-progress',
             version: 2,
@@ -441,7 +464,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       threadnoteHome: config.agentContextHome,
     });
   const result = options.json
-    ? yield* inspect(progress => Console.log(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})))
+    ? yield* inspect(progress => Console.error(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})))
     : status.stale
       ? yield* Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
@@ -801,7 +824,7 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
     if (json) {
       yield* indexer.index({
         cwd,
-        onProgress: progress => Console.log(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})),
+        onProgress: progress => Console.error(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})),
         threadnoteHome: config.agentContextHome,
       });
     } else {
@@ -837,11 +860,33 @@ function progressMessage(progress: CodeGraphProgress): string {
       return 'Registering repository index';
     case 'waiting':
       return 'Waiting for another code graph build to finish';
-    case 'scanning':
-      return (
+    case 'scanning': {
+      const summary =
         `Scanning · ${progress.completed}/${progress.total} eligible files · ${progress.accepted} accepted · ` +
-        `${progress.skipped} content skipped · ${progress.excluded} excluded`
+        `${progress.skipped} content skipped · ${progress.excluded} excluded`;
+      if (!progress.activity) return summary;
+      const activity = progress.activity;
+      const timing = [
+        activity.parseMilliseconds === undefined
+          ? undefined
+          : `parse ${formatMilliseconds(activity.parseMilliseconds)}`,
+        activity.persistMilliseconds === undefined
+          ? undefined
+          : `persist ${formatMilliseconds(activity.persistMilliseconds)}`,
+      ].filter((value): value is string => value !== undefined);
+      const activityLabel =
+        activity.stage === 'reading'
+          ? `reading Git batch from ${activity.path}`
+          : activity.stage === 'persisting'
+            ? `persisting batch from ${activity.path}`
+            : `${activity.stage} ${activity.path}`;
+      return (
+        `${summary} · ${activityLabel} · ${activity.language} · ${formatBytes(activity.bytes)} · ` +
+        `batch ${activity.batchCompleted}/${activity.batchTotal}` +
+        (activity.degraded ? ' · metadata fallback' : '') +
+        (timing.length > 0 ? ` · ${timing.join(' · ')}` : '')
       );
+    }
     case 'materializing':
       return `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused`;
     case 'resolving':
@@ -856,4 +901,11 @@ function progressMessage(progress: CodeGraphProgress): string {
     case 'activating':
       return `Activating (${progress.subphase ?? 'snapshot'}) · ${progress.snapshotId}`;
   }
+}
+
+function formatMilliseconds(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'unknown';
+  if (milliseconds < 1) return '<1ms';
+  if (milliseconds < 1_000) return `${milliseconds.toFixed(milliseconds >= 100 ? 0 : 1)}ms`;
+  return `${(milliseconds / 1_000).toFixed(milliseconds >= 10_000 ? 1 : 2)}s`;
 }

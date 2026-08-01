@@ -74,6 +74,16 @@ export interface GraphCatalog {
 }
 
 export interface GraphBuildStatus {
+  readonly activity?: {
+    readonly batchCompleted: number;
+    readonly batchTotal: number;
+    readonly bytes: number;
+    readonly degraded?: boolean;
+    readonly language: string;
+    readonly parseMilliseconds?: number;
+    readonly persistMilliseconds?: number;
+    readonly stage: 'extracting' | 'persisting' | 'reading';
+  };
   readonly buildId: string;
   readonly coordination?: {
     readonly lockVerified: boolean;
@@ -109,6 +119,11 @@ export interface GraphBuildStatus {
   readonly result?: {readonly snapshotId: string};
   readonly state: 'completed' | 'failed' | 'queued' | 'running';
   readonly subphase?: string;
+  readonly timings?: {
+    readonly extractionMilliseconds: number;
+    readonly persistenceMilliseconds: number;
+    readonly readingMilliseconds: number;
+  };
   readonly timestamps: {
     readonly heartbeatAt: string;
     readonly lastProgressAt: string;
@@ -1881,6 +1896,26 @@ function GraphBuildProgress(props: {
           ? ' · progress is silent; lock owner is still alive'
           : ''}
       </p>
+      {build.activity ? (
+        <p>
+          Current: {build.activity.stage} {build.activity.language} · {formatGraphBytes(build.activity.bytes)} · batch{' '}
+          {build.activity.batchCompleted.toLocaleString()}/{build.activity.batchTotal.toLocaleString()}
+          {build.activity.parseMilliseconds === undefined
+            ? ''
+            : ` · parse ${formatGraphMilliseconds(build.activity.parseMilliseconds)}`}
+          {build.activity.persistMilliseconds === undefined
+            ? ''
+            : ` · persist ${formatGraphMilliseconds(build.activity.persistMilliseconds)}`}
+          {build.activity.degraded ? ' · metadata fallback; retry scheduled' : ''}
+        </p>
+      ) : null}
+      {build.timings ? (
+        <p>
+          Phase: read {formatGraphMilliseconds(build.timings.readingMilliseconds)} · parse{' '}
+          {formatGraphMilliseconds(build.timings.extractionMilliseconds)} · persist{' '}
+          {formatGraphMilliseconds(build.timings.persistenceMilliseconds)}
+        </p>
+      ) : null}
       <footer>
         <span>PID {build.owner.processId}</span>
         {eta ? (
@@ -1919,6 +1954,20 @@ function formatBuildDuration(milliseconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function formatGraphMilliseconds(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'unknown';
+  if (milliseconds < 1) return '<1ms';
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)}ms`;
+  return `${(milliseconds / 1_000).toFixed(milliseconds >= 10_000 ? 1 : 2)}s`;
+}
+
+function formatGraphBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'unknown';
+  if (bytes < 1_024) return `${Math.round(bytes)} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KiB`;
+  return `${(bytes / 1_048_576).toFixed(bytes >= 10 * 1_048_576 ? 1 : 2)} MiB`;
 }
 
 function buildGraphLayout(

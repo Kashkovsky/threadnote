@@ -107,6 +107,34 @@ describe('process diagnostics', () => {
     }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
   );
 
+  it.effect('falls back to runtime RSS when the host process query is unavailable', () =>
+    Effect.gen(function* () {
+      const nativeSystem = yield* SystemInfo;
+      const expectedRssBytes = 42_000_000;
+      const unavailableProcessId = 2_000_000_000;
+      const systemWithoutPs = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: processId => processId === unavailableProcessId,
+        memoryUsage: () => ({external: 0, heapUsed: 0, rss: expectedRssBytes}),
+        processId: unavailableProcessId,
+        processStartIdentity: () => Effect.succeed(undefined),
+      });
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-rss-'});
+
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'cli',
+        Effect.gen(function* () {
+          const diagnostics = yield* readThreadnoteProcessDiagnostics({agentContextHome: home});
+          expect(diagnostics.processes).toEqual([
+            expect.objectContaining({processId: unavailableProcessId, rssBytes: expectedRssBytes}),
+          ]);
+        }),
+      ).pipe(Effect.provideService(SystemInfo, systemWithoutPs));
+    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
+  );
+
   it.live('coalesces consecutive model batches while preserving operation and idle transitions', () =>
     Effect.gen(function* () {
       temporaryRoot = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-process-diagnostics-')));

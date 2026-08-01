@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "suite": "code-graph-large-monorepo-heavy-tail-v1",
+  "createdAt": "2026-07-31T22:54:35.593Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "1305fe0233a5fc98042c3f2ad6aa2afa785df13b",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "memoryBytes": 68719476736,
+    "operatingSystem": "macOS 27.0",
+    "runtime": "bun/1.3.14",
+    "runnerClass": "local-unclassified"
+  },
+  "profile": {
+    "callsPerPathologicalTypeScriptFile": 12000,
+    "generatedTypeScriptBytes": 3145728,
+    "id": "large-monorepo-heavy-tail",
+    "interruptAfterPersistedFiles": 256,
+    "lowSignalJsonBytes": 26214400,
+    "parallelWorkers": 4,
+    "pathologicalTypeScriptFiles": 8,
+    "regularTypeScriptFiles": 256,
+    "textlessSvgFiles": 4000,
+    "version": 1
+  },
+  "result": {
+    "cacheFactsBytes": 3481602,
+    "cacheFiles": 4269,
+    "edges": 327,
+    "graphDigest": "09d403eacdc7294d6a6626eb39951e862b223d441b1b2ef0832145092e7ea6aa",
+    "lowSignalJsonFactsBytes": 664,
+    "symbols": 4551,
+    "textlessSvgSymbols": 4000
+  },
+  "runs": {
+    "single": {
+      "cpuMilliseconds": 9461.765,
+      "durationMilliseconds": 8686.998167,
+      "peakRssBytes": 407076864,
+      "reusedFiles": 0,
+      "workerCount": 1
+    },
+    "parallel": {
+      "cpuMilliseconds": 10253.721,
+      "durationMilliseconds": 8018.134875,
+      "peakRssBytes": 485294080,
+      "reusedFiles": 0,
+      "workerCount": 4
+    },
+    "interrupted": {
+      "cacheFactsBytes": 188056,
+      "cacheFiles": 257,
+      "cpuMilliseconds": 783.547,
+      "durationMilliseconds": 1455.443708,
+      "peakRssBytes": 247889920,
+      "workerCount": 4
+    },
+    "resumed": {
+      "cpuMilliseconds": 7820.229,
+      "durationMilliseconds": 5337.714458,
+      "peakRssBytes": 482197504,
+      "reusedFiles": 257,
+      "workerCount": 4
+    }
+  },
+  "assertions": {
+    "interruptionRetainedCache": true,
+    "lowSignalJsonBounded": true,
+    "parallelMatchesSingle": true,
+    "pathologicalTypeScriptSurfacePreserved": true,
+    "resumeMatchesClean": true,
+    "resumeReusedCache": true,
+    "textlessSvgMetadataPreserved": true
+  },
+  "interpretation": {
+    "latency": "one local observation per run; compare only on the same hardware and runner class",
+    "parallelParseMilliseconds": "per-file parse durations are summed across workers and are not wall time",
+    "source": "reviewed compact summary of the full harness artifact; synthetic repository content only"
+  }
+}

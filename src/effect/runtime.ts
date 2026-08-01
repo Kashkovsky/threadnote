@@ -17,6 +17,7 @@ import {CodeGraphWatcher} from '../code_graph/watcher.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';
+import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
 
 const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
@@ -35,6 +36,7 @@ const localModelRuntimeLayer = (
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
 const codeGraphAnalysisLayer = CodeGraphAnalysis.layer.pipe(Layer.provideMerge(codeGraphStoreLayer));
 const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));
+const codeGraphParserPoolLayer = CodeGraphParserPool.layer.pipe(Layer.provideMerge(systemLayer));
 const codeGraphLanguagePackLayer = CodeGraphLanguagePackRegistry.layer;
 const codeGraphEmbeddingLayer = CodeGraphEmbeddingIndex.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(localModelCatalogLayer, localModelRuntimeLayer, localModelStoreLayer)),
@@ -45,6 +47,7 @@ const codeGraphIndexerLayer = CodeGraphIndexer.layer.pipe(
       codeGraphStoreLayer,
       codeGraphEmbeddingLayer,
       codeGraphLanguagePackLayer,
+      codeGraphParserPoolLayer,
       commandLayer,
       systemLayer,
       treeSitterRuntimeLayer,

@@ -149,7 +149,7 @@ grammars for portable structural extraction. Apex, Fortran, and Razor use bounde
 because no compatible prebuilt WASM is available or the format mixes template languages. Compiler-backed TypeScript
 relationships remain higher-fidelity than structural packs; every pack advertises its actual capabilities and
 unresolved relationships remain syntactic. Deterministic extractors also cover SQL, GraphQL, protobuf, common
-configuration/schema formats, Dockerfiles, manifests, and workspace metadata. A generated language-pack catalog owns
+configuration/schema formats, Dockerfiles, manifests, Bazel/Starlark build metadata, and workspace metadata. A generated language-pack catalog owns
 file matching, parser/cache identity, workspace discovery, lookup rules, capabilities, and verified assets, so future
 first-party languages do not require changes to inventory, storage, query, CLI, or MCP architecture.
 
@@ -162,6 +162,12 @@ represented as assets rather than guessed. A corpus artifact over 64 MiB remains
 instead of being rejected or semantically decompressed. Selected OpenXML, OpenDocument, and EPUB text entries have
 bounded expansion. These are per-artifact extraction safety budgets, not repository or graph-size caps.
 
+Hidden directories and conventional generated roots such as `node_modules`, `dist`, `build`, `out`, `.nx`, and
+`bazel-*` are pruned before content is read, including when a broad package root contains them. Large unknown JSON,
+JSONC, and YAML files keep only bounded structure, while recognized snapshots, golden files, fixtures, datasets, and
+animation payloads are fingerprinted with a streaming read and represented by their file/module metadata only. Package
+manifests, schemas, and configuration files keep their dedicated extraction paths.
+
 Comments marked `NOTE`, `WHY`, `HACK`, `RATIONALE`, `DECISION`, `SAFETY`, or `INVARIANT`, plus ADR/RFC citations,
 become first-class rationale nodes linked to the nearest source declaration. They remain repository evidence, not
 canonical Threadnote memory.
@@ -170,7 +176,10 @@ Small cold graphs normally finish inside the first MCP call. If a large monorepo
 returns a structured `state: "indexing"` response with the current phase and `retryAfterMilliseconds` while the
 session-scoped build continues. Agents retry the same graph call instead of waiting for the MCP transport timeout or
 falling back to broad text search. Concurrent `threadnote graph index` commands show that they are waiting for the
-active build and remain interruptible; they do not fail after a fixed graph-lock deadline.
+active build and remain interruptible; they do not fail after a fixed graph-lock deadline. Interactive indexing reports
+Git read batches, each extraction file and language with parse timing, and each persistence batch. Extraction runs in
+a bounded worker pool shared across concurrent Threadnote processes, while one backpressured SQLite writer preserves
+deterministic order.
 
 ```sh
 threadnote graph status
@@ -198,10 +207,12 @@ zero-wait maintenance and checkout locks, verifies the active snapshot before an
 `VACUUM`, and defers safely during a build. Preview it with `--dry-run`; `--force` is available below the reviewed
 threshold.
 
-Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, and conservative Xcode metadata form a static
-workspace model; repository build scripts are never executed. Nested workspaces remain distinct, while an app that is
-also integrated into the outer monorepo can resolve only its explicitly declared project dependencies. Ambiguous or
-dynamic relationships stay syntactic.
+Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, conservative Xcode metadata, and nested or integrated
+Bazel workspaces form a static workspace model; repository build scripts are never executed. Bazel `WORKSPACE`,
+`MODULE.bazel`, `BUILD`, `.bzl`, and `.bazelrc` files contribute declared targets, loads, and labels without invoking
+Bazel or evaluating macros. Nested workspaces remain distinct, while an app that is also integrated into the outer
+monorepo can resolve only its explicitly declared project dependencies. Ambiguous or dynamic relationships stay
+syntactic.
 
 Exact and normalized SQLite lexical search always work. If the core embedding model is installed—as it is by default—
 Threadnote also maintains code-symbol vectors in a paged, snapshot-atomic SQLite generation through the same

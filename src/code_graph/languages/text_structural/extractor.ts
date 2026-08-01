@@ -8,9 +8,9 @@ import type {
   CodeGraphProvenance,
   CodeGraphReference,
   CodeGraphRelation,
-  CodeGraphSpan,
   CodeGraphSymbol,
 } from '../../types.js';
+import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from '../source_line_index.js';
 
 interface MutableTextFacts {
   readonly diagnostics: string[];
@@ -18,6 +18,7 @@ interface MutableTextFacts {
   readonly edges: CodeGraphEdge[];
   readonly file: CodeGraphInventoryFile;
   readonly identityOccurrences: Map<string, number>;
+  readonly lineIndex: SourceLineIndex;
   readonly module: CodeGraphSymbol;
   readonly packageName: string | undefined;
   readonly references: CodeGraphReference[];
@@ -261,6 +262,7 @@ function createFacts(
 ): MutableTextFacts {
   const packageName = Option.getOrUndefined(context.packageName);
   const identityOccurrences = new Map<string, number>();
+  const lineIndex = createSourceLineIndex(file.content!);
   const module = textSymbol(
     file,
     packageName,
@@ -272,6 +274,7 @@ function createFacts(
     Math.min(1, file.content!.length),
     true,
     identityOccurrences,
+    lineIndex,
   );
   return {
     diagnostics: [],
@@ -279,6 +282,7 @@ function createFacts(
     edges: [],
     file,
     identityOccurrences,
+    lineIndex,
     module,
     packageName,
     references: [],
@@ -308,6 +312,7 @@ function addDeclaration(
     end,
     exported,
     facts.identityOccurrences,
+    facts.lineIndex,
   );
   facts.symbols.push(symbol);
   facts.edges.push(resolvedEdge(facts, parent, symbol, 'contains', start, end));
@@ -325,6 +330,7 @@ function textSymbol(
   end: number,
   exported: boolean,
   identityOccurrences: Map<string, number>,
+  lineIndex: SourceLineIndex,
 ): CodeGraphSymbol {
   const normalizedQualifiedName = normalizeLookupName(qualifiedName);
   const normalizedName = normalizeLookupName(name).split('.').at(-1) ?? normalizeLookupName(name);
@@ -345,7 +351,7 @@ function textSymbol(
     path: file.path,
     qualifiedName,
     resolutionDomain: domain,
-    span: textSpan(file.content!, start, end),
+    span: sourceSpan(lineIndex, start, end),
   };
 }
 
@@ -361,7 +367,7 @@ function resolvedEdge(
   return {
     confidence: 0.75,
     evidencePath: facts.file.path,
-    evidenceSpan: textSpan(facts.file.content!, start, end),
+    evidenceSpan: sourceSpan(facts.lineIndex, start, end),
     id: textEdgeId(facts.file.path, source.id, relation, target.id, provenance),
     provenance,
     relation,
@@ -387,7 +393,7 @@ function addReference(
   const edge: CodeGraphEdge = {
     confidence: provenance === 'declared' ? 1 : 0.75,
     evidencePath: facts.file.path,
-    evidenceSpan: textSpan(facts.file.content!, start, end),
+    evidenceSpan: sourceSpan(facts.lineIndex, start, end),
     id: textEdgeId(facts.file.path, source.id, relation, targetName, provenance),
     provenance,
     relation,
@@ -424,19 +430,6 @@ function textEdgeId(path: string, source: string, relation: string, target: stri
   return `cge_${sha256HexSync(`text-structural-edge-v1\n${path}\n${source}\n${relation}\n${target}\n${provenance}`).slice(0, 32)}`;
 }
 
-function textSpan(content: string, start: number, end: number): CodeGraphSpan {
-  const boundedStart = Math.max(0, Math.min(content.length, start));
-  const boundedEnd = Math.max(boundedStart, Math.min(content.length, end));
-  const from = sourcePositionAt(content, boundedStart);
-  const to = sourcePositionAt(content, boundedEnd);
-  return {
-    column: from.column,
-    endColumn: to.column,
-    endLine: to.line,
-    line: from.line,
-  };
-}
-
 function linesWithOffsets(
   content: string,
 ): readonly {readonly end: number; readonly start: number; readonly text: string}[] {
@@ -455,24 +448,6 @@ function linesWithOffsets(
   }
   output.push({end: content.length, start, text: content.slice(start)});
   return output;
-}
-
-function sourcePositionAt(content: string, offset: number): {readonly column: number; readonly line: number} {
-  let column = 1;
-  let cursor = 0;
-  let line = 1;
-  while (cursor < offset) {
-    const width = lineTerminatorWidth(content, cursor);
-    if (width > 0) {
-      cursor += width;
-      column = 1;
-      line += 1;
-    } else {
-      cursor += 1;
-      column += 1;
-    }
-  }
-  return {column, line};
 }
 
 function lineTerminatorWidth(content: string, offset: number): number {

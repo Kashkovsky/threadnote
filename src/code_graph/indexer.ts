@@ -5,7 +5,12 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
 import {createPackageAttributor, createResolutionAttributor, extractRepositoryFileFacts} from './extractor.js';
-import {inventoryRepository, worktreeOverlayState, type CodeGraphInventoryOptions} from './inventory.js';
+import {
+  inventoryRepository,
+  worktreeOverlayState,
+  type CodeGraphContentBatchContext,
+  type CodeGraphInventoryOptions,
+} from './inventory.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
   CodeGraphLanguagePackRegistry,
@@ -51,6 +56,7 @@ import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runt
 import {createWorkspaceAttributor} from './workspace.js';
 import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
+import {CodeGraphParserPool, type CodeGraphParserPoolShape, type CodeGraphParserResult} from './parser_worker.js';
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly cwd: string;
@@ -103,6 +109,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const embedding = yield* CodeGraphEmbeddingIndex;
       const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const treeSitter = yield* TreeSitterRuntime;
+      const parserPool = yield* CodeGraphParserPool;
       const command = yield* CommandExecutor;
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
@@ -209,7 +216,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ...options,
                         cachedCommittedFileKeys,
                         languagePacks,
-                        onContentBatch: cacheContentBatch(store, layout.databasePath, languagePacks, treeSitter),
+                        onContentBatch: cacheContentBatch({
+                          databasePath: layout.databasePath,
+                          languagePacks,
+                          onProgress: options.onProgress,
+                          parserPool,
+                          store,
+                          threadnoteHome: options.threadnoteHome,
+                          treeSitter,
+                        }),
                       });
                       const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
                       const logicalSnapshotId = snapshotIdentity(
@@ -382,7 +397,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         cachedCommittedFileKeys,
                         includeOverlay: false,
                         languagePacks,
-                        onContentBatch: cacheContentBatch(store, layout.databasePath, languagePacks, treeSitter),
+                        onContentBatch: cacheContentBatch({
+                          databasePath: layout.databasePath,
+                          languagePacks,
+                          onProgress: options.onProgress,
+                          parserPool,
+                          store,
+                          threadnoteHome: options.threadnoteHome,
+                          treeSitter,
+                        }),
                       });
                       const committedBase = yield* ensureCommittedBase({
                         activeWorktreeIds,
@@ -1219,30 +1242,190 @@ function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): str
   }
 }
 
-function cacheContentBatch(
-  store: CodeGraphStoreShape,
-  databasePath: string,
-  languagePacks: CodeGraphLanguagePackRegistryShape,
-  treeSitter: TreeSitterRuntimeShape,
-) {
-  return (files: Parameters<typeof extractRepositoryFileFacts>[0]) =>
-    Effect.forEach(files, file => languagePacks.extractRawFile(file), {concurrency: 1}).pipe(
-      Effect.provideService(TreeSitterRuntime, treeSitter),
-      Effect.flatMap(facts => {
-        const factsByPath = new Map(facts.map(file => [file.path, file]));
-        return Effect.forEach(
-          groupFilesByCacheIdentity(files, languagePacks),
-          group =>
-            store.cacheFacts(
-              databasePath,
-              group.files,
-              group.files.map(file => factsByPath.get(file.path)!),
-              group.cacheIdentity,
-            ),
-          {concurrency: 1, discard: true},
+function cacheContentBatch(options: {
+  readonly databasePath: string;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly parserPool: CodeGraphParserPoolShape;
+  readonly store: CodeGraphStoreShape;
+  readonly threadnoteHome: string;
+  readonly treeSitter: TreeSitterRuntimeShape;
+}) {
+  const windowSize = Math.max(1, options.parserPool.capacity * 2);
+  let extractionMilliseconds = 0;
+  let persistenceMilliseconds = 0;
+  let readingMilliseconds = 0;
+  return (files: Parameters<typeof extractRepositoryFileFacts>[0], context: CodeGraphContentBatchContext) =>
+    Effect.gen(function* () {
+      readingMilliseconds += context.readingMilliseconds;
+      const cumulativeContext = {...context, readingMilliseconds};
+      let extracted = 0;
+      for (const window of chunkValues(files, windowSize)) {
+        let windowCompleted = 0;
+        const results = yield* Effect.forEach(
+          window,
+          file =>
+            Effect.gen(function* () {
+              yield* emitContentProgress(
+                options.onProgress,
+                cumulativeContext,
+                {
+                  batchCompleted: extracted,
+                  batchTotal: files.length,
+                  bytes: file.size,
+                  language: file.language,
+                  path: file.path,
+                  stage: 'extracting',
+                },
+                extractionMilliseconds,
+                persistenceMilliseconds,
+              );
+              const result = yield* extractParserFacts(file, options);
+              windowCompleted += 1;
+              yield* emitContentProgress(
+                options.onProgress,
+                cumulativeContext,
+                {
+                  batchCompleted: extracted + windowCompleted,
+                  batchTotal: files.length,
+                  bytes: file.size,
+                  degraded: result.degraded,
+                  language: file.language,
+                  parseMilliseconds: result.parseMilliseconds,
+                  path: file.path,
+                  relations: result.facts.edges.length,
+                  stage: 'extracting',
+                  symbols: result.facts.symbols.length,
+                },
+                extractionMilliseconds + result.parseMilliseconds,
+                persistenceMilliseconds,
+              );
+              return {file, result};
+            }),
+          {concurrency: options.parserPool.capacity},
         );
-      }),
-    );
+        extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
+        const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
+        for (const group of groupFilesByCacheIdentity(window, options.languagePacks)) {
+          const representative = group.files[0]!;
+          yield* emitContentProgress(
+            options.onProgress,
+            cumulativeContext,
+            {
+              batchCompleted: extracted,
+              batchTotal: files.length,
+              bytes: group.files.reduce((total, file) => total + file.size, 0),
+              language: representative.language,
+              path: representative.path,
+              stage: 'persisting',
+            },
+            extractionMilliseconds,
+            persistenceMilliseconds,
+          );
+          const startedAt = performance.now();
+          const durableFiles = group.files.filter(file => !resultsByPath.get(file.path)!.degraded);
+          const degradedFiles = group.files.filter(file => resultsByPath.get(file.path)!.degraded);
+          if (durableFiles.length > 0) {
+            yield* options.store.cacheFacts(
+              options.databasePath,
+              durableFiles,
+              durableFiles.map(file => resultsByPath.get(file.path)!.facts),
+              group.cacheIdentity,
+            );
+          }
+          if (degradedFiles.length > 0) {
+            // The current snapshot remains usable, but the ordinary active
+            // cache identity deliberately stays absent so the next build
+            // retries transient worker failures without requiring --full.
+            yield* options.store.cacheFacts(
+              options.databasePath,
+              degradedFiles,
+              degradedFiles.map(file => resultsByPath.get(file.path)!.facts),
+              degradedParserCacheIdentity(group.cacheIdentity),
+            );
+          }
+          const elapsed = Math.max(0, performance.now() - startedAt);
+          persistenceMilliseconds += elapsed;
+          extracted += group.files.length;
+          yield* emitContentProgress(
+            options.onProgress,
+            cumulativeContext,
+            {
+              batchCompleted: extracted,
+              batchTotal: files.length,
+              bytes: group.files.reduce((total, file) => total + file.size, 0),
+              language: representative.language,
+              path: representative.path,
+              persistMilliseconds: elapsed,
+              relations: group.files.reduce(
+                (total, file) => total + resultsByPath.get(file.path)!.facts.edges.length,
+                0,
+              ),
+              stage: 'persisting',
+              symbols: group.files.reduce(
+                (total, file) => total + resultsByPath.get(file.path)!.facts.symbols.length,
+                0,
+              ),
+            },
+            extractionMilliseconds,
+            persistenceMilliseconds,
+          );
+        }
+      }
+    });
+}
+
+function extractParserFacts(
+  file: CodeGraphInventoryFile,
+  options: {
+    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+    readonly parserPool: CodeGraphParserPoolShape;
+    readonly threadnoteHome: string;
+    readonly treeSitter: TreeSitterRuntimeShape;
+  },
+): Effect.Effect<CodeGraphParserResult, unknown> {
+  if (file.bytes === undefined) return options.parserPool.extract(file, options.threadnoteHome);
+  return Effect.gen(function* () {
+    const startedAt = performance.now();
+    const facts = yield* options.languagePacks
+      .extractRawFile(file)
+      .pipe(Effect.provideService(TreeSitterRuntime, options.treeSitter));
+    return {
+      degraded: false,
+      facts,
+      parseMilliseconds: Math.max(0, performance.now() - startedAt),
+    };
+  });
+}
+
+function emitContentProgress(
+  onProgress: ((progress: CodeGraphProgress) => Effect.Effect<void, unknown>) | undefined,
+  context: CodeGraphContentBatchContext,
+  activity: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'scanning'}>['activity']>,
+  extractionMilliseconds: number,
+  persistenceMilliseconds: number,
+) {
+  return (
+    onProgress?.({
+      ...context.progress,
+      activity,
+      timings: {
+        extractionMilliseconds,
+        persistenceMilliseconds,
+        readingMilliseconds: context.readingMilliseconds,
+      },
+    }) ?? Effect.void
+  );
+}
+
+function chunkValues<A>(values: readonly A[], size: number): readonly (readonly A[])[] {
+  const chunks: A[][] = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
+
+function degradedParserCacheIdentity(activeIdentity: string): string {
+  return sha256HexSync(`code-graph-parser-degraded-v1\n${activeIdentity}`);
 }
 
 const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function* (
@@ -1403,7 +1586,18 @@ function loadCachedFacts(
 ): Effect.Effect<ReadonlyMap<string, CodeGraphFileFacts>, unknown> {
   return Effect.forEach(
     groupFilesByCacheIdentity(files, languagePacks),
-    group => store.loadCachedFacts(databasePath, group.files, group.cacheIdentity),
+    group =>
+      Effect.gen(function* () {
+        const active = yield* store.loadCachedFacts(databasePath, group.files, group.cacheIdentity);
+        const missing = group.files.filter(file => !active.has(file.path));
+        if (missing.length === 0) return active;
+        const degraded = yield* store.loadCachedFacts(
+          databasePath,
+          missing,
+          degradedParserCacheIdentity(group.cacheIdentity),
+        );
+        return new Map([...active, ...degraded]);
+      }),
     {concurrency: 1},
   ).pipe(
     Effect.map(groups => {
