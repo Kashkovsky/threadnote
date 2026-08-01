@@ -14,6 +14,7 @@ import {
   vectorIndexDatabaseFilename,
   type VectorIndexProgress,
 } from '../src/search/vector-index.js';
+import {assessVectorDatabaseStorage, createCompactedSqliteSnapshot} from './recall-vector-storage-budget.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const MEBIBYTE = 1024 * 1024;
@@ -79,6 +80,9 @@ const program = Effect.scoped(
     initialPeakRssBytes = Math.max(initialPeakRssBytes, initialRss.peak(), process.memoryUsage().rss);
     const databasePath = path.join(home, 'indexes', 'vectors', manifest.id, vectorIndexDatabaseFilename());
     const initialDatabaseBytes = Number((yield* fs.stat(databasePath)).size);
+    const initialCompactedPath = path.join(home, 'initial-vector-index.compacted.sqlite');
+    createCompactedSqliteSnapshot(databasePath, initialCompactedPath);
+    const initialCompactedBytes = Number((yield* fs.stat(initialCompactedPath)).size);
 
     Bun.gc(true);
     const queryRssBeforeBytes = process.memoryUsage().rss;
@@ -141,12 +145,23 @@ const program = Effect.scoped(
         database.close();
       }
     })();
+    const incrementalCompactedPath = path.join(home, 'incremental-vector-index.compacted.sqlite');
+    createCompactedSqliteSnapshot(databasePath, incrementalCompactedPath);
+    const incrementalCompactedBytes = Number((yield* fs.stat(incrementalCompactedPath)).size);
+    const storageBudget = assessVectorDatabaseStorage(
+      options.documents,
+      {compactedBytes: initialCompactedBytes, databaseBytes: initialDatabaseBytes},
+      {compactedBytes: incrementalCompactedBytes, databaseBytes: incrementalDatabaseBytes},
+    );
     const sortedQueryDurations = queryDurations.sort((left, right) => left - right);
     const result = {
       database: {
         bytesAfterIncremental: incrementalDatabaseBytes,
         bytesAfterInitial: initialDatabaseBytes,
+        compactedBytesAfterIncremental: incrementalCompactedBytes,
+        compactedBytesAfterInitial: initialCompactedBytes,
         incrementalBytes: incrementalDatabaseBytes - initialDatabaseBytes,
+        incrementalCompactedBytes: storageBudget.incrementalCompactedBytes,
         ...storage,
       },
       environment: {
@@ -211,11 +226,11 @@ const program = Effect.scoped(
       if (result.scenarios.semanticQuery.rssDeltaBytes > 128 * MEBIBYTE) {
         return yield* Effect.fail(new Error('Semantic vector query exceeded its bounded-memory budget.'));
       }
-      if (result.database.bytesAfterInitial > options.documents * 4_096 + 4 * MEBIBYTE) {
+      if (!storageBudget.databaseBytesWithinBudget) {
         return yield* Effect.fail(new Error('Vector database exceeded its per-document storage budget.'));
       }
-      if (result.database.incrementalBytes > 64 * 1024) {
-        return yield* Effect.fail(new Error('Incremental vector build caused unexpected database growth.'));
+      if (!storageBudget.incrementalCompactedBytesWithinBudget) {
+        return yield* Effect.fail(new Error('Incremental vector build caused unexpected compacted database growth.'));
       }
       if (incremental.embeddedChunkCount !== 1 || incremental.reusedChunkCount !== options.documents - 1) {
         return yield* Effect.fail(new Error('Incremental vector build did not reuse all unchanged chunks.'));

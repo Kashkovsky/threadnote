@@ -8,6 +8,12 @@ const readProjectFile = (path: string) =>
     Effect.provide(BunFileSystem.layer),
   );
 
+const projectFileExists = (path: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap(fs => fs.exists(`${process.cwd()}/${path}`)),
+    Effect.provide(BunFileSystem.layer),
+  );
+
 describe('standalone release workflows', () => {
   it.effect('publishes macOS and Linux while retaining disabled Windows release definitions', () =>
     Effect.gen(function* () {
@@ -87,6 +93,23 @@ describe('standalone release workflows', () => {
         'bun-windows-x64-baseline',
       ]) {
         expect(workflow).toContain(target);
+      }
+    }),
+  );
+
+  it.effect('validates exact hosted release runners without broad Actionlint exceptions', () =>
+    Effect.gen(function* () {
+      const ci = yield* readProjectFile('.github/workflows/ci.yml');
+      const publish = yield* readProjectFile('.github/workflows/publish.yml');
+      const hostedReleaseRunners = ['macos-15-intel', 'windows-11-arm'] as const;
+
+      expect(ci).toContain('docker://rhysd/actionlint:1.7.8');
+      expect(ci).toContain('args: -color');
+      expect(ci).not.toContain('-ignore');
+      expect(yield* projectFileExists('.github/actionlint.yaml')).toBe(false);
+      expect(yield* projectFileExists('.github/actionlint.yml')).toBe(false);
+      for (const runner of hostedReleaseRunners) {
+        expect(publish.match(new RegExp(`runner: ${runner}$`, 'gm'))).toHaveLength(1);
       }
     }),
   );
