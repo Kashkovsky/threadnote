@@ -1,0 +1,353 @@
+import {readFileSync} from 'node:fs';
+import {it as effectIt} from '@effect/vitest';
+import {Clock, Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect, it} from 'vitest';
+import {
+  applyBenchmarkOverlay,
+  decodeBenchmarkSource,
+  externalBenchmarkPlatformSupported,
+  measureBenchmarkIndex,
+  measureSampledBenchmarkIndex,
+  parseCodeGraphBenchmarkArguments,
+  restoreBenchmarkOverlay,
+  sanitizedBenchmarkEnvironmentProvenance,
+  semanticBenchmarkOverlay,
+} from '../../scripts/benchmark-code-graph.js';
+import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const CONTROL = JSON.stringify({
+  expectedLanguage: 'typescript',
+  expectedPath: 'src/index.ts',
+  query: 'indexSymbol',
+});
+
+describe('code graph external benchmark harness', () => {
+  effectIt.effect('measures only index execution after setup and before cleanup', () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      yield* TestClock.adjust(3_000);
+      events.push('sampler-ready-and-overlay-applied');
+
+      const measured = yield* measureBenchmarkIndex(() =>
+        Effect.gen(function* () {
+          events.push('index-started');
+          yield* TestClock.adjust(125);
+          events.push('index-finished');
+          return 'summary';
+        }),
+      );
+
+      yield* TestClock.adjust(5_000);
+      events.push('overlay-restored-and-sampler-stopped');
+      const afterCleanup = yield* Clock.currentTimeNanos;
+
+      expect(measured.result).toBe('summary');
+      expect(Number(measured.startedAt) / 1_000_000).toBe(3_000);
+      expect(Number(measured.finishedAt - measured.startedAt) / 1_000_000).toBe(125);
+      expect(Number(afterCleanup - measured.finishedAt) / 1_000_000).toBe(5_000);
+      expect(measured.timeline.duration('start', 'finish')).toBe(125);
+      expect(events).toEqual([
+        'sampler-ready-and-overlay-applied',
+        'index-started',
+        'index-finished',
+        'overlay-restored-and-sampler-stopped',
+      ]);
+    }),
+  );
+
+  effectIt.effect('samples only index work between overlay setup and restore', () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const telemetry = {} as CodeGraphBenchmarkSamplerArtifact;
+      const sampled = yield* Effect.acquireUseRelease(
+        Effect.sync(() => events.push('overlay-applied')),
+        () =>
+          Effect.gen(function* () {
+            const result = yield* measureSampledBenchmarkIndex(
+              Effect.sync(() => {
+                events.push('sampler-started');
+                return {
+                  mark: () => Effect.void,
+                  stop: () =>
+                    Effect.sync(() => {
+                      events.push('sampler-stopped');
+                      return telemetry;
+                    }),
+                };
+              }),
+              () =>
+                Effect.gen(function* () {
+                  events.push('index-started');
+                  yield* TestClock.adjust(125);
+                  events.push('index-finished');
+                  return 'summary';
+                }),
+              Effect.sync(() => events.push('final-index-storage-sampled')),
+            );
+            events.push('post-index-control');
+            return result;
+          }),
+        () => Effect.sync(() => events.push('overlay-restored')),
+      );
+
+      expect(sampled.measurement.result).toBe('summary');
+      expect(sampled.telemetry).toBe(telemetry);
+      expect(Number(sampled.measurement.finishedAt - sampled.measurement.startedAt) / 1_000_000).toBe(125);
+      expect(events).toEqual([
+        'overlay-applied',
+        'sampler-started',
+        'index-started',
+        'index-finished',
+        'final-index-storage-sampled',
+        'sampler-stopped',
+        'post-index-control',
+        'overlay-restored',
+      ]);
+    }),
+  );
+
+  effectIt.effect('aborts the sampler before restoring an overlay when indexing fails', () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const telemetry = {} as CodeGraphBenchmarkSamplerArtifact;
+      const exit = yield* Effect.exit(
+        Effect.acquireUseRelease(
+          Effect.sync(() => events.push('overlay-applied')),
+          () =>
+            measureSampledBenchmarkIndex(
+              Effect.sync(() => {
+                events.push('sampler-started');
+                return {
+                  mark: () => Effect.void,
+                  stop: state =>
+                    Effect.sync(() => {
+                      events.push(`sampler-stopped:${state}`);
+                      return telemetry;
+                    }),
+                };
+              }),
+              () => Effect.fail(new Error('index failed')),
+              Effect.sync(() => events.push('final-index-storage-sampled')),
+            ),
+          () => Effect.sync(() => events.push('overlay-restored')),
+        ),
+      );
+
+      expect(exit._tag).toBe('Failure');
+      expect(events).toEqual(['overlay-applied', 'sampler-started', 'sampler-stopped:aborted', 'overlay-restored']);
+    }),
+  );
+
+  it('wires all three index phases through the phase-pure sampler boundary', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    const cold = sourceSlice(source, 'const coldStoragePeak', 'const changedPath');
+    const incremental = sourceSlice(source, 'const incrementalStoragePeak', 'const sameOverlayReferenceHome');
+    const sameOverlay = sourceSlice(source, 'const sameOverlayReferenceStoragePeak', 'const coldStatusStarted');
+
+    expectInOrder(cold, [
+      "runCheckpoint?.mark('cold-index')",
+      'measureSampledBenchmarkIndex(',
+      'const coldExternalTelemetry',
+      'const coldExternalQueryControls',
+    ]);
+    expectInOrder(incremental, [
+      'applyBenchmarkOverlay(',
+      'measureSampledBenchmarkIndex(',
+      'restoreBenchmarkOverlay(',
+      'const incrementalExternalTelemetry',
+      'const incrementalExternalQueryControls',
+    ]);
+    expectInOrder(sameOverlay, [
+      'process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot',
+      'applyBenchmarkOverlay(',
+      'measureSampledBenchmarkIndex(',
+      'const controls',
+      'restoreBenchmarkOverlay(',
+      'const sameOverlayReferenceTelemetry',
+    ]);
+    expect(source).not.toContain('const coldStarted = yield* Clock.currentTimeNanos');
+    expect(source).not.toContain('const incrementalStarted = yield* Clock.currentTimeNanos');
+    expect(source).not.toContain('const sameOverlayReferenceStarted = yield* Clock.currentTimeNanos');
+  });
+
+  it('accepts explicit retained homes and a validation-only preflight', () => {
+    const parsed = parseCodeGraphBenchmarkArguments([
+      '--repository',
+      '/tmp/public-repository',
+      '--incremental-path',
+      'src/index.ts',
+      '--control',
+      CONTROL,
+      '--output',
+      '/tmp/evidence.json',
+      '--home',
+      '/tmp/primary-home',
+      '--reference-home',
+      '/tmp/reference-home',
+      '--retain-homes',
+      '--minimum-free-gib',
+      '140',
+      '--preflight',
+    ]);
+
+    expect(parsed).toMatchObject({
+      homePath: '/tmp/primary-home',
+      minimumFreeGiB: 140,
+      preflight: true,
+      referenceHomePath: '/tmp/reference-home',
+      retainHomes: true,
+    });
+  });
+
+  it('rejects retention without two explicit fresh home paths', () => {
+    expect(() =>
+      parseCodeGraphBenchmarkArguments([
+        '--repository',
+        '/tmp/public-repository',
+        '--incremental-path',
+        'src/index.ts',
+        '--control',
+        CONTROL,
+        '--output',
+        '/tmp/evidence.json',
+        '--retain-homes',
+      ]),
+    ).toThrow('--retain-homes requires explicit --home and --reference-home paths');
+  });
+
+  it.each([
+    ['source.ts', "import 'threadnote-benchmark-overlay';"],
+    ['source.cjs', "require('threadnote-benchmark-overlay');"],
+    ['Source.java', 'import threadnote.benchmark.Overlay;'],
+    ['source.kt', 'import threadnote.benchmark.overlay'],
+    ['source.swift', 'import ThreadnoteBenchmarkOverlay'],
+    ['source.go', 'import _ "threadnote/benchmark/overlay"'],
+    ['source.rs', 'use threadnote_benchmark_overlay as _;'],
+    ['source.cpp', '#include <threadnote_benchmark_overlay.h>'],
+    ['source.py', '__import__("threadnote_benchmark_overlay")'],
+    ['BUILD.bazel', 'load("@threadnote_benchmark_overlay//:defs.bzl", "threadnote_benchmark_overlay")'],
+    ['MODULE.bazel', 'load("@threadnote_benchmark_overlay//:defs.bzl", "threadnote_benchmark_overlay")'],
+    ['rules.bzl', 'load("@threadnote_benchmark_overlay//:defs.bzl", "threadnote_benchmark_overlay")'],
+  ])('adds a structural dependency to %s without declaring a benchmark symbol', (path, dependency) => {
+    const overlaid = semanticBenchmarkOverlay(path, 'original');
+    expect(overlaid).toContain(dependency);
+    expect(overlaid).not.toContain('threadnoteBenchmarkOverlaySymbol');
+    expect(overlaid).toContain('original');
+  });
+
+  it('preserves CRLF and inserts Java imports after the package declaration', () => {
+    const overlaid = semanticBenchmarkOverlay('Source.java', 'package example;\r\n\r\nfinal class Source {}\r\n');
+    expect(overlaid).toBe('package example;\r\nimport threadnote.benchmark.Overlay;\r\n\r\nfinal class Source {}\r\n');
+    expect(overlaid.replaceAll('\r\n', '')).not.toContain('\n');
+  });
+
+  it('rejects unsupported benchmark platforms before external evidence work starts', () => {
+    expect(externalBenchmarkPlatformSupported('darwin')).toBe(true);
+    expect(externalBenchmarkPlatformSupported('linux')).toBe(true);
+    expect(externalBenchmarkPlatformSupported('win32')).toBe(false);
+    expect(externalBenchmarkPlatformSupported('freebsd')).toBe(false);
+  });
+
+  it('redacts path-valued and unsafe runner metadata while normalizing bounded controls', () => {
+    const provenance = sanitizedBenchmarkEnvironmentProvenance({
+      SQLITE_TMPDIR: '/private/customer/repository/sqlite-temp',
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'macos-arm64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '/Users/private/runner-42',
+      THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '99999999',
+      THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
+      THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '99',
+    });
+
+    expect(provenance).toMatchObject({
+      SQLITE_TMPDIR: 'configured-path-redacted',
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'macos-arm64',
+      THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '3600000',
+      THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
+      THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '8',
+    });
+    expect(provenance.THREADNOTE_BENCHMARK_RUNNER_ID).toMatch(/^redacted-[0-9a-f]{16}$/);
+    expect(JSON.stringify(provenance)).not.toContain('/Users/private');
+    expect(JSON.stringify(provenance)).not.toContain('/private/customer');
+  });
+
+  it('applies and restores the overlay byte-for-byte while preserving concurrent edits', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-benchmark-overlay-test-'});
+          const file = path.join(root, 'source.ts');
+          const original = new TextEncoder().encode('\uFEFFexport const source = 1;\r\n');
+          const overlay = new TextEncoder().encode(
+            semanticBenchmarkOverlay('source.ts', decodeBenchmarkSource(original)),
+          );
+          const concurrent = new TextEncoder().encode('export const userEdit = true;\n');
+
+          yield* fs.writeFile(file, original);
+          yield* applyBenchmarkOverlay(fs, file, original, overlay);
+          const applied = yield* fs.readFile(file);
+          yield* restoreBenchmarkOverlay(fs, file, overlay, original);
+          const restored = yield* fs.readFile(file);
+
+          yield* fs.writeFile(file, concurrent);
+          const applyConflict = yield* Effect.exit(applyBenchmarkOverlay(fs, file, original, overlay));
+          const afterApplyConflict = yield* fs.readFile(file);
+
+          yield* fs.writeFile(file, original);
+          yield* applyBenchmarkOverlay(fs, file, original, overlay);
+          yield* fs.writeFile(file, concurrent);
+          const restoreConflict = yield* Effect.exit(restoreBenchmarkOverlay(fs, file, overlay, original));
+          const afterRestoreConflict = yield* fs.readFile(file);
+
+          return {
+            afterApplyConflict,
+            afterRestoreConflict,
+            applied,
+            applyConflict: applyConflict._tag,
+            restored,
+            restoreConflict: restoreConflict._tag,
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect([...result.applied]).toEqual([
+      ...new TextEncoder().encode("\uFEFFimport 'threadnote-benchmark-overlay';\r\nexport const source = 1;\r\n"),
+    ]);
+    expect([...result.restored]).toEqual([...new TextEncoder().encode('\uFEFFexport const source = 1;\r\n')]);
+    expect(result.applyConflict).toBe('Failure');
+    expect(result.restoreConflict).toBe('Failure');
+    expect([...result.afterApplyConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
+    expect([...result.afterRestoreConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
+  });
+
+  it('rejects non-UTF-8 overlay sources without lossy replacement', () => {
+    expect(() => decodeBenchmarkSource(Uint8Array.from([0xc3, 0x28]))).toThrow('valid UTF-8');
+  });
+
+  it('rejects non-source incremental overlays', () => {
+    expect(() => semanticBenchmarkOverlay('fixtures/data.json', '{}')).toThrow(
+      'incremental benchmark path must use a supported source language',
+    );
+  });
+});
+
+function sourceSlice(source: string, from: string, to: string): string {
+  const start = source.indexOf(from);
+  const end = source.indexOf(to, start + from.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+function expectInOrder(source: string, markers: readonly string[]): void {
+  let cursor = -1;
+  for (const marker of markers) {
+    const next = source.indexOf(marker, cursor + 1);
+    expect(next, `missing or out-of-order benchmark marker: ${marker}`).toBeGreaterThan(cursor);
+    cursor = next;
+  }
+}

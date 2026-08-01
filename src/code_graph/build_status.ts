@@ -2,7 +2,17 @@ import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Semaphore} from 'e
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
-import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot, RepositoryIdentity} from './types.js';
+import type {
+  CodeGraphActivationActivity,
+  CodeGraphIndexSummary,
+  CodeGraphMaterializationActivity,
+  CodeGraphMaterializationMetrics,
+  CodeGraphMaterializationRows,
+  CodeGraphProgress,
+  CodeGraphResolutionActivity,
+  CodeGraphSnapshot,
+  RepositoryIdentity,
+} from './types.js';
 
 export const CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION = 1 as const;
 export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
@@ -19,10 +29,11 @@ export interface CodeGraphBuildCounters {
   readonly embedded?: number;
   readonly excluded?: number;
   readonly reused?: number;
+  readonly resolved?: number;
   readonly skipped?: number;
   readonly symbols?: number;
   readonly total?: number;
-  readonly unit?: 'files' | 'symbols';
+  readonly unit?: 'files' | 'references' | 'symbols';
 }
 
 export interface CodeGraphBuildActivity {
@@ -44,13 +55,28 @@ export interface CodeGraphBuildTimings {
   readonly readingMilliseconds: number;
 }
 
+export interface CodeGraphBuildMaterialization {
+  readonly activity?: CodeGraphMaterializationActivity & {readonly startedAt: string};
+  readonly metrics?: CodeGraphMaterializationMetrics;
+}
+
+export interface CodeGraphBuildActivation {
+  readonly activity: CodeGraphActivationActivity & {readonly startedAt: string};
+}
+
+export interface CodeGraphBuildResolution {
+  readonly activity: CodeGraphResolutionActivity & {readonly startedAt: string};
+}
+
 export interface CodeGraphBuildStatus {
+  readonly activation?: CodeGraphBuildActivation;
   /** Privacy-safe in-flight activity; repository paths and content are intentionally omitted. */
   readonly activity?: CodeGraphBuildActivity;
   readonly buildId: string;
   readonly counters: CodeGraphBuildCounters;
   readonly error?: {readonly summary: string};
   readonly eta?: {
+    readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
     readonly remainingMilliseconds: number;
     readonly scope: 'phase';
@@ -61,6 +87,7 @@ export interface CodeGraphBuildStatus {
     readonly repositoryId: string;
     readonly worktreeId: string;
   };
+  readonly materialization?: CodeGraphBuildMaterialization;
   readonly owner: {
     readonly processId: number;
     readonly processStartIdentity?: string;
@@ -72,6 +99,7 @@ export interface CodeGraphBuildStatus {
     /** Privacy-safe identity for callers waiting on the same source and extraction pipeline. */
     readonly key: string;
   };
+  readonly resolution?: CodeGraphBuildResolution;
   readonly result?: {
     readonly dirty: boolean;
     readonly edges: number;
@@ -125,6 +153,7 @@ interface ReporterState {
   readonly completionForecasts: readonly CompletionForecast[];
   readonly intervalSamplesMilliseconds: readonly number[];
   readonly lastCompleted?: number;
+  readonly lastMeasuredBasis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
   readonly lastPersistedAtMilliseconds: number;
   readonly lastSampleAtMilliseconds?: number;
   readonly rateForecastErrorSamples: readonly number[];
@@ -251,6 +280,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         ...current,
         status: {
           ...current.status,
+          activation: undefined,
           activity: undefined,
           counters: {
             edges: snapshot.edgeCount,
@@ -261,6 +291,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             unit: 'files',
           },
           eta: undefined,
+          materialization: current.status.materialization?.metrics
+            ? {metrics: current.status.materialization.metrics}
+            : undefined,
+          resolution: undefined,
           result: {
             dirty: snapshot.dirty,
             edges: snapshot.edgeCount,
@@ -292,9 +326,14 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           ...current,
           status: {
             ...current.status,
+            activation: undefined,
             activity: undefined,
             error: {summary: privacySafeError(cause)},
             eta: undefined,
+            materialization: current.status.materialization?.metrics
+              ? {metrics: current.status.materialization.metrics}
+              : undefined,
+            resolution: undefined,
             state: 'failed',
             subphase: 'failed',
             timings: undefined,
@@ -315,7 +354,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         if (current.status.state === 'completed' || current.status.state === 'failed') return;
         yield* persist((latest, now) => {
           const timestamp = new Date(now).toISOString();
-          const silenceMilliseconds = Math.max(0, now - Date.parse(latest.status.timestamps.lastProgressAt));
+          const silenceMilliseconds = Math.max(
+            0,
+            now - (latest.lastSampleAtMilliseconds ?? Date.parse(latest.status.timestamps.phaseStartedAt)),
+          );
           const confidence = latest.status.eta
             ? calibratedCodeGraphEtaConfidence({
                 intervalSamplesMilliseconds: latest.intervalSamplesMilliseconds,
@@ -345,6 +387,15 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           return (
             current.status.phase !== progress.phase ||
             (progress.phase === 'scanning' && measured !== undefined && measured.completed > persistedCompleted) ||
+            (progress.phase === 'activating' && current.status.subphase !== progressSubphase(progress)) ||
+            (progress.phase === 'materializing' &&
+              (current.status.subphase !== progressSubphase(progress) ||
+                (measured !== undefined && measured.completed > persistedCompleted))) ||
+            (progress.phase === 'resolving' &&
+              progress.subphase === 'references' &&
+              progress.activity !== undefined &&
+              (current.status.resolution?.activity.pass !== progress.activity.pass ||
+                current.status.resolution.activity.pageCompleted !== progress.activity.pageCompleted)) ||
             (measured?.completed ?? -1) >= (measured?.total ?? 0)
           );
         },
@@ -432,16 +483,17 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
   const timestamp = new Date(now).toISOString();
   const phaseChanged = current.status.phase !== progress.phase;
   const measured = measuredProgress(progress);
-  const previousCompleted = phaseChanged ? undefined : current.lastCompleted;
-  const previousAt = phaseChanged ? undefined : current.lastSampleAtMilliseconds;
-  let rate = phaseChanged ? undefined : current.smoothedUnitsPerMillisecond;
-  let sampleCount = phaseChanged ? 0 : current.sampleCount;
-  let rateSamples = phaseChanged ? [] : [...current.rateSamples];
-  let rateForecastErrorSamples = phaseChanged ? [] : [...current.rateForecastErrorSamples];
-  let intervalSamplesMilliseconds = phaseChanged ? [] : [...current.intervalSamplesMilliseconds];
-  let completionForecasts = phaseChanged ? [] : [...current.completionForecasts];
-  let realizedCompletionErrorSamples = [...current.realizedCompletionErrorSamples];
-  if ((phaseChanged || (measured && measured.completed >= measured.total)) && current.completionForecasts.length > 0) {
+  const basisChanged = phaseChanged || current.lastMeasuredBasis !== measured?.basis;
+  const previousCompleted = basisChanged ? undefined : current.lastCompleted;
+  const previousAt = basisChanged ? undefined : current.lastSampleAtMilliseconds;
+  let rate = basisChanged ? undefined : current.smoothedUnitsPerMillisecond;
+  let sampleCount = basisChanged ? 0 : current.sampleCount;
+  let rateSamples = basisChanged ? [] : [...current.rateSamples];
+  let rateForecastErrorSamples = basisChanged ? [] : [...current.rateForecastErrorSamples];
+  let intervalSamplesMilliseconds = basisChanged ? [] : [...current.intervalSamplesMilliseconds];
+  let completionForecasts = basisChanged ? [] : [...current.completionForecasts];
+  let realizedCompletionErrorSamples = basisChanged ? [] : [...current.realizedCompletionErrorSamples];
+  if (!basisChanged && measured && measured.completed >= measured.total && current.completionForecasts.length > 0) {
     realizedCompletionErrorSamples = current.completionForecasts.reduce(
       (samples, forecast) => appendEtaSample(samples, realizedCompletionError(forecast, now)),
       realizedCompletionErrorSamples,
@@ -461,7 +513,7 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
       }
       rateSamples = appendEtaSample(rateSamples, observed);
       intervalSamplesMilliseconds = appendEtaSample(intervalSamplesMilliseconds, interval);
-      rate = rate === undefined ? observed : rate * 0.65 + observed * 0.35;
+      rate = median(rateSamples);
       sampleCount += 1;
     }
   }
@@ -477,6 +529,7 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
     remaining === undefined || confidence === undefined
       ? undefined
       : {
+          basis: measured?.basis,
           confidence,
           remainingMilliseconds: Math.ceil(remaining / 1_000) * 1_000,
           scope: 'phase' as const,
@@ -491,8 +544,19 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
     ...current,
     completionForecasts,
     intervalSamplesMilliseconds,
-    lastCompleted: measured?.completed,
-    lastSampleAtMilliseconds: measured ? now : undefined,
+    lastCompleted:
+      measured === undefined
+        ? undefined
+        : previousCompleted === undefined || measured.completed !== previousCompleted
+          ? measured.completed
+          : previousCompleted,
+    lastMeasuredBasis: measured?.basis,
+    lastSampleAtMilliseconds:
+      measured === undefined
+        ? undefined
+        : previousCompleted === undefined || measured.completed !== previousCompleted
+          ? now
+          : previousAt,
     rateForecastErrorSamples,
     rateSamples,
     realizedCompletionErrorSamples,
@@ -500,10 +564,13 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
     smoothedUnitsPerMillisecond: rate,
     status: {
       ...current.status,
+      activation: progressActivation(current.status.activation, progress, timestamp),
       activity: progressActivity(progress),
       counters: progressCounters(progress),
       eta,
+      materialization: progressMaterialization(current.status.materialization, progress, timestamp),
       phase: progress.phase,
+      resolution: progressResolution(current.status.resolution, progress, timestamp),
       state: progress.phase === 'waiting' ? 'queued' : 'running',
       subphase: progressSubphase(progress),
       timings: progress.phase === 'scanning' ? progress.timings : undefined,
@@ -518,7 +585,37 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
   };
 }
 
-const ETA_CALIBRATION_WINDOW = 12;
+function progressActivation(
+  current: CodeGraphBuildActivation | undefined,
+  progress: CodeGraphProgress,
+  timestamp: string,
+): CodeGraphBuildActivation | undefined {
+  if (progress.phase !== 'activating') return undefined;
+  if (!progress.activity) return current;
+  return {
+    activity: {
+      ...progress.activity,
+      startedAt: current?.activity.stage === progress.activity.stage ? current.activity.startedAt : timestamp,
+    },
+  };
+}
+
+function progressResolution(
+  current: CodeGraphBuildResolution | undefined,
+  progress: CodeGraphProgress,
+  timestamp: string,
+): CodeGraphBuildResolution | undefined {
+  if (progress.phase !== 'resolving' || progress.subphase !== 'references') return undefined;
+  if (!progress.activity) return current;
+  return {
+    activity: {
+      ...progress.activity,
+      startedAt: current?.activity.pass === progress.activity.pass ? current.activity.startedAt : timestamp,
+    },
+  };
+}
+
+const ETA_CALIBRATION_WINDOW = 24;
 
 /**
  * Converts recent measured throughput into a deliberately conservative ETA
@@ -604,11 +701,11 @@ function progressSubphase(progress: CodeGraphProgress): string {
   if ('subphase' in progress && typeof progress.subphase === 'string') return boundedText(progress.subphase, 64);
   switch (progress.phase) {
     case 'activating':
-      return 'snapshot';
+      return progress.activity?.stage ?? 'snapshot';
     case 'embedding':
       return 'vectors';
     case 'materializing':
-      return 'facts';
+      return progress.activity?.stage ?? 'facts';
     case 'registering':
       return 'registration';
     case 'scanning':
@@ -616,6 +713,32 @@ function progressSubphase(progress: CodeGraphProgress): string {
     case 'waiting':
       return 'repository-lock';
   }
+}
+
+function progressMaterialization(
+  current: CodeGraphBuildMaterialization | undefined,
+  progress: CodeGraphProgress,
+  timestamp: string,
+): CodeGraphBuildMaterialization | undefined {
+  if (progress.phase !== 'materializing') return current?.metrics ? {metrics: current.metrics} : undefined;
+  if (!progress.activity && !progress.metrics) {
+    return progress.completed >= progress.total ? undefined : current;
+  }
+  const previousActivity = current?.activity;
+  const activity = progress.activity
+    ? {
+        ...progress.activity,
+        startedAt:
+          previousActivity?.stage === progress.activity.stage &&
+          previousActivity.batchCompleted === progress.activity.batchCompleted
+            ? previousActivity.startedAt
+            : timestamp,
+      }
+    : undefined;
+  return {
+    ...(activity ? {activity} : {}),
+    ...(progress.metrics ? {metrics: progress.metrics} : current?.metrics ? {metrics: current.metrics} : {}),
+  };
 }
 
 function progressActivity(progress: CodeGraphProgress): CodeGraphBuildActivity | undefined {
@@ -654,7 +777,16 @@ function progressCounters(progress: CodeGraphProgress): CodeGraphBuildCounters {
         unit: progress.unit,
       };
     case 'resolving':
-      return progress.subphase === 'complete' ? {edges: progress.edges, symbols: progress.symbols} : {};
+      return progress.subphase === 'complete'
+        ? {edges: progress.edges, resolved: progress.resolved, symbols: progress.symbols}
+        : progress.activity
+          ? {
+              completed: progress.activity.referencesCompleted,
+              resolved: progress.activity.resolved,
+              total: progress.activity.referencesTotal,
+              unit: 'references',
+            }
+          : {};
     case 'embedding':
       return {
         completed: progress.completed,
@@ -668,11 +800,47 @@ function progressCounters(progress: CodeGraphProgress): CodeGraphBuildCounters {
   }
 }
 
-function measuredProgress(
-  progress: CodeGraphProgress,
-): {readonly completed: number; readonly total: number} | undefined {
+function measuredProgress(progress: CodeGraphProgress):
+  | {
+      readonly basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+      readonly completed: number;
+      readonly total: number;
+    }
+  | undefined {
+  if (progress.phase === 'materializing') {
+    const metrics = progress.metrics;
+    if (
+      metrics?.factsBytesCompleted !== undefined &&
+      metrics.factsBytesTotal !== undefined &&
+      metrics.factsBytesTotal > 0
+    ) {
+      return {
+        basis: 'final-fact-bytes',
+        completed: Math.min(metrics.factsBytesCompleted, metrics.factsBytesTotal),
+        total: metrics.factsBytesTotal,
+      };
+    }
+    if (
+      metrics?.cachedFactBytesCompleted !== undefined &&
+      metrics.cachedFactBytesTotal !== undefined &&
+      metrics.cachedFactBytesTotal > 0
+    ) {
+      return {
+        basis: 'cached-fact-bytes',
+        completed: Math.min(metrics.cachedFactBytesCompleted, metrics.cachedFactBytesTotal),
+        total: metrics.cachedFactBytesTotal,
+      };
+    }
+    if (metrics && metrics.sourceBytesTotal > 0) {
+      return {
+        basis: 'source-bytes',
+        completed: Math.min(metrics.sourceBytesCompleted, metrics.sourceBytesTotal),
+        total: metrics.sourceBytesTotal,
+      };
+    }
+  }
   if (progress.phase === 'scanning' || progress.phase === 'materializing' || progress.phase === 'embedding') {
-    return {completed: progress.completed, total: progress.total};
+    return {basis: 'files', completed: progress.completed, total: progress.total};
   }
   return undefined;
 }
@@ -813,8 +981,12 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (!counters) return undefined;
   const activity = parseActivity(value.activity);
   if (value.activity !== undefined && !activity) return undefined;
+  const activation = parseActivation(value.activation);
+  if (value.activation !== undefined && !activation) return undefined;
   const timings = parseTimings(value.timings);
   if (value.timings !== undefined && !timings) return undefined;
+  const materialization = parseMaterialization(value.materialization);
+  if (value.materialization !== undefined && !materialization) return undefined;
   const ownerStart = value.owner.processStartIdentity;
   if (ownerStart !== undefined && !isText(ownerStart, 256)) return undefined;
   const subphase = value.subphase;
@@ -827,7 +999,10 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (value.result !== undefined && !result) return undefined;
   const request = parseRequest(value.request);
   if (value.request !== undefined && !request) return undefined;
+  const resolution = parseResolution(value.resolution);
+  if (value.resolution !== undefined && !resolution) return undefined;
   return {
+    ...(activation ? {activation} : {}),
     ...(activity ? {activity} : {}),
     buildId: value.buildId,
     counters,
@@ -839,6 +1014,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       repositoryId: value.identity.repositoryId,
       worktreeId: value.identity.worktreeId,
     },
+    ...(materialization ? {materialization} : {}),
     owner: {
       processId: Number(value.owner.processId),
       ...(ownerStart ? {processStartIdentity: ownerStart} : {}),
@@ -847,6 +1023,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     },
     phase: value.phase as CodeGraphProgress['phase'],
     ...(request ? {request} : {}),
+    ...(resolution ? {resolution} : {}),
     ...(result ? {result} : {}),
     schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
     state: value.state as CodeGraphBuildState,
@@ -861,6 +1038,411 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       updatedAt: timestamps.updatedAt,
     },
   };
+}
+
+function parseActivation(value: unknown): CodeGraphBuildActivation | undefined {
+  if (!isRecord(value)) return undefined;
+  const activity = parseActivationActivity(value.activity);
+  return activity ? {activity} : undefined;
+}
+
+function parseActivationActivity(value: unknown): CodeGraphBuildActivation['activity'] | undefined {
+  if (
+    !isRecord(value) ||
+    ![
+      'checkpointing-snapshot',
+      'committing-snapshot',
+      'copying-edges',
+      'copying-files',
+      'copying-lookup-keys',
+      'copying-reexports',
+      'copying-symbols',
+      'copying-terms',
+      'copying-workspace',
+      'recording-completion',
+      'validating-input',
+    ].includes(String(value.stage)) ||
+    !['completed', 'progress', 'started'].includes(String(value.state)) ||
+    !isNonNegativeFinite(value.elapsedMilliseconds) ||
+    !isNonNegativeFinite(value.stageElapsedMilliseconds) ||
+    !isTimestamp(value.startedAt)
+  ) {
+    return undefined;
+  }
+  if (value.rows !== undefined && !isNonNegativeSafeInteger(value.rows)) return undefined;
+  if (value.transactionMilliseconds !== undefined && !isNonNegativeFinite(value.transactionMilliseconds)) {
+    return undefined;
+  }
+  return {
+    elapsedMilliseconds: Number(value.elapsedMilliseconds),
+    ...(value.rows === undefined ? {} : {rows: Number(value.rows)}),
+    stage: value.stage as CodeGraphActivationActivity['stage'],
+    stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds),
+    startedAt: value.startedAt,
+    state: value.state as CodeGraphActivationActivity['state'],
+    ...(value.transactionMilliseconds === undefined
+      ? {}
+      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseResolution(value: unknown): CodeGraphBuildResolution | undefined {
+  if (!isRecord(value)) return undefined;
+  const activity = parseResolutionActivity(value.activity);
+  return activity ? {activity} : undefined;
+}
+
+function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['activity'] | undefined {
+  if (!isRecord(value) || !isTimestamp(value.startedAt)) return undefined;
+  for (const key of [
+    'aliasesDiscovered',
+    'pageCompleted',
+    'pageTotal',
+    'pagesCompleted',
+    'pass',
+    'referencesCompleted',
+    'referencesExamined',
+    'referencesTotal',
+    'resolved',
+  ] as const) {
+    if (!isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  for (const key of ['elapsedMilliseconds', 'matchingMilliseconds', 'transactionMilliseconds'] as const) {
+    if (!isNonNegativeFinite(value[key])) return undefined;
+  }
+  if (
+    Number(value.pass) < 1 ||
+    Number(value.pageCompleted) > Number(value.pageTotal) ||
+    Number(value.referencesCompleted) > Number(value.referencesTotal) ||
+    Number(value.pageCompleted) > Number(value.pagesCompleted) ||
+    Number(value.resolved) > Number(value.referencesExamined)
+  ) {
+    return undefined;
+  }
+  return {
+    aliasesDiscovered: Number(value.aliasesDiscovered),
+    elapsedMilliseconds: Number(value.elapsedMilliseconds),
+    matchingMilliseconds: Number(value.matchingMilliseconds),
+    pageCompleted: Number(value.pageCompleted),
+    pageTotal: Number(value.pageTotal),
+    pagesCompleted: Number(value.pagesCompleted),
+    pass: Number(value.pass),
+    referencesCompleted: Number(value.referencesCompleted),
+    referencesExamined: Number(value.referencesExamined),
+    referencesTotal: Number(value.referencesTotal),
+    resolved: Number(value.resolved),
+    startedAt: value.startedAt,
+    transactionMilliseconds: Number(value.transactionMilliseconds),
+  };
+}
+
+function parseMaterialization(value: unknown): CodeGraphBuildMaterialization | undefined {
+  if (!isRecord(value)) return undefined;
+  const activity = parseMaterializationActivity(value.activity);
+  if (value.activity !== undefined && !activity) return undefined;
+  const metrics = parseMaterializationMetrics(value.metrics);
+  if (value.metrics !== undefined && !metrics) return undefined;
+  if (!activity && !metrics) return undefined;
+  return {...(activity ? {activity} : {}), ...(metrics ? {metrics} : {})};
+}
+
+function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterialization['activity'] | undefined {
+  if (
+    !isRecord(value) ||
+    !isBatchProgress(value.batchCompleted, value.batchTotal) ||
+    !Number.isSafeInteger(value.sourceBytes) ||
+    Number(value.sourceBytes) < 0 ||
+    ![
+      'attributing',
+      'committing',
+      'loading-cache',
+      'preparing-rows',
+      'writing-candidates',
+      'writing-edges',
+      'writing-facts',
+      'writing-lookups',
+      'writing-references',
+      'writing-symbols',
+      'writing-terms',
+    ].includes(String(value.stage)) ||
+    !isTimestamp(value.startedAt)
+  ) {
+    return undefined;
+  }
+  if (value.cachedFactBytes !== undefined && !isNonNegativeSafeInteger(value.cachedFactBytes)) return undefined;
+  if (value.elapsedMilliseconds !== undefined && !isNonNegativeFinite(value.elapsedMilliseconds)) return undefined;
+  if (value.factsBytes !== undefined && !isNonNegativeSafeInteger(value.factsBytes)) return undefined;
+  if (value.transactionMilliseconds !== undefined && !isNonNegativeFinite(value.transactionMilliseconds)) {
+    return undefined;
+  }
+  const rows = parseMaterializationRows(value.rows);
+  if (value.rows !== undefined && !rows) return undefined;
+  return {
+    batchCompleted: Number(value.batchCompleted),
+    batchTotal: Number(value.batchTotal),
+    ...(value.cachedFactBytes === undefined ? {} : {cachedFactBytes: Number(value.cachedFactBytes)}),
+    ...(value.elapsedMilliseconds === undefined ? {} : {elapsedMilliseconds: Number(value.elapsedMilliseconds)}),
+    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
+    ...(rows ? {rows} : {}),
+    sourceBytes: Number(value.sourceBytes),
+    stage: value.stage as CodeGraphMaterializationActivity['stage'],
+    startedAt: value.startedAt,
+    ...(value.transactionMilliseconds === undefined
+      ? {}
+      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMetrics | undefined {
+  if (
+    !isRecord(value) ||
+    !isBatchProgress(value.batchesCompleted, value.batchesTotal) ||
+    !isNonNegativeSafeInteger(value.sourceBytesCompleted) ||
+    !isNonNegativeSafeInteger(value.sourceBytesTotal) ||
+    Number(value.sourceBytesCompleted) > Number(value.sourceBytesTotal)
+  ) {
+    return undefined;
+  }
+  for (const key of [
+    'cachedFactBytesCompleted',
+    'cachedFactBytesTotal',
+    'factsBytesCompleted',
+    'factsBytesTotal',
+  ] as const) {
+    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  if (
+    value.cachedFactBytesCompleted !== undefined &&
+    value.cachedFactBytesTotal !== undefined &&
+    Number(value.cachedFactBytesCompleted) > Number(value.cachedFactBytesTotal)
+  ) {
+    return undefined;
+  }
+  if (
+    value.factsBytesCompleted !== undefined &&
+    value.factsBytesTotal !== undefined &&
+    Number(value.factsBytesCompleted) > Number(value.factsBytesTotal)
+  ) {
+    return undefined;
+  }
+  for (const key of ['attributionMilliseconds', 'loadingMilliseconds', 'transactionMilliseconds'] as const) {
+    if (value[key] !== undefined && !isNonNegativeFinite(value[key])) return undefined;
+  }
+  const rows = parseMaterializationRows(value.rows);
+  if (value.rows !== undefined && !rows) return undefined;
+  const storage = parseMaterializationStorage(value.storage);
+  if (value.storage !== undefined && !storage) return undefined;
+  if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
+  if (storage?.estimateBasis === 'final-fact-bytes' && value.factsBytesTotal === undefined) return undefined;
+  return {
+    ...(value.attributionMilliseconds === undefined
+      ? {}
+      : {attributionMilliseconds: Number(value.attributionMilliseconds)}),
+    batchesCompleted: Number(value.batchesCompleted),
+    batchesTotal: Number(value.batchesTotal),
+    ...(value.cachedFactBytesCompleted === undefined
+      ? {}
+      : {cachedFactBytesCompleted: Number(value.cachedFactBytesCompleted)}),
+    ...(value.cachedFactBytesTotal === undefined ? {} : {cachedFactBytesTotal: Number(value.cachedFactBytesTotal)}),
+    ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
+    ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
+    ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),
+    ...(rows ? {rows} : {}),
+    sourceBytesCompleted: Number(value.sourceBytesCompleted),
+    sourceBytesTotal: Number(value.sourceBytesTotal),
+    ...(storage ? {storage} : {}),
+    ...(value.transactionMilliseconds === undefined
+      ? {}
+      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseMaterializationStorage(
+  value: unknown,
+): NonNullable<CodeGraphMaterializationMetrics['storage']> | undefined {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeSafeInteger(value.temporaryDatabaseBytes) ||
+    !isNonNegativeSafeInteger(value.temporaryDatabaseHighWaterBytes) ||
+    Number(value.temporaryDatabaseBytes) > Number(value.temporaryDatabaseHighWaterBytes)
+  ) {
+    return undefined;
+  }
+  if (
+    value.estimateBasis !== undefined &&
+    !['cached-fact-bytes', 'final-fact-bytes', 'source-bytes-fallback'].includes(String(value.estimateBasis))
+  ) {
+    return undefined;
+  }
+  for (const key of [
+    'availableBytes',
+    'durableAvailableBytes',
+    'durableDatabaseBytes',
+    'durableDatabaseFileBytes',
+    'durableDatabaseFileHighWaterBytes',
+    'durableDatabaseGrowthBytes',
+    'durableDatabaseGrowthHighWaterBytes',
+    'durableDatabaseHighWaterBytes',
+    'durableDatabaseStartBytes',
+    'durableFilesystemBytes',
+    'durableFilesystemHighWaterBytes',
+    'durableJournalBytes',
+    'durableJournalHighWaterBytes',
+    'durableSharedMemoryBytes',
+    'durableSharedMemoryHighWaterBytes',
+    'durableWalBytes',
+    'durableWalHighWaterBytes',
+    'estimatedConcurrentBuildBytes',
+    'estimatedDurableFilesystemRequiredBytes',
+    'estimatedDurableSnapshotBytes',
+    'estimatedJournalBytes',
+    'estimatedRequiredBytes',
+    'estimatedTemporaryFilesystemRequiredBytes',
+    'estimatedTemporaryDatabaseBytes',
+    'temporaryAvailableBytes',
+  ] as const) {
+    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  if (value.filesystemsShared !== undefined && typeof value.filesystemsShared !== 'boolean') return undefined;
+  if (
+    value.materializationMode !== undefined &&
+    !['direct-persistent', 'temporary-staged'].includes(String(value.materializationMode))
+  ) {
+    return undefined;
+  }
+  for (const [current, highWater] of [
+    ['durableDatabaseFileBytes', 'durableDatabaseFileHighWaterBytes'],
+    ['durableDatabaseGrowthBytes', 'durableDatabaseGrowthHighWaterBytes'],
+    ['durableFilesystemBytes', 'durableFilesystemHighWaterBytes'],
+    ['durableJournalBytes', 'durableJournalHighWaterBytes'],
+    ['durableSharedMemoryBytes', 'durableSharedMemoryHighWaterBytes'],
+    ['durableWalBytes', 'durableWalHighWaterBytes'],
+  ] as const) {
+    if (
+      value[current] !== undefined &&
+      value[highWater] !== undefined &&
+      Number(value[current]) > Number(value[highWater])
+    ) {
+      return undefined;
+    }
+  }
+  if (
+    value.durableDatabaseBytes !== undefined &&
+    value.durableDatabaseHighWaterBytes !== undefined &&
+    Number(value.durableDatabaseBytes) > Number(value.durableDatabaseHighWaterBytes)
+  ) {
+    return undefined;
+  }
+  if (
+    value.estimatedRequiredBytes !== undefined &&
+    value.estimatedConcurrentBuildBytes !== undefined &&
+    Number(value.estimatedRequiredBytes) < Number(value.estimatedConcurrentBuildBytes)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(value.availableBytes === undefined ? {} : {availableBytes: Number(value.availableBytes)}),
+    ...(value.durableAvailableBytes === undefined ? {} : {durableAvailableBytes: Number(value.durableAvailableBytes)}),
+    ...(value.durableDatabaseBytes === undefined ? {} : {durableDatabaseBytes: Number(value.durableDatabaseBytes)}),
+    ...(value.durableDatabaseFileBytes === undefined
+      ? {}
+      : {durableDatabaseFileBytes: Number(value.durableDatabaseFileBytes)}),
+    ...(value.durableDatabaseFileHighWaterBytes === undefined
+      ? {}
+      : {durableDatabaseFileHighWaterBytes: Number(value.durableDatabaseFileHighWaterBytes)}),
+    ...(value.durableDatabaseGrowthBytes === undefined
+      ? {}
+      : {durableDatabaseGrowthBytes: Number(value.durableDatabaseGrowthBytes)}),
+    ...(value.durableDatabaseGrowthHighWaterBytes === undefined
+      ? {}
+      : {durableDatabaseGrowthHighWaterBytes: Number(value.durableDatabaseGrowthHighWaterBytes)}),
+    ...(value.durableDatabaseHighWaterBytes === undefined
+      ? {}
+      : {durableDatabaseHighWaterBytes: Number(value.durableDatabaseHighWaterBytes)}),
+    ...(value.durableDatabaseStartBytes === undefined
+      ? {}
+      : {durableDatabaseStartBytes: Number(value.durableDatabaseStartBytes)}),
+    ...(value.durableFilesystemBytes === undefined
+      ? {}
+      : {durableFilesystemBytes: Number(value.durableFilesystemBytes)}),
+    ...(value.durableFilesystemHighWaterBytes === undefined
+      ? {}
+      : {durableFilesystemHighWaterBytes: Number(value.durableFilesystemHighWaterBytes)}),
+    ...(value.durableJournalBytes === undefined ? {} : {durableJournalBytes: Number(value.durableJournalBytes)}),
+    ...(value.durableJournalHighWaterBytes === undefined
+      ? {}
+      : {durableJournalHighWaterBytes: Number(value.durableJournalHighWaterBytes)}),
+    ...(value.durableSharedMemoryBytes === undefined
+      ? {}
+      : {durableSharedMemoryBytes: Number(value.durableSharedMemoryBytes)}),
+    ...(value.durableSharedMemoryHighWaterBytes === undefined
+      ? {}
+      : {durableSharedMemoryHighWaterBytes: Number(value.durableSharedMemoryHighWaterBytes)}),
+    ...(value.durableWalBytes === undefined ? {} : {durableWalBytes: Number(value.durableWalBytes)}),
+    ...(value.durableWalHighWaterBytes === undefined
+      ? {}
+      : {durableWalHighWaterBytes: Number(value.durableWalHighWaterBytes)}),
+    ...(value.estimateBasis === undefined
+      ? {}
+      : {
+          estimateBasis: value.estimateBasis as 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback',
+        }),
+    ...(value.estimatedConcurrentBuildBytes === undefined
+      ? {}
+      : {estimatedConcurrentBuildBytes: Number(value.estimatedConcurrentBuildBytes)}),
+    ...(value.estimatedDurableFilesystemRequiredBytes === undefined
+      ? {}
+      : {estimatedDurableFilesystemRequiredBytes: Number(value.estimatedDurableFilesystemRequiredBytes)}),
+    ...(value.estimatedDurableSnapshotBytes === undefined
+      ? {}
+      : {estimatedDurableSnapshotBytes: Number(value.estimatedDurableSnapshotBytes)}),
+    ...(value.estimatedJournalBytes === undefined ? {} : {estimatedJournalBytes: Number(value.estimatedJournalBytes)}),
+    ...(value.estimatedRequiredBytes === undefined
+      ? {}
+      : {estimatedRequiredBytes: Number(value.estimatedRequiredBytes)}),
+    ...(value.estimatedTemporaryFilesystemRequiredBytes === undefined
+      ? {}
+      : {estimatedTemporaryFilesystemRequiredBytes: Number(value.estimatedTemporaryFilesystemRequiredBytes)}),
+    ...(value.estimatedTemporaryDatabaseBytes === undefined
+      ? {}
+      : {estimatedTemporaryDatabaseBytes: Number(value.estimatedTemporaryDatabaseBytes)}),
+    ...(value.filesystemsShared === undefined ? {} : {filesystemsShared: value.filesystemsShared}),
+    ...(value.materializationMode === undefined
+      ? {}
+      : {materializationMode: value.materializationMode as 'direct-persistent' | 'temporary-staged'}),
+    ...(value.temporaryAvailableBytes === undefined
+      ? {}
+      : {temporaryAvailableBytes: Number(value.temporaryAvailableBytes)}),
+    temporaryDatabaseBytes: Number(value.temporaryDatabaseBytes),
+    temporaryDatabaseHighWaterBytes: Number(value.temporaryDatabaseHighWaterBytes),
+  };
+}
+
+function parseMaterializationRows(value: unknown): CodeGraphMaterializationRows | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = [
+    'deduplicatedEdges',
+    'deduplicatedReferences',
+    'edges',
+    'lookupKeys',
+    'referenceCandidates',
+    'references',
+    'reexports',
+    'symbols',
+    'terms',
+  ] as const;
+  for (const key of keys) {
+    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  return Object.fromEntries(keys.flatMap(key => (value[key] === undefined ? [] : [[key, Number(value[key])]])));
+}
+
+function isBatchProgress(completed: unknown, total: unknown): boolean {
+  return isNonNegativeSafeInteger(completed) && isNonNegativeSafeInteger(total) && Number(completed) <= Number(total);
+}
+
+function isNonNegativeSafeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
@@ -929,6 +1511,7 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
     'embedded',
     'excluded',
     'reused',
+    'resolved',
     'skipped',
     'symbols',
     'total',
@@ -937,7 +1520,7 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
     const counter = value[key];
     if (counter !== undefined && (!Number.isSafeInteger(counter) || Number(counter) < 0)) return undefined;
   }
-  if (value.unit !== undefined && value.unit !== 'files' && value.unit !== 'symbols') return undefined;
+  if (value.unit !== undefined && !['files', 'references', 'symbols'].includes(String(value.unit))) return undefined;
   return Object.fromEntries(
     [...keys, 'unit' as const].flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]])),
   ) as CodeGraphBuildCounters;
@@ -951,9 +1534,16 @@ function parseEta(value: unknown): CodeGraphBuildStatus['eta'] | undefined {
   return isRecord(value) &&
     value.scope === 'phase' &&
     ['high', 'low', 'medium'].includes(String(value.confidence)) &&
+    (value.basis === undefined ||
+      ['cached-fact-bytes', 'files', 'final-fact-bytes', 'source-bytes'].includes(String(value.basis))) &&
     Number.isSafeInteger(value.remainingMilliseconds) &&
     Number(value.remainingMilliseconds) >= 0
     ? {
+        ...(value.basis === undefined
+          ? {}
+          : {
+              basis: value.basis as 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes',
+            }),
         confidence: value.confidence as 'high' | 'low' | 'medium',
         remainingMilliseconds: Number(value.remainingMilliseconds),
         scope: 'phase',

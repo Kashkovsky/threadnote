@@ -43,12 +43,12 @@ describe('code graph analysis properties', () => {
       const snapshot = analysisSnapshot(symbols, edges);
       return Effect.gen(function* () {
         const first = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges), {
-          budget: {pageSize: 1},
+          budget: {aggregatePageSize: 1, pageSize: 1},
           databasePath: '/property/graph.sqlite',
           snapshot,
         });
         const second = yield* analyzeCodeGraph(pagedAnalysisStore([...symbols].reverse(), [...edges].reverse()), {
-          budget: {pageSize: 7},
+          budget: {aggregatePageSize: 7, pageSize: 7},
           databasePath: '/property/graph.sqlite',
           snapshot,
         });

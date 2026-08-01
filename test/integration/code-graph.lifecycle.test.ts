@@ -21,14 +21,14 @@ import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphExport} from '../../src/code_graph/commands.js';
 import {readAllCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from '../../src/code_graph/build_status.js';
-import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   inventoryRepository,
   readContainedStableRegularFile,
   worktreeOverlayState,
 } from '../../src/code_graph/inventory.js';
-import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../src/code_graph/query.js';
 import {
   codeGraphDoctorCheck,
   purgeAllCodeGraphIndexes,
@@ -116,6 +116,133 @@ describe('native code graph lifecycle', () => {
     expect(missing.nodes).toEqual([]);
   });
 
+  it('visibly and idempotently backfills analysis summaries when reusing a legacy ready snapshot', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const first = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    const databasePath = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      first.identity.checkoutId,
+      'graph-v3.sqlite',
+    );
+    const database = new Database(databasePath);
+    try {
+      database.exec(`
+        DELETE FROM snapshot_analysis_summary_receipts;
+        DELETE FROM snapshot_analysis_edge_counts;
+        DELETE FROM snapshot_analysis_edge_histogram;
+        DELETE FROM snapshot_analysis_symbol_counts;
+      `);
+    } finally {
+      database.close();
+    }
+
+    const backfillProgress: Array<{readonly phase: string; readonly subphase?: string}> = [];
+    const second = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({
+          cwd: root,
+          onProgress: progress => Effect.sync(() => backfillProgress.push(progress)),
+          threadnoteHome: home,
+        });
+      }),
+    );
+    expect(second.snapshot.id).toBe(first.snapshot.id);
+    expect(backfillProgress).toContainEqual({
+      phase: 'activating',
+      snapshotId: first.snapshot.id,
+      subphase: 'summarizing-analysis',
+    });
+    expect(second.diagnostics).toContain('Built the persisted whole-graph analysis summary for this reused snapshot.');
+
+    const idempotentProgress: Array<{readonly phase: string; readonly subphase?: string}> = [];
+    const third = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({
+          cwd: root,
+          onProgress: progress => Effect.sync(() => idempotentProgress.push(progress)),
+          threadnoteHome: home,
+        });
+      }),
+    );
+    expect(third.snapshot.id).toBe(first.snapshot.id);
+    expect(idempotentProgress).toContainEqual({
+      phase: 'activating',
+      snapshotId: first.snapshot.id,
+      subphase: 'summarizing-analysis',
+    });
+    expect(third.diagnostics).not.toContain(
+      'Built the persisted whole-graph analysis summary for this reused snapshot.',
+    );
+    const check = new Database(databasePath, {readonly: true});
+    try {
+      const receipt = check
+        .query('SELECT COUNT(*) AS count FROM snapshot_analysis_summary_receipts WHERE snapshot_id = ?')
+        .get(first.snapshot.id) as {readonly count: number};
+      expect(receipt.count).toBe(1);
+    } finally {
+      check.close();
+    }
+  });
+
+  it('collapses repeated logical relationships before strict full-build staging', async () => {
+    const root = createFixtureRepository();
+    const sourcePath = join(root, 'packages/app/src/repeated-call.ts');
+    writeFileSync(
+      sourcePath,
+      [
+        'export function repeatedTarget(): number { return 1; }',
+        'export function repeatedCaller(): number { return repeatedTarget() + repeatedTarget(); }',
+        '',
+      ].join('\n'),
+    );
+    git(root, ['add', 'packages/app/src/repeated-call.ts']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'repeated logical relationship',
+    ]);
+    const home = join(root, '.threadnote-test-home');
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const graph = yield* CodeGraphQueryService;
+        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const query = yield* graph.inspect({
+          cwd: root,
+          operation: 'query',
+          query: 'repeatedCaller',
+          refresh: false,
+          threadnoteHome: home,
+        });
+        return {indexed, query};
+      }),
+    );
+
+    expect(result.indexed.snapshot.state).toBe('ready');
+    expect(
+      result.query.edges.filter(
+        edge =>
+          edge.relation === 'calls' && edge.sourceName === 'repeatedCaller' && edge.targetName === 'repeatedTarget',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('synchronously refreshes stale lightweight reads when the caller requires freshness', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
@@ -165,7 +292,7 @@ describe('native code graph lifecycle', () => {
             afterObservation: () =>
               Effect.sync(() => {
                 observations += 1;
-                if (observations === 2) {
+                if (observations === 1) {
                   replaceFunction(root, 'ensureVectorIndex', 'ensureObservedVectorIndex');
                 }
               }),
@@ -180,7 +307,7 @@ describe('native code graph lifecycle', () => {
 
     expect(result.freshness).toBe('current');
     expect(result.nodes.some(node => node.name === 'ensureObservedVectorIndex')).toBe(true);
-    expect(observations).toBe(5);
+    expect(observations).toBe(4);
   });
 
   it('keeps dirty overlays isolated between linked Git worktrees', async () => {
@@ -422,7 +549,7 @@ describe('native code graph lifecycle', () => {
     );
   });
 
-  it('rehydrates cached package and TypeScript resolution context without reparsing manifests', async () => {
+  it('rehydrates cached manifest context across a committed rebuild without reparsing manifests', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
     mkdirSync(join(root, 'cmd', 'fixture'), {recursive: true});
@@ -461,6 +588,16 @@ describe('native code graph lifecycle', () => {
     );
     const appPath = join(root, 'packages/app/src/main.ts');
     writeFileSync(appPath, `${readFileSync(appPath, 'utf8')}\n// ordinary source revision\n`);
+    git(root, ['add', 'packages/app/src/main.ts']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'ordinary source revision',
+    ]);
 
     const result = await runEffect(
       Effect.gen(function* () {
@@ -476,6 +613,9 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(result.indexed.reusedFiles).toBe(first.snapshot.fileCount - 1);
+    expect(result.indexed.snapshot.commit).not.toBe(first.snapshot.commit);
+    expect(result.indexed.snapshot.dirty).toBe(false);
+    expect(result.indexed.materialization?.mode).toBe('full');
     expect(result.graph.symbols.find(symbol => symbol.name === 'runApplication')?.packageName).toBe('@fixture/app');
     expect(
       result.graph.edges.some(
@@ -722,7 +862,7 @@ describe('native code graph lifecycle', () => {
     expect(result.snapshot.fileCount).toBeGreaterThan(0);
   });
 
-  it('reuses fresh clean staging for a modification-only dirty overlay without changing graph results', async () => {
+  it('reuses the persisted clean base for a modification-only dirty overlay without changing graph results', async () => {
     const incrementalRoot = createBodyModifiedRepository(24);
     const fullRoot = createBodyModifiedRepository(24);
     const incrementalHome = join(incrementalRoot, '.threadnote-test-home');
@@ -762,7 +902,9 @@ describe('native code graph lifecycle', () => {
       stagedFiles: 1,
       totalFiles: 24,
     });
-    expect(result.incremental.diagnostics).toContain('Dirty overlay reused clean staging for 1 modified file(s).');
+    expect(result.incremental.diagnostics).toContain(
+      'Dirty overlay reused persisted clean base for 1 modified file(s).',
+    );
     expect(materializingTotals.at(-1)).toBe(1);
     expect(result.full.materialization).toEqual({
       fallbackReason: 'disabled',
@@ -908,7 +1050,7 @@ describe('native code graph lifecycle', () => {
       }),
     );
 
-    expect(indexed.freshness).toBe('current');
+    expect(indexed.freshness).toBe('deferred');
     expect(indexed.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
   });
 
@@ -1091,11 +1233,43 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(progressEvents).toBe(0);
-    expect(hotObservations).toBe(1);
-    expect(strictObservations).toBe(3);
-    expect(result.hot.freshness).toBe('current');
+    expect(hotObservations).toBe(0);
+    expect(strictObservations).toBe(2);
+    expect(result.hot.freshness).toBe('deferred');
     expect(result.strict.freshness).toBe('current');
     expect(result.stale.freshness).toBe('stale');
+  });
+
+  it('reuses an exact status observation without exposing it in serialized status output', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    let repeatedObservations = 0;
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const query = yield* CodeGraphQueryService;
+        yield* indexer.index({cwd: root, threadnoteHome: home});
+        const status = yield* query.status(home, root);
+        const statusObservation = observationFromCodeGraphStatus(status);
+        const inspected = yield* query.inspect({
+          cwd: root,
+          interlock: {
+            afterObservation: () => Effect.sync(() => (repeatedObservations += 1)),
+          },
+          operation: 'query',
+          query: 'exclusive file lock',
+          refresh: false,
+          statusObservation,
+          threadnoteHome: home,
+        });
+        return {inspected, serializedStatus: JSON.stringify(status), statusObservation};
+      }),
+    );
+
+    expect(result.statusObservation).toBeDefined();
+    expect(result.serializedStatus).not.toContain('statusObservation');
+    expect(result.inspected.freshness).toBe('current');
+    expect(repeatedObservations).toBe(0);
   });
 
   it('changes the overlay fingerprint for successive edits to an already-modified file', async () => {
@@ -1727,6 +1901,143 @@ describe('native code graph lifecycle', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'resumes exact postprocess-expanded batches without activating a killed partial build',
+    async () => {
+      const root = createRationaleAmplifiedRepository();
+      const home = join(root, '.threadnote-test-home');
+      const marker = join(root, '.forced-build-committed');
+      const helper = join(import.meta.dirname, '../helpers/code-graph-force-resume-child.ts');
+      const child = spawn(process.execPath, [helper, root, home, marker], {
+        cwd: process.cwd(),
+        env: {...process.env, NODE_ENV: 'test'},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', chunk => (stderr += String(chunk)));
+      try {
+        await waitForPath(marker, 30_000);
+        child.kill('SIGKILL');
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('exit', () => resolve());
+        });
+      } catch (error) {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        throw new Error(`Forced-build child did not reach a committed batch: ${stderr}`, {cause: error});
+      }
+
+      const markerProgress = JSON.parse(readFileSync(marker, 'utf8')) as {
+        readonly batchesCompleted: number;
+        readonly batchTotal: number;
+        readonly completed: number;
+        readonly factsBytesCompleted: number;
+        readonly factsBytesTotal?: number;
+      };
+      expect(markerProgress.batchesCompleted).toBe(1);
+      expect(markerProgress.batchTotal).toBe(2);
+      expect(markerProgress.completed).toBeGreaterThan(0);
+      expect(markerProgress.factsBytesCompleted).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(markerProgress.factsBytesTotal).toBeUndefined();
+
+      const identity = await runEffect(resolveRepositoryIdentity(root));
+      const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+      const interruptedDatabase = new Database(databasePath, {readonly: true, strict: true});
+      const interrupted = interruptedDatabase
+        .query("SELECT id FROM snapshots WHERE state = 'building' AND id GLOB 'cgsn_*-full-*' LIMIT 1")
+        .get() as {readonly id: string};
+      const receiptsBefore = interruptedDatabase
+        .query('SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index')
+        .all(interrupted.id) as Array<{readonly batch_index: number}>;
+      const rawCache = interruptedDatabase
+        .query('SELECT COUNT(*) AS files, COALESCE(SUM(length(CAST(facts_json AS BLOB))), 0) AS bytes FROM file_blobs')
+        .get() as {readonly bytes: number; readonly files: number};
+      const partialSymbols = interruptedDatabase
+        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+        .get(interrupted.id) as {readonly count: number};
+      const partiallyActive = interruptedDatabase
+        .query('SELECT COUNT(*) AS count FROM active_snapshots WHERE snapshot_id = ?')
+        .get(interrupted.id) as {readonly count: number};
+      interruptedDatabase.close(false);
+      expect(rawCache.files).toBe(3);
+      expect(rawCache.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(receiptsBefore.map(receipt => receipt.batch_index)).toEqual([0]);
+      expect(receiptsBefore).toHaveLength(markerProgress.batchesCompleted);
+      expect(receiptsBefore.length).toBeLessThan(markerProgress.batchTotal);
+      expect(partialSymbols.count).toBeGreaterThan(0);
+      expect(partiallyActive.count).toBe(0);
+
+      let completedMetrics:
+        | {readonly batchesCompleted: number; readonly batchesTotal: number; readonly factsBytesTotal?: number}
+        | undefined;
+      const resumedTransactionBytes: number[] = [];
+      let receiptsAtFinalCommit: number | undefined;
+      const resumed = await runEffect(
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          return yield* indexer.index({
+            cwd: root,
+            force: true,
+            onProgress: progress =>
+              Effect.sync(() => {
+                if (progress.phase !== 'materializing' || progress.metrics === undefined) return;
+                if (
+                  progress.activity?.stage === 'committing' &&
+                  progress.metrics.batchesCompleted === progress.activity.batchCompleted + 1
+                ) {
+                  resumedTransactionBytes.push(progress.activity.factsBytes!);
+                }
+                if (
+                  progress.metrics.factsBytesTotal === undefined ||
+                  progress.metrics.batchesCompleted !== progress.metrics.batchesTotal
+                ) {
+                  return;
+                }
+                completedMetrics = progress.metrics;
+                const committed = new Database(databasePath, {readonly: true, strict: true});
+                receiptsAtFinalCommit = Number(
+                  (
+                    committed
+                      .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+                      .get(interrupted.id) as {readonly count: number}
+                  ).count,
+                );
+                committed.close(false);
+              }),
+            threadnoteHome: home,
+          });
+        }),
+      );
+      expect(resumed.snapshot.id).toBe(interrupted.id);
+      expect(resumed.snapshot.state).toBe('ready');
+      expect(completedMetrics).toMatchObject({
+        batchesCompleted: markerProgress.batchTotal,
+        batchesTotal: markerProgress.batchTotal,
+        factsBytesTotal: expect.any(Number),
+      });
+      expect(resumedTransactionBytes).toHaveLength(markerProgress.batchTotal);
+      expect(resumedTransactionBytes.every(bytes => bytes <= CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM)).toBe(true);
+      expect(resumedTransactionBytes.reduce((total, bytes) => total + bytes, 0)).toBe(
+        completedMetrics?.factsBytesTotal,
+      );
+      expect(completedMetrics?.factsBytesTotal).toBeGreaterThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(receiptsAtFinalCommit).toBe(markerProgress.batchTotal);
+
+      const readyDatabase = new Database(databasePath, {readonly: true, strict: true});
+      const receiptsAfter = readyDatabase
+        .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+        .get(interrupted.id) as {readonly count: number};
+      const activeAfter = readyDatabase
+        .query('SELECT COUNT(*) AS count FROM active_snapshots WHERE snapshot_id = ?')
+        .get(interrupted.id) as {readonly count: number};
+      readyDatabase.close(false);
+      expect(receiptsAfter.count).toBe(0);
+      expect(activeAfter.count).toBe(1);
+    },
+    90_000,
+  );
+
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
     const root = createFixtureRepository();
     git(root, ['branch', 'graph-process-a']);
@@ -1743,6 +2054,7 @@ describe('native code graph lifecycle', () => {
     const gateB = join(root, '.release-worktree-b');
     const markerA = join(root, '.worktree-process-a');
     const markerB = join(root, '.worktree-process-b');
+    let writerLock: string | undefined;
     const first = startCodeGraphIndexProcess(worktreeA, home, gateA, markerA);
     let second: ReturnType<typeof startCodeGraphIndexProcess> | undefined;
     try {
@@ -1760,8 +2072,14 @@ describe('native code graph lifecycle', () => {
         reason: 'active-build',
       });
 
+      writerLock = join(home, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`);
+      mkdirSync(join(writerLock, '..'), {recursive: true});
+      writeFileSync(writerLock, `${process.pid}:held-beyond-sqlite-busy-timeout\n`, {mode: 0o600});
       writeFileSync(gateA, 'release\n');
       writeFileSync(gateB, 'release\n');
+      await Promise.all([waitForPath(`${markerA}.waiting`), waitForPath(`${markerB}.waiting`)]);
+      await new Promise(resolve => setTimeout(resolve, 5_250));
+      rmSync(writerLock, {force: true});
       const [firstOutput, secondOutput] = await Promise.all([first.done, second.done]);
       const summaryA = codeGraphProcessSummary(firstOutput);
       const summaryB = codeGraphProcessSummary(secondOutput);
@@ -1813,6 +2131,7 @@ describe('native code graph lifecycle', () => {
         database.close();
       }
     } finally {
+      if (writerLock) rmSync(writerLock, {force: true});
       if (first.running()) first.kill();
       if (second?.running()) second.kill();
     }
@@ -2463,6 +2782,34 @@ function createManySourceRepository(count: number): string {
   }
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  return root;
+}
+
+function createRationaleAmplifiedRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-rationale-amplified-');
+  mkdirSync(join(root, 'src'), {recursive: true});
+  git(root, ['init', '-q']);
+  writeFileSync(join(root, 'package.json'), JSON.stringify({name: 'rationale-amplification', type: 'module'}));
+  for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+    const rationale = Array.from(
+      {length: 3_000},
+      (_, index) => `  // WHY: rationale-${fileIndex}-${index}-${'漢'.repeat(160)}`,
+    ).join('\n');
+    writeFileSync(
+      join(root, `src/rationale-${fileIndex}.ts`),
+      `export function owner${fileIndex}(): number {\n${rationale}\n  return ${fileIndex};\n}\n`,
+    );
+  }
+  git(root, ['add', '.']);
+  git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'rationale amplification fixture',
+  ]);
   return root;
 }
 

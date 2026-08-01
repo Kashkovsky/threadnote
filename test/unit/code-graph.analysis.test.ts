@@ -69,10 +69,15 @@ describe('code graph analysis', () => {
       {count: 1, value: 'markdown'},
     ]);
     expect(first.coverage).toEqual({
+      aggregates: {
+        edges: {complete: true, rows: 7, source: 'paged-fallback'},
+        symbols: {complete: true, rows: 5, source: 'paged-fallback'},
+      },
       complete: true,
       edgeMetricsComplete: true,
       edgesComplete: true,
       nodesComplete: true,
+      topology: {complete: true, state: 'complete'},
     });
     expect(first.confidenceAudit).toMatchObject({
       averageConfidence: 1,
@@ -299,7 +304,7 @@ describe('code graph analysis', () => {
     );
   });
 
-  it('skips second-pass metrics and bounded outputs when every related result limit is zero', async () => {
+  it('uses aggregate pages only when every topology and finding output limit is zero', async () => {
     const symbols = Array.from({length: 50}, (_, index) =>
       analysisSymbol(`node-${index.toString().padStart(2, '0')}`, '@acme/app', `src/${index}.ts`),
     );
@@ -314,12 +319,14 @@ describe('code graph analysis', () => {
       }),
     );
 
-    expect(result.usage.edgeVisits).toBe(edges.length);
-    expect(observation.edgePageLimits).toHaveLength(Math.ceil(edges.length / 7));
+    expect(result.usage.edgeVisits).toBe(0);
+    expect(observation.edgePageLimits).toHaveLength(0);
+    expect(result.coverage.topology.state).toBe('not-requested');
+    expect(result.statistics).toMatchObject({aggregatedEdgeCount: edges.length, aggregatedNodeCount: symbols.length});
     expect(result).toMatchObject({communities: [], components: [], hubs: [], memberships: [], relationshipGroups: []});
   });
 
-  it('scales through paged topology while zero output limits keep work to one edge pass', async () => {
+  it('scales exact whole-graph statistics without hydrating topology when output limits are zero', async () => {
     const symbols = Array.from({length: 10_000}, (_, index) =>
       analysisSymbol(`scale-${index.toString().padStart(5, '0')}`, '@acme/scale', `src/${index}.ts`),
     );
@@ -337,9 +344,16 @@ describe('code graph analysis', () => {
     );
 
     expect(result.coverage.complete).toBe(true);
-    expect(result.statistics).toMatchObject({analyzedEdgeCount: 9_999, analyzedNodeCount: 10_000});
-    expect(result.usage.edgeVisits).toBe(9_999);
-    expect(Math.max(...observation.edgePageLimits, ...observation.symbolPageLimits)).toBeLessThanOrEqual(128);
+    expect(result.statistics).toMatchObject({
+      aggregatedEdgeCount: 9_999,
+      aggregatedNodeCount: 10_000,
+      analyzedEdgeCount: 0,
+      analyzedNodeCount: 0,
+    });
+    expect(result.usage.edgeVisits).toBe(0);
+    expect(result.coverage.topology.state).toBe('not-requested');
+    expect(observation.edgePageLimits).toHaveLength(0);
+    expect(observation.symbolPageLimits).toHaveLength(0);
   });
 
   it('leases the ready snapshot and releases it after success and interruption-safe failure', async () => {
@@ -430,20 +444,26 @@ describe('code graph analysis', () => {
     );
 
     expect(result.coverage).toEqual({
+      aggregates: {
+        edges: {complete: false, rows: 2, source: 'paged-fallback'},
+        symbols: {complete: false, rows: 3, source: 'paged-fallback'},
+      },
       complete: false,
       edgeMetricsComplete: false,
       edgesComplete: false,
       nodesComplete: false,
+      topology: {complete: false, state: 'unavailable'},
     });
     expect(result.statistics.analyzedNodeCount).toBe(3);
+    expect(result.statistics.analyzedEdgeCount).toBe(0);
     expect(result.statistics.scannedEdgeCount).toBe(2);
-    expect(result.usage.edgeVisits).toBe(3);
-    expect(result.memberships).toHaveLength(1);
+    expect(result.usage.edgeVisits).toBe(2);
+    expect(result.memberships).toHaveLength(0);
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('Node analysis reached'),
-        expect.stringContaining('Edge analysis reached'),
-        expect.stringContaining('Community edge metrics'),
+        expect.stringContaining('Symbol aggregates cover 3 of 8'),
+        expect.stringContaining('Relationship aggregates cover 2 of 8'),
+        expect.stringContaining('Topology was not derived'),
       ]),
     );
     expect(Math.max(...observation.symbolPageLimits, ...observation.edgePageLimits)).toBeLessThanOrEqual(2);

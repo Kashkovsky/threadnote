@@ -108,11 +108,12 @@ The graph inventory reads committed files through bounded Git tree/blob plumbing
 unstaged, deleted, renamed, and untracked worktree files after containment and ignore checks. Uncached source is parsed
 into the SQLite-backed content-addressed fact cache in bounded batches, and ordinary source text is released before the
 next batch. Package and workspace configuration is retained only as compact resolution metadata. Repository admission
-and graph coverage are not capped by file bytes, file count, resolution metadata, symbols, edges, lexical terms, or
-vectors. A bounded cross-process parser pool feeds one backpressured SQLite writer; fixed-size parse and persistence
-batches bound transient work without truncating the stored graph, and completed parser batches are reusable after
-interruption. Build status exposes Git read-batch timing plus per-language and per-file extraction and persistence
-progress.
+is not capped by file bytes, file count, resolution metadata, symbols, edges, lexical terms, or vectors. A bounded
+cross-process parser pool feeds one backpressured SQLite writer; fixed-size parse and persistence batches bound
+transient work, and completed parser batches are reusable after interruption. Pathological per-file fact payloads
+degrade deterministically at the reviewed persistence ceiling, retain higher-value topology first, and emit an explicit
+diagnostic for omitted lower-priority facts instead of rejecting the repository. Build status exposes Git read-batch
+timing plus per-language and per-file extraction and persistence progress.
 
 A generated language-pack catalog owns classification, extraction, cache identity, verified assets, capabilities,
 workspace discovery, and resolution domains. TypeScript/JavaScript continues to use the pinned TypeScript compiler

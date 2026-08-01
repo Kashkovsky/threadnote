@@ -56,15 +56,35 @@ shared-runner latency is machine-independent.
 
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested
-workspaces. It runs weekly or through the explicit `include_production_large` workflow input on the pinned
-`ubuntu-24.04` runner class; pull requests retain the existing reviewed
-development, 10k-symbol, and 100k-symbol suites. `--profile-files` and `--profile-symbols` may shrink the same generator
-for harness development, but only the default shape is the reviewed profile. There is intentionally no portable
-latency budget or fabricated checked result for this profile: retain the JSON artifact from each measured run and
-review it only when `sameRunnerComparisonKey` matches. The cold and incremental builds and their phases are explicitly
-labelled n=1; the artifact never presents them as a latency distribution.
+workspaces. One reusable workflow runs weekly, through the explicit `include_production_large` input, and as the
+publication gate for every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag on the pinned `ubuntu-24.04` runner
+class. Publication waits for the exact-commit artifact and upload digest, retained for 90 days; ordinary pull requests retain the bounded development,
+10k-symbol, and 100k-symbol suites. `--profile-files` and `--profile-symbols` may shrink the same generator for harness
+development, but only the default shape is the reviewed profile. Release evidence must attain at least 90% of each
+reviewed file, symbol, edge, and lexical-term target; merely carrying those measurement names cannot qualify an
+undersized run. There is intentionally no portable latency budget or fabricated checked result for this profile:
+retain the JSON artifact from each measured run and review it only when `sameRunnerComparisonKey` matches. The cold and
+incremental builds and their phases are explicitly labelled n=1; the artifact never presents them as a latency
+distribution.
 
-`heavy-tail-profile.json` is the complementary beta.29 regression shape. It checks the file classes that a uniform
+`beta30-staging-development.json` preserves the reviewed same-runner staging experiments, including the first 10k
+direct-persistent observation and its source-artifact SHA-256. Every source run was dirty and local, so this compact
+record is development evidence only. A release artifact is accepted only when it carries the Threadnote 4 release tag,
+the exact matching commit, and a clean checkout; missing provenance is a hard failure rather than an implicit pass.
+The compact direct record retains the reviewed top-level cold and one-file wall-time measurements under their exact raw
+artifact phase names. The split snapshot phases are:
+
+- `cold-snapshot-write-and-checkpoint`: 556.407 ms
+- `cold-snapshot-promotion`: 62.470 ms
+- `one-file-reindex-snapshot-write-and-checkpoint`: 131.654 ms
+- `one-file-reindex-snapshot-promotion`: 156.894 ms
+
+Snapshot write-and-checkpoint ends at promotion start; promotion is a separate phase. The record also retains the exact
+privacy-safe structural and query digests, zero observed TEMP database pages, zero cold activation-copy stages, query
+parity across all three builds, and structural parity between the incremental overlay and its independent full rebuild.
+Its cold graph intentionally differs because the parity build includes the benchmark's one-file mutation.
+
+`heavy-tail-profile.json` is the complementary beta.29 parser/cache regression shape. It checks the file classes that a uniform
 symbol-count generator cannot represent: call-heavy and multi-megabyte generated TypeScript, one 25 MiB test snapshot
 JSON, and 4,000 textless SVG assets. The harness builds clean graphs with one and four parser workers, interrupts a
 third build only after parser facts are durable, then resumes it from the same home. All three completed graphs must
@@ -73,7 +93,8 @@ small metadata fact; TypeScript imports/exports/tail declarations and one metada
 checked profile is a reviewed workload contract, not a fabricated latency result. Compare wall time, aggregate
 per-language parse/persist timing, RSS, and cache bytes only within the same artifact and runner class.
 `heavy-tail-development.json` retains the first reviewed full-shape observation on the documented local hardware. It
-is evidence that the harness and contracts passed, not an absolute release threshold for other machines.
+is evidence that the harness and contracts passed, not an absolute release threshold for other machines or evidence
+that production-scale materialization was exercised.
 
 `bench:code-graph:dirty-overlay` isolates the first dirty build where Threadnote must materialize a clean commit and a
 one-file worktree overlay in the same SQLite session. It alternates the safe staging-reuse path with an explicitly
@@ -109,14 +130,88 @@ or incremental run, `p50`, `p95`, and `p99` are schema-compatible copies of that
 estimates; cite it as “one observation (n=1),” never as p95. Distribution labels are valid only for measurements with
 multiple samples.
 
+The bounded development, polyglot, 10k, and 100k budget contracts gate cold and one-file materialization independently
+from total indexing. Production-large and external-soak artifacts additionally retain privacy-safe aggregate file,
+symbol, edge, lexical-term, staged-file, phase CPU, and phase boundary-RSS measurements. Completed activation-stage
+duration and row counts cover validation, graph-table copying, commit, checkpoint, and completion for both cold and
+one-file builds. SQLite TEMP allocated-page high-water is separate from the external sampler. The external value
+unions linked files in the isolated temporary root with open regular scratch files held by the recursive benchmark
+process tree and deduplicates them by device and inode. That includes immediately unlinked SQLite `etilqs_*`
+databases, journals, and subjournals without retaining their paths. Linux reads `/proc` file descriptors; macOS uses a
+bounded numeric-FD `lsof` projection at the process-sampling interval. Both values are sampled high-water, not exact
+live totals. For a
+production repository that is already cloned locally, run the explicit soak mode without adding a network clone to CI:
+
+```sh
+bun run bench:code-graph -- \
+  --repository /path/to/clean/checkout \
+  --incremental-path path/to/TrackedSource.java \
+  --control '{"query":"ExampleService","expectedPath":"path/to/TrackedSource.java","expectedLanguage":"java"}' \
+  --home /large-volume/threadnote-primary \
+  --reference-home /large-volume/threadnote-reference \
+  --retain-homes \
+  --samples 1 --warmups 0 \
+  --output /path/outside/checkout/code-graph-external-n1.json
+```
+
+The soak currently supports Linux and macOS, where both recursive process and SQLite temporary-file telemetry are
+audited; other platforms are rejected before indexing. The checkout must be clean and remain at the recorded exact
+commit. Git cleanliness checks explicitly include all untracked files, disable repository-configured filesystem
+monitor and untracked-cache shortcuts, include submodule dirt, and run again immediately before publication. The
+Threadnote source checkout is independently required to remain clean at its exact commit. The selected file must be
+tracked and regular, and the artifact and both benchmark homes must be outside the checkout.
+
+Explicit home paths are reserved with an exclusive directory creation rather than an existence-check race.
+`--retain-homes` requires two explicit fresh paths and arms retention only after the real run's preflight succeeds;
+otherwise scoped cleanup releases both reservations. Before an expensive run, repeat the command with `--preflight
+--minimum-free-gib 140`. A validation-only run always releases the requested paths—even when `--retain-homes` is
+present—so those same fresh paths remain available for the real run. Preflight validates the commit, tree, controls,
+semantic-overlay language, effective parser-worker capacity, privacy-safe allowlisted environment metadata, and free
+space without indexing. Path-valued environment metadata is recorded only as a redacted configured marker. The real
+run repeats the same validation and enforces the capacity threshold even when the operator omits `--preflight`; 120
+GiB is the default minimum and 140 GiB is recommended for the public soak. The validation-only command writes a
+separate `<output>.preflight.json` rather than impersonating benchmark evidence.
+
+The incremental edit is a harmless language-aware import/dependency, not a comment-only byte change or a new
+declaration. It changes graph evidence while preserving the symbol lookup surface, and release evidence requires the
+observed mode to be `incremental-overlay`; a conservative full fallback does not count as an incremental benchmark.
+The overlay source must be valid UTF-8. The harness compares bytes before applying and restoring it, restores the
+exact original bytes (including BOM and line endings), and leaves a newer concurrent edit untouched rather than
+overwriting it. Normal success and cooperative failure therefore restore safely. A process `SIGKILL`, power loss, or
+machine crash can still leave the benchmark overlay in place, so run destructive-scale evidence in a disposable clean
+clone and verify Git status after interruption.
+
+The run must prove that the overlay changes the cold effective-state digest and that its incremental state exactly
+matches an independent fresh-home full rebuild. The digest covers effective inventory files, symbols, lexical terms,
+lookup keys, edges, workspace attribution, re-export provenance, and structural-analysis aggregates—not only symbol
+and edge counts. Cold, incremental, and reference builds each have their own non-overlapping progress timeline,
+SQLite temporary root, required external sampler, and crash checkpoint. The artifact also times `query`, `node`,
+`neighbors`, `explain`, `impact`, and `path` through the MCP compaction path, enforcing the 25-second tool envelope and
+24 KiB limits for both structured and text parts. Only latency, row counts, truncation state, and byte counts are
+retained—never graph content. All gates and final source/checkout checks run before the canonical artifact is written.
+
+The artifact omits repository paths, remote URLs, filenames, queries, and source content. It retains only expected
+language categories and aggregate counts proving that every cold, post-incremental, and reference control returned at
+least one node from its expected tracked path and language. Compare it only with the same external commit and runner
+class.
+
 The production-large workflow additionally starts a 25 ms external sampler before it constructs the fixture, then
-hands continuous coverage across bootstrap, cold-index, and incremental-index samplers. Each sampler must publish a
-parseable readiness marker before the parent enters the measured phase. It records per-phase process CPU/RSS and
-DB/WAL/SHM peaks plus SQLite temporary-file peaks from an isolated temp root, including
+uses distinct, non-overlapping bootstrap, cold-index, incremental-index, and same-overlay reference samplers. A prior
+sampler is stopped before the next measured sampler starts, so CPU, RSS, I/O, and temporary-file totals cannot leak
+between measurements. Each sampler must publish a parseable readiness marker before the parent enters the measured
+phase. Index wall-time and process boundaries begin immediately before `indexer.index()` only after sampler readiness
+and overlay application, then end immediately after that call and before overlay restoration or post-index work. It
+records per-phase process CPU/RSS and
+DB/WAL/SHM peaks plus deduplicated linked-and-open SQLite temporary-file peaks, including
 `activating/writing-and-checkpointing`. This is observed sampling, not an assertion that an interval cannot miss a
 shorter transient. Linux validates the sampled parent using `/proc` start time so PID reuse cannot be mistaken for the
-original benchmark. Other platforms mark external CPU/RSS telemetry unavailable instead of emitting fabricated zero
-measurements; storage sampling remains available.
+original benchmark. macOS samples process trees every 250 ms and open numeric file descriptors every second to bound
+`ps`/`lsof` overhead. Open-file inspection is capped at 4,096 processes and 65,536 descriptors, and the macOS projection
+at 8 MiB. The artifact records aggregate scheduled attempts, successful samples, and failures; a cap or transient
+inspection loss after startup therefore fails production/external release evidence instead of silently retaining a
+partial high-water. The sampled-high-water caveat still applies between successful observations. The sampler excludes its own
+observer subtree from process and open-file totals. Production/external release evidence is accepted only on Linux or
+macOS; unsupported platforms fail the preflight instead of emitting partial or fabricated measurements.
 
 Each sampler atomically checkpoints its evidence into the workflow's artifact directory once per second and on parent
 exit. A separate run-lifecycle checkpoint records the current benchmark phase and ends as `complete` or `failed` when

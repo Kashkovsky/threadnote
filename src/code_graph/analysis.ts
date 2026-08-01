@@ -1,4 +1,4 @@
-import {Clock, Context, Effect, Layer} from 'effect';
+import {Clock, Context, Effect, Layer, Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {compareCodeUnits} from './ordering.js';
 import type {
@@ -8,12 +8,22 @@ import type {
   CodeGraphSnapshot,
   CodeGraphSymbol,
 } from './types.js';
-import type {CodeGraphEdgeCursor, CodeGraphStoreShape, CodeGraphSymbolCursor} from './store.js';
+import type {
+  CodeGraphAnalysisEdgeAggregate,
+  CodeGraphAnalysisEdgeAggregatePage,
+  CodeGraphAnalysisSymbolAggregatePage,
+  CodeGraphAnalysisSummary,
+  CodeGraphEdgeCursor,
+  CodeGraphStoreShape,
+  CodeGraphSymbolCursor,
+} from './store.js';
 import {CodeGraphStore} from './store.js';
 
 export const CODE_GRAPH_ANALYSIS_VERSION = 3 as const;
 
 export interface CodeGraphAnalysisBudget {
+  /** Rows grouped by each interruptible aggregate query. */
+  readonly aggregatePageSize?: number;
   /** Maximum distinct edge rows considered by the topology pass. */
   readonly maxEdges?: number;
   /** Maximum edge row visits across the topology and scoring passes. */
@@ -48,6 +58,7 @@ export interface CodeGraphAnalysisOptions {
 }
 
 export interface ResolvedCodeGraphAnalysisBudget {
+  readonly aggregatePageSize: number;
   readonly maxEdges: number;
   readonly maxEdgeVisits: number;
   readonly maxDurationMilliseconds: number;
@@ -211,6 +222,7 @@ export interface CodeGraphConfidenceAudit {
   readonly averageConfidence: number;
   readonly bands: readonly CodeGraphConfidenceBand[];
   readonly complete: boolean;
+  readonly findingsComplete: boolean;
   readonly findings: readonly CodeGraphConfidenceFinding[];
   readonly highConfidenceThreshold: number;
   readonly invalidConfidenceEdgeCount: number;
@@ -221,13 +233,20 @@ export interface CodeGraphConfidenceAudit {
     readonly provenance: CodeGraphProvenance;
   }[];
   readonly selectedEdgeCount: number;
+  readonly summaryComplete: boolean;
   readonly unresolvedEndpointEdgeCount: number;
   readonly unresolvedEndpointShare: number;
 }
 
 export interface CodeGraphAnalysisStatistics {
+  /** Relationships whose endpoints were both present in the observed topology pass. */
   readonly analyzedEdgeCount: number;
+  /** Symbols retained by the observed topology pass. */
   readonly analyzedNodeCount: number;
+  /** Edge rows included in the bounded aggregate pass. */
+  readonly aggregatedEdgeCount: number;
+  /** Symbol rows included in the bounded aggregate pass. */
+  readonly aggregatedNodeCount: number;
   readonly averageDegree: number;
   readonly communityCount: number;
   readonly connectedComponentCount: number;
@@ -247,13 +266,34 @@ export interface CodeGraphAnalysisStatistics {
 }
 
 export interface CodeGraphAnalysisCoverage {
+  readonly aggregates: {
+    readonly edges: {
+      readonly complete: boolean;
+      readonly rows: number;
+      readonly source: 'paged-fallback' | 'persisted-summary';
+    };
+    readonly symbols: {
+      readonly complete: boolean;
+      readonly rows: number;
+      readonly source: 'paged-fallback' | 'persisted-summary';
+    };
+  };
   readonly complete: boolean;
   readonly edgeMetricsComplete: boolean;
   readonly edgesComplete: boolean;
   readonly nodesComplete: boolean;
+  readonly topology: {
+    readonly complete: boolean;
+    readonly state: 'complete' | 'not-requested' | 'partial' | 'unavailable';
+  };
 }
 
 export interface CodeGraphAnalysisUsage {
+  readonly aggregateSummaryReads: number;
+  readonly aggregateEdgePageReads: number;
+  readonly aggregateEdgeRows: number;
+  readonly aggregateSymbolPageReads: number;
+  readonly aggregateSymbolRows: number;
   readonly durationMilliseconds: number;
   readonly edgePageReads: number;
   readonly edgeVisits: number;
@@ -329,6 +369,7 @@ export class CodeGraphAnalysis extends Context.Service<CodeGraphAnalysis, CodeGr
 }
 
 const DEFAULT_BUDGET = {
+  aggregatePageSize: 50_000,
   maxDurationMilliseconds: 60_000,
   pageSize: 1_000,
 } as const;
@@ -398,6 +439,34 @@ interface EdgeScanResult {
   readonly visits: number;
 }
 
+interface AggregateScanResult {
+  readonly pageReads: number;
+  readonly reachedEnd: boolean;
+  readonly rows: number;
+  readonly timedOut: boolean;
+}
+
+interface SymbolAggregateAccumulator {
+  readonly kindCounts: Map<string, number>;
+  readonly languageCounts: Map<string, number>;
+  rows: number;
+}
+
+interface EdgeAggregateAccumulator {
+  readonly confidenceBands: Map<CodeGraphConfidenceBandName, number>;
+  readonly confidenceByProvenance: Map<CodeGraphProvenance, MutableConfidenceSummary>;
+  readonly provenanceCounts: Map<string, number>;
+  readonly relationCounts: Map<string, number>;
+  confidenceTotal: number;
+  filteredEdges: number;
+  invalidConfidenceEdgeCount: number;
+  reviewFindingCount: number;
+  rows: number;
+  selectedEdges: number;
+  selfLoops: number;
+  unresolvedEndpointEdges: number;
+}
+
 interface AnalysisCounters {
   analyzedEdges: number;
   filteredEdges: number;
@@ -453,19 +522,69 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   const allowed = new Set(allowedProvenances);
   const startedAt = yield* Clock.currentTimeMillis;
   const deadline = startedAt + budget.maxDurationMilliseconds;
+  const symbolAggregates = makeSymbolAggregateAccumulator();
+  const edgeAggregates = makeEdgeAggregateAccumulator();
+  const persistedSummary =
+    typeof store.loadAnalysisSummary === 'function'
+      ? yield* store.loadAnalysisSummary(options.databasePath, options.snapshot.id)
+      : Option.none<CodeGraphAnalysisSummary>();
+  if (Option.isSome(persistedSummary)) {
+    mergePersistedAnalysisSummary(symbolAggregates, edgeAggregates, persistedSummary.value, allowed);
+  }
+  const persistedAggregateSource = Option.isSome(persistedSummary);
+  const symbolPageAggregateSupported = typeof store.loadAnalysisSymbolAggregatePage === 'function';
+  const edgePageAggregateSupported = typeof store.loadAnalysisEdgeAggregatePage === 'function';
+  const symbolAggregateSupported = persistedAggregateSource || symbolPageAggregateSupported;
+  const edgeAggregateSupported = persistedAggregateSource || edgePageAggregateSupported;
+  const symbolAggregateScan = persistedAggregateSource
+    ? completeAggregateScan(persistedSummary.value.symbolCount)
+    : symbolPageAggregateSupported
+      ? yield* scanSymbolAggregatePages(
+          store,
+          options,
+          budget.aggregatePageSize,
+          Math.min(budget.maxNodes, options.snapshot.symbolCount),
+          deadline,
+          symbolAggregates,
+        )
+      : emptyAggregateScan(false);
+  const edgeAggregateScan = persistedAggregateSource
+    ? completeAggregateScan(persistedSummary.value.edgeCount)
+    : edgePageAggregateSupported
+      ? yield* scanEdgeAggregatePages(
+          store,
+          options,
+          budget.aggregatePageSize,
+          Math.min(budget.maxEdges, options.snapshot.edgeCount),
+          deadline,
+          allowed,
+          edgeAggregates,
+        )
+      : emptyAggregateScan(false);
+  const needsTopology =
+    limits.communities > 0 ||
+    limits.components > 0 ||
+    limits.hubs > 0 ||
+    limits.memberships > 0 ||
+    limits.relationshipGroups > 0 ||
+    limits.surprisingLinks > 0 ||
+    options.communityId !== undefined;
+  const needsConfidenceFindingScan = limits.confidenceFindings > 0;
+  const aggregateFinishedAt = yield* Clock.currentTimeMillis;
+  const topologyNodeDeadline = needsTopology
+    ? aggregateFinishedAt + Math.floor(Math.max(0, deadline - aggregateFinishedAt) / 2)
+    : aggregateFinishedAt;
   const nodes: NodeState[] = [];
   const nodeIndex = new Map<string, number>();
-  const languageCounts = new Map<string, number>();
-  const kindCounts = new Map<string, number>();
+  const topologyLanguageCounts = new Map<string, number>();
+  const topologyKindCounts = new Map<string, number>();
   const componentSets = new DisjointSets();
   const communitySets = new DisjointSets();
   let nodePageReads = 0;
-  let timedOut = false;
   let symbolCursor: CodeGraphSymbolCursor | undefined;
 
-  while (nodes.length < budget.maxNodes) {
-    if (yield* deadlineReached(deadline)) {
-      timedOut = true;
+  while (needsTopology && nodes.length < budget.maxNodes) {
+    if (yield* deadlineReached(topologyNodeDeadline)) {
       break;
     }
     const remaining = budget.maxNodes - nodes.length;
@@ -482,8 +601,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
       nodes.push(nodeState(symbol));
       componentSets.add();
       communitySets.add();
-      increment(languageCounts, symbol.language);
-      increment(kindCounts, symbol.kind);
+      increment(topologyLanguageCounts, symbol.language);
+      increment(topologyKindCounts, symbol.kind);
       if (nodes.length >= budget.maxNodes) break;
     }
     const last = page.at(-1)!;
@@ -494,59 +613,65 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     }
   }
 
-  const nodesComplete = nodes.length >= options.snapshot.symbolCount;
-  const relationCounts = new Map<string, number>();
-  const provenanceCounts = new Map<string, number>();
+  const nodesComplete = needsTopology && nodes.length >= options.snapshot.symbolCount;
+  const relationCounts = edgeAggregateSupported ? new Map(edgeAggregates.relationCounts) : new Map<string, number>();
+  const provenanceCounts = edgeAggregateSupported
+    ? new Map(edgeAggregates.provenanceCounts)
+    : new Map<string, number>();
   const counters: AnalysisCounters = {
     analyzedEdges: 0,
-    filteredEdges: 0,
-    selectedEdges: 0,
-    selfLoops: 0,
-    unresolvedEndpointEdges: 0,
+    filteredEdges: edgeAggregateSupported ? edgeAggregates.filteredEdges : 0,
+    selectedEdges: edgeAggregateSupported ? edgeAggregates.selectedEdges : 0,
+    selfLoops: edgeAggregateSupported ? edgeAggregates.selfLoops : 0,
+    unresolvedEndpointEdges: edgeAggregateSupported ? edgeAggregates.unresolvedEndpointEdges : 0,
   };
-  const confidenceBands = new Map<CodeGraphConfidenceBandName, number>([
-    ['high', 0],
-    ['medium', 0],
-    ['low', 0],
-  ]);
-  const confidenceByProvenance = new Map<CodeGraphProvenance, MutableConfidenceSummary>();
+  const confidenceBands = edgeAggregateSupported ? new Map(edgeAggregates.confidenceBands) : emptyConfidenceBands();
+  const confidenceByProvenance = edgeAggregateSupported
+    ? cloneConfidenceSummaries(edgeAggregates.confidenceByProvenance)
+    : new Map<CodeGraphProvenance, MutableConfidenceSummary>();
   const confidenceFindings: CodeGraphConfidenceFinding[] = [];
-  let confidenceFindingCandidateCount = 0;
-  let confidenceTotal = 0;
-  let invalidConfidenceEdgeCount = 0;
+  let confidenceFindingCandidateCount = edgeAggregateSupported ? edgeAggregates.reviewFindingCount : 0;
+  let confidenceTotal = edgeAggregateSupported ? edgeAggregates.confidenceTotal : 0;
+  let invalidConfidenceEdgeCount = edgeAggregateSupported ? edgeAggregates.invalidConfidenceEdgeCount : 0;
   const firstEdgeBudget = Math.min(budget.maxEdges, budget.maxEdgeVisits);
-  const topologyScan = timedOut
-    ? emptyEdgeScan(true)
+  const topologyEnabled = needsTopology && nodesComplete;
+  const needsPrimaryEdgeScan = topologyEnabled || needsConfidenceFindingScan;
+  const topologyScan = !needsPrimaryEdgeScan
+    ? emptyEdgeScan(false)
     : yield* scanEdgePages(store, options, budget.pageSize, firstEdgeBudget, deadline, edge => {
         if (!allowed.has(edge.provenance)) {
-          counters.filteredEdges += 1;
+          if (!edgeAggregateSupported) counters.filteredEdges += 1;
           return;
         }
-        counters.selectedEdges += 1;
-        increment(provenanceCounts, edge.provenance);
-        increment(relationCounts, edge.relation);
+        if (!edgeAggregateSupported) {
+          counters.selectedEdges += 1;
+          increment(provenanceCounts, edge.provenance);
+          increment(relationCounts, edge.relation);
+        }
         const sourceIndex = edge.sourceId === undefined ? undefined : nodeIndex.get(edge.sourceId);
         const targetIndex = edge.targetId === undefined ? undefined : nodeIndex.get(edge.targetId);
         const confidenceValid = Number.isFinite(edge.confidence) && edge.confidence >= 0 && edge.confidence <= 1;
         const confidence = confidenceValid ? edge.confidence : Math.max(0, Math.min(1, edge.confidence || 0));
-        if (!confidenceValid) invalidConfidenceEdgeCount += 1;
-        confidenceTotal += confidence;
-        increment(confidenceBands, confidenceBand(confidence));
-        const provenanceSummary = confidenceByProvenance.get(edge.provenance) ?? {
-          count: 0,
-          lowest: confidence,
-          total: 0,
-        };
-        provenanceSummary.count += 1;
-        provenanceSummary.lowest = Math.min(provenanceSummary.lowest, confidence);
-        provenanceSummary.total += confidence;
-        confidenceByProvenance.set(edge.provenance, provenanceSummary);
+        if (!edgeAggregateSupported) {
+          if (!confidenceValid) invalidConfidenceEdgeCount += 1;
+          confidenceTotal += confidence;
+          increment(confidenceBands, confidenceBand(confidence));
+          const provenanceSummary = confidenceByProvenance.get(edge.provenance) ?? {
+            count: 0,
+            lowest: confidence,
+            total: 0,
+          };
+          provenanceSummary.count += 1;
+          provenanceSummary.lowest = Math.min(provenanceSummary.lowest, confidence);
+          provenanceSummary.total += confidence;
+          confidenceByProvenance.set(edge.provenance, provenanceSummary);
+        }
         const expectedMinimumConfidence = minimumExpectedConfidence(edge.provenance);
         const confidenceIssues: CodeGraphConfidenceFinding['issues'][number][] = [];
         if (!confidenceValid) confidenceIssues.push('invalid-confidence');
         if (confidence < expectedMinimumConfidence) confidenceIssues.push('below-provenance-baseline');
         if (confidenceIssues.length > 0) {
-          confidenceFindingCandidateCount += 1;
+          if (!edgeAggregateSupported) confidenceFindingCandidateCount += 1;
           retainBestDistinct(
             confidenceFindings,
             {
@@ -571,8 +696,9 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
             finding => finding.edgeId,
           );
         }
+        if (!topologyEnabled) return;
         if (sourceIndex === undefined || targetIndex === undefined) {
-          counters.unresolvedEndpointEdges += 1;
+          if (!edgeAggregateSupported) counters.unresolvedEndpointEdges += 1;
           return;
         }
         counters.analyzedEdges += 1;
@@ -584,10 +710,23 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
         if (source.scope === target.scope || COHESIVE_RELATIONS.has(edge.relation)) {
           communitySets.union(sourceIndex, targetIndex);
         }
-        if (sourceIndex === targetIndex) counters.selfLoops += 1;
+        if (!edgeAggregateSupported && sourceIndex === targetIndex) counters.selfLoops += 1;
       });
-  timedOut ||= topologyScan.timedOut;
-  const edgesComplete = topologyScan.visits >= options.snapshot.edgeCount || options.snapshot.edgeCount === 0;
+  const edgesComplete =
+    topologyEnabled && (topologyScan.visits >= options.snapshot.edgeCount || options.snapshot.edgeCount === 0);
+  const confidenceFindingsComplete =
+    !needsConfidenceFindingScan ||
+    topologyScan.reachedEnd ||
+    topologyScan.visits >= options.snapshot.edgeCount ||
+    options.snapshot.edgeCount === 0;
+  const observedTopologyNodeCount = nodes.length;
+  if (needsTopology && !topologyEnabled) {
+    // A path-prefix node slice without the complete endpoint set cannot support
+    // truthful connectivity, isolation, hub, or community claims. Preserve the
+    // observed row count for coverage, but derive no topology from that slice.
+    nodes.length = 0;
+    nodeIndex.clear();
+  }
 
   const componentGroups = new Map<number, MutableGroup>();
   const communityGroups = new Map<number, MutableGroup>();
@@ -744,8 +883,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     limits.surprisingLinks > 0 ||
     options.communityId !== undefined;
   const metricScan =
-    !needsMetricScan || timedOut || metricScanLimit === 0
-      ? emptyEdgeScan(timedOut)
+    !needsMetricScan || !topologyEnabled || metricScanLimit === 0
+      ? emptyEdgeScan(false)
       : yield* scanEdgePages(store, options, budget.pageSize, metricScanLimit, deadline, edge => {
           if (!allowed.has(edge.provenance)) return;
           const sourceIndex = edge.sourceId === undefined ? undefined : nodeIndex.get(edge.sourceId);
@@ -835,6 +974,22 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     (edgesComplete &&
       metricScanLimit >= topologyScan.visits &&
       (metricScan.reachedEnd || metricScan.visits >= topologyScan.visits));
+  const aggregatedNodeCount = symbolAggregateSupported ? symbolAggregateScan.rows : observedTopologyNodeCount;
+  const aggregatedEdgeCount = edgeAggregateSupported ? edgeAggregateScan.rows : topologyScan.visits;
+  const symbolAggregatesComplete = symbolAggregateSupported
+    ? aggregatedNodeCount >= options.snapshot.symbolCount || options.snapshot.symbolCount === 0
+    : nodesComplete;
+  const edgeAggregatesComplete = edgeAggregateSupported
+    ? aggregatedEdgeCount >= options.snapshot.edgeCount || options.snapshot.edgeCount === 0
+    : edgesComplete;
+  const topologyComplete = !needsTopology || (nodesComplete && edgesComplete && edgeMetricsComplete);
+  const topologyState: CodeGraphAnalysisCoverage['topology']['state'] = !needsTopology
+    ? 'not-requested'
+    : !topologyEnabled
+      ? 'unavailable'
+      : topologyComplete
+        ? 'complete'
+        : 'partial';
 
   const components: CodeGraphConnectedComponent[] = [];
   if (limits.components > 0) {
@@ -932,13 +1087,38 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
 
   const finishedAt = yield* Clock.currentTimeMillis;
   const warnings: string[] = [];
-  if (!nodesComplete)
-    warnings.push('Node analysis reached its configured node or elapsed-time budget; results are partial.');
-  if (!edgesComplete)
-    warnings.push('Edge analysis reached its configured edge or elapsed-time budget; results are partial.');
-  if (!edgeMetricsComplete) {
+  if (!persistedAggregateSource && (symbolPageAggregateSupported || edgePageAggregateSupported)) {
+    warnings.push(
+      'Whole-graph counts used the bounded legacy page fallback; run graph index once to persist the fast summary.',
+    );
+  }
+  if (!symbolAggregatesComplete) {
+    warnings.push(
+      `Symbol aggregates cover ${aggregatedNodeCount.toLocaleString()} of ${options.snapshot.symbolCount.toLocaleString()} rows; counts are observed, not whole-graph totals.`,
+    );
+  }
+  if (!edgeAggregatesComplete) {
+    warnings.push(
+      `Relationship aggregates cover ${aggregatedEdgeCount.toLocaleString()} of ${options.snapshot.edgeCount.toLocaleString()} rows; counts are observed, not whole-graph totals.`,
+    );
+  }
+  if (needsTopology && !nodesComplete) {
+    warnings.push(
+      `Topology was not derived because only ${observedTopologyNodeCount.toLocaleString()} of ${options.snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
+    );
+  }
+  if (needsTopology && topologyEnabled && !edgesComplete)
+    warnings.push(
+      'Topology relationship analysis reached its configured edge or elapsed-time budget; topology is partial.',
+    );
+  if (needsTopology && topologyEnabled && !edgeMetricsComplete) {
     warnings.push(
       'Community edge metrics, structural relationship groups, and surprising links reached their configured visit or elapsed-time budget.',
+    );
+  }
+  if (!confidenceFindingsComplete) {
+    warnings.push(
+      'Confidence summary counts are aggregate-backed, but individual review findings are a bounded sample.',
     );
   }
   if (limits.components > 0 && componentGroups.size > limits.components) {
@@ -984,7 +1164,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
       count: confidenceBands.get(band) ?? 0,
       share: stableNumber((confidenceBands.get(band) ?? 0) / Math.max(1, counters.selectedEdges)),
     })),
-    complete: edgesComplete,
+    complete: edgeAggregatesComplete && confidenceFindingsComplete,
+    findingsComplete: confidenceFindingsComplete,
     findings: confidenceFindings,
     highConfidenceThreshold: HIGH_CONFIDENCE_THRESHOLD,
     invalidConfidenceEdgeCount,
@@ -1003,6 +1184,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
       provenance,
     })),
     selectedEdgeCount: counters.selectedEdges,
+    summaryComplete: edgeAggregatesComplete,
     unresolvedEndpointEdgeCount: counters.unresolvedEndpointEdges,
     unresolvedEndpointShare: stableNumber(counters.unresolvedEndpointEdges / Math.max(1, counters.selectedEdges)),
   };
@@ -1030,10 +1212,23 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     components,
     confidenceAudit,
     coverage: {
-      complete: nodesComplete && edgesComplete && edgeMetricsComplete,
+      aggregates: {
+        edges: {
+          complete: edgeAggregatesComplete,
+          rows: aggregatedEdgeCount,
+          source: persistedAggregateSource ? 'persisted-summary' : 'paged-fallback',
+        },
+        symbols: {
+          complete: symbolAggregatesComplete,
+          rows: aggregatedNodeCount,
+          source: persistedAggregateSource ? 'persisted-summary' : 'paged-fallback',
+        },
+      },
+      complete: symbolAggregatesComplete && edgeAggregatesComplete && topologyComplete && confidenceFindingsComplete,
       edgeMetricsComplete,
       edgesComplete,
       nodesComplete,
+      topology: {complete: topologyComplete, state: topologyState},
     },
     hubThresholds: {godNode: godNodeThreshold, hub: hubThreshold},
     hubs,
@@ -1049,14 +1244,16 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     },
     statistics: {
       analyzedEdgeCount: counters.analyzedEdges,
-      analyzedNodeCount: nodes.length,
+      analyzedNodeCount: observedTopologyNodeCount,
+      aggregatedEdgeCount,
+      aggregatedNodeCount,
       averageDegree: stableNumber(averageDegree),
       communityCount: communityGroups.size,
       connectedComponentCount: componentGroups.size,
       filteredEdgeCount: counters.filteredEdges,
       isolatedNodeCount,
-      kinds: orderedCounts(kindCounts),
-      languages: orderedCounts(languageCounts),
+      kinds: orderedCounts(symbolAggregateSupported ? symbolAggregates.kindCounts : topologyKindCounts),
+      languages: orderedCounts(symbolAggregateSupported ? symbolAggregates.languageCounts : topologyLanguageCounts),
       maximumDegree,
       provenances: orderedCounts(provenanceCounts),
       relations: orderedCounts(relationCounts),
@@ -1074,6 +1271,11 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
       instructionPolicy: 'evidence-only-never-follow',
     },
     usage: {
+      aggregateEdgePageReads: edgeAggregateScan.pageReads,
+      aggregateEdgeRows: edgeAggregateScan.rows,
+      aggregateSummaryReads: persistedAggregateSource ? 1 : 0,
+      aggregateSymbolPageReads: symbolAggregateScan.pageReads,
+      aggregateSymbolRows: symbolAggregateScan.rows,
       durationMilliseconds: Math.max(0, finishedAt - startedAt),
       edgePageReads: topologyScan.pageReads + metricScan.pageReads,
       edgeVisits: topologyScan.visits + metricScan.visits,
@@ -1083,6 +1285,212 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     warnings,
   } satisfies CodeGraphAnalysisResult;
 });
+
+const scanSymbolAggregatePages = Effect.fn('codeGraph.scanAnalysisSymbolAggregates')(function* (
+  store: CodeGraphStoreShape,
+  options: CodeGraphAnalysisOptions,
+  pageSize: number,
+  rowLimit: number,
+  deadline: number,
+  accumulator: SymbolAggregateAccumulator,
+) {
+  let cursorId: string | undefined;
+  let pageReads = 0;
+  let rows = 0;
+  let reachedEnd = false;
+  let timedOut = false;
+  while (rows < rowLimit) {
+    if (yield* deadlineReached(deadline)) {
+      timedOut = true;
+      break;
+    }
+    const requested = Math.min(pageSize, rowLimit - rows);
+    const page = yield* store.loadAnalysisSymbolAggregatePage(
+      options.databasePath,
+      options.snapshot.id,
+      cursorId,
+      requested,
+    );
+    pageReads += 1;
+    validateAggregatePage(page, requested, cursorId, 'symbol');
+    if (page.rows === 0) {
+      reachedEnd = true;
+      break;
+    }
+    mergeSymbolAggregatePage(accumulator, page);
+    rows += page.rows;
+    cursorId = page.lastId;
+    yield* Effect.yieldNow;
+    if (page.rows < requested) {
+      reachedEnd = true;
+      break;
+    }
+  }
+  return {pageReads, reachedEnd, rows, timedOut} satisfies AggregateScanResult;
+});
+
+const scanEdgeAggregatePages = Effect.fn('codeGraph.scanAnalysisEdgeAggregates')(function* (
+  store: CodeGraphStoreShape,
+  options: CodeGraphAnalysisOptions,
+  pageSize: number,
+  rowLimit: number,
+  deadline: number,
+  allowed: ReadonlySet<CodeGraphProvenance>,
+  accumulator: EdgeAggregateAccumulator,
+) {
+  let cursorId: string | undefined;
+  let pageReads = 0;
+  let rows = 0;
+  let reachedEnd = false;
+  let timedOut = false;
+  while (rows < rowLimit) {
+    if (yield* deadlineReached(deadline)) {
+      timedOut = true;
+      break;
+    }
+    const requested = Math.min(pageSize, rowLimit - rows);
+    const page = yield* store.loadAnalysisEdgeAggregatePage(
+      options.databasePath,
+      options.snapshot.id,
+      cursorId,
+      requested,
+    );
+    pageReads += 1;
+    validateAggregatePage(page, requested, cursorId, 'relationship');
+    if (page.rows === 0) {
+      reachedEnd = true;
+      break;
+    }
+    mergeEdgeAggregatePage(accumulator, page, allowed);
+    rows += page.rows;
+    cursorId = page.lastId;
+    yield* Effect.yieldNow;
+    if (page.rows < requested) {
+      reachedEnd = true;
+      break;
+    }
+  }
+  return {pageReads, reachedEnd, rows, timedOut} satisfies AggregateScanResult;
+});
+
+function validateAggregatePage(
+  page: {readonly lastId?: string; readonly rows: number},
+  requested: number,
+  previousCursor: string | undefined,
+  label: string,
+): void {
+  if (!Number.isSafeInteger(page.rows) || page.rows < 0 || page.rows > requested) {
+    throw new Error(`Code graph ${label} aggregate page returned an invalid row count.`);
+  }
+  if (page.rows === 0) return;
+  if (
+    page.lastId === undefined ||
+    (previousCursor !== undefined && compareCodeUnits(page.lastId, previousCursor) <= 0)
+  ) {
+    throw new Error(`Code graph ${label} aggregate page did not advance its cursor.`);
+  }
+}
+
+function makeSymbolAggregateAccumulator(): SymbolAggregateAccumulator {
+  return {kindCounts: new Map(), languageCounts: new Map(), rows: 0};
+}
+
+function makeEdgeAggregateAccumulator(): EdgeAggregateAccumulator {
+  return {
+    confidenceBands: emptyConfidenceBands(),
+    confidenceByProvenance: new Map(),
+    confidenceTotal: 0,
+    filteredEdges: 0,
+    invalidConfidenceEdgeCount: 0,
+    provenanceCounts: new Map(),
+    relationCounts: new Map(),
+    reviewFindingCount: 0,
+    rows: 0,
+    selectedEdges: 0,
+    selfLoops: 0,
+    unresolvedEndpointEdges: 0,
+  };
+}
+
+function mergeSymbolAggregatePage(
+  accumulator: SymbolAggregateAccumulator,
+  page: CodeGraphAnalysisSymbolAggregatePage,
+): void {
+  accumulator.rows += page.rows;
+  for (const row of page.counts) {
+    incrementBy(accumulator.kindCounts, row.kind, row.count);
+    incrementBy(accumulator.languageCounts, row.language, row.count);
+  }
+}
+
+function mergePersistedAnalysisSummary(
+  symbols: SymbolAggregateAccumulator,
+  edges: EdgeAggregateAccumulator,
+  summary: CodeGraphAnalysisSummary,
+  allowed: ReadonlySet<CodeGraphProvenance>,
+): void {
+  symbols.rows = summary.symbolCount;
+  for (const row of summary.symbols) {
+    incrementBy(symbols.kindCounts, row.kind, row.count);
+    incrementBy(symbols.languageCounts, row.language, row.count);
+  }
+  edges.rows = summary.edgeCount;
+  for (const row of summary.edges) mergeEdgeAggregate(edges, row, allowed);
+}
+
+function mergeEdgeAggregatePage(
+  accumulator: EdgeAggregateAccumulator,
+  page: CodeGraphAnalysisEdgeAggregatePage,
+  allowed: ReadonlySet<CodeGraphProvenance>,
+): void {
+  accumulator.rows += page.rows;
+  for (const row of page.counts) mergeEdgeAggregate(accumulator, row, allowed);
+}
+
+function mergeEdgeAggregate(
+  accumulator: EdgeAggregateAccumulator,
+  row: CodeGraphAnalysisEdgeAggregate,
+  allowed: ReadonlySet<CodeGraphProvenance>,
+): void {
+  if (!allowed.has(row.provenance)) {
+    accumulator.filteredEdges += row.count;
+    return;
+  }
+  accumulator.selectedEdges += row.count;
+  accumulator.selfLoops += row.selfLoopCount;
+  accumulator.unresolvedEndpointEdges += row.unresolvedEndpointCount;
+  accumulator.confidenceTotal += row.confidenceTotal;
+  accumulator.invalidConfidenceEdgeCount += row.confidenceInvalid;
+  accumulator.reviewFindingCount += row.reviewFindingCount;
+  incrementBy(accumulator.provenanceCounts, row.provenance, row.count);
+  incrementBy(accumulator.relationCounts, row.relation, row.count);
+  incrementBy(accumulator.confidenceBands, 'high', row.confidenceHigh);
+  incrementBy(accumulator.confidenceBands, 'medium', row.confidenceMedium);
+  incrementBy(accumulator.confidenceBands, 'low', row.confidenceLow);
+  const summary = accumulator.confidenceByProvenance.get(row.provenance) ?? {
+    count: 0,
+    lowest: row.lowestConfidence,
+    total: 0,
+  };
+  summary.count += row.count;
+  summary.lowest = Math.min(summary.lowest, row.lowestConfidence);
+  summary.total += row.confidenceTotal;
+  accumulator.confidenceByProvenance.set(row.provenance, summary);
+}
+
+function emptyConfidenceBands(): Map<CodeGraphConfidenceBandName, number> {
+  return new Map<CodeGraphConfidenceBandName, number>([
+    ['high', 0],
+    ['medium', 0],
+    ['low', 0],
+  ]);
+}
+
+function cloneConfidenceSummaries(
+  values: ReadonlyMap<CodeGraphProvenance, MutableConfidenceSummary>,
+): Map<CodeGraphProvenance, MutableConfidenceSummary> {
+  return new Map([...values].map(([key, value]) => [key, {...value}]));
+}
 
 const scanEdgePages = Effect.fn('codeGraph.scanAnalysisEdges')(function* (
   store: CodeGraphStoreShape,
@@ -1523,6 +1931,10 @@ function increment(counts: Map<string, number>, value: string): void {
   counts.set(value, (counts.get(value) ?? 0) + 1);
 }
 
+function incrementBy(counts: Map<string, number>, value: string, amount: number): void {
+  counts.set(value, (counts.get(value) ?? 0) + amount);
+}
+
 function stableNumber(value: number): number {
   return Number.isFinite(value) ? Number(value.toFixed(8)) : 0;
 }
@@ -1539,12 +1951,21 @@ function emptyEdgeScan(timedOut: boolean): EdgeScanResult {
   return {pageReads: 0, reachedEnd: false, timedOut, visits: 0};
 }
 
+function emptyAggregateScan(timedOut: boolean): AggregateScanResult {
+  return {pageReads: 0, reachedEnd: false, rows: 0, timedOut};
+}
+
+function completeAggregateScan(rows: number): AggregateScanResult {
+  return {pageReads: 0, reachedEnd: true, rows, timedOut: false};
+}
+
 function resolveBudget(
   input: CodeGraphAnalysisBudget | undefined,
   snapshot: CodeGraphSnapshot,
 ): ResolvedCodeGraphAnalysisBudget {
   const maxEdges = nonNegativeSafeInteger(input?.maxEdges, snapshot.edgeCount);
   return {
+    aggregatePageSize: positiveInteger(input?.aggregatePageSize, DEFAULT_BUDGET.aggregatePageSize, 1, 250_000),
     maxEdges,
     maxEdgeVisits: nonNegativeSafeInteger(input?.maxEdgeVisits, saturatingMultiply(maxEdges, 2)),
     maxDurationMilliseconds: positiveInteger(

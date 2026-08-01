@@ -15,15 +15,18 @@
   },
   "developmentPerformance": {
     "coldIndexP95MillisecondsMaximum": 30000,
+    "coldMaterializationP95MillisecondsMaximum": 15000,
     "derivedIndexBytesMaximum": 134217728,
     "hotQueryP95MillisecondsMaximum": 500,
     "oneFileIncrementalP95MillisecondsMaximum": 15000,
+    "oneFileMaterializationP95MillisecondsMaximum": 10000,
     "processPeakRssBytesMaximum": 1610612736,
     "wholeGraphAnalysisP95MillisecondsMaximum": 2000
   },
   "notes": [
     "The fixture executes the compiler-backed TypeScript pack and bundled Java, Kotlin, and Swift WASM packs.",
     "The quality gate requires exact reviewed cross-language edges, zero authoritative false edges, and no-answer preservation.",
-    "Performance budgets are broad cross-platform regression guards; production monorepo scale remains covered by generated scale runs."
+    "Performance budgets are broad cross-platform regression guards; production monorepo scale remains covered by generated scale runs.",
+    "Materialization duration is gated independently from parser/extraction and activation work."
   ]
 }

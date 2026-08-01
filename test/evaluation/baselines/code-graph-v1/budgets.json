@@ -15,34 +15,42 @@
   },
   "developmentPerformance": {
     "coldIndexP95MillisecondsMaximum": 10000,
+    "coldMaterializationP95MillisecondsMaximum": 5000,
     "derivedIndexBytesMaximum": 67108864,
     "hotQueryP95MillisecondsMaximum": 250,
     "oneFileIncrementalP95MillisecondsMaximum": 5000,
+    "oneFileMaterializationP95MillisecondsMaximum": 4000,
     "processPeakRssBytesMaximum": 1073741824,
     "wholeGraphAnalysisP95MillisecondsMaximum": 1000
   },
   "vectorPerformance": {
     "coldIndexP95MillisecondsMaximum": 60000,
+    "coldMaterializationP95MillisecondsMaximum": 10000,
     "derivedIndexBytesMaximum": 134217728,
     "hotQueryP95MillisecondsMaximum": 5000,
     "oneFileIncrementalP95MillisecondsMaximum": 30000,
+    "oneFileMaterializationP95MillisecondsMaximum": 5000,
     "processPeakRssBytesMaximum": 2147483648,
     "wholeGraphAnalysisP95MillisecondsMaximum": 2000
   },
   "vectorScalePerformance": {
     "10000": {
       "coldIndexP95MillisecondsMaximum": 300000,
+      "coldMaterializationP95MillisecondsMaximum": 60000,
       "derivedIndexBytesMaximum": 1073741824,
       "hotQueryP95MillisecondsMaximum": 5000,
       "oneFileIncrementalP95MillisecondsMaximum": 120000,
+      "oneFileMaterializationP95MillisecondsMaximum": 15000,
       "processPeakRssBytesMaximum": 4294967296,
       "wholeGraphAnalysisP95MillisecondsMaximum": 10000
     },
     "100000": {
       "coldIndexP95MillisecondsMaximum": 900000,
+      "coldMaterializationP95MillisecondsMaximum": 600000,
       "derivedIndexBytesMaximum": 3221225472,
       "hotQueryP95MillisecondsMaximum": 10000,
       "oneFileIncrementalP95MillisecondsMaximum": 300000,
+      "oneFileMaterializationP95MillisecondsMaximum": 60000,
       "processPeakRssBytesMaximum": 8589934592,
       "wholeGraphAnalysisP95MillisecondsMaximum": 30000
     }
@@ -50,17 +58,21 @@
   "scalePerformance": {
     "10000": {
       "coldIndexP95MillisecondsMaximum": 60000,
+      "coldMaterializationP95MillisecondsMaximum": 40000,
       "derivedIndexBytesMaximum": 268435456,
       "hotQueryP95MillisecondsMaximum": 1000,
       "oneFileIncrementalP95MillisecondsMaximum": 15000,
+      "oneFileMaterializationP95MillisecondsMaximum": 10000,
       "processPeakRssBytesMaximum": 2147483648,
       "wholeGraphAnalysisP95MillisecondsMaximum": 2000
     },
     "100000": {
       "coldIndexP95MillisecondsMaximum": 600000,
+      "coldMaterializationP95MillisecondsMaximum": 300000,
       "derivedIndexBytesMaximum": 2147483648,
       "hotQueryP95MillisecondsMaximum": 3000,
       "oneFileIncrementalP95MillisecondsMaximum": 60000,
+      "oneFileMaterializationP95MillisecondsMaximum": 45000,
       "processPeakRssBytesMaximum": 6442450944,
       "wholeGraphAnalysisP95MillisecondsMaximum": 15000
     }
@@ -70,6 +82,7 @@
     "Development performance budgets detect order-of-magnitude regressions on the reviewed fixture.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
     "Generated 10k and 100k lexical artifacts are budget-gated on graph/runtime pull requests in Linux and on scheduled runners; production-shaped repositories remain a separate soak gate.",
-    "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions."
+    "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions.",
+    "Materialization has separate cold and one-file ceilings so parser/extraction improvements cannot hide a graph-row staging or SQLite write regression inside the end-to-end budget."
   ]
 }

@@ -140,6 +140,8 @@ describe('code graph per-file extraction budgets', () => {
   it.each([
     'test/__snapshots__/api.json',
     'test/golden/render.json',
+    'models-document/test/golden-data/example/v1/checksum_info.json',
+    'models-document/test/golden_data/example/v1/checksum_info.json',
     'fixtures/events.json',
     'logs/oplog/session.json',
     'evaluation/results.json',
@@ -153,6 +155,17 @@ describe('code graph per-file extraction budgets', () => {
 
     expect(facts.symbols.map(symbol => symbol.name)).toEqual([path]);
     expect(facts.diagnostics.join('\n')).toContain('module metadata only');
+  });
+
+  it('does not classify golden-like path prefixes as low-signal directories', () => {
+    const path = 'models-document/test/golden-database/example/v1/checksum_info.json';
+    const facts = extractStructuredSchemaFacts(sourceFile(path, 'json', '{"checksum":{"algorithm":"sha256"}}'), {
+      packageName: Option.none(),
+      project: Option.none(),
+    });
+
+    expect(facts.symbols.map(symbol => symbol.name)).toEqual(expect.arrayContaining([path, 'checksum', 'algorithm']));
+    expect(facts.diagnostics).toEqual([]);
   });
 
   it('extracts low-signal structured metadata without receiving its payload', () => {

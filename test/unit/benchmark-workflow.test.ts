@@ -20,6 +20,7 @@ interface WorkflowJob {
     };
   };
   readonly 'timeout-minutes'?: number;
+  readonly uses?: string;
 }
 
 interface BenchmarkWorkflow {
@@ -83,25 +84,32 @@ describe('platform benchmark workflow', () => {
       'code-graph-vectors-10k',
       'recall-10k',
     ]) {
-      expect(workflow.jobs[jobName]?.if).toBe("github.event_name != 'pull_request'");
+      expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'schedule'");
+      expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'workflow_dispatch'");
+      expect(workflow.jobs[jobName]?.if).not.toContain('refs/tags/');
     }
     for (const jobName of ['code-graph-100k', 'code-graph-vectors-100k', 'recall-100k']) {
       expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'schedule'");
     }
   });
 
-  it('runs the production-large n=1 profile only by schedule or explicit opt-in and retains its artifact', () => {
+  it('reuses one fail-closed production-large n=1 workflow for schedule, opt-in, and release gating', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const job = workflow.jobs['code-graph-production-large']!;
+    const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const caller = workflow.jobs['code-graph-production-large']!;
+    const job = evidence.jobs['code-graph-production-large']!;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
 
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_production_large');
-    expect(job.if).toContain("github.event_name == 'schedule'");
-    expect(job.if).toContain('inputs.include_production_large');
+    expect(caller.if).toContain("github.event_name == 'schedule'");
+    expect(caller.if).toContain('inputs.include_production_large');
+    expect(caller.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(360);
     expect(command).toContain('--profile production-large');
@@ -112,6 +120,8 @@ describe('platform benchmark workflow', () => {
     expect(capture?.env).toMatchObject({
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-${{ runner.arch }}',
       THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+      THREADNOTE_BENCHMARK_RELEASE_REF: '${{ inputs.release_ref }}',
+      THREADNOTE_BENCHMARK_RELEASE_SHA: '${{ inputs.release_sha }}',
     });
     const captureTimeout = capture?.['timeout-minutes'];
     expect(captureTimeout).toBeDefined();
@@ -120,7 +130,8 @@ describe('platform benchmark workflow', () => {
     expect(upload?.if).toBe('always()');
     expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(10);
     expect(upload?.with?.path).toBe('artifacts/code-graph-production-large-n1-*.json');
-    expect(upload?.with?.['if-no-files-found']).toBe('warn');
+    expect(upload?.with?.['if-no-files-found']).toBe('error');
+    expect(upload?.with?.['retention-days']).toBe(90);
   });
 
   it('runs the large-monorepo heavy-tail regression only by schedule or explicit opt-in', () => {

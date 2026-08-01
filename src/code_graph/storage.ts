@@ -5,6 +5,7 @@ import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {codeGraphMaintenanceLockPath, codeGraphRepositoryLockPath, codeGraphRepositoryRoot} from './layout.js';
 import {
   awaitCodeGraphWorktreeBuilds,
+  codeGraphRepositoryLockActive,
   codeGraphWorktreeBuildActive,
   withCodeGraphDatabaseWriteLock,
   withCodeGraphMaintenanceIntent,
@@ -120,10 +121,10 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
     [regularFileBytes(fs, `${databasePath}-wal`), regularFileBytes(fs, `${databasePath}-shm`)],
     {concurrency: 2},
   );
-  const lockPath = codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId);
   const locked =
     !options.openWhileLocked &&
-    ((yield* fs.exists(lockPath)) || (yield* codeGraphWorktreeBuildActive(threadnoteHome, checkoutId)));
+    ((yield* codeGraphRepositoryLockActive(threadnoteHome, checkoutId)) ||
+      (yield* codeGraphWorktreeBuildActive(threadnoteHome, checkoutId)));
   const threshold = {
     minimumReclaimableBytes: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES,
     minimumReclaimableRatio: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO,

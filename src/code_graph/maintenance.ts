@@ -11,11 +11,17 @@ import {
 } from './layout.js';
 import {
   awaitCodeGraphWorktreeBuilds,
+  codeGraphRepositoryLockActive,
   codeGraphWorktreeBuildActive,
   withCodeGraphDatabaseWriteLock,
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
-import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  CodeGraphStore,
+  codeGraphPersistentExtensionSchemaCompatible,
+  type CodeGraphDatabaseHealth,
+} from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 
@@ -192,7 +198,6 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   precomputed?: DoctorCheck,
 ) {
   if (precomputed) return precomputed;
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const obsolete = yield* inspectObsoleteCodeGraphStores(threadnoteHome);
@@ -205,7 +210,7 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
     yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
     const repositoryId = path.basename(path.dirname(database));
     if (
-      (yield* fs.exists(codeGraphRepositoryLockPath(path, threadnoteHome, repositoryId))) ||
+      (yield* codeGraphRepositoryLockActive(threadnoteHome, repositoryId)) ||
       (yield* codeGraphWorktreeBuildActive(threadnoteHome, repositoryId))
     ) {
       deferred += 1;
@@ -247,7 +252,14 @@ const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseR
       const schemaRows = yield* sql<{readonly value: string}>`
         SELECT value FROM schema_metadata WHERE key = 'schema_version'
       `;
+      const extensionRevisionRows = yield* sql<{readonly value: string}>`
+        SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
+      `;
       const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
+      const persistentExtensionSchemaRevision = Number.parseInt(extensionRevisionRows[0]?.value ?? '', 10);
+      const persistentExtensionCurrent =
+        persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+        (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
       const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
         SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
       `;
@@ -264,12 +276,17 @@ const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseR
         failedSnapshots: counts.get('failed') ?? 0,
         foreignKeyViolations: foreignKeyRows.length,
         integrity:
-          !Number.isSafeInteger(schemaVersion) || schemaVersion !== CODE_GRAPH_SCHEMA_VERSION
+          !Number.isSafeInteger(schemaVersion) ||
+          schemaVersion !== CODE_GRAPH_SCHEMA_VERSION ||
+          !persistentExtensionCurrent
             ? 'incompatible'
             : integrityOk
               ? 'ok'
               : 'corrupt',
         readySnapshots: counts.get('ready') ?? 0,
+        persistentExtensionSchemaRevision: Number.isSafeInteger(persistentExtensionSchemaRevision)
+          ? persistentExtensionSchemaRevision
+          : undefined,
         schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
       } satisfies CodeGraphDatabaseHealth;
     }).pipe(
@@ -316,48 +333,74 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
           const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
             onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void;
           yield* progress({phase: 'checking'});
+          const repositoryRoot = path.dirname(database);
           const maintained = yield* withDatabaseLock(
             fs,
             path,
             threadnoteHome,
             database,
             Effect.gen(function* () {
-              const repositoryRoot = path.dirname(database);
-              const diagnosed = deep
-                ? yield* store.diagnose(database).pipe(Effect.option)
-                : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
-              if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
-                if (!deep) return 'deep-check-required' as const;
-                discarded += 1;
-                yield* progress({phase: 'discarding'});
-                if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
-                return 'maintained' as const;
-              }
-              const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
-              readySnapshots += diagnosed.value.readySnapshots;
-              if (!deep && incomplete > 0) return 'deep-check-required' as const;
-              if (!deep) return 'maintained' as const;
-              if (incomplete > 0) {
-                yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
-                const repaired = yield* store.repair(database, dryRun);
-                const removed = repaired?.removedSnapshots ?? 0;
-                removedIncompleteSnapshots += removed;
-                remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
-              }
-              // Build-time cache GC can delete parser facts belonging to another
-              // linked worktree before that worktree activates its snapshot. This
-              // path owns the global maintenance intent and has drained every
-              // checkout worktree lock, so it is the safe place to collect them.
-              if (!dryRun) {
-                yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
-              }
-              yield* progress({phase: 'cleaning-vectors'});
-              removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
-                fs,
-                path,
-                path.join(repositoryRoot, 'vectors'),
-                dryRun,
+              const decision = yield* store.withSession(
+                database,
+                Effect.gen(function* () {
+                  const diagnosed = deep
+                    ? yield* store.diagnose(database).pipe(Effect.option)
+                    : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                  if (
+                    diagnosed._tag === 'Some' &&
+                    diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
+                    diagnosed.value.integrity === 'incompatible'
+                  ) {
+                    // Same-version beta databases with a missing revision or an
+                    // incompatible extension-table contract are recoverable on the
+                    // next ordinary writer open.
+                    // Never discard their ready snapshots as if the canonical graph
+                    // rows were corrupt merely because this maintenance pass is
+                    // deliberately read-only while holding the checkout gate.
+                    return 'deep-check-required' as const;
+                  }
+                  if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
+                    return deep ? ('discard' as const) : ('deep-check-required' as const);
+                  }
+                  const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
+                  readySnapshots += diagnosed.value.readySnapshots;
+                  if (!deep && incomplete > 0) return 'deep-check-required' as const;
+                  if (!deep) return 'maintained' as const;
+                  if (incomplete > 0) {
+                    yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
+                    const repaired = yield* store.repair(database, dryRun);
+                    const removed = repaired?.removedSnapshots ?? 0;
+                    removedIncompleteSnapshots += removed;
+                    remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
+                  }
+                  // Build-time cache GC can delete parser facts belonging to another
+                  // linked worktree before that worktree activates its snapshot. This
+                  // path owns the global maintenance intent and has drained every
+                  // checkout worktree lock, so it is the safe place to collect them.
+                  if (!dryRun) {
+                    yield* store.pruneRetiredSnapshots(database);
+                    yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
+                  }
+                  yield* progress({phase: 'cleaning-vectors'});
+                  removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
+                    fs,
+                    path,
+                    path.join(repositoryRoot, 'vectors'),
+                    dryRun,
+                  );
+                  return 'maintained' as const;
+                }),
+                {writerGateHeld: true},
               );
+              if (decision !== 'discard') return decision;
+
+              // The session-scoped SqliteClient has finalized before this branch.
+              // Keep the repository and database writer gates held while closing
+              // the handle first, otherwise Windows rejects recursive deletion of
+              // the incompatible SQLite store with a sharing violation.
+              discarded += 1;
+              yield* progress({phase: 'discarding'});
+              if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
               return 'maintained' as const;
             }),
             0,

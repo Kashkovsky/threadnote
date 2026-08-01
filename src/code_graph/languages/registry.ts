@@ -1,5 +1,6 @@
 import {Context, Effect, Layer, Option} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
+import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
 import {BUILTIN_CODE_GRAPH_LANGUAGE_PACKS} from './catalog.generated.js';
 import {
   CodeGraphLanguagePackError,
@@ -19,6 +20,8 @@ import {
   CODE_GRAPH_RATIONALE_EXTRACTOR_VERSION,
   CODE_GRAPH_RATIONALE_INPUT_VERSION,
 } from '../rationale.js';
+
+export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
 
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
@@ -145,7 +148,7 @@ export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
   return sha256HexSync(
     [
       'code-graph-language-pack-v3',
-      'parser-facts-v1',
+      CODE_GRAPH_PARSER_FACTS_VERSION,
       `derivation-inputs:${CODE_GRAPH_RATIONALE_INPUT_VERSION}`,
       `id:${pack.id}`,
       `extractor:${pack.extractor.version}`,

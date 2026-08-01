@@ -1,10 +1,15 @@
+import {Database} from 'bun:sqlite';
 import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {Context, Effect, Layer} from 'effect';
 import {afterAll, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
+import {repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const sqliteSessions = vi.hoisted(() => ({
@@ -85,19 +90,84 @@ afterAll(() => {
 });
 
 describe('code graph SQLite session lifetime', () => {
+  it('decodes, postprocesses, and attributes each cached file only once while staging', async () => {
+    const decoded = new Map<string, number>();
+    const postprocessed = new Map<string, number>();
+    const indexed = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        const languagePacks = yield* CodeGraphLanguagePackRegistry;
+        const countedStore = CodeGraphStore.of({
+          ...store,
+          loadCachedFacts: (databasePath, files, extractorSet, options) => {
+            if (options?.decode !== false) {
+              for (const file of files) decoded.set(file.path, (decoded.get(file.path) ?? 0) + 1);
+            }
+            return store.loadCachedFacts(databasePath, files, extractorSet, options);
+          },
+        });
+        const countedLanguagePacks = CodeGraphLanguagePackRegistry.of({
+          ...languagePacks,
+          postprocessFile: (file, facts) => {
+            postprocessed.set(file.path, (postprocessed.get(file.path) ?? 0) + 1);
+            return languagePacks.postprocessFile(file, facts);
+          },
+        });
+        const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(CodeGraphStore, countedStore),
+              Layer.succeed(CodeGraphLanguagePackRegistry, countedLanguagePacks),
+            ),
+          ),
+        );
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const indexerContext = yield* Layer.build(indexerLayer);
+            const indexer = Context.get(indexerContext, CodeGraphIndexer);
+            return yield* indexer.index({
+              cwd: repositoryRoot,
+              force: true,
+              threadnoteHome: join(repositoryRoot, '.threadnote-single-pass-home'),
+            });
+          }),
+        );
+      }),
+    );
+
+    expect(indexed.snapshot.fileCount).toBeGreaterThan(128);
+    expect(decoded.size).toBe(indexed.snapshot.fileCount);
+    expect(postprocessed.size).toBe(indexed.snapshot.fileCount);
+    expect([...decoded.values()]).toEqual(Array.from({length: indexed.snapshot.fileCount}, () => 1));
+    expect([...postprocessed.values()]).toEqual(Array.from({length: indexed.snapshot.fileCount}, () => 1));
+  }, 60_000);
+
   it('uses one client for every store call across a multi-batch index', async () => {
+    const completedBatches = new Set<number>();
+    const activeClientsByBatch: number[] = [];
+    let reportedBatchTotal = 0;
     const indexed = await runEffect(
       Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
         return yield* indexer.index({
           cwd: repositoryRoot,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase !== 'materializing' || progress.activity?.stage !== 'loading-cache') return;
+              completedBatches.add(progress.activity.batchCompleted);
+              reportedBatchTotal = Math.max(reportedBatchTotal, progress.activity.batchTotal);
+              activeClientsByBatch.push(sqliteSessions.active);
+            }),
           threadnoteHome: join(repositoryRoot, '.threadnote-index-home'),
         });
       }),
     );
 
     expect(indexed.snapshot.fileCount).toBeGreaterThan(128);
-    expectSingleClosedSession();
+    expect(reportedBatchTotal).toBeGreaterThan(1);
+    expect(completedBatches.size).toBe(reportedBatchTotal);
+    expect(activeClientsByBatch).toEqual(Array.from({length: reportedBatchTotal}, () => 1));
+    expectClosedSessions(2);
   }, 60_000);
 
   it('uses one client while materializing and leasing a multi-batch committed base', async () => {
@@ -114,7 +184,7 @@ describe('code graph SQLite session lifetime', () => {
 
     expect(lease.snapshot.commit).toBe(baseCommit);
     expect(lease.snapshot.fileCount).toBeGreaterThan(128);
-    expectSingleClosedSession();
+    expectClosedSessions(2);
   }, 60_000);
 
   it('closes the shared client when a multi-batch index fails after inventory caching', async () => {
@@ -137,7 +207,7 @@ describe('code graph SQLite session lifetime', () => {
     ).rejects.toThrow('fixture materialization failure');
 
     expect(materializingObserved).toBe(true);
-    expectSingleClosedSession();
+    expectClosedSessions(1);
   }, 60_000);
 
   it('closes the shared client when committed-base materialization fails', async () => {
@@ -161,16 +231,60 @@ describe('code graph SQLite session lifetime', () => {
     ).rejects.toThrow('fixture committed-base failure');
 
     expect(materializingObserved).toBe(true);
-    expectSingleClosedSession();
+    expectClosedSessions(1);
+  }, 60_000);
+
+  it('closes the maintenance SQLite client before discarding an incompatible store', async () => {
+    const home = join(repositoryRoot, '.threadnote-maintenance-close-home');
+    const indexed = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: repositoryRoot, threadnoteHome: home});
+      }),
+    );
+    expect(sqliteSessions.active).toBe(0);
+    sqliteSessions.closed.length = 0;
+    sqliteSessions.maximumActive = 0;
+    sqliteSessions.opened.length = 0;
+
+    const databasePath = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      indexed.identity.checkoutId,
+      `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+    );
+    const incompatible = new Database(databasePath, {strict: true});
+    incompatible.query("UPDATE schema_metadata SET value = '999' WHERE key = 'schema_version'").run();
+    incompatible.close(false);
+    let activeAtDiscard = -1;
+
+    const repaired = await runEffect(
+      repairCodeGraphIndexes(home, false, progress =>
+        Effect.sync(() => {
+          if (progress.phase === 'discarding') activeAtDiscard = sqliteSessions.active;
+        }),
+      ),
+    );
+
+    expect(repaired.discarded).toBe(1);
+    expect(activeAtDiscard).toBe(0);
+    expect(sqliteSessions.active).toBe(0);
+    expect(existsSync(databasePath)).toBe(false);
   }, 60_000);
 });
 
-function expectSingleClosedSession(): void {
-  expect(sqliteSessions.opened, JSON.stringify(sqliteSessions.opened)).toHaveLength(1);
+function expectClosedSessions(expected: number): void {
+  // Successful builds schedule exactly one bounded post-promotion cleanup
+  // connection after the indexing session closes. Failed builds never schedule
+  // it. A store-call-per-connection regression would therefore exceed these
+  // fixed counts even though every connection eventually closes.
+  expect(sqliteSessions.opened, JSON.stringify(sqliteSessions.opened)).toHaveLength(expected);
   expect(sqliteSessions.closed).toEqual(sqliteSessions.opened);
-  expect(sqliteSessions.maximumActive).toBe(1);
+  expect(sqliteSessions.maximumActive).toBeLessThanOrEqual(expected);
   expect(sqliteSessions.active).toBe(0);
-  expect(sqliteSessions.opened[0]).toMatch(/graph-v\d+\.sqlite$/);
+  expect(sqliteSessions.opened.every(filename => /graph-v\d+\.sqlite$/.test(filename))).toBe(true);
 }
 
 function git(args: readonly string[]): string {

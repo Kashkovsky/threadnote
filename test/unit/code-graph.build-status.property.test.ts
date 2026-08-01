@@ -21,6 +21,36 @@ const observationCase = FC.record({
   state: FC.constantFrom<CodeGraphBuildState>('completed', 'failed', 'queued', 'running'),
 });
 
+const materializationCase = FC.record({
+  availableBytes: FC.integer({max: 1_000_000_000, min: 0}),
+  batchCompleted: FC.integer({max: 100, min: 0}),
+  cachedFactBytes: FC.integer({max: 1_000_000_000, min: 0}),
+  edges: FC.integer({max: 1_000_000, min: 0}),
+  sourceBytes: FC.integer({max: 1_000_000_000, min: 0}),
+  stagingBytes: FC.integer({max: 1_000_000_000, min: 0}),
+  symbols: FC.integer({max: 1_000_000, min: 0}),
+});
+
+const activationCase = FC.record({
+  elapsedMilliseconds: FC.integer({max: 10_000_000, min: 0}),
+  rows: FC.integer({max: 100_000_000, min: 0}),
+  stage: FC.constantFrom(
+    'checkpointing-snapshot' as const,
+    'committing-snapshot' as const,
+    'copying-edges' as const,
+    'copying-files' as const,
+    'copying-lookup-keys' as const,
+    'copying-reexports' as const,
+    'copying-symbols' as const,
+    'copying-terms' as const,
+    'copying-workspace' as const,
+    'recording-completion' as const,
+    'validating-input' as const,
+  ),
+  state: FC.constantFrom('completed' as const, 'progress' as const, 'started' as const),
+  transactionMilliseconds: FC.integer({max: 100_000, min: 0}),
+});
+
 describe('code graph build-status properties', () => {
   it.prop(
     'classifies terminal, exited, reused, stale, and active owners in fail-closed precedence order',
@@ -68,6 +98,113 @@ describe('code graph build-status properties', () => {
       expect(Object.values(parsed.counters).every(value => typeof value === 'string' || value >= 0)).toBe(true);
     },
     {fastCheck: {numRuns: 500}},
+  );
+
+  it.prop(
+    'round-trips bounded materialization activity and keeps TEMP database high-water internally consistent',
+    {sample: materializationCase},
+    ({sample}) => {
+      const status = buildStatus('running', true);
+      const batchesTotal = sample.batchCompleted + 1;
+      const stagingHighWaterBytes = sample.stagingBytes + 1_024;
+      const materializing: CodeGraphBuildStatus = {
+        ...status,
+        materialization: {
+          activity: {
+            batchCompleted: sample.batchCompleted,
+            batchTotal: batchesTotal,
+            cachedFactBytes: sample.cachedFactBytes,
+            rows: {
+              deduplicatedEdges: sample.edges,
+              deduplicatedReferences: sample.symbols,
+              edges: sample.edges,
+              symbols: sample.symbols,
+            },
+            sourceBytes: sample.sourceBytes,
+            stage: 'writing-facts',
+            startedAt: status.timestamps.phaseStartedAt,
+          },
+          metrics: {
+            batchesCompleted: sample.batchCompleted,
+            batchesTotal,
+            cachedFactBytesCompleted: sample.cachedFactBytes,
+            cachedFactBytesTotal: sample.cachedFactBytes,
+            rows: {
+              deduplicatedEdges: sample.edges,
+              deduplicatedReferences: sample.symbols,
+              edges: sample.edges,
+              symbols: sample.symbols,
+            },
+            sourceBytesCompleted: sample.sourceBytes,
+            sourceBytesTotal: sample.sourceBytes,
+            storage: {
+              availableBytes: sample.availableBytes,
+              durableAvailableBytes: sample.availableBytes,
+              estimateBasis: 'cached-fact-bytes',
+              estimatedConcurrentBuildBytes: sample.stagingBytes,
+              estimatedDurableFilesystemRequiredBytes: sample.stagingBytes,
+              estimatedDurableSnapshotBytes: sample.stagingBytes,
+              estimatedJournalBytes: sample.stagingBytes,
+              estimatedRequiredBytes: stagingHighWaterBytes,
+              estimatedTemporaryFilesystemRequiredBytes: sample.stagingBytes,
+              estimatedTemporaryDatabaseBytes: sample.stagingBytes,
+              filesystemsShared: true,
+              temporaryAvailableBytes: sample.availableBytes,
+              temporaryDatabaseBytes: sample.stagingBytes,
+              temporaryDatabaseHighWaterBytes: stagingHighWaterBytes,
+            },
+          },
+        },
+      };
+
+      expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(materializing)))?.materialization).toEqual(
+        materializing.materialization,
+      );
+      expect(
+        parseCodeGraphBuildStatus({
+          ...materializing,
+          materialization: {
+            metrics: {
+              ...materializing.materialization!.metrics,
+              storage: {
+                temporaryDatabaseBytes: stagingHighWaterBytes + 1,
+                temporaryDatabaseHighWaterBytes: stagingHighWaterBytes,
+              },
+            },
+          },
+        }),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 150}},
+  );
+
+  it.prop(
+    'round-trips bounded activation progress and rejects negative transaction timings',
+    {sample: activationCase},
+    ({sample}) => {
+      const status = buildStatus('running', true);
+      const activity = {
+        elapsedMilliseconds: sample.elapsedMilliseconds,
+        rows: sample.rows,
+        stage: sample.stage,
+        stageElapsedMilliseconds: Math.min(sample.elapsedMilliseconds, sample.transactionMilliseconds),
+        startedAt: status.timestamps.phaseStartedAt,
+        state: sample.state,
+        transactionMilliseconds: sample.transactionMilliseconds,
+      };
+      const activating: CodeGraphBuildStatus = {...status, activation: {activity}, phase: 'activating'};
+
+      expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(activating)))?.activation).toEqual(
+        activating.activation,
+      );
+      expect(
+        parseCodeGraphBuildStatus({
+          ...activating,
+          activation: {activity: {...activity, transactionMilliseconds: -1}},
+        }),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 150}},
   );
 });
 

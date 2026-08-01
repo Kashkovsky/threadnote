@@ -48,6 +48,7 @@ interface ResolvablePackageInfo extends PackageInfo {
 
 interface PackageIndex {
   readonly all: readonly PackageInfo[];
+  readonly nameByRoot: ReadonlyMap<string, string>;
   readonly uniqueByName: ReadonlyMap<string, ResolvablePackageInfo>;
 }
 
@@ -118,7 +119,21 @@ export function refreshPackageAttribution(
 export function createPackageAttributor(
   files: readonly CodeGraphInventoryFile[],
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
+  return createPackageAttributorFromIndex(discoverPackages(files));
+}
+
+export function createRepositoryFactAttributor(
+  files: readonly CodeGraphInventoryFile[],
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const packages = discoverPackages(files);
+  const attributePackages = createPackageAttributorFromIndex(packages);
+  const attributeResolution = createResolutionAttributorFromIndex(files, packages);
+  return facts => attributeResolution(attributePackages(facts));
+}
+
+function createPackageAttributorFromIndex(
+  packages: PackageIndex,
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   return facts => facts.map(file => refreshFilePackageAttribution(file, packages));
 }
 
@@ -137,9 +152,18 @@ export function createResolutionAttributor(
   files: readonly CodeGraphInventoryFile[],
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const packages = discoverPackages(files);
-  const duplicatePackages = new Set(
-    packages.all.map(candidate => candidate.name).filter((name, index, names) => names.indexOf(name) !== index),
-  );
+  return createResolutionAttributorFromIndex(files, packages);
+}
+
+function createResolutionAttributorFromIndex(
+  files: readonly CodeGraphInventoryFile[],
+  packages: PackageIndex,
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
+  const packageNameCounts = new Map<string, number>();
+  for (const candidate of packages.all) {
+    packageNameCounts.set(candidate.name, (packageNameCounts.get(candidate.name) ?? 0) + 1);
+  }
+  const duplicatePackages = new Set([...packageNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
   const existingPaths = new Set(files.map(file => file.path));
   const aliases = discoverResolutionAliases(files, {});
   const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
@@ -1221,8 +1245,10 @@ function discoverPackages(files: readonly CodeGraphInventoryFile[]): PackageInde
       // Diagnostics are emitted by the manifest extractor.
     }
   }
+  const all = [...candidates.values()].flat();
   return {
-    all: [...candidates.values()].flat(),
+    all,
+    nameByRoot: new Map(all.map(candidate => [candidate.root, candidate.name])),
     uniqueByName: new Map(
       [...candidates].flatMap(([name, values]) => {
         const value = values[0];
@@ -1235,14 +1261,14 @@ function discoverPackages(files: readonly CodeGraphInventoryFile[]): PackageInde
 }
 
 function packageForPath(path: string, packages: PackageIndex): string | undefined {
-  let best: {readonly name: string; readonly root: string} | undefined;
-  for (const info of packages.all) {
-    const root = info.root;
-    if ((root === '' || path.startsWith(`${root}/`)) && (!best || root.length > best.root.length)) {
-      best = {name: info.name, root};
-    }
+  let directory = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  while (true) {
+    const packageName = packages.nameByRoot.get(directory);
+    if (packageName !== undefined) return packageName;
+    if (directory === '') return undefined;
+    const separator = directory.lastIndexOf('/');
+    directory = separator < 0 ? '' : directory.slice(0, separator);
   }
-  return best?.name;
 }
 
 function discoverResolutionAliases(

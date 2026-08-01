@@ -1,0 +1,293 @@
+{
+  "version": 1,
+  "createdAt": "2026-08-01T08:26:51.749Z",
+  "purpose": "Development-only same-runner evidence for beta.30 full-build staging changes and the activation bottleneck exposed afterward.",
+  "provenance": {
+    "architecture": "arm64",
+    "commit": "58390f02c1d7846a5aef313ab1d90d6cf07d7019",
+    "cpu": "Apple M1 Max",
+    "memoryBytes": 68719476736,
+    "operatingSystem": "macOS 27.0",
+    "runtime": "bun/1.3.14",
+    "runnerClass": "local-unclassified",
+    "runnerIdentity": "local",
+    "samples": 1,
+    "warning": "Every latency is one observation, not a percentile estimate. Both generated artifacts report a dirty source worktree, so this is developmental evidence rather than release evidence. The beta.30 control was run from a temporary detached worktree; the candidate used the shared dirty worktree.",
+    "commands": [
+      "bun run bench:code-graph -- --scale-symbols 20000 --samples 1 --warmups 0 --output /tmp/threadnote-bulk-beta30.json",
+      "bun run bench:code-graph -- --scale-symbols 20000 --samples 1 --warmups 0 --output /tmp/threadnote-bulk-current.json",
+      "bun run bench:code-graph -- --scale-symbols 100000 --samples 1 --warmups 0 --output /tmp/threadnote-bulk-current-100k.json",
+      "bun run bench:code-graph -- --scale-symbols 20000 --samples 1 --warmups 0 --output /tmp/threadnote-activation-index-prune-20k.json",
+      "bun run bench:code-graph -- --scale-symbols 100000 --samples 1 --warmups 0 --output /tmp/threadnote-activation-index-prune-100k.json",
+      "bun run bench:code-graph -- --scale-symbols 20000 --samples 1 --warmups 0 --output /tmp/threadnote-activation-chunked-20k.json",
+      "bun run bench:code-graph -- --scale-symbols 100000 --samples 1 --warmups 0 --output /tmp/threadnote-activation-chunked-100k.json",
+      "bun run bench:code-graph -- --scale-symbols 100000 --samples 1 --warmups 0 --output /tmp/threadnote-activation-final-100k.json",
+      "bun run bench:code-graph -- --scale-symbols 10000 --samples 1 --warmups 0 --output /private/tmp/threadnote-direct-10k.json"
+    ],
+    "sourceArtifactSha256": {
+      "beta30-20000": "4afb9b99461eee33d3320f2e54c9708b6e04b5b3f312db3fb9b85272edd8ee28",
+      "candidate-20000": "f12735acf5415fd9272361911a15f1f79173c1342d1774d3a05c627dc8c6c9cb",
+      "candidate-100000": "f90e5d15192acf13371da33989605127eebb4af1fa55ad99b726001fe71be871",
+      "index-pruned-20000": "93c09cef732130d8b836028dae4beec4875174beea9f40568a0145d46f1a7594",
+      "index-pruned-100000": "84a3ee785006ac6730443ede3b7a35297a1e0644e83d1370baefb248815351b8",
+      "chunked-20000": "ab9a89a39dc1d6444d0e15f33f4b052adc52aec426d97a559d78e9db76df2e86",
+      "chunked-100000": "d2d0c56fbb29b69436abd98a5ee6f74883d269465beae68794efd756cd193a7a",
+      "final-100000": "08bcaafe1311b6504a7cf8fba93e925f9d5c56fd8edc41bc4b2b5d9843b94832",
+      "direct-persistent-10000": "70ec59ed97e41ca085101fcc5fd58d759758a3094b4ec7ec2fc145f5039b511e"
+    }
+  },
+  "observations": [
+    {
+      "name": "beta30-control-20000",
+      "fixture": {
+        "files": 202,
+        "symbols": 20201,
+        "edges": 39999,
+        "lexicalTerms": 181803
+      },
+      "milliseconds": {
+        "coldIndex": 21359.1425,
+        "materialization": 11505.016959,
+        "referenceResolution": 1779.147166,
+        "snapshotWriteAndCheckpoint": 5569.61025
+      },
+      "bytes": {
+        "derivedIndex": 321223137,
+        "peakRss": 813334528
+      }
+    },
+    {
+      "name": "sorted-fail-fast-staging-20000",
+      "fixture": {
+        "files": 202,
+        "symbols": 20201,
+        "edges": 39999,
+        "lexicalTerms": 181803
+      },
+      "milliseconds": {
+        "coldIndex": 11149.104458,
+        "materialization": 2175.495042,
+        "referenceResolution": 1412.319042,
+        "snapshotWriteAndCheckpoint": 5655.092583
+      },
+      "bytes": {
+        "derivedIndex": 320506492,
+        "peakRss": 698499072
+      }
+    },
+    {
+      "name": "sorted-fail-fast-staging-100000",
+      "fixture": {
+        "files": 1002,
+        "symbols": 101001,
+        "edges": 199999,
+        "lexicalTerms": 909003
+      },
+      "milliseconds": {
+        "coldIndex": 83995.627416,
+        "materialization": 13867.406,
+        "referenceResolution": 7831.306042,
+        "snapshotWriteAndCheckpoint": 56907.478292
+      },
+      "bytes": {
+        "derivedIndex": 1595095695,
+        "peakRss": 846495744
+      }
+    },
+    {
+      "name": "index-pruned-monolithic-20000",
+      "fixture": {
+        "files": 202,
+        "symbols": 20201,
+        "edges": 39999,
+        "lexicalTerms": 181803
+      },
+      "milliseconds": {
+        "coldIndex": 10630.81225,
+        "materialization": 2277.294958,
+        "referenceResolution": 1437.402042,
+        "snapshotWriteAndCheckpoint": 5118.754417
+      },
+      "bytes": {
+        "derivedIndex": 264927901,
+        "peakRss": 694501376,
+        "walPeak": 226604152
+      }
+    },
+    {
+      "name": "index-pruned-monolithic-100000",
+      "fixture": {
+        "files": 1002,
+        "symbols": 101001,
+        "edges": 199999,
+        "lexicalTerms": 909003
+      },
+      "milliseconds": {
+        "coldIndex": 80020.426208,
+        "materialization": 14399.5875,
+        "referenceResolution": 7856.350583,
+        "snapshotWriteAndCheckpoint": 52958.165959
+      },
+      "bytes": {
+        "derivedIndex": 1317608112,
+        "peakRss": 803815424,
+        "walPeak": 1125320352
+      }
+    },
+    {
+      "name": "bounded-activation-chunks-20000",
+      "fixture": {
+        "files": 202,
+        "symbols": 20201,
+        "edges": 39999,
+        "lexicalTerms": 181803
+      },
+      "milliseconds": {
+        "coldIndex": 11109.391417,
+        "materialization": 2265.9715,
+        "referenceResolution": 1466.103708,
+        "snapshotWriteAndCheckpoint": 5576.743625
+      },
+      "bytes": {
+        "derivedIndex": 265042911,
+        "peakRss": 659357696,
+        "walPeak": 21737152
+      }
+    },
+    {
+      "name": "bounded-activation-chunks-100000",
+      "fixture": {
+        "files": 1002,
+        "symbols": 101001,
+        "edges": 199999,
+        "lexicalTerms": 909003
+      },
+      "milliseconds": {
+        "coldIndex": 72195.068875,
+        "materialization": 14141.788875,
+        "referenceResolution": 7809.356625,
+        "snapshotWriteAndCheckpoint": 45482.710833
+      },
+      "bytes": {
+        "derivedIndex": 1317739186,
+        "peakRss": 788267008,
+        "walPeak": 80327672
+      }
+    },
+    {
+      "name": "final-observable-bounded-activation-100000",
+      "fixture": {
+        "files": 1002,
+        "symbols": 101001,
+        "edges": 199999,
+        "lexicalTerms": 909003
+      },
+      "milliseconds": {
+        "coldIndex": 71957.51975,
+        "materialization": 14260.208584,
+        "referenceResolution": 7900.682708,
+        "snapshotWriteAndCheckpoint": 45066.655458,
+        "validation": 5882.9565,
+        "copyingSymbols": 9138.672,
+        "copyingTerms": 16146.254292,
+        "copyingEdges": 6127.704333,
+        "copyingLookupKeys": 7633.823625,
+        "committingSnapshot": 2.325958,
+        "checkpointingSnapshot": 2.013417,
+        "oneFileReindex": 3211.736209,
+        "hotExactLexicalQuery": 1875.24375
+      },
+      "bytes": {
+        "derivedIndex": 1317608116,
+        "peakRss": 870367232,
+        "walPeak": 92798912
+      }
+    },
+    {
+      "name": "direct-persistent-materialization-10000",
+      "fixture": {
+        "files": 102,
+        "symbols": 10101,
+        "edges": 19999
+      },
+      "runtime": {
+        "sqliteVersion": "3.54.0",
+        "storageMode": "direct-persistent"
+      },
+      "milliseconds": {
+        "cold-index": 10548.8525,
+        "cold-registration-lock-and-database-setup": 210.032875,
+        "cold-inventory-and-extraction": 1812.783208,
+        "cold-post-committed-scan-overlay-and-workspace": 155.001584,
+        "cold-pre-activation": 9881.577917,
+        "cold-materialization": 5468.52625,
+        "cold-reference-resolution": 2234.327791,
+        "cold-resolved-fact-accounting": 0.906209,
+        "cold-pre-activation-validation": 37.197625,
+        "cold-snapshot-write-and-checkpoint": 556.407083,
+        "cold-snapshot-promotion": 62.470125,
+        "cold-activation-lexical-only": 667.274583,
+        "cold-vector-index": 0,
+        "one-file-reindex-index": 852.131708,
+        "one-file-reindex-registration-lock-and-database-setup": 240.196833,
+        "one-file-reindex-inventory-and-extraction": 32.3295,
+        "one-file-reindex-post-committed-scan-overlay-and-workspace": 19.5815,
+        "one-file-reindex-pre-activation": 474.886,
+        "one-file-reindex-materialization": 20.32775,
+        "one-file-reindex-reference-resolution": 161.245292,
+        "one-file-reindex-resolved-fact-accounting": 1.205125,
+        "one-file-reindex-pre-activation-validation": 77.896625,
+        "one-file-reindex-snapshot-write-and-checkpoint": 131.654333,
+        "one-file-reindex-snapshot-promotion": 156.893917,
+        "one-file-reindex-activation-lexical-only": 377.245708,
+        "one-file-reindex-vector-index": 0,
+        "hot-exact-lexical-query": 208.784416,
+        "whole-graph-structural-analysis": 522.250625
+      },
+      "bytes": {
+        "derivedIndex": 139664626,
+        "durableDatabasePagesHighWater": 139341824,
+        "sqliteMainPeak": 139628544,
+        "sqliteTempDatabasePagesHighWater": 0,
+        "walPeak": 120909672,
+        "peakRss": 641957888
+      },
+      "digests": {
+        "primaryQueryCold": "ea37c5be95fe9c05282a16bbf38a09fe44b628b80e8d21e3425b696b304db85a",
+        "primaryQueryIncremental": "ea37c5be95fe9c05282a16bbf38a09fe44b628b80e8d21e3425b696b304db85a",
+        "primaryQuerySameOverlayReference": "ea37c5be95fe9c05282a16bbf38a09fe44b628b80e8d21e3425b696b304db85a",
+        "structuralGraphCold": "115c0a61d36f07818c9890779d782b672a69457d9a3be88cdb2dac327cda24ca",
+        "structuralGraphIncremental": "a97ddf1461c0795d04fde89ab5840f2c53a9fa5ad4a6904791de832f6e6aca1d",
+        "structuralGraphSameOverlayReference": "a97ddf1461c0795d04fde89ab5840f2c53a9fa5ad4a6904791de832f6e6aca1d"
+      },
+      "parity": {
+        "primaryQueryAcrossColdIncrementalAndReference": true,
+        "incrementalGraphMatchesIndependentSameOverlayRebuild": true,
+        "coldGraphDiffersAfterTheOneFileMutation": true
+      },
+      "reviewedClaims": {
+        "directPersistentPathObserved": true,
+        "temporaryDatabasePagesObserved": false,
+        "coldActivationCopyStagesObserved": 0,
+        "releaseEvidenceEligible": false
+      },
+      "evidence": "Reviewed n=1 direct-persistent development run. The source artifact is identified by SHA-256 above and was dirty, so this observation cannot satisfy release provenance."
+    }
+  ],
+  "reviewedInterpretation": {
+    "sameRunner20000": {
+      "coldIndexReductionPercent": 47.8,
+      "materializationReductionPercent": 81.1,
+      "materializationSpeedup": 5.29,
+      "peakRssReductionPercent": 14.1
+    },
+    "persistentActivation100000": {
+      "coldIndexReductionFromSortedStagingPercent": 14.3,
+      "activationReductionFromSortedStagingPercent": 20.8,
+      "derivedIndexReductionFromSortedStagingPercent": 17.4,
+      "walPeakReductionVersusIndexPrunedMonolithicPercent": 91.8,
+      "interpretation": "Bounded persistent copy materially reduces the large-scale activation time and WAL high-water while keeping final row counts and lexical query behavior unchanged. At 20k it deliberately adds 8.9% activation overhead in exchange for a 90.4% lower WAL peak and bounded writer ownership. The n=1 RSS observations are noisy and do not support an RSS-improvement claim."
+    },
+    "caveat": "These observations show substantial staging and activation improvement on one generated same-runner shape. They do not establish acceptable cold large-monorepo indexing and must not be used to claim the end-to-end issue is fixed; retained release evidence still requires a clean pinned production-large run."
+  }
+}

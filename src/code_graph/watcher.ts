@@ -110,10 +110,12 @@ interface ProgressTracker {
   estimatedPhaseRemainingMilliseconds?: number;
   estimateConfidence?: CodeGraphProgressTiming['estimateConfidence'];
   lastCompleted?: number;
+  lastMeasurementBasis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
   lastSampleAtMilliseconds?: number;
   phase?: CodeGraphProgress['phase'];
   phaseStartedAtMilliseconds: number;
   sampleCount: number;
+  rateSamples: number[];
   smoothedUnitsPerMillisecond?: number;
   startedAtMilliseconds: number;
   updatedAtMilliseconds: number;
@@ -122,8 +124,8 @@ interface ProgressTracker {
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEFAULT_MAXIMUM_WATCHERS = 32;
 const DEFAULT_SWEEP_INTERVAL_MILLISECONDS = 60_000;
-const PROGRESS_RATE_SMOOTHING_FACTOR = 0.35;
-const PROGRESS_ESTIMATE_MINIMUM_SAMPLES = 2;
+const PROGRESS_ESTIMATE_MINIMUM_SAMPLES = 4;
+const PROGRESS_RATE_SAMPLE_WINDOW = 24;
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
   'threadnote/codeGraph/CodeGraphWatcher',
@@ -429,6 +431,7 @@ function makeProgressTracker(startedAtMilliseconds: number, sequence: number): P
   return {
     buildId: `${startedAtMilliseconds.toString(36)}-${sequence.toString(36)}`,
     phaseStartedAtMilliseconds: startedAtMilliseconds,
+    rateSamples: [],
     sampleCount: 0,
     startedAtMilliseconds,
     updatedAtMilliseconds: startedAtMilliseconds,
@@ -437,12 +440,14 @@ function makeProgressTracker(startedAtMilliseconds: number, sequence: number): P
 
 function observeProgress(tracker: ProgressTracker, progress: CodeGraphProgress, now: number): void {
   const work = measuredProgress(progress);
-  if (tracker.phase !== progress.phase) {
+  if (tracker.phase !== progress.phase || tracker.lastMeasurementBasis !== work?.basis) {
     tracker.phase = progress.phase;
+    tracker.lastMeasurementBasis = work?.basis;
     tracker.phaseStartedAtMilliseconds = now;
     tracker.lastCompleted = work?.completed;
     tracker.lastSampleAtMilliseconds = work ? now : undefined;
     tracker.sampleCount = 0;
+    tracker.rateSamples = [];
     tracker.smoothedUnitsPerMillisecond = undefined;
     tracker.estimatedPhaseRemainingMilliseconds = undefined;
     tracker.estimateConfidence = undefined;
@@ -456,11 +461,8 @@ function observeProgress(tracker: ProgressTracker, progress: CodeGraphProgress, 
       now > previousSampleAt
     ) {
       const observedRate = (work.completed - previousCompleted) / (now - previousSampleAt);
-      tracker.smoothedUnitsPerMillisecond =
-        tracker.smoothedUnitsPerMillisecond === undefined
-          ? observedRate
-          : PROGRESS_RATE_SMOOTHING_FACTOR * observedRate +
-            (1 - PROGRESS_RATE_SMOOTHING_FACTOR) * tracker.smoothedUnitsPerMillisecond;
+      tracker.rateSamples = [...tracker.rateSamples, observedRate].slice(-PROGRESS_RATE_SAMPLE_WINDOW);
+      tracker.smoothedUnitsPerMillisecond = medianProgressRate(tracker.rateSamples);
       tracker.sampleCount += 1;
     }
     if (work.completed !== previousCompleted) {
@@ -486,17 +488,60 @@ function observeProgress(tracker: ProgressTracker, progress: CodeGraphProgress, 
   tracker.updatedAtMilliseconds = now;
 }
 
-function measuredProgress(
-  progress: CodeGraphProgress,
-): {readonly completed: number; readonly total: number} | undefined {
+function measuredProgress(progress: CodeGraphProgress):
+  | {
+      readonly basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+      readonly completed: number;
+      readonly total: number;
+    }
+  | undefined {
   switch (progress.phase) {
     case 'scanning':
-    case 'materializing':
     case 'embedding':
-      return {completed: progress.completed, total: progress.total};
+      return {basis: 'files', completed: progress.completed, total: progress.total};
+    case 'materializing': {
+      const metrics = progress.metrics;
+      if (
+        metrics?.factsBytesCompleted !== undefined &&
+        metrics.factsBytesTotal !== undefined &&
+        metrics.factsBytesTotal > 0
+      ) {
+        return {
+          basis: 'final-fact-bytes',
+          completed: Math.min(metrics.factsBytesCompleted, metrics.factsBytesTotal),
+          total: metrics.factsBytesTotal,
+        };
+      }
+      if (
+        metrics?.cachedFactBytesCompleted !== undefined &&
+        metrics.cachedFactBytesTotal !== undefined &&
+        metrics.cachedFactBytesTotal > 0
+      ) {
+        return {
+          basis: 'cached-fact-bytes',
+          completed: Math.min(metrics.cachedFactBytesCompleted, metrics.cachedFactBytesTotal),
+          total: metrics.cachedFactBytesTotal,
+        };
+      }
+      if (metrics && metrics.sourceBytesTotal > 0) {
+        return {
+          basis: 'source-bytes',
+          completed: Math.min(metrics.sourceBytesCompleted, metrics.sourceBytesTotal),
+          total: metrics.sourceBytesTotal,
+        };
+      }
+      return {basis: 'files', completed: progress.completed, total: progress.total};
+    }
     default:
       return undefined;
   }
+}
+
+function medianProgressRate(values: readonly number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle];
 }
 
 function estimateConfidence(

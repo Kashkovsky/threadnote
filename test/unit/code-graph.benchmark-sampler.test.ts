@@ -1,14 +1,23 @@
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
 import {
+  aggregateProcessTree,
+  isOpenTemporaryFilePath,
+  mergeTemporaryFileSnapshots,
+  observeTemporaryOpenInspection,
   parseCodeGraphBenchmarkSamplerArtifact,
   parseCodeGraphBenchmarkSamplerCheckpoint,
+  parseDarwinProcessList,
+  parseDarwinOpenFileList,
+  parseLinuxProcessIo,
   parseLinuxProcessStat,
+  processTreeDelta,
   samplerParentExited,
   samplerProcessTelemetryContract,
+  samplerTemporaryTelemetryContract,
 } from '../../scripts/code-graph-benchmark-sampler.js';
 
 const validArtifact = {
@@ -59,6 +68,72 @@ describe('code graph benchmark sampler artifact', () => {
     expect(parseCodeGraphBenchmarkSamplerArtifact(validArtifact)).toEqual(validArtifact);
   });
 
+  it('accepts recursive Linux process-tree and I/O telemetry', () => {
+    const artifact = {
+      ...validArtifact,
+      phases: {
+        scanning: {
+          ...validArtifact.phases.scanning,
+          ioReadBytes: 65_536,
+          ioWriteBytes: 131_072,
+          processPeakCount: 5,
+          processSamples: 2,
+        },
+      },
+      processTelemetry: {
+        availability: 'available',
+        ioCounters: 'linux-proc-read-write-bytes',
+        parentIdentityValidation: 'linux-proc-starttime',
+        sampleIntervalMilliseconds: 25,
+        scope: 'recursive-process-tree',
+        source: 'linux-proc',
+      },
+      version: 3,
+    } as const;
+
+    expect(parseCodeGraphBenchmarkSamplerArtifact(artifact)).toEqual(artifact);
+  });
+
+  it('accepts v4 linked-and-open temporary-file telemetry', () => {
+    const artifact = {
+      ...validArtifact,
+      phases: {
+        scanning: {
+          ...validArtifact.phases.scanning,
+          ioReadBytes: 65_536,
+          ioWriteBytes: 131_072,
+          processPeakCount: 5,
+          processSamples: 2,
+          temporaryOpenAttempts: 2,
+          temporaryOpenFailures: 0,
+          temporaryLinkedPeakBytes: 1_024,
+          temporaryOpenPeakBytes: 4_096,
+          temporaryOpenSamples: 2,
+          temporaryPeakBytes: 5_120,
+        },
+      },
+      processTelemetry: {
+        availability: 'available',
+        ioCounters: 'linux-proc-read-write-bytes',
+        parentIdentityValidation: 'linux-proc-starttime',
+        sampleIntervalMilliseconds: 25,
+        scope: 'recursive-process-tree',
+        source: 'linux-proc',
+      },
+      temporaryTelemetry: {
+        availability: 'available',
+        maximumOpenFileDescriptors: 65_536,
+        maximumProcesses: 4_096,
+        openFileSampleIntervalMilliseconds: 25,
+        scope: 'temporary-root-linked-plus-process-tree-open-files',
+        source: 'linux-proc-fd',
+      },
+      version: 4,
+    } as const;
+
+    expect(parseCodeGraphBenchmarkSamplerArtifact(artifact)).toEqual(artifact);
+  });
+
   it('omits process measurements when the platform cannot provide them', () => {
     const parsed = parseCodeGraphBenchmarkSamplerArtifact(unavailableArtifact);
 
@@ -95,6 +170,18 @@ describe('code graph benchmark sampler artifact', () => {
         scanning: {...unavailableArtifact.phases.scanning, cpuMilliseconds: 0, rssPeakBytes: 0},
       },
     },
+    {...validArtifact, version: 4},
+    {
+      ...validArtifact,
+      temporaryTelemetry: {
+        availability: 'available',
+        maximumOpenFileDescriptors: 65_536,
+        maximumProcesses: 4_096,
+        openFileSampleIntervalMilliseconds: 25,
+        scope: 'temporary-root-linked-plus-process-tree-open-files',
+        source: 'linux-proc-fd',
+      },
+    },
     {
       ...validArtifact,
       platform: 'darwin',
@@ -110,7 +197,10 @@ describe('code graph benchmark sampler artifact', () => {
   it('exposes the platform-specific process telemetry contract', () => {
     expect(samplerProcessTelemetryContract('linux', '4096')).toEqual({
       availability: 'available',
+      ioCounters: 'linux-proc-read-write-bytes',
       parentIdentityValidation: 'linux-proc-starttime',
+      sampleIntervalMilliseconds: 25,
+      scope: 'recursive-process-tree',
       source: 'linux-proc',
     });
     expect(samplerProcessTelemetryContract('linux', undefined)).toEqual({
@@ -119,14 +209,82 @@ describe('code graph benchmark sampler artifact', () => {
       reason: 'parent-inspection-unavailable',
       source: 'none',
     });
-    for (const platform of ['darwin', 'win32']) {
-      expect(samplerProcessTelemetryContract(platform, 'ignored')).toEqual({
-        availability: 'unavailable',
-        parentIdentityValidation: 'process-liveness-only',
-        reason: 'unsupported-platform',
-        source: 'none',
-      });
-    }
+    expect(samplerProcessTelemetryContract('darwin', 'Sat Aug 1 12:00:00 2026', 250)).toEqual({
+      availability: 'available',
+      parentIdentityValidation: 'darwin-ps-lstart',
+      sampleIntervalMilliseconds: 250,
+      scope: 'recursive-process-tree',
+      source: 'darwin-ps',
+    });
+    expect(samplerProcessTelemetryContract('darwin', undefined)).toEqual({
+      availability: 'unavailable',
+      parentIdentityValidation: 'process-liveness-only',
+      reason: 'parent-inspection-unavailable',
+      source: 'none',
+    });
+    expect(samplerProcessTelemetryContract('win32', 'ignored')).toEqual({
+      availability: 'unavailable',
+      parentIdentityValidation: 'process-liveness-only',
+      reason: 'unsupported-platform',
+      source: 'none',
+    });
+  });
+
+  it('exposes open temporary-file telemetry only when platform inspection succeeds', () => {
+    const empty = {bytes: 0, files: new Map<string, number>()};
+    expect(samplerTemporaryTelemetryContract('linux', empty)).toEqual({
+      availability: 'available',
+      maximumOpenFileDescriptors: 65_536,
+      maximumProcesses: 4_096,
+      openFileSampleIntervalMilliseconds: 25,
+      scope: 'temporary-root-linked-plus-process-tree-open-files',
+      source: 'linux-proc-fd',
+    });
+    expect(samplerTemporaryTelemetryContract('darwin', empty, 1_000)).toEqual({
+      availability: 'available',
+      maximumOpenFileDescriptors: 65_536,
+      maximumProcesses: 4_096,
+      openFileSampleIntervalMilliseconds: 1_000,
+      projectionByteLimit: 8_388_608,
+      scope: 'temporary-root-linked-plus-process-tree-open-files',
+      source: 'darwin-lsof',
+    });
+    expect(samplerTemporaryTelemetryContract('linux', undefined)).toEqual({
+      availability: 'unavailable',
+      reason: 'open-file-inspection-unavailable',
+      scope: 'temporary-root-linked-files-only',
+      source: 'directory-walk',
+    });
+    expect(samplerTemporaryTelemetryContract('win32', undefined)).toEqual({
+      availability: 'unavailable',
+      reason: 'unsupported-platform',
+      scope: 'temporary-root-linked-files-only',
+      source: 'directory-walk',
+    });
+  });
+
+  it('records an initial empty open-file success followed by inspection loss', () => {
+    const initial = observeTemporaryOpenInspection(
+      {
+        temporaryOpenAttempts: 0,
+        temporaryOpenFailures: 0,
+        temporaryOpenPeakBytes: 0,
+        temporaryOpenSamples: 0,
+      },
+      {bytes: 0, files: new Map()},
+    );
+    const afterFailure = observeTemporaryOpenInspection(
+      {
+        temporaryOpenAttempts: initial.attempts,
+        temporaryOpenFailures: initial.failures,
+        temporaryOpenPeakBytes: initial.peakBytes,
+        temporaryOpenSamples: initial.samples,
+      },
+      undefined,
+    );
+
+    expect(initial).toEqual({attempts: 1, failures: 0, peakBytes: 0, samples: 1});
+    expect(afterFailure).toEqual({attempts: 2, failures: 1, peakBytes: 0, samples: 1});
   });
 
   it('parses Linux start-time identity independently from process names containing parentheses', () => {
@@ -137,11 +295,131 @@ describe('code graph benchmark sampler artifact', () => {
     fields[19] = '987654321';
 
     expect(parseLinuxProcessStat(`42 (worker ) name) ${fields.join(' ')}`)).toEqual({
+      parentProcessId: 0,
       startIdentity: '987654321',
       systemTicks: 45,
       userTicks: 123,
     });
     expect(parseLinuxProcessStat('42 (truncated) S')).toBeUndefined();
+  });
+
+  it('parses Linux physical I/O counters without confusing logical character counters', () => {
+    expect(parseLinuxProcessIo('rchar: 999999\nwchar: 888888\nread_bytes: 4096\nwrite_bytes: 8192\n')).toEqual({
+      readBytes: 4096,
+      writeBytes: 8192,
+    });
+    expect(parseLinuxProcessIo('read_bytes: 4096\n')).toBeUndefined();
+  });
+
+  it('parses the privacy-safe Darwin ps projection', () => {
+    expect(
+      parseDarwinProcessList(
+        '  42  10 Sat Aug  1 12:00:00 2026       1:02.50  1024\n' +
+          '  43  42 Sat Aug  1 12:00:01 2026   1-02:03:04.25  2048\ncommand text is deliberately not accepted\n',
+      ),
+    ).toEqual([
+      {
+        cpuMilliseconds: 62_500,
+        parentProcessId: 10,
+        processId: 42,
+        rssBytes: 1_048_576,
+        startIdentity: 'Sat Aug 1 12:00:00 2026',
+      },
+      {
+        cpuMilliseconds: 93_784_250,
+        parentProcessId: 42,
+        processId: 43,
+        rssBytes: 2_097_152,
+        startIdentity: 'Sat Aug 1 12:00:01 2026',
+      },
+    ]);
+  });
+
+  it('aggregates Darwin open SQLite scratch by identity without retaining paths', () => {
+    const output =
+      'p42\0\nf10\0tREG\0D0x10\0s4096\0i100\0n/private/tmp/bench/etilqs_a1\0' +
+      '\nf11\0tREG\0D0x10\0s4096\0i100\0n/private/tmp/bench/etilqs_a1\0' +
+      '\nf12\0tREG\0D0x10\0s2048\0i101\0n/private/tmp/bench/linked.tmp\0' +
+      '\nf13\0tREG\0D0x10\0s9999\0i102\0n/private/tmp/unrelated.txt\0' +
+      '\np99\0\nf14\0tREG\0D0x10\0s9999\0i103\0n/private/tmp/bench/other.tmp\0';
+
+    const snapshot = parseDarwinOpenFileList(output, [42], 42, '/private/tmp/bench');
+    expect(snapshot).toEqual({
+      bytes: 6_144,
+      files: new Map([
+        ['16:100', 4_096],
+        ['16:101', 2_048],
+      ]),
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('/private/tmp');
+    expect(parseDarwinOpenFileList(output, [99], 99, '/private/tmp/bench')?.bytes).toBe(9_999);
+    expect(parseDarwinOpenFileList(output, [42], 41, '/private/tmp/bench')).toBeUndefined();
+  });
+
+  it('recognizes root-scoped files and SQLite etilqs files without path-prefix confusion', () => {
+    expect(isOpenTemporaryFilePath('/private/tmp/bench/etilqs_abc', '/private/tmp/bench')).toBe(true);
+    expect(isOpenTemporaryFilePath('/private/tmp/bench/file.tmp (deleted)', '/private/tmp/bench')).toBe(true);
+    expect(isOpenTemporaryFilePath('/elsewhere/etilqs_abc', '/private/tmp/bench')).toBe(true);
+    expect(isOpenTemporaryFilePath('/private/tmp/benchmark/file.tmp', '/private/tmp/bench')).toBe(false);
+    expect(isOpenTemporaryFilePath('relative/etilqs_abc', '/private/tmp/bench')).toBe(false);
+  });
+
+  it('deduplicates linked and open snapshots by device and inode', () => {
+    expect(
+      mergeTemporaryFileSnapshots(
+        {bytes: 10, files: new Map([['1:1', 10]])},
+        {
+          bytes: 25,
+          files: new Map([
+            ['1:1', 10],
+            ['1:2', 15],
+          ]),
+        },
+      ),
+    ).toEqual({
+      bytes: 25,
+      files: new Map([
+        ['1:1', 10],
+        ['1:2', 15],
+      ]),
+    });
+  });
+
+  it('aggregates only recursive descendants and validates the root identity', () => {
+    const entries = [
+      processEntry(10, 1, 'root', 100, 1_000, 10, 20),
+      processEntry(11, 10, 'child', 50, 2_000, 30, 40),
+      processEntry(12, 11, 'grandchild', 25, 3_000, 50, 60),
+      processEntry(99, 1, 'unrelated', 9_999, 9_999, 9_999, 9_999),
+    ];
+
+    const sample = aggregateProcessTree(entries, 10, 'root');
+    expect(sample?.rssBytes).toBe(6_000);
+    expect([...sample!.processes.keys()]).toEqual(['10:root', '11:child', '12:grandchild']);
+    expect(aggregateProcessTree(entries, 10, 'reused-root')).toBeUndefined();
+    expect([...aggregateProcessTree(entries, 10, 'root', 11)!.processes.keys()]).toEqual(['10:root']);
+  });
+
+  it('does not subtract disappeared descendants and counts a reused child PID as a new identity', () => {
+    const previous = aggregateProcessTree(
+      [
+        processEntry(10, 1, 'root', 100, 1_000, 100, 200),
+        processEntry(11, 10, 'old-child', 50, 2_000, 50, 60),
+        processEntry(12, 11, 'disappears', 25, 3_000, 25, 30),
+      ],
+      10,
+    );
+    const current = aggregateProcessTree(
+      [processEntry(10, 1, 'root', 110, 1_500, 110, 220), processEntry(11, 10, 'new-child', 7, 4_000, 8, 9)],
+      10,
+    );
+
+    expect(processTreeDelta(previous, current!)).toEqual({
+      cpuMilliseconds: 17,
+      ioReadBytes: 18,
+      ioWriteBytes: 29,
+    });
+    expect(current?.rssBytes).toBe(5_500);
   });
 
   it('treats a reused live PID as an exited parent', () => {
@@ -150,6 +428,144 @@ describe('code graph benchmark sampler artifact', () => {
     expect(samplerParentExited('100', '101', true)).toBe(true);
     expect(samplerParentExited('100', '100', false)).toBe(true);
   });
+
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))(
+    'captures a live recursive process tree without command metadata',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-process-tree-'));
+      try {
+        const phase = join(root, 'phase');
+        const output = join(root, 'output.json');
+        const checkpoint = join(root, 'checkpoint.json');
+        const ready = join(root, 'ready.json');
+        const stop = join(root, 'stop');
+        await writeFile(phase, 'scanning');
+        const parent = Bun.spawn({
+          cmd: [
+            process.execPath,
+            '-e',
+            "const child=Bun.spawn([process.execPath,'-e','await Bun.sleep(500)']); await child.exited;",
+          ],
+          stderr: 'ignore',
+          stdout: 'ignore',
+        });
+        await Bun.sleep(50);
+        const sampler = Bun.spawn({
+          cmd: [
+            process.execPath,
+            fileURLToPath(new URL('../../scripts/code-graph-benchmark-sampler.ts', import.meta.url)),
+            '--pid',
+            String(parent.pid),
+            '--database',
+            join(root, 'graph.sqlite'),
+            '--temp-root',
+            root,
+            '--phase',
+            phase,
+            '--stop',
+            stop,
+            '--output',
+            output,
+            '--checkpoint-output',
+            checkpoint,
+            '--ready',
+            ready,
+            '--interval-ms',
+            '10',
+            '--checkpoint-ms',
+            '20',
+          ],
+          stderr: 'pipe',
+          stdout: 'ignore',
+        });
+        await waitForText(ready);
+        await writeFile(stop, 'complete');
+        expect(await sampler.exited).toBe(0);
+        const artifact = parseCodeGraphBenchmarkSamplerArtifact(JSON.parse(await readFile(output, 'utf8')));
+        expect(artifact.processTelemetry).toMatchObject({
+          availability: 'available',
+          scope: 'recursive-process-tree',
+        });
+        expect(
+          Math.max(...Object.values(artifact.phases).map(sample => sample.processPeakCount ?? 0)),
+        ).toBeGreaterThanOrEqual(2);
+        expect(JSON.stringify(artifact)).not.toContain('command');
+        await parent.exited;
+      } finally {
+        await rm(root, {force: true, recursive: true});
+      }
+    },
+    2_000,
+  );
+
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))(
+    'captures an unlinked SQLite-style temporary file without retaining its path',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-unlinked-temp-'));
+      const temporaryFile = join(root, 'etilqs_deadbeef');
+      const handle = await open(temporaryFile, 'w+');
+      try {
+        await handle.truncate(1_048_576);
+        await rm(temporaryFile);
+        const phase = join(root, 'phase');
+        const output = join(root, 'output.json');
+        const checkpoint = join(root, 'checkpoint.json');
+        const ready = join(root, 'ready.json');
+        const stop = join(root, 'stop');
+        await writeFile(phase, 'materializing');
+        const sampler = Bun.spawn({
+          cmd: [
+            process.execPath,
+            fileURLToPath(new URL('../../scripts/code-graph-benchmark-sampler.ts', import.meta.url)),
+            '--pid',
+            String(process.pid),
+            '--database',
+            join(root, 'graph.sqlite'),
+            '--temp-root',
+            root,
+            '--phase',
+            phase,
+            '--stop',
+            stop,
+            '--output',
+            output,
+            '--checkpoint-output',
+            checkpoint,
+            '--ready',
+            ready,
+            '--interval-ms',
+            '10',
+            '--checkpoint-ms',
+            '20',
+          ],
+          stderr: 'pipe',
+          stdout: 'ignore',
+        });
+        await waitForText(ready, 5_000);
+        await writeFile(stop, 'complete');
+        expect(await sampler.exited).toBe(0);
+        const artifactText = await readFile(output, 'utf8');
+        const artifact = parseCodeGraphBenchmarkSamplerArtifact(JSON.parse(artifactText));
+        expect(artifact).toMatchObject({
+          temporaryTelemetry: {availability: 'available'},
+          version: 4,
+        });
+        expect(artifact.phases.materializing.temporaryOpenPeakBytes).toBeGreaterThanOrEqual(1_048_576);
+        expect(artifact.phases.materializing.temporaryPeakBytes).toBeGreaterThanOrEqual(1_048_576);
+        expect(artifact.phases.materializing.temporaryOpenAttempts).toBeGreaterThanOrEqual(1);
+        expect(artifact.phases.materializing.temporaryOpenFailures).toBe(0);
+        expect(artifact.phases.materializing.temporaryOpenSamples).toBe(
+          artifact.phases.materializing.temporaryOpenAttempts,
+        );
+        expect(artifactText).not.toContain(root);
+        expect(artifactText).not.toContain('etilqs_deadbeef');
+      } finally {
+        await handle.close();
+        await rm(root, {force: true, recursive: true});
+      }
+    },
+    10_000,
+  );
 
   it('writes its last observation and exits when the sampled parent is gone', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-sampler-'));
@@ -194,20 +610,23 @@ describe('code graph benchmark sampler artifact', () => {
         processTelemetry: {
           availability: 'unavailable',
           parentIdentityValidation: 'process-liveness-only',
-          reason: process.platform === 'linux' ? 'parent-inspection-unavailable' : 'unsupported-platform',
+          reason:
+            process.platform === 'linux' || process.platform === 'darwin'
+              ? 'parent-inspection-unavailable'
+              : 'unsupported-platform',
           source: 'none',
         },
         samples: 1,
-        version: 2,
+        version: 4,
       });
       expect(artifact.phases.scanning).not.toHaveProperty('cpuMilliseconds');
       expect(artifact.phases.scanning).not.toHaveProperty('rssPeakBytes');
       expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
-        sampler: {samples: 1, version: 2},
+        sampler: {samples: 1, version: 4},
         state: 'parent-exited',
-        version: 2,
+        version: 4,
       });
-      expect(JSON.parse(await readFile(ready, 'utf8'))).toEqual({checkpointVersion: 2, version: 1});
+      expect(JSON.parse(await readFile(ready, 'utf8'))).toEqual({checkpointVersion: 4, version: 1});
     } finally {
       await rm(root, {force: true, recursive: true});
     }
@@ -255,17 +674,17 @@ describe('code graph benchmark sampler artifact', () => {
         stdout: 'ignore',
       });
 
-      expect(JSON.parse(await waitForText(ready))).toEqual({checkpointVersion: 2, version: 1});
+      expect(JSON.parse(await waitForText(ready))).toEqual({checkpointVersion: 4, version: 1});
       expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
         state: 'running',
-        version: 2,
+        version: 4,
       });
       expect(await parent.exited).toBe(17);
       expect(await sampler.exited).toBe(0);
       expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
         sampler: {phases: {scanning: expect.objectContaining({samples: expect.any(Number)})}},
         state: 'parent-exited',
-        version: 2,
+        version: 4,
       });
     } finally {
       await rm(root, {force: true, recursive: true});
@@ -283,4 +702,24 @@ async function waitForText(file: string, timeoutMilliseconds = 2_000): Promise<s
     }
   } while (Date.now() < deadline);
   throw new Error(`Timed out waiting for ${file}.`);
+}
+
+function processEntry(
+  processId: number,
+  parentProcessId: number,
+  startIdentity: string,
+  cpuMilliseconds: number,
+  rssBytes: number,
+  ioReadBytes: number,
+  ioWriteBytes: number,
+) {
+  return {
+    cpuMilliseconds,
+    ioReadBytes,
+    ioWriteBytes,
+    parentProcessId,
+    processId,
+    rssBytes,
+    startIdentity,
+  };
 }

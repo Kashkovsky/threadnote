@@ -5,6 +5,7 @@ import {
   codeGraphDatabaseWriteLockPath,
   codeGraphMaintenanceIntentPath,
   codeGraphMaintenanceLockPath,
+  codeGraphRepositoryLockPath,
   codeGraphWorktreeLockRoot,
 } from './layout.js';
 
@@ -118,15 +119,25 @@ export const codeGraphWorktreeBuildActive = Effect.fn('codeGraph.worktreeBuildAc
     codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId),
   );
   for (const lock of locks) {
-    const active = yield* withExclusiveFileLock(
-      fs,
-      lock,
-      {...CODE_GRAPH_GATE_LOCK_OPTIONS, waitTimeoutMilliseconds: 0},
-      Effect.succeed(false),
-    ).pipe(Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(true) : Effect.fail(cause))));
+    const active = yield* codeGraphFileLockActive(fs, lock);
     if (active) return true;
   }
   return false;
+});
+
+/**
+ * Checks the checkout-wide lock through the lock protocol rather than treating
+ * a leftover path as a live owner. This recovers an orphaned lock immediately
+ * when its recorded process is gone and keeps doctor/storage diagnostics from
+ * deferring forever after a killed build.
+ */
+export const codeGraphRepositoryLockActive = Effect.fn('codeGraph.repositoryLockActive')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* codeGraphFileLockActive(fs, codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId));
 });
 
 /**
@@ -167,6 +178,21 @@ function codeGraphWorktreeLockFiles(
       .filter(name => /^[0-9a-f]{64}\.lock$/.test(name))
       .sort()
       .map(name => path.join(root, name));
+  });
+}
+
+function codeGraphFileLockActive(
+  fs: FileSystem.FileSystem,
+  lock: string,
+): Effect.Effect<boolean, unknown, Crypto.Crypto | Path.Path | SystemInfo> {
+  return Effect.gen(function* () {
+    if (!(yield* fs.exists(lock))) return false;
+    return yield* withExclusiveFileLock(
+      fs,
+      lock,
+      {...CODE_GRAPH_GATE_LOCK_OPTIONS, waitTimeoutMilliseconds: 0},
+      Effect.succeed(false),
+    ).pipe(Effect.catch(cause => (isFileLockTimeout(cause) ? Effect.succeed(true) : Effect.fail(cause))));
   });
 }
 

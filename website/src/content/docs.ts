@@ -1200,7 +1200,11 @@ threadnote graph compact --dry-run`,
           },
           {
             type: 'paragraph',
-            text: 'Eligible bytes, files, projects, symbols, edges, lexical terms, and vectors are not truncated by repository-size admission caps. Content parsing and SQLite activation run in bounded batches to reduce peak memory, and completed parser batches plus immutable commit snapshots are reusable after interruption. Individual query responses remain intentionally bounded by their node, edge, and result limits.',
+            text: 'Repositories are not rejected by aggregate byte, file, project, symbol, edge, lexical-term, or vector admission caps. Content parsing and SQLite activation run in bounded batches, and completed parser batches plus immutable commit snapshots are reusable after interruption. A pathological single-file fact payload degrades deterministically at the reviewed persistence ceiling, retains higher-value topology first, and reports omitted lower-priority facts explicitly. Individual query responses remain intentionally bounded by their node, edge, and result limits.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Interactive CLI, Manager, and benchmark artifacts retain detailed indexing diagnostics. MCP keeps code-graph evidence small: inspection defaults to 20 nodes and 40 relationships, strips parser/index-only fields and repository-local activity paths, caps structured graph evidence at 24 KiB, and returns stable cgs_ IDs for focused follow-up calls. That graph-only response budget never truncates canonical memories returned by read_context.',
           },
           {
             type: 'paragraph',

@@ -1,5 +1,4 @@
 import {open, readFile, readlink, rm as nodeRm, symlink} from 'node:fs/promises';
-import {Database} from 'bun:sqlite';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
@@ -9,6 +8,7 @@ import {
   repairCodeGraphIndexes,
 } from '../../src/code_graph/maintenance.js';
 import {codeGraphRepositoryLockPath} from '../../src/code_graph/layout.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
@@ -35,7 +35,7 @@ describe('obsolete code graph stores', () => {
     await sparseFile(join(repositoryRoot, 'graph-v2.sqlite-wal'), walBytes);
     await sparseFile(join(repositoryRoot, 'graph-v2.sqlite-shm'), shmBytes);
     const currentDatabase = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-    createHealthyCurrentDatabase(currentDatabase);
+    await createHealthyCurrentDatabase(currentDatabase);
     const futureDatabase = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION + 1}.sqlite`);
     await writeFile(futureDatabase, 'future schema must survive\n');
     const vector = join(repositoryRoot, 'vectors', 'current.vector');
@@ -186,19 +186,11 @@ async function sparseFile(path: string, bytes: number): Promise<void> {
   }
 }
 
-function createHealthyCurrentDatabase(path: string): void {
-  const database = new Database(path);
-  try {
-    database.exec(`
-      CREATE TABLE schema_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
-      INSERT INTO schema_metadata (key, value) VALUES ('schema_version', '${CODE_GRAPH_SCHEMA_VERSION}');
-      CREATE TABLE snapshots (state TEXT NOT NULL);
-      INSERT INTO snapshots (state) VALUES ('ready');
-      CREATE TABLE active_snapshots (snapshot_id TEXT);
-      INSERT INTO active_snapshots (snapshot_id) VALUES ('ready-snapshot');
-      CREATE TABLE file_blobs (content_hash TEXT);
-    `);
-  } finally {
-    database.close();
-  }
+async function createHealthyCurrentDatabase(path: string): Promise<void> {
+  await runEffect(
+    Effect.gen(function* () {
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(path);
+    }),
+  );
 }

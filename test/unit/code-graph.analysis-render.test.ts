@@ -46,6 +46,32 @@ describe('code graph analysis rendering', () => {
     expect(rendered).toContain('resolved 1 (average 1.00, lowest 1.00)');
     expect(rendered).toContain('Findings: none below the provenance-specific review thresholds');
   });
+
+  test('does not turn unavailable partial topology into false zero or none claims', async () => {
+    const symbols = Array.from({length: 8}, (_, index) =>
+      analysisSymbol(`node-${index}`, '@acme/partial', `src/${index}.ts`),
+    );
+    const edges = symbols.map((symbol, index) =>
+      analysisEdge(`edge-${index}`, symbol, symbols[(index + 1) % symbols.length]!),
+    );
+    const result = await Effect.runPromise(
+      analyzeCodeGraph(pagedAnalysisStore(symbols, edges), {
+        budget: {maxEdges: 2, maxEdgeVisits: 2, maxNodes: 3, pageSize: 2},
+        databasePath: ':memory:',
+        snapshot: analysisSnapshot(symbols, edges),
+      }),
+    );
+    const rendered = renderCodeGraphAnalysis(result, 'full');
+    const report = renderCodeGraphReport(result, {displayName: 'partial', repositoryId: 'repository'});
+    expect(result.coverage.topology.state).toBe('unavailable');
+    expect(rendered).toContain('Topology: unavailable');
+    expect(rendered).toContain('Communities: unavailable because topology was not derived');
+    expect(rendered).not.toContain('0 isolated nodes');
+    expect(rendered).not.toContain('Communities: none');
+    expect(report).toContain('Community analysis was unavailable because the complete symbol endpoint set did not fit');
+    expect(report).not.toContain('0 isolated nodes');
+    expect(report).not.toContain('No high-degree fan-in or fan-out groups met the deterministic threshold.');
+  });
 });
 
 async function analysisResultFixture() {

@@ -2,7 +2,8 @@ import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {startProgress} from '../cli_ui.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
-import {CodeGraphIndexer} from './indexer.js';
+import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
+import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout} from './layout.js';
 import {
   inspectObsoleteCodeGraphStores,
@@ -10,7 +11,7 @@ import {
   purgeObsoleteCodeGraphStores,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {CodeGraphQueryService, renderCodeGraphResult} from './query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
 import {repositoryChangesSince, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {CodeGraphProgress, CodeGraphQueryOptions} from './types.js';
@@ -61,30 +62,34 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);
   const selection = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
   const buildStatuses = selection.builds;
-  if (buildStatuses.length > 0) {
-    const query = yield* CodeGraphQueryService;
-    const ready = yield* query.statusForIdentity(config.agentContextHome, identity);
-    const current =
-      buildStatuses.find(status => status.identity.worktreeId === identity.worktreeId) ??
-      buildStatuses.find(status => status.observation.liveness === 'active');
-    const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
-    const status = {
-      build: current,
-      builds: buildStatuses,
-      databasePath: layout.databasePath,
-      identity,
-      obsoleteStores,
-      queuedWorktreeIds,
-      readySnapshot: ready.readySnapshot,
-      stale: ready.stale,
-      storage,
-      waiterCount: selection.waiters.length,
-      waiters: selection.waiters,
-    };
-    if (options.json) {
-      yield* Console.log(JSON.stringify({type: 'code-graph-status', version: 2, ...status}));
-      return;
-    }
+  const query = yield* CodeGraphQueryService;
+  const ready = yield* query.statusForIdentity(config.agentContextHome, identity);
+  const current =
+    buildStatuses.find(status => status.identity.worktreeId === identity.worktreeId) ??
+    buildStatuses.find(status => status.observation.liveness === 'active');
+  const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
+  if (options.json) {
+    yield* Console.log(
+      JSON.stringify({
+        build: current ?? null,
+        builds: buildStatuses,
+        databasePath: layout.databasePath,
+        identity,
+        languagePacks: ready.languagePacks,
+        obsoleteStores,
+        queuedWorktreeIds,
+        readySnapshot: ready.readySnapshot ?? null,
+        stale: ready.stale,
+        storage,
+        type: 'code-graph-status',
+        version: 2,
+        waiterCount: selection.waiters.length,
+        waiters: selection.waiters,
+      }),
+    );
+    return;
+  }
+  if (current !== undefined) {
     yield* Console.log(`Repository: ${identity.displayName}`);
     yield* Console.log(`Database: ${layout.databasePath}`);
     yield* renderObsoleteStoreStatus(obsoleteStores);
@@ -119,6 +124,145 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       ].filter((value): value is string => value !== undefined);
       yield* Console.log(`Current activity: ${details.join(' · ')}`);
     }
+    if (current.materialization?.activity) {
+      const activity = current.materialization.activity;
+      const details = [
+        materializationStageLabel(activity.stage),
+        `batch ${activeBatchNumber(activity.batchCompleted, activity.batchTotal)}/${activity.batchTotal}`,
+        `${formatBytes(activity.sourceBytes)} source`,
+        activity.cachedFactBytes === undefined ? undefined : `${formatBytes(activity.cachedFactBytes)} cached facts`,
+        activity.factsBytes === undefined ? undefined : `${formatBytes(activity.factsBytes)} final facts`,
+        renderMaterializationRows(activity.rows),
+        activity.elapsedMilliseconds === undefined
+          ? `active ${formatStatusDuration(Math.max(0, Date.now() - Date.parse(activity.startedAt)))}`
+          : `batch ${formatMilliseconds(activity.elapsedMilliseconds)}`,
+        activity.transactionMilliseconds === undefined
+          ? undefined
+          : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
+      ].filter((value): value is string => value !== undefined);
+      yield* Console.log(`Current activity: ${details.join(' · ')}`);
+    }
+    if (current.activation?.activity) {
+      const activity = current.activation.activity;
+      const details = [
+        activity.stage.replaceAll('-', ' '),
+        activity.state,
+        activity.rows === undefined ? undefined : `${activity.rows.toLocaleString()} rows`,
+        `stage ${formatMilliseconds(activity.stageElapsedMilliseconds)}`,
+        `total ${formatMilliseconds(activity.elapsedMilliseconds)}`,
+        activity.transactionMilliseconds === undefined
+          ? undefined
+          : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
+      ].filter((value): value is string => value !== undefined);
+      yield* Console.log(`Current activity: activating · ${details.join(' · ')}`);
+    }
+    if (current.resolution?.activity) {
+      const activity = current.resolution.activity;
+      const details = [
+        `pass ${activity.pass}`,
+        `page ${activity.pageCompleted}/${activity.pageTotal}`,
+        `${activity.referencesCompleted.toLocaleString()}/${activity.referencesTotal.toLocaleString()} references`,
+        `${activity.referencesExamined.toLocaleString()} cumulative examined`,
+        `${activity.resolved.toLocaleString()} linked`,
+        `${activity.aliasesDiscovered.toLocaleString()} aliases`,
+        `match ${formatMilliseconds(activity.matchingMilliseconds)}`,
+        `transactions ${formatMilliseconds(activity.transactionMilliseconds)}`,
+        `total ${formatMilliseconds(activity.elapsedMilliseconds)}`,
+      ];
+      yield* Console.log(`Reference resolution: ${details.join(' · ')}`);
+    }
+    if (current.materialization?.metrics) {
+      const metrics = current.materialization.metrics;
+      const details = [
+        `${metrics.batchesCompleted}/${metrics.batchesTotal} batches committed`,
+        `${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source`,
+        metrics.cachedFactBytesCompleted === undefined
+          ? undefined
+          : `${formatBytes(metrics.cachedFactBytesCompleted)}${
+              metrics.cachedFactBytesTotal === undefined ? '' : `/${formatBytes(metrics.cachedFactBytesTotal)}`
+            } cached facts`,
+        metrics.factsBytesCompleted === undefined
+          ? undefined
+          : `${formatBytes(metrics.factsBytesCompleted)}${
+              metrics.factsBytesTotal === undefined ? '' : `/${formatBytes(metrics.factsBytesTotal)}`
+            } final facts`,
+        renderMaterializationRows(metrics.rows),
+        metrics.loadingMilliseconds === undefined
+          ? undefined
+          : `load ${formatMilliseconds(metrics.loadingMilliseconds)}`,
+        metrics.attributionMilliseconds === undefined
+          ? undefined
+          : `attribute ${formatMilliseconds(metrics.attributionMilliseconds)}`,
+        metrics.transactionMilliseconds === undefined
+          ? undefined
+          : `transactions ${formatMilliseconds(metrics.transactionMilliseconds)}`,
+      ].filter((value): value is string => value !== undefined);
+      yield* Console.log(`Materialized: ${details.join(' · ')}`);
+      if (metrics.storage) {
+        const storage = metrics.storage;
+        const storageDetails = [
+          storage.materializationMode === undefined
+            ? undefined
+            : `${storage.materializationMode.replaceAll('-', ' ')} materialization`,
+          storage.durableDatabaseBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableDatabaseBytes)} allocated durable pages`,
+          storage.durableDatabaseHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableDatabaseHighWaterBytes)} allocated-page high-water`,
+          storage.durableDatabaseGrowthHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableDatabaseGrowthHighWaterBytes)} main-database growth`,
+          storage.durableFilesystemHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableFilesystemHighWaterBytes)} DB + sidecars high-water`,
+          storage.durableWalHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableWalHighWaterBytes)} WAL high-water`,
+          storage.durableJournalHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableJournalHighWaterBytes)} rollback-journal high-water`,
+          `${formatBytes(storage.temporaryDatabaseBytes)} current TEMP database`,
+          `${formatBytes(storage.temporaryDatabaseHighWaterBytes)} TEMP database high-water`,
+          storage.estimatedRequiredBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedRequiredBytes)} combined estimate`,
+          storage.estimatedTemporaryFilesystemRequiredBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedTemporaryFilesystemRequiredBytes)} TEMP-filesystem requirement`,
+          storage.estimatedDurableFilesystemRequiredBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedDurableFilesystemRequiredBytes)} graph-filesystem requirement`,
+          storage.estimatedTemporaryDatabaseBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedTemporaryDatabaseBytes)} estimated TEMP`,
+          storage.estimatedDurableSnapshotBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedDurableSnapshotBytes)} estimated snapshot/WAL`,
+          storage.estimatedJournalBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedJournalBytes)} estimated journals`,
+          storage.estimatedConcurrentBuildBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.estimatedConcurrentBuildBytes)} concurrent-build allowance`,
+          storage.filesystemsShared === true ? 'TEMP and graph database share a filesystem' : undefined,
+          storage.temporaryAvailableBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.temporaryAvailableBytes)} available for TEMP`,
+          storage.durableAvailableBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableAvailableBytes)} available for graph database`,
+          storage.estimateBasis === undefined
+            ? undefined
+            : `estimate from ${storage.estimateBasis.replaceAll('-', ' ')}`,
+        ].filter((value): value is string => value !== undefined);
+        yield* Console.log(
+          `Materialization storage: ${storageDetails.join(' · ')} · rollback journals excluded from TEMP totals`,
+        );
+        const diskWarning = materializationDiskWarning(storage);
+        if (diskWarning) yield* Console.log(`Warning: ${diskWarning}`);
+      }
+    }
     if (current.timings) {
       yield* Console.log(
         `Phase timings: read ${formatMilliseconds(current.timings.readingMilliseconds)} · ` +
@@ -127,12 +271,17 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       );
     }
     const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
-    if (current.eta && lastProgressAge <= 15_000) {
+    if (current.eta && current.eta.confidence !== 'low' && lastProgressAge <= 15_000) {
       yield* Console.log(
-        `Phase ETA: about ${formatStatusDuration(current.eta.remainingMilliseconds)} (${current.eta.confidence} confidence)`,
+        `Phase ETA: about ${formatStatusDuration(current.eta.remainingMilliseconds)} ` +
+          `(${current.eta.confidence} confidence${current.eta.basis ? `, ${etaBasisLabel(current.eta.basis)}` : ''})`,
       );
     } else if (current.eta) {
-      yield* Console.log('Phase ETA: paused while progress is silent.');
+      yield* Console.log(
+        lastProgressAge > 15_000
+          ? 'Phase ETA: paused while progress is silent.'
+          : 'Phase ETA: stabilizing from completed batch output.',
+      );
     }
     if (current.result) {
       yield* Console.log(
@@ -149,12 +298,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     if (!current.result) yield* renderReadySnapshotStatus(ready);
     return;
   }
-  const query = yield* CodeGraphQueryService;
-  const status = yield* query.statusForIdentity(config.agentContextHome, identity);
-  if (options.json) {
-    yield* Console.log(JSON.stringify({type: 'code-graph-status', version: 1, ...status, obsoleteStores, storage}));
-    return;
-  }
+  const status = ready;
   yield* Console.log(`Repository: ${status.identity.displayName}`);
   yield* Console.log(`Database: ${status.databasePath}`);
   yield* renderObsoleteStoreStatus(obsoleteStores);
@@ -270,6 +414,7 @@ function renderBuildCounters(status: ObservedCodeGraphBuildStatus): string | und
   const details = [
     counters.accepted === undefined ? undefined : `${counters.accepted} accepted`,
     counters.reused === undefined ? undefined : `${counters.reused} reused`,
+    counters.resolved === undefined ? undefined : `${counters.resolved} references linked`,
     counters.skipped === undefined ? undefined : `${counters.skipped} skipped`,
     counters.excluded === undefined ? undefined : `${counters.excluded} excluded`,
     counters.symbols === undefined ? undefined : `${counters.symbols} symbols`,
@@ -295,21 +440,14 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
   if (options.json) {
+    const reportProgress = yield* makeCodeGraphJsonProgressReporter({
+      displayName: identity.displayName,
+      repositoryId: identity.repositoryId,
+    });
     const summary = yield* indexer.index({
       cwd,
       force: options.full,
-      onProgress: progress =>
-        Console.error(
-          JSON.stringify({
-            type: 'code-graph-progress',
-            version: 2,
-            repository: {
-              displayName: identity.displayName,
-              repositoryId: identity.repositoryId,
-            },
-            ...progress,
-          }),
-        ),
+      onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
     });
     yield* Console.log(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
@@ -455,16 +593,20 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(options.cwd);
   const status = yield* service.status(config.agentContextHome, cwd);
+  const strictFreshness = options.operation === 'impact' || options.operation === 'path';
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
       ...options,
       cwd,
       onProgress,
       refresh: true,
+      statusObservation: observationFromCodeGraphStatus(status),
+      strictFreshness,
       threadnoteHome: config.agentContextHome,
     });
+  const reportProgress = options.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
   const result = options.json
-    ? yield* inspect(progress => Console.error(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})))
+    ? yield* inspect(reportProgress)
     : status.stale
       ? yield* Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
@@ -822,9 +964,10 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
   let status = yield* query.status(config.agentContextHome, cwd);
   if (status.stale) {
     if (json) {
+      const reportProgress = yield* makeCodeGraphJsonProgressReporter();
       yield* indexer.index({
         cwd,
-        onProgress: progress => Console.error(JSON.stringify({type: 'code-graph-progress', version: 2, ...progress})),
+        onProgress: reportProgress,
         threadnoteHome: config.agentContextHome,
       });
     } else {
@@ -888,18 +1031,168 @@ function progressMessage(progress: CodeGraphProgress): string {
       );
     }
     case 'materializing':
-      return `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused`;
+      return materializationProgressMessage(progress);
     case 'resolving':
-      return progress.subphase === 'references'
-        ? 'Resolving references · totals and ETA unavailable until this pass completes'
-        : `Resolved · ${progress.symbols} symbols · ${progress.edges} relationships · ${progress.resolved} references linked`;
+      if (progress.subphase === 'complete') {
+        return `Resolved · ${progress.symbols} symbols · ${progress.edges} relationships · ${progress.resolved} references linked`;
+      }
+      if (!progress.activity) return 'Resolving references · preparing pass totals';
+      return (
+        `Resolving references · pass ${progress.activity.pass} · ` +
+        `page ${progress.activity.pageCompleted}/${progress.activity.pageTotal} · ` +
+        `${progress.activity.referencesCompleted}/${progress.activity.referencesTotal} references · ` +
+        `${progress.activity.resolved} linked · ${progress.activity.referencesExamined} cumulative examined · ` +
+        `match ${formatMilliseconds(progress.activity.matchingMilliseconds)} · ` +
+        `transactions ${formatMilliseconds(progress.activity.transactionMilliseconds)} · ` +
+        `elapsed ${formatMilliseconds(progress.activity.elapsedMilliseconds)}`
+      );
     case 'embedding':
       return (
         `Embedding · ${Math.min(progress.total, progress.embedded + progress.reused)}/${progress.total} complete · ` +
         `${progress.reused} reused`
       );
-    case 'activating':
+    case 'activating': {
+      if (progress.activity) {
+        const activity = progress.activity;
+        const rows = activity.rows === undefined ? '' : ` · ${activity.rows.toLocaleString()} rows`;
+        const transaction =
+          activity.transactionMilliseconds === undefined
+            ? ''
+            : ` · transaction ${formatMilliseconds(activity.transactionMilliseconds)}`;
+        return (
+          `Activating · ${activity.stage.replaceAll('-', ' ')} ${activity.state} · ` +
+          `${formatMilliseconds(activity.stageElapsedMilliseconds)}${rows}${transaction}`
+        );
+      }
       return `Activating (${progress.subphase ?? 'snapshot'}) · ${progress.snapshotId}`;
+    }
+  }
+}
+
+function materializationProgressMessage(
+  progress: Extract<CodeGraphProgress, {readonly phase: 'materializing'}>,
+): string {
+  const summary = `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused`;
+  const diskWarning = materializationDiskWarning(progress.metrics?.storage);
+  const activity = progress.activity;
+  if (!activity) return diskWarning ? `${summary} · ${diskWarning}` : summary;
+  const details = [
+    materializationStageLabel(activity.stage),
+    `batch ${activeBatchNumber(activity.batchCompleted, activity.batchTotal)}/${activity.batchTotal}`,
+    `${formatBytes(activity.sourceBytes)} source`,
+    activity.cachedFactBytes === undefined ? undefined : `${formatBytes(activity.cachedFactBytes)} cached facts`,
+    renderMaterializationRows(activity.rows),
+    activity.elapsedMilliseconds === undefined ? undefined : formatMilliseconds(activity.elapsedMilliseconds),
+    activity.transactionMilliseconds === undefined
+      ? undefined
+      : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
+  ].filter((value): value is string => value !== undefined);
+  return `${summary} · ${details.join(' · ')}${diskWarning ? ` · ${diskWarning}` : ''}`;
+}
+
+function materializationDiskWarning(
+  storage:
+    | NonNullable<NonNullable<Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['metrics']>['storage']>
+    | undefined,
+): string | undefined {
+  if (!storage) return undefined;
+  const shortfalls = materializationStorageShortfalls(storage);
+  if (shortfalls.length === 0) return undefined;
+  if (shortfalls[0] === 'shared') {
+    return (
+      `low disk: ${formatBytes(storage.availableBytes!)} available is below the ` +
+      `${formatBytes(storage.estimatedRequiredBytes!)} conservative combined estimate; ` +
+      'indexing continues with live telemetry'
+    );
+  }
+  const scopes = shortfalls.map(scope => {
+    const available = scope === 'temporary' ? storage.temporaryAvailableBytes : storage.durableAvailableBytes;
+    const required =
+      scope === 'temporary'
+        ? storage.estimatedTemporaryFilesystemRequiredBytes
+        : storage.estimatedDurableFilesystemRequiredBytes;
+    return `${scope} filesystem (${formatBytes(available!)} available, ${formatBytes(required!)} estimated)`;
+  });
+  return `low disk on ${scopes.join(' and ')}; indexing continues with live telemetry`;
+}
+
+function activeBatchNumber(completed: number, total: number): number {
+  return total === 0 ? 0 : Math.min(total, completed + 1);
+}
+
+function materializationStageLabel(
+  stage: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['activity']>['stage'],
+): string {
+  switch (stage) {
+    case 'loading-cache':
+      return 'loading cached facts';
+    case 'attributing':
+      return 'attributing facts';
+    case 'preparing-rows':
+      return 'preparing rows';
+    case 'writing-symbols':
+      return 'writing symbols';
+    case 'writing-lookups':
+      return 'writing lookup keys';
+    case 'writing-terms':
+      return 'writing lexical terms';
+    case 'writing-edges':
+      return 'writing relationships';
+    case 'writing-references':
+      return 'writing references';
+    case 'writing-candidates':
+      return 'writing reference candidates';
+    case 'writing-facts':
+      return 'writing graph facts';
+    case 'committing':
+      return 'committing batch';
+  }
+}
+
+function renderMaterializationRows(
+  rows:
+    | {
+        readonly edges?: number;
+        readonly deduplicatedEdges?: number;
+        readonly deduplicatedReferences?: number;
+        readonly lookupKeys?: number;
+        readonly referenceCandidates?: number;
+        readonly references?: number;
+        readonly reexports?: number;
+        readonly symbols?: number;
+        readonly terms?: number;
+      }
+    | undefined,
+): string | undefined {
+  if (!rows) return undefined;
+  const values = [
+    rows.symbols === undefined ? undefined : `${rows.symbols.toLocaleString()} symbols`,
+    rows.lookupKeys === undefined ? undefined : `${rows.lookupKeys.toLocaleString()} lookup keys`,
+    rows.terms === undefined ? undefined : `${rows.terms.toLocaleString()} terms`,
+    rows.edges === undefined ? undefined : `${rows.edges.toLocaleString()} relationships`,
+    rows.references === undefined ? undefined : `${rows.references.toLocaleString()} references`,
+    rows.referenceCandidates === undefined ? undefined : `${rows.referenceCandidates.toLocaleString()} candidates`,
+    rows.reexports === undefined ? undefined : `${rows.reexports.toLocaleString()} re-exports`,
+    rows.deduplicatedEdges === undefined || rows.deduplicatedEdges === 0
+      ? undefined
+      : `${rows.deduplicatedEdges.toLocaleString()} repeated relationships collapsed`,
+    rows.deduplicatedReferences === undefined || rows.deduplicatedReferences === 0
+      ? undefined
+      : `${rows.deduplicatedReferences.toLocaleString()} repeated resolution records collapsed`,
+  ].filter((value): value is string => value !== undefined);
+  return values.length > 0 ? values.join(', ') : undefined;
+}
+
+function etaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+  switch (basis) {
+    case 'cached-fact-bytes':
+      return 'cached-fact bytes';
+    case 'final-fact-bytes':
+      return 'final attributed fact bytes';
+    case 'source-bytes':
+      return 'source bytes';
+    case 'files':
+      return 'files';
   }
 }
 

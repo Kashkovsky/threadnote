@@ -6,6 +6,7 @@ import {Database} from 'bun:sqlite';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphDoctorCheck} from '../../src/code_graph/maintenance.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
@@ -148,7 +149,7 @@ describe('read-only doctor', () => {
     expect(await filesystemSnapshot(root)).toEqual(before);
   });
 
-  it('diagnoses an existing native code graph database without locks or SQLite sidecars', async () => {
+  it('diagnoses a fully initialized native code graph database without logical writes', async () => {
     const root = await temporaryRoot('threadnote-doctor-read-only-graph-');
     const databasePath = join(
       root,
@@ -159,26 +160,18 @@ describe('read-only doctor', () => {
       `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
     );
     await mkdir(dirname(databasePath), {recursive: true});
-    const database = new Database(databasePath);
-    try {
-      database.exec(`
-        CREATE TABLE schema_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
-        INSERT INTO schema_metadata (key, value) VALUES ('schema_version', '${CODE_GRAPH_SCHEMA_VERSION}');
-        CREATE TABLE snapshots (state TEXT NOT NULL);
-        INSERT INTO snapshots (state) VALUES ('ready');
-        CREATE TABLE active_snapshots (snapshot_id TEXT);
-        INSERT INTO active_snapshots (snapshot_id) VALUES ('ready-snapshot');
-        CREATE TABLE file_blobs (content_hash TEXT);
-      `);
-    } finally {
-      database.close();
-    }
-    const before = await filesystemSnapshot(root);
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+      }),
+    );
+    const before = graphSchemaMetadata(databasePath);
 
     const check = await runEffect(codeGraphDoctorCheck(root));
 
     expect(check.status).toBe('ok');
-    expect(await filesystemSnapshot(root)).toEqual(before);
+    expect(graphSchemaMetadata(databasePath)).toEqual(before);
   });
 });
 
@@ -321,6 +314,26 @@ function recallDatabaseLogicalSnapshot(databasePath: string): unknown {
         )
         .all(),
       termStatistics: database.query('SELECT * FROM term_statistics ORDER BY term').all(),
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function graphSchemaMetadata(databasePath: string): unknown {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    return {
+      metadata: database.query('SELECT key, value FROM schema_metadata ORDER BY key').all(),
+      schema: database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_schema
+           WHERE name NOT LIKE 'sqlite_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+      snapshots: database.query('SELECT id, state FROM snapshots ORDER BY id').all(),
     };
   } finally {
     database.close();

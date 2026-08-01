@@ -40,6 +40,38 @@ export function codeGraphDatabaseWriteLockPath(path: Path.Path, threadnoteHome: 
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`);
 }
 
+export function codeGraphSnapshotBuildLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  logicalSnapshotId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  if (!/^cgsn_[0-9a-f]{40}$/.test(logicalSnapshotId)) {
+    throw new Error('Code graph logical snapshot identity is invalid.');
+  }
+  return path.join(
+    threadnoteHome,
+    'locks',
+    'indexes',
+    'code-graph',
+    'snapshot-builds',
+    checkoutId,
+    `${logicalSnapshotId}.lock`,
+  );
+}
+
+export function codeGraphRequestBuildLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  requestKey: string,
+): string {
+  assertCheckoutId(checkoutId);
+  if (!/^[0-9a-f]{64}$/.test(requestKey)) throw new Error('Code graph build request identity is invalid.');
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'requests', checkoutId, `${requestKey}.lock`);
+}
+
 export function codeGraphWorktreeLockRoot(path: Path.Path, threadnoteHome: string, checkoutId: string): string {
   assertCheckoutId(checkoutId);
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'worktrees', checkoutId);

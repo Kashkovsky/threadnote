@@ -42,6 +42,19 @@ for bounded memory, atomic availability, and fast incremental/cold-query behavio
 set-based activation/resolution work. At 100k symbols, cold indexing falls from 133.36 s to 36.29 s and a one-file
 incremental update falls from 127.70 s to 24.99 s.
 
+`code-graph-intellij-query-2026-08-01.json` is development evidence from a dirty Threadnote worktree, not release
+evidence. It records real CLI and MCP reads against a pinned public IntelliJ Community snapshot with 2.67 million
+symbols and 7.34 million relationships. Indexed hot search plus adjacency falls from more than a minute to about 44
+ms, the complete exact-current CLI query is 4.66 s, and Java, Kotlin, TypeScript, and Bazel/Starlark MCP queries remain
+inside the 24 KiB structured response budget. The artifact reports Git freshness observation separately from SQLite
+query time so neither number hides the other. Release claims must use a clean, harness-validated artifact instead.
+
+The development-only [IntelliJ persisted analysis-summary benchmark](benchmarks/darwin-arm64-m1-max/code-graph-intellij-analysis-summary-2026-08-01.json)
+uses the same public snapshot to preserve the whole-graph statistics comparison. It also records a dirty Threadnote
+worktree and is not release evidence. The bounded legacy fallback took 48–53 s, while the compact persisted summary
+answers the analysis portion in 6–7 ms; exact-current CLI runs take 3.91–3.99 s including Git observation and process
+startup. Its one-time legacy backfill took approximately 20 s and added exactly 45,056 durable database bytes.
+
 `embedding-backend-compatibility.json` records the Darwin arm64 BGE comparison used to preserve existing vector
 generations when switching the built-in model to `gpuLayers=0`. Across 35 frozen recall/code-graph texts, the minimum
 same-text cosine was 0.999879, the largest mixed-backend query/document score delta was 0.002503, and all 12 query

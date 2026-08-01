@@ -388,6 +388,10 @@ describe('CodeGraphWatcher', () => {
       const insufficient = yield* watcher.status(options.key);
       yield* TestClock.adjust(1_000);
       yield* scanning(20);
+      yield* TestClock.adjust(1_000);
+      yield* scanning(30);
+      yield* TestClock.adjust(1_000);
+      yield* scanning(40);
       const estimated = yield* watcher.status(options.key);
       yield* TestClock.adjust(500);
       const aged = yield* watcher.status(options.key);
@@ -417,8 +421,8 @@ describe('CodeGraphWatcher', () => {
         value: {
           state: 'indexing',
           timing: {
-            estimateConfidence: 'low',
-            estimatedPhaseRemainingMilliseconds: 8_000,
+            estimateConfidence: 'medium',
+            estimatedPhaseRemainingMilliseconds: 6_000,
             estimateScope: 'phase',
           },
         },
@@ -428,9 +432,9 @@ describe('CodeGraphWatcher', () => {
         value: {
           state: 'indexing',
           timing: {
-            elapsedMilliseconds: 2_500,
+            elapsedMilliseconds: 4_500,
             lastProgressAgeMilliseconds: 500,
-            phaseElapsedMilliseconds: 2_500,
+            phaseElapsedMilliseconds: 4_500,
           },
         },
       });

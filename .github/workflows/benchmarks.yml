@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/benchmarks.yml'
+      - '.github/workflows/production-large-evidence.yml'
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
@@ -45,7 +46,7 @@ on:
         type: boolean
         default: false
       include_heavy_tail:
-        description: Run the pathological TypeScript, 25 MiB JSON, SVG, interruption, and worker-determinism suite
+        description: Run parser/cache heavy-tail coverage; this is not a production materialization benchmark
         required: false
         type: boolean
         default: false
@@ -135,7 +136,7 @@ jobs:
 
   code-graph:
     name: Code graph · ${{ matrix.os }}
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +173,7 @@ jobs:
 
   code-graph-10k:
     name: Code graph 10k · ${{ matrix.os }}
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -207,7 +208,7 @@ jobs:
 
   code-graph-vectors:
     name: Code graph pinned vectors · Linux
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -245,7 +246,7 @@ jobs:
 
   code-graph-vectors-10k:
     name: Code graph pinned vectors 10k · Linux
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -353,43 +354,11 @@ jobs:
           retention-days: 30
 
   code-graph-production-large:
-    name: Code graph production-large · n=1 · pinned Linux class
     if: github.event_name == 'schedule' || inputs.include_production_large
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Capture one production-large observation with phase and storage telemetry
-        timeout-minutes: 320
-        env:
-          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
-          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
-        run: >-
-          bun run bench:code-graph --
-          --profile production-large
-          --samples 1
-          --warmups 0
-          --output artifacts/code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        timeout-minutes: 10
-        with:
-          name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
-          path: artifacts/code-graph-production-large-n1-*.json
-          if-no-files-found: warn
-          retention-days: 90
+    uses: ./.github/workflows/production-large-evidence.yml
 
   code-graph-heavy-tail:
-    name: Code graph large-monorepo heavy tail · pinned Linux class
+    name: Code graph parser/cache heavy tail · pinned Linux class
     if: github.event_name == 'schedule' || inputs.include_heavy_tail
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -403,7 +372,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Capture pathological files, parser determinism, and interruption resume
+      - name: Capture parser heavy tail, cache determinism, and interruption resume
         timeout-minutes: 160
         env:
           THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
@@ -423,7 +392,7 @@ jobs:
 
   recall-10k:
     name: Recall 10k · ${{ matrix.os }}
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:

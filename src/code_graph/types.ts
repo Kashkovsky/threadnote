@@ -142,6 +142,150 @@ export interface CodeGraphSnapshot {
   readonly worktreeId: string;
 }
 
+/** Privacy-safe row cardinality emitted while cached facts are materialized. */
+export interface CodeGraphMaterializationRows {
+  readonly deduplicatedEdges?: number;
+  readonly deduplicatedReferences?: number;
+  readonly edges?: number;
+  readonly lookupKeys?: number;
+  readonly referenceCandidates?: number;
+  readonly references?: number;
+  readonly reexports?: number;
+  readonly symbols?: number;
+  readonly terms?: number;
+}
+
+/**
+ * Batch-local materialization activity. Paths, symbol names, and repository
+ * content are deliberately excluded because this shape is persisted and
+ * exposed through the CLI and Manager.
+ */
+export interface CodeGraphMaterializationActivity {
+  /** Number of fully committed batches before the active batch. */
+  readonly batchCompleted: number;
+  readonly batchTotal: number;
+  readonly cachedFactBytes?: number;
+  readonly elapsedMilliseconds?: number;
+  /** Exact UTF-8 JSON bytes of final attributed facts in this staging transaction. */
+  readonly factsBytes?: number;
+  readonly rows?: CodeGraphMaterializationRows;
+  readonly sourceBytes: number;
+  readonly stage:
+    | 'attributing'
+    | 'committing'
+    | 'loading-cache'
+    | 'preparing-rows'
+    | 'writing-candidates'
+    | 'writing-edges'
+    | 'writing-facts'
+    | 'writing-lookups'
+    | 'writing-references'
+    | 'writing-symbols'
+    | 'writing-terms';
+  readonly transactionMilliseconds?: number;
+}
+
+/** Cumulative, privacy-safe measurements for the current materialization phase. */
+export interface CodeGraphMaterializationMetrics {
+  readonly attributionMilliseconds?: number;
+  readonly batchesCompleted: number;
+  readonly batchesTotal: number;
+  readonly cachedFactBytesCompleted?: number;
+  readonly cachedFactBytesTotal?: number;
+  /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
+  readonly factsBytesCompleted?: number;
+  readonly factsBytesTotal?: number;
+  readonly loadingMilliseconds?: number;
+  readonly rows?: CodeGraphMaterializationRows;
+  readonly sourceBytesCompleted: number;
+  readonly sourceBytesTotal: number;
+  readonly storage?: {
+    /** Legacy combined value, present only when durable and TEMP data share one filesystem. */
+    readonly availableBytes?: number;
+    readonly durableAvailableBytes?: number;
+    /** Allocated durable graph database pages observed during direct staging. */
+    readonly durableDatabaseBytes?: number;
+    readonly durableDatabaseHighWaterBytes?: number;
+    /** On-disk main database size when materialization began. */
+    readonly durableDatabaseStartBytes?: number;
+    /** Current and peak main-database growth attributable to this build. */
+    readonly durableDatabaseGrowthBytes?: number;
+    readonly durableDatabaseGrowthHighWaterBytes?: number;
+    readonly durableDatabaseFileBytes?: number;
+    readonly durableDatabaseFileHighWaterBytes?: number;
+    /** Main database plus observable WAL, SHM, and rollback-journal files. */
+    readonly durableFilesystemBytes?: number;
+    readonly durableFilesystemHighWaterBytes?: number;
+    readonly durableJournalBytes?: number;
+    readonly durableJournalHighWaterBytes?: number;
+    readonly durableSharedMemoryBytes?: number;
+    readonly durableSharedMemoryHighWaterBytes?: number;
+    readonly durableWalBytes?: number;
+    readonly durableWalHighWaterBytes?: number;
+    readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';
+    /** Allowance for one other repository/worktree build sharing the same disk. */
+    readonly estimatedConcurrentBuildBytes?: number;
+    readonly estimatedDurableFilesystemRequiredBytes?: number;
+    readonly estimatedDurableSnapshotBytes?: number;
+    readonly estimatedJournalBytes?: number;
+    /** Combined estimate when all storage shares one filesystem; never a hard limit. */
+    readonly estimatedRequiredBytes?: number;
+    readonly estimatedTemporaryFilesystemRequiredBytes?: number;
+    readonly estimatedTemporaryDatabaseBytes?: number;
+    /** Whether SQLite TEMP and the durable graph database are on the same filesystem. */
+    readonly filesystemsShared?: boolean;
+    readonly materializationMode?: 'direct-persistent' | 'temporary-staged';
+    readonly temporaryAvailableBytes?: number;
+    /** Allocated SQLite TEMP database pages; rollback journals and subjournals are excluded. */
+    readonly temporaryDatabaseBytes: number;
+    readonly temporaryDatabaseHighWaterBytes: number;
+  };
+  readonly transactionMilliseconds?: number;
+}
+
+/**
+ * Privacy-safe progress for the bounded reference-resolution pass. The
+ * current-pass counters provide an honest finite denominator while
+ * referencesExamined, pagesCompleted, and resolved remain cumulative across
+ * alias-expansion passes.
+ */
+export interface CodeGraphResolutionActivity {
+  readonly aliasesDiscovered: number;
+  readonly elapsedMilliseconds: number;
+  readonly matchingMilliseconds: number;
+  readonly pageCompleted: number;
+  readonly pageTotal: number;
+  readonly pagesCompleted: number;
+  readonly pass: number;
+  readonly referencesCompleted: number;
+  readonly referencesExamined: number;
+  readonly referencesTotal: number;
+  readonly resolved: number;
+  readonly transactionMilliseconds: number;
+}
+
+/** Privacy-safe progress for copying a staged graph into its durable snapshot. */
+export interface CodeGraphActivationActivity {
+  readonly elapsedMilliseconds: number;
+  readonly rows?: number;
+  readonly stage:
+    | 'checkpointing-snapshot'
+    | 'committing-snapshot'
+    | 'copying-edges'
+    | 'copying-files'
+    | 'copying-lookup-keys'
+    | 'copying-reexports'
+    | 'copying-symbols'
+    | 'copying-terms'
+    | 'copying-workspace'
+    | 'recording-completion'
+    | 'validating-input';
+  readonly stageElapsedMilliseconds: number;
+  readonly state: 'completed' | 'progress' | 'started';
+  /** Duration of the most recently committed bounded copy transaction. */
+  readonly transactionMilliseconds?: number;
+}
+
 export type CodeGraphProgress =
   | {
       readonly phase: 'registering';
@@ -179,13 +323,16 @@ export type CodeGraphProgress =
       readonly unit: 'files';
     }
   | {
+      readonly activity?: CodeGraphMaterializationActivity;
       readonly completed: number;
+      readonly metrics?: CodeGraphMaterializationMetrics;
       readonly phase: 'materializing';
       readonly reused: number;
       readonly total: number;
       readonly unit: 'files';
     }
   | {
+      readonly activity?: CodeGraphResolutionActivity;
       readonly phase: 'resolving';
       readonly subphase: 'references';
     }
@@ -197,9 +344,11 @@ export type CodeGraphProgress =
       readonly symbols: number;
     }
   | {
+      readonly activity?: CodeGraphActivationActivity;
       readonly phase: 'activating';
       readonly snapshotId: string;
-      readonly subphase?: 'complete' | 'promoting' | 'validating-input' | 'writing-and-checkpointing';
+      readonly subphase?:
+        'complete' | 'promoting' | 'summarizing-analysis' | 'validating-input' | 'writing-and-checkpointing';
     }
   | {
       readonly completed: number;
@@ -230,6 +379,7 @@ export type CodeGraphOverlayFallbackReason =
   | 'disabled'
   | 'dynamic-aliases'
   | 'extractor-context-changed'
+  | 'fact-budget-expanded'
   | 'file-set-changed'
   | 'forced-full-rebuild'
   | 'no-materialized-changes'
@@ -244,7 +394,7 @@ export interface CodeGraphQueryNode extends CodeGraphSymbol {
 
 export interface CodeGraphQueryResult {
   readonly edges: readonly CodeGraphEdge[];
-  readonly freshness: 'current' | 'stale';
+  readonly freshness: 'current' | 'deferred' | 'stale';
   readonly nodes: readonly CodeGraphQueryNode[];
   readonly operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query';
   readonly repository: {
@@ -283,6 +433,7 @@ export interface CodeGraphQueryOptions {
 
 export interface CodeGraphStatus {
   readonly databasePath: string;
+  readonly freshness: 'current' | 'deferred' | 'stale';
   readonly identity: RepositoryIdentity;
   readonly languagePacks: readonly CodeGraphLanguagePackStatus[];
   readonly readySnapshot?: CodeGraphSnapshot;

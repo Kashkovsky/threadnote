@@ -1,8 +1,17 @@
 import {Effect} from 'effect';
-import type {CodeGraphEdgeCursor, CodeGraphStoreShape, CodeGraphSymbolCursor} from '../../src/code_graph/store.js';
+import type {
+  CodeGraphAnalysisEdgeAggregate,
+  CodeGraphAnalysisEdgeAggregatePage,
+  CodeGraphAnalysisSymbolAggregatePage,
+  CodeGraphEdgeCursor,
+  CodeGraphStoreShape,
+  CodeGraphSymbolCursor,
+} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 export interface AnalysisPagingObservation {
+  readonly aggregateEdgePageLimits?: number[];
+  readonly aggregateSymbolPageLimits?: number[];
   readonly edgePageLimits: number[];
   readonly symbolPageLimits: number[];
 }
@@ -14,7 +23,34 @@ export function pagedAnalysisStore(
 ): CodeGraphStoreShape {
   const symbols = [...inputSymbols].sort(compareSymbols);
   const edges = [...inputEdges].sort(compareEdges);
+  const symbolsById = [...inputSymbols].sort((left, right) => compareText(left.id, right.id));
+  const edgesById = [...inputEdges].sort((left, right) => compareText(left.id, right.id));
   return {
+    loadAnalysisEdgeAggregatePage: (
+      _databasePath: string,
+      _snapshotId: string,
+      cursorId: string | undefined,
+      limit: number,
+    ) =>
+      Effect.sync(() => {
+        observation.aggregateEdgePageLimits?.push(limit);
+        const page = edgesById.slice(firstIdAfter(edgesById, cursorId), firstIdAfter(edgesById, cursorId) + limit);
+        return edgeAggregatePage(page);
+      }),
+    loadAnalysisSymbolAggregatePage: (
+      _databasePath: string,
+      _snapshotId: string,
+      cursorId: string | undefined,
+      limit: number,
+    ) =>
+      Effect.sync(() => {
+        observation.aggregateSymbolPageLimits?.push(limit);
+        const page = symbolsById.slice(
+          firstIdAfter(symbolsById, cursorId),
+          firstIdAfter(symbolsById, cursorId) + limit,
+        );
+        return symbolAggregatePage(page);
+      }),
     loadEdgePage: (
       _databasePath: string,
       _snapshotId: string,
@@ -36,6 +72,101 @@ export function pagedAnalysisStore(
         return symbols.slice(firstSymbolAfter(symbols, cursor), firstSymbolAfter(symbols, cursor) + limit);
       }),
   } as unknown as CodeGraphStoreShape;
+}
+
+function symbolAggregatePage(symbols: readonly CodeGraphSymbol[]): CodeGraphAnalysisSymbolAggregatePage {
+  const grouped = new Map<string, {count: number; kind: string; language: string}>();
+  for (const symbol of symbols) {
+    const key = `${symbol.language}\0${symbol.kind}`;
+    const current = grouped.get(key) ?? {count: 0, kind: symbol.kind, language: symbol.language};
+    current.count += 1;
+    grouped.set(key, current);
+  }
+  return {
+    counts: [...grouped.values()].sort(
+      (left, right) => compareText(left.language, right.language) || compareText(left.kind, right.kind),
+    ),
+    ...(symbols.length === 0 ? {} : {lastId: symbols.at(-1)!.id}),
+    rows: symbols.length,
+  };
+}
+
+function edgeAggregatePage(edges: readonly CodeGraphEdge[]): CodeGraphAnalysisEdgeAggregatePage {
+  const grouped = new Map<string, MutableEdgeAggregate>();
+  for (const edge of edges) {
+    const key = `${edge.provenance}\0${edge.relation}`;
+    const confidenceValid = Number.isFinite(edge.confidence) && edge.confidence >= 0 && edge.confidence <= 1;
+    const confidence = confidenceValid ? edge.confidence : Math.max(0, Math.min(1, edge.confidence || 0));
+    const current =
+      grouped.get(key) ??
+      ({
+        confidenceHigh: 0,
+        confidenceInvalid: 0,
+        confidenceLow: 0,
+        confidenceMedium: 0,
+        confidenceTotal: 0,
+        count: 0,
+        lowestConfidence: confidence,
+        provenance: edge.provenance,
+        relation: edge.relation,
+        reviewFindingCount: 0,
+        selfLoopCount: 0,
+        unresolvedEndpointCount: 0,
+      } satisfies MutableEdgeAggregate);
+    current.count += 1;
+    current.confidenceTotal += confidence;
+    current.lowestConfidence = Math.min(current.lowestConfidence, confidence);
+    if (!confidenceValid) current.confidenceInvalid += 1;
+    if (edge.confidence >= 0.9) current.confidenceHigh += 1;
+    else if (edge.confidence >= 0.6) current.confidenceMedium += 1;
+    else current.confidenceLow += 1;
+    if (edge.sourceId === undefined || edge.targetId === undefined) current.unresolvedEndpointCount += 1;
+    if (edge.sourceId !== undefined && edge.sourceId === edge.targetId) current.selfLoopCount += 1;
+    if (!confidenceValid || confidence < minimumExpectedConfidence(edge.provenance)) current.reviewFindingCount += 1;
+    grouped.set(key, current);
+  }
+  return {
+    counts: [...grouped.values()].sort(
+      (left, right) => compareText(left.provenance, right.provenance) || compareText(left.relation, right.relation),
+    ),
+    ...(edges.length === 0 ? {} : {lastId: edges.at(-1)!.id}),
+    rows: edges.length,
+  };
+}
+
+interface MutableEdgeAggregate extends CodeGraphAnalysisEdgeAggregate {
+  confidenceHigh: number;
+  confidenceInvalid: number;
+  confidenceLow: number;
+  confidenceMedium: number;
+  confidenceTotal: number;
+  count: number;
+  lowestConfidence: number;
+  reviewFindingCount: number;
+  selfLoopCount: number;
+  unresolvedEndpointCount: number;
+}
+
+function minimumExpectedConfidence(provenance: CodeGraphEdge['provenance']): number {
+  switch (provenance) {
+    case 'declared':
+    case 'resolved':
+      return 0.9;
+    case 'syntactic':
+      return 0.7;
+    case 'heuristic':
+      return 0.45;
+    case 'model':
+      return 0.35;
+  }
+}
+
+function firstIdAfter<Value extends {readonly id: string}>(values: readonly Value[], cursorId: string | undefined) {
+  return cursorId === undefined ? 0 : firstAfter(values, value => compareText(value.id, cursorId));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function analysisSnapshot(

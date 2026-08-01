@@ -4,7 +4,15 @@ import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
-import {createPackageAttributor, createResolutionAttributor, extractRepositoryFileFacts} from './extractor.js';
+import {createRepositoryFactAttributor, extractRepositoryFileFacts} from './extractor.js';
+import {
+  budgetCachedCodeGraphFacts,
+  cachedCodeGraphFactBytes,
+  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  finalCodeGraphFactBatches,
+  serializeBoundedCodeGraphFact,
+  type BoundedCodeGraphFact,
+} from './fact_budget.js';
 import {
   inventoryRepository,
   worktreeOverlayState,
@@ -17,12 +25,8 @@ import {
   packDerivationIdentity,
   type CodeGraphLanguagePackRegistryShape,
 } from './languages/registry.js';
-import {codeGraphLayout} from './layout.js';
-import {
-  codeGraphMaintenanceIntentActive,
-  withCodeGraphDatabaseWriteLock,
-  withCodeGraphMaintenanceRegistration,
-} from './maintenance_gate.js';
+import {codeGraphLayout, codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath} from './layout.js';
+import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {
@@ -30,13 +34,17 @@ import {
   CodeGraphStore,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
+  type CodeGraphStagingProgress,
   type CodeGraphStoreShape,
 } from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  type CodeGraphEdge,
   type CodeGraphFileFacts,
   type CodeGraphIndexSummary,
   type CodeGraphInventoryFile,
+  type CodeGraphMaterializationMetrics,
+  type CodeGraphMaterializationRows,
   type CodeGraphOverlayFallbackReason,
   type CodeGraphProgress,
   type CodeGraphReference,
@@ -57,6 +65,15 @@ import {createWorkspaceAttributor} from './workspace.js';
 import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import {CodeGraphParserPool, type CodeGraphParserPoolShape, type CodeGraphParserResult} from './parser_worker.js';
+
+export {
+  budgetCachedCodeGraphFacts,
+  cachedCodeGraphFactBytes,
+  cachedCodeGraphFactByteUpperBound,
+  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  compactCachedFileRelationships,
+  finalCodeGraphFactBatches,
+} from './fact_budget.js';
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly cwd: string;
@@ -164,7 +181,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome)) {
                   return yield* Effect.fail(new RepositoryMaintenanceInterrupted());
                 }
-                return yield* store
+                const build = store
                   .withSession(
                     layout.databasePath,
                     Effect.gen(function* () {
@@ -193,8 +210,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           requestKey,
                         );
                         if (completedByOwner) {
+                          const analysisSummaryBackfilled = yield* prepareReadyAnalysisSummary({
+                            databasePath: layout.databasePath,
+                            onProgress: options.onProgress,
+                            snapshotId: completedByOwner.id,
+                            store,
+                          });
+                          yield* store.promote(layout.databasePath, identity, completedByOwner.id, activeWorktreeIds);
                           return yield* reuseReadySnapshot({
                             activeWorktreeIds,
+                            analysisSummaryBackfilled,
+                            analysisSummaryPrepared: true,
                             embedding,
                             identity,
                             layout,
@@ -238,20 +264,57 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         : undefined;
                       const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
                       const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-                      if (!options.force && existing?.id === snapshotId) {
+                      const reusableReady =
+                        !options.force && existing?.id !== snapshotId
+                          ? yield* store.readySnapshotById(layout.databasePath, snapshotId)
+                          : existing;
+                      if (!options.force && reusableReady?.id === snapshotId) {
+                        let analysisSummaryBackfilled = false;
+                        let analysisSummaryPrepared = false;
+                        if (existing?.id !== reusableReady.id) {
+                          analysisSummaryBackfilled = yield* prepareReadyAnalysisSummary({
+                            databasePath: layout.databasePath,
+                            onProgress: options.onProgress,
+                            snapshotId: reusableReady.id,
+                            store,
+                          });
+                          analysisSummaryPrepared = true;
+                          yield* store.promote(layout.databasePath, identity, reusableReady.id, activeWorktreeIds);
+                        }
                         return yield* reuseReadySnapshot({
                           activeWorktreeIds,
+                          analysisSummaryBackfilled,
+                          analysisSummaryPrepared,
                           embedding,
                           identity,
                           layout,
                           onProgress: options.onProgress,
                           reusedFiles: inventory.files.length - inventory.parsedFiles,
                           skippedFiles: inventory.skipped,
-                          snapshot: existing,
+                          snapshot: reusableReady,
                           startedAt,
                           store,
                           threadnoteHome: options.threadnoteHome,
                           totalFiles: inventory.files.length,
+                        });
+                      }
+                      if (!inventory.dirty) {
+                        return yield* buildOwnedCleanSnapshot({
+                          activeWorktreeIds,
+                          embedding,
+                          existing,
+                          fallbackSnapshotId: snapshotId,
+                          force: options.force === true,
+                          fs,
+                          identity,
+                          inventory,
+                          languagePacks,
+                          layout,
+                          logicalSnapshotId,
+                          onProgress: options.onProgress,
+                          startedAt,
+                          store,
+                          threadnoteHome: options.threadnoteHome,
                         });
                       }
                       const committedBase = inventory.dirty
@@ -313,11 +376,22 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     }),
+                    writerSessionOptions(layout, options.onProgress),
                   )
                   .pipe(
                     Effect.tap(summary => reporter.complete(summary)),
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
+                return yield* withSharedCleanRequestGate({
+                  checkoutId: initialIdentity.checkoutId,
+                  effect: build,
+                  fs,
+                  onProgress: options.onProgress,
+                  path,
+                  requestKey,
+                  requestedOverlay,
+                  threadnoteHome: options.threadnoteHome,
+                });
               }),
             );
           }),
@@ -429,6 +503,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
                     }),
+                    writerSessionOptions(layout, options.onProgress),
                   )
                   .pipe(
                     Effect.tap(lease => reporter.completeSnapshot(lease.snapshot)),
@@ -471,6 +546,36 @@ function withCodeGraphProcessLock<A, E, R>(
   );
 }
 
+function writerSessionOptions(layout: CodeGraphLayout, onProgress: CodeGraphIndexOptions['onProgress']) {
+  return {
+    cleanupCompletedBuildRows: true,
+    onWriterContention: () => (onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+    writerLockPath: layout.databaseWriteLockPath,
+  } as const;
+}
+
+function withSharedCleanRequestGate<A, E, R>(input: {
+  readonly checkoutId: string;
+  readonly effect: Effect.Effect<A, E, R>;
+  readonly fs: FileSystem.FileSystem;
+  readonly onProgress: CodeGraphIndexOptions['onProgress'];
+  readonly path: Path.Path;
+  readonly requestedOverlay: {readonly dirty: boolean; readonly fingerprint?: string} | undefined;
+  readonly requestKey: string | undefined;
+  readonly threadnoteHome: string;
+}) {
+  if (!input.requestKey || input.requestedOverlay?.dirty !== false) return input.effect;
+  return withExclusiveFileLock(
+    input.fs,
+    codeGraphRequestBuildLockPath(input.path, input.threadnoteHome, input.checkoutId, input.requestKey),
+    {
+      ...CODE_GRAPH_LOCK_OPTIONS,
+      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+    },
+    input.effect,
+  );
+}
+
 const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnapshot')(function* (
   store: CodeGraphStoreShape,
   layout: CodeGraphLayout,
@@ -478,7 +583,12 @@ const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnap
   overlay: {readonly dirty: boolean; readonly fingerprint?: string},
   requestKey: string,
 ) {
-  const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+  const statuses = yield* readCodeGraphBuildStatuses(layout);
+  const completed = statuses.find(
+    status => status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId,
+  );
+  if (!completed?.result?.snapshotId) return undefined;
+  const ready = yield* store.readySnapshotById(layout.databasePath, completed.result.snapshotId);
   if (
     !ready ||
     ready.commit !== identity.headCommit ||
@@ -487,17 +597,32 @@ const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnap
   ) {
     return undefined;
   }
-  const statuses = yield* readCodeGraphBuildStatuses(layout);
-  return statuses.some(
-    status =>
-      status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId === ready.id,
-  )
-    ? ready
-    : undefined;
+  return ready;
+});
+
+const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnalysisSummary')(function* (input: {
+  readonly databasePath: string;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly snapshotId: string;
+  readonly store: CodeGraphStoreShape;
+}) {
+  yield* input.onProgress?.({
+    phase: 'activating',
+    snapshotId: input.snapshotId,
+    subphase: 'summarizing-analysis',
+  }) ?? Effect.void;
+  const backfilled =
+    typeof input.store.ensureAnalysisSummary === 'function'
+      ? yield* input.store.ensureAnalysisSummary(input.databasePath, input.snapshotId)
+      : false;
+  yield* input.onProgress?.({phase: 'activating', snapshotId: input.snapshotId, subphase: 'complete'}) ?? Effect.void;
+  return backfilled;
 });
 
 const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
+  readonly analysisSummaryBackfilled?: boolean;
+  readonly analysisSummaryPrepared?: boolean;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly identity: RepositoryIdentity;
   readonly layout: CodeGraphLayout;
@@ -510,8 +635,18 @@ const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (
   readonly threadnoteHome: string;
   readonly totalFiles: number;
 }) {
+  const analysisSummaryBackfilled = input.analysisSummaryPrepared
+    ? input.analysisSummaryBackfilled === true
+    : yield* prepareReadyAnalysisSummary({
+        databasePath: input.layout.databasePath,
+        onProgress: input.onProgress,
+        snapshotId: input.snapshot.id,
+        store: input.store,
+      });
   yield* input.store.reconcileWorktrees(input.layout.databasePath, input.activeWorktreeIds);
-  const diagnostics: string[] = [];
+  const diagnostics: string[] = analysisSummaryBackfilled
+    ? ['Built the persisted whole-graph analysis summary for this reused snapshot.']
+    : [];
   const vectorCheck = yield* input.embedding
     .check(input.threadnoteHome, input.layout, input.snapshot.id)
     .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
@@ -582,6 +717,114 @@ function sameOverlayState(
   return left.dirty === right.dirty && (!left.dirty || left.fingerprint === right.fingerprint);
 }
 
+const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
+  readonly activeWorktreeIds: ReadonlySet<string>;
+  readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly existing: CodeGraphSnapshot | undefined;
+  readonly fallbackSnapshotId: string;
+  readonly force: boolean;
+  readonly fs: FileSystem.FileSystem;
+  readonly identity: RepositoryIdentity;
+  readonly inventory: CodeGraphInventory;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly layout: CodeGraphLayout;
+  readonly logicalSnapshotId: string;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly startedAt: number;
+  readonly store: CodeGraphStoreShape;
+  readonly threadnoteHome: string;
+}) {
+  return yield* withExclusiveFileLock(
+    input.fs,
+    codeGraphSnapshotBuildLockPath(
+      yield* Path.Path,
+      input.threadnoteHome,
+      input.identity.checkoutId,
+      input.logicalSnapshotId,
+    ),
+    {
+      ...CODE_GRAPH_LOCK_OPTIONS,
+      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+    },
+    Effect.gen(function* () {
+      if (!input.force) {
+        const ready = yield* input.store.readySnapshotById(input.layout.databasePath, input.logicalSnapshotId);
+        if (ready) {
+          let analysisSummaryBackfilled = false;
+          let analysisSummaryPrepared = false;
+          if (input.existing?.id !== ready.id) {
+            analysisSummaryBackfilled = yield* prepareReadyAnalysisSummary({
+              databasePath: input.layout.databasePath,
+              onProgress: input.onProgress,
+              snapshotId: ready.id,
+              store: input.store,
+            });
+            analysisSummaryPrepared = true;
+            yield* input.store.promote(input.layout.databasePath, input.identity, ready.id, input.activeWorktreeIds);
+          }
+          return yield* reuseReadySnapshot({
+            activeWorktreeIds: input.activeWorktreeIds,
+            analysisSummaryBackfilled,
+            analysisSummaryPrepared,
+            embedding: input.embedding,
+            identity: input.identity,
+            layout: input.layout,
+            onProgress: input.onProgress,
+            reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
+            skippedFiles: input.inventory.skipped,
+            snapshot: ready,
+            startedAt: input.startedAt,
+            store: input.store,
+            threadnoteHome: input.threadnoteHome,
+            totalFiles: input.inventory.files.length,
+          });
+        }
+      }
+      const resumed = input.force
+        ? yield* input.store.resumableForcedBuild(input.layout.databasePath, input.logicalSnapshotId)
+        : undefined;
+      const building: CodeGraphSnapshot = resumed ?? {
+        commit: input.identity.headCommit,
+        dirty: false,
+        edgeCount: 0,
+        extractorSet: extractorSetIdentity(input.inventory.files, input.languagePacks),
+        fileCount: 0,
+        id: input.fallbackSnapshotId,
+        repositoryId: input.identity.repositoryId,
+        state: 'building',
+        symbolCount: 0,
+        worktreeId: input.identity.worktreeId,
+      };
+      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building);
+      return yield* buildAndActivate({
+        activeWorktreeIds: input.activeWorktreeIds,
+        activatePointer: true,
+        building,
+        embedding: input.embedding,
+        ensureVectors: true,
+        existing: input.existing,
+        force: input.force,
+        fs: input.fs,
+        identity: input.identity,
+        inventory: input.inventory,
+        languagePacks: input.languagePacks,
+        layout: input.layout,
+        onProgress: input.onProgress,
+        persistentOwnerToken: ownerToken,
+        startedAt: input.startedAt,
+        store: input.store,
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(
+        Effect.catch(cause =>
+          input.store
+            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+            .pipe(Effect.andThen(Effect.fail(cause))),
+        ),
+      );
+    }),
+  );
+});
+
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
   readonly embedding: CodeGraphEmbeddingIndexShape;
@@ -593,6 +836,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly persistentOwnerToken?: string;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
@@ -606,10 +850,8 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
     skipped: input.inventory.skipped,
   };
   const extractorSet = extractorSetIdentity(cleanInventory.files, input.languagePacks);
-  const snapshotId = forcedSnapshotIdentity(
-    snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files),
-    input.forceGeneration,
-  );
+  const logicalSnapshotId = snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files);
+  const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, input.forceGeneration);
   const existing = yield* input.store.readySnapshotById(input.layout.databasePath, snapshotId);
   if (existing) {
     const lease = yield* input.store
@@ -627,38 +869,74 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
       } satisfies CommittedBaseResult;
     }
   }
-  const building: CodeGraphSnapshot = {
-    commit: input.identity.headCommit,
-    dirty: false,
-    edgeCount: 0,
-    extractorSet,
-    fileCount: 0,
-    id: snapshotId,
-    repositoryId: input.identity.repositoryId,
-    state: 'building',
-    symbolCount: 0,
-    worktreeId: input.identity.worktreeId,
-  };
-  yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
-  const summary = yield* buildAndActivate({
-    ...input,
-    activatePointer: false,
-    building,
-    ensureVectors: false,
-    existing: undefined,
-    inventory: cleanInventory,
-  }).pipe(
-    Effect.catch(cause =>
-      input.store
-        .markFailed(input.layout.databasePath, snapshotId, messageOf(cause))
-        .pipe(Effect.andThen(Effect.fail(cause))),
+  const summary = yield* withExclusiveFileLock(
+    input.fs,
+    codeGraphSnapshotBuildLockPath(
+      yield* Path.Path,
+      input.threadnoteHome,
+      input.identity.checkoutId,
+      logicalSnapshotId,
     ),
+    {
+      ...CODE_GRAPH_LOCK_OPTIONS,
+      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+    },
+    Effect.gen(function* () {
+      if (!input.force) {
+        const ready = yield* input.store.readySnapshotById(input.layout.databasePath, logicalSnapshotId);
+        if (ready) {
+          return {
+            diagnostics: [],
+            durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
+            identity: input.identity,
+            materialization: {mode: 'reused-snapshot', stagedFiles: 0, totalFiles: cleanInventory.files.length},
+            reusedFiles: cleanInventory.files.length - cleanInventory.parsedFiles,
+            skippedFiles: cleanInventory.skipped,
+            snapshot: ready,
+          } satisfies CodeGraphIndexSummary;
+        }
+      }
+      const resumed = input.force
+        ? yield* input.store.resumableForcedBuild(input.layout.databasePath, logicalSnapshotId)
+        : undefined;
+      const building: CodeGraphSnapshot = resumed ?? {
+        commit: input.identity.headCommit,
+        dirty: false,
+        edgeCount: 0,
+        extractorSet,
+        fileCount: 0,
+        id: snapshotId,
+        repositoryId: input.identity.repositoryId,
+        state: 'building',
+        symbolCount: 0,
+        worktreeId: input.identity.worktreeId,
+      };
+      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building);
+      return yield* buildAndActivate({
+        ...input,
+        activatePointer: false,
+        building,
+        ensureVectors: false,
+        existing: undefined,
+        inventory: cleanInventory,
+        persistentOwnerToken: ownerToken,
+      }).pipe(
+        Effect.catch(cause =>
+          input.store
+            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+            .pipe(Effect.andThen(Effect.fail(cause))),
+        ),
+      );
+    }),
   );
   return {
     diagnostics: summary.diagnostics,
     leaseToken: Option.none(),
     snapshot: summary.snapshot,
-    stagingReusable: true,
+    // Clean builds now materialize directly into a durable `building`
+    // snapshot. Dirty overlays reuse the ready persisted base instead of a
+    // connection-private full staging graph.
+    stagingReusable: false,
   } satisfies CommittedBaseResult;
 });
 
@@ -678,13 +956,13 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly persistentOwnerToken?: string;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
 }) {
   const workspace = yield* input.languagePacks.discoverWorkspace(input.inventory.files);
-  const attributeFacts = (facts: readonly CodeGraphFileFacts[]) =>
-    deriveCachedCodeGraphFacts(input.inventory.files, workspace, facts);
+  const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
   const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
@@ -736,48 +1014,360 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     }
   }
   if (!incrementalApplied) {
+    const sourceBytesTotal = input.inventory.files.reduce((total, file) => total + file.size, 0);
+    const cachedMetadata = yield* cachedFactsMetadata(
+      input.store,
+      input.layout.databasePath,
+      input.inventory.files,
+      input.languagePacks,
+    );
+    if (cachedMetadata.files !== input.inventory.files.length) {
+      return yield* Effect.fail(
+        new Error('Cached code graph facts are incomplete during materialization planning; retry with a full rebuild.'),
+      );
+    }
+    const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
+    const cachedFactBytesTotal = cachedMetadata.bytes;
+    const storageEstimate = estimatedMaterializationStorageBytes(
+      cachedFactBytesTotal,
+      sourceBytesTotal,
+      input.inventory.dirty ? 'temporary-staged' : 'direct-persistent',
+      'cached-fact-bytes',
+    );
+    const system = yield* SystemInfo;
+    const [durableAvailableBytes, temporaryAvailableBytes, durableFilesystem, temporaryFilesystem] = yield* Effect.all(
+      [
+        system.availableDiskBytes(input.layout.repositoryRoot).pipe(Effect.catch(() => Effect.succeed(undefined))),
+        system.availableDiskBytes(system.tempDirectory).pipe(Effect.catch(() => Effect.succeed(undefined))),
+        input.fs.stat(input.layout.repositoryRoot).pipe(
+          Effect.map(info => info.dev),
+          Effect.option,
+        ),
+        input.fs.stat(system.tempDirectory).pipe(
+          Effect.map(info => info.dev),
+          Effect.option,
+        ),
+      ] as const,
+      {concurrency: 'unbounded'},
+    );
+    const filesystemsShared =
+      Option.isSome(durableFilesystem) && Option.isSome(temporaryFilesystem)
+        ? durableFilesystem.value === temporaryFilesystem.value
+        : undefined;
+    const storagePlan = materializationStoragePlan(storageEstimate, {
+      durableAvailableBytes,
+      filesystemsShared,
+      temporaryAvailableBytes,
+    });
+    let batchesCompleted = 0;
+    // Final attribution may expand one cached-fact batch into multiple bounded
+    // write transactions. Until each source batch is decoded, this is a lower
+    // bound that converges monotonically to the exact finalized receipt count.
+    let batchesTotal = batches.length;
+    let sourceBytesCompleted = 0;
+    let loadingMilliseconds = 0;
+    let attributionMilliseconds = 0;
+    let transactionMilliseconds = 0;
+    let cachedFactBytesCompleted = 0;
+    let factsBytesCompleted = 0;
+    let durableDatabaseBytes = 0;
+    let durableDatabaseHighWaterBytes = 0;
+    const storageAtStart = yield* materializationStorageFiles(input.fs, input.layout.databasePath);
+    let durableDatabaseFileBytes = storageAtStart.databaseBytes;
+    let durableDatabaseFileHighWaterBytes = storageAtStart.databaseBytes;
+    const durableDatabaseStartBytes = storageAtStart.databaseBytes;
+    let durableDatabaseGrowthBytes = 0;
+    let durableDatabaseGrowthHighWaterBytes = 0;
+    let durableFilesystemBytes = storageAtStart.totalBytes;
+    let durableFilesystemHighWaterBytes = storageAtStart.totalBytes;
+    let durableJournalBytes = storageAtStart.journalBytes;
+    let durableJournalHighWaterBytes = storageAtStart.journalBytes;
+    let durableSharedMemoryBytes = storageAtStart.sharedMemoryBytes;
+    let durableSharedMemoryHighWaterBytes = storageAtStart.sharedMemoryBytes;
+    let durableWalBytes = storageAtStart.walBytes;
+    let durableWalHighWaterBytes = storageAtStart.walBytes;
+    let lastStorageFileSampleAt = Number.NEGATIVE_INFINITY;
+    let temporaryDatabaseBytes = 0;
+    let temporaryDatabaseHighWaterBytes = 0;
+    let materializedRows: CodeGraphMaterializationRows = {};
+    const metrics = (finalFactsBytesTotal?: number): CodeGraphMaterializationMetrics => ({
+      attributionMilliseconds,
+      batchesCompleted,
+      batchesTotal,
+      cachedFactBytesCompleted,
+      cachedFactBytesTotal,
+      factsBytesCompleted,
+      ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
+      loadingMilliseconds,
+      rows: materializedRows,
+      sourceBytesCompleted,
+      sourceBytesTotal,
+      storage: {
+        ...storagePlan,
+        durableDatabaseBytes,
+        durableDatabaseFileBytes,
+        durableDatabaseFileHighWaterBytes,
+        durableDatabaseGrowthBytes,
+        durableDatabaseGrowthHighWaterBytes,
+        durableDatabaseHighWaterBytes,
+        durableDatabaseStartBytes,
+        durableFilesystemBytes,
+        durableFilesystemHighWaterBytes,
+        durableJournalBytes,
+        durableJournalHighWaterBytes,
+        durableSharedMemoryBytes,
+        durableSharedMemoryHighWaterBytes,
+        durableWalBytes,
+        durableWalHighWaterBytes,
+        temporaryDatabaseBytes,
+        temporaryDatabaseHighWaterBytes,
+      },
+      transactionMilliseconds,
+    });
+    const refreshStorageFiles = (force = false) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (!force && now - lastStorageFileSampleAt < 1_000) return;
+        const current = yield* materializationStorageFiles(input.fs, input.layout.databasePath);
+        durableDatabaseFileBytes = current.databaseBytes;
+        durableDatabaseFileHighWaterBytes = Math.max(durableDatabaseFileHighWaterBytes, current.databaseBytes);
+        durableDatabaseGrowthBytes = Math.max(0, current.databaseBytes - durableDatabaseStartBytes);
+        durableDatabaseGrowthHighWaterBytes = Math.max(durableDatabaseGrowthHighWaterBytes, durableDatabaseGrowthBytes);
+        durableFilesystemBytes = current.totalBytes;
+        durableFilesystemHighWaterBytes = Math.max(durableFilesystemHighWaterBytes, current.totalBytes);
+        durableJournalBytes = current.journalBytes;
+        durableJournalHighWaterBytes = Math.max(durableJournalHighWaterBytes, current.journalBytes);
+        durableSharedMemoryBytes = current.sharedMemoryBytes;
+        durableSharedMemoryHighWaterBytes = Math.max(durableSharedMemoryHighWaterBytes, current.sharedMemoryBytes);
+        durableWalBytes = current.walBytes;
+        durableWalHighWaterBytes = Math.max(durableWalHighWaterBytes, current.walBytes);
+        lastStorageFileSampleAt = now;
+      });
+    const storageShortfalls = materializationStorageShortfalls(storagePlan);
+    if (storageShortfalls.length > 0) {
+      extractionDiagnostics.push(
+        `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization estimate; ` +
+          'indexing will continue while reporting actual TEMP database usage.',
+      );
+    }
     yield* input.onProgress?.({
       completed: materializedFiles,
+      metrics: metrics(),
       phase: 'materializing',
       reused: reusedFiles,
       total: input.inventory.files.length,
       unit: 'files',
     }) ?? Effect.void;
-    yield* input.store.prepareActivation(input.layout.databasePath, input.inventory.files);
+    yield* input.store.prepareActivation(
+      input.layout.databasePath,
+      input.inventory.files,
+      input.inventory.dirty ? undefined : input.building.id,
+      undefined,
+      input.persistentOwnerToken,
+    );
     yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace);
-    for (const files of factMaterializationBatches(input.inventory.files)) {
-      const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
-      if (files.some(file => !cached.has(file.path))) {
-        return yield* Effect.fail(
-          new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
-        );
-      }
-      const facts = attributeFacts(
-        files.map(file => input.languagePacks.postprocessFile(file, cached.get(file.path)!)),
-      );
-      if (extractionDiagnostics.length < 100) {
-        extractionDiagnostics.push(
-          ...facts.flatMap(file => file.diagnostics).slice(0, 100 - extractionDiagnostics.length),
-        );
-      }
-      yield* input.store.stageActivationFacts(
-        input.layout.databasePath,
-        uniqueById(facts.flatMap(file => file.symbols)),
-        facts.flatMap(file => file.edges),
-        facts.flatMap(file => file.references ?? []),
-      );
-      materializedFiles += files.length;
+    let persistentBatchCursor = 0;
+    for (const files of batches) {
+      const sourceBytes = files.reduce((total, file) => total + file.size, 0);
       yield* input.onProgress?.({
+        activity: {
+          batchCompleted: batchesCompleted,
+          batchTotal: batchesTotal,
+          sourceBytes,
+          stage: 'loading-cache',
+        },
         completed: materializedFiles,
+        metrics: metrics(),
         phase: 'materializing',
         reused: reusedFiles,
         total: input.inventory.files.length,
         unit: 'files',
       }) ?? Effect.void;
+      const loadingStartedAt = yield* Clock.currentTimeMillis;
+      const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
+      const batchLoadingMilliseconds = (yield* Clock.currentTimeMillis) - loadingStartedAt;
+      loadingMilliseconds += batchLoadingMilliseconds;
+      if (files.some(file => !cached.facts.has(file.path))) {
+        return yield* Effect.fail(
+          new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
+        );
+      }
+      yield* input.onProgress?.({
+        activity: {
+          batchCompleted: batchesCompleted,
+          batchTotal: batchesTotal,
+          cachedFactBytes: cached.bytes,
+          elapsedMilliseconds: batchLoadingMilliseconds,
+          sourceBytes,
+          stage: 'attributing',
+        },
+        completed: materializedFiles,
+        metrics: metrics(),
+        phase: 'materializing',
+        reused: reusedFiles,
+        total: input.inventory.files.length,
+        unit: 'files',
+      }) ?? Effect.void;
+      const attributionStartedAt = yield* Clock.currentTimeMillis;
+      const facts = attributeFacts(
+        files.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+      );
+      const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
+      attributionMilliseconds += batchAttributionMilliseconds;
+      const finalBatches = finalCodeGraphFactBatches(facts);
+      batchesTotal += Math.max(0, finalBatches.length - 1);
+      if (extractionDiagnostics.length < 100) {
+        extractionDiagnostics.push(
+          ...finalBatches
+            .flatMap(batch => batch.flatMap(value => value.facts.diagnostics))
+            .slice(0, 100 - extractionDiagnostics.length),
+        );
+      }
+      const filesByPath = new Map(files.map(file => [file.path, file]));
+      for (let finalBatchIndex = 0; finalBatchIndex < finalBatches.length; finalBatchIndex += 1) {
+        const finalBatch = finalBatches[finalBatchIndex]!;
+        const finalFacts = finalBatch.map(value => value.facts);
+        const batchFinalFactBytes = finalBatch.reduce((total, value) => total + value.bytes, 0);
+        const batchFiles = finalFacts.map(fact => filesByPath.get(fact.path)!);
+        const batchSourceBytes = batchFiles.reduce((total, file) => total + file.size, 0);
+        const batchCachedFactBytes = batchFiles.reduce(
+          (total, file) => total + (cached.bytesByPath.get(file.path) ?? 0),
+          0,
+        );
+        const symbols = uniqueById(finalFacts.flatMap(file => file.symbols));
+        const relationships = deduplicateMaterializationRelationships(
+          finalFacts.flatMap(file => file.edges),
+          finalFacts.flatMap(file => file.references ?? []),
+        );
+        const edges = relationships.edges;
+        const references = relationships.references;
+        let rows = materializationRows(symbols, edges.length, references, {
+          edges: relationships.duplicateEdges,
+          references: relationships.duplicateReferences,
+        });
+        yield* input.onProgress?.({
+          activity: {
+            batchCompleted: batchesCompleted,
+            batchTotal: batchesTotal,
+            cachedFactBytes: batchCachedFactBytes,
+            elapsedMilliseconds: finalBatchIndex === 0 ? batchAttributionMilliseconds : 0,
+            factsBytes: batchFinalFactBytes,
+            rows,
+            sourceBytes: batchSourceBytes,
+            stage: 'writing-facts',
+          },
+          completed: materializedFiles,
+          metrics: metrics(),
+          phase: 'materializing',
+          reused: reusedFiles,
+          total: input.inventory.files.length,
+          unit: 'files',
+        }) ?? Effect.void;
+        const transactionStartedAt = yield* Clock.currentTimeMillis;
+        const persistentBatchIndex = persistentBatchCursor;
+        yield* input.store.stageActivationFacts(
+          input.layout.databasePath,
+          symbols,
+          edges,
+          references,
+          progress => {
+            if (progress.temporaryDatabaseBytes !== undefined) {
+              temporaryDatabaseBytes = progress.temporaryDatabaseBytes;
+              temporaryDatabaseHighWaterBytes = Math.max(
+                temporaryDatabaseHighWaterBytes,
+                progress.temporaryDatabaseBytes,
+              );
+            }
+            if (progress.durableDatabaseBytes !== undefined) {
+              durableDatabaseBytes = progress.durableDatabaseBytes;
+              durableDatabaseHighWaterBytes = Math.max(durableDatabaseHighWaterBytes, progress.durableDatabaseBytes);
+            }
+            rows = materializationRowsWithStoreProgress(rows, progress);
+            return refreshStorageFiles(progress.stage === 'committed').pipe(
+              Effect.andThen(
+                input.onProgress?.({
+                  activity: {
+                    batchCompleted: persistentBatchIndex,
+                    batchTotal: batchesTotal,
+                    cachedFactBytes: batchCachedFactBytes,
+                    elapsedMilliseconds: progress.elapsedMilliseconds,
+                    factsBytes: batchFinalFactBytes,
+                    rows,
+                    sourceBytes: batchSourceBytes,
+                    stage: materializationStagingStage(progress),
+                    transactionMilliseconds: progress.elapsedMilliseconds,
+                  },
+                  completed: materializedFiles,
+                  metrics: metrics(),
+                  phase: 'materializing',
+                  reused: reusedFiles,
+                  total: input.inventory.files.length,
+                  unit: 'files',
+                }) ?? Effect.void,
+              ),
+              Effect.catch(() => Effect.void),
+            );
+          },
+          persistentBatchIndex,
+        );
+        const batchTransactionMilliseconds = (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        transactionMilliseconds += batchTransactionMilliseconds;
+        materializedFiles += batchFiles.length;
+        batchesCompleted += 1;
+        persistentBatchCursor += 1;
+        sourceBytesCompleted += batchSourceBytes;
+        cachedFactBytesCompleted += batchCachedFactBytes;
+        factsBytesCompleted += batchFinalFactBytes;
+        materializedRows = addMaterializationRows(materializedRows, rows);
+        yield* input.onProgress?.({
+          activity: {
+            batchCompleted: persistentBatchIndex,
+            batchTotal: batchesTotal,
+            cachedFactBytes: batchCachedFactBytes,
+            elapsedMilliseconds:
+              (finalBatchIndex === 0 ? batchLoadingMilliseconds + batchAttributionMilliseconds : 0) +
+              batchTransactionMilliseconds,
+            factsBytes: batchFinalFactBytes,
+            rows,
+            sourceBytes: batchSourceBytes,
+            stage: 'committing',
+            transactionMilliseconds: batchTransactionMilliseconds,
+          },
+          completed: materializedFiles,
+          metrics: metrics(),
+          phase: 'materializing',
+          reused: reusedFiles,
+          total: input.inventory.files.length,
+          unit: 'files',
+        }) ?? Effect.void;
+      }
     }
+    batchesTotal = persistentBatchCursor;
+    if (!input.inventory.dirty) {
+      yield* input.store.finalizePersistentMaterializationPlan(input.layout.databasePath, persistentBatchCursor);
+    }
+    yield* input.onProgress?.({
+      completed: materializedFiles,
+      metrics: metrics(factsBytesCompleted),
+      phase: 'materializing',
+      reused: reusedFiles,
+      total: input.inventory.files.length,
+      unit: 'files',
+    }) ?? Effect.void;
   }
   yield* input.onProgress?.({phase: 'resolving', subphase: 'references'}) ?? Effect.void;
-  const resolution = yield* input.store.resolveStagedReferences(input.layout.databasePath);
+  const resolution = yield* input.store.resolveStagedReferences(input.layout.databasePath, activity =>
+    (
+      input.onProgress?.({
+        activity,
+        phase: 'resolving',
+        subphase: 'references',
+      }) ?? Effect.void
+    ).pipe(
+      Effect.catch(() => Effect.void),
+      Effect.andThen(Effect.yieldNow),
+    ),
+  );
   const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
   yield* input.onProgress?.({
     edges: stagedCounts.edges,
@@ -801,55 +1391,58 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     snapshotId: ready.id,
     subphase: 'writing-and-checkpointing',
   }) ?? Effect.void;
-  const activatedReady = yield* withCodeGraphDatabaseWriteLock(
-    input.threadnoteHome,
-    input.identity.checkoutId,
-    Effect.gen(function* () {
-      const activationLease = yield* Effect.acquireRelease(
-        input.store.activateStaged(
-          input.layout.databasePath,
-          input.identity,
-          ready,
-          !ready.dirty
-            ? {
-                fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
-                workspaceFingerprint: workspace.fingerprint,
-              }
-            : undefined,
-          CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
-        ),
-        lease =>
-          Option.match(lease, {
-            onNone: () => Effect.void,
-            onSome: token =>
-              input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
-          }),
-      );
-      const activated = yield* input.store.readySnapshotById(input.layout.databasePath, ready.id);
-      if (!activated) {
-        return yield* Effect.fail(new Error('Activated code graph snapshot could not be read back from its store.'));
-      }
+  const activatedReady = yield* Effect.gen(function* () {
+    const activationLease = yield* Effect.acquireRelease(
+      input.store.activateStaged(
+        input.layout.databasePath,
+        input.identity,
+        ready,
+        !ready.dirty
+          ? {
+              fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
+              workspaceFingerprint: workspace.fingerprint,
+            }
+          : undefined,
+        CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+        activity =>
+          (
+            input.onProgress?.({
+              activity,
+              phase: 'activating',
+              snapshotId: ready.id,
+            }) ?? Effect.void
+          ).pipe(Effect.catch(() => Effect.void)),
+      ),
+      lease =>
+        Option.match(lease, {
+          onNone: () => Effect.void,
+          onSome: token =>
+            input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+        }),
+    );
+    const activated = yield* input.store.readySnapshotById(input.layout.databasePath, ready.id);
+    if (!activated) {
+      return yield* Effect.fail(new Error('Activated code graph snapshot could not be read back from its store.'));
+    }
+    yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
+    if (input.activatePointer) {
+      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
+      // Progress callbacks are user-controlled effects and may yield long enough for
+      // the worktree to change. Revalidate on both sides of pointer promotion so a
+      // mutation observed in this window triggers the bounded retry.
       yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-      if (input.activatePointer) {
-        yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ??
-          Effect.void;
-        // Progress callbacks are user-controlled effects and may yield long enough for
-        // the worktree to change. Revalidate on both sides of pointer promotion so a
-        // mutation observed in this window triggers the bounded retry.
-        yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-        yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, input.activeWorktreeIds);
-        yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-        if (Option.isSome(activationLease)) {
-          yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
-        }
+      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, input.activeWorktreeIds);
+      yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
+      if (Option.isSome(activationLease)) {
+        yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
       }
-      if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
-        yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
-      }
-      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'complete'}) ?? Effect.void;
-      return activated;
-    }),
-  );
+    }
+    if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
+      yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
+    }
+    yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'complete'}) ?? Effect.void;
+    return activated;
+  });
   const embedding = input.ensureVectors
     ? yield* input.embedding
         .ensure(
@@ -975,20 +1568,20 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     {concurrency: 1},
   );
   if (
-    committedFiles.some(file => !committedCache.has(file.path)) ||
-    modifiedFiles.some(file => !effectiveCache.has(file.path))
+    committedFiles.some(file => !committedCache.facts.has(file.path)) ||
+    modifiedFiles.some(file => !effectiveCache.facts.has(file.path))
   ) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayAssessment;
   }
   const committedFacts = attributeInventoryFacts(
     input.inventory.committedFiles,
     committedWorkspace,
-    committedFiles.map(file => input.languagePacks.postprocessFile(file, committedCache.get(file.path)!)),
+    committedFiles.map(file => input.languagePacks.postprocessFile(file, committedCache.facts.get(file.path)!)),
   );
   const effectiveFacts = attributeInventoryFacts(
     input.inventory.files,
     workspace,
-    modifiedFiles.map(file => input.languagePacks.postprocessFile(file, effectiveCache.get(file.path)!)),
+    modifiedFiles.map(file => input.languagePacks.postprocessFile(file, effectiveCache.facts.get(file.path)!)),
   );
   if (hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts)) {
     return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayAssessment;
@@ -1017,7 +1610,16 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
       reusableFacts = enrichPersistedTypeScriptReexports(effectiveFacts, reexports);
     }
   }
-  return {facts: reusableFacts, files: modifiedFiles, mode: 'eligible', reuse} satisfies IncrementalOverlayAssessment;
+  const finalBatches = finalCodeGraphFactBatches(reusableFacts);
+  if (finalBatches.length !== 1) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
+  }
+  return {
+    facts: finalBatches[0]!.map(value => value.facts),
+    files: modifiedFiles,
+    mode: 'eligible',
+    reuse,
+  } satisfies IncrementalOverlayAssessment;
 });
 
 function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
@@ -1121,7 +1723,8 @@ function typeScriptLookupTiersForTargets(
 }
 
 function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
-  const match = /^typescript:path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
+  const match =
+    /^typescript:(?:[^:]+:)?path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
   if (!match) return [];
   try {
     return [{name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)}];
@@ -1170,7 +1773,16 @@ export function deriveCachedCodeGraphFacts(
   workspace: CodeGraphWorkspace,
   facts: readonly CodeGraphFileFacts[],
 ): readonly CodeGraphFileFacts[] {
-  return createWorkspaceAttributor(workspace)(createResolutionAttributor(files)(createPackageAttributor(files)(facts)));
+  return createCachedCodeGraphFactsAttributor(files, workspace)(facts);
+}
+
+export function createCachedCodeGraphFactsAttributor(
+  files: readonly CodeGraphInventoryFile[],
+  workspace: CodeGraphWorkspace,
+): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
+  const attributeRepositoryFacts = createRepositoryFactAttributor(files);
+  const attributeWorkspace = createWorkspaceAttributor(workspace);
+  return facts => attributeWorkspace(attributeRepositoryFacts(facts));
 }
 
 function hasDynamicAliases(facts: readonly CodeGraphFileFacts[]): boolean {
@@ -1225,6 +1837,8 @@ function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): str
       return 'changed files participate in dynamic alias resolution';
     case 'extractor-context-changed':
       return 'resolution context changed';
+    case 'fact-budget-expanded':
+      return 'final attributed facts exceeded one bounded incremental transaction';
     case 'file-set-changed':
       return 'eligible files were added or deleted';
     case 'forced-full-rebuild':
@@ -1280,7 +1894,13 @@ function cacheContentBatch(options: {
                 extractionMilliseconds,
                 persistenceMilliseconds,
               );
-              const result = yield* extractParserFacts(file, options);
+              const parsed = yield* extractParserFacts(file, options);
+              const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
+              const result = {
+                ...parsed,
+                cacheFact,
+                facts: cacheFact.facts,
+              } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
               windowCompleted += 1;
               yield* emitContentProgress(
                 options.onProgress,
@@ -1290,6 +1910,7 @@ function cacheContentBatch(options: {
                   batchTotal: files.length,
                   bytes: file.size,
                   degraded: result.degraded,
+                  factsBytes: result.cacheFact.bytes,
                   language: file.language,
                   parseMilliseconds: result.parseMilliseconds,
                   path: file.path,
@@ -1315,6 +1936,7 @@ function cacheContentBatch(options: {
               batchCompleted: extracted,
               batchTotal: files.length,
               bytes: group.files.reduce((total, file) => total + file.size, 0),
+              factsBytes: group.files.reduce((total, file) => total + resultsByPath.get(file.path)!.cacheFact.bytes, 0),
               language: representative.language,
               path: representative.path,
               stage: 'persisting',
@@ -1329,7 +1951,7 @@ function cacheContentBatch(options: {
             yield* options.store.cacheFacts(
               options.databasePath,
               durableFiles,
-              durableFiles.map(file => resultsByPath.get(file.path)!.facts),
+              durableFiles.map(file => resultsByPath.get(file.path)!.cacheFact),
               group.cacheIdentity,
             );
           }
@@ -1340,7 +1962,7 @@ function cacheContentBatch(options: {
             yield* options.store.cacheFacts(
               options.databasePath,
               degradedFiles,
-              degradedFiles.map(file => resultsByPath.get(file.path)!.facts),
+              degradedFiles.map(file => resultsByPath.get(file.path)!.cacheFact),
               degradedParserCacheIdentity(group.cacheIdentity),
             );
           }
@@ -1354,6 +1976,7 @@ function cacheContentBatch(options: {
               batchCompleted: extracted,
               batchTotal: files.length,
               bytes: group.files.reduce((total, file) => total + file.size, 0),
+              factsBytes: group.files.reduce((total, file) => total + resultsByPath.get(file.path)!.cacheFact.bytes, 0),
               language: representative.language,
               path: representative.path,
               persistMilliseconds: elapsed,
@@ -1534,25 +2157,184 @@ const CODE_GRAPH_LOCK_OPTIONS = {
 const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
 const FACT_MATERIALIZATION_BATCH_FILES = 128;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
+const FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
+// Conservative, warning-only planning factors informed by beta.30's observed
+// production-shaped live amplification. They cover indexed TEMP rows, the durable candidate
+// plus WAL, rollback/subjournals, and one concurrent worktree/repository build.
+// Actual high-water telemetry remains authoritative and should recalibrate
+// these factors as retained release evidence grows.
+const FACT_MATERIALIZATION_TEMP_FACT_AMPLIFICATION_HEURISTIC = 5;
+const FACT_MATERIALIZATION_DURABLE_FACT_AMPLIFICATION_HEURISTIC = 5;
+const FACT_MATERIALIZATION_JOURNAL_FACT_AMPLIFICATION_HEURISTIC = 3;
+const FACT_MATERIALIZATION_TEMP_MINIMUM_ESTIMATE_BYTES = 512 * 1_048_576;
+const FACT_MATERIALIZATION_DIRECT_TEMP_ESTIMATE_BYTES = 16 * 1_048_576;
+const FACT_MATERIALIZATION_DURABLE_MINIMUM_ESTIMATE_BYTES = 512 * 1_048_576;
+const FACT_MATERIALIZATION_JOURNAL_MINIMUM_ESTIMATE_BYTES = 256 * 1_048_576;
 
-function factMaterializationBatches<T extends {readonly size: number}>(
+export function estimatedMaterializationStorageBytes(
+  factBytes: number | undefined,
+  sourceBytes: number,
+  materializationMode: 'direct-persistent' | 'temporary-staged' = 'temporary-staged',
+  estimateBasis: 'cached-fact-bytes' | 'final-fact-bytes' = 'cached-fact-bytes',
+) {
+  const basisBytes = factBytes ?? sourceBytes;
+  const estimatedTemporaryDatabaseBytes =
+    materializationMode === 'direct-persistent'
+      ? FACT_MATERIALIZATION_DIRECT_TEMP_ESTIMATE_BYTES
+      : Math.max(
+          FACT_MATERIALIZATION_TEMP_MINIMUM_ESTIMATE_BYTES,
+          saturatingMultiply(basisBytes, FACT_MATERIALIZATION_TEMP_FACT_AMPLIFICATION_HEURISTIC),
+        );
+  const estimatedDurableSnapshotBytes = Math.max(
+    FACT_MATERIALIZATION_DURABLE_MINIMUM_ESTIMATE_BYTES,
+    saturatingMultiply(basisBytes, FACT_MATERIALIZATION_DURABLE_FACT_AMPLIFICATION_HEURISTIC),
+  );
+  const estimatedJournalBytes = Math.max(
+    FACT_MATERIALIZATION_JOURNAL_MINIMUM_ESTIMATE_BYTES,
+    saturatingMultiply(basisBytes, FACT_MATERIALIZATION_JOURNAL_FACT_AMPLIFICATION_HEURISTIC),
+  );
+  const estimatedConcurrentBuildBytes = saturatingAdd(
+    estimatedTemporaryDatabaseBytes,
+    estimatedDurableSnapshotBytes,
+    estimatedJournalBytes,
+  );
+  return {
+    estimateBasis: factBytes === undefined ? ('source-bytes-fallback' as const) : estimateBasis,
+    estimatedConcurrentBuildBytes,
+    estimatedDurableSnapshotBytes,
+    estimatedJournalBytes,
+    estimatedRequiredBytes: saturatingAdd(estimatedConcurrentBuildBytes, estimatedConcurrentBuildBytes),
+    estimatedTemporaryDatabaseBytes,
+    materializationMode,
+  };
+}
+
+export interface MaterializationStorageAvailability {
+  readonly durableAvailableBytes?: number;
+  readonly filesystemsShared?: boolean;
+  readonly temporaryAvailableBytes?: number;
+}
+
+export type MaterializationStoragePlan = ReturnType<typeof estimatedMaterializationStorageBytes> &
+  MaterializationStorageAvailability & {
+    readonly availableBytes?: number;
+    readonly estimatedDurableFilesystemRequiredBytes: number;
+    readonly estimatedTemporaryFilesystemRequiredBytes: number;
+  };
+
+/**
+ * Plans warning-only materialization headroom for SQLite's durable and TEMP
+ * filesystems. A second complete allowance covers one concurrent worktree or
+ * repository build without imposing a repository-size rejection.
+ */
+export function materializationStoragePlan(
+  estimate: ReturnType<typeof estimatedMaterializationStorageBytes>,
+  availability: MaterializationStorageAvailability,
+): MaterializationStoragePlan {
+  const estimatedDurableFilesystemRequiredBytes = saturatingMultiply(
+    estimate.materializationMode === 'direct-persistent'
+      ? saturatingAdd(estimate.estimatedDurableSnapshotBytes, estimate.estimatedJournalBytes)
+      : estimate.estimatedDurableSnapshotBytes,
+    2,
+  );
+  const estimatedTemporaryFilesystemRequiredBytes = saturatingMultiply(
+    estimate.materializationMode === 'direct-persistent'
+      ? estimate.estimatedTemporaryDatabaseBytes
+      : saturatingAdd(estimate.estimatedTemporaryDatabaseBytes, estimate.estimatedJournalBytes),
+    2,
+  );
+  const sharedAvailableBytes =
+    availability.filesystemsShared === true
+      ? minimumDefined(availability.durableAvailableBytes, availability.temporaryAvailableBytes)
+      : undefined;
+  return {
+    ...estimate,
+    ...availability,
+    ...(sharedAvailableBytes === undefined ? {} : {availableBytes: sharedAvailableBytes}),
+    estimatedDurableFilesystemRequiredBytes,
+    estimatedTemporaryFilesystemRequiredBytes,
+  };
+}
+
+export function materializationStorageShortfalls(storage: {
+  readonly availableBytes?: number;
+  readonly durableAvailableBytes?: number;
+  readonly estimatedDurableFilesystemRequiredBytes?: number;
+  readonly estimatedRequiredBytes?: number;
+  readonly estimatedTemporaryFilesystemRequiredBytes?: number;
+  readonly filesystemsShared?: boolean;
+  readonly temporaryAvailableBytes?: number;
+}): readonly ('durable' | 'shared' | 'temporary')[] {
+  if (storage.filesystemsShared === true) {
+    return storage.availableBytes !== undefined &&
+      storage.estimatedRequiredBytes !== undefined &&
+      storage.availableBytes < storage.estimatedRequiredBytes
+      ? ['shared']
+      : [];
+  }
+  const shortfalls: ('durable' | 'temporary')[] = [];
+  if (
+    storage.durableAvailableBytes !== undefined &&
+    storage.estimatedDurableFilesystemRequiredBytes !== undefined &&
+    storage.durableAvailableBytes < storage.estimatedDurableFilesystemRequiredBytes
+  ) {
+    shortfalls.push('durable');
+  }
+  if (
+    storage.temporaryAvailableBytes !== undefined &&
+    storage.estimatedTemporaryFilesystemRequiredBytes !== undefined &&
+    storage.temporaryAvailableBytes < storage.estimatedTemporaryFilesystemRequiredBytes
+  ) {
+    shortfalls.push('temporary');
+  }
+  return shortfalls;
+}
+
+function minimumDefined(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.min(left, right);
+}
+
+function saturatingMultiply(value: number, multiplier: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value * multiplier);
+}
+
+function saturatingAdd(...values: readonly number[]): number {
+  return values.reduce((total, value) => Math.min(Number.MAX_SAFE_INTEGER, total + value), 0);
+}
+
+export function factMaterializationBatches<T extends {readonly path: string; readonly size: number}>(
   values: readonly T[],
+  cachedFactBytesByPath: ReadonlyMap<string, number> = new Map(),
 ): readonly (readonly T[])[] {
   const output: T[][] = [];
   let batch: T[] = [];
   let batchBytes = 0;
+  let batchFactBytes = 0;
   for (const value of values) {
+    // Current-version cache writes and materialization reads both apply the
+    // same per-file compactor. Clamp defensive metadata from an unexpected
+    // legacy/corrupt row to that in-memory materialization ceiling, so there
+    // is no oversized-singleton exception in the batch planner.
+    const factBytes = Math.min(
+      CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+      Math.max(0, cachedFactBytesByPath.get(value.path) ?? 0),
+    );
     if (
       batch.length > 0 &&
       (batch.length >= FACT_MATERIALIZATION_BATCH_FILES ||
-        batchBytes + value.size > FACT_MATERIALIZATION_BATCH_SOURCE_BYTES)
+        batchBytes + value.size > FACT_MATERIALIZATION_BATCH_SOURCE_BYTES ||
+        batchFactBytes + factBytes > FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES)
     ) {
       output.push(batch);
       batch = [];
       batchBytes = 0;
+      batchFactBytes = 0;
     }
     batch.push(value);
     batchBytes += value.size;
+    batchFactBytes += factBytes;
   }
   if (batch.length > 0) output.push(batch);
   return output;
@@ -1564,6 +2346,162 @@ function uniqueById<T extends {readonly id: string}>(values: readonly T[]): read
     if (!unique.has(value.id)) unique.set(value.id, value);
   }
   return [...unique.values()];
+}
+
+/**
+ * Extraction may encounter the same relationship repeatedly at one call site
+ * or through overlapping language-pack derivations. The storage layer keeps
+ * strict INSERT semantics; collapse those logical duplicates deterministically
+ * before they reach its primary-key boundary.
+ */
+export function deduplicateMaterializationRelationships(
+  edges: readonly CodeGraphEdge[],
+  references: readonly CodeGraphReference[],
+): {
+  readonly duplicateEdges: number;
+  readonly duplicateReferences: number;
+  readonly edges: readonly CodeGraphEdge[];
+  readonly references: readonly CodeGraphReference[];
+} {
+  const edgeById = new Map<string, CodeGraphEdge>();
+  for (const edge of edges) {
+    if (!edgeById.has(edge.id)) edgeById.set(edge.id, edge);
+  }
+  const referenceByEdgeId = new Map<string, CodeGraphReference>();
+  for (const reference of references) {
+    // Reference attribution has historically been last-wins for one logical
+    // edge. Preserve that contract for older, uncompacted cache rows while
+    // edges retain their first stable evidence occurrence.
+    referenceByEdgeId.set(reference.edgeId, reference);
+  }
+  return {
+    duplicateEdges: edges.length - edgeById.size,
+    duplicateReferences: references.length - referenceByEdgeId.size,
+    edges: [...edgeById.values()],
+    references: [...referenceByEdgeId.values()],
+  };
+}
+
+function materializationRows(
+  symbols: readonly CodeGraphSymbol[],
+  edges: number,
+  references: readonly CodeGraphReference[],
+  deduplicated: {readonly edges: number; readonly references: number},
+): CodeGraphMaterializationRows {
+  return {
+    deduplicatedEdges: deduplicated.edges,
+    deduplicatedReferences: deduplicated.references,
+    edges,
+    lookupKeys: symbols.reduce((total, symbol) => total + (symbol.lookupKeys?.length ?? 0), 0),
+    referenceCandidates: references.reduce(
+      (total, reference) => total + reference.lookupTiers.reduce((tierTotal, tier) => tierTotal + tier.length, 0),
+      0,
+    ),
+    references: references.length,
+    symbols: symbols.length,
+  };
+}
+
+export function addMaterializationRows(
+  left: CodeGraphMaterializationRows,
+  right: CodeGraphMaterializationRows,
+): CodeGraphMaterializationRows {
+  return {
+    deduplicatedEdges: (left.deduplicatedEdges ?? 0) + (right.deduplicatedEdges ?? 0),
+    deduplicatedReferences: (left.deduplicatedReferences ?? 0) + (right.deduplicatedReferences ?? 0),
+    edges: (left.edges ?? 0) + (right.edges ?? 0),
+    lookupKeys: (left.lookupKeys ?? 0) + (right.lookupKeys ?? 0),
+    referenceCandidates: (left.referenceCandidates ?? 0) + (right.referenceCandidates ?? 0),
+    references: (left.references ?? 0) + (right.references ?? 0),
+    reexports: (left.reexports ?? 0) + (right.reexports ?? 0),
+    symbols: (left.symbols ?? 0) + (right.symbols ?? 0),
+    terms: (left.terms ?? 0) + (right.terms ?? 0),
+  };
+}
+
+export function materializationRowsWithStoreProgress(
+  rows: CodeGraphMaterializationRows,
+  progress: CodeGraphStagingProgress,
+): CodeGraphMaterializationRows {
+  // Store observers emit a zero-row stage boundary before the first bounded
+  // statement. Keep the batch estimate at that boundary; replacing it with
+  // zero made the CLI claim that a non-empty batch contained no symbols or
+  // lookup keys. Positive observations monotonically replace estimates with
+  // the rows actually accepted by SQLite.
+  if (progress.rowsCompleted === 0) return rows;
+  switch (progress.stage) {
+    case 'symbols':
+      return {...rows, symbols: progress.rowsCompleted};
+    case 'lookup-keys':
+      return {...rows, lookupKeys: progress.rowsCompleted};
+    case 'terms':
+      return {...rows, terms: progress.rowsCompleted};
+    case 'edges':
+      return {...rows, edges: progress.rowsCompleted};
+    case 'references':
+      return {...rows, references: progress.rowsCompleted};
+    case 'reference-candidates':
+      return {...rows, referenceCandidates: progress.rowsCompleted};
+    case 'reexports':
+      return {...rows, reexports: progress.rowsCompleted};
+    case 'committing':
+    case 'committed':
+      return rows;
+  }
+}
+
+interface MaterializationStorageFiles {
+  readonly databaseBytes: number;
+  readonly journalBytes: number;
+  readonly sharedMemoryBytes: number;
+  readonly totalBytes: number;
+  readonly walBytes: number;
+}
+
+function materializationStorageFiles(
+  fs: FileSystem.FileSystem,
+  databasePath: string,
+): Effect.Effect<MaterializationStorageFiles, never> {
+  const bytes = (file: string) =>
+    fs.stat(file).pipe(
+      Effect.map(info => Math.min(Number(info.size), Number.MAX_SAFE_INTEGER)),
+      Effect.catch(() => Effect.succeed(0)),
+    );
+  return Effect.all(
+    [bytes(databasePath), bytes(`${databasePath}-journal`), bytes(`${databasePath}-shm`), bytes(`${databasePath}-wal`)],
+    {concurrency: 4},
+  ).pipe(
+    Effect.map(([databaseBytes, journalBytes, sharedMemoryBytes, walBytes]) => ({
+      databaseBytes,
+      journalBytes,
+      sharedMemoryBytes,
+      totalBytes: databaseBytes + journalBytes + sharedMemoryBytes + walBytes,
+      walBytes,
+    })),
+  );
+}
+
+function materializationStagingStage(
+  progress: CodeGraphStagingProgress,
+): NonNullable<Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['activity']>['stage'] {
+  switch (progress.stage) {
+    case 'symbols':
+      return 'writing-symbols';
+    case 'lookup-keys':
+      return 'writing-lookups';
+    case 'terms':
+      return 'writing-terms';
+    case 'edges':
+      return 'writing-edges';
+    case 'reference-candidates':
+      return 'writing-candidates';
+    case 'references':
+    case 'reexports':
+      return 'writing-references';
+    case 'committing':
+    case 'committed':
+      return 'committing';
+  }
 }
 
 function cachedFileKeys(
@@ -1583,29 +2521,103 @@ function loadCachedFacts(
   databasePath: string,
   files: readonly CodeGraphInventoryFile[],
   languagePacks: CodeGraphLanguagePackRegistryShape,
-): Effect.Effect<ReadonlyMap<string, CodeGraphFileFacts>, unknown> {
+): Effect.Effect<
+  {
+    readonly bytes: number;
+    readonly bytesByPath: ReadonlyMap<string, number>;
+    readonly facts: ReadonlyMap<string, CodeGraphFileFacts>;
+  },
+  unknown
+> {
   return Effect.forEach(
     groupFilesByCacheIdentity(files, languagePacks),
     group =>
       Effect.gen(function* () {
         const active = yield* store.loadCachedFacts(databasePath, group.files, group.cacheIdentity);
-        const missing = group.files.filter(file => !active.has(file.path));
+        const missing = group.files.filter(file => !active.facts.has(file.path));
         if (missing.length === 0) return active;
         const degraded = yield* store.loadCachedFacts(
           databasePath,
           missing,
           degradedParserCacheIdentity(group.cacheIdentity),
         );
-        return new Map([...active, ...degraded]);
+        return {
+          bytes: active.bytes + degraded.bytes,
+          bytesByPath: new Map([...(active.bytesByPath ?? []), ...(degraded.bytesByPath ?? [])]),
+          facts: new Map([...active.facts, ...degraded.facts]),
+        };
       }),
     {concurrency: 1},
   ).pipe(
     Effect.map(groups => {
       const output = new Map<string, CodeGraphFileFacts>();
+      const bytesByPath = new Map<string, number>();
+      let bytes = 0;
       for (const group of groups) {
-        for (const [path, facts] of group) output.set(path, facts);
+        for (const [path, facts] of group.facts) {
+          const persistedBytes = group.bytesByPath?.get(path);
+          if (persistedBytes !== undefined && persistedBytes <= CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM) {
+            output.set(path, facts);
+            bytesByPath.set(path, persistedBytes);
+            bytes += persistedBytes;
+            continue;
+          }
+          const budgeted = budgetCachedCodeGraphFacts(facts);
+          const budgetedBytes = cachedCodeGraphFactBytes(budgeted);
+          output.set(path, budgeted);
+          bytesByPath.set(path, budgetedBytes);
+          bytes += budgetedBytes;
+        }
       }
-      return output;
+      return {bytes, bytesByPath, facts: output};
+    }),
+  );
+}
+
+function cachedFactsMetadata(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): Effect.Effect<
+  {readonly bytes: number; readonly bytesByPath: ReadonlyMap<string, number>; readonly files: number},
+  unknown
+> {
+  return Effect.forEach(
+    groupFilesByCacheIdentity(files, languagePacks),
+    group =>
+      Effect.gen(function* () {
+        const active = yield* store.loadCachedFacts(databasePath, group.files, group.cacheIdentity, {decode: false});
+        const activeKeys = active.keys ?? new Set(active.facts.keys());
+        const missing = group.files.filter(file => !activeKeys.has(file.path));
+        if (missing.length === 0)
+          return {bytes: active.bytes, bytesByPath: active.bytesByPath ?? new Map(), keys: activeKeys};
+        const degraded = yield* store.loadCachedFacts(
+          databasePath,
+          missing,
+          degradedParserCacheIdentity(group.cacheIdentity),
+          {decode: false},
+        );
+        const degradedKeys = degraded.keys ?? new Set(degraded.facts.keys());
+        return {
+          bytes: active.bytes + degraded.bytes,
+          bytesByPath: new Map([...(active.bytesByPath ?? []), ...(degraded.bytesByPath ?? [])]),
+          keys: new Set([...activeKeys, ...degradedKeys]),
+        };
+      }),
+    {concurrency: 1},
+  ).pipe(
+    Effect.map(groups => {
+      const bytesByPath = new Map(
+        groups
+          .flatMap(group => [...group.bytesByPath])
+          .map(([path, bytes]) => [path, Math.min(bytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM)] as const),
+      );
+      return {
+        bytes: [...bytesByPath.values()].reduce((total, bytes) => total + bytes, 0),
+        bytesByPath,
+        files: new Set(groups.flatMap(group => [...group.keys])).size,
+      };
     }),
   );
 }

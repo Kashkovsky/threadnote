@@ -1,6 +1,8 @@
 import {describe, expect, it} from 'vitest';
 import {
   graphAnalysisRequestIsCurrent,
+  graphAnalysisCoverageLabel,
+  graphAnalysisTopologyAvailable,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
@@ -12,6 +14,7 @@ import {
   graphWithNodeNeighborhood,
   resolveGraphSelection,
   type GraphEdge,
+  type GraphAnalysis,
   type GraphRepositoryGroup,
 } from '../../src/manager_graph.js';
 
@@ -83,6 +86,16 @@ describe('manager graph focus', () => {
     expect(graphAnalysisRequestIsCurrent(5, 4, 'repo-a:snapshot-1', 'repo-a:snapshot-1')).toBe(false);
     expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-b:snapshot-1', 'repo-a:snapshot-1')).toBe(false);
     expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-a:snapshot-2', 'repo-a:snapshot-1')).toBe(false);
+  });
+
+  it('does not present unavailable topology as zero communities, components, or hubs', () => {
+    const unavailable = graphAnalysis('unavailable', false);
+    expect(graphAnalysisTopologyAvailable(unavailable)).toBe(false);
+    expect(graphAnalysisCoverageLabel(unavailable)).toBe('Topology unavailable');
+    const partial = graphAnalysis('partial', false);
+    expect(graphAnalysisTopologyAvailable(partial)).toBe(true);
+    expect(graphAnalysisCoverageLabel(partial)).toBe('Topology partial');
+    expect(graphAnalysisCoverageLabel(graphAnalysis('complete', true))).toBe('Complete');
   });
 
   it('centers a searched detail node and zooms into its labels', () => {
@@ -323,6 +336,23 @@ describe('manager graph focus', () => {
     expect(graph.nodes).toHaveLength(3);
   });
 });
+
+function graphAnalysis(state: GraphAnalysis['coverage']['topology']['state'], complete: boolean): GraphAnalysis {
+  return {
+    communities: [],
+    coverage: {complete, topology: {complete: state === 'complete', state}},
+    hubs: [],
+    statistics: {
+      analyzedEdgeCount: 0,
+      analyzedNodeCount: 0,
+      communityCount: 0,
+      connectedComponentCount: 0,
+      maximumDegree: 0,
+    },
+    surprisingLinks: [],
+    warnings: [],
+  };
+}
 
 function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: string): GraphRepositoryGroup {
   return {

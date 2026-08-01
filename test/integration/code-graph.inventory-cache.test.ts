@@ -9,9 +9,11 @@ import {
   extractRepositoryFileFacts,
   resolveExtractedRepositoryFacts,
 } from '../../src/code_graph/extractor.js';
+import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -157,6 +159,84 @@ describe('code graph inventory cache rehydration', () => {
     expect(manifest?.content).toBeUndefined();
     expect(manifest?.contentHash).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('rehydrates cached manifests during a new-commit rebuild without losing attribution or resolution', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-cache-rebuild-'));
+    const home = join(root, '.threadnote-home');
+    roots.push(root);
+    createResolutionFixture(root);
+
+    const first = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    writeFileSync(join(root, 'src', 'helper.ts'), 'export function helperFunction(): number { return 3; }\n');
+    execFileSync('git', ['-C', root, 'add', 'src/helper.ts']);
+    execFileSync('git', [
+      '-C',
+      root,
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'change one source file',
+    ]);
+
+    const rebuilt = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const graph = yield* store.loadGraph(
+          join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite'),
+          indexed.snapshot.id,
+        );
+        return {graph, indexed};
+      }),
+    );
+
+    expect(rebuilt.indexed.snapshot.id).not.toBe(first.snapshot.id);
+    expect(rebuilt.indexed.reusedFiles).toBeGreaterThanOrEqual(rebuilt.indexed.snapshot.fileCount - 1);
+    expect(
+      rebuilt.graph.symbols.find(symbol => symbol.name === 'entryFunction' && symbol.path === 'src/entry.ts')
+        ?.packageName,
+    ).toBe('@fixture/root');
+    expect(
+      rebuilt.graph.symbols.find(
+        symbol => symbol.name === 'libraryFunction' && symbol.path === 'packages/library/src/index.ts',
+      )?.packageName,
+    ).toBe('@fixture/library');
+    expect(
+      rebuilt.graph.edges.some(
+        edge =>
+          edge.sourceName === 'entryFunction' &&
+          edge.targetName === 'helperFunction' &&
+          edge.provenance === 'resolved' &&
+          edge.targetId !== undefined,
+      ),
+    ).toBe(true);
+    expect(
+      rebuilt.graph.edges.some(
+        edge =>
+          edge.sourceName === 'entryFunction' &&
+          edge.targetName === 'libraryFunction' &&
+          edge.provenance === 'resolved' &&
+          edge.targetId !== undefined,
+      ),
+    ).toBe(true);
+    expect(
+      rebuilt.graph.edges.some(
+        edge =>
+          edge.sourceName === 'example.com/cache-fixture' &&
+          edge.relation === 'depends_on' &&
+          edge.targetName === 'example.com/cache-dependency',
+      ),
+    ).toBe(true);
+  }, 60_000);
 });
 
 function createResolutionFixture(root: string): void {

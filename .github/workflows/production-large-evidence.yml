@@ -1,0 +1,93 @@
+name: Production-large code graph evidence
+
+on:
+  workflow_call:
+    inputs:
+      release_ref:
+        description: Optional exact Threadnote 4 release tag ref
+        required: false
+        type: string
+        default: ''
+      release_sha:
+        description: Optional exact release commit corresponding to release_ref
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.14
+
+jobs:
+  code-graph-production-large:
+    name: Code graph production-large · n=1 · pinned Linux class
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          ref: ${{ inputs.release_ref || github.ref }}
+
+      - name: Verify the release tag resolves to the measured commit
+        if: inputs.release_ref != ''
+        shell: bash
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          resolved="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          test "$resolved" = "$RELEASE_SHA"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture one production-large observation with phase and storage telemetry
+        timeout-minutes: 320
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+          THREADNOTE_BENCHMARK_RELEASE_REF: ${{ inputs.release_ref }}
+          THREADNOTE_BENCHMARK_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: >-
+          bun run bench:code-graph --
+          --profile production-large
+          --samples 1
+          --warmups 0
+          --output artifacts/code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
+
+      - id: upload-production-large
+        uses: actions/upload-artifact@v7
+        if: always()
+        timeout-minutes: 10
+        with:
+          name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/code-graph-production-large-n1-*.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summarize retained release evidence
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload-production-large.outputs.artifact-digest }}
+          ARTIFACT_URL: ${{ steps.upload-production-large.outputs.artifact-url }}
+          SOURCE_REF: ${{ inputs.release_ref || github.ref }}
+          SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
+        run: |
+          {
+            echo '## Production-large release evidence'
+            echo
+            echo "- Source ref: \`${SOURCE_REF}\`"
+            echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
+            echo "- Retained artifact: ${ARTIFACT_URL:-not-produced}"
+            echo '- Scope: aggregate production-shaped scan, materialization, resolution, activation-stage, SQLite scratch, and one-file reindex telemetry.'
+          } >> "$GITHUB_STEP_SUMMARY"

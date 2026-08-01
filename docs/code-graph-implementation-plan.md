@@ -590,8 +590,11 @@ MCP-session build continues, then retries before making relationship-aware graph
 non-read-only because starting that disposable derived build mutates graph index state.
 
 Expose `analyze_code_graph` separately so scoped source retrieval does not mix with whole-repository topology. Its
-operations are `stats`, `communities`, `hubs`, `surprises`, and `full`. Analysis has no graph-size admission cap;
-elapsed-time and response-output budgets produce explicit partial-coverage warnings.
+operations are `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`, `confidence`, and `full`. Analysis
+has no graph-size admission cap. MCP topology retention is separately bounded while the CLI and Manager retain their
+complete snapshot-derived defaults; cap hits report topology as partial or unavailable rather than as an empty graph.
+The MCP structured projection and rendered text each enforce a deterministic 24 KiB UTF-8 budget and expose their own
+coverage/truncation metadata.
 
 ### Manager
 

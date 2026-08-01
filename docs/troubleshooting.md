@@ -185,10 +185,13 @@ loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`
 Threadnote never invokes Bazel or evaluates Starlark macros.
 
 For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
-has no repository-size admission cap. If an elapsed-time or output budget is reached, the result says coverage is
-partial and includes a warning; it does not imply that the stored snapshot was truncated. Manager shows the same
-statistics, community drill-down, structural groups, confidence, hubs, and cross-community signals only after
-**Analyze** is selected.
+has no repository-size admission cap. The MCP surface independently caps topology retention at 100,000 symbols,
+500,000 distinct relationships, and 1,000,000 relationship visits; larger snapshots still return aggregate statistics,
+with topology explicitly marked partial or unavailable. CLI and Manager analysis keep their complete snapshot-derived
+budgets. MCP structured content and rendered text each have an independent deterministic 24 KiB UTF-8 envelope with
+output coverage and omission metadata. Reaching any analysis or response budget does not imply that the stored
+snapshot was truncated. Manager shows statistics, community drill-down, structural groups, confidence, hubs, and
+cross-community signals only after **Analyze** is selected.
 
 Document extraction is deliberately local and deterministic. PDFs, OpenXML/OpenDocument files, EPUB, text documents,
 notebooks, and text-based diagram formats contribute extractable text and links. A scanned PDF, image, audio file, or

@@ -18,19 +18,28 @@ markers; one worktree can never select another worktree's mutable overlay.
 Committed inventory streams from Git tree and blob plumbing. Overlay inventory comes from Git status plus
 boundary-checked worktree reads. Threadnote does not recursively walk a repository looking for source. Hidden
 directories, ignored/generated/vendor/cache paths, symbolic links, submodule contents, and unsupported or binary files
-are rejected before parsing. Eligible tracked source is not rejected because of file or repository size.
+are rejected before parsing. Eligible tracked source is not rejected because of file or repository size; an
+exceptionally complex file degrades to bounded high-value declarations, imports, exports, and module metadata instead
+of rejecting the repository.
 
 Parsed file facts are content-addressed and reusable. Uncached source is read, parsed, and committed to the disposable
 parser cache in bounded batches; ordinary source text is released after each batch and is never retained until graph
 activation. Package and TypeScript configuration is reduced to compact resolution metadata before its source text is
-released. File, byte, symbol, edge, lexical-term, and vector counts are not repository admission or coverage limits.
-Fixed-size parser, SQLite, embedding, and output batches bound transient work without truncating the graph. Completed
-parser-cache batches are reusable checkpoints after interruption. Snapshot-dependent symbol resolution remains
-separate.
-Deterministic graph snapshots are staged, revalidated, then promoted transactionally. Incomplete or failed builds never
-replace the latest ready snapshot, and bounded reader leases keep selected snapshots alive without serializing queries
-behind the writer lock. Dirty activation stages complete current rows in bounded batches and derives overrides and
-deletions with indexed SQL joins, so a one-file edit does not issue one comparison query per symbol or edge. A short
+released. File, byte, symbol, edge, lexical-term, and vector counts are not repository admission limits. Fixed-size
+parser, SQLite, embedding, and output batches bound transient work. Per-file extraction budgets may omit lower-priority
+documentation, calls, or generated structural detail only after preserving the file/module surface, imports/exports,
+declarations, and valid relationship endpoints; the omission is reported as partial per-file coverage and never aborts
+or silently truncates the repository. Completed parser-cache batches are reusable checkpoints after interruption.
+Snapshot-dependent symbol resolution remains
+separate. Clean full builds write bounded batches directly into durable final tables under a `building` snapshot ID;
+durable batch fingerprints resume an interrupted process without a second repository-sized staging copy. References
+and candidates remain snapshot-owned until resolution, while only the bounded resolution cursor uses SQLite TEMP.
+Readers require a ready snapshot, and readiness plus reusable-base metadata is committed atomically before pointer
+promotion. Caught failures and abandoned snapshots are discarded through adaptive paged cleanup. Incomplete or failed
+builds therefore never replace the latest ready snapshot, and bounded reader leases keep selected snapshots alive
+without serializing queries behind the writer lock. Dirty activation stages complete current rows in bounded batches
+and derive overrides and deletions with indexed SQL joins, so a one-file edit does not issue one comparison query per
+symbol or edge. A short
 process-aware registration lease plus maintenance intent prevents repair or purge from racing repository-root creation
 without holding a reader marker while an index request waits for the repository lock. Vector generations are optional
 derived data associated with a ready snapshot only after verification. A per-model SQLite database pages candidate
@@ -54,7 +63,8 @@ OpenXML, OpenDocument, EPUB, plain-text documentation, notebooks, and text-based
 extractable text and links. Images, audio, and video retain deterministic asset metadata; visual interpretation, OCR,
 transcription, and video/frame analysis are outside this decision. Corpus inputs over 64 MiB remain metadata-only
 assets; selected OpenXML, OpenDocument, and EPUB entries have 16 MiB per-entry and 64 MiB cumulative expansion
-budgets. These per-artifact extraction budgets do not admit, reject, or truncate a repository graph. Marked rationale
+budgets. These per-artifact extraction budgets do not admit or reject a repository; they produce explicit bounded
+per-artifact coverage. Marked rationale
 comments and ADR/RFC references become derived rationale nodes with declared `documents` edges to their nearest source
 owner.
 

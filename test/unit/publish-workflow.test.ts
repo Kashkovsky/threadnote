@@ -28,9 +28,28 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('bun-windows-arm64');
       expect(workflow).toContain('windows-11-arm');
       expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
-      expect(workflow).toContain('needs: [linux, macos]');
+      expect(workflow).toContain('needs: [linux, macos, production-large-evidence]');
       expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
       expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
+    }),
+  );
+
+  it.effect('blocks Threadnote 4 publication on the exact-tag production-large evidence workflow', () =>
+    Effect.gen(function* () {
+      const publish = yield* readProjectFile('.github/workflows/publish.yml');
+      const benchmarks = yield* readProjectFile('.github/workflows/benchmarks.yml');
+      const evidence = yield* readProjectFile('.github/workflows/production-large-evidence.yml');
+
+      expect(publish).toContain('production-large-evidence:');
+      expect(publish).toContain('uses: ./.github/workflows/production-large-evidence.yml');
+      expect(publish).toContain('release_ref: ${{ github.ref }}');
+      expect(publish).toContain('release_sha: ${{ github.sha }}');
+      expect(publish).toContain("needs.production-large-evidence.result == 'success'");
+      expect(evidence).toContain('workflow_call:');
+      expect(evidence).toContain('if-no-files-found: error');
+      expect(evidence).toContain('retention-days: 90');
+      expect(benchmarks).not.toContain("startsWith(github.ref, 'refs/tags/v4.0.0-");
+      expect(benchmarks).not.toMatch(/^\s+push:\s*$/m);
     }),
   );
 

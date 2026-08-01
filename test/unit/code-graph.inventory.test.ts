@@ -114,11 +114,19 @@ describe('native code graph inventory policy', () => {
     for (const path of [
       'test/__snapshots__/screen.json',
       'tests/golden/render.yaml',
+      'models-document/test/golden-data/example/v1/checksum_info.json',
+      'models-document/test/golden_data/example/v1/checksum_info.json',
       'fixtures/events.jsonc',
       'assets/animations/loading.json',
     ]) {
       expect(shouldOmitRepositoryContent(path, 25 * 1_024 * 1_024), path).toBe(true);
     }
+    expect(
+      shouldOmitRepositoryContent(
+        'models-document/test/golden-database/example/v1/checksum_info.json',
+        25 * 1_024 * 1_024,
+      ),
+    ).toBe(false);
     expect(shouldOmitRepositoryContent('config/runtime.json', 25 * 1_024 * 1_024)).toBe(false);
     expect(shouldOmitRepositoryContent('schemas/events.yaml', 25 * 1_024 * 1_024)).toBe(false);
   });

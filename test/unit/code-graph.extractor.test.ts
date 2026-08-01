@@ -5,11 +5,12 @@ import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   createPackageAttributor,
+  createRepositoryFactAttributor,
   createRepositoryFactResolver,
   extractRepositoryFacts,
   extractRepositoryFileFacts,
 } from '../../src/code_graph/extractor.js';
-import {deriveCachedCodeGraphFacts} from '../../src/code_graph/indexer.js';
+import {createCachedCodeGraphFactsAttributor, deriveCachedCodeGraphFacts} from '../../src/code_graph/indexer.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
@@ -98,6 +99,39 @@ describe('native code graph extraction', () => {
     expect(
       resolved.flatMap(file => file.edges).find(edge => edge.sourceName === 'consumer' && edge.relation === 'calls'),
     ).toMatchObject({provenance: 'resolved', targetId: dependency?.id, targetName: 'dependency'});
+  });
+
+  it('reuses immutable repository attribution across materialization batches', () => {
+    const cachedFiles = [
+      sourceFile('package.json', '{"name":"root-package"}\n'),
+      sourceFile('packages/app/package.json', '{"name":"nested-package"}\n'),
+      sourceFile('packages/app/src/deep/dependency.ts', 'export function dependency(): number { return 1; }\n'),
+      sourceFile(
+        'packages/app/src/deep/consumer.ts',
+        'import {dependency} from "./dependency.js";\n' +
+          'export function consumer(): number { return dependency(); }\n',
+      ),
+      sourceFile('packages/application/src/unrelated.ts', 'export const unrelated = true;\n'),
+    ];
+    const workspace = discoverManifestWorkspace(cachedFiles);
+    const raw = extractRepositoryFileFacts(cachedFiles);
+    const attributeFacts = createCachedCodeGraphFactsAttributor(cachedFiles, workspace);
+    const streamed = raw.flatMap(file => attributeFacts([file]));
+    const rebuiltPerBatch = raw.flatMap(file => createCachedCodeGraphFactsAttributor(cachedFiles, workspace)([file]));
+    const repositoryOnly = createRepositoryFactAttributor(cachedFiles)(raw);
+
+    expect(streamed).toEqual(rebuiltPerBatch);
+    expect(
+      streamed
+        .flatMap(file => file.symbols)
+        .find(symbol => symbol.path === 'packages/app/src/deep/consumer.ts' && symbol.name === 'consumer')?.packageName,
+    ).toBe('nested-package');
+    expect(
+      repositoryOnly
+        .flatMap(file => file.symbols)
+        .find(symbol => symbol.path === 'packages/application/src/unrelated.ts' && symbol.name === 'unrelated')
+        ?.packageName,
+    ).toBe('root-package');
   });
 
   it('indexes documentation without promoting prose similarity to a source dependency', () => {

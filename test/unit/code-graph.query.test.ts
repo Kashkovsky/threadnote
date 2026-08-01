@@ -333,7 +333,7 @@ describe('code graph query budgets', () => {
     );
   }
 
-  it.effect('bounds deleted-path recovery frontiers while preserving one seed per changed path', () =>
+  it.effect('fairly batches deleted-path recovery frontiers above the store node-ID limit', () =>
     Effect.gen(function* () {
       const changedPaths = Array.from({length: 200}, (_, index) => `src/deleted-${String(index).padStart(3, '0')}.ts`);
       const baseGroups = changedPaths.map((path, pathIndex) =>
@@ -363,11 +363,13 @@ describe('code graph query budgets', () => {
         }),
       );
       const baseFrontierSizes: number[] = [];
+      const baseFrontiers: string[][] = [];
       const store = {
         edgesForNodes: (_databasePath: string, snapshotId: string, ids: readonly string[]) =>
           Effect.sync(() => {
             if (snapshotId !== 'base') return [];
             baseFrontierSizes.push(ids.length);
+            baseFrontiers.push([...ids]);
             return ids.map((id, index) => {
               const pathIndex = Number(id.split('-')[1]);
               const current = currentNodes.get(`current-${pathIndex}`);
@@ -414,7 +416,8 @@ describe('code graph query budgets', () => {
         'base',
       );
 
-      expect(baseFrontierSizes).toEqual([200]);
+      expect(baseFrontierSizes).toEqual(Array.from({length: 8}, () => 500));
+      expect(new Set(baseFrontiers[0]!.slice(0, 200).map(id => Number(id.split('-')[1]))).size).toBe(200);
       expect(result.nodes).toHaveLength(200);
       expect(result.nodes.map(node => node.id)).toContain('current-199');
       expect(result.warnings.some(warning => warning.includes('recovered 200 deleted path(s)'))).toBe(true);

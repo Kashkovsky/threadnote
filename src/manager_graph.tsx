@@ -74,6 +74,17 @@ export interface GraphCatalog {
 }
 
 export interface GraphBuildStatus {
+  readonly activation?: {
+    readonly activity: {
+      readonly elapsedMilliseconds: number;
+      readonly rows?: number;
+      readonly stage: GraphActivationStage;
+      readonly stageElapsedMilliseconds: number;
+      readonly startedAt: string;
+      readonly state: 'completed' | 'progress' | 'started';
+      readonly transactionMilliseconds?: number;
+    };
+  };
   readonly activity?: {
     readonly batchCompleted: number;
     readonly batchTotal: number;
@@ -96,13 +107,18 @@ export interface GraphBuildStatus {
     readonly edges?: number;
     readonly excluded?: number;
     readonly reused?: number;
+    readonly resolved?: number;
     readonly skipped?: number;
     readonly symbols?: number;
     readonly total?: number;
     readonly unit?: string;
   };
   readonly error?: {readonly summary: string};
-  readonly eta?: {readonly confidence: 'high' | 'low' | 'medium'; readonly remainingMilliseconds: number};
+  readonly eta?: {
+    readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+    readonly confidence: 'high' | 'low' | 'medium';
+    readonly remainingMilliseconds: number;
+  };
   readonly identity: {
     readonly checkoutId: string;
     readonly commit: string;
@@ -113,9 +129,55 @@ export interface GraphBuildStatus {
     readonly heartbeatAgeMilliseconds: number;
     readonly liveness: 'abandoned' | 'active' | 'completed' | 'failed' | 'stalled';
   };
+  readonly materialization?: {
+    readonly activity?: {
+      readonly batchCompleted: number;
+      readonly batchTotal: number;
+      readonly cachedFactBytes?: number;
+      readonly elapsedMilliseconds?: number;
+      readonly factsBytes?: number;
+      readonly rows?: GraphMaterializationRows;
+      readonly sourceBytes: number;
+      readonly stage: GraphMaterializationStage;
+      readonly startedAt: string;
+      readonly transactionMilliseconds?: number;
+    };
+    readonly metrics?: {
+      readonly attributionMilliseconds?: number;
+      readonly batchesCompleted: number;
+      readonly batchesTotal: number;
+      readonly cachedFactBytesCompleted?: number;
+      readonly cachedFactBytesTotal?: number;
+      readonly factsBytesCompleted?: number;
+      readonly factsBytesTotal?: number;
+      readonly loadingMilliseconds?: number;
+      readonly rows?: GraphMaterializationRows;
+      readonly sourceBytesCompleted: number;
+      readonly sourceBytesTotal: number;
+      readonly storage?: GraphMaterializationStorage;
+      readonly transactionMilliseconds?: number;
+    };
+  };
   readonly owner: {readonly processId: number};
   readonly phase: string;
   readonly request?: {readonly key: string};
+  readonly resolution?: {
+    readonly activity: {
+      readonly aliasesDiscovered: number;
+      readonly elapsedMilliseconds: number;
+      readonly matchingMilliseconds: number;
+      readonly pageCompleted: number;
+      readonly pageTotal: number;
+      readonly pagesCompleted: number;
+      readonly pass: number;
+      readonly referencesCompleted: number;
+      readonly referencesExamined: number;
+      readonly referencesTotal: number;
+      readonly resolved: number;
+      readonly startedAt: string;
+      readonly transactionMilliseconds: number;
+    };
+  };
   readonly result?: {readonly snapshotId: string};
   readonly state: 'completed' | 'failed' | 'queued' | 'running';
   readonly subphase?: string;
@@ -129,6 +191,77 @@ export interface GraphBuildStatus {
     readonly lastProgressAt: string;
     readonly startedAt: string;
   };
+}
+
+type GraphActivationStage =
+  | 'checkpointing-snapshot'
+  | 'committing-snapshot'
+  | 'copying-edges'
+  | 'copying-files'
+  | 'copying-lookup-keys'
+  | 'copying-reexports'
+  | 'copying-symbols'
+  | 'copying-terms'
+  | 'copying-workspace'
+  | 'recording-completion'
+  | 'validating-input';
+
+type GraphMaterializationStage =
+  | 'attributing'
+  | 'committing'
+  | 'loading-cache'
+  | 'preparing-rows'
+  | 'writing-candidates'
+  | 'writing-edges'
+  | 'writing-facts'
+  | 'writing-lookups'
+  | 'writing-references'
+  | 'writing-symbols'
+  | 'writing-terms';
+
+interface GraphMaterializationRows {
+  readonly deduplicatedEdges?: number;
+  readonly deduplicatedReferences?: number;
+  readonly edges?: number;
+  readonly lookupKeys?: number;
+  readonly referenceCandidates?: number;
+  readonly references?: number;
+  readonly reexports?: number;
+  readonly symbols?: number;
+  readonly terms?: number;
+}
+
+interface GraphMaterializationStorage {
+  readonly availableBytes?: number;
+  readonly durableAvailableBytes?: number;
+  readonly durableDatabaseBytes?: number;
+  readonly durableDatabaseFileBytes?: number;
+  readonly durableDatabaseFileHighWaterBytes?: number;
+  readonly durableDatabaseGrowthBytes?: number;
+  readonly durableDatabaseGrowthHighWaterBytes?: number;
+  readonly durableDatabaseHighWaterBytes?: number;
+  readonly durableDatabaseStartBytes?: number;
+  readonly durableFilesystemBytes?: number;
+  readonly durableFilesystemHighWaterBytes?: number;
+  readonly durableJournalBytes?: number;
+  readonly durableJournalHighWaterBytes?: number;
+  readonly durableSharedMemoryBytes?: number;
+  readonly durableSharedMemoryHighWaterBytes?: number;
+  readonly durableWalBytes?: number;
+  readonly durableWalHighWaterBytes?: number;
+  readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';
+  readonly estimatedConcurrentBuildBytes?: number;
+  readonly estimatedDurableFilesystemRequiredBytes?: number;
+  readonly estimatedDurableSnapshotBytes?: number;
+  readonly estimatedJournalBytes?: number;
+  readonly estimatedRequiredBytes?: number;
+  readonly estimatedTemporaryFilesystemRequiredBytes?: number;
+  readonly estimatedTemporaryDatabaseBytes?: number;
+  readonly filesystemsShared?: boolean;
+  readonly materializationMode?: 'direct-persistent' | 'temporary-staged';
+  readonly temporaryAvailableBytes?: number;
+  readonly temporaryDatabaseBytes: number;
+  readonly temporaryDatabaseHighWaterBytes: number;
 }
 
 export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): number {
@@ -376,7 +509,13 @@ export interface GraphAnalysis {
     readonly label: string;
     readonly memberCount: number;
   }[];
-  readonly coverage: {readonly complete: boolean};
+  readonly coverage: {
+    readonly complete: boolean;
+    readonly topology: {
+      readonly complete: boolean;
+      readonly state: 'complete' | 'not-requested' | 'partial' | 'unavailable';
+    };
+  };
   readonly hubs: readonly {
     readonly classification: 'god-node' | 'hub';
     readonly degree: number;
@@ -396,6 +535,23 @@ export interface GraphAnalysis {
     readonly target: {readonly label: string};
   }[];
   readonly warnings: readonly string[];
+}
+
+export function graphAnalysisTopologyAvailable(analysis: GraphAnalysis): boolean {
+  return analysis.coverage.topology.state === 'complete' || analysis.coverage.topology.state === 'partial';
+}
+
+export function graphAnalysisCoverageLabel(analysis: GraphAnalysis): string {
+  switch (analysis.coverage.topology.state) {
+    case 'complete':
+      return analysis.coverage.complete ? 'Complete' : 'Topology complete';
+    case 'partial':
+      return 'Topology partial';
+    case 'not-requested':
+      return 'Topology not requested';
+    case 'unavailable':
+      return 'Topology unavailable';
+  }
 }
 
 interface PositionedNode extends GraphNode {
@@ -1556,19 +1712,31 @@ function GraphSummary(props: {
             <dl className="metric-list graph-analysis-metrics">
               <div>
                 <dt>Communities</dt>
-                <dd>{compactNumber(props.analysis.statistics.communityCount)}</dd>
+                <dd>
+                  {graphAnalysisTopologyAvailable(props.analysis)
+                    ? compactNumber(props.analysis.statistics.communityCount)
+                    : 'Unavailable'}
+                </dd>
               </div>
               <div>
                 <dt>Components</dt>
-                <dd>{compactNumber(props.analysis.statistics.connectedComponentCount)}</dd>
+                <dd>
+                  {graphAnalysisTopologyAvailable(props.analysis)
+                    ? compactNumber(props.analysis.statistics.connectedComponentCount)
+                    : 'Unavailable'}
+                </dd>
               </div>
               <div>
                 <dt>Hubs</dt>
-                <dd>{compactNumber(props.analysis.hubs.length)}</dd>
+                <dd>
+                  {graphAnalysisTopologyAvailable(props.analysis)
+                    ? compactNumber(props.analysis.hubs.length)
+                    : 'Unavailable'}
+                </dd>
               </div>
               <div>
                 <dt>Coverage</dt>
-                <dd>{props.analysis.coverage.complete ? 'Complete' : 'Partial'}</dd>
+                <dd>{graphAnalysisCoverageLabel(props.analysis)}</dd>
               </div>
             </dl>
             {props.analysis.hubs.length > 0 ? (
@@ -1586,7 +1754,9 @@ function GraphSummary(props: {
                   </div>
                 ))}
               </div>
-            ) : null}
+            ) : graphAnalysisTopologyAvailable(props.analysis) ? null : (
+              <p>Topology was not derived, so community, component, and hub absence is not inferred.</p>
+            )}
             {props.analysis.surprisingLinks[0] ? (
               <p className="graph-analysis-surprise">
                 <strong>Cross-community signal:</strong> {props.analysis.surprisingLinks[0].source.label}{' '}
@@ -1909,6 +2079,150 @@ function GraphBuildProgress(props: {
           {build.activity.degraded ? ' · metadata fallback; retry scheduled' : ''}
         </p>
       ) : null}
+      {build.materialization?.activity ? (
+        <p>
+          Current: {graphMaterializationStageLabel(build.materialization.activity.stage)} · batch{' '}
+          {graphActiveBatchNumber(
+            build.materialization.activity.batchCompleted,
+            build.materialization.activity.batchTotal,
+          ).toLocaleString()}
+          /{build.materialization.activity.batchTotal.toLocaleString()} ·{' '}
+          {formatGraphBytes(build.materialization.activity.sourceBytes)} source
+          {build.materialization.activity.cachedFactBytes === undefined
+            ? ''
+            : ` · ${formatGraphBytes(build.materialization.activity.cachedFactBytes)} cached facts`}
+          {build.materialization.activity.factsBytes === undefined
+            ? ''
+            : ` · ${formatGraphBytes(build.materialization.activity.factsBytes)} final facts`}
+          {graphMaterializationRows(build.materialization.activity.rows)}
+          {' · '}active{' '}
+          {formatBuildDuration(Math.max(0, Date.now() - Date.parse(build.materialization.activity.startedAt)))}
+          {build.materialization.activity.transactionMilliseconds === undefined
+            ? ''
+            : ` · transaction ${formatGraphMilliseconds(build.materialization.activity.transactionMilliseconds)}`}
+        </p>
+      ) : null}
+      {build.activation?.activity ? (
+        <p>
+          Current: activating · {build.activation.activity.stage.replaceAll('-', ' ')} ·{' '}
+          {build.activation.activity.state}
+          {build.activation.activity.rows === undefined
+            ? ''
+            : ` · ${build.activation.activity.rows.toLocaleString()} rows`}
+          {' · '}stage {formatGraphMilliseconds(build.activation.activity.stageElapsedMilliseconds)} · total{' '}
+          {formatGraphMilliseconds(build.activation.activity.elapsedMilliseconds)}
+          {build.activation.activity.transactionMilliseconds === undefined
+            ? ''
+            : ` · transaction ${formatGraphMilliseconds(build.activation.activity.transactionMilliseconds)}`}
+        </p>
+      ) : null}
+      {build.resolution?.activity ? (
+        <p>
+          Reference resolution: pass {build.resolution.activity.pass.toLocaleString()} · page{' '}
+          {build.resolution.activity.pageCompleted.toLocaleString()}/
+          {build.resolution.activity.pageTotal.toLocaleString()} ·{' '}
+          {build.resolution.activity.referencesCompleted.toLocaleString()}/
+          {build.resolution.activity.referencesTotal.toLocaleString()} references ·{' '}
+          {build.resolution.activity.referencesExamined.toLocaleString()} cumulative examined ·{' '}
+          {build.resolution.activity.resolved.toLocaleString()} linked ·{' '}
+          {build.resolution.activity.aliasesDiscovered.toLocaleString()} aliases · match{' '}
+          {formatGraphMilliseconds(build.resolution.activity.matchingMilliseconds)} · transactions{' '}
+          {formatGraphMilliseconds(build.resolution.activity.transactionMilliseconds)} · total{' '}
+          {formatGraphMilliseconds(build.resolution.activity.elapsedMilliseconds)}
+        </p>
+      ) : null}
+      {build.materialization?.metrics ? (
+        <>
+          <p>
+            Materialized: {build.materialization.metrics.batchesCompleted.toLocaleString()}/
+            {build.materialization.metrics.batchesTotal.toLocaleString()} batches ·{' '}
+            {formatGraphBytes(build.materialization.metrics.sourceBytesCompleted)}/
+            {formatGraphBytes(build.materialization.metrics.sourceBytesTotal)} source
+            {build.materialization.metrics.cachedFactBytesCompleted === undefined
+              ? ''
+              : ` · ${formatGraphBytes(build.materialization.metrics.cachedFactBytesCompleted)}${
+                  build.materialization.metrics.cachedFactBytesTotal === undefined
+                    ? ''
+                    : `/${formatGraphBytes(build.materialization.metrics.cachedFactBytesTotal)}`
+                } cached facts`}
+            {build.materialization.metrics.factsBytesCompleted === undefined
+              ? ''
+              : ` · ${formatGraphBytes(build.materialization.metrics.factsBytesCompleted)}${
+                  build.materialization.metrics.factsBytesTotal === undefined
+                    ? ''
+                    : `/${formatGraphBytes(build.materialization.metrics.factsBytesTotal)}`
+                } final facts`}
+            {graphMaterializationRows(build.materialization.metrics.rows)}
+            {build.materialization.metrics.loadingMilliseconds === undefined
+              ? ''
+              : ` · load ${formatGraphMilliseconds(build.materialization.metrics.loadingMilliseconds)}`}
+            {build.materialization.metrics.attributionMilliseconds === undefined
+              ? ''
+              : ` · attribute ${formatGraphMilliseconds(build.materialization.metrics.attributionMilliseconds)}`}
+            {build.materialization.metrics.transactionMilliseconds === undefined
+              ? ''
+              : ` · transactions ${formatGraphMilliseconds(build.materialization.metrics.transactionMilliseconds)}`}
+          </p>
+          {build.materialization.metrics.storage ? (
+            <>
+              <p>
+                Storage:
+                {build.materialization.metrics.storage.durableDatabaseBytes === undefined
+                  ? ''
+                  : ` ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseBytes)} allocated durable pages`}
+                {build.materialization.metrics.storage.durableDatabaseHighWaterBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseHighWaterBytes)} allocated-page high-water`}
+                {build.materialization.metrics.storage.durableDatabaseGrowthHighWaterBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseGrowthHighWaterBytes)} main-database growth`}
+                {build.materialization.metrics.storage.durableFilesystemHighWaterBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableFilesystemHighWaterBytes)} DB + sidecars high-water`}
+                {build.materialization.metrics.storage.durableWalHighWaterBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableWalHighWaterBytes)} WAL high-water`}
+                {build.materialization.metrics.storage.durableJournalHighWaterBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableJournalHighWaterBytes)} rollback-journal high-water`}
+                {build.materialization.metrics.storage.durableDatabaseBytes === undefined ? '' : ' ·'}{' '}
+                {formatGraphBytes(build.materialization.metrics.storage.temporaryDatabaseBytes)} current TEMP database ·{' '}
+                {formatGraphBytes(build.materialization.metrics.storage.temporaryDatabaseHighWaterBytes)} TEMP database
+                high-water
+                {build.materialization.metrics.storage.estimatedRequiredBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.estimatedRequiredBytes)} combined estimate`}
+                {build.materialization.metrics.storage.estimatedTemporaryFilesystemRequiredBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.estimatedTemporaryFilesystemRequiredBytes)} TEMP-filesystem requirement`}
+                {build.materialization.metrics.storage.estimatedDurableFilesystemRequiredBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.estimatedDurableFilesystemRequiredBytes)} graph-filesystem requirement`}
+                {build.materialization.metrics.storage.temporaryAvailableBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.temporaryAvailableBytes)} available for TEMP`}
+                {build.materialization.metrics.storage.durableAvailableBytes === undefined
+                  ? ''
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableAvailableBytes)} available for graph database`}
+                {build.materialization.metrics.storage.filesystemsShared === true ? ' · shared filesystem' : ''}
+                {build.materialization.metrics.storage.materializationMode === undefined
+                  ? ''
+                  : ` · ${build.materialization.metrics.storage.materializationMode.replaceAll('-', ' ')}`}
+                {build.materialization.metrics.storage.estimateBasis === undefined
+                  ? ''
+                  : ` · estimate from ${build.materialization.metrics.storage.estimateBasis.replaceAll('-', ' ')}`}
+                {' · '}rollback journals excluded from TEMP totals
+              </p>
+              {graphMaterializationDiskWarning(build.materialization.metrics.storage) ? (
+                <p className="graph-build-error">
+                  {graphMaterializationDiskWarning(build.materialization.metrics.storage)} Indexing continues with live
+                  storage telemetry.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+        </>
+      ) : null}
       {build.timings ? (
         <p>
           Phase: read {formatGraphMilliseconds(build.timings.readingMilliseconds)} · parse{' '}
@@ -1918,18 +2232,110 @@ function GraphBuildProgress(props: {
       ) : null}
       <footer>
         <span>PID {build.owner.processId}</span>
-        {eta ? (
+        {eta && eta.confidence !== 'low' ? (
           <span>
-            ETA {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}
+            Phase ETA {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}
+            {eta.basis ? ` · ${graphEtaBasisLabel(eta.basis)}` : ''}
           </span>
         ) : build.eta ? (
-          <span>ETA paused while progress is silent</span>
+          <span>{progressSilent ? 'Phase ETA paused while progress is silent' : 'Phase ETA stabilizing'}</span>
         ) : null}
         {props.waiterCount > 0 ? <span>{props.waiterCount} waiting process(es)</span> : null}
         {build.error ? <span className="graph-build-error">{build.error.summary}</span> : null}
       </footer>
     </article>
   );
+}
+
+function graphActiveBatchNumber(completed: number, total: number): number {
+  return total === 0 ? 0 : Math.min(total, completed + 1);
+}
+
+function graphMaterializationStageLabel(stage: GraphMaterializationStage): string {
+  switch (stage) {
+    case 'loading-cache':
+      return 'loading cached facts';
+    case 'attributing':
+      return 'attributing facts';
+    case 'preparing-rows':
+      return 'preparing rows';
+    case 'writing-symbols':
+      return 'writing symbols';
+    case 'writing-lookups':
+      return 'writing lookup keys';
+    case 'writing-terms':
+      return 'writing lexical terms';
+    case 'writing-edges':
+      return 'writing relationships';
+    case 'writing-references':
+      return 'writing references';
+    case 'writing-candidates':
+      return 'writing reference candidates';
+    case 'writing-facts':
+      return 'writing graph facts';
+    case 'committing':
+      return 'committing batch';
+  }
+}
+
+function graphMaterializationRows(rows: GraphMaterializationRows | undefined): string {
+  if (!rows) return '';
+  const values = [
+    rows.symbols === undefined ? undefined : `${rows.symbols.toLocaleString()} symbols`,
+    rows.lookupKeys === undefined ? undefined : `${rows.lookupKeys.toLocaleString()} lookup keys`,
+    rows.terms === undefined ? undefined : `${rows.terms.toLocaleString()} terms`,
+    rows.edges === undefined ? undefined : `${rows.edges.toLocaleString()} relationships`,
+    rows.references === undefined ? undefined : `${rows.references.toLocaleString()} references`,
+    rows.referenceCandidates === undefined ? undefined : `${rows.referenceCandidates.toLocaleString()} candidates`,
+    rows.reexports === undefined ? undefined : `${rows.reexports.toLocaleString()} re-exports`,
+    rows.deduplicatedEdges === undefined || rows.deduplicatedEdges === 0
+      ? undefined
+      : `${rows.deduplicatedEdges.toLocaleString()} repeated relationships collapsed`,
+    rows.deduplicatedReferences === undefined || rows.deduplicatedReferences === 0
+      ? undefined
+      : `${rows.deduplicatedReferences.toLocaleString()} repeated resolution records collapsed`,
+  ].filter((value): value is string => value !== undefined);
+  return values.length > 0 ? ` · ${values.join(', ')}` : '';
+}
+
+function graphMaterializationDiskWarning(storage: GraphMaterializationStorage): string | undefined {
+  if (
+    storage.filesystemsShared === true &&
+    storage.availableBytes !== undefined &&
+    storage.estimatedRequiredBytes !== undefined &&
+    storage.availableBytes < storage.estimatedRequiredBytes
+  ) {
+    return 'Low disk: shared TEMP and graph storage is below the conservative combined estimate.';
+  }
+  const scopes: string[] = [];
+  if (
+    storage.temporaryAvailableBytes !== undefined &&
+    storage.estimatedTemporaryFilesystemRequiredBytes !== undefined &&
+    storage.temporaryAvailableBytes < storage.estimatedTemporaryFilesystemRequiredBytes
+  ) {
+    scopes.push('SQLite TEMP');
+  }
+  if (
+    storage.durableAvailableBytes !== undefined &&
+    storage.estimatedDurableFilesystemRequiredBytes !== undefined &&
+    storage.durableAvailableBytes < storage.estimatedDurableFilesystemRequiredBytes
+  ) {
+    scopes.push('graph database');
+  }
+  return scopes.length === 0 ? undefined : `Low disk: ${scopes.join(' and ')} storage is below its estimate.`;
+}
+
+function graphEtaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+  switch (basis) {
+    case 'cached-fact-bytes':
+      return 'cached-fact bytes';
+    case 'final-fact-bytes':
+      return 'final attributed fact bytes';
+    case 'source-bytes':
+      return 'source bytes';
+    case 'files':
+      return 'files';
+  }
 }
 
 function GraphEmptyState(props: {readonly building: boolean}): React.ReactElement {

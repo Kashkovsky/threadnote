@@ -112,7 +112,7 @@ describe('code graph cross-process build status', () => {
     expect(JSON.stringify(statuses)).not.toContain(home);
   });
 
-  it('throttles steady-state counter writes while persisting transitions immediately', async () => {
+  it('persists materialization commits while throttling ordinary steady-state counter writes', async () => {
     const home = await mkdtemp('threadnote-graph-build-throttle-');
     homes.push(home);
     const observations = await runEffect(
@@ -134,6 +134,15 @@ describe('code graph cross-process build status', () => {
           unit: 'symbols',
         });
         const afterPhaseTransition = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        yield* reporter.progress({
+          completed: 1,
+          embedded: 1,
+          phase: 'embedding',
+          reused: 0,
+          total: 10,
+          unit: 'symbols',
+        });
+        const afterThrottledEmbeddingCounter = (yield* readCodeGraphBuildStatuses(layout))[0]!;
         yield* Effect.sleep(CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS + 10);
         yield* reporter.progress({
           completed: 3,
@@ -144,7 +153,13 @@ describe('code graph cross-process build status', () => {
           unit: 'symbols',
         });
         const afterInterval = (yield* readCodeGraphBuildStatuses(layout))[0]!;
-        return {afterInterval, afterPhaseTransition, afterThrottledCounter, afterTransition};
+        return {
+          afterInterval,
+          afterPhaseTransition,
+          afterThrottledCounter,
+          afterThrottledEmbeddingCounter,
+          afterTransition,
+        };
       }),
     );
 
@@ -153,10 +168,14 @@ describe('code graph cross-process build status', () => {
       phase: 'materializing',
     });
     expect(observations.afterThrottledCounter).toMatchObject({
-      counters: {completed: 1},
+      counters: {completed: 2},
       phase: 'materializing',
     });
     expect(observations.afterPhaseTransition).toMatchObject({
+      counters: {completed: 0},
+      phase: 'embedding',
+    });
+    expect(observations.afterThrottledEmbeddingCounter).toMatchObject({
       counters: {completed: 0},
       phase: 'embedding',
     });
@@ -214,6 +233,217 @@ describe('code graph cross-process build status', () => {
 
     expect(status.counters).toMatchObject({completed: 8, total: 10});
     expect(JSON.stringify(status)).not.toContain(secretPath);
+  });
+
+  it('persists privacy-safe materialization substages, row totals, timings, and TEMP database high-water', async () => {
+    const home = await mkdtemp('threadnote-graph-build-materialization-progress-');
+    homes.push(home);
+    const status = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        const metrics = (completed: number) => ({
+          attributionMilliseconds: completed * 3,
+          batchesCompleted: completed,
+          batchesTotal: 10,
+          cachedFactBytesCompleted: completed * 40_000,
+          cachedFactBytesTotal: 400_000,
+          factsBytesCompleted: completed * 50_000,
+          factsBytesTotal: 500_000,
+          loadingMilliseconds: completed * 2,
+          rows: {
+            deduplicatedEdges: completed * 5,
+            deduplicatedReferences: completed * 3,
+            edges: completed * 700,
+            lookupKeys: completed * 300,
+            referenceCandidates: completed * 500,
+            references: completed * 100,
+            symbols: completed * 200,
+            terms: completed * 1_100,
+          },
+          sourceBytesCompleted: completed * 10_000,
+          sourceBytesTotal: 100_000,
+          storage: {
+            availableBytes: 2_000_000,
+            estimateBasis: 'final-fact-bytes' as const,
+            estimatedConcurrentBuildBytes: 500_000,
+            estimatedDurableSnapshotBytes: 200_000,
+            estimatedJournalBytes: 100_000,
+            estimatedRequiredBytes: 1_000_000,
+            estimatedTemporaryDatabaseBytes: 200_000,
+            temporaryDatabaseBytes: completed * 20_000,
+            temporaryDatabaseHighWaterBytes: completed * 25_000,
+          },
+          transactionMilliseconds: completed * 10,
+        });
+        yield* reporter.progress({
+          activity: {
+            batchCompleted: 0,
+            batchTotal: 10,
+            sourceBytes: 10_000,
+            stage: 'loading-cache',
+          },
+          completed: 0,
+          metrics: metrics(0),
+          phase: 'materializing',
+          reused: 90,
+          total: 10,
+          unit: 'files',
+        });
+        for (let completed = 1; completed <= 5; completed += 1) {
+          yield* Effect.sleep(20);
+          yield* reporter.progress({
+            activity: {
+              batchCompleted: completed,
+              batchTotal: 10,
+              cachedFactBytes: 40_000,
+              elapsedMilliseconds: 20,
+              factsBytes: 50_000,
+              rows: {
+                deduplicatedEdges: 5,
+                deduplicatedReferences: 3,
+                edges: 700,
+                lookupKeys: 300,
+                referenceCandidates: 500,
+                references: 100,
+                symbols: 200,
+                terms: 1_100,
+              },
+              sourceBytes: 10_000,
+              stage: 'committing',
+              transactionMilliseconds: 10,
+            },
+            completed,
+            metrics: metrics(completed),
+            phase: 'materializing',
+            reused: 90,
+            total: 10,
+            unit: 'files',
+          });
+          if (completed < 5) {
+            yield* reporter.progress({
+              activity: {
+                batchCompleted: completed,
+                batchTotal: 10,
+                sourceBytes: 10_000,
+                stage: 'loading-cache',
+              },
+              completed,
+              metrics: metrics(completed),
+              phase: 'materializing',
+              reused: 90,
+              total: 10,
+              unit: 'files',
+            });
+          }
+        }
+        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+      }),
+    );
+
+    expect(status).toMatchObject({
+      counters: {completed: 5, reused: 90, total: 10},
+      eta: {basis: 'final-fact-bytes', scope: 'phase'},
+      materialization: {
+        activity: {
+          batchCompleted: 5,
+          batchTotal: 10,
+          cachedFactBytes: 40_000,
+          factsBytes: 50_000,
+          rows: {edges: 700, symbols: 200, terms: 1_100},
+          stage: 'committing',
+          transactionMilliseconds: 10,
+        },
+        metrics: {
+          batchesCompleted: 5,
+          batchesTotal: 10,
+          cachedFactBytesCompleted: 200_000,
+          cachedFactBytesTotal: 400_000,
+          factsBytesCompleted: 250_000,
+          factsBytesTotal: 500_000,
+          rows: {
+            deduplicatedEdges: 25,
+            deduplicatedReferences: 15,
+            edges: 3_500,
+            symbols: 1_000,
+            terms: 5_500,
+          },
+          sourceBytesCompleted: 50_000,
+          sourceBytesTotal: 100_000,
+          storage: {
+            availableBytes: 2_000_000,
+            estimateBasis: 'final-fact-bytes',
+            estimatedConcurrentBuildBytes: 500_000,
+            estimatedDurableSnapshotBytes: 200_000,
+            estimatedJournalBytes: 100_000,
+            estimatedRequiredBytes: 1_000_000,
+            estimatedTemporaryDatabaseBytes: 200_000,
+            temporaryDatabaseBytes: 100_000,
+            temporaryDatabaseHighWaterBytes: 125_000,
+          },
+        },
+      },
+      phase: 'materializing',
+      subphase: 'committing',
+    });
+    expect(Date.parse(status.materialization!.activity!.startedAt)).toBeGreaterThan(0);
+    expect(JSON.stringify(status)).not.toContain(home);
+  });
+
+  it('persists the active durable-snapshot activation substage without repository data', async () => {
+    const home = await mkdtemp('threadnote-graph-build-activation-progress-');
+    homes.push(home);
+    const status = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({
+          activity: {
+            elapsedMilliseconds: 500,
+            rows: 4_200,
+            stage: 'copying-symbols',
+            stageElapsedMilliseconds: 0,
+            state: 'started',
+          },
+          phase: 'activating',
+          snapshotId: 'cgsn_activation-progress',
+        });
+        yield* reporter.progress({
+          activity: {
+            elapsedMilliseconds: 1_250,
+            rows: 42_000,
+            stage: 'copying-terms',
+            stageElapsedMilliseconds: 750,
+            state: 'completed',
+            transactionMilliseconds: 125,
+          },
+          phase: 'activating',
+          snapshotId: 'cgsn_activation-progress',
+        });
+        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+      }),
+    );
+
+    expect(status).toMatchObject({
+      activation: {
+        activity: {
+          elapsedMilliseconds: 1_250,
+          rows: 42_000,
+          stage: 'copying-terms',
+          stageElapsedMilliseconds: 750,
+          state: 'completed',
+          transactionMilliseconds: 125,
+        },
+      },
+      phase: 'activating',
+      subphase: 'copying-terms',
+    });
+    expect(Date.parse(status.activation!.activity.startedAt)).toBeGreaterThan(0);
+    expect(JSON.stringify(status)).not.toContain(home);
   });
 
   it('validates owner start identity before trusting a live PID and detects stale heartbeats', async () => {
@@ -415,15 +645,67 @@ describe('code graph cross-process build status', () => {
         const path = yield* Path.Path;
         const identity = yield* resolveRepositoryIdentity(repository);
         const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const idleOutput = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
         const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
-        yield* reporter.progress({completed: 3, phase: 'materializing', reused: 2, total: 10, unit: 'files'});
+        yield* reporter.progress({
+          activity: {
+            batchCompleted: 3,
+            batchTotal: 10,
+            cachedFactBytes: 6_000,
+            rows: {edges: 30, symbols: 20},
+            sourceBytes: 4_000,
+            stage: 'writing-facts',
+          },
+          completed: 3,
+          metrics: {
+            batchesCompleted: 3,
+            batchesTotal: 10,
+            rows: {edges: 90, symbols: 60},
+            sourceBytesCompleted: 12_000,
+            sourceBytesTotal: 40_000,
+            storage: {
+              availableBytes: 100_000,
+              durableAvailableBytes: 100_000,
+              durableDatabaseBytes: 48_000,
+              durableDatabaseFileBytes: 48_000,
+              durableDatabaseFileHighWaterBytes: 56_000,
+              durableDatabaseGrowthBytes: 8_000,
+              durableDatabaseGrowthHighWaterBytes: 16_000,
+              durableDatabaseHighWaterBytes: 64_000,
+              durableDatabaseStartBytes: 40_000,
+              durableFilesystemBytes: 70_000,
+              durableFilesystemHighWaterBytes: 90_000,
+              durableJournalBytes: 2_000,
+              durableJournalHighWaterBytes: 10_000,
+              durableSharedMemoryBytes: 1_000,
+              durableSharedMemoryHighWaterBytes: 4_000,
+              durableWalBytes: 19_000,
+              durableWalHighWaterBytes: 25_000,
+              estimatedDurableFilesystemRequiredBytes: 200_000,
+              estimatedRequiredBytes: 500_000,
+              estimatedTemporaryFilesystemRequiredBytes: 300_000,
+              filesystemsShared: true,
+              materializationMode: 'direct-persistent',
+              temporaryAvailableBytes: 100_000,
+              temporaryDatabaseBytes: 24_000,
+              temporaryDatabaseHighWaterBytes: 32_000,
+            },
+          },
+          phase: 'materializing',
+          reused: 2,
+          total: 10,
+          unit: 'files',
+        });
         yield* fs.writeFileString(path.join(layout.repositoryRoot, 'graph-v2.sqlite'), 'obsolete graph\n');
         yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
         const startedAt = Date.now();
         const output = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}));
+        const human = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}));
         return {
           databasePath: layout.databasePath,
           elapsedMilliseconds: Date.now() - startedAt,
+          human: human.output,
+          idleOutput: idleOutput.output.trim(),
           output: output.output.trim(),
         };
       }),
@@ -438,6 +720,25 @@ describe('code graph cross-process build status', () => {
       type: 'code-graph-status',
       version: 2,
     });
+    const idleStatus = JSON.parse(result.idleOutput) as Record<string, unknown>;
+    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 2});
+    expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
+    expect(result.human).toContain('Current activity: writing graph facts');
+    expect(result.human).toContain('23.4 KiB current TEMP database');
+    expect(result.human).toContain('31.3 KiB TEMP database high-water');
+    expect(result.human).toContain('46.9 KiB allocated durable pages');
+    expect(result.human).toContain('62.5 KiB allocated-page high-water');
+    expect(result.human).toContain('15.6 KiB main-database growth');
+    expect(result.human).toContain('87.9 KiB DB + sidecars high-water');
+    expect(result.human).toContain('24.4 KiB WAL high-water');
+    expect(result.human).toContain('9.77 KiB rollback-journal high-water');
+    expect(result.human).toContain('direct persistent materialization');
+    expect(result.human).toContain('488 KiB combined estimate');
+    expect(result.human).toContain('rollback journals excluded from TEMP totals');
+    expect(result.human).toContain(
+      'Warning: low disk: 97.7 KiB available is below the 488 KiB conservative combined estimate',
+    );
+    expect(result.human).toContain('indexing continues with live telemetry');
   });
 
   it('does not let another worktree sidecar hide the current ready snapshot', async () => {
@@ -474,22 +775,26 @@ describe('code graph cross-process build status', () => {
         const otherLayout = codeGraphLayout(path, home, otherIdentity.checkoutId, otherIdentity.worktreeId);
         const other = yield* makeCodeGraphBuildReporter(otherIdentity, otherLayout);
         yield* other.completeSnapshot({...summary.snapshot, worktreeId: otherIdentity.worktreeId});
-        return (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output.trim();
+        return {
+          human: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}))).output,
+          json: (yield* captureConsole(runCodeGraphStatus(config, {cwd: repository, json: true}))).output.trim(),
+        };
       }),
     );
-    const status = JSON.parse(output) as {
+    const status = JSON.parse(output.json) as {
       readonly build?: unknown;
       readonly builds: readonly {readonly identity: {readonly worktreeId: string}}[];
       readonly readySnapshot?: {readonly id: string};
       readonly stale: boolean;
     };
 
-    expect(status.build).toBeUndefined();
+    expect(status.build).toBeNull();
     expect(status.builds).toEqual([
       expect.objectContaining({identity: expect.objectContaining({worktreeId: 'e'.repeat(64)})}),
     ]);
     expect(status.readySnapshot?.id).toMatch(/^cgsn_/);
     expect(status.stale).toBe(false);
+    expect(output.human).toContain('Ready snapshot: cgsn_');
   });
 });
 
