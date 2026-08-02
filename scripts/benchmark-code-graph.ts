@@ -2435,6 +2435,50 @@ function sqliteVersionString(databasePath: string): string {
   }
 }
 
+/** @internal Exposed so parity tests can exercise the persisted-delta lookup surface in SQLite. */
+export function codeGraphStructuralDigestSymbolLookupStatement(
+  snapshotId: string,
+  baseSnapshotId: string,
+): {readonly parameters: readonly string[]; readonly text: string} {
+  return {
+    parameters: [snapshotId, baseSnapshotId, snapshotId, snapshotId, snapshotId],
+    text: `WITH effective_rows AS (
+      SELECT current_rows.lookup_key, current_rows.symbol_id, current_rows.resolution_domain,
+        current_rows.exported, current_rows.provenance, current_rows.evidence_edge_id,
+        current_rows.evidence_path
+      FROM snapshot_symbol_lookup AS current_rows
+      WHERE current_rows.snapshot_id = ?
+      UNION ALL
+      SELECT base_rows.lookup_key, base_rows.symbol_id, base_rows.resolution_domain,
+        base_rows.exported, base_rows.provenance, base_rows.evidence_edge_id,
+        base_rows.evidence_path
+      FROM snapshot_symbol_lookup AS base_rows
+      WHERE base_rows.snapshot_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_symbol_lookup AS overrides
+          WHERE overrides.snapshot_id = ?
+            AND overrides.lookup_key = base_rows.lookup_key
+            AND overrides.symbol_id = base_rows.symbol_id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_symbol_deletions AS removed
+          WHERE removed.snapshot_id = ? AND removed.symbol_id = base_rows.symbol_id
+        )
+        AND (
+          base_rows.provenance = 'symbol'
+          OR base_rows.evidence_path IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM snapshot_files AS changed
+            WHERE changed.snapshot_id = ? AND changed.path = base_rows.evidence_path
+          )
+        )
+    )
+    SELECT lookup_key, symbol_id, resolution_domain, exported, provenance,
+      evidence_edge_id, evidence_path
+    FROM effective_rows ORDER BY lookup_key, symbol_id`,
+  };
+}
+
 function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): string {
   const database = new Database(databasePath, {readonly: true, strict: true});
   const digest = new Bun.CryptoHasher('sha256');
@@ -2445,6 +2489,7 @@ function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): 
     if (!snapshot) throw new Error('Ready snapshot was unavailable for the structural graph digest.');
     const baseSnapshotId = typeof snapshot.base_snapshot_id === 'string' ? snapshot.base_snapshot_id : '';
     const effectiveParameters = [snapshotId, baseSnapshotId, snapshotId, snapshotId] as const;
+    const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
     const streams = [
       {
         name: 'snapshot',
@@ -2498,39 +2543,8 @@ function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): 
       },
       {
         name: 'symbol-lookup',
-        parameters: [snapshotId, baseSnapshotId, snapshotId, snapshotId, snapshotId],
-        query: `WITH effective_rows AS (
-          SELECT current_rows.lookup_key, current_rows.symbol_id, current_rows.resolution_domain,
-            current_rows.exported, current_rows.provenance, current_rows.evidence_edge_id,
-            current_rows.evidence_path
-          FROM snapshot_symbol_lookup AS current_rows
-          WHERE current_rows.snapshot_id = ?
-          UNION ALL
-          SELECT base_rows.lookup_key, base_rows.symbol_id, base_rows.resolution_domain,
-            base_rows.exported, base_rows.provenance, base_rows.evidence_edge_id,
-            base_rows.evidence_path
-          FROM snapshot_symbol_lookup AS base_rows
-          WHERE base_rows.snapshot_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM snapshot_symbol_lookup AS overrides
-              WHERE overrides.snapshot_id = ?
-                AND overrides.lookup_key = base_rows.lookup_key
-                AND overrides.symbol_id = base_rows.symbol_id
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM snapshot_symbol_deletions AS removed
-              WHERE removed.snapshot_id = ? AND removed.symbol_id = base_rows.symbol_id
-            )
-            AND (
-              base_rows.evidence_path IS NULL OR NOT EXISTS (
-                SELECT 1 FROM snapshot_files AS changed
-                WHERE changed.snapshot_id = ? AND changed.path = base_rows.evidence_path
-              )
-            )
-        )
-        SELECT lookup_key, symbol_id, resolution_domain, exported, provenance,
-          evidence_edge_id, evidence_path
-        FROM effective_rows ORDER BY lookup_key, symbol_id`,
+        parameters: symbolLookup.parameters,
+        query: symbolLookup.text,
       },
       {
         name: 'edges',

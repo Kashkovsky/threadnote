@@ -1,11 +1,14 @@
 import {readFileSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
+import {Database} from 'bun:sqlite';
 import {Clock, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
+  codeGraphStructuralDigestSymbolLookupStatement,
   decodeBenchmarkSource,
   externalBenchmarkPlatformSupported,
   measureBenchmarkIndex,
@@ -382,7 +385,171 @@ describe('code graph external benchmark harness', () => {
       'incremental benchmark path must use a supported source language',
     );
   });
+
+  it('retains changed-file symbol lookups while invalidating changed-file aliases', () => {
+    const rows = structuralDigestLookupRows({
+      base: [
+        lookupRow('alias-changed', 'alias-changed', 'alias', 'src/index.ts'),
+        lookupRow('alias-null', 'alias-null', 'alias'),
+        lookupRow('alias-unchanged', 'alias-unchanged', 'alias', 'src/other.ts'),
+        lookupRow('deleted-symbol', 'deleted-symbol', 'symbol', 'src/index.ts'),
+        lookupRow('overridden', 'overridden', 'symbol', 'src/index.ts'),
+        lookupRow('symbol-changed', 'symbol-changed', 'symbol', 'src/index.ts'),
+      ],
+      changedPaths: ['src/index.ts'],
+      current: [lookupRow('overridden', 'overridden', 'alias', 'src/current.ts')],
+      deletedSymbolIds: ['deleted-symbol'],
+    });
+
+    expect(rows).toEqual([
+      lookupRow('alias-null', 'alias-null', 'alias'),
+      lookupRow('alias-unchanged', 'alias-unchanged', 'alias', 'src/other.ts'),
+      lookupRow('overridden', 'overridden', 'alias', 'src/current.ts'),
+      lookupRow('symbol-changed', 'symbol-changed', 'symbol', 'src/index.ts'),
+    ]);
+  });
+
+  it('matches the persisted-delta lookup model for randomized changed paths and overrides', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(lookupRowArbitrary, {selector: row => `${row.lookup_key}\0${row.symbol_id}`}),
+        fc.uniqueArray(lookupRowArbitrary, {selector: row => `${row.lookup_key}\0${row.symbol_id}`}),
+        fc.uniqueArray(fc.constantFrom(...LOOKUP_PATHS)),
+        fc.uniqueArray(fc.stringMatching(/^[a-z]{1,6}$/)),
+        (base, current, changedPaths, deletedSymbolIds) => {
+          const actual = structuralDigestLookupRows({base, changedPaths, current, deletedSymbolIds});
+          const currentKeys = new Set(current.map(row => `${row.lookup_key}\0${row.symbol_id}`));
+          const deleted = new Set(deletedSymbolIds);
+          const changed = new Set(changedPaths);
+          const expected = [
+            ...current,
+            ...base.filter(
+              row =>
+                !currentKeys.has(`${row.lookup_key}\0${row.symbol_id}`) &&
+                !deleted.has(row.symbol_id) &&
+                (row.provenance === 'symbol' || row.evidence_path === undefined || !changed.has(row.evidence_path)),
+            ),
+          ].sort(compareLookupRows);
+          expect(actual).toEqual(expected);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
 });
+
+const LOOKUP_PATHS = ['src/a.ts', 'src/b.ts', 'src/c.ts'] as const;
+
+interface StructuralLookupRow {
+  readonly evidence_edge_id?: string;
+  readonly evidence_path?: string;
+  readonly exported: number;
+  readonly lookup_key: string;
+  readonly provenance: 'alias' | 'symbol';
+  readonly resolution_domain: string;
+  readonly symbol_id: string;
+}
+
+const lookupRowArbitrary = fc.record({
+  evidence_edge_id: fc.option(fc.stringMatching(/^[a-z]{1,6}$/), {nil: undefined}),
+  evidence_path: fc.option(fc.constantFrom(...LOOKUP_PATHS), {nil: undefined}),
+  exported: fc.integer({max: 1, min: 0}),
+  lookup_key: fc.stringMatching(/^[a-z]{1,6}$/),
+  provenance: fc.constantFrom('alias' as const, 'symbol' as const),
+  resolution_domain: fc.constantFrom('global', 'typescript'),
+  symbol_id: fc.stringMatching(/^[a-z]{1,6}$/),
+}) satisfies fc.Arbitrary<StructuralLookupRow>;
+
+function lookupRow(
+  lookupKey: string,
+  symbolId: string,
+  provenance: StructuralLookupRow['provenance'],
+  evidencePath?: string,
+): StructuralLookupRow {
+  return {
+    ...(evidencePath === undefined ? {} : {evidence_path: evidencePath}),
+    exported: 1,
+    lookup_key: lookupKey,
+    provenance,
+    resolution_domain: 'typescript',
+    symbol_id: symbolId,
+  };
+}
+
+function structuralDigestLookupRows(input: {
+  readonly base: readonly StructuralLookupRow[];
+  readonly changedPaths: readonly string[];
+  readonly current: readonly StructuralLookupRow[];
+  readonly deletedSymbolIds: readonly string[];
+}): readonly StructuralLookupRow[] {
+  const database = new Database(':memory:', {strict: true});
+  try {
+    database.run(`CREATE TABLE snapshot_symbol_lookup (
+      snapshot_id TEXT NOT NULL,
+      lookup_key TEXT NOT NULL,
+      symbol_id TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      exported INTEGER NOT NULL,
+      provenance TEXT NOT NULL,
+      evidence_edge_id TEXT,
+      evidence_path TEXT,
+      PRIMARY KEY (snapshot_id, lookup_key, symbol_id)
+    ) WITHOUT ROWID`);
+    database.run(`CREATE TABLE snapshot_symbol_deletions (
+      snapshot_id TEXT NOT NULL,
+      symbol_id TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, symbol_id)
+    ) WITHOUT ROWID`);
+    database.run(`CREATE TABLE snapshot_files (
+      snapshot_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, path)
+    ) WITHOUT ROWID`);
+    const insertLookup = database.query(`INSERT INTO snapshot_symbol_lookup (
+      snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
+      provenance, evidence_edge_id, evidence_path
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const [snapshotId, rows] of [
+      ['base', input.base],
+      ['current', input.current],
+    ] as const) {
+      for (const row of rows) {
+        insertLookup.run(
+          snapshotId,
+          row.lookup_key,
+          row.symbol_id,
+          row.resolution_domain,
+          row.exported,
+          row.provenance,
+          row.evidence_edge_id ?? null,
+          row.evidence_path ?? null,
+        );
+      }
+    }
+    const insertChanged = database.query('INSERT INTO snapshot_files (snapshot_id, path) VALUES (?, ?)');
+    for (const changedPath of input.changedPaths) insertChanged.run('current', changedPath);
+    const insertDeleted = database.query(
+      'INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id) VALUES (?, ?)',
+    );
+    for (const symbolId of new Set(input.deletedSymbolIds)) insertDeleted.run('current', symbolId);
+    const statement = codeGraphStructuralDigestSymbolLookupStatement('current', 'base');
+    return (database.query(statement.text).all(...statement.parameters) as StructuralLookupRow[]).map(row => ({
+      ...(row.evidence_edge_id === null ? {} : {evidence_edge_id: row.evidence_edge_id}),
+      ...(row.evidence_path === null ? {} : {evidence_path: row.evidence_path}),
+      exported: Number(row.exported),
+      lookup_key: row.lookup_key,
+      provenance: row.provenance,
+      resolution_domain: row.resolution_domain,
+      symbol_id: row.symbol_id,
+    }));
+  } finally {
+    database.close(false);
+  }
+}
+
+function compareLookupRows(left: StructuralLookupRow, right: StructuralLookupRow): number {
+  return left.lookup_key.localeCompare(right.lookup_key) || left.symbol_id.localeCompare(right.symbol_id);
+}
 
 function sourceSlice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
