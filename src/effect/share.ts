@@ -1,7 +1,7 @@
 import {Console, Effect, FileSystem} from 'effect';
 import {isFileLockTimeout} from './file_lock.js';
 import {withMemoryUriLocks} from './memory_lock.js';
-import {withSharedRepositoryLock} from './share_lock.js';
+import {observeSharedRepositoryHomeLock, withSharedRepositoryLock} from './share_lock.js';
 import {
   installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
@@ -52,8 +52,8 @@ import type {
 } from '../types.js';
 
 const SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS = 250;
-const SHARED_REPOSITORY_READ_CONTENTION_WARNING =
-  'Shared repository auto-sync was skipped because another Threadnote process held the repository lock for more than 250 ms; this read used the local snapshot.';
+const SHARED_REPOSITORY_READ_UNHEALTHY_LOCK_WARNING =
+  'Shared repository auto-sync used the local snapshot because the repository lock was stale or unverifiable; run threadnote doctor --dry-run if this warning persists.';
 
 export const runShareInit = (config: ShareRuntime, remoteUrl: string, options: ShareInitOptions) =>
   withSharedRepositoryLock(config, runShareInitEffect(config, remoteUrl, options));
@@ -75,14 +75,24 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
   }
 });
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
-  return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
+  const observed = yield* observeSharedRepositoryHomeLock(config.agentContextHome);
+  if (observed === 'active') {
+    return {syncedTeams: [] as readonly string[], warnings: [] as readonly string[]};
+  }
+  const sync = withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
     waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
-  }).pipe(
+  });
+  return yield* sync.pipe(
     Effect.catchIf(isFileLockTimeout, () =>
-      Effect.succeed({
-        syncedTeams: [] as readonly string[],
-        warnings: [SHARED_REPOSITORY_READ_CONTENTION_WARNING] as readonly string[],
-      }),
+      observeSharedRepositoryHomeLock(config.agentContextHome).pipe(
+        Effect.map(lockState => ({
+          syncedTeams: [] as readonly string[],
+          warnings:
+            lockState === 'unhealthy'
+              ? ([SHARED_REPOSITORY_READ_UNHEALTHY_LOCK_WARNING] as readonly string[])
+              : ([] as readonly string[]),
+        })),
+      ),
     ),
   );
 });
