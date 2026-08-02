@@ -704,10 +704,18 @@ describe('Manager logical repository and workspace catalogs', () => {
           0,
           0,
           '2026-08-01T13:00:00.000Z',
-          '2026-08-01T13:00:01.000Z',
+          index === 39 ? '2026-08-02T13:00:01.000Z' : '2026-08-01T13:00:01.000Z',
           null,
         );
       }
+      viewDatabase
+        .query(
+          "INSERT INTO snapshot_extractor_generations (snapshot_id, generation) SELECT ?, CAST(value AS INTEGER) FROM schema_metadata WHERE key = 'minimum_extractor_generation'",
+        )
+        .run('cgsn_view_39');
+      viewDatabase
+        .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
+        .run('0'.repeat(62) + '27', 'cgsn_view_39', '2099-08-02T13:00:02.000Z');
     })();
     viewDatabase.close();
     const [firstViews, continuedViews, searchedViews] = await Effect.runPromise(
@@ -727,6 +735,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       }).pipe(Effect.provide(storeLayer)),
     );
     expect(firstViews).toHaveLength(33);
+    expect(firstViews[0]?.viewWorktreeId).toBe('0'.repeat(62) + '27');
     expect(continuedViews.length).toBeGreaterThan(0);
     expect(new Set([...firstViews, ...continuedViews].map(view => view.viewWorktreeId)).size).toBeGreaterThan(33);
     expect(searchedViews.map(view => view.viewWorktreeId)).toEqual(['0'.repeat(62) + '27']);

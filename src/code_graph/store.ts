@@ -11091,13 +11091,17 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
   const viewOffset = boundedVisualizationCatalogOffset(options.viewOffset);
   const viewQuery = boundedVisualizationCatalogQuery(options.viewQuery);
   const worktrees = yield* sql.unsafe<{readonly worktree_id: string}>(
-    `SELECT DISTINCT COALESCE(active_snapshots.worktree_id, snapshots.worktree_id) AS worktree_id
+    `SELECT COALESCE(active_snapshots.worktree_id, snapshots.worktree_id) AS worktree_id
      FROM snapshots
      JOIN repositories ON repositories.id = snapshots.repository_id
      LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
      WHERE snapshots.state = 'ready'
        ${viewQuery.length === 0 ? '' : "AND instr(lower(repositories.display_name || ' ' || snapshots.commit_id || ' ' || COALESCE(active_snapshots.worktree_id, snapshots.worktree_id)), lower(?)) > 0"}
-     ORDER BY worktree_id
+     GROUP BY 1
+     ORDER BY
+       MAX(CASE WHEN active_snapshots.snapshot_id IS NULL THEN 0 ELSE 1 END) DESC,
+       MAX(COALESCE(active_snapshots.activated_at, snapshots.completed_at, snapshots.started_at)) DESC,
+       worktree_id
      LIMIT ? OFFSET ?`,
     [...(viewQuery.length === 0 ? [] : [viewQuery]), viewLimit, viewOffset],
   );

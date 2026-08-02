@@ -4,6 +4,7 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphCatalogPageOffsets,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
@@ -333,6 +334,54 @@ describe('manager graph focus', () => {
       ],
     };
     expect(mergeGraphRepositoryGroups([refreshed], [stalePage])[0]?.views[0]?.projects).toEqual([]);
+  });
+
+  it('keeps unfiltered catalog cursors independent from merged search hits', () => {
+    const initial = repositoryGroup('repo', ['view-00', 'view-01'], 'view-00');
+    const baseRepository = {
+      ...initial.views[0]!,
+      checkoutId: 'checkout',
+      projects: [
+        {id: 'cgp_first', label: '//apps:first'},
+        {id: 'cgp_second', label: '//apps:second'},
+      ],
+      workspaces: [
+        {buildSystem: 'bazel', id: 'workspace-1', name: 'one', root: 'apps/one'},
+        {buildSystem: 'bazel', id: 'workspace-2', name: 'two', root: 'apps/two'},
+      ],
+    };
+    const baseRepositoryGroup = {
+      ...initial,
+      views: [baseRepository, {...initial.views[1]!, checkoutId: 'checkout'}],
+    };
+    const searchResult = {
+      ...baseRepository,
+      projects: [{id: 'cgp_out_of_prefix', label: '//z:last'}],
+      workspaces: [{buildSystem: 'bazel', id: 'workspace-z', name: 'last', root: 'z'}],
+    };
+    const merged = mergeGraphRepositoryGroups(
+      [baseRepositoryGroup],
+      [{...baseRepositoryGroup, views: [searchResult]}],
+    )[0]!;
+    expect(merged.views[0]?.projects).toHaveLength(3);
+    expect(merged.views[0]?.workspaces).toHaveLength(3);
+    expect(
+      graphCatalogPageOffsets({
+        baseRepository,
+        baseRepositoryGroup,
+        checkoutId: 'checkout',
+        viewId: baseRepository.id,
+      }),
+    ).toEqual({projectOffset: 2, viewOffset: 2, workspaceOffset: 2});
+    expect(
+      graphCatalogPageOffsets({
+        baseRepository,
+        baseRepositoryGroup,
+        checkoutId: 'checkout',
+        continuation: {projectOffset: 64, viewId: baseRepository.id, viewOffset: 32, workspaceOffset: 48},
+        viewId: baseRepository.id,
+      }),
+    ).toEqual({projectOffset: 64, viewOffset: 32, workspaceOffset: 48});
   });
 
   it('keeps the selected node anchored while separating highlighted node labels', () => {

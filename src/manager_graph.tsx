@@ -375,6 +375,32 @@ export function mergeGraphRepositoryGroups(
   );
 }
 
+export function graphCatalogPageOffsets(input: {
+  readonly baseRepository?: GraphRepository;
+  readonly baseRepositoryGroup?: GraphRepositoryGroup;
+  readonly checkoutId: string;
+  readonly continuation?: {
+    readonly projectOffset: number;
+    readonly viewId: string;
+    readonly viewOffset: number;
+    readonly workspaceOffset: number;
+  };
+  readonly viewId: string;
+}): {readonly projectOffset: number; readonly viewOffset: number; readonly workspaceOffset: number} {
+  const continuation = input.continuation?.viewId === input.viewId ? input.continuation : undefined;
+  return {
+    projectOffset:
+      continuation?.projectOffset ??
+      input.baseRepository?.projects.filter(project => project.id.startsWith('cgp_')).length ??
+      0,
+    viewOffset:
+      continuation?.viewOffset ??
+      input.baseRepositoryGroup?.views.filter(view => view.checkoutId === input.checkoutId).length ??
+      0,
+    workspaceOffset: continuation?.workspaceOffset ?? input.baseRepository?.workspaces.length ?? 0,
+  };
+}
+
 function mergeGraphRepository(current: GraphRepository, addition: GraphRepository): GraphRepository {
   if (current.snapshot.id !== addition.snapshot.id) return current;
   const projects = new Map(current.projects.map(project => [project.id, project]));
@@ -939,6 +965,10 @@ export function GraphWorkspace(props: {
     repositoryGroup?.views.find(candidate => candidate.id === viewId) ??
     repositoryGroup?.views.find(candidate => candidate.id === repositoryGroup.defaultViewId) ??
     repositoryGroup?.views[0];
+  const baseRepositoryGroup = (props.catalog?.repositories ?? []).find(
+    candidate => candidate.id === repositoryGroup?.id,
+  );
+  const baseRepository = baseRepositoryGroup?.views.find(candidate => candidate.id === repository?.id);
   const analysisScope = `${repository?.id ?? ''}:${repository?.snapshot.id ?? ''}`;
   const analysisScopeRef = useRef(analysisScope);
   analysisScopeRef.current = analysisScope;
@@ -1321,16 +1351,17 @@ export function GraphWorkspace(props: {
     if (!repository || !repositoryGroup || catalogLoading) return;
     const query = requestedQuery.trim().slice(0, 256);
     const continuation = catalogContinuation?.viewId === repository.id ? catalogContinuation : undefined;
-    const projectOffset =
+    const offsets =
       query.length === 0
-        ? (continuation?.projectOffset ?? repository.projects.filter(project => project.id.startsWith('cgp_')).length)
-        : 0;
-    const workspaceOffset = query.length === 0 ? (continuation?.workspaceOffset ?? repository.workspaces.length) : 0;
-    const viewOffset =
-      query.length === 0
-        ? (continuation?.viewOffset ??
-          repositoryGroup.views.filter(view => view.checkoutId === repository.checkoutId).length)
-        : 0;
+        ? graphCatalogPageOffsets({
+            baseRepository,
+            baseRepositoryGroup,
+            checkoutId: repository.checkoutId,
+            continuation,
+            viewId: repository.id,
+          })
+        : {projectOffset: 0, viewOffset: 0, workspaceOffset: 0};
+    const {projectOffset, viewOffset, workspaceOffset} = offsets;
     const requestedScope = `${repository.id}:${repository.snapshot.id}:${projectOffset}:${workspaceOffset}:${viewOffset}:${query}`;
     const requestSequence = catalogRequestSequence.current + 1;
     catalogRequestSequence.current = requestSequence;
