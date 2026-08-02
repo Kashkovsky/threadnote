@@ -952,11 +952,13 @@ function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterializa
       'committing',
       'loading-cache',
       'preparing-rows',
+      'writing-analysis',
       'writing-candidates',
       'writing-edges',
       'writing-facts',
       'writing-lookups',
       'writing-references',
+      'writing-receipt',
       'writing-symbols',
       'writing-terms',
     ].includes(String(value.stage)) ||
@@ -967,6 +969,9 @@ function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterializa
   if (value.cachedFactBytes !== undefined && !isNonNegativeSafeInteger(value.cachedFactBytes)) return undefined;
   if (value.elapsedMilliseconds !== undefined && !isNonNegativeFinite(value.elapsedMilliseconds)) return undefined;
   if (value.factsBytes !== undefined && !isNonNegativeSafeInteger(value.factsBytes)) return undefined;
+  if (value.stageElapsedMilliseconds !== undefined && !isNonNegativeFinite(value.stageElapsedMilliseconds)) {
+    return undefined;
+  }
   if (value.transactionMilliseconds !== undefined && !isNonNegativeFinite(value.transactionMilliseconds)) {
     return undefined;
   }
@@ -981,6 +986,9 @@ function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterializa
     ...(rows ? {rows} : {}),
     sourceBytes: Number(value.sourceBytes),
     stage: value.stage as CodeGraphMaterializationActivity['stage'],
+    ...(value.stageElapsedMilliseconds === undefined
+      ? {}
+      : {stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds)}),
     startedAt: value.startedAt,
     ...(value.transactionMilliseconds === undefined
       ? {}
@@ -1025,6 +1033,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   }
   const rows = parseMaterializationRows(value.rows);
   if (value.rows !== undefined && !rows) return undefined;
+  const stageMilliseconds = parseMaterializationStageMilliseconds(value.stageMilliseconds);
+  if (value.stageMilliseconds !== undefined && !stageMilliseconds) return undefined;
   const storage = parseMaterializationStorage(value.storage);
   if (value.storage !== undefined && !storage) return undefined;
   if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
@@ -1045,11 +1055,40 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(rows ? {rows} : {}),
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),
+    ...(stageMilliseconds ? {stageMilliseconds} : {}),
     ...(storage ? {storage} : {}),
     ...(value.transactionMilliseconds === undefined
       ? {}
       : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
   };
+}
+
+function parseMaterializationStageMilliseconds(
+  value: unknown,
+): CodeGraphMaterializationMetrics['stageMilliseconds'] | undefined {
+  if (!isRecord(value)) return undefined;
+  const stages = [
+    'attributing',
+    'committing',
+    'loading-cache',
+    'preparing-rows',
+    'writing-analysis',
+    'writing-candidates',
+    'writing-edges',
+    'writing-facts',
+    'writing-lookups',
+    'writing-receipt',
+    'writing-references',
+    'writing-symbols',
+    'writing-terms',
+  ] as const satisfies readonly CodeGraphMaterializationActivity['stage'][];
+  const allowed = new Set<string>(stages);
+  const parsed: Partial<Record<CodeGraphMaterializationActivity['stage'], number>> = {};
+  for (const [stage, milliseconds] of Object.entries(value)) {
+    if (!allowed.has(stage) || !isNonNegativeFinite(milliseconds)) return undefined;
+    parsed[stage as CodeGraphMaterializationActivity['stage']] = Number(milliseconds);
+  }
+  return parsed;
 }
 
 function parseMaterializationStorage(

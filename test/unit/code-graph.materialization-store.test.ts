@@ -15,6 +15,8 @@ import {
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
+  type CodeGraphSqliteWriterSettings,
+  type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
 import type {
@@ -66,6 +68,147 @@ describe('code graph full-build materialization store', () => {
     );
 
     expect(pager).toEqual({cacheSize: -64 * 1_024, temporaryStore: 2});
+  });
+
+  it('restores FULL durability before publication and leaves a failed publication resumable', async () => {
+    const fixture = await materializationFixture();
+    const observed: CodeGraphSqliteWriterSettings[] = [];
+    const staging: CodeGraphStagingProgress[] = [];
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.initialize(fixture.databasePath);
+            const stored = symbol('sqlite-tuning-symbol', 'sqliteTuningSymbol', ['typescript:name:sqliteTuningSymbol']);
+            const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'sqlite-tuning-publication'};
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              [stored],
+              [],
+              [],
+              progress => Effect.sync(() => staging.push(progress)),
+              0,
+            );
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql.unsafe(`
+              CREATE TRIGGER reject_ready_publication
+              BEFORE UPDATE OF state ON snapshots
+              WHEN NEW.state = 'ready'
+              BEGIN
+                SELECT RAISE(ABORT, 'injected publication failure');
+              END
+            `);
+            const failed = yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot).pipe(
+              Effect.as(false),
+              Effect.catch(() => Effect.succeed(true)),
+            );
+            const afterFailure = yield* sql<{readonly state: string}>`
+              SELECT state FROM snapshots WHERE id = ${snapshot.id}
+            `;
+            const synchronousAfterFailure = yield* sql.unsafe<{readonly synchronous: number}>(
+              'PRAGMA main.synchronous',
+            );
+            yield* sql.unsafe('DROP TRIGGER reject_ready_publication');
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            const afterRetry = yield* sql<{readonly state: string}>`
+              SELECT state FROM snapshots WHERE id = ${snapshot.id}
+            `;
+            return {
+              failed,
+              stateAfterFailure: afterFailure[0]?.state,
+              stateAfterRetry: afterRetry[0]?.state,
+              synchronousAfterFailure: Number(synchronousAfterFailure[0]?.synchronous),
+            };
+          }),
+          {
+            onSqliteWriterConfigured: settings => Effect.sync(() => observed.push(settings)),
+            sqliteWriterTuning: {
+              mainCacheKiB: 64 * 1_024,
+              reconstructibleBuildSynchronous: 'normal',
+              walAutoCheckpointPages: 1_000,
+            },
+            writerLockPath: join(fixture.root, 'writer.lock'),
+          },
+        );
+      }),
+    );
+
+    expect(result).toEqual({
+      failed: true,
+      stateAfterFailure: 'building',
+      stateAfterRetry: 'ready',
+      synchronousAfterFailure: 2,
+    });
+    const durability = observed.filter(settings => settings.phase !== 'connection');
+    expect(durability.map(settings => [settings.phase, settings.synchronous])).toEqual([
+      ['building', 1],
+      ['publication', 2],
+      ['publication', 2],
+    ]);
+    expect(durability.every(settings => settings.journalMode === 'wal')).toBe(true);
+    expect(staging.map(progress => progress.stage)).toEqual(
+      expect.arrayContaining(['analysis', 'committed', 'committing', 'receipt', 'validating']),
+    );
+    expect(
+      staging.every(
+        progress =>
+          (progress.stageElapsedMilliseconds ?? -1) >= 0 &&
+          (progress.stageElapsedMilliseconds ?? Number.POSITIVE_INFINITY) <= progress.elapsedMilliseconds,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps persistent graph evidence identical under benchmark-only writer tuning', async () => {
+    const build = async (tuning?: CodeGraphSqliteWriterTuning) => {
+      const fixture = await materializationFixture();
+      const stored = symbol('sqlite-parity-symbol', 'sqliteParitySymbol', ['typescript:name:sqliteParitySymbol']);
+      const linked = {...edge('sqlite-parity-edge', stored, stored.name), targetId: stored.id};
+      const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'sqlite-tuning-parity'};
+      const graph = await runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              yield* store.initialize(fixture.databasePath);
+              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [stored], [linked], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              return yield* store.loadGraph(fixture.databasePath, snapshot.id);
+            }),
+            {
+              ...(tuning ? {sqliteWriterTuning: tuning} : {}),
+              writerLockPath: join(fixture.root, 'writer.lock'),
+            },
+          );
+        }),
+      );
+      return {evidence: persistentGraphEvidence(fixture.databasePath, snapshot.id), graph};
+    };
+
+    const control = await build();
+    const tuned = await build({
+      mainCacheKiB: 256 * 1_024,
+      mmapSizeBytes: 256 * 1_024 * 1_024,
+      reconstructibleBuildSynchronous: 'normal',
+      walAutoCheckpointPages: 8_192,
+    });
+    expect(tuned.evidence).toEqual(control.evidence);
+    expect(tuned.graph.symbols).toEqual(control.graph.symbols);
+    expect(tuned.graph.edges).toEqual(control.graph.edges);
   });
 
   it('validates persistent endpoints in bounded endpoint-index order', () => {

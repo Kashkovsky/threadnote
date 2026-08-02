@@ -136,6 +136,9 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
         activity.elapsedMilliseconds === undefined
           ? `active ${formatStatusDuration(Math.max(0, Date.now() - Date.parse(activity.startedAt)))}`
           : `batch ${formatMilliseconds(activity.elapsedMilliseconds)}`,
+        activity.stageElapsedMilliseconds === undefined
+          ? undefined
+          : `stage ${formatMilliseconds(activity.stageElapsedMilliseconds)}`,
         activity.transactionMilliseconds === undefined
           ? undefined
           : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
@@ -1148,6 +1151,8 @@ function materializationStageLabel(
       return 'attributing facts';
     case 'preparing-rows':
       return 'preparing rows';
+    case 'writing-analysis':
+      return 'writing analysis summary';
     case 'writing-symbols':
       return 'writing symbols';
     case 'writing-lookups':
@@ -1158,6 +1163,8 @@ function materializationStageLabel(
       return 'writing relationships';
     case 'writing-references':
       return 'writing references';
+    case 'writing-receipt':
+      return 'recording resumable batch';
     case 'writing-candidates':
       return 'writing reference candidates';
     case 'writing-facts':

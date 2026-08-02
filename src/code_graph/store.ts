@@ -218,15 +218,18 @@ export interface LoadedCodeGraphFacts {
 }
 
 export type CodeGraphStagingStage =
+  | 'analysis'
   | 'committed'
   | 'committing'
   | 'edges'
   | 'lookup-keys'
   | 'reference-candidates'
   | 'references'
+  | 'receipt'
   | 'reexports'
   | 'symbols'
-  | 'terms';
+  | 'terms'
+  | 'validating';
 
 export interface CodeGraphStagingProgress {
   readonly chunkRows: number;
@@ -235,6 +238,8 @@ export interface CodeGraphStagingProgress {
   readonly elapsedMilliseconds: number;
   readonly rowsCompleted: number;
   readonly stage: CodeGraphStagingStage;
+  /** Batch-local wall time spent in bounded SQLite work for this stage. */
+  readonly stageElapsedMilliseconds?: number;
   /** Allocated TEMP database pages; excludes rollback journals and subjournals. */
   readonly temporaryDatabaseBytes?: number;
 }
@@ -649,9 +654,30 @@ export interface CodeGraphDatabaseSessionOptions {
   /** @internal Deterministic checkout-writer acquisition observer used by coordination tests. */
   readonly onWriterAcquired?: () => Effect.Effect<void, never>;
   readonly onWriterContention?: () => Effect.Effect<void, never>;
+  /** @internal Records effective PRAGMA values for controlled benchmark evidence. */
+  readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
+  /** @internal Benchmark-only overrides. Production indexing leaves this unset. */
+  readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
   /** @internal The caller already owns this database's checkout-wide writer gate. */
   readonly writerGateHeld?: boolean;
   readonly writerLockPath?: string;
+}
+
+export interface CodeGraphSqliteWriterTuning {
+  readonly mainCacheKiB?: number;
+  readonly mmapSizeBytes?: number;
+  /** Use NORMAL only while a clean, unpublished snapshot remains reconstructible. */
+  readonly reconstructibleBuildSynchronous?: 'normal';
+  readonly walAutoCheckpointPages?: number;
+}
+
+export interface CodeGraphSqliteWriterSettings {
+  readonly cacheSizePragma: number;
+  readonly journalMode: string;
+  readonly mmapSizeBytes: number;
+  readonly phase: 'building' | 'connection' | 'publication';
+  readonly synchronous: number;
+  readonly walAutoCheckpointPages: number;
 }
 
 interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionOptions {
@@ -710,6 +736,14 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
           if (matching?.schemaInitialized) return;
           yield* withWriterGate(databasePath, initializeSchema(sql));
+          if (matching?.sqliteWriterTuning) {
+            yield* configureSqliteWriterConnection(
+              sql,
+              matching.sqliteWriterTuning,
+              'connection',
+              matching.onSqliteWriterConfigured,
+            );
+          }
           if (matching) matching.schemaInitialized = true;
         });
       const scheduleCompletedBuildCleanup = (databasePath: string, snapshotId?: string) =>
@@ -773,7 +807,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 // indexing writer. Read/query sessions retain SQLite's small
                 // default cache, so concurrent agents do not multiply this
                 // bounded 64 MiB budget.
-                yield* sql.unsafe(`PRAGMA main.cache_size = -${CODE_GRAPH_WRITER_MAIN_CACHE_KIB}`);
+                if (options.sqliteWriterTuning) {
+                  yield* configureSqliteWriterConnection(
+                    sql,
+                    options.sqliteWriterTuning,
+                    'connection',
+                    options.onSqliteWriterConfigured,
+                  );
+                } else {
+                  yield* sql.unsafe(`PRAGMA main.cache_size = -${CODE_GRAPH_WRITER_MAIN_CACHE_KIB}`);
+                }
               }
               const session = {
                 databasePath,
@@ -1550,6 +1593,113 @@ const configureConnection = Effect.fn('codeGraph.configureConnection')(function*
 });
 
 const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM = 4 * 1_024 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM = 64 * 1_024 * 1_024 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM = 1_000_000;
+
+const configureSqliteWriterConnection = Effect.fn('codeGraph.configureSqliteWriterConnection')(function* (
+  sql: SqlClient.SqlClient,
+  tuning: CodeGraphSqliteWriterTuning,
+  phase: CodeGraphSqliteWriterSettings['phase'],
+  observe?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>,
+) {
+  if (tuning.mainCacheKiB !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.mainCacheKiB,
+      'SQLite writer cache KiB',
+      1,
+      CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA main.cache_size = -${value}`);
+  }
+  if (tuning.mmapSizeBytes !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.mmapSizeBytes,
+      'SQLite writer mmap bytes',
+      0,
+      CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA main.mmap_size = ${value}`);
+  }
+  if (tuning.walAutoCheckpointPages !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.walAutoCheckpointPages,
+      'SQLite writer WAL auto-checkpoint pages',
+      0,
+      CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA wal_autocheckpoint = ${value}`);
+  }
+  yield* reportSqliteWriterSettings(sql, phase, observe);
+});
+
+const configureReconstructibleBuildDurability = Effect.fn('codeGraph.configureReconstructibleBuildDurability')(
+  function* (sql: SqlClient.SqlClient) {
+    const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+    if (
+      Option.isNone(session) ||
+      session.value.sql !== sql ||
+      session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal'
+    ) {
+      return;
+    }
+    // Only unpublished full-build rows use NORMAL. They are ignored by readers,
+    // fingerprinted by batch, and can be resumed or reconstructed after a crash.
+    yield* sql.unsafe('PRAGMA synchronous = NORMAL');
+    yield* reportSqliteWriterSettings(sql, 'building', session.value.onSqliteWriterConfigured);
+  },
+);
+
+const configurePublicationDurability = Effect.fn('codeGraph.configurePublicationDurability')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+  if (
+    Option.isNone(session) ||
+    session.value.sql !== sql ||
+    session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal'
+  ) {
+    return;
+  }
+  // The ready-state CAS is the publication boundary. FULL makes that commit
+  // sync the WAL containing every earlier NORMAL full-build transaction before
+  // readers can observe the snapshot as ready.
+  yield* sql.unsafe('PRAGMA synchronous = FULL');
+  yield* reportSqliteWriterSettings(sql, 'publication', session.value.onSqliteWriterConfigured);
+});
+
+const reportSqliteWriterSettings = Effect.fn('codeGraph.reportSqliteWriterSettings')(function* (
+  sql: SqlClient.SqlClient,
+  phase: CodeGraphSqliteWriterSettings['phase'],
+  observe?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>,
+) {
+  if (!observe) return;
+  const [cache, journal, mmap, synchronous, wal] = yield* Effect.all(
+    [
+      sql.unsafe<{readonly cache_size: number}>('PRAGMA main.cache_size'),
+      sql.unsafe<{readonly journal_mode: string}>('PRAGMA main.journal_mode'),
+      sql.unsafe<{readonly mmap_size: number}>('PRAGMA main.mmap_size'),
+      sql.unsafe<{readonly synchronous: number}>('PRAGMA main.synchronous'),
+      sql.unsafe<{readonly wal_autocheckpoint: number}>('PRAGMA wal_autocheckpoint'),
+    ] as const,
+    {concurrency: 1},
+  );
+  yield* observe({
+    cacheSizePragma: Number(cache[0]?.cache_size ?? 0),
+    journalMode: String(journal[0]?.journal_mode ?? 'unknown'),
+    mmapSizeBytes: Number(mmap[0]?.mmap_size ?? 0),
+    phase,
+    synchronous: Number(synchronous[0]?.synchronous ?? -1),
+    walAutoCheckpointPages: Number(wal[0]?.wal_autocheckpoint ?? 0),
+  });
+});
+
+function sqlitePragmaInteger(value: number, label: string, minimum: number, maximum: number): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new CodeGraphStoreError(`${label} must be an integer from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
 
 const CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS = {
   retryIntervalMilliseconds: 25,
@@ -4132,6 +4282,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
     : {aliasCount: 0, lookupCount: 0, reexportCount: 0};
   yield* observe('validating-input', 'completed', snapshot.fileCount + snapshot.symbolCount + snapshot.edgeCount);
 
+  yield* configurePublicationDurability(sql);
   yield* observe('recording-completion', 'started');
   yield* observe('committing-snapshot', 'started');
   const readyTransactionStartedAt = performance.now();
@@ -5257,6 +5408,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   // retaining those small B-trees in memory avoids temp-file pager and journal
   // I/O without risking repository-proportional RSS.
   yield* sql.unsafe('PRAGMA temp_store = MEMORY');
+  yield* configureReconstructibleBuildDurability(sql);
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
   const snapshots = yield* sql<{readonly state: CodeGraphSnapshot['state']}>`
     SELECT state FROM snapshots WHERE id = ${snapshotId} LIMIT 1
@@ -5713,15 +5865,24 @@ function activationStagingObserver(
   storageDatabase: 'main' | 'temp' = 'temp',
 ): ActivationStagingObserver {
   const startedAt = performance.now();
+  const elapsedByStage = new Map<Exclude<CodeGraphStagingStage, 'committed'>, number>();
   const rowsByStage = new Map<CodeGraphStagingStage, number>();
   let lastReportAt = Number.NEGATIVE_INFINITY;
   let lastStorageSampleAt = Number.NEGATIVE_INFINITY;
   let lastStage: CodeGraphStagingStage | undefined;
+  let lastTimingAt = startedAt;
+  let lastTimingStage: Exclude<CodeGraphStagingStage, 'committed'> | undefined;
   return (stage, chunkRows, force = false) =>
     Effect.gen(function* () {
       const rowsCompleted = (rowsByStage.get(stage) ?? 0) + chunkRows;
       rowsByStage.set(stage, rowsCompleted);
       const now = performance.now();
+      const timingStage = stage === 'committed' ? 'committing' : stage;
+      if (lastTimingStage === timingStage) {
+        elapsedByStage.set(timingStage, (elapsedByStage.get(timingStage) ?? 0) + Math.max(0, now - lastTimingAt));
+      }
+      lastTimingAt = now;
+      lastTimingStage = timingStage;
       const shouldReport = force || stage !== lastStage || now - lastReportAt >= 500;
       if (onProgress && shouldReport) {
         let allocatedDatabaseBytes: number | undefined;
@@ -5742,6 +5903,7 @@ function activationStagingObserver(
           elapsedMilliseconds: Math.max(0, now - startedAt),
           rowsCompleted,
           stage,
+          stageElapsedMilliseconds: elapsedByStage.get(timingStage) ?? 0,
           ...(allocatedDatabaseBytes === undefined
             ? {}
             : storageDatabase === 'main'
@@ -6319,6 +6481,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   let reexportCount = 0;
   const resumed = yield* sql.withTransaction(
     Effect.gen(function* () {
+      yield* observer('validating', 0, true);
       yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
       yield* assertPersistentMaterializationBatchPlanned(sql, snapshotId, ownerToken, batchIndex);
       const existing = yield* sql<PersistedFullBatchReceipt>`
@@ -6328,6 +6491,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         WHERE snapshot_id = ${snapshotId} AND batch_index = ${batchIndex}
         LIMIT 1
       `;
+      yield* observer('validating', 3, true);
       if (existing[0]) {
         if (existing[0].batch_fingerprint !== batchFingerprint) {
           return yield* Effect.fail(
@@ -6337,7 +6501,9 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         // Beta databases may have a durable materialization receipt created
         // before compact analysis summaries existed. Repair that batch from
         // the fingerprint-verified caller facts without replaying fact rows.
+        yield* observer('analysis', 0, true);
         yield* stagePersistedAnalysisBatch(sql, snapshotId, batchIndex, batchFingerprint, symbols, edges);
+        yield* observer('analysis', symbols.length + edges.length, true);
         return existing[0];
       }
       yield* observer('symbols', 0, true);
@@ -6536,7 +6702,10 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       yield* observer('references', 0, true);
       yield* observer('reference-candidates', 0, true);
       yield* observer('reexports', 0, true);
+      yield* observer('analysis', 0, true);
       yield* stagePersistedAnalysisBatch(sql, snapshotId, batchIndex, batchFingerprint, symbols, edges);
+      yield* observer('analysis', symbols.length + edges.length, true);
+      yield* observer('receipt', 0, true);
       yield* sql`
         INSERT INTO building_materialization_batches (
           snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, term_count, lookup_count,
@@ -6546,6 +6715,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
           ${references.length}, ${candidateCount}, ${reexportCount}, ${new Date().toISOString()}
         )
       `;
+      yield* observer('receipt', 1, true);
       yield* observer('committing', 0, true);
       return undefined;
     }),
@@ -6559,6 +6729,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       ['references', Number(resumed.reference_count)],
       ['reference-candidates', Number(resumed.candidate_count)],
       ['reexports', Number(resumed.reexport_count)],
+      ['receipt', 1],
     ] as const) {
       yield* observer(stage, rows, true);
     }

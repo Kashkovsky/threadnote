@@ -141,6 +141,7 @@ export interface GraphBuildStatus {
       readonly rows?: GraphMaterializationRows;
       readonly sourceBytes: number;
       readonly stage: GraphMaterializationStage;
+      readonly stageElapsedMilliseconds?: number;
       readonly startedAt: string;
       readonly transactionMilliseconds?: number;
     };
@@ -156,6 +157,7 @@ export interface GraphBuildStatus {
       readonly rows?: GraphMaterializationRows;
       readonly sourceBytesCompleted: number;
       readonly sourceBytesTotal: number;
+      readonly stageMilliseconds?: Readonly<Partial<Record<GraphMaterializationStage, number>>>;
       readonly storage?: GraphMaterializationStorage;
       readonly transactionMilliseconds?: number;
     };
@@ -213,11 +215,13 @@ type GraphMaterializationStage =
   | 'committing'
   | 'loading-cache'
   | 'preparing-rows'
+  | 'writing-analysis'
   | 'writing-candidates'
   | 'writing-edges'
   | 'writing-facts'
   | 'writing-lookups'
   | 'writing-references'
+  | 'writing-receipt'
   | 'writing-symbols'
   | 'writing-terms';
 
@@ -2265,6 +2269,8 @@ function graphMaterializationStageLabel(stage: GraphMaterializationStage): strin
       return 'attributing facts';
     case 'preparing-rows':
       return 'preparing rows';
+    case 'writing-analysis':
+      return 'writing analysis summary';
     case 'writing-symbols':
       return 'writing symbols';
     case 'writing-lookups':
@@ -2275,6 +2281,8 @@ function graphMaterializationStageLabel(stage: GraphMaterializationStage): strin
       return 'writing relationships';
     case 'writing-references':
       return 'writing references';
+    case 'writing-receipt':
+      return 'recording resumable batch';
     case 'writing-candidates':
       return 'writing reference candidates';
     case 'writing-facts':

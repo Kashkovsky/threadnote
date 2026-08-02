@@ -37,6 +37,8 @@ import {
   type CodeGraphReusableReexportSeed,
   type CodeGraphStagingProgress,
   type CodeGraphStoreShape,
+  type CodeGraphSqliteWriterSettings,
+  type CodeGraphSqliteWriterTuning,
 } from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -44,6 +46,7 @@ import {
   type CodeGraphFileFacts,
   type CodeGraphIndexSummary,
   type CodeGraphInventoryFile,
+  type CodeGraphMaterializationActivity,
   type CodeGraphMaterializationMetrics,
   type CodeGraphMaterializationRows,
   type CodeGraphOverlayFallbackReason,
@@ -81,6 +84,10 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly force?: boolean;
   /** Internal benchmark/correctness escape hatch; normal indexing keeps this enabled. */
   readonly incrementalOverlay?: boolean;
+  /** @internal Records read-back PRAGMA values for controlled benchmark evidence. */
+  readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
+  /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */
+  readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
   readonly threadnoteHome: string;
 }
 
@@ -585,7 +592,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         ),
                       );
                     }),
-                    writerSessionOptions(layout, options.onProgress),
+                    writerSessionOptions(layout, options),
                   )
                   .pipe(
                     Effect.tap(summary => reporter.complete(summary)),
@@ -715,7 +722,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
                     }),
-                    writerSessionOptions(layout, options.onProgress),
+                    writerSessionOptions(layout, options),
                   )
                   .pipe(
                     Effect.tap(lease => reporter.completeSnapshot(lease.snapshot)),
@@ -758,13 +765,15 @@ function withCodeGraphProcessLock<A, E, R>(
   );
 }
 
-function writerSessionOptions(layout: CodeGraphLayout, onProgress: CodeGraphIndexOptions['onProgress']) {
+function writerSessionOptions(layout: CodeGraphLayout, options: CodeGraphIndexOptions) {
   return {
     cleanupCompletedBuildRows: true,
+    ...(options.onSqliteWriterConfigured ? {onSqliteWriterConfigured: options.onSqliteWriterConfigured} : {}),
     onWriterContention: () =>
-      (onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(
+      (options.onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(
         Effect.catch(() => Effect.void),
       ),
+    ...(options.sqliteWriterTuning ? {sqliteWriterTuning: options.sqliteWriterTuning} : {}),
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
 }
@@ -1342,6 +1351,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     let temporaryDatabaseBytes = 0;
     let temporaryDatabaseHighWaterBytes = 0;
     let materializedRows: CodeGraphMaterializationRows = {};
+    const stageMilliseconds: Partial<Record<CodeGraphMaterializationActivity['stage'], number>> = {};
     const metrics = (finalFactsBytesTotal?: number): CodeGraphMaterializationMetrics => ({
       attributionMilliseconds,
       batchesCompleted,
@@ -1354,6 +1364,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       rows: materializedRows,
       sourceBytesCompleted,
       sourceBytesTotal,
+      stageMilliseconds: {...stageMilliseconds},
       storage: {
         ...storagePlan,
         durableDatabaseBytes,
@@ -1439,6 +1450,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
       const batchLoadingMilliseconds = (yield* Clock.currentTimeMillis) - loadingStartedAt;
       loadingMilliseconds += batchLoadingMilliseconds;
+      stageMilliseconds['loading-cache'] = loadingMilliseconds;
       if (files.some(file => !cached.facts.has(file.path))) {
         return yield* Effect.fail(
           new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
@@ -1466,6 +1478,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       );
       const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
       attributionMilliseconds += batchAttributionMilliseconds;
+      stageMilliseconds.attributing = attributionMilliseconds;
       const finalBatches = finalCodeGraphFactBatches(facts);
       batchesTotal += Math.max(0, finalBatches.length - 1);
       if (extractionDiagnostics.length < 100) {
@@ -1517,6 +1530,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         }) ?? Effect.void;
         const transactionStartedAt = yield* Clock.currentTimeMillis;
         const persistentBatchIndex = persistentBatchCursor;
+        const batchStageMilliseconds = new Map<string, number>();
         yield* input.store.stageActivationFacts(
           input.layout.databasePath,
           symbols,
@@ -1534,6 +1548,13 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               durableDatabaseBytes = progress.durableDatabaseBytes;
               durableDatabaseHighWaterBytes = Math.max(durableDatabaseHighWaterBytes, progress.durableDatabaseBytes);
             }
+            const activityStage = materializationStagingStage(progress);
+            const timingKey = progress.stage === 'committed' ? 'committing' : progress.stage;
+            const previousStageMilliseconds = batchStageMilliseconds.get(timingKey) ?? 0;
+            const currentStageMilliseconds = progress.stageElapsedMilliseconds ?? 0;
+            const stageDeltaMilliseconds = Math.max(0, currentStageMilliseconds - previousStageMilliseconds);
+            batchStageMilliseconds.set(timingKey, currentStageMilliseconds);
+            stageMilliseconds[activityStage] = (stageMilliseconds[activityStage] ?? 0) + stageDeltaMilliseconds;
             rows = materializationRowsWithStoreProgress(rows, progress);
             return refreshStorageFiles(progress.stage === 'committed').pipe(
               Effect.andThen(
@@ -1546,7 +1567,8 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
                     factsBytes: batchFinalFactBytes,
                     rows,
                     sourceBytes: batchSourceBytes,
-                    stage: materializationStagingStage(progress),
+                    stage: activityStage,
+                    stageElapsedMilliseconds: currentStageMilliseconds,
                     transactionMilliseconds: progress.elapsedMilliseconds,
                   },
                   completed: materializedFiles,
@@ -2753,6 +2775,9 @@ export function materializationRowsWithStoreProgress(
       return {...rows, referenceCandidates: progress.rowsCompleted};
     case 'reexports':
       return {...rows, reexports: progress.rowsCompleted};
+    case 'analysis':
+    case 'receipt':
+    case 'validating':
     case 'committing':
     case 'committed':
       return rows;
@@ -2794,6 +2819,8 @@ function materializationStagingStage(
   progress: CodeGraphStagingProgress,
 ): NonNullable<Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['activity']>['stage'] {
   switch (progress.stage) {
+    case 'validating':
+      return 'preparing-rows';
     case 'symbols':
       return 'writing-symbols';
     case 'lookup-keys':
@@ -2807,6 +2834,10 @@ function materializationStagingStage(
     case 'references':
     case 'reexports':
       return 'writing-references';
+    case 'analysis':
+      return 'writing-analysis';
+    case 'receipt':
+      return 'writing-receipt';
     case 'committing':
     case 'committed':
       return 'committing';

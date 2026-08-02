@@ -3,6 +3,7 @@ import {Database} from 'bun:sqlite';
 import {Clock, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
+import type {CodeGraphSqliteWriterSettings, CodeGraphSqliteWriterTuning} from '../src/code_graph/store.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
@@ -74,6 +75,109 @@ const ACTIVATION_STAGES = [
   'checkpointing-snapshot',
   'recording-completion',
 ] as const satisfies readonly CodeGraphActivationActivity['stage'][];
+
+const MATERIALIZATION_STAGES = [
+  'loading-cache',
+  'attributing',
+  'preparing-rows',
+  'writing-symbols',
+  'writing-lookups',
+  'writing-terms',
+  'writing-edges',
+  'writing-references',
+  'writing-candidates',
+  'writing-analysis',
+  'writing-receipt',
+  'committing',
+] as const satisfies readonly NonNullable<
+  Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['activity']
+>['stage'][];
+
+export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
+  current: {
+    description: 'Current 64 MiB writer cache and 1,000-page WAL auto-checkpoint.',
+    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-256m': {
+    description: 'Isolates a 256 MiB writer page cache.',
+    tuning: {mainCacheKiB: 256 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'mmap-256m': {
+    description: 'Isolates a 256 MiB main-database mmap window.',
+    tuning: {mainCacheKiB: 64 * 1_024, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'wal-checkpoint-8192': {
+    description: 'Isolates an 8,192-page passive WAL auto-checkpoint cadence.',
+    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 8_192},
+  },
+  'building-normal-full-publication': {
+    description: 'Uses NORMAL only for reconstructible full-build rows and restores FULL before publication.',
+    tuning: {
+      mainCacheKiB: 64 * 1_024,
+      reconstructibleBuildSynchronous: 'normal',
+      walAutoCheckpointPages: 1_000,
+    },
+  },
+  'combined-candidate': {
+    description: 'Combines the independently measured candidates; never a production default by itself.',
+    tuning: {
+      mainCacheKiB: 256 * 1_024,
+      mmapSizeBytes: 256 * 1_024 * 1_024,
+      reconstructibleBuildSynchronous: 'normal',
+      walAutoCheckpointPages: 8_192,
+    },
+  },
+} as const satisfies Readonly<
+  Record<string, {readonly description: string; readonly tuning: CodeGraphSqliteWriterTuning}>
+>;
+
+export type CodeGraphSqliteWriterProfile = keyof typeof CODE_GRAPH_SQLITE_WRITER_PROFILES;
+type SqliteWriterBenchmarkPhase = 'cold' | 'one-file-reindex' | 'same-overlay-reference';
+export type SqliteWriterSettingsEvidence = CodeGraphSqliteWriterSettings & {
+  readonly benchmarkPhase: SqliteWriterBenchmarkPhase;
+};
+
+export function validateSqliteWriterSettingsEvidence(
+  profile: CodeGraphSqliteWriterProfile,
+  evidence: readonly SqliteWriterSettingsEvidence[],
+): void {
+  const requested: CodeGraphSqliteWriterTuning = CODE_GRAPH_SQLITE_WRITER_PROFILES[profile].tuning;
+  for (const benchmarkPhase of ['cold', 'one-file-reindex', 'same-overlay-reference'] as const) {
+    const phaseEvidence = evidence.filter(settings => settings.benchmarkPhase === benchmarkPhase);
+    const connection = phaseEvidence.filter(settings => settings.phase === 'connection').at(-1);
+    if (!connection || connection.journalMode.toLowerCase() !== 'wal') {
+      throw new Error(`SQLite writer profile ${profile} did not report a WAL connection for ${benchmarkPhase}.`);
+    }
+    if (requested.mainCacheKiB !== undefined && connection.cacheSizePragma !== -requested.mainCacheKiB) {
+      throw new Error(`SQLite writer profile ${profile} did not apply its cache size for ${benchmarkPhase}.`);
+    }
+    if (requested.mmapSizeBytes !== undefined && connection.mmapSizeBytes !== requested.mmapSizeBytes) {
+      throw new Error(`SQLite writer profile ${profile} did not apply its mmap size for ${benchmarkPhase}.`);
+    }
+    if (
+      requested.walAutoCheckpointPages !== undefined &&
+      connection.walAutoCheckpointPages !== requested.walAutoCheckpointPages
+    ) {
+      throw new Error(
+        `SQLite writer profile ${profile} did not apply its WAL checkpoint cadence for ${benchmarkPhase}.`,
+      );
+    }
+  }
+  if (requested.reconstructibleBuildSynchronous === 'normal') {
+    for (const benchmarkPhase of ['cold', 'same-overlay-reference'] as const) {
+      const phaseEvidence = evidence.filter(settings => settings.benchmarkPhase === benchmarkPhase);
+      const building = phaseEvidence.findIndex(settings => settings.phase === 'building' && settings.synchronous === 1);
+      const publication = phaseEvidence.findIndex(
+        (settings, index) => index > building && settings.phase === 'publication' && settings.synchronous === 2,
+      );
+      if (building < 0 || publication < 0) {
+        throw new Error(
+          `SQLite writer profile ${profile} did not restore FULL after NORMAL before ${benchmarkPhase} publication.`,
+        );
+      }
+    }
+  }
+}
 
 const DIRECT_PERSISTENT_ACTIVATION_STAGES = [
   'validating-input',
@@ -308,6 +412,20 @@ const benchmarkCodeGraph = Effect.scoped(
       benchmarkIdentity.checkoutId,
       benchmarkIdentity.worktreeId,
     );
+    const sqliteWriterProfile = options.sqliteWriterProfile
+      ? CODE_GRAPH_SQLITE_WRITER_PROFILES[options.sqliteWriterProfile]
+      : undefined;
+    let sqliteWriterEvidencePhase: SqliteWriterBenchmarkPhase = 'cold';
+    const sqliteWriterSettingsEvidence: SqliteWriterSettingsEvidence[] = [];
+    const sqliteWriterIndexOptions = sqliteWriterProfile
+      ? {
+          onSqliteWriterConfigured: (settings: CodeGraphSqliteWriterSettings) =>
+            Effect.sync(() => {
+              sqliteWriterSettingsEvidence.push({...settings, benchmarkPhase: sqliteWriterEvidencePhase});
+            }),
+          sqliteWriterTuning: sqliteWriterProfile.tuning,
+        }
+      : {};
     const samplerRoot = path.join(prepared.home, 'benchmark-telemetry');
     const sqliteTemporaryRoot = path.join(samplerRoot, 'sqlite-temp');
     if (largeEvidenceRun) {
@@ -337,6 +455,7 @@ const benchmarkCodeGraph = Effect.scoped(
               Effect.andThen(sampler?.mark(progress) ?? Effect.void),
               Effect.andThen(observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath)),
             ),
+          ...sqliteWriterIndexOptions,
           threadnoteHome: prepared.home,
         }),
       observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath),
@@ -454,6 +573,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const benchmarkChangedSource = semanticBenchmarkOverlay(changedPath, originalChangedSource);
     const benchmarkChangedBytes = new TextEncoder().encode(benchmarkChangedSource);
     const incrementalStoragePeak = new SqliteStoragePeakTelemetry();
+    sqliteWriterEvidencePhase = 'one-file-reindex';
     const incrementalPhase = yield* Effect.acquireUseRelease(
       applyBenchmarkOverlay(fs, changedPath, originalChangedBytes, benchmarkChangedBytes),
       () =>
@@ -479,6 +599,7 @@ const benchmarkCodeGraph = Effect.scoped(
                     Effect.andThen(sampler?.mark(progress) ?? Effect.void),
                     Effect.andThen(observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath)),
                   ),
+                ...sqliteWriterIndexOptions,
                 threadnoteHome: prepared.home,
               }),
             observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath),
@@ -591,6 +712,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const sameOverlaySqliteTemporaryRoot = path.join(sameOverlaySamplerRoot, 'sqlite-temp');
     if (largeEvidenceRun) yield* fs.makeDirectory(sameOverlaySqliteTemporaryRoot, {recursive: true});
     const sameOverlayReferenceStoragePeak = new SqliteStoragePeakTelemetry();
+    sqliteWriterEvidencePhase = 'same-overlay-reference';
     const previousSqliteTemporaryRoot = process.env.SQLITE_TMPDIR;
     const sameOverlayReference = yield* Effect.sync(() => {
       if (largeEvidenceRun) process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot;
@@ -633,6 +755,7 @@ const benchmarkCodeGraph = Effect.scoped(
                           ),
                         ),
                       ),
+                    ...sqliteWriterIndexOptions,
                     threadnoteHome: sameOverlayReferenceHome,
                   }),
                 observeSqliteStoragePeak(fs, sameOverlayReferenceStoragePeak, sameOverlayReferenceLayout.databasePath),
@@ -818,6 +941,9 @@ const benchmarkCodeGraph = Effect.scoped(
       environment: system.environment(),
       hardwareConcurrency: navigator.hardwareConcurrency,
     });
+    if (options.sqliteWriterProfile) {
+      validateSqliteWriterSettingsEvidence(options.sqliteWriterProfile, sqliteWriterSettingsEvidence);
+    }
     yield* runCheckpoint?.mark('finalizing-artifact') ?? Effect.void;
     const artifact: BenchmarkArtifactV1 = {
       createdAt: new Date().toISOString(),
@@ -1001,7 +1127,7 @@ const benchmarkCodeGraph = Effect.scoped(
           'final bytes plus SQLite main/WAL/SHM peaks sampled at progress boundaries; vectors, sidecar, and unclassified bytes separate',
         incrementalIndexSamples: 1,
         materializationMeasurement:
-          'aggregate phase duration, process CPU, boundary RSS, and row counts; no repository paths or source content',
+          'aggregate phase duration plus stage-attributed SQLite wall time, process CPU, boundary RSS, and row counts; no repository paths or source content',
         mcpOperationCount: mcpOperationMatrix.length,
         mcpOperationMeasurement:
           'query, node, neighbors, explain, impact, and path latency plus compact text/structured byte counts; no graph content retained',
@@ -1043,6 +1169,14 @@ const benchmarkCodeGraph = Effect.scoped(
         sqliteTemporaryStorageMeasurement:
           'SQLite TEMP database allocated-page high-water from materialization progress; excludes rollback journals and subjournals and remains separate from the filesystem sampler',
         sqliteVersion,
+        ...(options.sqliteWriterProfile && sqliteWriterProfile
+          ? {
+              sqliteWriterEffectiveSettings: JSON.stringify(sqliteWriterSettingsEvidence),
+              sqliteWriterProfile: options.sqliteWriterProfile,
+              sqliteWriterProfileDescription: sqliteWriterProfile.description,
+              sqliteWriterRequestedTuning: JSON.stringify(sqliteWriterProfile.tuning),
+            }
+          : {}),
         structuralGraphDigestCold: coldStructuralGraphDigest,
         structuralGraphDigestIncremental: incrementalStructuralGraphDigest,
         structuralGraphDigestSameOverlayReference: sameOverlayReferenceStructuralGraphDigest,
@@ -1297,6 +1431,7 @@ export class IndexPhaseTimeline {
   #maximumProgressHeartbeatGapMilliseconds = 0;
   #materializationDeduplicatedEdges = 0;
   #materializationDeduplicatedReferences = 0;
+  readonly #materializationStageMilliseconds = new Map<(typeof MATERIALIZATION_STAGES)[number], number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
   #sqliteDurableDatabaseHighWaterBytes = 0;
   #sqliteTemporaryDatabaseHighWaterBytes = 0;
@@ -1330,6 +1465,15 @@ export class IndexPhaseTimeline {
           this.#materializationDeduplicatedReferences,
           progress.metrics?.rows?.deduplicatedReferences ?? 0,
         );
+        for (const stage of MATERIALIZATION_STAGES) {
+          const milliseconds = progress.metrics?.stageMilliseconds?.[stage];
+          if (milliseconds !== undefined) {
+            this.#materializationStageMilliseconds.set(
+              stage,
+              Math.max(this.#materializationStageMilliseconds.get(stage) ?? 0, milliseconds),
+            );
+          }
+        }
         if (progress.metrics?.storage) {
           this.#materializationStorage = {
             ...(progress.metrics.cachedFactBytesTotal === undefined
@@ -1448,6 +1592,10 @@ export class IndexPhaseTimeline {
 
   materializationStorage(): IndexMaterializationStorageEvidence | undefined {
     return this.#materializationStorage;
+  }
+
+  materializationStageMilliseconds(stage: (typeof MATERIALIZATION_STAGES)[number]): number | undefined {
+    return this.#materializationStageMilliseconds.get(stage);
   }
 
   sqliteTemporaryDatabaseHighWaterBytes(): number {
@@ -1616,6 +1764,11 @@ function indexPhaseMeasurements(
     benchmarkMeasurement(`${prefix}-materialization-deduplicated-reference-rows-n1`, 'count', [
       timeline.materializationDeduplicatedReferences(),
     ]),
+    ...MATERIALIZATION_STAGES.map(stage =>
+      benchmarkMeasurement(`${prefix}-materialization-stage-${stage}-n1`, 'milliseconds', [
+        timeline.materializationStageMilliseconds(stage) ?? 0,
+      ]),
+    ),
     ...materializationStorageMeasurements(prefix, timeline.materializationStorage()),
     ...activationStageMeasurements(prefix, timeline),
   ];
@@ -3088,6 +3241,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly retainHomes: boolean;
   readonly samples: number;
   readonly scaleSymbols?: number;
+  readonly sqliteWriterProfile?: CodeGraphSqliteWriterProfile;
   readonly warmups: number;
   readonly failOnBudget: boolean;
   readonly vectors: boolean;
@@ -3113,6 +3267,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let retainHomes = false;
   let samples = 25;
   let scaleSymbols: number | undefined;
+  let sqliteWriterProfile: CodeGraphSqliteWriterProfile | undefined;
   let warmups = 5;
   let failOnBudget = false;
   let vectors = false;
@@ -3139,7 +3294,13 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--profile-symbols') profileSymbols = integer(args[++index], argument, 2);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
-    else if (argument === '--warmups') warmups = integer(args[++index], argument, 0);
+    else if (argument === '--sqlite-writer-profile') {
+      const value = required(args[++index], argument);
+      if (!(value in CODE_GRAPH_SQLITE_WRITER_PROFILES)) {
+        throw new Error(`Unknown SQLite writer benchmark profile: ${value}`);
+      }
+      sqliteWriterProfile = value as CodeGraphSqliteWriterProfile;
+    } else if (argument === '--warmups') warmups = integer(args[++index], argument, 0);
     else if (argument === '--fail-on-budget') failOnBudget = true;
     else if (argument === '--preflight') preflight = true;
     else if (argument === '--retain-homes') retainHomes = true;
@@ -3163,6 +3324,9 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     throw new Error(
       'The opt-in production-large profile has no portable latency budget; retain and review its artifact.',
     );
+  }
+  if (sqliteWriterProfile !== undefined && sqliteWriterProfile !== 'current' && failOnBudget) {
+    throw new Error('SQLite writer candidate runs retain comparison evidence and cannot use production budgets.');
   }
   const legacyControlValues = [queryText, expectedPath, expectedLanguage].filter(value => value !== undefined).length;
   if (structuredControls.length > 0 && legacyControlValues > 0) {
@@ -3229,6 +3393,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     retainHomes,
     samples,
     scaleSymbols,
+    sqliteWriterProfile,
     vectors,
     warmups,
   };

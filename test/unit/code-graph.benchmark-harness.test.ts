@@ -5,6 +5,7 @@ import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
+  CODE_GRAPH_SQLITE_WRITER_PROFILES,
   decodeBenchmarkSource,
   externalBenchmarkPlatformSupported,
   measureBenchmarkIndex,
@@ -13,6 +14,7 @@ import {
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
+  validateSqliteWriterSettingsEvidence,
 } from '../../scripts/benchmark-code-graph.js';
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -199,6 +201,53 @@ describe('code graph external benchmark harness', () => {
       referenceHomePath: '/tmp/reference-home',
       retainHomes: true,
     });
+  });
+
+  it('selects explicit SQLite writer candidates without exposing production environment knobs', () => {
+    for (const profile of Object.keys(CODE_GRAPH_SQLITE_WRITER_PROFILES)) {
+      expect(parseCodeGraphBenchmarkArguments(['--sqlite-writer-profile', profile]).sqliteWriterProfile).toBe(profile);
+    }
+    expect(() => parseCodeGraphBenchmarkArguments(['--sqlite-writer-profile', 'unknown'])).toThrow(
+      'Unknown SQLite writer benchmark profile',
+    );
+    expect(() =>
+      parseCodeGraphBenchmarkArguments(['--sqlite-writer-profile', 'cache-256m', '--fail-on-budget']),
+    ).toThrow('cannot use production budgets');
+  });
+
+  it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {
+    const connection = (benchmarkPhase: 'cold' | 'one-file-reindex' | 'same-overlay-reference') => ({
+      benchmarkPhase,
+      cacheSizePragma: -64 * 1_024,
+      journalMode: 'wal',
+      mmapSizeBytes: 0,
+      phase: 'connection' as const,
+      synchronous: 2,
+      walAutoCheckpointPages: 1_000,
+    });
+    const evidence = [
+      connection('cold'),
+      {...connection('cold'), phase: 'building' as const, synchronous: 1},
+      {...connection('cold'), phase: 'publication' as const},
+      connection('one-file-reindex'),
+      connection('same-overlay-reference'),
+      {...connection('same-overlay-reference'), phase: 'building' as const, synchronous: 1},
+      {...connection('same-overlay-reference'), phase: 'publication' as const},
+    ];
+
+    expect(() => validateSqliteWriterSettingsEvidence('building-normal-full-publication', evidence)).not.toThrow();
+    expect(() =>
+      validateSqliteWriterSettingsEvidence(
+        'building-normal-full-publication',
+        evidence.filter(settings => settings.phase !== 'publication'),
+      ),
+    ).toThrow('did not restore FULL after NORMAL');
+    expect(() =>
+      validateSqliteWriterSettingsEvidence('current', [
+        ...evidence.filter(settings => settings.phase === 'connection').slice(0, 2),
+        {...connection('same-overlay-reference'), walAutoCheckpointPages: 8_192},
+      ]),
+    ).toThrow('did not apply its WAL checkpoint cadence');
   });
 
   it('rejects retention without two explicit fresh home paths', () => {

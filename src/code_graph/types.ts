@@ -170,16 +170,20 @@ export interface CodeGraphMaterializationActivity {
   readonly factsBytes?: number;
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytes: number;
+  /** Batch-local cumulative wall time attributed to this bounded stage. */
+  readonly stageElapsedMilliseconds?: number;
   readonly stage:
     | 'attributing'
     | 'committing'
     | 'loading-cache'
     | 'preparing-rows'
+    | 'writing-analysis'
     | 'writing-candidates'
     | 'writing-edges'
     | 'writing-facts'
     | 'writing-lookups'
     | 'writing-references'
+    | 'writing-receipt'
     | 'writing-symbols'
     | 'writing-terms';
   readonly transactionMilliseconds?: number;
@@ -199,6 +203,8 @@ export interface CodeGraphMaterializationMetrics {
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytesCompleted: number;
   readonly sourceBytesTotal: number;
+  /** Cumulative wall time attributed to privacy-safe materialization stages. */
+  readonly stageMilliseconds?: Readonly<Partial<Record<CodeGraphMaterializationActivity['stage'], number>>>;
   readonly storage?: {
     /** Legacy combined value, present only when durable and TEMP data share one filesystem. */
     readonly availableBytes?: number;
