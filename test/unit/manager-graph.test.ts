@@ -1,3 +1,5 @@
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
 import {
   cacheGraphNodeDetail,
@@ -23,6 +25,7 @@ import {
   graphWaiterCountForBuild,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
+  GraphWorkspace,
   managerGraphDebouncedQueryCandidate,
   managerGraphQueryCandidate,
   mergeGraphRepositoryGroups,
@@ -34,6 +37,24 @@ import {
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
+  it('renders the graph workspace before its first catalog response', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(GraphWorkspace, {
+          loadAnalysis: neverResolves,
+          loadCatalogPage: neverResolves,
+          loadGraph: neverResolves,
+          loadNodeDetail: neverResolves,
+          loadQuery: neverResolves,
+          loadViewsPage: neverResolves,
+          onRefresh: () => undefined,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
   it('uses catalog fallbacks before either a view or continuation exists', () => {
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'projectHasMore', false)).toBe(false);
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'workspaceHasMore', true)).toBe(true);
