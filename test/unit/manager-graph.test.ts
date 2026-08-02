@@ -57,6 +57,35 @@ describe('manager graph focus', () => {
         {...graphBuildStatus('completed'), result: {snapshotId: 'snapshot-known-snapshot'}},
       ]),
     ).toBe(false);
+    const truncatedCatalog = {
+      ...catalog,
+      repositories: [{...catalog.repositories[0]!, viewsTruncated: true}],
+    };
+    expect(
+      graphStatusRequiresCatalogRefresh(truncatedCatalog, [
+        {...graphBuildStatus('completed'), result: {snapshotId: 'hidden-snapshot'}},
+      ]),
+    ).toBe(false);
+    expect(
+      graphStatusRequiresCatalogRefresh(
+        {
+          ...truncatedCatalog,
+          repositories: [
+            {
+              ...truncatedCatalog.repositories[0]!,
+              views: [
+                {
+                  ...truncatedCatalog.repositories[0]!.views[0]!,
+                  checkoutId: 'checkout',
+                  worktreeId: 'worktree',
+                },
+              ],
+            },
+          ],
+        },
+        [{...graphBuildStatus('completed'), result: {snapshotId: 'promoted-snapshot'}}],
+      ),
+    ).toBe(true);
 
     const owner = {...graphBuildStatus('running'), request: {key: 'request-a'}};
     const matching = {...graphBuildStatus('queued'), buildId: 'waiter-a', request: {key: 'request-a'}};
@@ -334,6 +363,38 @@ describe('manager graph focus', () => {
       ],
     };
     expect(mergeGraphRepositoryGroups([refreshed], [stalePage])[0]?.views[0]?.projects).toEqual([]);
+
+    const promotedPage = {
+      ...refreshed,
+      views: [
+        {
+          ...refreshed.views[0]!,
+          activatedAt: '2026-08-02T12:00:00.000Z',
+          projects: [project],
+          snapshot: {
+            ...refreshed.views[0]!.snapshot,
+            completedAt: '2026-08-02T11:59:00.000Z',
+            id: 'promoted-snapshot',
+          },
+        },
+      ],
+    };
+    const previousPage = {
+      ...refreshed,
+      views: [
+        {
+          ...refreshed.views[0]!,
+          activatedAt: '2026-08-01T12:00:00.000Z',
+          snapshot: {...refreshed.views[0]!.snapshot, completedAt: '2026-08-01T11:59:00.000Z'},
+        },
+      ],
+    };
+    expect(mergeGraphRepositoryGroups([previousPage], [promotedPage])[0]?.views[0]?.snapshot.id).toBe(
+      'promoted-snapshot',
+    );
+    expect(mergeGraphRepositoryGroups([promotedPage], [previousPage])[0]?.views[0]?.snapshot.id).toBe(
+      'promoted-snapshot',
+    );
   });
 
   it('keeps unfiltered catalog cursors independent from merged search hits', () => {

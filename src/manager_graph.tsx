@@ -305,13 +305,21 @@ export function graphStatusRequiresCatalogRefresh(
   catalog: GraphCatalog | undefined,
   builds: readonly GraphBuildStatus[],
 ): boolean {
+  if (!catalog) return builds.some(build => build.state === 'completed' && build.result !== undefined);
   const indexedSnapshotIds = new Set(
-    catalog?.repositories.flatMap(repository => repository.views.map(view => view.snapshot.id)) ?? [],
+    catalog.repositories.flatMap(repository => repository.views.map(view => view.snapshot.id)),
   );
-  return builds.some(
-    build =>
-      build.state === 'completed' && build.result !== undefined && !indexedSnapshotIds.has(build.result.snapshotId),
-  );
+  return builds.some(build => {
+    if (build.state !== 'completed' || build.result === undefined || indexedSnapshotIds.has(build.result.snapshotId)) {
+      return false;
+    }
+    const repository = catalog.repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
+    if (!repository) return true;
+    const visibleWorktree = repository.views.some(
+      view => view.checkoutId === build.identity.checkoutId && view.worktreeId === build.identity.worktreeId,
+    );
+    return visibleWorktree || !repository.viewsTruncated;
+  });
 }
 
 export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: readonly GraphBuildStatus[]): number {
@@ -402,7 +410,11 @@ export function graphCatalogPageOffsets(input: {
 }
 
 function mergeGraphRepository(current: GraphRepository, addition: GraphRepository): GraphRepository {
-  if (current.snapshot.id !== addition.snapshot.id) return current;
+  if (current.snapshot.id !== addition.snapshot.id) {
+    const currentTime = Date.parse(current.activatedAt ?? current.snapshot.completedAt ?? '') || 0;
+    const additionTime = Date.parse(addition.activatedAt ?? addition.snapshot.completedAt ?? '') || 0;
+    return additionTime > currentTime ? addition : current;
+  }
   const projects = new Map(current.projects.map(project => [project.id, project]));
   for (const project of addition.projects) projects.set(project.id, project);
   const workspaces = new Map(current.workspaces.map(workspace => [workspace.id, workspace]));
@@ -1435,7 +1447,7 @@ export function GraphWorkspace(props: {
     setCatalogContinuation(undefined);
     setCatalogError('');
     setCatalogLoading(false);
-  }, [repository?.id, repository?.snapshot.id]);
+  }, [baseCatalogIdentity, repository?.id, repository?.snapshot.id]);
 
   return (
     <section className="graph-workspace">
@@ -1795,7 +1807,10 @@ export function GraphWorkspace(props: {
             <div className="graph-empty" role="status">
               <span className="empty-orbit" aria-hidden="true" />
               <h3>No code graph matches</h3>
-              <p>No concept, path, module, or symbol matched “{activeQuery}” in this snapshot.</p>
+              <p>
+                No concept, path, module, or symbol was returned for “{activeQuery}” by this bounded snapshot search.
+                Review any partial-result warning below or refine the query.
+              </p>
               <button className="quiet-button" onClick={clearCodeQuery} type="button">
                 Return to graph
               </button>

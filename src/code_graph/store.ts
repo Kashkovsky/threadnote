@@ -11523,12 +11523,13 @@ function visualizationScopeIndex(scope: CodeGraphVisualizationScope): string {
     case 'all':
       return ' INDEXED BY symbols_export_order';
     case 'package':
-      return ' INDEXED BY symbols_visualization_package_v2';
     case 'path':
-      return ' INDEXED BY symbols_visualization_path_v2';
     case 'component':
     case 'unscoped':
-      return ' INDEXED BY symbols_visualization_scope_v2';
+      // These visualization indexes were added additively within graph-v3.
+      // Let SQLite select them when present so a Manager-only session can
+      // still read an older v3 database before the next writer initializes it.
+      return '';
     case 'documentation-facet':
       return ' INDEXED BY symbols_resolution_scope';
   }

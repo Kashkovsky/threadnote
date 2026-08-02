@@ -388,6 +388,39 @@ describe('Manager logical repository and workspace catalogs', () => {
       .all(...repositoryStatement.parameters) as readonly {readonly detail: string}[];
     queryPlanDatabase.close();
     expect(repositoryPlan.some(row => row.detail.includes('symbols_export_order (snapshot_id=?)'))).toBe(true);
+
+    const previousBetaDatabase = new Database(databasePath);
+    previousBetaDatabase.run('DROP INDEX symbols_visualization_scope_v2');
+    previousBetaDatabase.run('DROP INDEX symbols_visualization_package_v2');
+    previousBetaDatabase.run('DROP INDEX symbols_visualization_path_v2');
+    previousBetaDatabase.close();
+    const previousBetaReads = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* Effect.all({
+          component: store.loadVisualizationSymbols(
+            databasePath,
+            snapshot.id,
+            {type: 'component', value: 'cgp_component_a'},
+            20,
+          ),
+          package: store.loadVisualizationSymbols(
+            databasePath,
+            snapshot.id,
+            {type: 'package', value: 'threadnote'},
+            20,
+          ),
+          path: store.loadVisualizationSymbols(databasePath, snapshot.id, {type: 'path', value: 'scripts'}, 20),
+          unscoped: store.loadVisualizationSymbols(databasePath, snapshot.id, {type: 'unscoped'}, 20),
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    expect(previousBetaReads.component.map(item => item.id)).toEqual(['symbol-a-1', 'symbol-a-2']);
+    expect(previousBetaReads.package.map(item => item.id)).toEqual(['symbol-root-ts']);
+    expect(previousBetaReads.path.map(item => item.id)).toEqual(['symbol-script']);
+    expect(previousBetaReads.unscoped.map(item => item.id)).toEqual(
+      expect.arrayContaining(['symbol-doc', 'symbol-root-ts', 'symbol-script']),
+    );
   });
 
   it('groups checkouts only by logical repository identity and defaults to the newest activation', () => {
