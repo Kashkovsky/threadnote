@@ -11091,17 +11091,31 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
   const viewOffset = boundedVisualizationCatalogOffset(options.viewOffset);
   const viewQuery = boundedVisualizationCatalogQuery(options.viewQuery);
   const worktrees = yield* sql.unsafe<{readonly worktree_id: string}>(
-    `SELECT COALESCE(active_snapshots.worktree_id, snapshots.worktree_id) AS worktree_id
-     FROM snapshots
-     JOIN repositories ON repositories.id = snapshots.repository_id
-     LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
-     WHERE snapshots.state = 'ready'
-       ${viewQuery.length === 0 ? '' : "AND instr(lower(repositories.display_name || ' ' || snapshots.commit_id || ' ' || COALESCE(active_snapshots.worktree_id, snapshots.worktree_id)), lower(?)) > 0"}
-     GROUP BY 1
-     ORDER BY
-       MAX(CASE WHEN active_snapshots.snapshot_id IS NULL THEN 0 ELSE 1 END) DESC,
-       MAX(COALESCE(active_snapshots.activated_at, snapshots.completed_at, snapshots.started_at)) DESC,
-       worktree_id
+    `WITH ranked_views AS (
+       SELECT
+         COALESCE(active_snapshots.worktree_id, snapshots.worktree_id) AS worktree_id,
+         repositories.display_name,
+         snapshots.commit_id,
+         CASE WHEN active_snapshots.snapshot_id IS NULL THEN 0 ELSE 1 END AS is_active,
+         COALESCE(active_snapshots.activated_at, snapshots.completed_at, snapshots.started_at) AS freshness,
+         ROW_NUMBER() OVER (
+           PARTITION BY COALESCE(active_snapshots.worktree_id, snapshots.worktree_id)
+           ORDER BY
+             CASE WHEN active_snapshots.snapshot_id IS NULL THEN 1 ELSE 0 END,
+             active_snapshots.activated_at DESC,
+             snapshots.completed_at DESC,
+             snapshots.id
+         ) AS view_rank
+       FROM snapshots
+       JOIN repositories ON repositories.id = snapshots.repository_id
+       LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
+       WHERE snapshots.state = 'ready'
+     )
+     SELECT worktree_id
+     FROM ranked_views
+     WHERE view_rank = 1
+       ${viewQuery.length === 0 ? '' : "AND instr(lower(display_name || ' ' || commit_id || ' ' || worktree_id), lower(?)) > 0"}
+     ORDER BY is_active DESC, freshness DESC, worktree_id
      LIMIT ? OFFSET ?`,
     [...(viewQuery.length === 0 ? [] : [viewQuery]), viewLimit, viewOffset],
   );

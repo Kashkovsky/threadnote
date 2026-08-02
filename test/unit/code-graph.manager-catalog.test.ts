@@ -741,6 +741,23 @@ describe('Manager logical repository and workspace catalogs', () => {
           null,
         );
       }
+      insertSnapshot.run(
+        'cgsn_historical_view',
+        identity.repositoryId,
+        '0'.repeat(62) + '26',
+        'deadbeef'.repeat(5),
+        null,
+        'workspace-test',
+        0,
+        null,
+        'ready',
+        0,
+        0,
+        0,
+        '2020-08-01T13:00:00.000Z',
+        '2020-08-01T13:00:01.000Z',
+        null,
+      );
       viewDatabase
         .query(
           "INSERT INTO snapshot_extractor_generations (snapshot_id, generation) SELECT ?, CAST(value AS INTEGER) FROM schema_metadata WHERE key = 'minimum_extractor_generation'",
@@ -751,7 +768,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         .run('0'.repeat(62) + '27', 'cgsn_view_39', '2099-08-02T13:00:02.000Z');
     })();
     viewDatabase.close();
-    const [firstViews, continuedViews, searchedViews] = await Effect.runPromise(
+    const [firstViews, continuedViews, searchedViews, historicalViews] = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         return yield* Effect.all(
@@ -761,6 +778,10 @@ describe('Manager logical repository and workspace catalogs', () => {
             store.loadVisualizationCatalogs(databasePath, 'deferred', {
               viewLimit: 33,
               viewQuery: Option.some('0000000000000000000000000000000000000027'),
+            }),
+            store.loadVisualizationCatalogs(databasePath, 'deferred', {
+              viewLimit: 33,
+              viewQuery: Option.some('deadbeef'),
             }),
           ],
           {concurrency: 1},
@@ -772,6 +793,7 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(continuedViews.length).toBeGreaterThan(0);
     expect(new Set([...firstViews, ...continuedViews].map(view => view.viewWorktreeId)).size).toBeGreaterThan(33);
     expect(searchedViews.map(view => view.viewWorktreeId)).toEqual(['0'.repeat(62) + '27']);
+    expect(historicalViews).toEqual([]);
   });
 
   it('surfaces an unreadable database without exposing its local path', async () => {

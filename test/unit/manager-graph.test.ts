@@ -5,6 +5,7 @@ import {
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
   graphCatalogPageOffsets,
+  graphCompletedBuildResultIdentity,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
@@ -52,19 +53,33 @@ describe('manager graph focus', () => {
         {...graphBuildStatus('completed'), result: {snapshotId: 'new-snapshot'}},
       ]),
     ).toBe(true);
+    const visibleBuild = {
+      ...graphBuildStatus('completed'),
+      identity: {
+        ...graphBuildStatus('completed').identity,
+        checkoutId: 'known-snapshot',
+        worktreeId: 'known-snapshot',
+      },
+      result: {snapshotId: 'snapshot-known-snapshot'},
+    };
+    expect(graphStatusRequiresCatalogRefresh(catalog, [visibleBuild])).toBe(false);
     expect(
       graphStatusRequiresCatalogRefresh(catalog, [
         {...graphBuildStatus('completed'), result: {snapshotId: 'snapshot-known-snapshot'}},
       ]),
-    ).toBe(false);
+    ).toBe(true);
     const truncatedCatalog = {
       ...catalog,
       repositories: [{...catalog.repositories[0]!, viewsTruncated: true}],
     };
+    const hiddenBuild = {...graphBuildStatus('completed'), result: {snapshotId: 'hidden-snapshot'}};
+    expect(graphStatusRequiresCatalogRefresh(truncatedCatalog, [hiddenBuild])).toBe(true);
     expect(
-      graphStatusRequiresCatalogRefresh(truncatedCatalog, [
-        {...graphBuildStatus('completed'), result: {snapshotId: 'hidden-snapshot'}},
-      ]),
+      graphStatusRequiresCatalogRefresh(
+        truncatedCatalog,
+        [hiddenBuild],
+        new Set([graphCompletedBuildResultIdentity(hiddenBuild)!]),
+      ),
     ).toBe(false);
     expect(
       graphStatusRequiresCatalogRefresh(

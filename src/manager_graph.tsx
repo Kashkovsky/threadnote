@@ -301,24 +301,36 @@ export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): numbe
   return builds.some(build => build.state === 'queued' || build.state === 'running') ? 1_000 : 15_000;
 }
 
+export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): string | undefined {
+  return build.state === 'completed' && build.result !== undefined
+    ? `${build.buildId}:${build.result.snapshotId}`
+    : undefined;
+}
+
 export function graphStatusRequiresCatalogRefresh(
   catalog: GraphCatalog | undefined,
   builds: readonly GraphBuildStatus[],
+  acknowledgedResults: ReadonlySet<string> = new Set(),
 ): boolean {
-  if (!catalog) return builds.some(build => build.state === 'completed' && build.result !== undefined);
-  const indexedSnapshotIds = new Set(
-    catalog.repositories.flatMap(repository => repository.views.map(view => view.snapshot.id)),
-  );
+  if (!catalog) {
+    return builds.some(build => {
+      const identity = graphCompletedBuildResultIdentity(build);
+      return identity !== undefined && !acknowledgedResults.has(identity);
+    });
+  }
   return builds.some(build => {
-    if (build.state !== 'completed' || build.result === undefined || indexedSnapshotIds.has(build.result.snapshotId)) {
-      return false;
-    }
-    const repository = catalog.repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
-    if (!repository) return true;
-    const visibleWorktree = repository.views.some(
-      view => view.checkoutId === build.identity.checkoutId && view.worktreeId === build.identity.worktreeId,
+    const identity = graphCompletedBuildResultIdentity(build);
+    const resultVisible = catalog.repositories.some(
+      repository =>
+        repository.repositoryId === build.identity.repositoryId &&
+        repository.views.some(
+          view =>
+            view.checkoutId === build.identity.checkoutId &&
+            view.worktreeId === build.identity.worktreeId &&
+            view.snapshot.id === build.result?.snapshotId,
+        ),
     );
-    return visibleWorktree || !repository.viewsTruncated;
+    return identity !== undefined && !acknowledgedResults.has(identity) && !resultVisible;
   });
 }
 

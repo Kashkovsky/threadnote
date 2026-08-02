@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   GraphWorkspace,
+  graphCompletedBuildResultIdentity,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
@@ -223,18 +224,24 @@ function App(): React.ReactElement {
     let cancelled = false;
     let timer: number | undefined;
     let observedActiveBuild = false;
+    const acknowledgedCompletedResults = new Set<string>();
     const poll = async (): Promise<void> => {
       try {
         const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>('/api/graphs/status');
         if (cancelled) return;
         const active = status.builds.some(build => build.state === 'queued' || build.state === 'running');
         const refreshCatalog =
-          (observedActiveBuild && !active) || graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds);
+          (observedActiveBuild && !active) ||
+          graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults);
         if (refreshCatalog) {
           const refreshed = await api<GraphCatalog>('/api/graphs');
           if (cancelled) return;
           graphCatalogRef.current = refreshed;
           setGraphCatalog(refreshed);
+          for (const build of status.builds) {
+            const identity = graphCompletedBuildResultIdentity(build);
+            if (identity) acknowledgedCompletedResults.add(identity);
+          }
         } else if (graphCatalogRef.current) {
           const merged = {...graphCatalogRef.current, ...status};
           graphCatalogRef.current = merged;
