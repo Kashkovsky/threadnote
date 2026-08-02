@@ -667,6 +667,46 @@ describe('post-update validation', () => {
     expect(outputs).toEqual(['', '', '', '']);
   });
 
+  it('keeps the shipped beta migration catalog silent for a fresh current home', async () => {
+    const outputs = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-catalog-fresh-'});
+          const home = path.join(temporaryRoot, '.threadnote');
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () => Effect.die('fresh homes must not run shipped migrations'),
+          });
+          const outputs: string[] = [];
+          for (const interactive of [false, true]) {
+            const system = SystemInfo.of({
+              ...baseSystem,
+              homeDirectory: temporaryRoot,
+              stdinIsTTY: interactive,
+              stdoutIsTTY: interactive,
+            });
+            const captured = yield* captureConsole(
+              runPostUpdate(runtimeConfig(home), {
+                fromVersion: '4.0.0-beta.29',
+                toVersion: '4.0.0-beta.30',
+              }).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+            outputs.push(captured.output);
+          }
+          return outputs;
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(outputs).toEqual(['', '']);
+  });
+
   it('does not announce an action when migration evidence disappears at the locked recheck', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -679,6 +719,7 @@ describe('post-update validation', () => {
           const home = path.join(temporaryRoot, '.threadnote');
           const legacyLayout = path.join(home, 'data', 'viking');
           yield* fs.makeDirectory(legacyLayout, {recursive: true});
+          yield* fs.writeFileString(path.join(legacyLayout, 'memory.md'), '# Material beta memory\n');
           yield* writePostUpdateFixture(fs, path, fixtureRoot, [
             fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
           ]);
@@ -795,6 +836,72 @@ describe('post-update validation', () => {
     expect(result.noOpFailure).toContain('filesystem requirements remain pending');
     expect(result.first).toContain('Post-update actions are available.');
     expect(result.second).toBe('');
+  });
+
+  it('keeps authoritative home recovery eligible after its introduction version until it completes', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const crypto = yield* Crypto.Crypto;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-deferred-home-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          const betaMemory = path.join(home, 'data', 'viking', 'local', 'memory.md');
+          yield* fs.makeDirectory(path.dirname(betaMemory), {recursive: true});
+          yield* fs.writeFileString(betaMemory, '# Deferred beta memory\n');
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const system = SystemInfo.of({
+            ...baseSystem,
+            homeDirectory: temporaryRoot,
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+          let executions = 0;
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () =>
+              Effect.gen(function* () {
+                executions += 1;
+                yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(
+                  Effect.provideService(Crypto.Crypto, crypto),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, system),
+                );
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }).pipe(Effect.orDie),
+          });
+          const run = () =>
+            captureConsole(
+              runPostUpdate(runtimeConfig(home), {
+                fromVersion: '4.0.0',
+                toVersion: '4.0.1',
+                yes: true,
+              }).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+          const first = yield* run();
+          const second = yield* run();
+          return {executions, first: first.output, second: second.output};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      executions: 1,
+      first: expect.stringContaining('Post-update actions are available.'),
+      second: '',
+    });
   });
 
   it('recovers beta data after an older repair already wrote the current layout marker', async () => {

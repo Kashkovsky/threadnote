@@ -894,7 +894,10 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
     if (handled.has(migration.id) && !hasAuthoritativeHomeRequirements(migration)) {
       continue;
     }
-    if (compareVersions(options.fromVersion, migration.introducedIn) >= 0) {
+    if (
+      compareVersions(options.fromVersion, migration.introducedIn) >= 0 &&
+      !hasAuthoritativeHomeRequirements(migration)
+    ) {
       continue;
     }
     if (!postUpdateMigrationReached(migration, options.fromVersion, options.toVersion)) {

@@ -80,7 +80,7 @@ export interface CodeGraphRepairCompletion {
 export interface CodeGraphMaintenanceProgress {
   readonly current: number;
   readonly phase: 'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'deferred' | 'discarding';
-  readonly reason?: 'active-build' | 'deep-check-required';
+  readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use';
   readonly snapshots?: number;
   readonly total: number;
 }
@@ -357,7 +357,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     // Never discard their ready snapshots as if the canonical graph
                     // rows were corrupt merely because this maintenance pass is
                     // deliberately read-only while holding the checkout gate.
-                    return 'deep-check-required' as const;
+                    return 'schema-upgrade-on-use' as const;
                   }
                   if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
                     return deep ? ('discard' as const) : ('deep-check-required' as const);

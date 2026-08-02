@@ -7,6 +7,7 @@ import {
   THREADNOTE_STORAGE_LAYOUT_VERSION,
 } from '../storage/layout.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
+import {hasBoundedMigrationTreeContent} from './evidence.js';
 
 export const STORAGE_LAYOUT_MIGRATION_ID = 'threadnote-storage-layout-v2';
 const STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION = 1 as const;
@@ -67,8 +68,9 @@ export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayou
   yield* assertLegacyStorageAncestors(fs, path, home);
   const legacyRoot = path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
+  const hasMaterialLegacyRoot = hasLegacyRoot && (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot));
   const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
-  if (hasLegacyRoot || receipt?.status === 'pending') return true;
+  if (hasMaterialLegacyRoot || receipt?.status === 'pending') return true;
 
   const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
   if (currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION) return false;
@@ -91,21 +93,22 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   const dataRoot = path.join(home, 'data');
   const legacyRoot = path.join(dataRoot, LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
+  const hasMaterialLegacyRoot = hasLegacyRoot && (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot));
   const receiptPath = path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH);
   const existingReceipt = yield* readMigrationReceipt(fs, receiptPath);
   const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
   if (
     currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION &&
-    !hasLegacyRoot &&
+    !hasMaterialLegacyRoot &&
     existingReceipt?.status !== 'pending'
   ) {
     return {accounts: 0, action: 'already_current'} satisfies StorageLayoutMigrationResult;
   }
 
-  if (!hasLegacyRoot && !existingReceipt) {
+  if (!hasMaterialLegacyRoot && !existingReceipt) {
     return {accounts: 0, action: 'no_legacy_layout'} satisfies StorageLayoutMigrationResult;
   }
-  if (hasLegacyRoot && existingReceipt?.status === 'completed') {
+  if (hasMaterialLegacyRoot && existingReceipt?.status === 'completed') {
     return yield* new StorageLayoutMigrationConflict({
       message: 'A completed storage migration receipt conflicts with a remaining legacy canonical-store directory.',
       path: legacyRoot,

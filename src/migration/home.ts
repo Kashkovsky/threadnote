@@ -10,6 +10,7 @@ import {
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withSharedRepositoryHomeLock} from '../effect/share_lock.js';
+import {hasBoundedMigrationTreeContent} from './evidence.js';
 import {
   isThreadnoteStorageLayoutMigrationPending,
   migrateThreadnoteStorageLayout,
@@ -367,7 +368,17 @@ function hasMaterialLegacyHomeContent(
     }
     for (const candidate of evidence) {
       if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) return true;
-      if (yield* fs.exists(candidate)) return true;
+      if (!(yield* fs.exists(candidate))) continue;
+      const info = yield* fs.stat(candidate).pipe(Effect.option);
+      if (Option.isNone(info)) return true;
+      if (info.value.type !== 'Directory') return true;
+      if (
+        yield* hasBoundedMigrationTreeContent(fs, path, candidate, entry =>
+          shouldIncludeLegacyPath(path.relative(legacyHome, entry)),
+        )
+      ) {
+        return true;
+      }
     }
     return yield* isLegacyLocalModelMigrationPending({home: legacyHome});
   });

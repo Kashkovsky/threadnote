@@ -137,11 +137,21 @@ describe('bounded code graph maintenance', () => {
       interrupted.close(false);
     }
 
+    const progress: string[] = [];
     const doctorBefore = await runEffect(codeGraphDoctorCheck(home));
-    const repair = await runEffect(repairCodeGraphIndexes(home, false, undefined, undefined, {mode: 'deep'}));
+    const repair = await runEffect(
+      repairCodeGraphIndexes(
+        home,
+        false,
+        state => Effect.sync(() => progress.push(`${state.phase}:${state.reason ?? 'none'}`)),
+        undefined,
+        {mode: 'deep'},
+      ),
+    );
 
     expect(doctorBefore).toMatchObject({status: 'fail'});
     expect(repair).toMatchObject({databases: 1, deferredDatabases: 1, discarded: 0});
+    expect(progress).toEqual(['checking:none', 'deferred:schema-upgrade-on-use']);
     await expect(Bun.file(databasePath).exists()).resolves.toBe(true);
 
     await runEffect(

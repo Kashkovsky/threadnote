@@ -102,40 +102,43 @@ describe('vector index generations', () => {
     }
   });
 
-  it('recreates an incompatible vector schema as a disposable derived index', async () => {
-    const home = await mkdtemp('threadnote-vector-schema-');
-    const candidates = [{text: '# Alpha\n\nSchema recovery.', uri: 'threadnote://resources/repos/a.md'}];
-    try {
-      const runtimeLayer = fakeRuntimeLayer(() => 0);
-      await runEffect(
-        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
-        ),
-      );
-      const incompatible = new Database(vectorDatabasePath(home));
-      incompatible.exec('PRAGMA user_version = 999');
-      incompatible.close();
-
-      const rebuilt = await runEffect(
-        rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
-        ),
-      );
-
-      expect(rebuilt.ready).toBe(true);
-      expect(rebuilt.embeddedChunkCount).toBe(1);
-      const current = new Database(vectorDatabasePath(home), {readonly: true});
+  it.each([1, 999])(
+    'recreates vector schema version %i through the updater-facing ensure path',
+    async schemaVersion => {
+      const home = await mkdtemp('threadnote-vector-schema-');
+      const candidates = [{text: '# Alpha\n\nSchema recovery.', uri: 'threadnote://resources/repos/a.md'}];
       try {
-        expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+        const runtimeLayer = fakeRuntimeLayer(() => 0);
+        await runEffect(
+          rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+            Effect.provide(runtimeLayer),
+            Effect.provide(modelStoreLayer),
+          ),
+        );
+        const incompatible = new Database(vectorDatabasePath(home));
+        incompatible.exec(`PRAGMA user_version = ${schemaVersion}`);
+        incompatible.close();
+
+        const rebuilt = await runEffect(
+          ensureVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
+            Effect.provide(runtimeLayer),
+            Effect.provide(modelStoreLayer),
+          ),
+        );
+
+        expect(rebuilt.ready).toBe(true);
+        expect(rebuilt.embeddedChunkCount).toBe(1);
+        const current = new Database(vectorDatabasePath(home), {readonly: true});
+        try {
+          expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+        } finally {
+          current.close();
+        }
       } finally {
-        current.close();
+        await rm(home, {force: true, recursive: true});
       }
-    } finally {
-      await rm(home, {force: true, recursive: true});
-    }
-  });
+    },
+  );
 
   it.each([0, 2])('recreates a structurally malformed schema at user_version %i', async userVersion => {
     const home = await mkdtemp(`threadnote-vector-malformed-v${userVersion}-`);

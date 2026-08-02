@@ -304,6 +304,25 @@ describe('local recall index', () => {
     ]);
   });
 
+  it('rebuilds an earlier beta lexical schema from canonical documents', async () => {
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'schema.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Schema recovery\n\nearlier-beta-lexical-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    executeDatabase("UPDATE metadata SET value = '2' WHERE key = 'schema_version'");
+    clearRecallIndexMemoryCache();
+
+    const recovered = await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
+    const status = await run(recallIndexStatus(config()));
+
+    expect(recovered).toEqual([
+      expect.objectContaining({text: expect.stringContaining('earlier-beta-lexical-anchor')}),
+    ]);
+    expect(status).toMatchObject({documentCount: 1, ready: true});
+    expect(status.databasePath).toContain('/generations/');
+  });
+
   it('supports concurrent first opens without racing schema initialization', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});

@@ -12,6 +12,43 @@ import {
 } from '../../src/migration/layout.js';
 
 describe('Threadnote storage layout migration', () => {
+  it.effect('ignores empty beta layout scaffolds, including after a completed migration', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-empty-scaffold-'});
+        yield* fs.makeDirectory(path.join(home, 'data', 'viking', 'local', 'user'), {recursive: true});
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+        expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({
+          accounts: 0,
+          action: 'no_legacy_layout',
+        });
+
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+          `${JSON.stringify({
+            accounts: [],
+            id: STORAGE_LAYOUT_MIGRATION_ID,
+            sourceLayoutVersion: 1,
+            status: 'completed',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 0,
+          action: 'already_current',
+        });
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('flattens beta.1 accounts into data and records a resumable migration', () =>
     Effect.scoped(
       Effect.gen(function* () {

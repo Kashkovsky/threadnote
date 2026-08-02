@@ -39,6 +39,23 @@ describe('OpenViking home migration', () => {
         });
         expect(yield* fs.exists(targetHome)).toBe(false);
 
+        for (const directory of [
+          path.join(legacyHome, 'share', 'teams'),
+          path.join(legacyHome, 'share', 'worktrees'),
+          path.join(legacyHome, 'data', 'viking', 'local', 'memories'),
+          path.join(legacyHome, 'data', 'viking', 'local', 'resources'),
+          path.join(legacyHome, 'data', 'viking', 'local', 'user', 'tester', 'memories'),
+        ]) {
+          yield* fs.makeDirectory(directory, {recursive: true});
+        }
+        yield* fs.writeFileString(path.join(legacyHome, 'share', 'teams', '.DS_Store'), 'Finder metadata');
+        yield* fs.writeFileString(
+          path.join(legacyHome, 'data', 'viking', 'local', 'resources', '._metadata'),
+          'AppleDouble metadata',
+        );
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+
         yield* fs.makeDirectory(path.join(legacyHome, 'logs'), {recursive: true});
         yield* fs.writeFileString(path.join(legacyHome, 'logs', 'server.log'), 'runtime noise');
         yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.json'), '{}');

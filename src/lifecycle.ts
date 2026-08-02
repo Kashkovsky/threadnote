@@ -410,8 +410,11 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
     case 'cleaning-vectors':
       return `Checking temporary vector state for ${database}.`;
     case 'deferred':
-      return progress.reason === 'active-build'
-        ? `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`
+      if (progress.reason === 'active-build') {
+        return `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`;
+      }
+      return progress.reason === 'schema-upgrade-on-use'
+        ? `Deferred ${database}: the next graph query or index will transactionally repair or upgrade its persistent schema.`
         : `Deferred ${database}: run \`threadnote repair --deep\` when a full derived-store check is convenient.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;

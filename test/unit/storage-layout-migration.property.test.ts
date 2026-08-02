@@ -3,6 +3,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {Effect, FileSystem, Path} from 'effect';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
+  isThreadnoteStorageLayoutMigrationPending,
   migrateThreadnoteStorageLayout,
   STORAGE_LAYOUT_MIGRATION_ID,
   StorageLayoutMigrationConflict,
@@ -23,6 +24,13 @@ interface TreeSnapshotEntry {
 
 const accountArbitrary = FC.integer({max: 100_000, min: 0}).map(index => `account-${index}`);
 const bytesArbitrary = FC.uint8Array({maxLength: 48});
+const emptyScaffoldsArbitrary = FC.array(
+  FC.array(
+    FC.integer({max: 1_000, min: 0}).map(index => `directory-${index}`),
+    {maxLength: 6, minLength: 1},
+  ),
+  {maxLength: 20, minLength: 1},
+);
 
 const mergeableTreeArbitrary = FC.record({
   account: accountArbitrary,
@@ -42,6 +50,32 @@ const conflictingTreeArbitrary = FC.record({
 
 describe('Threadnote storage layout migration properties', () => {
   it.layer(ApplicationLayer)(layerIt => {
+    layerIt.effect.prop(
+      'ignores generated empty beta scaffolds and detects the first material file',
+      {scaffolds: emptyScaffoldsArbitrary},
+      ({scaffolds}) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-empty-property-'});
+          const legacyRoot = path.join(home, 'data', 'viking');
+          for (const segments of scaffolds) {
+            yield* fs.makeDirectory(path.join(legacyRoot, ...segments), {recursive: true});
+          }
+
+          expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+          expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({
+            accounts: 0,
+            action: 'no_legacy_layout',
+          });
+
+          const first = scaffolds[0]!;
+          yield* fs.writeFileString(path.join(legacyRoot, ...first, 'material.md'), '# Material beta data\n');
+          expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+        }),
+      {fastCheck: {numRuns: 20}, timeout: 30_000},
+    );
+
     layerIt.effect.prop(
       'dry-runs without writes, merges byte-exact trees, and applies idempotently',
       {tree: mergeableTreeArbitrary},
