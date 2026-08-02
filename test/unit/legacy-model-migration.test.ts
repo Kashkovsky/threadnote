@@ -3,7 +3,7 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {migrateLegacyLocalModels} from '../../src/migration/models.js';
+import {isLegacyLocalModelMigrationPending, migrateLegacyLocalModels} from '../../src/migration/models.js';
 import type {LocalModelManifest} from '../../src/models/catalog.js';
 import {readModelSelection} from '../../src/models/selection.js';
 
@@ -37,6 +37,7 @@ describe('legacy local model migration', () => {
         yield* fs.makeDirectory(path.dirname(source), {recursive: true});
         yield* fs.writeFile(source, modelBytes);
 
+        expect(yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]})).toBe(true);
         expect(yield* migrateLegacyLocalModels({home, manifests: [manifest]})).toEqual({
           action: 'dry_run',
           models: [manifest.id],
@@ -49,6 +50,7 @@ describe('legacy local model migration', () => {
         const target = path.join(home, 'models', 'generation', manifest.id, `${manifest.sha256}.gguf`);
         expect(Array.from(yield* fs.readFile(target))).toEqual(Array.from(modelBytes));
         expect(yield* fs.exists(source)).toBe(false);
+        expect(yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]})).toBe(false);
         expect((yield* readModelSelection(home)).roles.generation).toBe(manifest.id);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),

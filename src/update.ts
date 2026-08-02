@@ -27,7 +27,7 @@ import {
   withStandaloneInstallationLock,
 } from './installations.js';
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
-import {isLegacyHomeMigrationPending} from './migration/home.js';
+import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from './migration/home.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
@@ -95,6 +95,7 @@ interface PostUpdateMigration {
   readonly introducedIn: string;
   readonly markHandledWhenSkipped?: boolean;
   readonly requiresLegacyHandoffs?: boolean;
+  readonly requiresLegacyHomeMigration?: boolean;
   readonly requiresPendingHomeMigration?: boolean;
   readonly requiresProjectNameConsolidation?: boolean;
   readonly title: string;
@@ -109,6 +110,7 @@ interface PostUpdateMigrationRunOptions {
   readonly fromVersion: string;
   readonly interactive: boolean;
   readonly markHandled: boolean;
+  readonly repairFallback?: boolean;
   readonly toVersion: string;
   readonly yes: boolean;
 }
@@ -236,7 +238,10 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     ...(options.yes === true ? ['--yes'] : []),
   ];
   if (options.postUpdate !== false) {
-    yield* runStreamingSubcommand(dryRun, threadnoteCommand, postUpdateArgs);
+    // The child announces only when it finds evidence-backed work. Keeping the
+    // wrapper quiet prevents fresh installs from looking as if a migration was
+    // offered when the post-update command intentionally produced no output.
+    yield* runStreamingSubcommand(dryRun, threadnoteCommand, postUpdateArgs, false);
   } else {
     yield* Console.log('Skipping post-update migration prompts because --no-post-update was provided.');
   }
@@ -575,33 +580,12 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
     const system = yield* SystemInfo;
     const toVersion = yield* currentPackageVersion();
     const interactive = system.stdinIsTTY && system.stdoutIsTTY;
-    const state = yield* readPostUpdateState(config);
-    const migrations = yield* applicablePostUpdateMigrations(config, {
-      fromVersion: '0.0.0',
-      handledMigrationIds: state.handledMigrationIds,
-      toVersion,
-    });
-    if (migrations.length === 0) {
-      return;
-    }
-    yield* Console.log('');
-    yield* Console.log('Repair found package post-update actions.');
-    yield* Console.log(
-      'This also covers updates launched by older Threadnote versions that only knew how to run repair.',
-    );
-    if (!interactive) {
-      yield* Console.log(
-        'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
-      );
-      yield* Console.log(
-        `Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${toVersion}`,
-      );
-    }
     yield* runApplicablePostUpdateMigrations(config, {
       dryRun: options.dryRun,
       fromVersion: '0.0.0',
       interactive,
       markHandled: true,
+      repairFallback: true,
       toVersion,
       yes: false,
     });
@@ -613,14 +597,18 @@ export function maybeRunPostUpdateAfterRepair(config: RuntimeConfig, options: {r
  * live, instead of buffering through the regular command runner. Dry-run
  * defers to `maybeRun` so it only prints the command it would run.
  */
-function runStreamingSubcommand(dryRun: boolean, executable: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
+function runStreamingSubcommand(
+  dryRun: boolean,
+  executable: string,
+  args: readonly string[],
+  announce: boolean = true,
+) {
   if (dryRun) {
     return maybeRunEffect(true, executable, args).pipe(Effect.asVoid);
   }
   return Effect.gen(function* () {
-    yield* Console.log(`Running: ${formatShellCommand(executable, args)}`);
+    if (announce) yield* Console.log(`Running: ${formatShellCommand(executable, args)}`);
     const result = yield* runStreamingCommandEffect(executable, args, {
-      ...(env ? {env} : {}),
       inheritOutput: true,
     });
     if (result.exitCode !== 0) {
@@ -817,13 +805,11 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
     toVersion: options.toVersion,
   });
   if (migrations.length === 0) {
-    yield* Console.log('No post-update actions apply.');
     return;
   }
 
-  yield* Console.log('');
-  yield* Console.log('Post-update actions are available.');
   const threadnoteCommand = currentThreadnoteCommand(system) ?? THREADNOTE_COMMAND;
+  let announced = false;
   const handledMigrationIds = new Set(state.handledMigrationIds);
   const checkpoint = (migrationId: string) => {
     if (options.dryRun || !options.markHandled || handledMigrationIds.has(migrationId)) return Effect.void;
@@ -834,6 +820,26 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
     if (!(yield* migrationRequirementsSatisfied(config, migration))) {
       if (!options.dryRun) yield* checkpoint(migration.id);
       continue;
+    }
+    if (!announced) {
+      announced = true;
+      if (options.repairFallback === true) {
+        yield* Console.log('');
+        yield* Console.log('Repair found package post-update actions.');
+        yield* Console.log(
+          'This also covers updates launched by older Threadnote versions that only knew how to run repair.',
+        );
+        if (!options.interactive) {
+          yield* Console.log(
+            'This process is non-interactive, so Threadnote will print the manual migration command instead of prompting.',
+          );
+          yield* Console.log(
+            `Run the prompt manually with: threadnote post-update --from-version 0.0.0 --to-version ${options.toVersion}`,
+          );
+        }
+      }
+      yield* Console.log('');
+      yield* Console.log('Post-update actions are available.');
     }
     yield* printPostUpdateMigration(migration);
     const accepted =
@@ -850,6 +856,16 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
     }
     yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
     if (!options.dryRun) {
+      if (hasAuthoritativeHomeRequirements(migration) && (yield* migrationRequirementsSatisfied(config, migration))) {
+        return yield* Effect.fail(
+          applicationError(
+            'verify post-update migration',
+            new Error(
+              `Migration ${migration.id} exited successfully but its filesystem requirements remain pending; it was not marked handled.`,
+            ),
+          ),
+        );
+      }
       yield* checkpoint(migration.id);
       for (const instruction of migration.instructions) {
         yield* Console.log(instruction);
@@ -875,7 +891,7 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
   const handled = new Set(options.handledMigrationIds);
   const applicable: PostUpdateMigration[] = [];
   for (const migration of migrations) {
-    if (handled.has(migration.id)) {
+    if (handled.has(migration.id) && !hasAuthoritativeHomeRequirements(migration)) {
       continue;
     }
     if (compareVersions(options.fromVersion, migration.introducedIn) >= 0) {
@@ -900,8 +916,14 @@ const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSa
     return false;
   }
   if (
-    migration.requiresPendingHomeMigration === true &&
+    migration.requiresLegacyHomeMigration === true &&
     !(yield* isLegacyHomeMigrationPending({targetHome: config.agentContextHome}))
+  ) {
+    return false;
+  }
+  if (
+    migration.requiresPendingHomeMigration === true &&
+    !(yield* isThreadnoteHomeMigrationPending({targetHome: config.agentContextHome}))
   ) {
     return false;
   }
@@ -910,6 +932,10 @@ const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSa
   }
   return true;
 });
+
+function hasAuthoritativeHomeRequirements(migration: PostUpdateMigration): boolean {
+  return migration.requiresLegacyHomeMigration === true || migration.requiresPendingHomeMigration === true;
+}
 
 const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(function* () {
   const path = yield* Path.Path;
@@ -948,6 +974,7 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     introducedIn: value.introducedIn,
     markHandledWhenSkipped: value.markHandledWhenSkipped === true,
     requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
+    requiresLegacyHomeMigration: value.requiresLegacyHomeMigration === true,
     requiresPendingHomeMigration: value.requiresPendingHomeMigration === true,
     requiresProjectNameConsolidation: value.requiresProjectNameConsolidation === true,
     title: value.title,

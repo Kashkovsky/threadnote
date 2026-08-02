@@ -8,6 +8,16 @@ threadnote migrate
 threadnote migrate --apply
 ```
 
+Post-update prompts are evidence-driven. A fresh current install, an empty or runtime-only `~/.openviking`, and a home
+with completed matching receipts produce no migration prompt or manual follow-up command. Threadnote rechecks the
+evidence under the post-update lock before announcing or running an action.
+
+Upgrades from earlier 4.0 betas do not depend on `~/.openviking` still existing. The same migration command resumes a
+pending receipt, flattens the short-lived `~/.threadnote/data/viking/<account>` layout, and adopts a verified model from
+the earlier `~/.threadnote/threadnote/models/` layout. Completed receipts make each step idempotent. Lexical, vector,
+and code-graph SQLite stores are derived data: repair validates their schema, and incompatible or stale indexes rebuild
+from canonical files or current repository source instead of treating old database bytes as canonical migration input.
+
 The migration:
 
 1. inventories canonical resources, memories, seed state, share metadata, and applicable settings;

@@ -6,6 +6,7 @@ import {
   assertSufficientHomeMigrationDiskSpace,
   HomeMigrationInsufficientSpace,
   isLegacyHomeMigrationPending,
+  isThreadnoteHomeMigrationPending,
   migrateOpenVikingHome,
 } from '../../src/migration/home.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -17,6 +18,97 @@ describe('OpenViking home migration', () => {
       expect(failure).toBeInstanceOf(HomeMigrationInsufficientSpace);
       expect(failure.requiredBytes).toBeGreaterThan(100);
     }),
+  );
+
+  it.effect('keeps empty and runtime-only legacy homes ineligible without creating a target', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-eligibility-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        yield* fs.makeDirectory(legacyHome, {recursive: true});
+
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome})).toEqual({
+          action: 'no_legacy_content',
+        });
+        expect(yield* fs.exists(targetHome)).toBe(false);
+
+        yield* fs.makeDirectory(path.join(legacyHome, 'logs'), {recursive: true});
+        yield* fs.writeFileString(path.join(legacyHome, 'logs', 'server.log'), 'runtime noise');
+        yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.json'), '{}');
+        yield* fs.makeDirectory(path.join(legacyHome, 'threadnote'), {recursive: true});
+        yield* fs.writeFileString(path.join(legacyHome, 'threadnote', 'local-ai-token'), 'runtime token');
+        yield* fs.makeDirectory(path.join(legacyHome, 'data', 'viking'), {recursive: true});
+        yield* fs.writeFileString(path.join(legacyHome, 'data', 'viking', 'backend_meta.json'), '{}');
+        yield* fs.makeDirectory(targetHome, {recursive: true});
+        yield* fs.writeFileString(
+          path.join(targetHome, 'layout.json'),
+          `${JSON.stringify({createdBy: 'threadnote', version: 2})}\n`,
+        );
+
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* migrateOpenVikingHome({legacyHome, targetHome})).toEqual({action: 'no_legacy_content'});
+        expect(yield* fs.exists(path.join(targetHome, 'layout.json'))).toBe(true);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('recognizes genuine legacy canonical content and completed receipts', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-canonical-eligibility-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const memory = path.join(legacyHome, 'data', 'viking', 'local', 'memories', 'context.md');
+        yield* fs.makeDirectory(path.dirname(memory), {recursive: true});
+        yield* fs.writeFileString(memory, '# Canonical context\n');
+
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(true);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(true);
+        expect((yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome})).action).toBe('migrated');
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('recognizes beta layout and pending local-model recovery without ~/.openviking', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-beta-home-eligibility-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const betaMemory = path.join(targetHome, 'data', 'viking', 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(betaMemory), {recursive: true});
+        yield* fs.writeFileString(betaMemory, '# Beta memory\n');
+
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(true);
+
+        yield* fs.remove(path.join(targetHome, 'data'), {recursive: true});
+        yield* fs.makeDirectory(path.join(targetHome, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(targetHome, 'migration', 'legacy-local-model-v1.json'),
+          `${JSON.stringify({id: 'legacy-local-model-v1', models: ['bge-small-en-v1.5-q8'], status: 'pending', version: 1})}\n`,
+        );
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(true);
+
+        yield* fs.writeFileString(
+          path.join(targetHome, 'migration', 'legacy-local-model-v1.json'),
+          `${JSON.stringify({id: 'legacy-local-model-v1', models: ['bge-small-en-v1.5-q8'], status: 'completed', version: 1})}\n`,
+        );
+        expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
   );
 
   it.effect('dry-runs, validates, promotes, preserves the source, and is idempotent', () =>

@@ -52,7 +52,7 @@
         "Threadnote 4 uses in-process node-llama-cpp for optional embeddings, reranking, and generation; no Python or background OpenViking service is required."
       ],
       "commandArgs": ["migrate", "--apply"],
-      "requiresPendingHomeMigration": true,
+      "requiresLegacyHomeMigration": true,
       "instructions": [
         "Home migration finished. Run `threadnote doctor`, then `threadnote index status`.",
         "Optional semantic recall starts with `threadnote models list`; install and select a measured embedding model before rebuilding the vector index."

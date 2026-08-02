@@ -3,6 +3,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
+  isThreadnoteStorageLayoutMigrationPending,
   migrateThreadnoteStorageLayout,
   STORAGE_LAYOUT_MIGRATION_ID,
   StorageLayoutMigrationConflict,
@@ -20,6 +21,7 @@ describe('Threadnote storage layout migration', () => {
         yield* fs.writeFileString(source, '# Guide\n');
         yield* fs.writeFileString(path.join(home, 'layout.json'), '{"version":1}\n');
 
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
         expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({accounts: 1, action: 'dry_run'});
         expect(yield* fs.exists(source)).toBe(true);
 
@@ -32,6 +34,7 @@ describe('Threadnote storage layout migration', () => {
         ).toContain('Guide');
         expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
         expect(yield* fs.exists(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`))).toBe(true);
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

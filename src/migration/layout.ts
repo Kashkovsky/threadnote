@@ -46,6 +46,26 @@ export interface StorageLayoutMigrationOptions {
 }
 
 /**
+ * Bounded eligibility check for the beta.1 data/viking layout. This mirrors
+ * the state transitions that migrateThreadnoteStorageLayout can perform
+ * without hashing or walking the canonical store merely to decide whether an
+ * update should offer the migration.
+ */
+export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayoutMigration.isPending')(function* (
+  options: Pick<StorageLayoutMigrationOptions, 'home'>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = path.resolve(options.home);
+  const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
+  if (currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION) return false;
+
+  const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
+  if (receipt) return true;
+  return yield* fs.exists(path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY));
+});
+
+/**
  * Flattens the short-lived 4.0.0-beta.1 data/viking/<account> layout into
  * data/<account>. A pending receipt makes every account move/merge resumable,
  * and the expected merged tree is verified before the legacy directory is

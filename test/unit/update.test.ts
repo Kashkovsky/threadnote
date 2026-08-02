@@ -23,6 +23,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 
 import {
   fetchLatestVersion,
+  maybeRunPostUpdateAfterRepair,
   parseReleaseChecksum,
   promoteReleaseDirectory,
   releaseArtifactName,
@@ -611,6 +612,190 @@ describe('post-update validation', () => {
     );
   });
 
+  it('is silent for fresh homes in interactive and non-interactive post-update and repair paths', async () => {
+    const outputs = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-fresh-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('legacy-home-import', {requiresLegacyHomeMigration: true}),
+            fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () => Effect.die('fresh homes must not run migrations'),
+          });
+          const outputs: string[] = [];
+          for (const interactive of [false, true]) {
+            const system = SystemInfo.of({
+              ...baseSystem,
+              homeDirectory: temporaryRoot,
+              stdinIsTTY: interactive,
+              stdoutIsTTY: interactive,
+            });
+            const postUpdate = yield* captureConsole(
+              runPostUpdate(runtimeConfig(home), {
+                fromVersion: '0.0.0',
+                toVersion: RELEASE_VERSION,
+              }).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+            const repairFallback = yield* captureConsole(
+              maybeRunPostUpdateAfterRepair(runtimeConfig(home), {dryRun: false}).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+            outputs.push(postUpdate.output, repairFallback.output);
+          }
+          return outputs;
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(outputs).toEqual(['', '', '', '']);
+  });
+
+  it('does not announce an action when migration evidence disappears at the locked recheck', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-drift-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          const legacyLayout = path.join(home, 'data', 'viking');
+          yield* fs.makeDirectory(home, {recursive: true});
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          let evidenceChecks = 0;
+          const flappingFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            exists: target =>
+              target === legacyLayout
+                ? Effect.sync(() => {
+                    evidenceChecks += 1;
+                    return evidenceChecks === 1;
+                  })
+                : fs.exists(target),
+          });
+          const system = SystemInfo.of({
+            ...baseSystem,
+            homeDirectory: temporaryRoot,
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () => Effect.die('disappeared evidence must not execute'),
+          });
+          const captured = yield* captureConsole(
+            runPostUpdate(runtimeConfig(home), {
+              fromVersion: '4.0.0-beta.1',
+              toVersion: RELEASE_VERSION,
+            }).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(FileSystem.FileSystem, flappingFileSystem),
+              Effect.provideService(SystemInfo, system),
+            ),
+          );
+          return {evidenceChecks, output: captured.output};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({evidenceChecks: 2, output: ''});
+  });
+
+  it('retries evidence-backed beta-layout recovery until it materially completes', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-beta-layout-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          const betaMemory = path.join(home, 'data', 'viking', 'local', 'memory.md');
+          yield* fs.makeDirectory(path.dirname(betaMemory), {recursive: true});
+          yield* fs.writeFileString(betaMemory, '# Beta memory\n');
+          yield* fs.writeFileString(
+            path.join(home, 'post-update-state.json'),
+            `${JSON.stringify({handledMigrationIds: ['home-recovery']})}\n`,
+          );
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('legacy-home-import', {requiresLegacyHomeMigration: true}),
+            fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const attempts: string[] = [];
+          let materialize = false;
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: (_executable, args) =>
+              Effect.gen(function* () {
+                attempts.push(args[0] ?? '');
+                if (materialize) {
+                  yield* fs.remove(path.join(home, 'data', 'viking'), {recursive: true});
+                  yield* fs.writeFileString(
+                    path.join(home, 'layout.json'),
+                    `${JSON.stringify({createdBy: 'threadnote', version: 2})}\n`,
+                  );
+                }
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }).pipe(Effect.orDie),
+          });
+          const system = SystemInfo.of({
+            ...baseSystem,
+            homeDirectory: temporaryRoot,
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+          const run = () =>
+            captureConsole(
+              runPostUpdate(runtimeConfig(home), {
+                fromVersion: '4.0.0-beta.1',
+                toVersion: RELEASE_VERSION,
+                yes: true,
+              }).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+          const noOpFailure = yield* run().pipe(Effect.flip);
+          materialize = true;
+          const first = yield* run();
+          const second = yield* run();
+          return {attempts, first: first.output, noOpFailure: String(noOpFailure), second: second.output};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.attempts).toEqual(['home-recovery', 'home-recovery']);
+    expect(result.noOpFailure).toContain('filesystem requirements remain pending');
+    expect(result.first).toContain('Post-update actions are available.');
+    expect(result.second).toBe('');
+  });
+
   it('checkpoints each successful migration before a later migration fails', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -805,13 +990,20 @@ function runtimeConfig(home: string): RuntimeConfig {
   };
 }
 
-function fixtureMigration(id: string) {
+function fixtureMigration(
+  id: string,
+  requirements: {
+    readonly requiresLegacyHomeMigration?: boolean;
+    readonly requiresPendingHomeMigration?: boolean;
+  } = {},
+) {
   return {
     commandArgs: [id],
     description: [`Run ${id}.`],
     id,
     instructions: [`Finished ${id}.`],
     introducedIn: RELEASE_VERSION,
+    ...requirements,
     title: id,
   };
 }

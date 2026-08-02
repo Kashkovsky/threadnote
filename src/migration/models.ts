@@ -27,6 +27,23 @@ interface LegacyLocalModelMigrationReceipt {
 }
 
 /**
+ * Checks only the bounded legacy model catalog and resumable receipt. Model
+ * bytes are verified by the applying migration, not while deciding whether an
+ * update should offer it.
+ */
+export const isLegacyLocalModelMigrationPending = Effect.fn('legacyLocalModelMigration.isPending')(function* (
+  options: Pick<LegacyLocalModelMigrationOptions, 'home' | 'manifests'>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = path.resolve(options.home);
+  const manifests = options.manifests ?? BUILTIN_MODEL_MANIFESTS;
+  const receipt = yield* readReceipt(fs, path.join(home, 'migration', `${LEGACY_LOCAL_MODEL_MIGRATION_ID}.json`));
+  if (receipt) return receipt.status === 'pending';
+  return (yield* discoverLegacyModels(fs, path, home, manifests)).length > 0;
+});
+
+/**
  * Adopts verified 3.x managed GGUF files into the role-aware 4.x model store.
  * The model is renamed on the same filesystem, so upgrading does not require a
  * second multi-gigabyte copy or a new download.

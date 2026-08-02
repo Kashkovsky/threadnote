@@ -8,13 +8,18 @@ import {
 } from '../storage/layout.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withSharedRepositoryHomeLock} from '../effect/share_lock.js';
-import {migrateThreadnoteStorageLayout, STORAGE_LAYOUT_MIGRATION_ID} from './layout.js';
-import {migrateLegacyLocalModels} from './models.js';
+import {
+  isThreadnoteStorageLayoutMigrationPending,
+  migrateThreadnoteStorageLayout,
+  STORAGE_LAYOUT_MIGRATION_ID,
+} from './layout.js';
+import {isLegacyLocalModelMigrationPending, migrateLegacyLocalModels} from './models.js';
 
 export const HOME_MIGRATION_ID = 'openviking-home-v1';
 export const HOME_MIGRATION_RECEIPT_VERSION = 1 as const;
 const RECEIPT_RELATIVE_PATH = `migration/${HOME_MIGRATION_ID}.json`;
 const LAYOUT_RELATIVE_PATH = 'layout.json';
+const LEGACY_ELIGIBILITY_ENTRY_LIMIT = 4_096;
 
 const EXCLUDED_LEGACY_PATHS = new Set([
   '.venv',
@@ -65,7 +70,8 @@ export interface HomeMigrationReceipt {
 }
 
 export interface HomeMigrationResult {
-  readonly action: 'already_migrated' | 'dry_run' | 'migrated' | 'no_legacy_home' | 'recovered' | 'resumed';
+  readonly action:
+    'already_migrated' | 'dry_run' | 'migrated' | 'no_legacy_content' | 'no_legacy_home' | 'recovered' | 'resumed';
   readonly receipt?: HomeMigrationReceipt;
 }
 
@@ -181,6 +187,9 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
         }),
       );
     }
+    if (!(yield* hasMaterialLegacyHomeContent(fs, path, legacyHome))) {
+      return {action: 'no_legacy_content'};
+    }
     const recovery = recoverIntoExistingTarget(fs, path, system, legacyHome, targetHome, options.apply === true);
     return options.apply === true ? yield* withSharedRepositoryHomeLock(targetHome, recovery) : yield* recovery;
   }
@@ -188,6 +197,9 @@ const migrateOpenVikingHomeImpl = Effect.fn('homeMigration.migrate')(function* (
     return {action: 'no_legacy_home'};
   }
   yield* fs.access(legacyHome, {readable: true});
+  if (!(yield* hasMaterialLegacyHomeContent(fs, path, legacyHome))) {
+    return {action: 'no_legacy_content'};
+  }
   const targetParent = path.dirname(targetHome);
   yield* fs.makeDirectory(targetParent, {recursive: true, mode: 0o700});
   yield* fs.access(targetParent, {writable: true});
@@ -295,8 +307,60 @@ export const isLegacyHomeMigrationPending = Effect.fn('homeMigration.isPending')
     options.targetHome ?? path.join(system.homeDirectory, THREADNOTE_HOME_DIRECTORY),
   );
   const receipt = yield* readReceipt(fs, path.join(targetHome, RECEIPT_RELATIVE_PATH));
-  return receipt?.legacyHome !== legacyHome || receipt.targetHome !== targetHome;
+  if (receipt?.legacyHome === legacyHome && receipt.targetHome === targetHome) return false;
+  return yield* hasMaterialLegacyHomeContent(fs, path, legacyHome);
 });
+
+/**
+ * All migration work performed by `threadnote migrate --apply`: legacy-home
+ * import/recovery plus the short-lived beta storage and local-model layouts.
+ * This lets earlier 4.0 betas recover even when ~/.openviking is absent while
+ * keeping fresh installs and runtime-only legacy homes silent.
+ */
+export const isThreadnoteHomeMigrationPending = Effect.fn('homeMigration.isThreadnoteHomePending')(function* (
+  options: Pick<HomeMigrationOptions, 'legacyHome' | 'targetHome'> = {},
+) {
+  if (yield* isLegacyHomeMigrationPending(options)) return true;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const targetHome = resolveHomeInput(
+    path,
+    system.homeDirectory,
+    options.targetHome ?? path.join(system.homeDirectory, THREADNOTE_HOME_DIRECTORY),
+  );
+  if (!(yield* fs.exists(targetHome))) return false;
+  if (yield* isThreadnoteStorageLayoutMigrationPending({home: targetHome})) return true;
+  return yield* isLegacyLocalModelMigrationPending({home: targetHome});
+});
+
+function hasMaterialLegacyHomeContent(fs: FileSystem.FileSystem, path: Path.Path, legacyHome: string) {
+  return Effect.gen(function* () {
+    let inspectedEntries = 0;
+    const pendingDirectories = [{directory: legacyHome, relativeDirectory: ''}];
+    while (pendingDirectories.length > 0) {
+      const current = pendingDirectories.pop();
+      if (!current) break;
+      const names = (yield* fs.readDirectory(current.directory)).sort((left, right) => right.localeCompare(left));
+      for (const name of names) {
+        const relativePath = portableRelative(path, path.join(current.relativeDirectory, name));
+        if (!shouldIncludeLegacyPath(relativePath)) continue;
+        inspectedEntries += 1;
+        // Conservatively offer the validated migration rather than scan an
+        // adversarial directory tree without bound. The applying inventory
+        // remains authoritative and validates every selected entry.
+        if (inspectedEntries > LEGACY_ELIGIBILITY_ENTRY_LIMIT) return true;
+        const absolutePath = path.join(current.directory, name);
+        if (Option.isSome(yield* fs.readLink(absolutePath).pipe(Effect.option))) return true;
+        const info = yield* fs.stat(absolutePath);
+        if (info.type === 'File') return true;
+        if (info.type !== 'Directory') return true;
+        pendingDirectories.push({directory: absolutePath, relativeDirectory: relativePath});
+      }
+    }
+    return false;
+  });
+}
 
 export const runHomeMigration = Effect.fn('homeMigration.run')(function* (options: HomeMigrationOptions) {
   const fs = yield* FileSystem.FileSystem;
@@ -353,6 +417,9 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       return;
     case 'no_legacy_home':
       yield* Console.log('No legacy ~/.openviking home was found; nothing to migrate.');
+      return;
+    case 'no_legacy_content':
+      yield* Console.log('No canonical content was found in the legacy ~/.openviking home; nothing to migrate.');
       return;
     case 'recovered':
       yield* Console.log(
