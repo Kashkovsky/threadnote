@@ -3,7 +3,7 @@ import {
   graphFocusLayoutTargets,
   managerGraphClientRenderProxy,
   type GraphEdge,
-  type GraphVisualization,
+  type GraphQueryVisualization,
 } from '../../src/manager_graph.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
@@ -24,7 +24,7 @@ describe('Manager graph production-shaped budgets', () => {
     });
   });
 
-  it('keeps a maximum working-set payload and deterministic client render proxy bounded', () => {
+  it('keeps a maximum code-query working set and deterministic client render latency bounded', () => {
     const graph = maximumGraphFixture();
     const payloadBytes = new TextEncoder().encode(JSON.stringify(graph)).byteLength;
     const startedAt = performance.now();
@@ -33,6 +33,14 @@ describe('Manager graph production-shaped budgets', () => {
     const elapsedMilliseconds = performance.now() - startedAt;
 
     expect(payloadBytes).toBeLessThan(1_250_000);
+    expect(graph.query).toEqual({
+      matchedNodes: 40,
+      state: 'ready',
+      text: 'dependency injection boundary',
+      warnings: [],
+    });
+    expect(graph.nodes).toHaveLength(MANAGER_GRAPH_MAX_NODE_LIMIT);
+    expect(graph.edges).toHaveLength(MANAGER_GRAPH_MAX_EDGE_LIMIT);
     expect(result).toEqual({labels: expect.any(Number), matchedEdges: 1_500, nodes: 500});
     expect(result.labels).toBeLessThanOrEqual(180);
     expect(elapsedMilliseconds).toBeLessThan(2_000);
@@ -62,7 +70,7 @@ describe('Manager graph production-shaped budgets', () => {
   });
 });
 
-function maximumGraphFixture(): GraphVisualization {
+function maximumGraphFixture(): GraphQueryVisualization {
   const nodes = Array.from({length: MANAGER_GRAPH_MAX_NODE_LIMIT}, (_, index) => {
     const suffix = index.toString().padStart(4, '0');
     return {
@@ -97,6 +105,7 @@ function maximumGraphFixture(): GraphVisualization {
       nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
     },
     projectId: 'cgp_production',
+    query: {matchedNodes: 40, state: 'ready', text: 'dependency injection boundary', warnings: []},
     repository: {
       accounting: {
         attributedSymbols: 0,

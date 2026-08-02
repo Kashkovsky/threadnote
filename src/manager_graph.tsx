@@ -447,6 +447,25 @@ export function graphRequestIsCurrent(
   return currentSequence === requestedSequence && currentScope === requestedScope;
 }
 
+export function graphQueryRequestIsCurrent(
+  aborted: boolean,
+  currentSequence: number,
+  requestedSequence: number,
+  currentScope: string,
+  requestedScope: string,
+  graph: GraphQueryVisualization,
+  expectedSnapshotId: string,
+  expectedQuery: string,
+): boolean {
+  return (
+    !aborted &&
+    graphRequestIsCurrent(currentSequence, requestedSequence, currentScope, requestedScope) &&
+    graph.repository.snapshot.id === expectedSnapshotId &&
+    graph.query.state === 'ready' &&
+    graph.query.text.trim() === expectedQuery
+  );
+}
+
 export function graphNodeDetailRequestIsCurrent(
   aborted: boolean,
   detail: Pick<GraphNodeDetail, 'node' | 'snapshotId'>,
@@ -564,6 +583,7 @@ export interface GraphVisualization {
     readonly nodeLimit: number;
   };
   readonly projectId: string;
+  readonly query?: GraphQueryMetadata;
   readonly repository: Pick<GraphRepository, 'accounting' | 'displayName' | 'id' | 'metrics' | 'snapshot'>;
   readonly scope: {readonly id: string; readonly label: string};
   readonly stats: {
@@ -573,6 +593,17 @@ export interface GraphVisualization {
     readonly totalNodes: number;
   };
   readonly warnings: readonly string[];
+}
+
+export interface GraphQueryMetadata {
+  readonly matchedNodes: number;
+  readonly state: 'ready';
+  readonly text: string;
+  readonly warnings: readonly string[];
+}
+
+export interface GraphQueryVisualization extends GraphVisualization {
+  readonly query: GraphQueryMetadata;
 }
 
 export interface GraphAnalysis {
@@ -693,6 +724,21 @@ const SEARCH_FOCUS_ZOOM = {
   detail: 2.8,
   overview: 1.8,
 } as const;
+const GRAPH_QUERY_DEBOUNCE_MILLISECONDS = 450;
+const GRAPH_QUERY_MINIMUM_LENGTH = 3;
+const GRAPH_QUERY_MAXIMUM_LENGTH = 512;
+const DEFAULT_QUERY_WORKING_SET = {edgeLimit: 240, nodeLimit: 120} as const;
+const MAX_QUERY_WORKING_SET = {edgeLimit: 500, nodeLimit: 200} as const;
+
+export function managerGraphQueryCandidate(input: string): string | undefined {
+  const candidate = input.trim();
+  return candidate.length > 0 && candidate.length <= GRAPH_QUERY_MAXIMUM_LENGTH ? candidate : undefined;
+}
+
+export function managerGraphDebouncedQueryCandidate(input: string): string | undefined {
+  const candidate = managerGraphQueryCandidate(input);
+  return candidate && candidate.length >= GRAPH_QUERY_MINIMUM_LENGTH ? candidate : undefined;
+}
 
 export function managerGraphClientRenderProxy(
   graph: GraphVisualization,
@@ -727,6 +773,13 @@ export function GraphWorkspace(props: {
     nodeId: string,
     signal: AbortSignal,
   ) => Promise<GraphNodeDetail>;
+  readonly loadQuery: (
+    repositoryId: string,
+    snapshotId: string,
+    query: string,
+    limits: ManagerGraphVisualizationLimits,
+    signal: AbortSignal,
+  ) => Promise<GraphQueryVisualization>;
   readonly onRefresh: () => void;
 }): React.ReactElement {
   const [repositoryId, setRepositoryId] = useState('');
@@ -739,6 +792,14 @@ export function GraphWorkspace(props: {
   const [focusRequest, setFocusRequest] = useState<{readonly nodeId: string; readonly sequence: number} | undefined>();
   const focusSequence = useRef(0);
   const [search, setSearch] = useState('');
+  const [queryInput, setQueryInput] = useState('');
+  const [activeQuery, setActiveQuery] = useState('');
+  const [queryGraph, setQueryGraph] = useState<GraphQueryVisualization | undefined>();
+  const [queryLoading, setQueryLoading] = useState(false);
+  const [queryError, setQueryError] = useState('');
+  const [queryAttempt, setQueryAttempt] = useState(0);
+  const [queryWorkingSet, setQueryWorkingSet] = useState<ManagerGraphVisualizationLimits>(DEFAULT_QUERY_WORKING_SET);
+  const queryRequestSequence = useRef(0);
   const [relationFilter, setRelationFilter] = useState('all');
   const [focusMode, setFocusMode] = useState<GraphFocusMode>('all');
   const [sizeMetric, setSizeMetric] = useState<GraphSizeMetric>('connections');
@@ -766,9 +827,14 @@ export function GraphWorkspace(props: {
   const graphScope = `${analysisScope}:${projectId}:${workingSet.nodeLimit}:${workingSet.edgeLimit}`;
   const graphScopeRef = useRef(graphScope);
   graphScopeRef.current = graphScope;
+  const queryScope = `${analysisScope}:${activeQuery}:${queryAttempt}:${queryWorkingSet.nodeLimit}:${queryWorkingSet.edgeLimit}`;
+  const queryScopeRef = useRef(queryScope);
+  queryScopeRef.current = queryScope;
+  const graphSource = activeQuery ? queryGraph : baseGraph;
   const graph = useMemo(
-    () => (baseGraph && expandedNeighborhood ? graphWithNodeNeighborhood(baseGraph, expandedNeighborhood) : baseGraph),
-    [baseGraph, expandedNeighborhood],
+    () =>
+      graphSource && expandedNeighborhood ? graphWithNodeNeighborhood(graphSource, expandedNeighborhood) : graphSource,
+    [expandedNeighborhood, graphSource],
   );
   const selectedNode = graph?.nodes.find(node => node.id === selectedNodeId);
   const relations = useMemo(
@@ -778,8 +844,17 @@ export function GraphWorkspace(props: {
   const activeBuilds = (props.catalog?.builds ?? []).filter(
     build => build.state === 'queued' || build.state === 'running' || build.state === 'failed',
   );
-  const workingSetAtMaximum =
-    workingSet.nodeLimit >= MAX_WORKING_SET.nodeLimit && workingSet.edgeLimit >= MAX_WORKING_SET.edgeLimit;
+  const selectedRepositoryIsIndexing = activeBuilds.some(
+    build =>
+      repository !== undefined &&
+      build.identity.checkoutId === repository.checkoutId &&
+      build.identity.worktreeId === repository.worktreeId &&
+      (build.state === 'queued' || build.state === 'running'),
+  );
+  const workingSetAtMaximum = activeQuery
+    ? queryWorkingSet.nodeLimit >= MAX_QUERY_WORKING_SET.nodeLimit &&
+      queryWorkingSet.edgeLimit >= MAX_QUERY_WORKING_SET.edgeLimit
+    : workingSet.nodeLimit >= MAX_WORKING_SET.nodeLimit && workingSet.edgeLimit >= MAX_WORKING_SET.edgeLimit;
 
   useEffect(() => {
     const selection = resolveGraphSelection(repositories, repositoryId, viewId);
@@ -843,6 +918,79 @@ export function GraphWorkspace(props: {
       graphRequestSequence.current += 1;
     };
   }, [graphScope, projectId, props.loadGraph, repository?.id, repository?.snapshot.id, workingSet]);
+
+  useEffect(() => {
+    const candidate = managerGraphDebouncedQueryCandidate(queryInput);
+    if (!candidate || candidate === activeQuery) return;
+    const timeout = window.setTimeout(() => {
+      setQueryAttempt(0);
+      setQueryWorkingSet(DEFAULT_QUERY_WORKING_SET);
+      setActiveQuery(candidate);
+    }, GRAPH_QUERY_DEBOUNCE_MILLISECONDS);
+    return () => window.clearTimeout(timeout);
+  }, [activeQuery, queryInput]);
+
+  useEffect(() => {
+    if (!repository || !activeQuery) {
+      setQueryGraph(undefined);
+      setQueryLoading(false);
+      setQueryError('');
+      return;
+    }
+    const requestSequence = queryRequestSequence.current + 1;
+    queryRequestSequence.current = requestSequence;
+    const requestedScope = queryScope;
+    const expectedSnapshotId = repository.snapshot.id;
+    const expectedQuery = activeQuery;
+    const controller = new AbortController();
+    setQueryGraph(undefined);
+    setQueryLoading(true);
+    setQueryError('');
+    setSelectedNodeId(undefined);
+    setExpandedNeighborhood(undefined);
+    setFocusRequest(undefined);
+    setFocusMode('all');
+    setRelationFilter('all');
+    setSizeMetric('connections');
+    void props
+      .loadQuery(repository.id, expectedSnapshotId, expectedQuery, queryWorkingSet, controller.signal)
+      .then(next => {
+        if (
+          graphQueryRequestIsCurrent(
+            controller.signal.aborted,
+            queryRequestSequence.current,
+            requestSequence,
+            queryScopeRef.current,
+            requestedScope,
+            next,
+            expectedSnapshotId,
+            expectedQuery,
+          )
+        ) {
+          setQueryGraph(next);
+        }
+      })
+      .catch(cause => {
+        if (
+          !isAbortError(cause) &&
+          graphRequestIsCurrent(queryRequestSequence.current, requestSequence, queryScopeRef.current, requestedScope)
+        ) {
+          setQueryGraph(undefined);
+          setQueryError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (
+          graphRequestIsCurrent(queryRequestSequence.current, requestSequence, queryScopeRef.current, requestedScope)
+        ) {
+          setQueryLoading(false);
+        }
+      });
+    return () => {
+      controller.abort();
+      queryRequestSequence.current += 1;
+    };
+  }, [activeQuery, props.loadQuery, queryScope, queryWorkingSet, repository?.id, repository?.snapshot.id]);
 
   useEffect(() => {
     analysisAbortController.current?.abort();
@@ -914,7 +1062,7 @@ export function GraphWorkspace(props: {
       setNodeDetailError('');
       return;
     }
-    const key = `${repository.id}:${baseGraph?.repository.snapshot.id ?? ''}:${selectedNode.id}`;
+    const key = `${repository.id}:${graph?.repository.snapshot.id ?? ''}:${selectedNode.id}`;
     const cached = nodeDetailCache.current.get(key);
     if (cached) {
       cacheGraphNodeDetail(nodeDetailCache.current, key, cached);
@@ -955,7 +1103,7 @@ export function GraphWorkspace(props: {
     return () => {
       controller.abort();
     };
-  }, [baseGraph?.repository.snapshot.id, props.loadNodeDetail, repository?.id, selectedNode?.id, selectedNode?.type]);
+  }, [graph?.repository.snapshot.id, props.loadNodeDetail, repository?.id, selectedNode?.id, selectedNode?.type]);
 
   const searchResults = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -977,12 +1125,14 @@ export function GraphWorkspace(props: {
     setViewId(next?.defaultViewId ?? next?.views[0]?.id ?? '');
     setProjectId('all');
     setWorkingSet(DEFAULT_WORKING_SET);
+    clearCodeQuery();
   };
 
   const chooseView = (nextViewId: string): void => {
     setViewId(nextViewId);
     setProjectId('all');
     setWorkingSet(DEFAULT_WORKING_SET);
+    clearCodeQuery();
   };
 
   const chooseProject = (nextProjectId: string): void => {
@@ -991,7 +1141,37 @@ export function GraphWorkspace(props: {
     setSearch('');
     setSelectedNodeId(undefined);
     setExpandedNeighborhood(undefined);
+    clearCodeQuery();
   };
+
+  const submitCodeQuery = (): void => {
+    const candidate = managerGraphQueryCandidate(queryInput);
+    if (!candidate) {
+      setQueryError(`Enter between 1 and ${GRAPH_QUERY_MAXIMUM_LENGTH} characters to search the code graph.`);
+      return;
+    }
+    if (candidate === activeQuery) {
+      setQueryAttempt(current => current + 1);
+      return;
+    }
+    setQueryAttempt(0);
+    setQueryWorkingSet(DEFAULT_QUERY_WORKING_SET);
+    setActiveQuery(candidate);
+  };
+
+  function clearCodeQuery(): void {
+    queryRequestSequence.current += 1;
+    setQueryInput('');
+    setActiveQuery('');
+    setQueryGraph(undefined);
+    setQueryLoading(false);
+    setQueryError('');
+    setQueryAttempt(0);
+    setQueryWorkingSet(DEFAULT_QUERY_WORKING_SET);
+    setSelectedNodeId(undefined);
+    setExpandedNeighborhood(undefined);
+    setFocusRequest(undefined);
+  }
 
   const selectNode = (nodeId: string | undefined, focus = false): void => {
     setSelectedNodeId(nodeId);
@@ -1143,21 +1323,66 @@ export function GraphWorkspace(props: {
             </div>
           ) : null}
         </label>
+        <label className="graph-search">
+          <span>Search the code graph</span>
+          <input
+            aria-label="Search the code graph"
+            disabled={!repository}
+            maxLength={GRAPH_QUERY_MAXIMUM_LENGTH}
+            onChange={event => setQueryInput(event.target.value)}
+            onKeyDown={event => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              submitCodeQuery();
+            }}
+            placeholder="Concept, path, module, or symbol"
+            type="search"
+            value={queryInput}
+          />
+          <button
+            disabled={!repository || managerGraphQueryCandidate(queryInput) === undefined || queryLoading}
+            onClick={submitCodeQuery}
+            type="button"
+          >
+            {queryLoading ? 'Searching…' : 'Search graph'}
+          </button>
+          {activeQuery ? (
+            <button className="quiet-button" onClick={clearCodeQuery} type="button">
+              Back to {projectId === 'all' ? 'overview' : 'component'}
+            </button>
+          ) : null}
+          {!activeQuery && queryError ? <small role="alert">{queryError}</small> : null}
+        </label>
         <div className="graph-stats" aria-label="Graph rendering status">
           <span>{graph ? compactNumber(graph.stats.renderedNodes) : '—'} nodes</span>
           <span>{graph ? compactNumber(graph.stats.renderedEdges) : '—'} links</span>
           {graph?.paging.hasMore ? (
             <button
-              disabled={loading || workingSetAtMaximum}
-              onClick={() =>
-                setWorkingSet(current => ({
-                  edgeLimit: Math.min(MAX_WORKING_SET.edgeLimit, current.edgeLimit * 2),
-                  nodeLimit: Math.min(MAX_WORKING_SET.nodeLimit, current.nodeLimit * 2),
-                }))
-              }
+              disabled={(activeQuery ? queryLoading : loading) || workingSetAtMaximum}
+              onClick={() => {
+                if (activeQuery) {
+                  setQueryWorkingSet(current => ({
+                    edgeLimit: Math.min(MAX_QUERY_WORKING_SET.edgeLimit, current.edgeLimit * 2),
+                    nodeLimit: Math.min(MAX_QUERY_WORKING_SET.nodeLimit, current.nodeLimit * 2),
+                  }));
+                } else {
+                  setWorkingSet(current => ({
+                    edgeLimit: Math.min(MAX_WORKING_SET.edgeLimit, current.edgeLimit * 2),
+                    nodeLimit: Math.min(MAX_WORKING_SET.nodeLimit, current.nodeLimit * 2),
+                  }));
+                }
+              }}
               type="button"
             >
-              {loading ? 'Expanding…' : workingSetAtMaximum ? 'View capped' : 'Expand view'}
+              {(activeQuery ? queryLoading : loading)
+                ? 'Expanding…'
+                : workingSetAtMaximum
+                  ? activeQuery
+                    ? 'Query capped'
+                    : 'View capped'
+                  : activeQuery
+                    ? 'Expand results'
+                    : 'Expand view'}
             </button>
           ) : null}
           <span className="gpu-badge">WebGL</span>
@@ -1244,7 +1469,24 @@ export function GraphWorkspace(props: {
             <GraphEmptyState
               building={activeBuilds.some(build => build.state === 'queued' || build.state === 'running')}
             />
-          ) : error ? (
+          ) : activeQuery && selectedRepositoryIsIndexing && !queryGraph ? (
+            <div aria-live="polite" className="graph-loading" role="status">
+              <span className="spinner" aria-hidden="true" />
+              <span>Code graph indexing is in progress. Search will use the pinned ready snapshot when available.</span>
+            </div>
+          ) : activeQuery && queryError ? (
+            <div className="graph-empty" role="status">
+              <span className="empty-orbit" aria-hidden="true" />
+              <h3>Code search unavailable</h3>
+              <p>{queryError}</p>
+              <button onClick={submitCodeQuery} type="button">
+                Try query again
+              </button>
+              <button className="quiet-button" onClick={clearCodeQuery} type="button">
+                Return to graph
+              </button>
+            </div>
+          ) : !activeQuery && error ? (
             <div className="graph-empty">
               <span className="empty-orbit" aria-hidden="true" />
               <h3>Graph unavailable</h3>
@@ -1253,16 +1495,25 @@ export function GraphWorkspace(props: {
                 Try again
               </button>
             </div>
-          ) : loading || !graph ? (
+          ) : (activeQuery ? queryLoading : loading) || !graph ? (
             <div aria-live="polite" className="graph-loading" role="status">
               <span className="spinner" aria-hidden="true" />
-              <span>Preparing a bounded graph view…</span>
+              <span>{activeQuery ? `Searching for “${activeQuery}”…` : 'Preparing a bounded graph view…'}</span>
+            </div>
+          ) : activeQuery && (graph.query?.matchedNodes === 0 || graph.nodes.length === 0) ? (
+            <div className="graph-empty" role="status">
+              <span className="empty-orbit" aria-hidden="true" />
+              <h3>No code graph matches</h3>
+              <p>No concept, path, module, or symbol matched “{activeQuery}” in this snapshot.</p>
+              <button className="quiet-button" onClick={clearCodeQuery} type="button">
+                Return to graph
+              </button>
             </div>
           ) : (
             <ThreeGraph
               graph={graph}
               focusMode={focusMode}
-              key={`${graph.repository.id}:${graph.repository.snapshot.id}:${graph.projectId}`}
+              key={`${graph.repository.id}:${graph.repository.snapshot.id}:${graph.projectId}:${graph.query?.text ?? ''}`}
               onOpenProject={chooseProject}
               onSelectNode={nodeId => selectNode(nodeId, Boolean(nodeId))}
               relationFilter={relationFilter}
@@ -1302,9 +1553,9 @@ export function GraphWorkspace(props: {
         </aside>
       </div>
 
-      {graph?.warnings.length ? (
+      {graph && [...new Set([...graph.warnings, ...(graph.query?.warnings ?? [])])].length ? (
         <footer className="graph-notes">
-          {graph.warnings.map(warning => (
+          {[...new Set([...graph.warnings, ...(graph.query?.warnings ?? [])])].map(warning => (
             <span key={warning}>{warning}</span>
           ))}
         </footer>

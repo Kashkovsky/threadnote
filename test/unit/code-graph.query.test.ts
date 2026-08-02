@@ -173,7 +173,7 @@ describe('code graph query budgets', () => {
     }),
   );
 
-  it.effect('returns lexical evidence when semantic search does not finish within its dedicated deadline', () =>
+  it.effect('returns lexical evidence when semantic search exceeds a surface-specific deadline', () =>
     Effect.gen(function* () {
       const calls: string[] = [];
       const store = {
@@ -214,8 +214,11 @@ describe('code graph query budgets', () => {
         '/fixture/home',
         layout,
         false,
+        undefined,
+        undefined,
+        {semanticMilliseconds: 750, traversalMilliseconds: 1_000},
       ).pipe(Effect.forkChild);
-      yield* TestClock.adjust(10_001);
+      yield* TestClock.adjust(751);
       const result = yield* Fiber.join(fiber);
 
       expect(result.nodes).toEqual([expect.objectContaining({id: seed.id, score: 1})]);

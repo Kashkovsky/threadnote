@@ -685,6 +685,37 @@ describe('manager http API', () => {
       expect(new TextEncoder().encode(expandedText).byteLength).toBeLessThan(1_250_000);
       expect(expandedElapsedMilliseconds).toBeLessThan(2_000);
 
+      const queryStartedAt = performance.now();
+      const queryResponse = await fetch(
+        `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=manager-graph-snapshot&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
+        {headers},
+      );
+      const queryElapsedMilliseconds = performance.now() - queryStartedAt;
+      const queryText = await queryResponse.text();
+      const query = JSON.parse(queryText) as {
+        readonly edges: readonly {readonly sourceId: string; readonly targetId: string}[];
+        readonly nodes: readonly {readonly id: string; readonly score?: number}[];
+        readonly paging: {readonly edgeLimit: number; readonly nodeLimit: number};
+        readonly query: {readonly matchedNodes: number; readonly state: string; readonly text: string};
+        readonly repository: {readonly snapshot: {readonly id: string}};
+      };
+      expect(queryResponse.status).toBe(200);
+      expect(query.query).toMatchObject({matchedNodes: query.nodes.length, state: 'ready', text: 'App'});
+      expect(query.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(query.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
+      expect(query.nodes.some(node => typeof node.score === 'number')).toBe(true);
+      const queryNodeIds = new Set(query.nodes.map(node => node.id));
+      expect(query.edges.every(edge => queryNodeIds.has(edge.sourceId) && queryNodeIds.has(edge.targetId))).toBe(true);
+      expect(query.paging).toMatchObject({edgeLimit: 500, nodeLimit: 200});
+      expect(new TextEncoder().encode(queryText).byteLength).toBeLessThan(500_000);
+      expect(queryElapsedMilliseconds).toBeLessThan(2_500);
+
+      const unpinnedQueryResponse = await fetch(
+        `${server.url}/api/graph/query?repository=${repositoryId}&query=${encodeURIComponent('App')}`,
+        {headers},
+      );
+      expect(unpinnedQueryResponse.status).toBe(500);
+
       const nodeResponse = await fetch(
         `${server.url}/api/graph/node?repository=${repositoryId}&node=${encodeURIComponent('app')}`,
         {headers},
@@ -797,6 +828,18 @@ describe('manager http API', () => {
       };
       expect(pinnedAnalysisResponse.status).toBe(200);
       expect(pinnedAnalysis.statistics.analyzedNodeCount).toBe(523);
+
+      const pinnedQueryResponse = await fetch(
+        `${server.url}/api/graph/query?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=App`,
+        {headers},
+      );
+      const pinnedQuery = (await pinnedQueryResponse.json()) as {
+        readonly nodes: readonly {readonly id: string}[];
+        readonly repository: {readonly snapshot: {readonly id: string}};
+      };
+      expect(pinnedQueryResponse.status).toBe(200);
+      expect(pinnedQuery.repository.snapshot.id).toBe(originalSnapshotId);
+      expect(pinnedQuery.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
 
       const currentGraph = (await (
         await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})

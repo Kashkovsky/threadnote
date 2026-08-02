@@ -9,6 +9,7 @@ import {
   graphFocusTarget,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
+  graphQueryRequestIsCurrent,
   graphRequestIsCurrent,
   graphRepositoryOptionLabel,
   graphStatusPollDelay,
@@ -16,10 +17,13 @@ import {
   graphWaiterCountForBuild,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
+  managerGraphDebouncedQueryCandidate,
+  managerGraphQueryCandidate,
   resolveGraphSelection,
   type GraphEdge,
   type GraphAnalysis,
   type GraphRepositoryGroup,
+  type GraphQueryVisualization,
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
@@ -96,6 +100,81 @@ describe('manager graph focus', () => {
     expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(true);
     expect(graphRequestIsCurrent(8, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(false);
     expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:other:240', 'repo:snapshot:component:240')).toBe(false);
+  });
+
+  it('normalizes explicit queries while debouncing only useful typed graph-query text', () => {
+    expect(managerGraphQueryCandidate('  hydration manager  ')).toBe('hydration manager');
+    expect(managerGraphQueryCandidate('ab')).toBe('ab');
+    expect(managerGraphQueryCandidate('   ')).toBeUndefined();
+    expect(managerGraphDebouncedQueryCandidate('ab')).toBeUndefined();
+    expect(managerGraphDebouncedQueryCandidate(' api ')).toBe('api');
+    expect(managerGraphQueryCandidate('x'.repeat(513))).toBeUndefined();
+  });
+
+  it('rejects cancelled or stale code-query responses across rapid input and snapshot changes', () => {
+    const result = queryVisualization('hydrate document');
+    const controller = new AbortController();
+    expect(
+      graphQueryRequestIsCurrent(
+        false,
+        12,
+        12,
+        'repository:snapshot:hydrate document:240:640',
+        'repository:snapshot:hydrate document:240:640',
+        result,
+        'snapshot',
+        'hydrate document',
+      ),
+    ).toBe(true);
+    controller.abort();
+    expect(
+      graphQueryRequestIsCurrent(
+        controller.signal.aborted,
+        12,
+        12,
+        'repository:snapshot:hydrate document:240:640',
+        'repository:snapshot:hydrate document:240:640',
+        result,
+        'snapshot',
+        'hydrate document',
+      ),
+    ).toBe(false);
+    expect(
+      graphQueryRequestIsCurrent(
+        false,
+        13,
+        12,
+        'repository:snapshot:next query:240:640',
+        'repository:snapshot:hydrate document:240:640',
+        result,
+        'snapshot',
+        'hydrate document',
+      ),
+    ).toBe(false);
+    expect(
+      graphQueryRequestIsCurrent(
+        false,
+        12,
+        12,
+        'repository:snapshot:hydrate document:240:640',
+        'repository:snapshot:hydrate document:240:640',
+        {...result, repository: {...result.repository, snapshot: {...result.repository.snapshot, id: 'promoted'}}},
+        'snapshot',
+        'hydrate document',
+      ),
+    ).toBe(false);
+    expect(
+      graphQueryRequestIsCurrent(
+        false,
+        12,
+        12,
+        'repository:snapshot:hydrate document:240:640',
+        'repository:snapshot:hydrate document:240:640',
+        {...result, query: {...result.query, text: 'next query'}},
+        'snapshot',
+        'hydrate document',
+      ),
+    ).toBe(false);
   });
 
   it('rejects a late node detail after rapid selection, cancellation, or snapshot promotion', () => {
@@ -393,6 +472,40 @@ function graphAnalysis(state: GraphAnalysis['coverage']['topology']['state'], co
       maximumDegree: 0,
     },
     surprisingLinks: [],
+    warnings: [],
+  };
+}
+
+function queryVisualization(query: string): GraphQueryVisualization {
+  return {
+    edges: [],
+    mode: 'detail',
+    nodes: [],
+    paging: {edgeLimit: 640, hasMore: false, nodeLimit: 240},
+    projectId: 'query',
+    query: {matchedNodes: 0, state: 'ready', text: query, warnings: []},
+    repository: {
+      accounting: {
+        attributedSymbols: 0,
+        componentSymbols: 0,
+        fallbackSymbols: 0,
+        omittedSymbols: 0,
+        totalSymbols: 0,
+      },
+      displayName: 'threadnote',
+      id: 'repository',
+      metrics: 'complete',
+      snapshot: {
+        commit: 'commit',
+        dirty: false,
+        edgeCount: 0,
+        fileCount: 0,
+        id: 'snapshot',
+        symbolCount: 0,
+      },
+    },
+    scope: {id: 'query', label: query},
+    stats: {renderedEdges: 0, renderedNodes: 0, totalEdges: 0, totalNodes: 0},
     warnings: [],
   };
 }

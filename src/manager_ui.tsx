@@ -9,6 +9,7 @@ import {
   type GraphAnalysis,
   type GraphCatalog,
   type GraphNodeDetail,
+  type GraphQueryVisualization,
   type GraphVisualization,
 } from './manager_graph.js';
 import type {ManagerGraphVisualizationLimits} from './manager_graph_limits.js';
@@ -996,6 +997,7 @@ function App(): React.ReactElement {
               loadAnalysis={loadManagerGraphAnalysis}
               loadGraph={loadManagerGraph}
               loadNodeDetail={loadManagerGraphNodeDetail}
+              loadQuery={loadManagerGraphQuery}
               onRefresh={() => void refreshGraphCatalog(true)}
             />
           </section>
@@ -1804,6 +1806,20 @@ function loadManagerGraphNodeDetail(
 ): Promise<GraphNodeDetail> {
   return api<GraphNodeDetail>(
     `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&node=${encodeURIComponent(nodeId)}`,
+    undefined,
+    {signal},
+  );
+}
+
+function loadManagerGraphQuery(
+  repositoryId: string,
+  snapshotId: string,
+  query: string,
+  limits: ManagerGraphVisualizationLimits,
+  signal: AbortSignal,
+): Promise<GraphQueryVisualization> {
+  return api<GraphQueryVisualization>(
+    `/api/graph/query?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&query=${encodeURIComponent(query)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
     undefined,
     {signal},
   );

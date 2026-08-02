@@ -59,6 +59,11 @@ export interface CodeGraphQueryInterlock {
   readonly beforeReadCompletion?: () => Effect.Effect<void>;
 }
 
+export interface CodeGraphTraversalTimeBudgets {
+  readonly semanticMilliseconds?: number;
+  readonly traversalMilliseconds?: number;
+}
+
 export interface CodeGraphStatusObservation {
   readonly identity: RepositoryIdentity;
   readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
@@ -310,8 +315,21 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   impact: boolean,
   seedQueries?: readonly string[],
   baseSnapshotId?: string,
+  timeBudgets: CodeGraphTraversalTimeBudgets = {},
 ) {
-  let deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
+  const traversalTimeBudgetMilliseconds = boundedInteger(
+    timeBudgets.traversalMilliseconds,
+    QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+    100,
+    QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+  );
+  const semanticTimeBudgetMilliseconds = boundedInteger(
+    timeBudgets.semanticMilliseconds,
+    QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+    100,
+    QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+  );
+  let deadline = (yield* Clock.currentTimeMillis) + traversalTimeBudgetMilliseconds;
   const requestedSeedQueries = (seedQueries?.length ? seedQueries : [query]).slice(0, MAX_IMPACT_SEED_QUERIES);
   const seedLimit = impact ? MAX_IMPACT_SEED_SYMBOLS : Math.min(nodeLimit, 12);
   const perSeedLimit = impact
@@ -360,7 +378,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
         Effect.map(scores => ({scores, timedOut: false as const})),
         Effect.catch(() => Effect.succeed({scores: new Map<string, number>(), timedOut: false as const})),
         Effect.timeoutOrElse({
-          duration: QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+          duration: semanticTimeBudgetMilliseconds,
           orElse: () =>
             Effect.succeed({
               scores: new Map<string, number>(),
@@ -369,7 +387,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
         }),
       );
   if (semanticEligible) {
-    deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
+    deadline = (yield* Clock.currentTimeMillis) + traversalTimeBudgetMilliseconds;
   }
   const semantic = semanticResult.scores;
   const semanticOnlyIds = [...semantic.keys()]

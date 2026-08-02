@@ -61,6 +61,7 @@ import {
   managerGraphBuildCatalog,
   managerGraphCatalog,
   managerGraphNodeDetail,
+  managerGraphQuery,
   managerGraphVisualization,
 } from './code_graph/visualization.js';
 import type {
@@ -499,6 +500,29 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
         context.config.agentContextHome,
         requiredQuery(url, 'repository'),
         optionalNonEmptyQuery(url, 'snapshot'),
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/query') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphQuery(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        requiredQuery(url, 'query'),
+        {
+          ...Option.match(optionalPositiveIntegerQuery(url, 'edgeLimit'), {
+            onNone: () => ({}),
+            onSome: edgeLimit => ({edgeLimit}),
+          }),
+          ...Option.match(optionalPositiveIntegerQuery(url, 'nodeLimit'), {
+            onNone: () => ({}),
+            onSome: nodeLimit => ({nodeLimit}),
+          }),
+        },
+        Option.some(requiredQuery(url, 'snapshot')),
       ),
     );
     return;

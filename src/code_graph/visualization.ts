@@ -1,6 +1,9 @@
 import {Effect, Option, Path} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
+import {CodeGraphEmbeddingIndex} from './embedding.js';
+import {codeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {traversalQuery} from './query.js';
 import {
   CodeGraphStore,
   type CodeGraphStoreShape,
@@ -9,7 +12,14 @@ import {
   type CodeGraphVisualizationScope,
   type CodeGraphVisualizationScopeEdge,
 } from './store.js';
-import type {CodeGraphEdge, CodeGraphProvenance, CodeGraphSnapshot, CodeGraphSpan, CodeGraphSymbol} from './types.js';
+import type {
+  CodeGraphEdge,
+  CodeGraphProvenance,
+  CodeGraphQueryNode,
+  CodeGraphSnapshot,
+  CodeGraphSpan,
+  CodeGraphSymbol,
+} from './types.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
 import {
@@ -30,6 +40,13 @@ const MANAGER_OVERVIEW_PROJECT_LIMIT = 500;
 const MANAGER_CATALOG_WORKSPACE_LIMIT = 64;
 const MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS = MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS / 2;
+const MANAGER_QUERY_DEFAULT_EDGE_LIMIT = 240;
+const MANAGER_QUERY_DEFAULT_NODE_LIMIT = 120;
+const MANAGER_QUERY_MAX_EDGE_LIMIT = 500;
+const MANAGER_QUERY_MAX_NODE_LIMIT = 200;
+const MANAGER_QUERY_MAX_LENGTH = 512;
+const MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 750;
+const MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS = 1_000;
 const managerSnapshotLeases = new Map<string, {readonly renewAfter: number; readonly token: string}>();
 const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
 const NODE_ID_MAX_LENGTH = 512;
@@ -116,6 +133,7 @@ export interface ManagerGraphNode {
   readonly path?: string;
   readonly projectId: string;
   readonly qualifiedName?: string;
+  readonly score?: number;
   readonly signature?: string;
   readonly symbolCount?: number;
   readonly type: 'project' | 'symbol';
@@ -142,6 +160,12 @@ export interface ManagerGraphVisualization {
     readonly nodeLimit: number;
   };
   readonly projectId: string;
+  readonly query?: {
+    readonly matchedNodes: number;
+    readonly state: 'ready';
+    readonly text: string;
+    readonly warnings: readonly string[];
+  };
   readonly repository: {
     readonly accounting: CodeGraphVisualizationCatalog['accounting'];
     readonly displayName: string;
@@ -379,6 +403,90 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
   const project = catalog.projects.find(candidate => candidate.id === projectId);
   if (!project) return yield* Effect.fail(new Error('Indexed graph project was not found.'));
   return yield* detailVisualization(store, database, repository, project, limits);
+});
+
+export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
+  threadnoteHome: string,
+  indexedViewId: string,
+  requestedQuery: string,
+  requestedBudget: ManagerGraphVisualizationBudget = {},
+  expectedSnapshotId: Option.Option<string> = Option.none(),
+) {
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (Option.isNone(expectedSnapshotId)) {
+    return yield* Effect.fail(new Error('Graph queries require the selected snapshot identity.'));
+  }
+  const query = requestedQuery.trim();
+  if (query.length === 0 || query.length > MANAGER_QUERY_MAX_LENGTH) {
+    return yield* Effect.fail(new Error('Graph query must contain between 1 and 512 characters.'));
+  }
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const embedding = yield* CodeGraphEmbeddingIndex;
+  const {catalog, checkoutId, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
+    expectedSnapshotId,
+    includeDependencies: false,
+    projectLimit: 1,
+  });
+  const requestedLimits = managerGraphVisualizationLimits({
+    edgeLimit: requestedBudget.edgeLimit ?? MANAGER_QUERY_DEFAULT_EDGE_LIMIT,
+    nodeLimit: requestedBudget.nodeLimit ?? MANAGER_QUERY_DEFAULT_NODE_LIMIT,
+  });
+  const limits = {
+    edgeLimit: Math.min(MANAGER_QUERY_MAX_EDGE_LIMIT, requestedLimits.edgeLimit),
+    nodeLimit: Math.min(MANAGER_QUERY_MAX_NODE_LIMIT, requestedLimits.nodeLimit),
+  };
+  const layout = codeGraphLayout(path, threadnoteHome, checkoutId, catalog.viewWorktreeId);
+  const lease = yield* store.acquireSnapshotLease(database, catalog.snapshot.id, 2 * 60_000);
+  const selection = yield* store
+    .withSession(
+      database,
+      traversalQuery(
+        store,
+        database,
+        catalog.snapshot.id,
+        query,
+        'both',
+        limits.nodeLimit,
+        limits.edgeLimit,
+        1,
+        ['declared', 'resolved', 'syntactic'],
+        embedding,
+        threadnoteHome,
+        layout,
+        false,
+        undefined,
+        undefined,
+        {
+          semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+          traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+        },
+      ),
+      {readOnly: true},
+    )
+    .pipe(Effect.ensuring(store.releaseSnapshotLease(database, lease).pipe(Effect.catch(() => Effect.void))));
+  const workingSet = managerGraphQueryWorkingSet(selection.nodes, selection.edges, limits);
+  const {edges: visibleEdges, nodes} = workingSet;
+  const warnings = selection.warnings.map(warning => boundedText(warning, 320));
+  const truncated = workingSet.truncated || warnings.some(warning => /partial|limit|budget/iu.test(warning));
+  const repository = repositoryFromCatalog(checkoutId, catalog);
+  return {
+    edges: visibleEdges,
+    mode: 'detail',
+    nodes,
+    paging: {...limits, hasMore: truncated},
+    projectId: 'query',
+    query: {matchedNodes: nodes.length, state: 'ready', text: boundedText(query, MANAGER_QUERY_MAX_LENGTH), warnings},
+    repository: visualizationRepository(repository),
+    scope: {id: 'query', label: `Query: ${boundedText(query, 120)}`},
+    stats: {
+      renderedEdges: visibleEdges.length,
+      renderedNodes: nodes.length,
+      totalEdges: repository.snapshot.edgeCount,
+      totalNodes: repository.snapshot.symbolCount,
+    },
+    warnings,
+  } satisfies ManagerGraphVisualization;
 });
 
 export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(function* (
@@ -807,6 +915,49 @@ export function managerGraphDetailWorkingSet(
       [...new Set(adjacent.flatMap(edge => [edge.sourceId, edge.targetId]).filter(isString))].some(
         id => !visibleIds.has(id),
       ),
+  };
+}
+
+export function managerGraphQueryWorkingSet(
+  queryNodes: readonly CodeGraphQueryNode[],
+  queryEdges: readonly CodeGraphEdge[],
+  limits: ManagerGraphVisualizationLimits,
+): {
+  readonly edges: readonly ManagerGraphEdge[];
+  readonly nodes: readonly ManagerGraphNode[];
+  readonly truncated: boolean;
+} {
+  const visibleNodes = queryNodes.slice(0, limits.nodeLimit);
+  const visibleIds = new Set(visibleNodes.map(node => node.id));
+  const edges = queryEdges
+    .filter((edge): edge is CodeGraphEdge & {readonly sourceId: string; readonly targetId: string} =>
+      Boolean(
+        edge.sourceId &&
+        edge.targetId &&
+        edge.sourceId !== edge.targetId &&
+        visibleIds.has(edge.sourceId) &&
+        visibleIds.has(edge.targetId),
+      ),
+    )
+    .slice(0, limits.edgeLimit)
+    .map(edge => ({
+      confidence: edge.confidence,
+      count: 1,
+      id: edge.id,
+      provenance: edge.provenance,
+      relation: edge.relation,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+    }));
+  const connections = connectionCounts(edges);
+  const nodes = visibleNodes.map(node => ({
+    ...symbolNode(node, connections.get(node.id) ?? 0),
+    score: node.score,
+  }));
+  return {
+    edges,
+    nodes,
+    truncated: queryNodes.length > nodes.length || queryEdges.length > edges.length,
   };
 }
 
