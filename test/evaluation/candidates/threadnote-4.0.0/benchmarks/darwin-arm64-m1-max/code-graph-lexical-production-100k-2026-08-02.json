@@ -1,0 +1,97 @@
+{
+  "assertions": {
+    "canonicalParity": true,
+    "deepAuditParity": true,
+    "postingCountParity": true,
+    "queryParity": true,
+    "storageReduced": true
+  },
+  "compact": {
+    "activationValidationMilliseconds": 1.9449160000003758,
+    "materializationMilliseconds": 13581.369332999999,
+    "postingRows": 2084370,
+    "termWriteMilliseconds": 6382.126999000009,
+    "canonical": {
+      "digest": "e1e534b2818b58b68c4c37e68ffd5a01c9e9ea39601e9c843c9de112aa9fc469",
+      "rowCount": 2084370
+    },
+    "exactValidation": {
+      "actualPostingCount": 2084370,
+      "actualSymbolCount": 100000,
+      "actualTermCount": 110198,
+      "expectedPostingCount": 2084370,
+      "expectedSymbolCount": 100000,
+      "expectedTermCount": 110198,
+      "firstMilliseconds": 55.20387499999924,
+      "parity": true,
+      "p50Milliseconds": 54.629667000001064,
+      "samples": 5
+    },
+    "query": {
+      "digest": "1e0bb058e8bf233c88caf5272dcd3bfd4dc71c762262297975b7a7a744670116",
+      "p50Milliseconds": 123.5769169999985,
+      "p95Milliseconds": 126.45158400000219,
+      "responseRows": 400
+    },
+    "storage": {
+      "allocatedBytes": 233046016,
+      "freelistBytes": 0,
+      "pageCount": 56896,
+      "pageSize": 4096
+    }
+  },
+  "contract": {
+    "compactFormatVersion": 1,
+    "legacySecondaryIndexes": ["terms_lookup", "terms_symbol"],
+    "measurement": "same-process-production-schema-write-query-microbenchmark",
+    "ranking": "sum-weight-desc-symbol-id",
+    "scope": "lexical-storage-only-not-end-to-end-indexing"
+  },
+  "createdAt": "2026-08-02T23:11:05.453Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "1e9b0c41a10831774d487747d3f6214bc9d29afd",
+    "cpu": "Apple M1 Max",
+    "dirty": false,
+    "memoryBytes": 68719476736,
+    "operatingSystem": "macOS 27.0",
+    "runtime": "1.3.14",
+    "sqlite": "3.54.0"
+  },
+  "legacy": {
+    "canonical": {
+      "digest": "e1e534b2818b58b68c4c37e68ffd5a01c9e9ea39601e9c843c9de112aa9fc469",
+      "rowCount": 2084370
+    },
+    "postingRows": 2084370,
+    "query": {
+      "digest": "1e0bb058e8bf233c88caf5272dcd3bfd4dc71c762262297975b7a7a744670116",
+      "p50Milliseconds": 140.3172909999994,
+      "p95Milliseconds": 147.26404100000218,
+      "responseRows": 400
+    },
+    "storage": {
+      "allocatedBytes": 539148288,
+      "freelistBytes": 0,
+      "pageCount": 131628,
+      "pageSize": 4096
+    },
+    "termWriteMilliseconds": 17565.757583
+  },
+  "profile": {
+    "allowLarge": true,
+    "batchSymbols": 1000,
+    "legacyInsertBatchRows": 5000,
+    "legacyTransactionRows": 100000,
+    "queryIterations": 30,
+    "symbolCount": 100000
+  },
+  "reduction": {
+    "exactCountToActivationValidationRatio": 28.088445464992066,
+    "allocatedBytesPercent": 56.775154222505854,
+    "compactToLegacyRatio": 0.4322484577749415,
+    "compactToLegacyTermWriteRatio": 0.3633277397142598
+  },
+  "suite": "code-graph-lexical-production-micro-v1",
+  "version": 1
+}
