@@ -56,6 +56,67 @@ describe('code graph persistent schema migration', () => {
     }
   });
 
+  it('keeps revision 4 ready lexical rows readable while enabling compact writes for later snapshots', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-legacy-lexical-before-upgrade');
+    const preserved = graphSymbol('preserved-legacy-lexical');
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+          }),
+        );
+      }),
+    );
+    downgradeLexicalExtensionToRevision4(fixture.databasePath, ready.id);
+
+    const replacement = snapshot(fixture.identity, 'ready-compact-lexical-after-upgrade');
+    const compact = graphSymbol('new-compact-lexical');
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+        const legacySearch = yield* store.searchSymbols(fixture.databasePath, ready.id, preserved.name, 10);
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [compact], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, replacement);
+          }),
+        );
+        const compactSearch = yield* store.searchSymbols(fixture.databasePath, replacement.id, compact.name, 10);
+        return {compactSearch, legacySearch};
+      }),
+    );
+
+    expect(result.legacySearch.map(symbol => symbol.id)).toEqual([preserved.id]);
+    expect(result.compactSearch.map(symbol => symbol.id)).toEqual([compact.id]);
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      const formats = database
+        .query('SELECT snapshot_id FROM lexical_storage_formats ORDER BY snapshot_id')
+        .all() as readonly {readonly snapshot_id: string}[];
+      const legacyRows = database
+        .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
+        .get(ready.id) as {readonly count: number};
+      const revision = database
+        .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+        .get() as {readonly value: string};
+      expect(formats.map(format => format.snapshot_id)).toEqual([replacement.id]);
+      expect(legacyRows.count).toBeGreaterThan(0);
+      expect(revision.value).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
   it('preserves ready beta data and restarts an incomplete pre-fingerprint build before materializing', async () => {
     const fixture = await migrationFixture();
     const ready = snapshot(fixture.identity, 'ready-before-upgrade');
@@ -768,6 +829,41 @@ function downgradePersistentExtensionSchema(
          ) VALUES (?, 1, 1, 0, ?)`,
       )
       .run(readySnapshotId, new Date().toISOString());
+    database.exec('COMMIT');
+  } catch (error) {
+    if (database.inTransaction) database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeLexicalExtensionToRevision4(databasePath: string, snapshotId: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    database.exec('BEGIN IMMEDIATE');
+    database
+      .query(
+        `INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
+         SELECT compact.snapshot_id, term.term, symbol.symbol_id, posting.weight
+         FROM lexical_compact_snapshots AS compact
+         JOIN lexical_compact_terms AS term ON term.snapshot_key = compact.snapshot_key
+         JOIN lexical_compact_postings AS posting
+           ON posting.snapshot_key = compact.snapshot_key AND posting.term_key = term.term_key
+         JOIN lexical_compact_symbols AS symbol
+           ON symbol.snapshot_key = compact.snapshot_key AND symbol.symbol_key = posting.symbol_key
+         WHERE compact.snapshot_id = ?`,
+      )
+      .run(snapshotId);
+    database.exec(`
+      DROP TABLE lexical_storage_formats;
+      DROP TABLE lexical_compact_postings;
+      DROP TABLE lexical_compact_symbols;
+      DROP TABLE lexical_compact_terms;
+      DROP TABLE lexical_compact_snapshots;
+    `);
+    database.query("UPDATE schema_metadata SET value = '4' WHERE key = 'persistent_extension_schema_revision'").run();
     database.exec('COMMIT');
   } catch (error) {
     if (database.inTransaction) database.exec('ROLLBACK');

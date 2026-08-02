@@ -4,6 +4,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphAdjacencyQueryStatement,
+  codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolsByIdsQueryStatement,
   codeGraphTermCandidateQueryStatement,
@@ -29,6 +30,14 @@ interface EdgeSpec {
   readonly target: number;
 }
 
+interface LexicalPostingSpec {
+  readonly symbol: number;
+  readonly term: string;
+  readonly weight: number;
+}
+
+type LexicalFixtureFormat = 'compact' | 'legacy';
+
 const edgeSpec = FC.record({
   confidence: FC.integer({max: 100, min: 0}),
   id: FC.integer({max: 15, min: 0}),
@@ -36,6 +45,11 @@ const edgeSpec = FC.record({
   relation: FC.constantFrom(...relations),
   source: FC.integer({max: 5, min: 0}),
   target: FC.integer({max: 5, min: 0}),
+});
+const lexicalPostingSpec = FC.record({
+  symbol: FC.integer({max: 7, min: 0}),
+  term: FC.constantFrom('alpha', 'beta', 'delta', 'gamma', 'omega'),
+  weight: FC.integer({max: 5, min: 1}),
 });
 const bazelLabelSegment = FC.array(
   FC.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-'),
@@ -201,14 +215,85 @@ describe('code graph indexed query properties', () => {
             400,
           );
           const termPlan = queryPlan(database, terms.text, terms.parameters);
-          expect(termPlan).toContain('SEARCH current_terms USING PRIMARY KEY (snapshot_id=? AND term=?)');
-          expect(termPlan).toContain('SEARCH base_terms USING PRIMARY KEY (snapshot_id=? AND term=?)');
-          expect(termPlan.join('\n')).not.toMatch(/SCAN (?:current_terms|base_terms|symbol_terms)/u);
+          expect(termPlan).toContain('SEARCH current_legacy_terms USING PRIMARY KEY (snapshot_id=? AND term=?)');
+          expect(termPlan).toContain('SEARCH base_legacy_terms USING PRIMARY KEY (snapshot_id=? AND term=?)');
+          expect(termPlan).toContain(
+            'SEARCH current_compact_terms USING COVERING INDEX sqlite_autoindex_lexical_compact_terms_1 (snapshot_key=? AND term=?)',
+          );
+          expect(termPlan).toContain(
+            'SEARCH current_compact_postings USING PRIMARY KEY (snapshot_key=? AND term_key=?)',
+          );
+          expect(termPlan.join('\n')).not.toMatch(
+            /SCAN (?:current_legacy_terms|base_legacy_terms|current_compact_postings|base_compact_postings|symbol_terms)/u,
+          );
         } finally {
           database.close(false);
         }
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect.prop(
+    'preserves canonical rows and exact ranking across mixed lexical formats, overrides, and deletions',
+    {
+      base: FC.array(lexicalPostingSpec, {maxLength: 30}),
+      baseFormat: FC.constantFrom<LexicalFixtureFormat>('compact', 'legacy'),
+      current: FC.array(lexicalPostingSpec, {maxLength: 30}),
+      currentFormat: FC.constantFrom<LexicalFixtureFormat>('compact', 'legacy'),
+      deletedSymbols: FC.array(FC.integer({max: 7, min: 0}), {maxLength: 8}),
+      limit: FC.integer({max: 20, min: 1}),
+      terms: FC.uniqueArray(FC.constantFrom('alpha', 'beta', 'delta', 'gamma', 'omega'), {
+        maxLength: 5,
+        minLength: 1,
+      }),
+    },
+    ({base, baseFormat, current, currentFormat, deletedSymbols, limit, terms}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-lexical-mixed-property-'});
+          const databasePath = path.join(root, 'graph-v3.sqlite');
+          yield* store.initialize(databasePath);
+          const expected = yield* Effect.sync(() =>
+            insertLexicalOverlayFixture(
+              databasePath,
+              base,
+              current,
+              new Set(deletedSymbols.map(lexicalSymbolId)),
+              baseFormat,
+              currentFormat,
+            ),
+          );
+
+          const actual = yield* Effect.sync(() => {
+            const database = new Database(databasePath, {readonly: true, strict: true});
+            try {
+              const candidates = codeGraphTermCandidateQueryStatement(currentSnapshotId, baseSnapshotId, terms, limit);
+              const rows = database.query(candidates.text).all(...candidates.parameters) as readonly {
+                readonly score: number;
+                readonly symbol_id: string;
+              }[];
+              const canonical = codeGraphEffectiveSymbolTermsQueryStatement(currentSnapshotId, baseSnapshotId);
+              const canonicalRows = database.query(canonical.text).all(...canonical.parameters) as readonly {
+                readonly symbol_id: string;
+                readonly term: string;
+                readonly weight: number;
+              }[];
+              return {canonicalRows, rows};
+            } finally {
+              database.close(false);
+            }
+          });
+          const expectedScores = lexicalCandidateReference(expected, new Set(terms), limit);
+          expect(actual.canonicalRows).toEqual(expected);
+          expect(actual.rows.map(row => ({score: Number(row.score), symbol_id: row.symbol_id}))).toEqual(
+            expectedScores,
+          );
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    {fastCheck: {numRuns: 80}},
   );
 
   it.effect('bounds every branch before merging a high-degree adjacency result', () =>
@@ -429,6 +514,147 @@ function edgeIdentity(edge: CodeGraphEdge): readonly unknown[] {
     edge.sourceName,
     edge.targetName,
   ];
+}
+
+interface LexicalCanonicalRow {
+  readonly symbol_id: string;
+  readonly term: string;
+  readonly weight: number;
+}
+
+function insertLexicalOverlayFixture(
+  databasePath: string,
+  baseInput: readonly LexicalPostingSpec[],
+  currentInput: readonly LexicalPostingSpec[],
+  deletedSymbolIds: ReadonlySet<string>,
+  baseFormat: LexicalFixtureFormat,
+  currentFormat: LexicalFixtureFormat,
+): readonly LexicalCanonicalRow[] {
+  const base = normalizedLexicalPostings(baseInput);
+  const current = normalizedLexicalPostings(currentInput);
+  const currentSymbolIds = new Set(current.map(row => row.symbol_id));
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.transaction(() => {
+      insertRepository(database);
+      insertSnapshot(database, baseSnapshotId, undefined, 0);
+      insertSnapshot(database, currentSnapshotId, baseSnapshotId, 0);
+      insertLexicalSnapshot(database, baseSnapshotId, base, baseFormat);
+      insertLexicalSnapshot(database, currentSnapshotId, current, currentFormat);
+      const deletion = database.query('INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id) VALUES (?, ?)');
+      for (const symbolId of [...deletedSymbolIds].sort()) deletion.run(currentSnapshotId, symbolId);
+    })();
+  } finally {
+    database.close(false);
+  }
+  return [
+    ...current,
+    ...base.filter(row => !currentSymbolIds.has(row.symbol_id) && !deletedSymbolIds.has(row.symbol_id)),
+  ].sort(
+    (left, right) => left.term.localeCompare(right.term, 'en') || left.symbol_id.localeCompare(right.symbol_id, 'en'),
+  );
+}
+
+function normalizedLexicalPostings(input: readonly LexicalPostingSpec[]): readonly LexicalCanonicalRow[] {
+  const rows = new Map<string, LexicalCanonicalRow>();
+  for (const posting of input) {
+    const symbolId = lexicalSymbolId(posting.symbol);
+    const key = `${posting.term}\0${symbolId}`;
+    const current = rows.get(key);
+    if (current === undefined || posting.weight > current.weight) {
+      rows.set(key, {symbol_id: symbolId, term: posting.term, weight: posting.weight});
+    }
+  }
+  return [...rows.values()].sort(
+    (left, right) => left.term.localeCompare(right.term, 'en') || left.symbol_id.localeCompare(right.symbol_id, 'en'),
+  );
+}
+
+function insertLexicalSnapshot(
+  database: Database,
+  snapshotId: string,
+  postings: readonly LexicalCanonicalRow[],
+  format: LexicalFixtureFormat,
+): void {
+  const symbolIds = [...new Set(postings.map(row => row.symbol_id))].sort();
+  const insertSymbol = database.query(`INSERT INTO symbols (
+    snapshot_id, id, content_hash, kind, name, qualified_name, path, language, arity,
+    lookup_keys_json, resolution_domain, resolution_scope_id, package_name, exported,
+    signature, documentation, span_json
+  ) VALUES (?, ?, ?, 'function', ?, ?, ?, 'typescript', NULL, '[]', 'typescript', NULL, NULL, 1, NULL, NULL, ?)`);
+  for (const symbolId of symbolIds) {
+    insertSymbol.run(
+      snapshotId,
+      symbolId,
+      `hash-${snapshotId}-${symbolId}`,
+      symbolId,
+      symbolId,
+      `src/${symbolId}.ts`,
+      spanJson,
+    );
+  }
+  database.query('UPDATE snapshots SET symbol_count = ? WHERE id = ?').run(symbolIds.length, snapshotId);
+  if (format === 'legacy') {
+    const insert = database.query(
+      'INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight) VALUES (?, ?, ?, ?)',
+    );
+    for (const posting of postings) insert.run(snapshotId, posting.term, posting.symbol_id, posting.weight);
+    return;
+  }
+  database.query('INSERT INTO lexical_compact_snapshots (snapshot_id) VALUES (?)').run(snapshotId);
+  const compact = database
+    .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+    .get(snapshotId) as {readonly snapshot_key: number};
+  const insertCompactSymbol = database.query(
+    'INSERT INTO lexical_compact_symbols (snapshot_key, symbol_id) VALUES (?, ?)',
+  );
+  for (const symbolId of symbolIds) insertCompactSymbol.run(compact.snapshot_key, symbolId);
+  const terms = [...new Set(postings.map(row => row.term))].sort();
+  const insertTerm = database.query('INSERT INTO lexical_compact_terms (snapshot_key, term) VALUES (?, ?)');
+  for (const term of terms) insertTerm.run(compact.snapshot_key, term);
+  const insertPosting = database.query(
+    `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+     SELECT ?, term.term_key, symbol.symbol_key, ?
+     FROM lexical_compact_terms AS term, lexical_compact_symbols AS symbol
+     WHERE term.snapshot_key = ? AND term.term = ?
+       AND symbol.snapshot_key = ? AND symbol.symbol_id = ?`,
+  );
+  for (const posting of postings) {
+    insertPosting.run(
+      compact.snapshot_key,
+      posting.weight,
+      compact.snapshot_key,
+      posting.term,
+      compact.snapshot_key,
+      posting.symbol_id,
+    );
+  }
+  database
+    .query(
+      `INSERT INTO lexical_storage_formats (
+         snapshot_id, format_version, posting_count, symbol_count, term_count, created_at
+       ) VALUES (?, 1, ?, ?, ?, ?)`,
+    )
+    .run(snapshotId, postings.length, symbolIds.length, terms.length, timestamp);
+}
+
+function lexicalCandidateReference(
+  rows: readonly LexicalCanonicalRow[],
+  terms: ReadonlySet<string>,
+  limit: number,
+): readonly {readonly score: number; readonly symbol_id: string}[] {
+  const scores = new Map<string, number>();
+  for (const row of rows) {
+    if (terms.has(row.term)) scores.set(row.symbol_id, (scores.get(row.symbol_id) ?? 0) + row.weight);
+  }
+  return [...scores]
+    .map(([symbol_id, score]) => ({score, symbol_id}))
+    .sort((left, right) => right.score - left.score || left.symbol_id.localeCompare(right.symbol_id, 'en'))
+    .slice(0, limit);
+}
+
+function lexicalSymbolId(value: number): string {
+  return `lexical-symbol-${value}`;
 }
 
 function insertOverlayFixture(

@@ -12,7 +12,9 @@ import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
+  codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphPersistedEndpointValidationPageStatement,
+  codeGraphTermCandidateQueryStatement,
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
@@ -1514,10 +1516,36 @@ describe('code graph full-build materialization store', () => {
     const firstGraph = await finish(fixture.identity, firstSnapshot, first);
     const secondGraph = await finish(secondIdentity, secondSnapshot, second);
 
+    const lexical = new Database(fixture.databasePath, {readonly: true, strict: true});
+    const formats = lexical
+      .query(
+        `SELECT snapshot_id, posting_count
+         FROM lexical_storage_formats
+         WHERE snapshot_id IN (?, ?)
+         ORDER BY snapshot_id`,
+      )
+      .all(firstSnapshot.id, secondSnapshot.id) as readonly {
+      readonly posting_count: number;
+      readonly snapshot_id: string;
+    }[];
+    const firstTerms = readLexicalTerms(lexical, firstSnapshot.id);
+    const secondTerms = readLexicalTerms(lexical, secondSnapshot.id);
+    const legacyPostings = lexical
+      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id IN (?, ?)')
+      .get(firstSnapshot.id, secondSnapshot.id) as {readonly count: number};
+    lexical.close(false);
+
     expect(firstGraph.edges).toHaveLength(1);
     expect(firstGraph.edges[0]?.targetId).toBe(first.target.id);
     expect(secondGraph.edges).toHaveLength(1);
     expect(secondGraph.edges[0]?.targetId).toBe(second.target.id);
+    expect(formats).toHaveLength(2);
+    expect(formats.every(format => format.posting_count > 0)).toBe(true);
+    expect(firstTerms.some(row => row.symbol_id === first.target.id)).toBe(true);
+    expect(firstTerms.some(row => row.symbol_id === second.target.id)).toBe(false);
+    expect(secondTerms.some(row => row.symbol_id === second.target.id)).toBe(true);
+    expect(secondTerms.some(row => row.symbol_id === first.target.id)).toBe(false);
+    expect(legacyPostings.count).toBe(0);
   });
 
   it('resumes committed direct batches across sessions and discards a caught failed build', async () => {
@@ -1589,6 +1617,18 @@ describe('code graph full-build materialization store', () => {
     expect(result.resumedCounts).toEqual({edges: 0, symbols: 1});
     expect(result.mismatch).toContain('batch contents changed');
     expect(result.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
+    const lexical = new Database(fixture.databasePath, {readonly: true, strict: true});
+    const receipt = lexical
+      .query('SELECT posting_count, symbol_count FROM lexical_storage_formats WHERE snapshot_id = ?')
+      .get(snapshot.id) as {readonly posting_count: number; readonly symbol_count: number};
+    const terms = readLexicalTerms(lexical, snapshot.id);
+    const legacyRows = lexical
+      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
+      .get(snapshot.id) as {readonly count: number};
+    lexical.close(false);
+    expect(receipt).toMatchObject({posting_count: terms.length, symbol_count: 1});
+    expect(new Set(terms.map(row => row.symbol_id))).toEqual(new Set([replacement.id]));
+    expect(legacyRows.count).toBe(0);
   });
 
   it('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', async () => {
@@ -2133,9 +2173,7 @@ describe('code graph full-build materialization store', () => {
     );
 
     const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const termOwners = database
-      .query('SELECT DISTINCT symbol_id FROM symbol_terms WHERE snapshot_id = ? ORDER BY symbol_id')
-      .all(snapshot.id) as readonly {readonly symbol_id: string}[];
+    const termOwners = [...new Set(readLexicalTerms(database, snapshot.id).map(row => row.symbol_id))].sort();
     const foreignKeyViolations = database.query('PRAGMA foreign_key_check').all();
     const indexes = database.query("SELECT name FROM sqlite_master WHERE type = 'index'").all() as readonly {
       readonly name: string;
@@ -2145,7 +2183,7 @@ describe('code graph full-build materialization store', () => {
     expect(result.graph.symbols).toEqual([replacement]);
     expect(result.replacementSearch.map(node => node.id)).toEqual([replacement.id]);
     expect(result.staleSearch).toEqual([]);
-    expect(termOwners.map(row => row.symbol_id)).toEqual([replacement.id]);
+    expect(termOwners).toEqual([replacement.id]);
     expect(foreignKeyViolations).toEqual([]);
     expect(indexes.map(index => index.name)).not.toContain('terms_symbol');
   });
@@ -2399,39 +2437,34 @@ describe('code graph full-build materialization store', () => {
          WHERE snapshot_id = ? AND lookup_key = ? AND resolution_domain = ? AND exported = 1`,
       )
       .all(result.graph.snapshot.id, 'typescript:name:target', 'typescript') as readonly {readonly detail: string}[];
-    const termPlan = database
-      .query('EXPLAIN QUERY PLAN SELECT symbol_id, weight FROM symbol_terms WHERE snapshot_id = ? AND term = ?')
-      .all(result.graph.snapshot.id, 'target') as readonly {readonly detail: string}[];
+    const rankedTerms = codeGraphTermCandidateQueryStatement(
+      result.graph.snapshot.id,
+      undefined,
+      ['target', 'direct', 'caller'],
+      100,
+    );
     const rankedTermPlan = database
-      .query(
-        `EXPLAIN QUERY PLAN
-         WITH effective_terms AS (
-           SELECT current_terms.*
-           FROM symbol_terms AS current_terms INDEXED BY sqlite_autoindex_symbol_terms_1
-           WHERE current_terms.snapshot_id = ?
-           UNION ALL
-           SELECT base_terms.*
-           FROM symbol_terms AS base_terms INDEXED BY sqlite_autoindex_symbol_terms_1
-           WHERE base_terms.snapshot_id = ?
-         )
-         SELECT symbol_id, SUM(weight) AS score
-         FROM effective_terms
-         WHERE term IN (?, ?, ?)
-         GROUP BY symbol_id
-         ORDER BY score DESC, symbol_id
-         LIMIT ?`,
-      )
-      .all(result.graph.snapshot.id, 'missing-base', 'target', 'direct', 'caller', 100) as readonly {
-      readonly detail: string;
-    }[];
+      .query(`EXPLAIN QUERY PLAN ${rankedTerms.text}`)
+      .all(...rankedTerms.parameters) as readonly {readonly detail: string}[];
     database.close(false);
     expect(indexes.map(index => index.name)).not.toContain('snapshot_symbol_lookup_key');
     expect(indexes.map(index => index.name)).not.toContain('terms_lookup');
     expect(indexes.map(index => index.name)).not.toContain('terms_symbol');
     expect(lookupPlan.some(row => /PRIMARY KEY.*snapshot_id=.*lookup_key=/i.test(row.detail))).toBe(true);
-    expect(termPlan.some(row => /PRIMARY KEY.*snapshot_id=.*term=/i.test(row.detail))).toBe(true);
     expect(
-      rankedTermPlan.filter(row => /SEARCH .*terms/i.test(row.detail)).every(row => /PRIMARY KEY/i.test(row.detail)),
+      rankedTermPlan.some(row =>
+        /SEARCH current_compact_terms USING COVERING INDEX .*snapshot_key=.*term=/i.test(row.detail),
+      ),
+    ).toBe(true);
+    expect(
+      rankedTermPlan.some(
+        row => row.detail.includes('current_compact_postings') && row.detail.includes('USING PRIMARY KEY'),
+      ),
+    ).toBe(true);
+    expect(
+      rankedTermPlan
+        .filter(row => /SEARCH (?:current|base)_legacy_terms/i.test(row.detail))
+        .every(row => /PRIMARY KEY.*snapshot_id=.*term=/i.test(row.detail)),
     ).toBe(true);
     expect(rankedTermPlan.every(row => !/terms_symbol/i.test(row.detail))).toBe(true);
   });
@@ -2749,16 +2782,14 @@ describe('code graph full-build materialization store', () => {
     const interruptedRows = database
       .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
       .get(interruptedSnapshot.id) as {readonly count: number};
-    const interruptedTerms = database
-      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
-      .get(interruptedSnapshot.id) as {readonly count: number};
+    const interruptedTerms = readLexicalTerms(database, interruptedSnapshot.id);
     const foreignKeyViolations = database.query('PRAGMA foreign_key_check').all();
     database.close(false);
 
     expect(recovered.active?.id).toBe(originalSnapshot.id);
     expect(recovered.graph?.symbols).toEqual([original]);
     expect(interruptedRows.count).toBe(0);
-    expect(interruptedTerms.count).toBe(0);
+    expect(interruptedTerms).toEqual([]);
     expect(foreignKeyViolations).toEqual([]);
     expect(recovered.healthBeforeRepair?.buildingSnapshots).toBe(1);
     expect(recovered.repaired?.removedSnapshots).toBe(1);
@@ -2972,13 +3003,11 @@ describe('code graph full-build materialization store', () => {
     const retiredSymbolsBefore = before
       .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
       .get(firstSnapshot.id) as {readonly count: number};
-    const retiredTermsBefore = before
-      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
-      .get(firstSnapshot.id) as {readonly count: number};
+    const retiredTermsBefore = readLexicalTerms(before, firstSnapshot.id);
     before.close(false);
     expect(retiredBefore.state).toBe('retired');
     expect(retiredSymbolsBefore.count).toBe(1);
-    expect(retiredTermsBefore.count).toBeGreaterThan(0);
+    expect(retiredTermsBefore.length).toBeGreaterThan(0);
 
     await runEffect(
       Effect.gen(function* () {
@@ -2995,19 +3024,15 @@ describe('code graph full-build materialization store', () => {
     const activeAfter = after
       .query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
       .get(fixture.identity.worktreeId) as {readonly snapshot_id: string};
-    const retiredTermsAfter = after
-      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
-      .get(firstSnapshot.id) as {readonly count: number};
-    const currentTermsAfter = after
-      .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
-      .get(currentSnapshot.id) as {readonly count: number};
+    const retiredTermsAfter = readLexicalTerms(after, firstSnapshot.id);
+    const currentTermsAfter = readLexicalTerms(after, currentSnapshot.id);
     const foreignKeyViolations = after.query('PRAGMA foreign_key_check').all();
     after.close(false);
     expect(retiredAfter).toBeNull();
     expect(currentAfter.state).toBe('ready');
     expect(activeAfter.snapshot_id).toBe(currentSnapshot.id);
-    expect(retiredTermsAfter.count).toBe(0);
-    expect(currentTermsAfter.count).toBeGreaterThan(0);
+    expect(retiredTermsAfter).toEqual([]);
+    expect(currentTermsAfter.length).toBeGreaterThan(0);
     expect(foreignKeyViolations).toEqual([]);
   });
 
@@ -3296,6 +3321,18 @@ async function awaitCompletedBuildCleanup(databasePath: string, snapshotId: stri
     if (Date.now() >= deadline) return rows;
     await Bun.sleep(10);
   }
+}
+
+function readLexicalTerms(
+  database: Database,
+  snapshotId: string,
+): readonly {readonly symbol_id: string; readonly term: string; readonly weight: number}[] {
+  const statement = codeGraphEffectiveSymbolTermsQueryStatement(snapshotId, undefined);
+  return database.query(statement.text).all(...statement.parameters) as readonly {
+    readonly symbol_id: string;
+    readonly term: string;
+    readonly weight: number;
+  }[];
 }
 
 function symbol(id: string, name: string, lookupKeys: readonly string[]): CodeGraphSymbol {
