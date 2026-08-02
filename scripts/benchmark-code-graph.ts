@@ -111,6 +111,9 @@ const SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'one-file-reindex', 'sam
     {name: `${prefix}-external-sampler-version-n1`, unit: 'count'} as const,
     {name: `${prefix}-external-storage-samples-n1`, unit: 'count'} as const,
     {name: `${prefix}-external-process-tree-samples-n1`, unit: 'count'} as const,
+    {name: `${prefix}-external-process-tree-attempts-n1`, unit: 'count'} as const,
+    {name: `${prefix}-external-process-tree-failures-n1`, unit: 'count'} as const,
+    {name: `${prefix}-external-process-tree-maximum-sample-gap-n1`, unit: 'milliseconds'} as const,
     {name: `${prefix}-external-process-count-peak-observed-n1`, unit: 'count'} as const,
     {name: `${prefix}-external-process-cpu-n1`, unit: 'milliseconds'} as const,
     {name: `${prefix}-external-rss-peak-observed-n1`, unit: 'bytes'} as const,
@@ -1709,6 +1712,15 @@ export function externalSamplerMeasurements(
           benchmarkMeasurement(`${prefix}-external-process-tree-samples-n1`, 'count', [
             boundedPhaseTotal(phases, sample => sample.processSamples ?? 0),
           ]),
+          benchmarkMeasurement(`${prefix}-external-process-tree-attempts-n1`, 'count', [
+            boundedPhaseTotal(phases, sample => sample.processSampleAttempts ?? 0),
+          ]),
+          benchmarkMeasurement(`${prefix}-external-process-tree-failures-n1`, 'count', [
+            boundedPhaseTotal(phases, sample => sample.processSampleFailures ?? 0),
+          ]),
+          benchmarkMeasurement(`${prefix}-external-process-tree-maximum-sample-gap-n1`, 'milliseconds', [
+            Math.max(0, ...phases.map(([, sample]) => sample.processSampleGapPeakMilliseconds ?? 0)),
+          ]),
           benchmarkMeasurement(`${prefix}-external-process-count-peak-observed-n1`, 'count', [
             Math.max(0, ...phases.map(([, sample]) => sample.processPeakCount ?? 0)),
           ]),
@@ -1785,6 +1797,27 @@ export function externalSamplerMeasurements(
                 : [
                     benchmarkMeasurement(`${prefix}-${name}-external-process-samples-n1`, 'count', [
                       sample.processSamples,
+                    ]),
+                  ]),
+              ...(sample.processSampleAttempts === undefined
+                ? []
+                : [
+                    benchmarkMeasurement(`${prefix}-${name}-external-process-attempts-n1`, 'count', [
+                      sample.processSampleAttempts,
+                    ]),
+                  ]),
+              ...(sample.processSampleFailures === undefined
+                ? []
+                : [
+                    benchmarkMeasurement(`${prefix}-${name}-external-process-failures-n1`, 'count', [
+                      sample.processSampleFailures,
+                    ]),
+                  ]),
+              ...(sample.processSampleGapPeakMilliseconds === undefined
+                ? []
+                : [
+                    benchmarkMeasurement(`${prefix}-${name}-external-process-maximum-sample-gap-n1`, 'milliseconds', [
+                      sample.processSampleGapPeakMilliseconds,
                     ]),
                   ]),
               ...(sample.ioReadBytes === undefined
@@ -2865,6 +2898,7 @@ function missingSamplerObservations(
     const expectedPositive = [
       `${prefix}-external-storage-samples-n1`,
       `${prefix}-external-process-tree-samples-n1`,
+      `${prefix}-external-process-tree-attempts-n1`,
       `${prefix}-external-process-count-peak-observed-n1`,
       `${prefix}-external-rss-peak-observed-n1`,
     ];
@@ -2875,6 +2909,14 @@ function missingSamplerObservations(
     const samplerVersion = measurements.get(`${prefix}-external-sampler-version-n1`);
     if (!samplerVersion || samplerVersion.minimum < 4) {
       prefixMissing.push(`${prefix}-external-sampler-version-n1 expected sampler v4 or newer`);
+    }
+    const processTreeFailures = measurements.get(`${prefix}-external-process-tree-failures-n1`);
+    requiredFailureMeasurements.add(`${prefix}-external-process-tree-failures-n1`);
+    if (!processTreeFailures || processTreeFailures.maximum !== 0) {
+      prefixMissing.push(`${prefix}-external-process-tree-failures-n1 expected zero inspection loss`);
+    }
+    if (!measurements.has(`${prefix}-external-process-tree-maximum-sample-gap-n1`)) {
+      prefixMissing.push(`${prefix}-external-process-tree-maximum-sample-gap-n1 observed result`);
     }
     const openTemporaryFileAttempts = measurements.get(`${prefix}-external-open-temp-process-tree-attempts-n1`);
     if (!openTemporaryFileAttempts || openTemporaryFileAttempts.minimum < 1) {
@@ -2893,7 +2935,8 @@ function missingSamplerObservations(
   });
   for (const [name, measurement] of measurements) {
     if (
-      name.endsWith('-external-open-temp-process-tree-failures-n1') &&
+      (name.endsWith('-external-process-tree-failures-n1') ||
+        name.endsWith('-external-open-temp-process-tree-failures-n1')) &&
       !requiredFailureMeasurements.has(name) &&
       measurement.maximum !== 0
     ) {

@@ -2,6 +2,7 @@ import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   aggregateProcessTree,
@@ -14,6 +15,7 @@ import {
   parseDarwinOpenFileList,
   parseLinuxProcessIo,
   parseLinuxProcessStat,
+  parseProcessCpuTime,
   processTreeDelta,
   samplerParentExited,
   samplerProcessTelemetryContract,
@@ -103,6 +105,9 @@ describe('code graph benchmark sampler artifact', () => {
           ioReadBytes: 65_536,
           ioWriteBytes: 131_072,
           processPeakCount: 5,
+          processSampleAttempts: 2,
+          processSampleFailures: 0,
+          processSampleGapPeakMilliseconds: 25,
           processSamples: 2,
           temporaryOpenAttempts: 2,
           temporaryOpenFailures: 0,
@@ -132,6 +137,58 @@ describe('code graph benchmark sampler artifact', () => {
     } as const;
 
     expect(parseCodeGraphBenchmarkSamplerArtifact(artifact)).toEqual(artifact);
+  });
+
+  it('rejects inconsistent process-sampling diagnostics while reading legacy v4 artifacts', () => {
+    const legacy = {
+      ...validArtifact,
+      phases: {
+        scanning: {
+          ...validArtifact.phases.scanning,
+          ioReadBytes: 0,
+          ioWriteBytes: 0,
+          processPeakCount: 1,
+          processSamples: 2,
+          temporaryLinkedPeakBytes: 0,
+          temporaryOpenAttempts: 1,
+          temporaryOpenFailures: 0,
+          temporaryOpenPeakBytes: 0,
+          temporaryOpenSamples: 1,
+        },
+      },
+      processTelemetry: {
+        availability: 'available',
+        ioCounters: 'linux-proc-read-write-bytes',
+        parentIdentityValidation: 'linux-proc-starttime',
+        sampleIntervalMilliseconds: 25,
+        scope: 'recursive-process-tree',
+        source: 'linux-proc',
+      },
+      temporaryTelemetry: {
+        availability: 'available',
+        maximumOpenFileDescriptors: 65_536,
+        maximumProcesses: 4_096,
+        openFileSampleIntervalMilliseconds: 25,
+        scope: 'temporary-root-linked-plus-process-tree-open-files',
+        source: 'linux-proc-fd',
+      },
+      version: 4,
+    } as const;
+
+    expect(parseCodeGraphBenchmarkSamplerArtifact(legacy)).toEqual(legacy);
+    expect(() =>
+      parseCodeGraphBenchmarkSamplerArtifact({
+        ...legacy,
+        phases: {
+          scanning: {
+            ...legacy.phases.scanning,
+            processSampleAttempts: 2,
+            processSampleFailures: 1,
+            processSampleGapPeakMilliseconds: 25,
+          },
+        },
+      }),
+    ).toThrow(/sampler phase/i);
   });
 
   it('omits process measurements when the platform cannot provide them', () => {
@@ -335,6 +392,39 @@ describe('code graph benchmark sampler artifact', () => {
     ]);
   });
 
+  it.each([
+    ['0:00.00', 0],
+    ['59:59.99', 3_599_990],
+    ['60:00.00', 3_600_000],
+    ['78:13.45', 4_693_450],
+    ['1:02:03.45', 3_723_450],
+    ['1-02:03:04.25', 93_784_250],
+  ])('parses Darwin cumulative CPU time %s beyond one hour', (value, expected) => {
+    expect(parseProcessCpuTime(value)).toBe(expected);
+  });
+
+  it.each(['1-60:00', '1:60:00', '1:00:60', '-1:00', 'not-a-time', '999999999999999:00'])(
+    'rejects malformed Darwin cumulative CPU time %s',
+    value => {
+      expect(parseProcessCpuTime(value)).toBeUndefined();
+    },
+  );
+
+  it('preserves arbitrary valid unbounded Darwin minute counters', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({min: 0, max: 1_000_000}),
+        fc.integer({min: 0, max: 59}),
+        fc.integer({min: 0, max: 99}),
+        (minutes, seconds, centiseconds) => {
+          const encoded = `${minutes}:${String(seconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`;
+          expect(parseProcessCpuTime(encoded)).toBe(minutes * 60_000 + seconds * 1_000 + centiseconds * 10);
+        },
+      ),
+      {numRuns: 500},
+    );
+  });
+
   it('aggregates Darwin open SQLite scratch by identity without retaining paths', () => {
     const output =
       'p42\0\nf10\0tREG\0D0x10\0s4096\0i100\0n/private/tmp/bench/etilqs_a1\0' +
@@ -489,6 +579,12 @@ describe('code graph benchmark sampler artifact', () => {
         expect(
           Math.max(...Object.values(artifact.phases).map(sample => sample.processPeakCount ?? 0)),
         ).toBeGreaterThanOrEqual(2);
+        expect(
+          Object.values(artifact.phases).reduce((total, sample) => total + (sample.processSampleAttempts ?? 0), 0),
+        ).toBeGreaterThanOrEqual(1);
+        expect(
+          Object.values(artifact.phases).reduce((total, sample) => total + (sample.processSampleFailures ?? 0), 0),
+        ).toBe(0);
         expect(JSON.stringify(artifact)).not.toContain('command');
         await parent.exited;
       } finally {

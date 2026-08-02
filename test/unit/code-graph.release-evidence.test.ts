@@ -325,6 +325,9 @@ describe('code graph release evidence', () => {
             ioReadBytes: 2_000,
             ioWriteBytes: 3_000,
             processPeakCount: 5,
+            processSampleAttempts: 7,
+            processSampleFailures: 0,
+            processSampleGapPeakMilliseconds: 25,
             processSamples: 7,
             rssPeakBytes: 4_000,
             samples: 8,
@@ -343,6 +346,9 @@ describe('code graph release evidence', () => {
             ioReadBytes: 200,
             ioWriteBytes: 300,
             processPeakCount: 3,
+            processSampleAttempts: 4,
+            processSampleFailures: 0,
+            processSampleGapPeakMilliseconds: 20,
             processSamples: 4,
             rssPeakBytes: 400,
             samples: 5,
@@ -381,6 +387,9 @@ describe('code graph release evidence', () => {
       ['cold-external-sampler-version-n1', 4],
       ['cold-external-storage-samples-n1', 13],
       ['cold-external-process-tree-samples-n1', 11],
+      ['cold-external-process-tree-attempts-n1', 11],
+      ['cold-external-process-tree-failures-n1', 0],
+      ['cold-external-process-tree-maximum-sample-gap-n1', 25],
       ['cold-external-process-count-peak-observed-n1', 5],
       ['cold-external-process-cpu-n1', 110],
       ['cold-external-rss-peak-observed-n1', 4_000],
@@ -417,6 +426,16 @@ describe('code graph release evidence', () => {
         ),
       }),
     ).toThrow(/cold-external-process-tree-samples-n1 positive result/);
+    expect(() =>
+      assertProductionReleaseEvidence({
+        ...artifact,
+        measurements: artifact.measurements.map(measurement =>
+          measurement.name === 'cold-external-process-tree-failures-n1'
+            ? benchmarkMeasurement(measurement.name, 'count', [1])
+            : measurement,
+        ),
+      }),
+    ).toThrow(/cold-external-process-tree-failures-n1 expected zero inspection loss/);
     expect(() =>
       assertProductionReleaseEvidence({
         ...artifact,
@@ -872,7 +891,8 @@ function requiredReleaseMeasurements(
               ? 32
               : measurement.name.endsWith('-external-sampler-version-n1')
                 ? 4
-                : measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+                : measurement.name.endsWith('-external-process-tree-failures-n1') ||
+                    measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
                   ? 0
                   : 1,
     ]),

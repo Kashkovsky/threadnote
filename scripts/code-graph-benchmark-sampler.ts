@@ -12,6 +12,9 @@ export interface CodeGraphBenchmarkSamplerPhase {
   readonly ioReadBytes?: number;
   readonly ioWriteBytes?: number;
   readonly processPeakCount?: number;
+  readonly processSampleAttempts?: number;
+  readonly processSampleFailures?: number;
+  readonly processSampleGapPeakMilliseconds?: number;
   readonly processSamples?: number;
   readonly rssPeakBytes?: number;
   readonly samples: number;
@@ -285,8 +288,19 @@ function isSamplerPhase(
             sample.temporaryOpenFailures === undefined &&
             sample.temporaryOpenPeakBytes === undefined &&
             sample.temporaryOpenSamples === undefined);
+  const processSampleDiagnostics = [
+    sample.processSampleAttempts,
+    sample.processSampleFailures,
+    sample.processSampleGapPeakMilliseconds,
+  ];
+  const processSampleDiagnosticsValid =
+    processSampleDiagnostics.every(candidate => candidate === undefined) ||
+    (processTelemetry.availability === 'available' &&
+      processSampleDiagnostics.every(candidate => Number.isSafeInteger(candidate) && Number(candidate) >= 0) &&
+      Number(sample.processSampleAttempts) === Number(sample.processSamples) + Number(sample.processSampleFailures));
   return (
     processTelemetryValid &&
+    processSampleDiagnosticsValid &&
     temporaryTelemetryValid &&
     Number.isSafeInteger(sample.samples) &&
     Number(sample.samples) > 0 &&
@@ -300,6 +314,9 @@ interface MutablePhase {
   ioReadBytes: number;
   ioWriteBytes: number;
   processPeakCount: number;
+  processSampleAttempts: number;
+  processSampleFailures: number;
+  processSampleGapPeakMilliseconds: number;
   processSamples: number;
   rssPeakBytes: number;
   samples: number;
@@ -354,6 +371,7 @@ async function main(): Promise<void> {
   let pendingInitialTemporaryOpenFiles =
     temporaryTelemetry.availability === 'available' ? initialTemporaryOpenFiles : undefined;
   let lastProcessSampleAt = Date.now();
+  let lastSuccessfulProcessSampleAt = lastProcessSampleAt;
   let lastTemporaryOpenSampleAt = Date.now();
   let samples = 0;
   let lastCheckpointAt = 0;
@@ -407,6 +425,9 @@ async function main(): Promise<void> {
       ioReadBytes: 0,
       ioWriteBytes: 0,
       processPeakCount: 0,
+      processSampleAttempts: 0,
+      processSampleFailures: 0,
+      processSampleGapPeakMilliseconds: 0,
       processSamples: 0,
       rssPeakBytes: 0,
       samples: 0,
@@ -431,6 +452,16 @@ async function main(): Promise<void> {
       current.temporaryOpenSamples = inspection.samples;
     }
     current.temporaryPeakBytes = Math.max(current.temporaryPeakBytes, temporaryBytes);
+    if (processTelemetry.availability === 'available' && processSampleDue) {
+      const observedAt = Date.now();
+      current.processSampleAttempts += 1;
+      current.processSampleGapPeakMilliseconds = Math.max(
+        current.processSampleGapPeakMilliseconds,
+        observedAt - lastSuccessfulProcessSampleAt,
+      );
+      if (telemetrySample === undefined) current.processSampleFailures += 1;
+      else lastSuccessfulProcessSampleAt = observedAt;
+    }
     if (telemetrySample) {
       const delta = processTreeDelta(previousProcessSample, telemetrySample);
       current.cpuMilliseconds += delta.cpuMilliseconds;
@@ -489,6 +520,9 @@ function samplerArtifact(
                     ? {ioReadBytes: value.ioReadBytes, ioWriteBytes: value.ioWriteBytes}
                     : {}),
                   processPeakCount: value.processPeakCount,
+                  processSampleAttempts: value.processSampleAttempts,
+                  processSampleFailures: value.processSampleFailures,
+                  processSampleGapPeakMilliseconds: value.processSampleGapPeakMilliseconds,
                   processSamples: value.processSamples,
                   rssPeakBytes: value.rssPeakBytes,
                 }
@@ -808,7 +842,7 @@ function parseDarwinProcessLine(line: string): BenchmarkProcessTreeEntry | undef
   return {cpuMilliseconds, parentProcessId, processId, rssBytes: rssKilobytes * 1024, startIdentity};
 }
 
-function parseProcessCpuTime(value: string): number | undefined {
+export function parseProcessCpuTime(value: string): number | undefined {
   const [dayText, clockText] = value.includes('-') ? value.split('-', 2) : [undefined, value];
   const parts = clockText?.split(':') ?? [];
   if (parts.length !== 2 && parts.length !== 3) return undefined;
@@ -817,20 +851,22 @@ function parseProcessCpuTime(value: string): number | undefined {
   const minutes = Number(parts.at(-2));
   const seconds = Number(parts.at(-1));
   if (
+    (dayText !== undefined && parts.length !== 3) ||
     !Number.isSafeInteger(days) ||
     days < 0 ||
     !Number.isSafeInteger(hours) ||
     hours < 0 ||
     !Number.isSafeInteger(minutes) ||
     minutes < 0 ||
-    minutes >= 60 ||
+    (parts.length === 3 && minutes >= 60) ||
     !Number.isFinite(seconds) ||
     seconds < 0 ||
     seconds >= 60
   ) {
     return undefined;
   }
-  return (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1_000;
+  const milliseconds = Math.round((((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1_000);
+  return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
 }
 
 export function parseLinuxProcessStat(statText: string):
