@@ -356,67 +356,65 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
-  it('keeps a large canonical read exact when auto-sync appends a warning', async () => {
+  it('keeps a large canonical read exact while healthy auto-sync contention is quietly deferred', async () => {
     await withMcpClient(
       async (client, fixture) => {
-        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/sync-warning-read.md';
-        const content = canonicalMemoryContent('sync-warning-read', largeReadBody('Large-sync-warning-read', 12_000));
-        await writeCanonicalMemory(fixture.home, 'sync-warning-read.md', content);
-
-        const shareRoot = join(fixture.home, 'share');
-        const worktree = join(shareRoot, 'worktrees', 'broken');
-        await mkdir(shareRoot, {recursive: true});
-        await writeFile(
-          join(shareRoot, 'teams.json'),
-          JSON.stringify({
-            defaultTeam: 'broken',
-            teams: {
-              broken: {
-                addedAt: '2026-08-01T00:00:00.000Z',
-                gitdir: join(shareRoot, 'teams', 'broken.gitdir'),
-                name: 'broken',
-                remote: join(fixture.root, 'missing-remote.git'),
-                worktree,
-              },
-            },
-            version: 1,
-          }),
-          'utf8',
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/sync-contention-read.md';
+        const content = canonicalMemoryContent(
+          'sync-contention-read',
+          largeReadBody('Large-sync-contention-read', 12_000),
         );
-        await writeFile(
-          join(shareRoot, 'auto-sync-pending-reindexes.json'),
-          JSON.stringify({
-            teams: {
-              broken: [
-                {
-                  path: join(worktree, 'durable', 'projects', 'threadnote', 'missing.md'),
-                  relativePath: 'durable/projects/threadnote/missing.md',
-                  status: 'added',
-                },
-              ],
-            },
-            version: 1,
-          }),
-          'utf8',
-        );
+        await writeCanonicalMemory(fixture.home, 'sync-contention-read.md', content);
 
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const output = Array.isArray(result.content) ? result.content : [];
-        const primary = output[0] as TextContent | undefined;
-        const warning = output[1] as TextContent | undefined;
-
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(output).toHaveLength(2);
-        expect(primary).toEqual({text: content, type: 'text'});
-        expect(Buffer.byteLength(primary?.text ?? '')).toBeGreaterThan(1_024 * 1_024);
-        expect(result.structuredContent).toEqual({
-          resources: [{contentIndex: 0, uri}],
-          type: 'threadnote-canonical-read',
-          version: 1,
+        const ready = join(fixture.root, 'share-lock-owner.ready');
+        const release = join(fixture.root, 'share-lock-owner.release');
+        const helper = join(import.meta.dirname, '../helpers/share-lock-receipt-owner.ts');
+        const owner = Bun.spawn({
+          cmd: [
+            process.execPath,
+            helper,
+            fixture.home,
+            ready,
+            release,
+            join(fixture.root, 'unused-remote.git'),
+            join(fixture.root, 'unused-worktree'),
+          ],
+          stderr: 'pipe',
+          stdout: 'pipe',
         });
-        expect(warning?.type).toBe('text');
-        expect(warning?.text).toContain('Auto-sync warning:');
-        expect(warning?.text).not.toContain('Large-sync-warning-read');
+        let ownerExitCode: number | undefined;
+        try {
+          const readyDeadline = Date.now() + 10_000;
+          while (!(await Bun.file(ready).exists())) {
+            if (owner.exitCode !== null) {
+              throw new Error(`Share lock owner exited early: ${await new Response(owner.stderr).text()}`);
+            }
+            if (Date.now() >= readyDeadline) throw new Error('Timed out waiting for the shared repository lock owner.');
+            await Bun.sleep(10);
+          }
+
+          const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
+          const output = Array.isArray(result.content) ? result.content : [];
+          const primary = output[0] as TextContent | undefined;
+
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
+          expect(output).toHaveLength(1);
+          expect(primary).toEqual({text: content, type: 'text'});
+          expect(Buffer.byteLength(primary?.text ?? '')).toBeGreaterThan(1_024 * 1_024);
+          expect(result.structuredContent).toEqual({
+            resources: [{contentIndex: 0, uri}],
+            type: 'threadnote-canonical-read',
+            version: 1,
+          });
+        } finally {
+          await writeFile(release, 'release\n', 'utf8');
+          const exited = await Promise.race([owner.exited, Bun.sleep(5_000).then(() => undefined)]);
+          if (exited === undefined) owner.kill(9);
+          ownerExitCode = await owner.exited;
+        }
+        if (ownerExitCode !== 0) {
+          throw new Error(`Share lock owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
+        }
       },
       {toolset: 'core'},
     );

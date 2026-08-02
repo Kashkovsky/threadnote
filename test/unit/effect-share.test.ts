@@ -2,6 +2,7 @@ import {Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
+  markSharedAutoSyncDeferred: vi.fn(),
   resolveTeam: vi.fn(),
   runShareConflicts: vi.fn(),
   runSharePublish: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock('../../src/share.js', () => ({
   installSharedAgentArtifacts: shareMocks.unused,
   listShareConflicts: shareMocks.unused,
   listSharedAgentArtifacts: shareMocks.unused,
+  markSharedAutoSyncDeferred: shareMocks.markSharedAutoSyncDeferred,
   removeMemoryUri: shareMocks.unused,
   refreshSharedReposInBackground: shareMocks.refreshSharedReposInBackground,
   resolveShareConflict: shareMocks.unused,

@@ -58,7 +58,7 @@ export const observeSharedRepositoryHomeLock = Effect.fn('share.observeRepositor
   return yield* Effect.gen(function* () {
     if (!(yield* fs.exists(lockPath))) return 'available' as const;
     const owner = Option.getOrUndefined(yield* readExclusiveFileLockOwner(fs, lockPath));
-    if (!owner) return 'unhealthy' as const;
+    if (!owner?.processStartIdentity) return 'unhealthy' as const;
     const info = yield* fs.stat(lockPath);
     const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
     const now = yield* Clock.currentTimeMillis;
@@ -70,11 +70,9 @@ export const observeSharedRepositoryHomeLock = Effect.fn('share.observeRepositor
     ) {
       return 'unhealthy' as const;
     }
-    if (owner.processStartIdentity) {
-      const currentIdentity = yield* system.processStartIdentity(owner.processId);
-      if (currentIdentity !== undefined && currentIdentity !== owner.processStartIdentity) {
-        return 'unhealthy' as const;
-      }
+    const currentIdentity = yield* system.processStartIdentity(owner.processId);
+    if (currentIdentity === undefined || currentIdentity !== owner.processStartIdentity) {
+      return 'unhealthy' as const;
     }
     return 'active' as const;
   }).pipe(Effect.catch(() => Effect.succeed('unhealthy' as const)));

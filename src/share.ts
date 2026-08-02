@@ -318,6 +318,7 @@ export interface SharedMemoryUriParts {
 
 interface AutoShareState {
   behindTeams: ReadonlySet<string>;
+  forceNextCheck: boolean;
   lastCheckedAt: number;
   pendingReindexes: Map<string, readonly ChangedFile[]>;
 }
@@ -384,6 +385,10 @@ interface PendingReindexFile {
 
 export function clearAutoShareStateForTest(): void {
   autoShareStates.clear();
+}
+
+export function markSharedAutoSyncDeferred(config: ShareRuntime): void {
+  autoShareState(config).forceNextCheck = true;
 }
 
 export const runShareInit = Effect.fn('share.runShareInit')(function* (
@@ -581,7 +586,7 @@ function autoShareState(config: ShareRuntime): AutoShareState {
   const key = `${config.agentContextHome}:${config.account}:${config.user}`;
   let state = autoShareStates.get(key);
   if (!state) {
-    state = {behindTeams: new Set(), lastCheckedAt: 0, pendingReindexes: new Map()};
+    state = {behindTeams: new Set(), forceNextCheck: false, lastCheckedAt: 0, pendingReindexes: new Map()};
     autoShareStates.set(key, state);
   }
   return state;
@@ -681,11 +686,13 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
   const now = Date.now();
   if (
     !options.force &&
+    !state.forceNextCheck &&
     state.lastCheckedAt > 0 &&
     now - state.lastCheckedAt < SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS
   ) {
     return [];
   }
+  state.forceNextCheck = false;
   return yield* Effect.gen(function* () {
     const statuses = yield* fetchShareUpdateStatuses(config);
     const nextBehindTeams = new Set(state.behindTeams);

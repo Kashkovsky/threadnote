@@ -1236,6 +1236,66 @@ describe('share sync git handling', () => {
     });
   });
 
+  it('forces a primed reader to consume the first receipt written by a concurrent process after deferral', async () => {
+    const {config, home, remote, root, seed, worktree} = await makeShareRepo();
+    const relativePath = 'durable/projects/threadnote/concurrent-receipt.md';
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/concurrent-receipt.md';
+    expect(await syncSharedReposBeforeAgentRead(config)).toEqual({syncedTeams: [], warnings: []});
+
+    await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+    await writeFile(
+      join(seed, relativePath),
+      'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: concurrent-receipt\n\nRemote body.\n',
+      'utf8',
+    );
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add concurrent receipt memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await git(['fetch', 'origin'], worktree);
+
+    const ready = join(root, 'receipt-owner.ready');
+    const release = join(root, 'receipt-owner.release');
+    const helper = join(import.meta.dirname, '../helpers/share-lock-receipt-owner.ts');
+    const owner = Bun.spawn({
+      cmd: [process.execPath, helper, home, ready, release, remote, worktree],
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    let ownerExitCode: number | undefined;
+    try {
+      const readyDeadline = Date.now() + 10_000;
+      while (!(await Bun.file(ready).exists())) {
+        if (owner.exitCode !== null) {
+          throw new Error(`Receipt owner exited before acquiring the lock: ${await new Response(owner.stderr).text()}`);
+        }
+        if (Date.now() >= readyDeadline) {
+          throw new Error('Timed out waiting for the receipt owner to acquire the shared repository lock.');
+        }
+        await Bun.sleep(10);
+      }
+      const deferred = await syncSharedReposBeforeAgentRead(config);
+
+      expect(deferred).toEqual({syncedTeams: [], warnings: []});
+      await expect(readFile(canonicalResourceFile(home, uri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await writeFile(release, 'release\n', 'utf8');
+      const exited = await Promise.race([owner.exited, Bun.sleep(5_000).then(() => undefined)]);
+      if (exited === undefined) owner.kill(9);
+      ownerExitCode = await owner.exited;
+    }
+    if (ownerExitCode !== 0) {
+      throw new Error(`Receipt owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
+    }
+
+    const caughtUp = await syncSharedReposBeforeAgentRead(config);
+
+    expect(caughtUp.syncedTeams).toEqual(['default']);
+    await expect(readFile(canonicalResourceFile(home, uri), 'utf8')).resolves.toContain('Remote body.');
+    await expect(
+      readFile(join(home, 'share', 'fetch-receipts', 'default.json'), 'utf8').then(content => JSON.parse(content)),
+    ).resolves.toMatchObject({behind: 0, succeeded: true});
+  });
+
   it('leaves an in-progress rebase untouched when retrying pending ingestion', async () => {
     const {config, home, seed, worktree} = await makeShareRepo();
     const relativePath = 'durable/projects/threadnote/shared.md';

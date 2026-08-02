@@ -6,6 +6,7 @@ import {
   installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
   listShareConflicts as listShareConflictsEffect,
+  markSharedAutoSyncDeferred,
   removeMemoryUri as removeMemoryUriEffect,
   refreshSharedReposInBackground as refreshSharedReposInBackgroundEffect,
   resolveShareConflict as resolveShareConflictEffect,
@@ -77,6 +78,7 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
   const observed = yield* observeSharedRepositoryHomeLock(config.agentContextHome);
   if (observed === 'active') {
+    markSharedAutoSyncDeferred(config);
     return {syncedTeams: [] as readonly string[], warnings: [] as readonly string[]};
   }
   const sync = withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
@@ -84,7 +86,8 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRe
   });
   return yield* sync.pipe(
     Effect.catchIf(isFileLockTimeout, () =>
-      observeSharedRepositoryHomeLock(config.agentContextHome).pipe(
+      Effect.sync(() => markSharedAutoSyncDeferred(config)).pipe(
+        Effect.andThen(observeSharedRepositoryHomeLock(config.agentContextHome)),
         Effect.map(lockState => ({
           syncedTeams: [] as readonly string[],
           warnings:
