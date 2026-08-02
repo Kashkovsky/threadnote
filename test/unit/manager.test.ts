@@ -607,6 +607,36 @@ describe('manager http API', () => {
         expect.arrayContaining([expect.objectContaining({id: 'cgp_app'}), expect.objectContaining({id: 'cgp_core'})]),
       );
 
+      const catalogPageResponse = await fetch(
+        `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=manager-graph-snapshot&offset=0&workspaceOffset=0&query=core`,
+        {headers},
+      );
+      const catalogPage = (await catalogPageResponse.json()) as {
+        readonly query: string;
+        readonly repository: {
+          readonly projects: readonly {readonly id: string}[];
+          readonly snapshot: {readonly id: string};
+        };
+      };
+      expect(catalogPageResponse.status).toBe(200);
+      expect(catalogPage.query).toBe('core');
+      expect(catalogPage.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(catalogPage.repository.projects.map(project => project.id)).toEqual(['cgp_core']);
+
+      const viewsPageResponse = await fetch(`${server.url}/api/graphs/views?repository=${repositoryId}&offset=0`, {
+        headers,
+      });
+      const viewsPage = (await viewsPageResponse.json()) as {
+        readonly hasMore: boolean;
+        readonly repositories: readonly {readonly views: readonly {readonly id: string}[]}[];
+      };
+      expect(viewsPageResponse.status).toBe(200);
+      expect(viewsPage.hasMore).toBe(false);
+      expect(viewsPage.repositories[0]?.views[0]?.id).toBe(`${repositoryId}.${'c'.repeat(64)}`);
+
+      const unpinnedCatalogPage = await fetch(`${server.url}/api/graphs/page?repository=${repositoryId}`, {headers});
+      expect(unpinnedCatalogPage.status).toBe(500);
+
       const overviewResponse = await fetch(`${server.url}/api/graph?repository=${repositoryId}&project=all`, {headers});
       const overview = (await overviewResponse.json()) as {
         readonly edges: readonly {readonly count: number; readonly relation: string}[];
@@ -737,6 +767,8 @@ describe('manager http API', () => {
           readonly incoming: number;
           readonly outgoing: number;
           readonly relations: readonly {readonly count: number; readonly relation: string}[];
+          readonly sampledEdges: number;
+          readonly summaryTruncated: boolean;
           readonly truncated: boolean;
         };
       };
@@ -746,7 +778,13 @@ describe('manager http API', () => {
         path: 'packages/app/src/index.ts',
         span: {column: 3, line: 7},
       });
-      expect(node.stats).toMatchObject({incoming: 0, outgoing: 2, truncated: false});
+      expect(node.stats).toMatchObject({
+        incoming: 0,
+        outgoing: 2,
+        sampledEdges: 2,
+        summaryTruncated: false,
+        truncated: false,
+      });
       expect(node.stats.relations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({count: 1, relation: 'calls'}),
@@ -840,6 +878,22 @@ describe('manager http API', () => {
       expect(pinnedQueryResponse.status).toBe(200);
       expect(pinnedQuery.repository.snapshot.id).toBe(originalSnapshotId);
       expect(pinnedQuery.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
+
+      const pinnedCatalogPageResponse = await fetch(
+        `${server.url}/api/graphs/page?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=app`,
+        {headers},
+      );
+      const pinnedCatalogPage = (await pinnedCatalogPageResponse.json()) as {
+        readonly repository: {
+          readonly projects: readonly {readonly id: string}[];
+          readonly snapshot: {readonly id: string};
+        };
+      };
+      expect(pinnedCatalogPageResponse.status).toBe(200);
+      expect(pinnedCatalogPage.repository.snapshot.id).toBe(originalSnapshotId);
+      expect(pinnedCatalogPage.repository.projects).toEqual(
+        expect.arrayContaining([expect.objectContaining({id: 'cgp_app'})]),
+      );
 
       const currentGraph = (await (
         await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})

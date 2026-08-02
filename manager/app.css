@@ -1080,6 +1080,24 @@ dd {
   font-size: 12px;
 }
 
+.graph-catalog-continuation {
+  align-items: end;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  min-width: 0;
+}
+
+.graph-catalog-continuation .quiet-button,
+.graph-catalog-continuation small {
+  grid-column: 1 / -1;
+}
+
+.graph-catalog-continuation small {
+  color: var(--danger);
+  font-size: 10px;
+}
+
 .graph-search-results {
   background: #111821;
   border: 1px solid var(--line);

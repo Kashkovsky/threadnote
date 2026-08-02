@@ -8,9 +8,11 @@ import {
   graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
   type GraphCatalog,
+  type GraphCatalogPage,
   type GraphNodeDetail,
   type GraphQueryVisualization,
   type GraphVisualization,
+  type GraphViewPage,
 } from './manager_graph.js';
 import type {ManagerGraphVisualizationLimits} from './manager_graph_limits.js';
 
@@ -995,9 +997,11 @@ function App(): React.ReactElement {
             <GraphWorkspace
               catalog={graphCatalog}
               loadAnalysis={loadManagerGraphAnalysis}
+              loadCatalogPage={loadManagerGraphCatalogPage}
               loadGraph={loadManagerGraph}
               loadNodeDetail={loadManagerGraphNodeDetail}
               loadQuery={loadManagerGraphQuery}
+              loadViewsPage={loadManagerGraphViewsPage}
               onRefresh={() => void refreshGraphCatalog(true)}
             />
           </section>
@@ -1781,6 +1785,34 @@ function loadManagerGraph(
 ): Promise<GraphVisualization> {
   return api<GraphVisualization>(
     `/api/graph?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&project=${encodeURIComponent(projectId)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
+    undefined,
+    {signal},
+  );
+}
+
+function loadManagerGraphCatalogPage(
+  repositoryId: string,
+  snapshotId: string,
+  projectOffset: number,
+  workspaceOffset: number,
+  query: string,
+  signal: AbortSignal,
+): Promise<GraphCatalogPage> {
+  return api<GraphCatalogPage>(
+    `/api/graphs/page?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&offset=${projectOffset}&workspaceOffset=${workspaceOffset}${query ? `&query=${encodeURIComponent(query)}` : ''}`,
+    undefined,
+    {signal},
+  );
+}
+
+function loadManagerGraphViewsPage(
+  repositoryId: string,
+  offset: number,
+  query: string,
+  signal: AbortSignal,
+): Promise<GraphViewPage> {
+  return api<GraphViewPage>(
+    `/api/graphs/views?repository=${encodeURIComponent(repositoryId)}&offset=${offset}${query ? `&query=${encodeURIComponent(query)}` : ''}`,
     undefined,
     {signal},
   );

@@ -69,6 +69,7 @@ export interface GraphRepositoryGroup {
   readonly id: string;
   readonly repositoryId: string;
   readonly views: readonly GraphRepository[];
+  readonly viewsTruncated: boolean;
 }
 
 export interface GraphCatalogDiagnostic {
@@ -83,6 +84,20 @@ export interface GraphCatalog {
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly waiterCount: number;
   readonly waiters: readonly GraphBuildStatus[];
+}
+
+export interface GraphCatalogPage {
+  readonly projectOffset: number;
+  readonly query: string;
+  readonly repository: GraphRepository;
+  readonly workspaceOffset: number;
+}
+
+export interface GraphViewPage {
+  readonly hasMore: boolean;
+  readonly offset: number;
+  readonly query: string;
+  readonly repositories: readonly GraphRepositoryGroup[];
 }
 
 export interface GraphBuildStatus {
@@ -332,6 +347,52 @@ export function graphRepositoryOptionLabel(
   return collides ? `${repository.displayName} · ${repository.id.slice(0, 8)}` : repository.displayName;
 }
 
+export function mergeGraphRepositoryGroups(
+  current: readonly GraphRepositoryGroup[],
+  additions: readonly GraphRepositoryGroup[],
+): readonly GraphRepositoryGroup[] {
+  const groups = new Map(current.map(group => [group.id, {...group, views: [...group.views]}]));
+  for (const addition of additions) {
+    const existing = groups.get(addition.id);
+    if (!existing) {
+      groups.set(addition.id, {...addition, views: [...addition.views]});
+      continue;
+    }
+    const views = new Map(existing.views.map(view => [view.id, view]));
+    for (const view of addition.views) {
+      const currentView = views.get(view.id);
+      views.set(view.id, currentView ? mergeGraphRepository(currentView, view) : view);
+    }
+    groups.set(addition.id, {
+      ...existing,
+      defaultViewId: existing.defaultViewId || addition.defaultViewId,
+      views: [...views.values()],
+      viewsTruncated: existing.viewsTruncated || addition.viewsTruncated,
+    });
+  }
+  return [...groups.values()].sort(
+    (left, right) => compareCodeUnits(left.displayName, right.displayName) || compareCodeUnits(left.id, right.id),
+  );
+}
+
+function mergeGraphRepository(current: GraphRepository, addition: GraphRepository): GraphRepository {
+  if (current.snapshot.id !== addition.snapshot.id) return current;
+  const projects = new Map(current.projects.map(project => [project.id, project]));
+  for (const project of addition.projects) projects.set(project.id, project);
+  const workspaces = new Map(current.workspaces.map(workspace => [workspace.id, workspace]));
+  for (const workspace of addition.workspaces) workspaces.set(workspace.id, workspace);
+  return {
+    ...current,
+    ...addition,
+    projectCount: Math.max(current.projectCount, addition.projectCount),
+    projects: [...projects.values()],
+    projectsTruncated: current.projectsTruncated || addition.projectsTruncated,
+    workspaceCount: Math.max(current.workspaceCount, addition.workspaceCount),
+    workspaces: [...workspaces.values()],
+    workspacesTruncated: current.workspacesTruncated || addition.workspacesTruncated,
+  };
+}
+
 interface GraphNode {
   readonly degree: number;
   readonly exported?: boolean;
@@ -403,6 +464,7 @@ export interface GraphNodeDetail {
     readonly incoming: number;
     readonly outgoing: number;
     readonly sampledEdges?: number;
+    readonly summaryTruncated?: boolean;
     readonly provenances: readonly {readonly count: number; readonly provenance: string}[];
     readonly relations: readonly {
       readonly count: number;
@@ -412,6 +474,16 @@ export interface GraphNodeDetail {
     }[];
     readonly truncated: boolean;
   };
+}
+
+export function graphRelationshipCountLabel(count: number, sampled: boolean): string {
+  return `${sampled ? '≥' : ''}${Math.max(0, count).toLocaleString()}`;
+}
+
+export function graphRelationshipSampleLabel(detail: GraphNodeDetail): string | undefined {
+  if (detail.stats.summaryTruncated !== true) return undefined;
+  const sampledEdges = detail.stats.sampledEdges ?? detail.stats.incoming + detail.stats.outgoing;
+  return `Counts are lower bounds from a ${sampledEdges.toLocaleString()}-edge sample.`;
 }
 
 export function graphDisplayEdges(
@@ -757,6 +829,12 @@ export function managerGraphClientRenderProxy(
   };
 }
 
+export function graphOverviewSizeLabel(graph: GraphVisualization): string {
+  return graph.repository.metrics === 'complete' && graph.nodes.some(node => node.symbolCount !== undefined)
+    ? 'Component symbols'
+    : 'Visible relationship degree';
+}
+
 export function GraphWorkspace(props: {
   readonly catalog?: GraphCatalog;
   readonly loadAnalysis: (repositoryId: string, snapshotId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
@@ -767,6 +845,14 @@ export function GraphWorkspace(props: {
     limits: ManagerGraphVisualizationLimits,
     signal: AbortSignal,
   ) => Promise<GraphVisualization>;
+  readonly loadCatalogPage: (
+    repositoryId: string,
+    snapshotId: string,
+    projectOffset: number,
+    workspaceOffset: number,
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<GraphCatalogPage>;
   readonly loadNodeDetail: (
     repositoryId: string,
     snapshotId: string,
@@ -780,6 +866,12 @@ export function GraphWorkspace(props: {
     limits: ManagerGraphVisualizationLimits,
     signal: AbortSignal,
   ) => Promise<GraphQueryVisualization>;
+  readonly loadViewsPage: (
+    repositoryId: string,
+    offset: number,
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<GraphViewPage>;
   readonly onRefresh: () => void;
 }): React.ReactElement {
   const [repositoryId, setRepositoryId] = useState('');
@@ -815,7 +907,33 @@ export function GraphWorkspace(props: {
   const analysisRequestSequence = useRef(0);
   const analysisAbortController = useRef<AbortController | undefined>(undefined);
   const graphRequestSequence = useRef(0);
-  const repositories = props.catalog?.repositories ?? [];
+  const [catalogAdditions, setCatalogAdditions] = useState<readonly GraphRepositoryGroup[]>([]);
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogContinuation, setCatalogContinuation] = useState<{
+    readonly projectOffset: number;
+    readonly projectHasMore: boolean;
+    readonly viewOffset: number;
+    readonly viewHasMore: boolean;
+    readonly viewId: string;
+    readonly workspaceOffset: number;
+    readonly workspaceHasMore: boolean;
+  }>();
+  const catalogAbortController = useRef<AbortController | undefined>(undefined);
+  const catalogRequestSequence = useRef(0);
+  const baseCatalogIdentity = useMemo(
+    () =>
+      (props.catalog?.repositories ?? [])
+        .flatMap(group => group.views.map(view => `${view.id}:${view.snapshot.id}`))
+        .sort(compareCodeUnits)
+        .join('|'),
+    [props.catalog?.repositories],
+  );
+  const repositories = useMemo(
+    () => mergeGraphRepositoryGroups(props.catalog?.repositories ?? [], catalogAdditions),
+    [catalogAdditions, props.catalog?.repositories],
+  );
   const repositoryGroup = repositories.find(candidate => candidate.id === repositoryId) ?? repositories[0];
   const repository =
     repositoryGroup?.views.find(candidate => candidate.id === viewId) ??
@@ -855,6 +973,18 @@ export function GraphWorkspace(props: {
     ? queryWorkingSet.nodeLimit >= MAX_QUERY_WORKING_SET.nodeLimit &&
       queryWorkingSet.edgeLimit >= MAX_QUERY_WORKING_SET.edgeLimit
     : workingSet.nodeLimit >= MAX_WORKING_SET.nodeLimit && workingSet.edgeLimit >= MAX_WORKING_SET.edgeLimit;
+  const projectCatalogHasMore =
+    catalogContinuation?.viewId === repository?.id
+      ? catalogContinuation.projectHasMore
+      : (repository?.projectsTruncated ?? false);
+  const workspaceCatalogHasMore =
+    catalogContinuation?.viewId === repository?.id
+      ? catalogContinuation.workspaceHasMore
+      : (repository?.workspacesTruncated ?? false);
+  const viewCatalogHasMore =
+    catalogContinuation?.viewId === repository?.id
+      ? catalogContinuation.viewHasMore
+      : (repositoryGroup?.viewsTruncated ?? false);
 
   useEffect(() => {
     const selection = resolveGraphSelection(repositories, repositoryId, viewId);
@@ -1187,6 +1317,95 @@ export function GraphWorkspace(props: {
     }
   };
 
+  const loadCatalogContinuation = (requestedQuery: string): void => {
+    if (!repository || !repositoryGroup || catalogLoading) return;
+    const query = requestedQuery.trim().slice(0, 256);
+    const continuation = catalogContinuation?.viewId === repository.id ? catalogContinuation : undefined;
+    const projectOffset =
+      query.length === 0
+        ? (continuation?.projectOffset ?? repository.projects.filter(project => project.id.startsWith('cgp_')).length)
+        : 0;
+    const workspaceOffset = query.length === 0 ? (continuation?.workspaceOffset ?? repository.workspaces.length) : 0;
+    const viewOffset =
+      query.length === 0
+        ? (continuation?.viewOffset ??
+          repositoryGroup.views.filter(view => view.checkoutId === repository.checkoutId).length)
+        : 0;
+    const requestedScope = `${repository.id}:${repository.snapshot.id}:${projectOffset}:${workspaceOffset}:${viewOffset}:${query}`;
+    const requestSequence = catalogRequestSequence.current + 1;
+    catalogRequestSequence.current = requestSequence;
+    catalogAbortController.current?.abort();
+    const controller = new AbortController();
+    catalogAbortController.current = controller;
+    setCatalogLoading(true);
+    setCatalogError('');
+    void Promise.all([
+      props.loadCatalogPage(
+        repository.id,
+        repository.snapshot.id,
+        projectOffset,
+        workspaceOffset,
+        query,
+        controller.signal,
+      ),
+      props.loadViewsPage(repository.id, viewOffset, query, controller.signal),
+    ])
+      .then(([catalogPage, viewPage]) => {
+        const currentScope = `${repository.id}:${repository.snapshot.id}:${projectOffset}:${workspaceOffset}:${viewOffset}:${query}`;
+        if (
+          controller.signal.aborted ||
+          catalogRequestSequence.current !== requestSequence ||
+          currentScope !== requestedScope
+        )
+          return;
+        const selectedViewGroup: GraphRepositoryGroup = {
+          ...repositoryGroup,
+          defaultViewId: repositoryGroup.defaultViewId,
+          views: [catalogPage.repository],
+          viewsTruncated: false,
+        };
+        setCatalogAdditions(current =>
+          mergeGraphRepositoryGroups(current, [selectedViewGroup, ...viewPage.repositories]),
+        );
+        if (query.length === 0) {
+          setCatalogContinuation({
+            projectHasMore: catalogPage.repository.projectsTruncated,
+            projectOffset:
+              projectOffset + catalogPage.repository.projects.filter(project => project.id.startsWith('cgp_')).length,
+            viewHasMore: viewPage.hasMore,
+            viewId: repository.id,
+            viewOffset:
+              viewOffset +
+              viewPage.repositories
+                .flatMap(group => group.views)
+                .filter(view => view.checkoutId === repository.checkoutId).length,
+            workspaceHasMore: catalogPage.repository.workspacesTruncated,
+            workspaceOffset: workspaceOffset + catalogPage.repository.workspaces.length,
+          });
+        }
+      })
+      .catch(cause => {
+        if (!controller.signal.aborted && catalogRequestSequence.current === requestSequence) {
+          setCatalogError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && catalogRequestSequence.current === requestSequence) setCatalogLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    setCatalogAdditions([]);
+  }, [baseCatalogIdentity]);
+
+  useEffect(() => {
+    catalogAbortController.current?.abort();
+    catalogRequestSequence.current += 1;
+    setCatalogContinuation(undefined);
+    setCatalogError('');
+    setCatalogLoading(false);
+  }, [repository?.id, repository?.snapshot.id]);
+
   return (
     <section className="graph-workspace">
       <header className="workspace-header">
@@ -1241,7 +1460,7 @@ export function GraphWorkspace(props: {
             ))}
           </select>
         </label>
-        {repositoryGroup && repositoryGroup.views.length > 1 ? (
+        {repositoryGroup && (repositoryGroup.views.length > 1 || viewCatalogHasMore) ? (
           <label>
             <span>Indexed view</span>
             <select
@@ -1283,7 +1502,11 @@ export function GraphWorkspace(props: {
               ) : null;
             })}
             {(repository?.projects ?? [])
-              .filter(project => !project.workspaceId)
+              .filter(
+                project =>
+                  !project.workspaceId ||
+                  !repository?.workspaces.some(workspace => workspace.id === project.workspaceId),
+              )
               .map(project => (
                 <option key={project.id} value={project.id}>
                   {project.label} · {graphProjectBadge(project)} ·{' '}
@@ -1292,6 +1515,43 @@ export function GraphWorkspace(props: {
               ))}
           </select>
         </label>
+        <div className="graph-catalog-continuation">
+          <label>
+            <span>Find catalog option</span>
+            <input
+              aria-label="Find component, workspace, or indexed view"
+              disabled={!repository || catalogLoading}
+              maxLength={256}
+              onChange={event => setCatalogQuery(event.target.value)}
+              onKeyDown={event => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                loadCatalogContinuation(catalogQuery);
+              }}
+              placeholder="Component, workspace, commit, or view"
+              type="search"
+              value={catalogQuery}
+            />
+          </label>
+          <button
+            disabled={!repository || catalogLoading || catalogQuery.trim().length === 0}
+            onClick={() => loadCatalogContinuation(catalogQuery)}
+            type="button"
+          >
+            {catalogLoading && catalogQuery.trim().length > 0 ? 'Searching…' : 'Search options'}
+          </button>
+          {projectCatalogHasMore || workspaceCatalogHasMore || viewCatalogHasMore ? (
+            <button
+              className="quiet-button"
+              disabled={!repository || catalogLoading}
+              onClick={() => loadCatalogContinuation('')}
+              type="button"
+            >
+              {catalogLoading && catalogQuery.trim().length === 0 ? 'Loading…' : 'Load more options'}
+            </button>
+          ) : null}
+          {catalogError ? <small role="alert">{catalogError}</small> : null}
+        </div>
         <label className="graph-search">
           <span>Find a node</span>
           <input
@@ -1422,7 +1682,7 @@ export function GraphWorkspace(props: {
           ) : (
             <div className="graph-size-readout">
               <span>Node size</span>
-              <strong>Component symbols</strong>
+              <strong>{graphOverviewSizeLabel(graph)}</strong>
             </div>
           )}
           <div className="graph-focus-control">
@@ -2223,6 +2483,8 @@ function NodeInspector(props: {
     ? `${detail.node.path}:${detail.node.span.line}:${detail.node.span.column}`
     : props.node.path;
   const breadcrumb = detail ? sourceBreadcrumb(detail.node.projectId, detail.node.path) : [];
+  const relationshipCountsSampled = detail?.stats.summaryTruncated === true;
+  const relationshipSampleLabel = detail ? graphRelationshipSampleLabel(detail) : undefined;
   return (
     <div className="node-inspector">
       <header className="node-inspector-header">
@@ -2301,11 +2563,15 @@ function NodeInspector(props: {
               </>
             ) : null}
             <dt>{detail ? 'Fan-in' : 'Visible degree'}</dt>
-            <dd>{detail ? detail.stats.incoming.toLocaleString() : props.node.degree.toLocaleString()}</dd>
+            <dd>
+              {detail
+                ? graphRelationshipCountLabel(detail.stats.incoming, relationshipCountsSampled)
+                : props.node.degree.toLocaleString()}
+            </dd>
             {detail ? (
               <>
                 <dt>Fan-out</dt>
-                <dd>{detail.stats.outgoing.toLocaleString()}</dd>
+                <dd>{graphRelationshipCountLabel(detail.stats.outgoing, relationshipCountsSampled)}</dd>
               </>
             ) : null}
             {props.node.symbolCount !== undefined ? (
@@ -2321,11 +2587,13 @@ function NodeInspector(props: {
             <div className="provenance-strip" aria-label="Relationship provenance">
               {detail.stats.provenances.map(item => (
                 <span key={item.provenance}>
-                  {item.provenance} <strong>{item.count}</strong>
+                  {item.provenance}{' '}
+                  <strong>{graphRelationshipCountLabel(item.count, relationshipCountsSampled)}</strong>
                 </span>
               ))}
             </div>
           ) : null}
+          {relationshipSampleLabel ? <p className="detail-truncation">{relationshipSampleLabel}</p> : null}
           {(detail?.node.signature ?? props.node.signature) ? (
             <pre className="node-signature">{detail?.node.signature ?? props.node.signature}</pre>
           ) : null}
@@ -2351,10 +2619,12 @@ function NodeInspector(props: {
           <div className="relationship-view">
             <div className="relationship-totals">
               <span>
-                <strong>{detail.stats.incoming.toLocaleString()}</strong> incoming
+                <strong>{graphRelationshipCountLabel(detail.stats.incoming, relationshipCountsSampled)}</strong>{' '}
+                incoming
               </span>
               <span>
-                <strong>{detail.stats.outgoing.toLocaleString()}</strong> outgoing
+                <strong>{graphRelationshipCountLabel(detail.stats.outgoing, relationshipCountsSampled)}</strong>{' '}
+                outgoing
               </span>
             </div>
             <div className="relation-breakdown">
@@ -2365,7 +2635,8 @@ function NodeInspector(props: {
                     <span>
                       <strong>{relationLabel(item.relation)}</strong>
                       <small>
-                        {item.incoming} in · {item.outgoing} out
+                        {graphRelationshipCountLabel(item.incoming, relationshipCountsSampled)} in ·{' '}
+                        {graphRelationshipCountLabel(item.outgoing, relationshipCountsSampled)} out
                       </small>
                     </span>
                     <i style={{width: `${Math.max(4, (item.count / maximum) * 100)}%`}} />
@@ -2373,6 +2644,7 @@ function NodeInspector(props: {
                 );
               })}
             </div>
+            {relationshipSampleLabel ? <p className="detail-truncation">{relationshipSampleLabel}</p> : null}
             <div className="related-list relationship-list">
               <h4>Direct neighborhood</h4>
               {detail.relationships.slice(0, 32).map(relationship => {

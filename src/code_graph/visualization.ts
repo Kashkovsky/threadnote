@@ -38,6 +38,7 @@ const NODE_DETAIL_SUMMARY_LIMIT = 2_000;
 const MANAGER_CATALOG_PROJECT_LIMIT = 160;
 const MANAGER_OVERVIEW_PROJECT_LIMIT = 500;
 const MANAGER_CATALOG_WORKSPACE_LIMIT = 64;
+const MANAGER_CATALOG_VIEW_LIMIT = 32;
 const MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS = MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS / 2;
 const MANAGER_QUERY_DEFAULT_EDGE_LIMIT = 240;
@@ -64,6 +65,7 @@ export interface ManagerGraphRepository {
   readonly defaultViewId: string;
   readonly repositoryId: string;
   readonly views: readonly ManagerGraphIndexedView[];
+  readonly viewsTruncated: boolean;
 }
 
 export interface ManagerGraphIndexedView {
@@ -112,6 +114,20 @@ export interface ManagerGraphCatalog {
   readonly repositories: readonly ManagerGraphRepository[];
   readonly waiterCount: number;
   readonly waiters: readonly ObservedCodeGraphBuildStatus[];
+}
+
+export interface ManagerGraphCatalogPage {
+  readonly projectOffset: number;
+  readonly query: string;
+  readonly repository: ManagerGraphIndexedView;
+  readonly workspaceOffset: number;
+}
+
+export interface ManagerGraphViewPage {
+  readonly hasMore: boolean;
+  readonly offset: number;
+  readonly query: string;
+  readonly repositories: readonly ManagerGraphRepository[];
 }
 
 export interface ManagerGraphBuildCatalog {
@@ -229,6 +245,8 @@ export interface ManagerGraphNodeDetail {
       readonly outgoing: number;
       readonly relation: CodeGraphEdge['relation'];
     }[];
+    readonly sampledEdges: number;
+    readonly summaryTruncated: boolean;
     readonly truncated: boolean;
   };
 }
@@ -246,18 +264,27 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
         .loadVisualizationCatalogs(database, 'deferred', {
           includeDependencies: false,
           projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
+          viewLimit: MANAGER_CATALOG_VIEW_LIMIT + 1,
           workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
         })
         .pipe(
           Effect.tap(catalogs =>
-            Effect.forEach(catalogs, catalog => retainManagerSnapshot(store, database, catalog.snapshot.id), {
-              concurrency: 1,
-              discard: true,
-            }),
+            Effect.forEach(
+              catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT),
+              catalog => retainManagerSnapshot(store, database, catalog.snapshot.id),
+              {
+                concurrency: 1,
+                discard: true,
+              },
+            ),
           ),
           Effect.map(catalogs =>
             catalogs.length > 0
-              ? ({checkoutId, catalogs} as const)
+              ? ({
+                  checkoutId,
+                  catalogs: catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT),
+                  viewsTruncated: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
+                } as const)
               : ({
                   diagnostic: {
                     checkoutId,
@@ -279,11 +306,21 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     },
     {concurrency: 2},
   );
-  const catalogEntries: Array<{catalog: CodeGraphVisualizationCatalog; checkoutId: string}> = [];
+  const catalogEntries: Array<{
+    catalog: CodeGraphVisualizationCatalog;
+    checkoutId: string;
+    viewsTruncated?: boolean;
+  }> = [];
   const diagnostics: ManagerGraphCatalogDiagnostic[] = [];
   for (const entry of entries) {
     if ('catalogs' in entry && entry.catalogs) {
-      catalogEntries.push(...entry.catalogs.map(catalog => ({catalog, checkoutId: entry.checkoutId})));
+      catalogEntries.push(
+        ...entry.catalogs.map(catalog => ({
+          catalog,
+          checkoutId: entry.checkoutId,
+          viewsTruncated: entry.viewsTruncated,
+        })),
+      );
     }
     if ('diagnostic' in entry && entry.diagnostic) diagnostics.push(entry.diagnostic);
   }
@@ -322,13 +359,22 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
 });
 
 export function groupManagerGraphRepositories(
-  entries: readonly {readonly catalog: CodeGraphVisualizationCatalog; readonly checkoutId: string}[],
+  entries: readonly {
+    readonly catalog: CodeGraphVisualizationCatalog;
+    readonly checkoutId: string;
+    readonly viewsTruncated?: boolean;
+  }[],
 ): readonly ManagerGraphRepository[] {
-  const groups = new Map<string, {displayName: string; views: ManagerGraphIndexedView[]}>();
+  const groups = new Map<string, {displayName: string; views: ManagerGraphIndexedView[]; viewsTruncated: boolean}>();
   for (const entry of entries) {
     const repositoryId = entry.catalog.repository.repositoryId;
-    const group = groups.get(repositoryId) ?? {displayName: entry.catalog.repository.displayName, views: []};
+    const group = groups.get(repositoryId) ?? {
+      displayName: entry.catalog.repository.displayName,
+      views: [],
+      viewsTruncated: false,
+    };
     group.views.push(repositoryFromCatalog(entry.checkoutId, entry.catalog));
+    group.viewsTruncated ||= entry.viewsTruncated === true;
     groups.set(repositoryId, group);
   }
   return [...groups]
@@ -340,6 +386,7 @@ export function groupManagerGraphRepositories(
         id: repositoryId,
         repositoryId,
         views,
+        viewsTruncated: group.viewsTruncated,
       } satisfies ManagerGraphRepository;
     })
     .sort(
@@ -357,6 +404,70 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
     waiterCount: selection.waiters.length,
     waiters: selection.waiters,
   } satisfies ManagerGraphBuildCatalog;
+});
+
+export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')(function* (
+  threadnoteHome: string,
+  indexedViewId: string,
+  expectedSnapshotId: Option.Option<string>,
+  request: {readonly offset?: number; readonly query?: string; readonly workspaceOffset?: number} = {},
+) {
+  if (Option.isNone(expectedSnapshotId)) {
+    return yield* Effect.fail(new Error('Graph catalog continuation requires the selected snapshot identity.'));
+  }
+  const projectOffset = boundedCatalogOffset(request.offset);
+  const workspaceOffset = boundedCatalogOffset(request.workspaceOffset);
+  const query = boundedCatalogQuery(request.query);
+  const {catalog, checkoutId} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
+    expectedSnapshotId,
+    includeDependencies: false,
+    projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
+    projectOffset,
+    projectQuery: query.length === 0 ? Option.none() : Option.some(query),
+    workspaceOffset,
+    workspaceQuery: query.length === 0 ? Option.none() : Option.some(query),
+  });
+  return {
+    projectOffset,
+    query,
+    repository: repositoryFromCatalog(checkoutId, catalog),
+    workspaceOffset,
+  } satisfies ManagerGraphCatalogPage;
+});
+
+export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(function* (
+  threadnoteHome: string,
+  indexedViewId: string,
+  request: {readonly offset?: number; readonly query?: string} = {},
+) {
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const [checkoutId] = indexedViewId.split('.', 1) as [string];
+  const databases = yield* codeGraphDatabasePaths(threadnoteHome);
+  const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
+  if (!database) return yield* Effect.fail(new Error('Indexed graph checkout was not found.'));
+  const offset = boundedCatalogOffset(request.offset);
+  const query = boundedCatalogQuery(request.query);
+  const catalogs = yield* store.loadVisualizationCatalogs(database, 'deferred', {
+    includeDependencies: false,
+    projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
+    viewLimit: MANAGER_CATALOG_VIEW_LIMIT + 1,
+    viewOffset: offset,
+    viewQuery: query.length === 0 ? Option.none() : Option.some(query),
+    workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
+  });
+  const visible = catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT);
+  yield* Effect.forEach(visible, catalog => retainManagerSnapshot(store, database, catalog.snapshot.id), {
+    concurrency: 1,
+    discard: true,
+  });
+  return {
+    hasMore: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
+    offset,
+    query,
+    repositories: groupManagerGraphRepositories(visible.map(catalog => ({catalog, checkoutId}))),
+  } satisfies ManagerGraphViewPage;
 });
 
 export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(function* (
@@ -573,6 +684,7 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
     snapshotId: catalog.snapshot.id,
     stats: {
       ...summary,
+      summaryTruncated: summary.truncated,
       truncated:
         summary.truncated || summary.provenances.reduce((total, item) => total + item.count, 0) > relationships.length,
     },
@@ -1014,8 +1126,12 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   options: {
     readonly expectedSnapshotId: Option.Option<string>;
     readonly includeDependencies: boolean;
+    readonly projectOffset?: number;
     readonly projectId?: Option.Option<string>;
     readonly projectLimit: number;
+    readonly projectQuery?: Option.Option<string>;
+    readonly workspaceOffset?: number;
+    readonly workspaceQuery?: Option.Option<string>;
   },
 ) {
   const path = yield* Path.Path;
@@ -1026,10 +1142,14 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   if (!database) return yield* Effect.fail(new Error('Indexed graph checkout was not found.'));
   const catalogOptions = {
     includeDependencies: options.includeDependencies,
+    projectOffset: options.projectOffset,
     projectId: options.projectId ?? Option.none(),
     projectLimit: options.projectLimit,
+    projectQuery: options.projectQuery ?? Option.none(),
     snapshotId: options.expectedSnapshotId,
     workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
+    workspaceOffset: options.workspaceOffset,
+    workspaceQuery: options.workspaceQuery ?? Option.none(),
   };
   const catalog = Option.isSome(options.expectedSnapshotId)
     ? yield* store.loadVisualizationCatalog(database, 'deferred', catalogOptions)
@@ -1044,6 +1164,14 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   }
   return {catalog, checkoutId, database};
 });
+
+function boundedCatalogOffset(value: number | undefined): number {
+  return value === undefined || !Number.isSafeInteger(value) ? 0 : Math.max(0, Math.min(1_000_000, Math.floor(value)));
+}
+
+function boundedCatalogQuery(value: string | undefined): string {
+  return (value ?? '').trim().slice(0, 256);
+}
 
 function scopeFromProjectId(projectId: string): CodeGraphVisualizationScope {
   if (projectId.startsWith('cgp_')) return {type: 'component', value: projectId};

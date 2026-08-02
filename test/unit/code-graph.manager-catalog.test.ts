@@ -8,6 +8,10 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {groupManagerGraphRepositories, managerGraphCatalog} from '../../src/code_graph/visualization.js';
 import {
   CodeGraphStore,
+  codeGraphVisualizationScopeEdgeSampleStatements,
+  codeGraphVisualizationScopeEndpointStatement,
+  codeGraphVisualizationScopeSummaryStatementCount,
+  codeGraphVisualizationScopeSymbolSampleStatements,
   codeGraphVisualizationSymbolsQueryStatement,
   type CodeGraphVisualizationCatalog,
 } from '../../src/code_graph/store.js';
@@ -441,12 +445,42 @@ describe('Manager logical repository and workspace catalogs', () => {
         languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    const insertWorkspace = database.prepare(
+      `INSERT INTO workspace_scopes
+       (snapshot_id, id, build_system, name, root, provenance, diagnostics_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
     const insertDependency = database.prepare(
       `INSERT INTO workspace_component_dependencies
        (snapshot_id, source_component_id, target_component_id, provenance, evidence)
        VALUES (?, ?, ?, ?, ?)`,
     );
+    const insertSymbol = database.prepare(
+      `INSERT INTO symbols
+       (snapshot_id, id, content_hash, kind, name, qualified_name, path, language, arity,
+        lookup_keys_json, resolution_domain, resolution_scope_id, package_name, exported,
+        signature, documentation, span_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertEdge = database.prepare(
+      `INSERT INTO edges
+       (snapshot_id, id, source_id, source_name, relation, target_id, target_name, provenance,
+        confidence, evidence_path, evidence_span_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
     database.transaction(() => {
+      for (let index = 1; index < 130; index += 1) {
+        const suffix = index.toString().padStart(3, '0');
+        insertWorkspace.run(
+          snapshot.id,
+          `cgw_bazel_${suffix}`,
+          'bazel',
+          `nested-workspace-${suffix}`,
+          `apps/nested-${suffix}`,
+          'declared',
+          '[]',
+        );
+      }
       for (let index = 0; index < 5_000; index += 1) {
         const suffix = index.toString().padStart(5, '0');
         insertComponent.run(
@@ -474,6 +508,44 @@ describe('Manager logical repository and workspace catalogs', () => {
             `discarded-evidence-${'x'.repeat(2_048)}`,
           );
         }
+        if (index < 500) {
+          const symbolId = `symbol-bazel-${suffix}`;
+          insertSymbol.run(
+            snapshot.id,
+            symbolId,
+            `hash-${suffix}`,
+            'class',
+            `Service${suffix}`,
+            `Service${suffix}`,
+            `apps/service-${suffix}/src/Service.kt`,
+            'kotlin',
+            null,
+            '[]',
+            'jvm',
+            `cgp_bazel_${suffix}`,
+            null,
+            1,
+            null,
+            null,
+            '{"column":1,"endColumn":2,"endLine":1,"line":1}',
+          );
+          if (index > 0) {
+            const previousSuffix = (index - 1).toString().padStart(5, '0');
+            insertEdge.run(
+              snapshot.id,
+              `edge-bazel-${suffix}`,
+              symbolId,
+              `Service${suffix}`,
+              'calls',
+              `symbol-bazel-${previousSuffix}`,
+              `Service${previousSuffix}`,
+              'resolved',
+              1,
+              `apps/service-${suffix}/src/Service.kt`,
+              '{"column":1,"endColumn":2,"endLine":1,"line":1}',
+            );
+          }
+        }
       }
     })();
     database.close();
@@ -491,6 +563,30 @@ describe('Manager logical repository and workspace catalogs', () => {
     );
     const elapsedMilliseconds = performance.now() - startedAt;
     const payload = JSON.stringify(catalog);
+    const catalogContinuation = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+          projectLimit: 160,
+          projectOffset: 159,
+          snapshotId: Option.some(snapshot.id),
+          workspaceLimit: 64,
+          workspaceOffset: 64,
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const catalogSearch = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+          projectLimit: 160,
+          projectQuery: Option.some('service-04999'),
+          snapshotId: Option.some(snapshot.id),
+          workspaceLimit: 64,
+          workspaceQuery: Option.some('nested-workspace-129'),
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
     const detailStartedAt = performance.now();
     const detailCatalog = await Effect.runPromise(
       Effect.gen(function* () {
@@ -518,16 +614,122 @@ describe('Manager logical repository and workspace catalogs', () => {
       }).pipe(Effect.provide(storeLayer)),
     );
     const sourceSummaryElapsedMilliseconds = performance.now() - sourceSummaryStartedAt;
-    expect(catalog).toMatchObject({projectCount: 5_001, projectsTruncated: true, workspaceCount: 1});
+    expect(catalog).toMatchObject({projectCount: 5_001, projectsTruncated: true, workspaceCount: 130});
     expect(catalog?.projects).toHaveLength(160);
+    expect(catalog?.workspaces).toHaveLength(64);
+    expect(catalog?.workspacesTruncated).toBe(true);
     expect(catalog?.projects.every(project => project.dependencies.length === 0)).toBe(true);
     expect(payload).not.toContain('discarded-evidence');
     expect(new TextEncoder().encode(payload).byteLength).toBeLessThan(100_000);
     expect(elapsedMilliseconds).toBeLessThan(1_500);
     expect(detailCatalog?.projects.map(project => project.id)).toEqual(['cgp_bazel_04999']);
     expect(detailElapsedMilliseconds).toBeLessThan(500);
-    expect(sourceSummary).toEqual({edges: [], sampledScopes: 0, truncated: true});
+    expect(catalogContinuation?.projects).toHaveLength(160);
+    expect(catalogContinuation?.projects[0]?.id).not.toBe(catalog?.projects[0]?.id);
+    expect(catalogContinuation?.workspaces).toHaveLength(64);
+    expect(catalogContinuation?.workspaces[0]?.id).toBe('cgw_bazel_064');
+    expect(catalogSearch?.projects.map(project => project.id)).toEqual(['cgp_bazel_04999']);
+    expect(catalogSearch?.workspaces.map(workspace => workspace.id)).toEqual(['cgw_bazel_129']);
+    expect(sourceSummary).toMatchObject({sampledScopes: 500, truncated: true});
+    expect(sourceSummary.edges.length).toBeGreaterThan(0);
     expect(sourceSummaryElapsedMilliseconds).toBeLessThan(1_500);
+
+    const sampledScopeIds = Array.from({length: 500}, (_, index) => `cgp_bazel_${index.toString().padStart(5, '0')}`);
+    const symbolStatements = codeGraphVisualizationScopeSymbolSampleStatements(
+      snapshot.id,
+      undefined,
+      sampledScopeIds,
+      7,
+    );
+    const edgeStatements = codeGraphVisualizationScopeEdgeSampleStatements(
+      snapshot.id,
+      undefined,
+      sampledScopeIds.map((scopeId, index) => ({
+        scopeId,
+        symbolIds: [`symbol-bazel-${index.toString().padStart(5, '0')}`],
+      })),
+      8,
+      ['resolved'],
+    );
+    const endpointStatement = codeGraphVisualizationScopeEndpointStatement(snapshot.id, undefined, [
+      'symbol-bazel-00000',
+      'symbol-bazel-00499',
+    ]);
+    expect(codeGraphVisualizationScopeSummaryStatementCount(500)).toBe(17);
+    expect(symbolStatements).toHaveLength(8);
+    expect(edgeStatements).toHaveLength(8);
+    const planDatabase = new Database(databasePath, {readonly: true});
+    const symbolPlan = planDatabase
+      .query(`EXPLAIN QUERY PLAN ${symbolStatements[0]!.text}`)
+      .all(...symbolStatements[0]!.parameters) as readonly {readonly detail: string}[];
+    const edgePlan = planDatabase
+      .query(`EXPLAIN QUERY PLAN ${edgeStatements[0]!.text}`)
+      .all(...edgeStatements[0]!.parameters) as readonly {readonly detail: string}[];
+    const endpointPlan = planDatabase
+      .query(`EXPLAIN QUERY PLAN ${endpointStatement.text}`)
+      .all(...endpointStatement.parameters) as readonly {readonly detail: string}[];
+    planDatabase.close();
+    expect(symbolPlan.some(row => row.detail.includes('symbols_visualization_scope_v2'))).toBe(true);
+    expect(edgePlan.some(row => row.detail.includes('edges_source'))).toBe(true);
+    expect(edgePlan.some(row => row.detail.includes('edges_target'))).toBe(true);
+    expect(
+      endpointPlan.some(
+        row =>
+          row.detail.includes('SEARCH current_symbols USING PRIMARY KEY') &&
+          row.detail.includes('snapshot_id=? AND id=?'),
+      ),
+    ).toBe(true);
+
+    const viewDatabase = new Database(databasePath);
+    const insertSnapshot = viewDatabase.prepare(
+      `INSERT INTO snapshots
+       (id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set, dirty,
+        overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at, failure_summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    viewDatabase.transaction(() => {
+      for (let index = 0; index < 40; index += 1) {
+        const suffix = index.toString(16).padStart(64, '0');
+        insertSnapshot.run(
+          `cgsn_view_${index}`,
+          identity.repositoryId,
+          suffix,
+          suffix.slice(0, 40),
+          null,
+          'workspace-test',
+          0,
+          null,
+          'ready',
+          0,
+          0,
+          0,
+          '2026-08-01T13:00:00.000Z',
+          '2026-08-01T13:00:01.000Z',
+          null,
+        );
+      }
+    })();
+    viewDatabase.close();
+    const [firstViews, continuedViews, searchedViews] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* Effect.all(
+          [
+            store.loadVisualizationCatalogs(databasePath, 'deferred', {viewLimit: 33}),
+            store.loadVisualizationCatalogs(databasePath, 'deferred', {viewLimit: 33, viewOffset: 33}),
+            store.loadVisualizationCatalogs(databasePath, 'deferred', {
+              viewLimit: 33,
+              viewQuery: Option.some('0000000000000000000000000000000000000027'),
+            }),
+          ],
+          {concurrency: 1},
+        );
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    expect(firstViews).toHaveLength(33);
+    expect(continuedViews.length).toBeGreaterThan(0);
+    expect(new Set([...firstViews, ...continuedViews].map(view => view.viewWorktreeId)).size).toBeGreaterThan(33);
+    expect(searchedViews.map(view => view.viewWorktreeId)).toEqual(['0'.repeat(62) + '27']);
   });
 
   it('surfaces an unreadable database without exposing its local path', async () => {

@@ -9,7 +9,10 @@ import {
   graphFocusTarget,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
+  graphOverviewSizeLabel,
   graphQueryRequestIsCurrent,
+  graphRelationshipCountLabel,
+  graphRelationshipSampleLabel,
   graphRequestIsCurrent,
   graphRepositoryOptionLabel,
   graphStatusPollDelay,
@@ -19,6 +22,7 @@ import {
   graphWithNodeNeighborhood,
   managerGraphDebouncedQueryCandidate,
   managerGraphQueryCandidate,
+  mergeGraphRepositoryGroups,
   resolveGraphSelection,
   type GraphEdge,
   type GraphAnalysis,
@@ -262,6 +266,73 @@ describe('manager graph focus', () => {
       a: 2,
       c: 1,
     });
+  });
+
+  it('labels overview sizing from the metric that is actually present', () => {
+    const base = queryVisualization('overview');
+    const overview = {
+      ...base,
+      mode: 'overview' as const,
+      nodes: [{...graphNode('component', 'Component'), symbolCount: 42, type: 'project' as const}],
+    };
+    expect(graphOverviewSizeLabel(overview)).toBe('Component symbols');
+    expect(
+      graphOverviewSizeLabel({
+        ...overview,
+        nodes: overview.nodes.map(({symbolCount: _symbolCount, ...node}) => node),
+        repository: {...overview.repository, metrics: 'deferred'},
+      }),
+    ).toBe('Visible relationship degree');
+  });
+
+  it('marks sampled high-degree relationship counts as lower bounds with the sample size', () => {
+    const detail = {
+      ...nodeDetail('god-node', 'Coordinator', []),
+      stats: {
+        incoming: 1_500,
+        outgoing: 500,
+        provenances: [{count: 2_000, provenance: 'resolved'}],
+        relations: [{count: 2_000, incoming: 1_500, outgoing: 500, relation: 'calls'}],
+        sampledEdges: 2_000,
+        summaryTruncated: true,
+        truncated: true,
+      },
+    };
+    expect(graphRelationshipCountLabel(detail.stats.incoming, detail.stats.summaryTruncated)).toBe('≥1,500');
+    expect(graphRelationshipSampleLabel(detail)).toBe('Counts are lower bounds from a 2,000-edge sample.');
+    expect(graphRelationshipCountLabel(12, false)).toBe('12');
+  });
+
+  it('merges continuation pages without dropping loaded views or component options', () => {
+    const initial = repositoryGroup('repo', ['view-00'], 'view-00');
+    const continued = repositoryGroup('repo', ['view-01'], 'view-01');
+    const project = {
+      id: 'cgp_late_target',
+      label: '//apps/late:target',
+      model: 'component' as const,
+      provenance: 'declared',
+    };
+    const continuation = {
+      ...continued,
+      views: [{...continued.views[0]!, projects: [project], projectsTruncated: false}],
+    };
+    const merged = mergeGraphRepositoryGroups([{...initial, viewsTruncated: true}], [continuation]);
+    expect(merged[0]?.views.map(view => view.id)).toEqual(['view-00', 'view-01']);
+    expect(merged[0]?.views.find(view => view.id === 'view-01')?.projects).toContainEqual(project);
+    expect(merged[0]?.viewsTruncated).toBe(true);
+
+    const refreshed = repositoryGroup('repo', ['view-00'], 'view-00');
+    const stalePage = {
+      ...refreshed,
+      views: [
+        {
+          ...refreshed.views[0]!,
+          projects: [project],
+          snapshot: {...refreshed.views[0]!.snapshot, id: 'stale-snapshot'},
+        },
+      ],
+    };
+    expect(mergeGraphRepositoryGroups([refreshed], [stalePage])[0]?.views[0]?.projects).toEqual([]);
   });
 
   it('keeps the selected node anchored while separating highlighted node labels', () => {
@@ -516,6 +587,7 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
     displayName: id,
     id,
     repositoryId: id,
+    viewsTruncated: false,
     views: viewIds.map(viewId => ({
       accounting: {
         attributedSymbols: 0,

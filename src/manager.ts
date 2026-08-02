@@ -60,9 +60,11 @@ import {
   managerGraphAnalysis,
   managerGraphBuildCatalog,
   managerGraphCatalog,
+  managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
   managerGraphVisualization,
+  managerGraphViewsPage,
 } from './code_graph/visualization.js';
 import type {
   AgentClient,
@@ -467,6 +469,34 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   }
   if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
     writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/page') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphCatalogPage(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        Option.some(requiredQuery(url, 'snapshot')),
+        {
+          offset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'offset')),
+          query: Option.getOrUndefined(optionalNonEmptyQuery(url, 'query')),
+          workspaceOffset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'workspaceOffset')),
+        },
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/views') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphViewsPage(context.config.agentContextHome, requiredQuery(url, 'repository'), {
+        offset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'offset')),
+        query: Option.getOrUndefined(optionalNonEmptyQuery(url, 'query')),
+      }),
+    );
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/graph') {
@@ -1565,6 +1595,13 @@ function optionalPositiveIntegerQuery(url: URL, name: string): Option.Option<num
   return Option.fromNullishOr(url.searchParams.get(name)).pipe(
     Option.map(value => Number(value)),
     Option.filter(value => Number.isSafeInteger(value) && value > 0),
+  );
+}
+
+function optionalNonNegativeIntegerQuery(url: URL, name: string): Option.Option<number> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => Number(value)),
+    Option.filter(value => Number.isSafeInteger(value) && value >= 0),
   );
 }
 
