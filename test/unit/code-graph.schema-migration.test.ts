@@ -22,6 +22,40 @@ afterEach(async () => {
 });
 
 describe('code graph persistent schema migration', () => {
+  it('rejects a newer persistent extension revision without downgrading it', async () => {
+    const fixture = await migrationFixture();
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+    const futureRevision = CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION + 1;
+    const prepared = new Database(fixture.databasePath, {strict: true});
+    prepared
+      .query("UPDATE schema_metadata SET value = ? WHERE key = 'persistent_extension_schema_revision'")
+      .run(String(futureRevision));
+    prepared.close(false);
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.initialize(fixture.databasePath);
+        }),
+      ),
+    ).rejects.toThrow(`persistent extension schema ${futureRevision} is newer`);
+
+    const preserved = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(
+        preserved.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
+      ).toEqual({value: String(futureRevision)});
+    } finally {
+      preserved.close(false);
+    }
+  });
+
   it('preserves ready beta data and restarts an incomplete pre-fingerprint build before materializing', async () => {
     const fixture = await migrationFixture();
     const ready = snapshot(fixture.identity, 'ready-before-upgrade');

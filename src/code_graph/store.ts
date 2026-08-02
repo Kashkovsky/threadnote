@@ -2122,6 +2122,17 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const revision = yield* sql<{readonly value: string}>`
         SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision' LIMIT 1
       `;
+      const recordedRevision = Number(revision[0]?.value);
+      if (
+        Number.isSafeInteger(recordedRevision) &&
+        recordedRevision > CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
+      ) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError(
+            `Code graph persistent extension schema ${recordedRevision} is newer than ${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}.`,
+          ),
+        );
+      }
       const legacyBuildOwners = yield* persistentExtensionTableInspection(sql, LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT);
       if (legacyBuildOwners.compatible) {
         const completedAt = new Date().toISOString();
