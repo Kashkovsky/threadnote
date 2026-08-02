@@ -16,6 +16,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         home: resolve(siteRoot, 'index.html'),
+        performance: resolve(siteRoot, 'performance/index.html'),
         docs: resolve(siteRoot, 'docs/index.html'),
         proTips: resolve(siteRoot, 'pro-tips/index.html'),
         managerDemo: resolve(siteRoot, 'manager-demo/index.html'),

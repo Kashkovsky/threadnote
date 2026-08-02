@@ -23,6 +23,8 @@ runtime, Python service, external memory platform, or background daemon required
 
 **Website:** https://threadnote.io/
 
+**Performance:** https://threadnote.io/performance/
+
 **Documentation:** https://threadnote.io/docs/
 
 ## The Value

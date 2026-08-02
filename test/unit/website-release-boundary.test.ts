@@ -62,6 +62,7 @@ describe('website and standalone release boundary', () => {
 
     for (const entry of [
       'index.html',
+      'performance/index.html',
       'docs/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
@@ -100,6 +101,7 @@ describe('website and standalone release boundary', () => {
     const origin = 'https://threadnote.io';
     const entries = [
       ['index.html', '/'],
+      ['performance/index.html', '/performance/'],
       ['docs/index.html', '/docs/'],
       ['pro-tips/index.html', '/pro-tips/'],
       ['manager-demo/index.html', '/manager-demo/'],

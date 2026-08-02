@@ -4,6 +4,11 @@ import {describe, expect, it} from 'vitest';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
+import {
+  adaptRetainedPerformanceArtifact,
+  performanceEvidence,
+  retainedPerformanceArtifactFieldPaths,
+} from '../../website/src/content/performance.js';
 import {proTips} from '../../website/src/content/proTips.js';
 
 const root = process.cwd();
@@ -79,10 +84,109 @@ function expectNonEmptyString(payload: Record<string, unknown>, key: string): vo
   expect((payload[key] as string).trim().length).toBeGreaterThan(0);
 }
 
+function verifiedPerformanceFixture(): Record<string, unknown> {
+  const overlayDigest = 'd'.repeat(64);
+  const controls = Object.fromEntries(
+    ['java', 'kotlin', 'typescript', 'bazel'].map((language, index) => [
+      language,
+      {
+        query: `${language} definition`,
+        path: `src/${language}/control.${language}`,
+        stableNodeId: `cgs_${String(index + 1).repeat(32)}`,
+        milliseconds: index + 1,
+        passed: true,
+      },
+    ]),
+  );
+
+  return {
+    schemaVersion: 1,
+    status: 'verified',
+    artifact: {
+      url: 'https://github.com/Kashkovsky/threadnote/releases/download/example/performance.json',
+      sha256: 'a'.repeat(64),
+      generatedAt: '2026-08-02T20:00:00Z',
+    },
+    source: {
+      threadnote: {version: '4.0.0-beta.example', commit: 'b'.repeat(40)},
+      repository: {
+        name: 'Example/public-monorepo',
+        url: 'https://github.com/Example/public-monorepo',
+        commit: 'c'.repeat(40),
+        checkout: 'clean',
+      },
+    },
+    runner: {
+      hardware: 'Example runner',
+      operatingSystem: 'Example OS',
+      architecture: 'arm64',
+      memoryBytes: 64 * 1024 ** 3,
+      logicalCpuCount: 10,
+      runtime: {name: 'Bun', version: '1.3.14'},
+      database: {name: 'SQLite', version: '3.54.0'},
+      disk: {medium: 'SSD', filesystem: 'APFS'},
+    },
+    inventory: {
+      eligibleFiles: 100,
+      indexedFiles: 90,
+      excludedFiles: 10,
+      languages: {java: 20, kotlin: 20, typescript: 20, bazel: 5},
+    },
+    graph: {
+      symbols: 1_000,
+      relationships: 2_000,
+      references: 500,
+      referenceCandidates: 700,
+      lookupKeys: 3_000,
+      lexicalPostings: 10_000,
+    },
+    phases: {
+      cold: {
+        totalMilliseconds: 10_000,
+        discoveryMilliseconds: 500,
+        extractionMilliseconds: 2_000,
+        materializationMilliseconds: 3_000,
+        resolutionMilliseconds: 1_000,
+        activationMilliseconds: 2_000,
+      },
+      incremental: {totalMilliseconds: 300, changedFiles: 1},
+      independentRebuild: {totalMilliseconds: 9_500},
+    },
+    queries: {sampleCount: 20, p50Milliseconds: 5, p95Milliseconds: 12, maxMilliseconds: 18},
+    controls,
+    parity: {
+      cleanColdDigest: 'e'.repeat(64),
+      incrementalOverlayDigest: overlayDigest,
+      independentOverlayDigest: overlayDigest,
+      incrementalMatchesIndependent: true,
+    },
+    storage: {
+      databaseBytes: 1024 ** 3,
+      peakResidentBytes: 512 * 1024 ** 2,
+      peakWalBytes: 64 * 1024 ** 2,
+      peakTemporaryBytes: 0,
+      peakDurableGrowthBytes: 2 * 1024 ** 3,
+    },
+    manager: {
+      catalogColdMilliseconds: 30,
+      catalogWarmMilliseconds: 5,
+      overviewColdMilliseconds: 20,
+      overviewWarmMilliseconds: 4,
+      detailColdMilliseconds: 10,
+      renderProxyMilliseconds: 2,
+      maxPayloadBytes: 400_000,
+      nodeBudget: 500,
+      edgeBudget: 1_500,
+    },
+    concurrency: {simultaneousWorktrees: 3, isolationPassed: true},
+  };
+}
+
 describe('Threadnote 4 website content', () => {
   it('ships real entry documents for every root page', async () => {
     const routes = [
       'index.html',
+      'performance/index.html',
       'docs/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
@@ -91,7 +195,7 @@ describe('Threadnote 4 website content', () => {
 
     await Promise.all(routes.map(route => access(join(root, 'website', route))));
     const config = await readFile(join(root, 'website', 'vite.config.ts'), 'utf8');
-    for (const route of ['docs', 'proTips', 'managerDemo', 'faq']) {
+    for (const route of ['performance', 'docs', 'proTips', 'managerDemo', 'faq']) {
       expect(config).toContain(`${route}:`);
     }
   });
@@ -101,6 +205,7 @@ describe('Threadnote 4 website content', () => {
       [
         'components/SiteShell.tsx',
         'pages/LandingPage.tsx',
+        'pages/PerformancePage.tsx',
         'pages/DocsPage.tsx',
         'pages/ProTipsPage.tsx',
         'pages/ManagerDemoPage.tsx',
@@ -270,8 +375,75 @@ describe('Threadnote 4 website content', () => {
     expect(landingSource).toContain('Architecture signals');
     expect(landingSource).toContain('JSON, GraphML, HTML, or SVG');
     expect(landingSource).toContain('Open the Manager demo');
+    expect(landingSource).toContain("siteHref('performance/')");
+    expect(landingSource).toContain('real polyglot Bazel monorepo');
+    expect(landingSource).toContain('Final values stay visibly');
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
+  });
+
+  it('fails closed until one complete retained performance artifact is available', async () => {
+    const [pageSource, evidenceSource] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'content', 'performance.ts'), 'utf8'),
+    ]);
+
+    expect(performanceEvidence).toMatchObject({state: 'pending'});
+    const verifiedFixture = verifiedPerformanceFixture();
+    expect(adaptRetainedPerformanceArtifact(verifiedFixture)).toMatchObject({state: 'verified'});
+    expect(() => adaptRetainedPerformanceArtifact({schemaVersion: 1, status: 'verified'})).toThrow(
+      'unexpected or missing fields',
+    );
+    expect(() =>
+      adaptRetainedPerformanceArtifact({schemaVersion: 1, status: 'pending', reason: 'still running', value: 1}),
+    ).toThrow('unexpected or missing fields');
+    const mismatchedFixture = structuredClone(verifiedFixture);
+    const parity = mismatchedFixture.parity as Record<string, unknown>;
+    parity.independentOverlayDigest = 'f'.repeat(64);
+    expect(() => adaptRetainedPerformanceArtifact(mismatchedFixture)).toThrow('overlay digests must match');
+    expect(retainedPerformanceArtifactFieldPaths).toEqual(
+      expect.arrayContaining([
+        'artifact.url',
+        'artifact.sha256',
+        'artifact.generatedAt',
+        'source.threadnote.commit',
+        'source.repository.commit',
+        'runner.hardware',
+        'runner.runtime.version',
+        'runner.database.version',
+        'inventory.languages.java',
+        'inventory.languages.kotlin',
+        'inventory.languages.typescript',
+        'inventory.languages.bazel',
+        'phases.cold.materializationMilliseconds',
+        'phases.incremental.totalMilliseconds',
+        'phases.independentRebuild.totalMilliseconds',
+        'queries.p95Milliseconds',
+        'controls.java.stableNodeId',
+        'controls.kotlin.stableNodeId',
+        'controls.typescript.stableNodeId',
+        'controls.bazel.stableNodeId',
+        'parity.incrementalOverlayDigest',
+        'parity.independentOverlayDigest',
+        'storage.peakResidentBytes',
+        'storage.peakWalBytes',
+        'storage.peakTemporaryBytes',
+        'manager.overviewColdMilliseconds',
+        'manager.renderProxyMilliseconds',
+        'concurrency.simultaneousWorktrees',
+      ]),
+    );
+
+    expect(pageSource).toContain('Large codebases are a normal case');
+    expect(pageSource).toContain('Repository size is never an admission test');
+    expect(pageSource).toContain('bounded parser worker pool');
+    expect(pageSource).toContain('one backpressured SQLite writer');
+    expect(pageSource).toContain('One commit graph. One truthful overlay per worktree');
+    expect(pageSource).toContain('Graph responses stay deliberately bounded');
+    expect(pageSource).toContain('returns the complete record');
+    expect(pageSource).toContain('Your agents will love it');
+    expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
+    expect(evidenceSource).toContain('Strict public adapter for one retained, exact-HEAD benchmark artifact');
   });
 
   it('documents the explicit publishing and supported hook boundaries', () => {
@@ -355,6 +527,8 @@ describe('Threadnote 4 website content', () => {
     expect(content).toContain('64 MiB per-artifact source budget');
     expect(content).toContain('not repository or graph-size admission caps');
     expect(content).toContain('threadnote graph export --format graphml');
+    expect(content).toContain('[Performance page](/performance/)');
+    expect(content).toContain('incremental-versus-independent-rebuild digest parity');
   });
 
   it('pins the Manager canvas to its stage without a resize feedback loop', async () => {

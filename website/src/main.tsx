@@ -34,6 +34,8 @@ const loadPage = (): Promise<PageModule> => {
   switch (page) {
     case 'docs':
       return import('./pages/DocsPage');
+    case 'performance':
+      return import('./pages/PerformancePage');
     case 'pro-tips':
       return import('./pages/ProTipsPage');
     case 'manager-demo':

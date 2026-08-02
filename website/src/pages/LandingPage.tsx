@@ -193,6 +193,19 @@ function GraphSearchShowcase() {
         ))}
       </div>
 
+      <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
+        <div>
+          <span className="eyebrow">Large-repository performance</span>
+          <h3>See how Threadnote is built and benchmarked for a real polyglot Bazel monorepo.</h3>
+        </div>
+        <p>
+          One strict evidence gate ties exact commits to cold and incremental phases, Java/Kotlin/TypeScript/Bazel
+          controls, storage high-water, queries, Manager rendering, and rebuild parity. Final values stay visibly
+          pending until the retained artifact is complete.
+        </p>
+        <Icon name="arrow" aria-hidden="true" />
+      </a>
+
       <div className="graph-showcase__manager">
         <div className="graph-showcase__manager-copy">
           <span className="eyebrow">From MCP evidence to a visual map</span>
