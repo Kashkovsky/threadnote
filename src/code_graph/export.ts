@@ -181,7 +181,7 @@ export const exportCodeGraph = Effect.fn('codeGraph.export')(function* (request:
     Effect.forever,
   );
   return yield* Effect.raceFirst(
-    store.withSession(request.databasePath, renderExport(store, request, snapshot, metadata, limits)),
+    store.withSession(request.databasePath, renderExport(store, request, snapshot, metadata, limits), {readOnly: true}),
     renewLease,
   ).pipe(
     Effect.ensuring(store.releaseSnapshotLease(request.databasePath, lease).pipe(Effect.catch(() => Effect.void))),

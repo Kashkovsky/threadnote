@@ -643,6 +643,8 @@ export interface CodeGraphStoreShape {
 }
 
 export interface CodeGraphDatabaseSessionOptions {
+  /** @internal Open a non-creating, query-only SQLite connection without WAL bootstrap writes. */
+  readonly readOnly?: boolean;
   /** @internal Ordinary index sessions opportunistically reclaim completed build-only rows. */
   readonly cleanupCompletedBuildRows?: boolean;
   /** @internal Observes the point at which gated background cleanup may open SQLite. */
@@ -801,7 +803,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             databasePath,
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
-              yield* configureConnection(sql);
+              yield* options?.readOnly ? configureReadConnection(sql) : configureConnection(sql);
               if (options?.writerLockPath !== undefined) {
                 // Keep hot upper B-tree pages resident for the one long-lived
                 // indexing writer. Read/query sessions retain SQLite's small
@@ -843,6 +845,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 return yield* effect;
               }).pipe(Effect.provideService(CodeGraphDatabaseSession, session));
             }),
+            options?.readOnly === true,
           ).pipe(
             Effect.catchTag('SqlError', cause =>
               Effect.fail(storeError('use code graph database session', cause as SqlError.SqlError)),
@@ -1066,7 +1069,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet))
+                ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet))
                 : Effect.succeed(new Set<string>()),
             ),
             Effect.mapError(cause => storeError('load cached code graph file keys', cause)),
@@ -1074,55 +1077,62 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         edgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
           prepare(databasePath).pipe(
             Effect.andThen(
-              useDatabase(databasePath, selectEdgesForNodes(snapshotId, nodeIds, direction, limit, allowedProvenances)),
+              useReadOnlyDatabase(
+                databasePath,
+                selectEdgesForNodes(snapshotId, nodeIds, direction, limit, allowedProvenances),
+              ),
             ),
             Effect.mapError(cause => storeError('load code graph adjacency', cause)),
           ),
         findSymbolsByPathAndName: (databasePath, snapshotId, sourcePath, name) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSymbolsByPathAndName(snapshotId, sourcePath, name))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolsByPathAndName(snapshotId, sourcePath, name))),
             Effect.mapError(cause => storeError('resolve qualified code graph symbol', cause)),
           ),
         loadCachedFacts: (databasePath, files, extractorSet, options) =>
           prepare(databasePath).pipe(
             Effect.andThen(
-              useDatabase(databasePath, selectCachedFacts(files, extractorSet, options?.decode !== false)),
+              useReadOnlyDatabase(databasePath, selectCachedFacts(files, extractorSet, options?.decode !== false)),
             ),
             Effect.mapError(cause => storeError('load cached code graph facts', cause)),
           ),
         loadGraph: (databasePath, snapshotId) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectStoredGraph(snapshotId))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectStoredGraph(snapshotId))),
             Effect.mapError(cause => storeError('load code graph snapshot', cause)),
           ),
         loadSymbols: (databasePath, snapshotId) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectStoredSymbols(snapshotId))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectStoredSymbols(snapshotId))),
             Effect.mapError(cause => storeError('load code graph snapshot symbols', cause)),
           ),
         loadEdgePage: (databasePath, snapshotId, cursor, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectEdgePage(snapshotId, cursor, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectEdgePage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph edge page', cause)),
           ),
         loadSymbolPage: (databasePath, snapshotId, cursor, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSymbolPage(snapshotId, cursor, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph symbol page', cause)),
           ),
         loadAnalysisSymbolAggregatePage: (databasePath, snapshotId, cursorId, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectAnalysisSymbolAggregatePage(snapshotId, cursorId, limit))),
+            Effect.andThen(
+              useReadOnlyDatabase(databasePath, selectAnalysisSymbolAggregatePage(snapshotId, cursorId, limit)),
+            ),
             Effect.mapError(cause => storeError('aggregate code graph symbol page', cause)),
           ),
         loadAnalysisEdgeAggregatePage: (databasePath, snapshotId, cursorId, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectAnalysisEdgeAggregatePage(snapshotId, cursorId, limit))),
+            Effect.andThen(
+              useReadOnlyDatabase(databasePath, selectAnalysisEdgeAggregatePage(snapshotId, cursorId, limit)),
+            ),
             Effect.mapError(cause => storeError('aggregate code graph edge page', cause)),
           ),
         loadAnalysisSummary: (databasePath, snapshotId) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectAnalysisSummary(snapshotId))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectAnalysisSummary(snapshotId))),
             Effect.mapError(cause => storeError('load code graph analysis summary', cause)),
           ),
         ensureAnalysisSummary: (databasePath, snapshotId) =>
@@ -1144,38 +1154,40 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           ),
         countEmbeddingSymbols: (databasePath, snapshotId) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectEmbeddingSymbolCount(snapshotId))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolCount(snapshotId))),
             Effect.mapError(cause => storeError('count code graph embedding symbols', cause)),
           ),
         loadEmbeddingSymbolPage: (databasePath, snapshotId, cursor, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph embedding symbol page', cause)),
           ),
         loadVisualizationCatalog: databasePath =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectVisualizationCatalog()) : Effect.succeed(undefined),
+              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog()) : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
           ),
         loadVisualizationCatalogs: databasePath =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectVisualizationCatalogs()) : Effect.succeed([]),
+              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs()) : Effect.succeed([]),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalogs', cause)),
           ),
         loadVisualizationScopeEdges: (databasePath, snapshotId) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectVisualizationScopeEdges(snapshotId)) : Effect.succeed([]),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectVisualizationScopeEdges(snapshotId))
+                : Effect.succeed([]),
             ),
             Effect.mapError(cause => storeError('load code graph visualization scope edges', cause)),
           ),
         loadVisualizationSymbols: (databasePath, snapshotId, scope, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectVisualizationSymbols(snapshotId, scope, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectVisualizationSymbols(snapshotId, scope, limit))),
             Effect.mapError(cause => storeError('load code graph visualization symbols', cause)),
           ),
         markBuilding: (databasePath, identity, snapshot) =>
@@ -1241,7 +1253,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useDatabase(databasePath, selectResumableForcedBuild(logicalSnapshotId))
+                ? useReadOnlyDatabase(databasePath, selectResumableForcedBuild(logicalSnapshotId))
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load resumable forced code graph snapshot', cause)),
@@ -1249,7 +1261,9 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         resumableBuildById: (databasePath, snapshotId) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectResumableBuildById(snapshotId)) : Effect.succeed(undefined),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectResumableBuildById(snapshotId))
+                : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
           ),
@@ -1309,14 +1323,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         readySnapshot: (databasePath, worktreeId) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectReadySnapshot(worktreeId)) : Effect.succeed(undefined),
+              exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId)) : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load ready code graph snapshot', cause)),
           ),
         readySnapshotById: (databasePath, snapshotId) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectReadySnapshotById(snapshotId)) : Effect.succeed(undefined),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectReadySnapshotById(snapshotId))
+                : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load ready code graph snapshot by identity', cause)),
           ),
@@ -1324,7 +1340,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useDatabase(databasePath, selectReadySnapshotForCommit(repositoryId, commit, extractorSet))
+                ? useReadOnlyDatabase(databasePath, selectReadySnapshotForCommit(repositoryId, commit, extractorSet))
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
@@ -1332,7 +1348,9 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         reusableBaseReceipt: (databasePath, snapshotId) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useDatabase(databasePath, selectReusableBaseReceipt(snapshotId)) : Effect.succeed(undefined),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId))
+                : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
           ),
@@ -1340,7 +1358,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useDatabase(databasePath, selectReusableReexports(snapshotId, seeds))
+                ? useReadOnlyDatabase(databasePath, selectReusableReexports(snapshotId, seeds))
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),
@@ -1348,7 +1366,10 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         relationshipSummaryForNode: (databasePath, snapshotId, nodeId, allowedProvenances) =>
           prepare(databasePath).pipe(
             Effect.andThen(
-              useDatabase(databasePath, selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances)),
+              useReadOnlyDatabase(
+                databasePath,
+                selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances),
+              ),
             ),
             Effect.mapError(cause => storeError('summarize code graph relationships', cause)),
           ),
@@ -1429,22 +1450,24 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           ),
         searchSymbols: (databasePath, snapshotId, query, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSearchSymbols(snapshotId, query, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectSearchSymbols(snapshotId, query, limit))),
             Effect.mapError(cause => storeError('search code graph symbols', cause)),
           ),
         searchSymbolsMany: (databasePath, snapshotId, queries, limit) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSearchSymbolsMany(snapshotId, queries, limit))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectSearchSymbolsMany(snapshotId, queries, limit))),
             Effect.mapError(cause => storeError('search code graph symbols', cause)),
           ),
         searchSymbolsByPaths: (databasePath, snapshotId, sourcePaths, limitPerPath) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSymbolsByPaths(snapshotId, sourcePaths, limitPerPath))),
+            Effect.andThen(
+              useReadOnlyDatabase(databasePath, selectSymbolsByPaths(snapshotId, sourcePaths, limitPerPath)),
+            ),
             Effect.mapError(cause => storeError('search code graph symbols by path', cause)),
           ),
         symbolsByIds: (databasePath, snapshotId, ids) =>
           prepare(databasePath).pipe(
-            Effect.andThen(useDatabase(databasePath, selectSymbolsByIds(snapshotId, ids))),
+            Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolsByIds(snapshotId, ids))),
             Effect.mapError(cause => storeError('load code graph symbols', cause)),
           ),
         stageActivationFacts: (databasePath, symbols, edges, references = [], onProgress, batchIndex) =>
@@ -1576,20 +1599,44 @@ function useDatabase<A, E, R>(
   ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
 }
 
-function useDatabaseDirect<A, E, R>(
+function useReadOnlyDatabase<A, E, R>(
   databasePath: string,
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
-  return Effect.scoped(effect.pipe(Effect.provide(SqliteClient.layer({filename: databasePath})))) as Effect.Effect<
-    A,
-    E,
-    Exclude<R, SqlClient.SqlClient>
-  >;
+  return Effect.serviceOption(CodeGraphDatabaseSession).pipe(
+    Effect.flatMap(session =>
+      Option.isSome(session) && session.value.databasePath === databasePath
+        ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
+        : useDatabaseDirect(databasePath, effect, true),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+function useDatabaseDirect<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+  readOnly = false,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  const layer = readOnly
+    ? SqliteClient.layer({
+        create: false,
+        disableWAL: true,
+        filename: databasePath,
+        readonly: true,
+        readwrite: false,
+      })
+    : SqliteClient.layer({filename: databasePath});
+  return Effect.scoped(effect.pipe(Effect.provide(layer))) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
 }
 
 const configureConnection = Effect.fn('codeGraph.configureConnection')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA foreign_keys = ON');
   yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+});
+
+const configureReadConnection = Effect.fn('codeGraph.configureReadConnection')(function* (sql: SqlClient.SqlClient) {
+  yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  yield* sql.unsafe('PRAGMA query_only = ON');
 });
 
 const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64 * 1_024;

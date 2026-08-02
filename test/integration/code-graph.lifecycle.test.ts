@@ -17,7 +17,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync, spawn} from 'node:child_process';
 import {Database} from 'bun:sqlite';
-import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphExport} from '../../src/code_graph/commands.js';
 import {readAllCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from '../../src/code_graph/build_status.js';
@@ -115,6 +116,111 @@ describe('native code graph lifecycle', () => {
       expect.arrayContaining(['ensureVectorIndex', 'refreshRecallIndex', 'runApplication']),
     );
     expect(missing.nodes).toEqual([]);
+  });
+
+  it('serves parallel ready-snapshot queries without contending on SQLite connection bootstrap', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const indexed = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    const databasePath = codeGraphDatabasePath(home, indexed);
+    const writer = new Database(databasePath);
+    let transactionOpen = false;
+    try {
+      writer.exec('PRAGMA journal_mode = WAL');
+      writer.exec('BEGIN IMMEDIATE');
+      transactionOpen = true;
+
+      const snapshots = await runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* Effect.all(
+            Array.from({length: 8}, () => store.readySnapshot(databasePath, indexed.identity.worktreeId)),
+            {concurrency: 'unbounded'},
+          );
+        }),
+      );
+      expect(snapshots).toHaveLength(8);
+      expect(snapshots.every(snapshot => snapshot?.id === indexed.snapshot.id)).toBe(true);
+    } finally {
+      if (transactionOpen) writer.exec('ROLLBACK');
+      writer.close();
+    }
+
+    const queryOnly = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const rows = yield* sql.unsafe<{readonly query_only: number}>('PRAGMA query_only');
+            return Number(rows[0]?.query_only ?? 0);
+          }),
+          {readOnly: true},
+        );
+      }),
+    );
+    expect(queryOnly).toBe(1);
+
+    const results = await runEffect(
+      Effect.gen(function* () {
+        const graph = yield* CodeGraphQueryService;
+        const selected = yield* Ref.make(0);
+        const allSelected = yield* Deferred.make<void>();
+        const afterSnapshotSelected = () =>
+          Ref.updateAndGet(selected, count => count + 1).pipe(
+            Effect.flatMap(count => (count === 8 ? Deferred.succeed(allSelected, undefined) : Effect.void)),
+            Effect.andThen(Deferred.await(allSelected)),
+          );
+        return yield* Effect.all(
+          Array.from({length: 8}, () =>
+            graph.inspect({
+              cwd: root,
+              interlock: {afterSnapshotSelected},
+              operation: 'query',
+              query: 'withExclusiveFileLock',
+              refresh: false,
+              threadnoteHome: home,
+            }),
+          ),
+          {concurrency: 'unbounded'},
+        );
+      }),
+    );
+    expect(results).toHaveLength(8);
+    expect(results.every(result => result.nodes.some(node => node.name === 'withExclusiveFileLock'))).toBe(true);
+
+    const leaseCoverage = await runEffect(
+      Effect.gen(function* () {
+        const graph = yield* CodeGraphQueryService;
+        const readCompleted = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        const query = yield* graph
+          .inspect({
+            cwd: root,
+            interlock: {
+              beforeReadCompletion: () =>
+                Deferred.succeed(readCompleted, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+            },
+            operation: 'query',
+            query: 'withExclusiveFileLock',
+            refresh: false,
+            threadnoteHome: home,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(readCompleted);
+        const active = snapshotLeaseCount(databasePath);
+        yield* Deferred.succeed(finish, undefined);
+        yield* Fiber.join(query);
+        return {active, released: snapshotLeaseCount(databasePath)};
+      }),
+    );
+    expect(leaseCoverage).toEqual({active: 1, released: 0});
   });
 
   it('visibly and idempotently backfills analysis summaries when reusing a legacy ready snapshot', async () => {
@@ -3215,6 +3321,16 @@ function createFactBudgetExpandedRepository(): string {
 
 function codeGraphDatabasePath(home: string, indexed: {readonly identity: {readonly checkoutId: string}}): string {
   return join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite');
+}
+
+function snapshotLeaseCount(databasePath: string): number {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    const row = database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_leases').get();
+    return Number(row?.count ?? 0);
+  } finally {
+    database.close();
+  }
 }
 
 function normalizeStoredGraph(graph: StoredCodeGraph): Pick<StoredCodeGraph, 'edges' | 'symbols'> {

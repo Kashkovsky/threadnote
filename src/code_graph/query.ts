@@ -53,6 +53,10 @@ export interface CodeGraphStatusOptions {
 
 export interface CodeGraphQueryInterlock {
   readonly afterObservation?: () => Effect.Effect<void>;
+  /** @internal Deterministic barrier used to exercise concurrent ready-snapshot acquisition. */
+  readonly afterSnapshotSelected?: () => Effect.Effect<void>;
+  /** @internal Deterministic barrier used to verify that leases cover the complete read session. */
+  readonly beforeReadCompletion?: () => Effect.Effect<void>;
 }
 
 export interface CodeGraphStatusObservation {
@@ -189,20 +193,17 @@ export class CodeGraphQueryService extends Context.Service<
               const inspect = (baseSnapshotId?: string) =>
                 Effect.gen(function* () {
                   const read = () =>
-                    store.withSession(
-                      layout.databasePath,
-                      inspectReadyGraph({
-                        baseSnapshotId,
-                        embedding,
-                        expectedRepositoryId: identity.repositoryId,
-                        layout,
-                        deferWorktreeObservation: overlay === undefined && !rebuilt,
-                        observation: overlay === undefined || rebuilt ? undefined : {identity, overlay},
-                        options,
-                        store,
-                        strictFreshness,
-                      }),
-                    );
+                    inspectReadyGraph({
+                      baseSnapshotId,
+                      embedding,
+                      expectedRepositoryId: identity.repositoryId,
+                      layout,
+                      deferWorktreeObservation: overlay === undefined && !rebuilt,
+                      observation: overlay === undefined || rebuilt ? undefined : {identity, overlay},
+                      options,
+                      store,
+                      strictFreshness,
+                    });
                   let result = yield* read();
                   if (options.refresh !== false && freshnessRequired && result.freshness === 'stale') {
                     yield* indexer.index({
@@ -708,8 +709,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     );
   }
   const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
+  yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
   const lease = yield* input.store.acquireSnapshotLease(input.layout.databasePath, snapshot.id, 2 * 60_000);
-  return yield* Effect.gen(function* () {
+  const read = Effect.gen(function* () {
     const nodeLimit = boundedInteger(input.options.nodeLimit, 20, 1, 200);
     const edgeLimit = boundedInteger(input.options.edgeLimit, 40, 1, 500);
     const depth = boundedInteger(
@@ -824,7 +826,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         : snapshotMatches(snapshot, finalIdentity.headCommit, finalOverlay)
           ? 'current'
           : 'stale';
-    return {
+    const result = {
       edges: safeSelection.edges,
       freshness,
       nodes: safeSelection.nodes,
@@ -846,11 +848,16 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       version: CODE_GRAPH_RESULT_VERSION,
       warnings: safeSelection.warnings,
     } satisfies CodeGraphQueryResult;
-  }).pipe(
-    Effect.ensuring(
-      input.store.releaseSnapshotLease(input.layout.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
-    ),
-  );
+    yield* input.options.interlock?.beforeReadCompletion?.() ?? Effect.void;
+    return result;
+  });
+  return yield* input.store
+    .withSession(input.layout.databasePath, read, {readOnly: true})
+    .pipe(
+      Effect.ensuring(
+        input.store.releaseSnapshotLease(input.layout.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
+      ),
+    );
 });
 
 class WorktreeChangedDuringQuery extends Error {

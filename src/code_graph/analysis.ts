@@ -506,7 +506,7 @@ export const analyzeCodeGraphWithLease = Effect.fn('codeGraph.analyzeWithSnapsho
   );
   const lease = yield* store.acquireSnapshotLease(options.databasePath, options.snapshot.id, leaseDuration);
   return yield* store
-    .withSession(options.databasePath, analyzeCodeGraph(store, options))
+    .withSession(options.databasePath, analyzeCodeGraph(store, options), {readOnly: true})
     .pipe(
       Effect.ensuring(store.releaseSnapshotLease(options.databasePath, lease).pipe(Effect.catch(() => Effect.void))),
     );
