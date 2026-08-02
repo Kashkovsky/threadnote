@@ -12,6 +12,7 @@ const WINDOWS_VERSION_BUILD_OFFSET = 12;
 
 export interface WindowsHardwareInfo {
   readonly cpuModel: string;
+  readonly effectiveMemoryBytes: number;
   readonly memoryBytes: number;
   readonly operatingSystem: string;
 }
@@ -56,7 +57,12 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
           throw new Error('Windows memory metadata is invalid.');
         }
-        return {cpuModel, memoryBytes, operatingSystem} satisfies WindowsHardwareInfo;
+        return {
+          cpuModel,
+          effectiveMemoryBytes: memoryBytes,
+          memoryBytes,
+          operatingSystem,
+        } satisfies WindowsHardwareInfo;
       } finally {
         native.close();
         kernel.close();

@@ -1,4 +1,5 @@
 import {Context, Effect, Layer} from 'effect';
+import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
 
 export interface SystemInfoShape {
@@ -34,7 +35,10 @@ export interface SystemInfoShape {
 
 export interface SystemHardwareInfo {
   readonly cpuModel: string;
+  /** Physical RAM remains the stable benchmark provenance value. */
   readonly memoryBytes: number;
+  /** Lower of physical RAM and any visible finite cgroup memory limit. */
+  readonly effectiveMemoryBytes: number;
   readonly operatingSystem: string;
 }
 
@@ -206,11 +210,13 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         ]);
         const cpuModel = /^(?:model name|Hardware)\s*:\s*(.+)$/m.exec(cpuInfo)?.[1]?.trim();
         const memoryKibibytes = Number(/^MemTotal:\s+(\d+)\s+kB$/m.exec(memoryInfo)?.[1]);
-        const operatingSystem = spawnText(['uname', '-sr'], environment);
         if (!cpuModel || !Number.isSafeInteger(memoryKibibytes) || memoryKibibytes <= 0) {
           throw new Error('Linux hardware metadata is incomplete.');
         }
-        return {cpuModel, memoryBytes: memoryKibibytes * KIBIBYTE_BYTES, operatingSystem};
+        const memoryBytes = memoryKibibytes * KIBIBYTE_BYTES;
+        const effectiveMemoryBytes = await readLinuxEffectiveMemoryBytes(memoryBytes);
+        const operatingSystem = spawnText(['uname', '-sr'], environment);
+        return {cpuModel, effectiveMemoryBytes, memoryBytes, operatingSystem};
       },
       catch: cause => new Error('Could not read Linux hardware metadata.', {cause}),
     });
@@ -224,7 +230,7 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
           throw new Error('macOS memory metadata is invalid.');
         }
-        return {cpuModel, memoryBytes, operatingSystem: `macOS ${version}`};
+        return {cpuModel, effectiveMemoryBytes: memoryBytes, memoryBytes, operatingSystem: `macOS ${version}`};
       },
       catch: cause => new Error('Could not read macOS hardware metadata.', {cause}),
     });
@@ -233,6 +239,25 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
     return readWindowsHardwareInfo(environment);
   }
   return Effect.fail(new Error(`Hardware metadata is not supported on ${platform}.`));
+}
+
+async function readLinuxEffectiveMemoryBytes(physicalMemoryBytes: number): Promise<number> {
+  const [processCgroup, processMountInfo] = await Promise.all([
+    readOptionalBunFile('/proc/self/cgroup'),
+    readOptionalBunFile('/proc/self/mountinfo'),
+  ]);
+  if (processCgroup === undefined || processMountInfo === undefined) return physicalMemoryBytes;
+  const files = linuxCgroupMemoryFiles(processCgroup, processMountInfo);
+  const limits = await Promise.all(files.map(file => readOptionalBunFile(file.path)));
+  return effectiveLinuxMemoryBytes(physicalMemoryBytes, limits);
+}
+
+async function readOptionalBunFile(path: string): Promise<string | undefined> {
+  try {
+    return await Bun.file(path).text();
+  } catch {
+    return undefined;
+  }
 }
 
 function spawnText(command: readonly string[], environment: NodeJS.ProcessEnv): string {

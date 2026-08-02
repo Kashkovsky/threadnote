@@ -3,6 +3,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {fromPromiseError, fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, serializeBoundedCodeGraphFact} from './fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
@@ -11,6 +12,7 @@ export const CODE_GRAPH_PARSER_WORKER_ARGUMENT = '--threadnote-code-graph-parser
 export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS';
 export const CODE_GRAPH_PARSER_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_IDLE_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS';
+export const CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM + 4 * 1_024;
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
@@ -20,6 +22,7 @@ const STDERR_BYTES_LIMIT = 32 * 1_024;
 const WORKER_SHUTDOWN_TIMEOUT_MILLISECONDS = 500;
 const SLOT_RETRY_MILLISECONDS = 25;
 const SLOT_STALE_MILLISECONDS = 30_000;
+const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
 
 type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -96,6 +99,14 @@ export interface CodeGraphParserPoolShape {
     file: CodeGraphInventoryFile,
     threadnoteHome: string,
   ) => Effect.Effect<CodeGraphParserResult, never>;
+  readonly trimIdle: () => Effect.Effect<void, never>;
+}
+
+export interface ParserWorkerCapacityInput {
+  readonly effectiveMemoryBytes?: number;
+  readonly environment: ParserWorkerEnvironment;
+  readonly hardwareConcurrency: number;
+  readonly override?: number;
 }
 
 export class CodeGraphParserPool extends Context.Service<CodeGraphParserPool, CodeGraphParserPoolShape>()(
@@ -117,14 +128,27 @@ export function codeGraphParserPoolLayer(
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const system = yield* SystemInfo;
-        const capacity = parserWorkerCapacity(system.environment(), options.capacity);
+        const environment = system.environment();
+        const explicitCapacity = explicitParserWorkerCapacity(environment, options.capacity);
+        const capacity =
+          explicitCapacity ??
+          (yield* system.hardwareInfo().pipe(
+            Effect.map(hardware =>
+              parserWorkerCapacity({
+                effectiveMemoryBytes: hardware.effectiveMemoryBytes,
+                environment,
+                hardwareConcurrency: currentHardwareConcurrency(),
+              }),
+            ),
+            Effect.catch(() => Effect.succeed(1)),
+          ));
         const requestTimeoutMilliseconds = positiveInteger(
           options.requestTimeoutMilliseconds,
-          parserWorkerTimeout(system.environment()),
+          parserWorkerTimeout(environment),
         );
         const idleTimeoutMilliseconds = nonNegativeInteger(
           options.idleTimeoutMilliseconds,
-          parserWorkerIdleTimeout(system.environment()),
+          parserWorkerIdleTimeout(environment),
         );
         const maxProtocolLineBytes = positiveInteger(options.maxProtocolLineBytes, MAX_PROTOCOL_LINE_BYTES);
         const maxStderrBytes = positiveInteger(options.maxStderrBytes, STDERR_BYTES_LIMIT);
@@ -172,6 +196,16 @@ export function codeGraphParserPoolLayer(
                   ),
                 slot => Queue.offer(available, slot),
               ),
+            trimIdle: () =>
+              Effect.acquireUseRelease(
+                Queue.clear(available),
+                idleSlots =>
+                  Effect.forEach(idleSlots, slot => fromPromiseError(() => slot.trimIdle()), {
+                    concurrency: 'unbounded',
+                    discard: true,
+                  }).pipe(Effect.catch(() => Effect.void)),
+                idleSlots => Queue.offerAll(available, idleSlots),
+              ).pipe(Effect.asVoid),
           }),
           slots,
         };
@@ -305,6 +339,13 @@ class ParserWorkerSlot {
     await connection.close();
   }
 
+  async trimIdle(): Promise<void> {
+    this.cancelIdleEviction();
+    await this.evictingConnection?.catch(() => undefined);
+    if (this.closed || Option.isNone(this.connection)) return;
+    await this.evictConnection(this.connection.value);
+  }
+
   private async activeConnection(threadnoteHome: string): Promise<ParserWorkerConnection> {
     if (this.closed) throw new ParserWorkerError('exit');
     const eviction = this.evictingConnection;
@@ -365,16 +406,23 @@ class ParserWorkerSlot {
       ) {
         return;
       }
-      this.connection = Option.none();
-      this.connectionHome = Option.none();
-      const eviction = connection.close();
-      this.evictingConnection = eviction;
-      const clearEviction = () => {
-        if (this.evictingConnection === eviction) this.evictingConnection = undefined;
-      };
-      void eviction.then(clearEviction, clearEviction);
+      void this.evictConnection(connection);
     }, this.idleTimeoutMilliseconds);
     this.idleTimer.unref?.();
+  }
+
+  private async evictConnection(connection: ParserWorkerConnection): Promise<void> {
+    if (Option.isSome(this.connection) && this.connection.value === connection) {
+      this.connection = Option.none();
+      this.connectionHome = Option.none();
+    }
+    const eviction = connection.close();
+    this.evictingConnection = eviction;
+    try {
+      await eviction;
+    } finally {
+      if (this.evictingConnection === eviction) this.evictingConnection = undefined;
+    }
   }
 }
 
@@ -609,7 +657,7 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
     let bufferedBytes = 0;
 
     const writeResponse = (response: ParserWorkerResponse) =>
-      Stream.run(Stream.make(`${JSON.stringify(response)}\n`), stdio.stdout({endOnDone: false}));
+      Stream.run(Stream.make(encodeParserWorkerResponse(response)), stdio.stdout({endOnDone: false}));
 
     const processLine = (line: string) => handleParserWorkerLine(line, treeSitter).pipe(Effect.flatMap(writeResponse));
 
@@ -656,13 +704,16 @@ function handleParserWorkerLine(
     Effect.provideService(TreeSitterRuntime, treeSitter),
     Effect.match({
       onFailure: () => protocolFailure(request.id, 'Language extraction failed.'),
-      onSuccess: facts => ({
-        facts,
-        id: request.id,
-        ok: true as const,
-        parseMilliseconds: Math.max(0, performance.now() - startedAt),
-        protocol: PROTOCOL_VERSION,
-      }),
+      onSuccess: facts => {
+        const boundedFacts = budgetParserWorkerFacts(facts);
+        return {
+          facts: boundedFacts,
+          id: request.id,
+          ok: true as const,
+          parseMilliseconds: Math.max(0, performance.now() - startedAt),
+          protocol: PROTOCOL_VERSION,
+        };
+      },
     }),
   );
 }
@@ -844,12 +895,55 @@ function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphF
   return {diagnostics: [diagnostic], edges: [], path: file.path, symbols: [symbol]};
 }
 
-function parserWorkerCapacity(environment: ParserWorkerEnvironment, override?: number): number {
+export function budgetParserWorkerFacts(facts: CodeGraphFileFacts): CodeGraphFileFacts {
+  return serializeBoundedCodeGraphFact(facts).facts;
+}
+
+export function parserWorkerSuccessResponseBytes(
+  facts: CodeGraphFileFacts,
+  id = 'parser-worker-response-size',
+): number {
+  return new TextEncoder().encode(
+    `${JSON.stringify({facts, id, ok: true, parseMilliseconds: 0, protocol: PROTOCOL_VERSION})}\n`,
+  ).byteLength;
+}
+
+export function parserWorkerCapacity(input: ParserWorkerCapacityInput): number {
+  const explicit = explicitParserWorkerCapacity(input.environment, input.override);
+  if (explicit !== undefined) return explicit;
+  const hardwareConcurrency =
+    Number.isSafeInteger(input.hardwareConcurrency) && input.hardwareConcurrency > 0 ? input.hardwareConcurrency : 1;
+  const cpuCapacity = Math.max(1, Math.min(4, Math.floor(hardwareConcurrency / 2)));
+  const effectiveMemoryBytes = input.effectiveMemoryBytes;
+  if (
+    typeof effectiveMemoryBytes !== 'number' ||
+    !Number.isSafeInteger(effectiveMemoryBytes) ||
+    effectiveMemoryBytes <= 0
+  ) {
+    return 1;
+  }
+  const memoryCapacity = Math.max(1, Math.floor(effectiveMemoryBytes / PARSER_WORKER_MEMORY_BYTES_PER_SLOT));
+  return Math.min(cpuCapacity, memoryCapacity);
+}
+
+function explicitParserWorkerCapacity(environment: ParserWorkerEnvironment, override?: number): number | undefined {
   if (Number.isSafeInteger(override) && override! > 0) return Math.min(8, override!);
   const configured = Number.parseInt(environment[CODE_GRAPH_PARSER_WORKERS_ENV] ?? '', 10);
-  if (Number.isSafeInteger(configured) && configured > 0) return Math.min(8, configured);
-  const hardwareConcurrency = Math.max(1, navigator.hardwareConcurrency || 1);
-  return Math.max(1, Math.min(4, Math.floor(hardwareConcurrency / 2)));
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(8, configured) : undefined;
+}
+
+function currentHardwareConcurrency(): number {
+  try {
+    return navigator.hardwareConcurrency || 1;
+  } catch {
+    return 1;
+  }
+}
+
+function encodeParserWorkerResponse(response: ParserWorkerResponse): string {
+  const line = `${JSON.stringify(response)}\n`;
+  if (new TextEncoder().encode(line).byteLength <= CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM) return line;
+  return `${JSON.stringify(protocolFailure(response.id, 'Parser worker response exceeded its protocol budget.'))}\n`;
 }
 
 function parserWorkerTimeout(environment: ParserWorkerEnvironment): number {

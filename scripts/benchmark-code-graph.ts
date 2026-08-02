@@ -5,6 +5,7 @@ import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
+import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
 import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
@@ -809,6 +810,11 @@ const benchmarkCodeGraph = Effect.scoped(
       ],
       {concurrency: 3},
     );
+    const effectiveParserWorkers = parserWorkerCapacity({
+      effectiveMemoryBytes: hardware.effectiveMemoryBytes,
+      environment: system.environment(),
+      hardwareConcurrency: navigator.hardwareConcurrency,
+    });
     yield* runCheckpoint?.mark('finalizing-artifact') ?? Effect.void;
     const artifact: BenchmarkArtifactV1 = {
       createdAt: new Date().toISOString(),
@@ -985,7 +991,8 @@ const benchmarkCodeGraph = Effect.scoped(
         analysisCoverage: 'complete',
         coldIndexSamples: 1,
         cpuMeasurement: 'process.cpuUsage delta at operation boundary',
-        effectiveParserWorkers: effectiveParserWorkerCount(),
+        effectiveParserMemoryBytes: hardware.effectiveMemoryBytes,
+        effectiveParserWorkers,
         environmentOverrides: JSON.stringify(benchmarkEnvironmentProvenance()),
         diskMeasurement:
           'final bytes plus SQLite main/WAL/SHM peaks sampled at progress boundaries; vectors, sidecar, and unclassified bytes separate',
@@ -3374,6 +3381,7 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
   minimumFreeGiB: number,
   retainHomes: boolean,
 ) {
+  const system = yield* SystemInfo;
   if (!externalBenchmarkPlatformSupported(process.platform)) {
     return yield* Effect.fail(
       new Error('External code-graph evidence currently requires Linux or macOS process and storage telemetry.'),
@@ -3386,13 +3394,14 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
     yield* fs.readFile(path.join(prepared.repository, prepared.incrementalSourcePath)),
   );
   semanticBenchmarkOverlay(prepared.incrementalSourcePath, source);
-  const [tree, primaryCapacity, referenceCapacity] = yield* Effect.all(
+  const [tree, primaryCapacity, referenceCapacity, hardware] = yield* Effect.all(
     [
       repositoryGit(prepared.repository, ['rev-parse', 'HEAD^{tree}']).pipe(Effect.map(result => result.stdout.trim())),
       filesystemCapacity(prepared.home),
       filesystemCapacity(prepared.referenceHome),
+      system.hardwareInfo(),
     ],
-    {concurrency: 3},
+    {concurrency: 4},
   );
   const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
   if (primaryCapacity.availableBytes < minimumFreeBytes || referenceCapacity.availableBytes < minimumFreeBytes) {
@@ -3408,7 +3417,13 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
       reference: referenceCapacity.availableBytes,
     },
     commit: prepared.externalCommit,
-    effectiveParserWorkers: effectiveParserWorkerCount(),
+    effectiveParserMemoryBytes: hardware.effectiveMemoryBytes,
+    effectiveParserWorkers: parserWorkerCapacity({
+      effectiveMemoryBytes: hardware.effectiveMemoryBytes,
+      environment: system.environment(),
+      hardwareConcurrency: navigator.hardwareConcurrency,
+    }),
+    physicalMemoryBytes: hardware.memoryBytes,
     environment: benchmarkEnvironmentProvenance(),
     filesystemsShared: primaryCapacity.filesystem === referenceCapacity.filesystem,
     minimumFreeBytes,
@@ -3431,12 +3446,6 @@ const filesystemCapacity = Effect.fn('benchmarkCodeGraph.filesystemCapacity')(fu
   }
   return {availableBytes: availableKilobytes * 1_024, filesystem};
 });
-
-function effectiveParserWorkerCount(): number {
-  const configured = Number.parseInt(process.env.THREADNOTE_CODE_GRAPH_PARSER_WORKERS ?? '', 10);
-  if (Number.isSafeInteger(configured) && configured > 0) return Math.min(8, configured);
-  return Math.max(1, Math.min(4, Math.floor(Math.max(1, navigator.hardwareConcurrency || 1) / 2)));
-}
 
 function benchmarkEnvironmentProvenance(): Readonly<Record<string, string>> {
   return sanitizedBenchmarkEnvironmentProvenance(process.env);

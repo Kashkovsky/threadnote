@@ -3,20 +3,113 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
+  cachedCodeGraphFactBytes,
+  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  serializeBoundedCodeGraphFact,
+} from '../../src/code_graph/fact_budget.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {
+  CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   CodeGraphParserPool,
   codeGraphParserPoolLayer,
+  parserWorkerCapacity,
+  parserWorkerSuccessResponseBytes,
   type ParserWorkerProcess,
   type ParserWorkerSpawner,
   type ParserWorkerSpawnOptions,
 } from '../../src/code_graph/parser_worker.js';
+import {TreeSitterRuntime} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 
 const encoder = new TextEncoder();
 
 describe('code graph parser worker pool', () => {
+  it.each([
+    [8, 1],
+    [16, 2],
+    [32, 4],
+    [64, 4],
+  ])('selects %i GiB as %i automatic parser worker(s)', (memoryGiB, expected) => {
+    expect(
+      parserWorkerCapacity({
+        effectiveMemoryBytes: memoryGiB * 1_024 * 1_024 * 1_024,
+        environment: {},
+        hardwareConcurrency: 16,
+      }),
+    ).toBe(expected);
+  });
+
+  it.prop(
+    'keeps automatic parser capacity bounded and monotonic with effective memory',
+    {
+      hardwareConcurrency: FC.integer({max: 64, min: 1}),
+      memoryGiB: FC.integer({max: 128, min: 1}),
+    },
+    ({hardwareConcurrency, memoryGiB}) => {
+      const capacity = (effectiveMemoryGiB: number) =>
+        parserWorkerCapacity({
+          effectiveMemoryBytes: effectiveMemoryGiB * 1_024 * 1_024 * 1_024,
+          environment: {},
+          hardwareConcurrency,
+        });
+      expect(capacity(memoryGiB)).toBeGreaterThanOrEqual(1);
+      expect(capacity(memoryGiB)).toBeLessThanOrEqual(4);
+      expect(capacity(memoryGiB + 1)).toBeGreaterThanOrEqual(capacity(memoryGiB));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.effect('honors explicit capacity without consulting hardware', () => {
+    const unavailableHardware = systemWith({hardwareInfo: () => Effect.die('hardware must not be read')});
+    return Effect.gen(function* () {
+      const pool = yield* CodeGraphParserPool;
+      expect(pool.capacity).toBe(8);
+    }).pipe(Effect.provide(parserLayer({capacity: 99}, Layer.succeed(SystemInfo, unavailableHardware))), Effect.scoped);
+  });
+
+  it.effect('falls back to one worker when automatic hardware lookup fails', () => {
+    let hardwareLookups = 0;
+    const unavailableHardware = systemWith({
+      environment: () => ({}),
+      hardwareInfo: () => {
+        hardwareLookups += 1;
+        return Effect.fail(new Error('hardware unavailable'));
+      },
+    });
+    return Effect.gen(function* () {
+      const pool = yield* CodeGraphParserPool;
+      expect(pool.capacity).toBe(1);
+      expect(hardwareLookups).toBe(1);
+    }).pipe(Effect.provide(parserLayer({}, Layer.succeed(SystemInfo, unavailableHardware))), Effect.scoped);
+  });
+
+  it('honors the environment override and ignores invalid automatic hardware values', () => {
+    expect(
+      parserWorkerCapacity({
+        environment: {},
+        hardwareConcurrency: 1,
+        override: 99,
+      }),
+    ).toBe(8);
+    expect(
+      parserWorkerCapacity({
+        effectiveMemoryBytes: 1,
+        environment: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '7'},
+        hardwareConcurrency: 1,
+      }),
+    ).toBe(7);
+    expect(
+      parserWorkerCapacity({
+        environment: {},
+        hardwareConcurrency: Number.NaN,
+      }),
+    ).toBe(1);
+  });
+
   it.effect('launches the real source worker and extracts TypeScript outside the caller process', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -31,6 +124,41 @@ describe('code graph parser worker pool', () => {
       expect(result.parseMilliseconds).toBeGreaterThanOrEqual(0);
       expect(result.facts.path).toBe('src/real-worker.ts');
       expect(result.facts.symbols.some(symbol => symbol.name === 'realWorker')).toBe(true);
+
+      yield* pool.trimIdle();
+      const restarted = yield* pool.extract(
+        inventoryFile('src/restarted-worker.ts', 'export const restartedWorker = true;'),
+        home,
+      );
+      expect(restarted.degraded).toBe(false);
+      expect(restarted.facts.symbols.some(symbol => symbol.name === 'restartedWorker')).toBe(true);
+    }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
+  );
+
+  it.effect('budgets pathological facts in the real worker with exact parent and digest parity', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-budget-'});
+      const content = `Pathological corpus\n===================\n\nprivate-corpus-sentinel ${'漢'.repeat(2_850_000)}`;
+      const file = inventoryFile('docs/pathological.rst', content, 'document');
+      const raw = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file).pipe(
+        Effect.provide(TreeSitterRuntime.layer),
+      );
+      const parent = serializeBoundedCodeGraphFact(raw);
+      const worker = yield* CodeGraphParserPool;
+      const result = yield* worker.extract(file, home);
+
+      expect(cachedCodeGraphFactBytes(raw)).toBeGreaterThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(result.degraded).toBe(false);
+      expect(result.facts).toEqual(parent.facts);
+      expect(JSON.stringify(result.facts)).toBe(parent.json);
+      expect(sha256HexSync(JSON.stringify(result.facts))).toBe(sha256HexSync(parent.json));
+      expect(cachedCodeGraphFactBytes(result.facts)).toBe(parent.bytes);
+      expect(parent.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(parserWorkerSuccessResponseBytes(result.facts, 'x'.repeat(100))).toBeLessThanOrEqual(
+        CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
+      );
+      expect(JSON.stringify(result.facts)).not.toContain('private-corpus-sentinel');
     }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
   );
 
@@ -249,6 +377,62 @@ describe('code graph parser worker pool', () => {
     }).pipe(Effect.provide(parserLayer({capacity: 1, idleTimeoutMilliseconds: 15, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('trims idle workers concurrently exactly once and lazily restarts their slots', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-trim-idle-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* pool.extract(inventoryFile('src/before-trim.ts', 'export const beforeTrim = true;'), home);
+      yield* Effect.all([pool.trimIdle(), pool.trimIdle()], {concurrency: 'unbounded'});
+      expect(processes[0]!.closeInputCalls).toBe(1);
+      expect(yield* Effect.promise(() => processes[0]!.exited)).toBe(0);
+
+      const afterTrim = yield* pool.extract(inventoryFile('src/after-trim.ts', 'export const afterTrim = true;'), home);
+      expect(afterTrim.degraded).toBe(false);
+      expect(processes).toHaveLength(2);
+    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = new ScriptedParserWorkerProcess(() => {});
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-trim-active-'});
+      const pool = yield* CodeGraphParserPool;
+      const fiber = yield* Effect.forkScoped(
+        pool.extract(inventoryFile('src/active.ts', 'export const active = true;'), home),
+      );
+      yield* waitUntil(() => processes[0]?.writes.length === 1);
+
+      yield* pool.trimIdle();
+      expect(processes[0]!.inputClosed).toBe(false);
+      expect(processes[0]!.killed).toBe(false);
+
+      const request = processes[0]!.writes[0]!;
+      processes[0]!.respond(request, factsFor(request.file));
+      expect((yield* Fiber.join(fiber)).degraded).toBe(false);
+      yield* pool.trimIdle();
+      expect(processes[0]!.closeInputCalls).toBe(1);
+    }).pipe(
+      Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
+      Effect.scoped,
+    );
+  });
+
   it.effect('uses the packaged executable directly on Windows and preserves array-safe paths', () => {
     const launches: ParserWorkerSpawnOptions[] = [];
     const spawn: ParserWorkerSpawner = options => {
@@ -300,12 +484,12 @@ function parserLayer(
   return codeGraphParserPoolLayer(options).pipe(Layer.provideMerge(dependencies));
 }
 
-function inventoryFile(path: string, content: string): CodeGraphInventoryFile {
+function inventoryFile(path: string, content: string, language = 'typescript'): CodeGraphInventoryFile {
   return {
     blobId: `blob-${path}`,
     content,
     contentHash: Bun.hash(content).toString(16),
-    language: 'typescript',
+    language,
     mode: '100644',
     path,
     size: encoder.encode(content).byteLength,
@@ -348,6 +532,7 @@ class ScriptedParserWorkerProcess implements ParserWorkerProcess {
   readonly stdout = this.stdoutFeed;
   readonly writes: WireRequest[] = [];
   readonly exited: Promise<number>;
+  closeInputCalls = 0;
   inputClosed = false;
   killed = false;
   private resolveExit = (_code: number) => {};
@@ -362,6 +547,7 @@ class ScriptedParserWorkerProcess implements ParserWorkerProcess {
   }
 
   closeInput(): void {
+    this.closeInputCalls += 1;
     this.inputClosed = true;
     this.stderrFeed.end();
     this.stdoutFeed.end();

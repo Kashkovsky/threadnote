@@ -276,7 +276,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           threadnoteHome: options.threadnoteHome,
                           treeSitter,
                         }),
-                      });
+                      }).pipe(Effect.ensuring(parserPool.trimIdle()));
                       const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
                       const logicalSnapshotId = snapshotIdentity(
                         identity,
@@ -692,7 +692,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           threadnoteHome: options.threadnoteHome,
                           treeSitter,
                         }),
-                      });
+                      }).pipe(Effect.ensuring(parserPool.trimIdle()));
                       const committedBase = yield* ensureCommittedBase({
                         activeWorktreeIds,
                         embedding,
