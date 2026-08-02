@@ -1,13 +1,26 @@
+import {parseBenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
 import {
   pendingPerformanceEvidence,
-  validateBoundRetainedPerformanceArtifact,
+  retainedPerformanceArtifactFromHarness,
   validateRetainedPerformancePayload,
   type PerformanceEvidence,
+  type RetainedPerformancePayload,
 } from '../website/src/content/performance.js';
 
 export const performanceArtifactRelativePath = 'website/public/performance-evidence.json';
 export const performanceBindingRelativePath = 'website/performance/evidence.binding.json';
-export const performanceArtifactPublicUrl = 'https://threadnote.io/performance-evidence.json';
+export function performanceArtifactPublicUrl(siteBase: string): string {
+  const segments = siteBase.split('/').filter(Boolean);
+  if (
+    !siteBase.startsWith('/') ||
+    !siteBase.endsWith('/') ||
+    siteBase.includes('//') ||
+    segments.some(segment => segment === '.' || segment === '..' || !/^[A-Za-z0-9._~-]+$/.test(segment))
+  ) {
+    throw new Error('THREADNOTE_SITE_BASE must be a root-relative directory path ending in /.');
+  }
+  return `${siteBase}performance-evidence.json`;
+}
 
 export const performanceSourcePathspecs = [
   'src',
@@ -81,9 +94,23 @@ export function sha256Hex(bytes: Uint8Array | string): string {
   return hasher.digest('hex');
 }
 
+function parseRetainedPerformanceArtifactBytes(artifactBytes: Uint8Array): RetainedPerformancePayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(artifactBytes));
+  } catch {
+    throw new Error('Retained performance artifact is not valid JSON.');
+  }
+  parseBenchmarkArtifactV1(parsed);
+  return validateRetainedPerformancePayload(parsed);
+}
+
 export function bindRetainedPerformanceArtifact(input: {
   readonly artifactBytes: Uint8Array;
+  readonly artifactPublicUrl: string;
   readonly binding: unknown;
+  readonly currentLockfileSha256: string;
+  readonly currentPackageManifestSha256: string;
   readonly currentSourceTreeSha256: string;
 }): PerformanceEvidence {
   const binding = validatePerformanceArtifactBinding(input.binding);
@@ -100,25 +127,16 @@ export function bindRetainedPerformanceArtifact(input: {
     throw new Error('Retained performance evidence does not match the current Threadnote source tree.');
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(input.artifactBytes));
-  } catch {
-    throw new Error('Retained performance artifact is not valid JSON.');
-  }
-  const payload = validateRetainedPerformancePayload(parsed);
-  if (payload.source.threadnote.commit !== binding.sourceThreadnoteCommit) {
+  const payload = parseRetainedPerformanceArtifactBytes(input.artifactBytes);
+  if (payload.environment.commit !== binding.sourceThreadnoteCommit) {
     throw new Error('Retained performance artifact and binding name different Threadnote source commits.');
   }
-
-  const artifact = validateBoundRetainedPerformanceArtifact({
-    ...payload,
-    status: 'verified',
-    artifact: {
-      url: performanceArtifactPublicUrl,
-      sha256: actualArtifactSha256,
-      generatedAt: binding.generatedAt,
-    },
+  const artifact = retainedPerformanceArtifactFromHarness(payload, {
+    artifactUrl: input.artifactPublicUrl,
+    artifactSha256: actualArtifactSha256,
+    generatedAt: binding.generatedAt,
+    currentLockfileSha256: input.currentLockfileSha256,
+    currentPackageManifestSha256: input.currentPackageManifestSha256,
   });
   return {state: 'verified', artifact};
 }
@@ -136,7 +154,34 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): ReturnTy
   });
 }
 
+function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operation: string): void {
+  if (result.exitCode !== 0) {
+    throw new Error(`Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`);
+  }
+}
+
+export function assertPerformanceSourceClean(repositoryRoot: string): void {
+  const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...performanceSourcePathspecs]);
+  if (unstaged.exitCode === 1) {
+    throw new Error('Performance-bound sources contain tracked working-tree modifications.');
+  }
+  requireSuccessfulGit(unstaged, 'inspect tracked performance-source modifications');
+
+  const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...performanceSourcePathspecs]);
+  if (staged.exitCode === 1) {
+    throw new Error('Performance-bound sources contain staged modifications.');
+  }
+  requireSuccessfulGit(staged, 'inspect staged performance-source modifications');
+
+  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...performanceSourcePathspecs]);
+  requireSuccessfulGit(untracked, 'inspect untracked performance sources');
+  if ((untracked.stdout?.byteLength ?? 0) > 0) {
+    throw new Error('Performance-bound sources contain untracked files.');
+  }
+}
+
 function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void {
+  assertPerformanceSourceClean(repositoryRoot);
   const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
   if (commit.exitCode !== 0) {
     throw new Error(
@@ -160,7 +205,17 @@ function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void 
   }
 }
 
+function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPerformancePayload): void {
+  const ref = String(payload.metadata.releaseEvidenceRef);
+  const resolved = runGit(repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]);
+  requireSuccessfulGit(resolved, 'resolve the retained performance release tag');
+  if (decodeOutput(resolved.stdout) !== payload.environment.commit) {
+    throw new Error('Retained performance release tag does not resolve to the measured Threadnote commit.');
+  }
+}
+
 export async function computePerformanceSourceTreeSha256(repositoryRoot: string): Promise<string> {
+  assertPerformanceSourceClean(repositoryRoot);
   const listed = runGit(repositoryRoot, ['ls-files', '--stage', '-z', '--', ...performanceSourcePathspecs]);
   if (listed.exitCode !== 0) {
     throw new Error(`Could not inventory performance-bound sources: ${decodeOutput(listed.stderr)}.`);
@@ -191,7 +246,24 @@ export async function computePerformanceSourceTreeSha256(repositoryRoot: string)
   return hasher.digest('hex');
 }
 
-export async function loadRetainedPerformanceEvidence(repositoryRoot: string): Promise<PerformanceEvidence> {
+async function currentSourceDependencyHashes(repositoryRoot: string): Promise<{
+  readonly lockfileSha256: string;
+  readonly packageManifestSha256: string;
+}> {
+  const [lockfile, packageManifest] = await Promise.all([
+    Bun.file(`${repositoryRoot}/bun.lock`).arrayBuffer(),
+    Bun.file(`${repositoryRoot}/package.json`).arrayBuffer(),
+  ]);
+  return {
+    lockfileSha256: sha256Hex(new Uint8Array(lockfile)),
+    packageManifestSha256: sha256Hex(new Uint8Array(packageManifest)),
+  };
+}
+
+export async function loadRetainedPerformanceEvidence(
+  repositoryRoot: string,
+  siteBase: string,
+): Promise<PerformanceEvidence> {
   const artifactFile = Bun.file(`${repositoryRoot}/${performanceArtifactRelativePath}`);
   const bindingFile = Bun.file(`${repositoryRoot}/${performanceBindingRelativePath}`);
   const [artifactExists, bindingExists] = await Promise.all([artifactFile.exists(), bindingFile.exists()]);
@@ -212,41 +284,50 @@ export async function loadRetainedPerformanceEvidence(repositoryRoot: string): P
   }
   const binding = validatePerformanceArtifactBinding(bindingInput);
   verifySourceCommit(repositoryRoot, binding.sourceThreadnoteCommit);
-  const [artifactBuffer, currentSourceTreeSha256] = await Promise.all([
+  const [artifactBuffer, currentSourceTreeSha256, dependencyHashes] = await Promise.all([
     artifactFile.arrayBuffer(),
     computePerformanceSourceTreeSha256(repositoryRoot),
+    currentSourceDependencyHashes(repositoryRoot),
   ]);
+  const artifactBytes = new Uint8Array(artifactBuffer);
+  verifyReleaseEvidenceSource(repositoryRoot, parseRetainedPerformanceArtifactBytes(artifactBytes));
   return bindRetainedPerformanceArtifact({
-    artifactBytes: new Uint8Array(artifactBuffer),
+    artifactBytes,
+    artifactPublicUrl: performanceArtifactPublicUrl(siteBase),
     binding,
+    currentLockfileSha256: dependencyHashes.lockfileSha256,
+    currentPackageManifestSha256: dependencyHashes.packageManifestSha256,
     currentSourceTreeSha256,
   });
 }
 
-export async function writePerformanceArtifactBinding(
-  repositoryRoot: string,
-  generatedAt = new Date().toISOString(),
-): Promise<PerformanceArtifactBinding> {
+export async function writePerformanceArtifactBinding(repositoryRoot: string): Promise<PerformanceArtifactBinding> {
   const artifactFile = Bun.file(`${repositoryRoot}/${performanceArtifactRelativePath}`);
   if (!(await artifactFile.exists())) {
     throw new Error(`Place the reviewed payload at ${performanceArtifactRelativePath} before creating its binding.`);
   }
 
   const artifactBytes = new Uint8Array(await artifactFile.arrayBuffer());
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(artifactBytes));
-  } catch {
-    throw new Error('Retained performance artifact is not valid JSON.');
-  }
-  const payload = validateRetainedPerformancePayload(parsed);
-  verifySourceCommit(repositoryRoot, payload.source.threadnote.commit);
+  const payload = parseRetainedPerformanceArtifactBytes(artifactBytes);
+  verifySourceCommit(repositoryRoot, payload.environment.commit);
+  verifyReleaseEvidenceSource(repositoryRoot, payload);
+  const [sourceTreeSha256, dependencyHashes] = await Promise.all([
+    computePerformanceSourceTreeSha256(repositoryRoot),
+    currentSourceDependencyHashes(repositoryRoot),
+  ]);
   const binding = validatePerformanceArtifactBinding({
     schemaVersion: 1,
     artifactSha256: sha256Hex(artifactBytes),
-    generatedAt,
-    sourceThreadnoteCommit: payload.source.threadnote.commit,
-    sourceTreeSha256: await computePerformanceSourceTreeSha256(repositoryRoot),
+    generatedAt: payload.createdAt,
+    sourceThreadnoteCommit: payload.environment.commit,
+    sourceTreeSha256,
+  });
+  retainedPerformanceArtifactFromHarness(payload, {
+    artifactUrl: performanceArtifactPublicUrl('/'),
+    artifactSha256: binding.artifactSha256,
+    generatedAt: binding.generatedAt,
+    currentLockfileSha256: dependencyHashes.lockfileSha256,
+    currentPackageManifestSha256: dependencyHashes.packageManifestSha256,
   });
   await Bun.write(`${repositoryRoot}/${performanceBindingRelativePath}`, `${JSON.stringify(binding, undefined, 2)}\n`);
   return binding;
@@ -255,11 +336,13 @@ export async function writePerformanceArtifactBinding(
 if (import.meta.main) {
   try {
     const binding = await writePerformanceArtifactBinding(process.cwd());
-    console.log(`Wrote ${performanceBindingRelativePath}`);
-    console.log(`Artifact SHA-256: ${binding.artifactSha256}`);
-    console.log(`Source tree SHA-256: ${binding.sourceTreeSha256}`);
+    process.stdout.write(
+      `Wrote ${performanceBindingRelativePath}\n` +
+        `Artifact SHA-256: ${binding.artifactSha256}\n` +
+        `Source tree SHA-256: ${binding.sourceTreeSha256}\n`,
+    );
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   }
 }

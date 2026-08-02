@@ -89,7 +89,7 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
 const proofGroups = [
   {
     label: 'Exact provenance',
-    body: 'Artifact URL, artifact SHA-256, UTC timestamp, exact Threadnote commit, exact public-repository commit, clean-checkout state, hardware, OS, Bun, SQLite, and disk details.',
+    body: 'The complete harness artifact binds its bytes, exact source and public-repository commits, clean managed executable, dependency lock, payload manifest, release metadata, runtime target, hardware, Bun, SQLite, and disk details.',
   },
   {
     label: 'End-to-end phases',
@@ -231,7 +231,8 @@ function ProvenanceCard({artifact}: {artifact: RetainedPerformanceArtifact | und
       </dl>
       <p>
         {artifact.runner.runtime.name} {artifact.runner.runtime.version} · {artifact.runner.database.name}{' '}
-        {artifact.runner.database.version} · {formatBytes(artifact.runner.memoryBytes)} memory
+        {artifact.runner.database.version} · {artifact.runner.runtime.target} ·{' '}
+        {formatBytes(artifact.runner.memoryBytes)} memory
       </p>
     </aside>
   );

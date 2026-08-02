@@ -31,23 +31,28 @@ The production output is `site-dist/`. It is ignored by Git and rejected if it a
 The researched Graphify comparison remains in the FAQ source but is hidden in normal development and production
 builds. Set `VITE_SHOW_GRAPHIFY_COMPARISON=true` only when the comparison is ready to be shown again.
 
-The Performance page fails closed around a typed, runtime-validated evidence adapter. Until one final exact-HEAD
-artifact contains the pinned source and public-repository commits, hardware/runtime/database provenance, complete cold
-and incremental phases, Java/Kotlin/TypeScript/Bazel controls, query and Manager timings, RSS/WAL/TEMP/storage
+The Performance page fails closed around one complete, runtime-validated code-graph harness artifact. It does not
+accept a manually reduced result summary. Until one final exact-HEAD artifact contains the pinned source and
+public-repository commits, clean managed-install provenance, source dependency and executable/payload/release hashes,
+runtime target, hardware/runtime/database provenance, complete cold and incremental phases,
+Java/Kotlin/TypeScript/Bazel controls, query and Manager measurements from that same run, RSS/WAL/TEMP/storage
 high-water, and incremental-versus-independent-rebuild digest parity, every result value remains explicitly pending.
-Do not replace pending values with observations copied from separate runs.
+Do not combine observations copied from separate runs.
 
 Verified values require both `website/public/performance-evidence.json` and
 `website/performance/evidence.binding.json`. The Vite build hashes the exact public JSON bytes, checks the sidecar
-SHA-256 and UTC timestamp, verifies the benchmarked Threadnote commit is an ancestor of the website build, rejects any
-runtime-source change since that commit, and compares a deterministic source-tree digest before exposing a verified
-virtual module to React. Missing both files is the valid pending state; a partial pair or any mismatch fails the build.
-CI and Pages use full Git history so source-commit verification cannot silently degrade in shallow checkouts.
+SHA-256 and harness timestamp, verifies the benchmarked Threadnote commit is an ancestor of the website build, rejects
+tracked, staged, or untracked changes in bound sources, cross-checks the exact lockfile and package-manifest hashes,
+and compares a deterministic source-tree digest before exposing a verified virtual module to React. The artifact link
+is generated from `THREADNOTE_SITE_BASE`, including subpath deployments. Missing both files is the valid pending state;
+a partial pair or any mismatch fails the build. CI and Pages use full Git history so source-commit verification cannot
+silently degrade in shallow checkouts. Every push to `main` runs the Pages workflow because any bound runtime-source
+change must get a chance to fail closed rather than leave previously verified claims deployed.
 
 After producing and reviewing the complete payload, install and bind it with:
 
 ```bash
-cp /absolute/path/to/reviewed-performance-evidence.json website/public/performance-evidence.json
+cp /absolute/path/to/complete-reviewed-harness-artifact.json website/public/performance-evidence.json
 bun run site:bind-performance-evidence
 ```
 

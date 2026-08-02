@@ -85,7 +85,31 @@ function expectNonEmptyString(payload: Record<string, unknown>, key: string): vo
   expect((payload[key] as string).trim().length).toBeGreaterThan(0);
 }
 
+const fixtureLockfileSha256 = '1'.repeat(64);
+const fixturePackageManifestSha256 = '2'.repeat(64);
+
+function harnessMeasurement(
+  name: string,
+  unit: 'bytes' | 'count' | 'milliseconds',
+  value: number,
+  distribution?: {p50: number; p95: number; p99: number; maximum: number; samples: number},
+): Record<string, unknown> {
+  return {
+    maximum: distribution?.maximum ?? value,
+    mean: value,
+    minimum: Math.min(value, distribution?.p50 ?? value),
+    name,
+    p50: distribution?.p50 ?? value,
+    p95: distribution?.p95 ?? value,
+    p99: distribution?.p99 ?? value,
+    samples: distribution?.samples ?? 1,
+    unit,
+  };
+}
+
 function verifiedPerformanceFixture(): Record<string, unknown> {
+  const sourceCommit = 'b'.repeat(40);
+  const repositoryCommit = 'c'.repeat(40);
   const overlayDigest = 'd'.repeat(64);
   const controls = Object.fromEntries(
     ['java', 'kotlin', 'typescript', 'bazel'].map((language, index) => [
@@ -94,93 +118,130 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
         query: `${language} definition`,
         path: `src/${language}/control.${language}`,
         stableNodeId: `cgs_${String(index + 1).repeat(32)}`,
-        milliseconds: index + 1,
-        passed: true,
       },
     ]),
   );
+  const measurements = [
+    harnessMeasurement('cold-index', 'milliseconds', 10_000),
+    harnessMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', 500),
+    harnessMeasurement('cold-inventory-and-extraction', 'milliseconds', 2_000),
+    harnessMeasurement('cold-materialization', 'milliseconds', 3_000),
+    harnessMeasurement('cold-reference-resolution', 'milliseconds', 1_000),
+    harnessMeasurement('cold-activation-lexical-only', 'milliseconds', 2_000),
+    harnessMeasurement('one-file-reindex-index', 'milliseconds', 300),
+    harnessMeasurement('same-overlay-full-rebuild-index', 'milliseconds', 9_500),
+    harnessMeasurement('hot-exact-lexical-query', 'milliseconds', 8, {
+      p50: 5,
+      p95: 12,
+      p99: 16,
+      maximum: 18,
+      samples: 20,
+    }),
+    harnessMeasurement('cold-materialized-file-rows', 'count', 90),
+    harnessMeasurement('cold-materialized-symbol-rows', 'count', 1_000),
+    harnessMeasurement('cold-materialized-edge-rows', 'count', 2_000),
+    harnessMeasurement('cold-materialization-deduplicated-reference-rows-n1', 'count', 500),
+    harnessMeasurement('cold-materialized-reference-candidate-rows-n1', 'count', 700),
+    harnessMeasurement('cold-materialized-lookup-key-rows-n1', 'count', 3_000),
+    harnessMeasurement('cold-materialized-lexical-term-rows', 'count', 10_000),
+    harnessMeasurement('sqlite-main-disk', 'bytes', 1024 ** 3),
+    harnessMeasurement('cold-process-peak-rss', 'bytes', 512 * 1024 ** 2),
+    harnessMeasurement('cold-sqlite-wal-peak-observed', 'bytes', 64 * 1024 ** 2),
+    harnessMeasurement('cold-sqlite-temp-peak-observed', 'bytes', 0),
+    harnessMeasurement('cold-sqlite-durable-database-pages-high-water-n1', 'bytes', 2 * 1024 ** 3),
+    harnessMeasurement('primary-query-structural-parity', 'count', 1),
+    harnessMeasurement('structural-graph-digest-parity', 'count', 1),
+    harnessMeasurement('manager-catalog-cold', 'milliseconds', 30),
+    harnessMeasurement('manager-catalog-warm', 'milliseconds', 5),
+    harnessMeasurement('manager-overview-cold', 'milliseconds', 20),
+    harnessMeasurement('manager-overview-warm', 'milliseconds', 4),
+    harnessMeasurement('manager-detail-cold', 'milliseconds', 10),
+    harnessMeasurement('manager-render-proxy', 'milliseconds', 2),
+    harnessMeasurement('manager-response-payload', 'bytes', 400_000),
+    harnessMeasurement('manager-bounded-query', 'milliseconds', 10, {
+      p50: 6,
+      p95: 14,
+      p99: 20,
+      maximum: 24,
+      samples: 20,
+    }),
+    harnessMeasurement('manager-bounded-query-payload', 'bytes', 120_000),
+  ];
+  for (const [language, files, duration] of [
+    ['java', 20, 1],
+    ['kotlin', 20, 2],
+    ['typescript', 20, 3],
+    ['bazel-build', 5, 4],
+  ] as const) {
+    measurements.push(
+      harnessMeasurement(`cold-materialized-file-rows-language-${language}`, 'count', files),
+      harnessMeasurement(`external-query-cold-${language}-duration`, 'milliseconds', duration),
+      harnessMeasurement(`external-query-cold-${language}-returned-nodes`, 'count', 2),
+      harnessMeasurement(`external-query-cold-${language}-expected-path-language-nodes`, 'count', 1),
+      harnessMeasurement(`external-query-${language}-same-overlay-structural-parity`, 'count', 1),
+    );
+  }
 
   return {
-    schemaVersion: 1,
-    source: {
-      threadnote: {version: '4.0.0-beta.example', commit: 'b'.repeat(40)},
-      repository: {
-        name: 'Example/public-monorepo',
-        url: 'https://github.com/Example/public-monorepo',
-        commit: 'c'.repeat(40),
-        checkout: 'clean',
-      },
-    },
-    runner: {
-      hardware: 'Example runner',
-      operatingSystem: 'Example OS',
+    createdAt: '2026-08-02T20:00:00Z',
+    environment: {
       architecture: 'arm64',
+      commit: sourceCommit,
+      cpu: 'Example runner',
+      dirty: false,
+      fixtureHash: `external-code-graph-v1:${repositoryCommit}`,
       memoryBytes: 64 * 1024 ** 3,
-      logicalCpuCount: 10,
-      runtime: {name: 'Bun', version: '1.3.14'},
-      database: {name: 'SQLite', version: '3.54.0'},
-      disk: {medium: 'SSD', filesystem: 'APFS'},
+      node: 'bun/1.3.14',
+      operatingSystem: 'Example OS',
+      packageManager: 'bun/1.3.14',
+      runner: 'threadnote-code-graph-e2e',
+      runnerVersion: '1',
     },
-    inventory: {
-      eligibleFiles: 100,
-      indexedFiles: 90,
-      excludedFiles: 10,
-      languages: {java: 20, kotlin: 20, typescript: 20, bazel: 5},
+    measurements,
+    metadata: {
+      benchmarkDiskFilesystem: 'APFS',
+      benchmarkDiskMedium: 'SSD',
+      benchmarkInventoryEligibleFiles: 100,
+      benchmarkInventoryExcludedFiles: 10,
+      benchmarkLogicalCpuCount: 10,
+      benchmarkManagedDependencyInstallation: 'bun install --frozen-lockfile',
+      benchmarkManagedExecutableSha256: '3'.repeat(64),
+      benchmarkManagedPayloadBytes: 1_000_000,
+      benchmarkManagedPayloadFileCount: 20,
+      benchmarkManagedPayloadManifestSha256: '4'.repeat(64),
+      benchmarkManagedProcessLeaseInspection: 'complete',
+      benchmarkManagedReleaseMetadataSha256: '5'.repeat(64),
+      benchmarkManagedRuntime: 'bun-1.3.14',
+      benchmarkManagedTarget: 'darwin-arm64',
+      benchmarkManagedVersion: `4.0.0-beta.31.local.g${sourceCommit}`,
+      benchmarkRuntimeProvenanceMode: 'managed-exact-head',
+      benchmarkRuntimeSourceCommit: sourceCommit,
+      benchmarkRuntimeSourceLockfileSha256: fixtureLockfileSha256,
+      benchmarkRuntimeSourcePackageManifestSha256: fixturePackageManifestSha256,
+      externalControlEvidence: JSON.stringify(controls),
+      externalControlLanguages: 'java,kotlin,typescript,bazel-build',
+      externalRepositoryCommit: repositoryCommit,
+      externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
+      externalRepositoryName: 'Example/public-monorepo',
+      externalRepositoryUrl: 'https://github.com/Example/public-monorepo',
+      managerEdgeBudget: 1_500,
+      managerNodeBudget: 500,
+      managerSnapshotBindingPassed: true,
+      managerStaleRequestCancellationPassed: true,
+      releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
+      releaseEvidenceResolvedSha: sourceCommit,
+      releaseEvidenceSha: sourceCommit,
+      retrievalMode: 'lexical-only',
+      simultaneousWorktrees: 3,
+      sqliteVersion: '3.54.0',
+      structuralGraphDigestCold: 'e'.repeat(64),
+      structuralGraphDigestIncremental: overlayDigest,
+      structuralGraphDigestSameOverlayReference: overlayDigest,
+      worktreeIsolationPassed: true,
     },
-    graph: {
-      symbols: 1_000,
-      relationships: 2_000,
-      references: 500,
-      referenceCandidates: 700,
-      lookupKeys: 3_000,
-      lexicalPostings: 10_000,
-    },
-    phases: {
-      cold: {
-        totalMilliseconds: 10_000,
-        discoveryMilliseconds: 500,
-        extractionMilliseconds: 2_000,
-        materializationMilliseconds: 3_000,
-        resolutionMilliseconds: 1_000,
-        activationMilliseconds: 2_000,
-      },
-      incremental: {totalMilliseconds: 300, changedFiles: 1},
-      independentRebuild: {totalMilliseconds: 9_500},
-    },
-    queries: {sampleCount: 20, p50Milliseconds: 5, p95Milliseconds: 12, maxMilliseconds: 18},
-    controls,
-    parity: {
-      cleanColdDigest: 'e'.repeat(64),
-      incrementalOverlayDigest: overlayDigest,
-      independentOverlayDigest: overlayDigest,
-      incrementalMatchesIndependent: true,
-    },
-    storage: {
-      databaseBytes: 1024 ** 3,
-      peakResidentBytes: 512 * 1024 ** 2,
-      peakWalBytes: 64 * 1024 ** 2,
-      peakTemporaryBytes: 0,
-      peakDurableGrowthBytes: 2 * 1024 ** 3,
-    },
-    manager: {
-      catalogColdMilliseconds: 30,
-      catalogWarmMilliseconds: 5,
-      overviewColdMilliseconds: 20,
-      overviewWarmMilliseconds: 4,
-      detailColdMilliseconds: 10,
-      renderProxyMilliseconds: 2,
-      maxPayloadBytes: 400_000,
-      querySampleCount: 20,
-      queryP50Milliseconds: 6,
-      queryP95Milliseconds: 14,
-      queryMaxMilliseconds: 24,
-      queryMaxPayloadBytes: 120_000,
-      nodeBudget: 500,
-      edgeBudget: 1_500,
-      snapshotBindingPassed: true,
-      staleRequestCancellationPassed: true,
-    },
-    concurrency: {simultaneousWorktrees: 3, isolationPassed: true},
+    suite: 'code-graph-external-repository-v1',
+    version: 1,
+    warmups: 0,
   };
 }
 
@@ -405,7 +466,10 @@ describe('Threadnote 4 website content', () => {
     const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
     const evidence = bindRetainedPerformanceArtifact({
       artifactBytes,
+      artifactPublicUrl: performanceArtifactPublicUrl('/'),
       binding: fixtureBinding(artifactBytes),
+      currentLockfileSha256: fixtureLockfileSha256,
+      currentPackageManifestSha256: fixturePackageManifestSha256,
       currentSourceTreeSha256: 'f'.repeat(64),
     });
 
@@ -413,7 +477,7 @@ describe('Threadnote 4 website content', () => {
       state: 'verified',
       artifact: {
         artifact: {
-          url: performanceArtifactPublicUrl,
+          url: '/performance-evidence.json',
           sha256: sha256Hex(artifactBytes),
           generatedAt: '2026-08-02T20:00:00Z',
         },
@@ -430,14 +494,20 @@ describe('Threadnote 4 website content', () => {
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes: tamperedBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding,
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('artifact SHA-256 mismatch');
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(artifactBytes, {artifactSha256: '0'.repeat(64)}),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('artifact SHA-256 mismatch');
@@ -449,14 +519,20 @@ describe('Threadnote 4 website content', () => {
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(artifactBytes, {sourceThreadnoteCommit: '9'.repeat(40)}),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('different Threadnote source commits');
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(artifactBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: '8'.repeat(64),
       }),
     ).toThrow('does not match the current Threadnote source tree');
@@ -464,15 +540,18 @@ describe('Threadnote 4 website content', () => {
 
   it('rejects partial, extra, and mixed retained result payloads', () => {
     const partial = verifiedPerformanceFixture();
-    delete partial.graph;
+    delete partial.environment;
     const partialBytes = fixtureBytes(partial);
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes: partialBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(partialBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
-    ).toThrow('unexpected or missing fields');
+    ).toThrow('Missing key');
 
     const extra = verifiedPerformanceFixture();
     extra.unreviewedResult = 42;
@@ -480,22 +559,152 @@ describe('Threadnote 4 website content', () => {
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes: extraBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(extraBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('unexpected or missing fields');
 
     const mismatched = verifiedPerformanceFixture();
-    const parity = mismatched.parity as Record<string, unknown>;
-    parity.independentOverlayDigest = '0'.repeat(64);
+    const metadata = mismatched.metadata as Record<string, unknown>;
+    metadata.structuralGraphDigestSameOverlayReference = '0'.repeat(64);
     const mismatchedBytes = fixtureBytes(mismatched);
     expect(() =>
       bindRetainedPerformanceArtifact({
         artifactBytes: mismatchedBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
         binding: fixtureBinding(mismatchedBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('overlay digests must match');
+  });
+
+  it('rejects fabricated, mixed-runtime, and separately supplied Manager evidence', () => {
+    const githubMode = verifiedPerformanceFixture();
+    (githubMode.metadata as Record<string, unknown>).benchmarkRuntimeProvenanceMode = 'github-actions-clean-source';
+    const githubBytes = fixtureBytes(githubMode);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: githubBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
+        binding: fixtureBinding(githubBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('managed-exact-head');
+
+    const missingRuntimeHash = verifiedPerformanceFixture();
+    delete (missingRuntimeHash.metadata as Record<string, unknown>).benchmarkManagedExecutableSha256;
+    const runtimeBytes = fixtureBytes(missingRuntimeHash);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: runtimeBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
+        binding: fixtureBinding(runtimeBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('benchmarkManagedExecutableSha256');
+
+    for (const [label, mutate] of [
+      [
+        'dirty source',
+        (fixture: Record<string, unknown>) => {
+          (fixture.environment as Record<string, unknown>).dirty = true;
+        },
+      ],
+      [
+        'dependency installation',
+        (fixture: Record<string, unknown>) => {
+          (fixture.metadata as Record<string, unknown>).benchmarkManagedDependencyInstallation = 'bun install';
+        },
+      ],
+      [
+        'payload manifest hash',
+        (fixture: Record<string, unknown>) => {
+          delete (fixture.metadata as Record<string, unknown>).benchmarkManagedPayloadManifestSha256;
+        },
+      ],
+      [
+        'release metadata hash',
+        (fixture: Record<string, unknown>) => {
+          delete (fixture.metadata as Record<string, unknown>).benchmarkManagedReleaseMetadataSha256;
+        },
+      ],
+      [
+        'runtime target',
+        (fixture: Record<string, unknown>) => {
+          (fixture.metadata as Record<string, unknown>).benchmarkManagedTarget = 'linux-x64';
+        },
+      ],
+    ] as const) {
+      const fixture = verifiedPerformanceFixture();
+      mutate(fixture);
+      const bytes = fixtureBytes(fixture);
+      expect(
+        () =>
+          bindRetainedPerformanceArtifact({
+            artifactBytes: bytes,
+            artifactPublicUrl: performanceArtifactPublicUrl('/'),
+            binding: fixtureBinding(bytes),
+            currentLockfileSha256: fixtureLockfileSha256,
+            currentPackageManifestSha256: fixturePackageManifestSha256,
+            currentSourceTreeSha256: 'f'.repeat(64),
+          }),
+        label,
+      ).toThrow();
+    }
+
+    const withoutManagerQuery = verifiedPerformanceFixture();
+    withoutManagerQuery.measurements = (withoutManagerQuery.measurements as Record<string, unknown>[]).filter(
+      measurement => measurement.name !== 'manager-bounded-query',
+    );
+    const managerBytes = fixtureBytes(withoutManagerQuery);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: managerBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/'),
+        binding: fixtureBinding(managerBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: fixturePackageManifestSha256,
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('manager-bounded-query');
+  });
+
+  it('cross-binds source dependency hashes and the configured site base', () => {
+    const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
+    expect(performanceArtifactPublicUrl('/')).toBe('/performance-evidence.json');
+    expect(performanceArtifactPublicUrl('/threadnote/')).toBe('/threadnote/performance-evidence.json');
+    expect(() => performanceArtifactPublicUrl('/threadnote')).toThrow('THREADNOTE_SITE_BASE');
+    expect(() => performanceArtifactPublicUrl('/../')).toThrow('THREADNOTE_SITE_BASE');
+    expect(() => performanceArtifactPublicUrl('//')).toThrow('THREADNOTE_SITE_BASE');
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/threadnote/'),
+        binding: fixtureBinding(artifactBytes),
+        currentLockfileSha256: '0'.repeat(64),
+        currentPackageManifestSha256: fixturePackageManifestSha256,
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('lockfile SHA-256');
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes,
+        artifactPublicUrl: performanceArtifactPublicUrl('/threadnote/'),
+        binding: fixtureBinding(artifactBytes),
+        currentLockfileSha256: fixtureLockfileSha256,
+        currentPackageManifestSha256: '0'.repeat(64),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('package manifest SHA-256');
   });
 
   it('keeps the Performance page pending until bound evidence is emitted at build time', async () => {
@@ -510,9 +719,16 @@ describe('Threadnote 4 website content', () => {
         'artifact.sha256',
         'artifact.generatedAt',
         'source.threadnote.commit',
+        'source.threadnote.lockfileSha256',
+        'source.threadnote.packageManifestSha256',
         'source.repository.commit',
         'runner.hardware',
         'runner.runtime.version',
+        'runner.runtime.target',
+        'runner.runtime.executionMode',
+        'runner.runtime.executableSha256',
+        'runner.runtime.payloadManifestSha256',
+        'runner.runtime.releaseMetadataSha256',
         'runner.database.version',
         'inventory.languages.java',
         'inventory.languages.kotlin',
@@ -550,7 +766,8 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('returns the complete record');
     expect(pageSource).toContain('Your agents will love it');
     expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
-    expect(evidenceSource).toContain('Do not use this as a substitute for `bindRetainedPerformanceArtifact`');
+    expect(evidenceSource).toContain('derives every displayed measurement and provenance field from this one artifact');
+    expect(evidenceSource).not.toContain('export function validateBoundRetainedPerformanceArtifact');
   });
 
   it('documents the explicit publishing and supported hook boundaries', () => {

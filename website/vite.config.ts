@@ -4,6 +4,7 @@ import {loadRetainedPerformanceEvidence} from '../scripts/site-performance-evide
 
 const repositoryRoot = process.cwd();
 const siteRoot = `${repositoryRoot}/website`;
+const siteBase = process.env.THREADNOTE_SITE_BASE ?? '/';
 const virtualEvidenceId = 'virtual:threadnote-performance-evidence';
 const resolvedVirtualEvidenceId = `\0${virtualEvidenceId}`;
 
@@ -14,14 +15,14 @@ const performanceEvidencePlugin = {
   },
   async load(id: string) {
     if (id !== resolvedVirtualEvidenceId) return undefined;
-    const evidence = await loadRetainedPerformanceEvidence(repositoryRoot);
+    const evidence = await loadRetainedPerformanceEvidence(repositoryRoot, siteBase);
     return `export default ${JSON.stringify(evidence)};`;
   },
 };
 
 export default defineConfig({
   root: siteRoot,
-  base: process.env.THREADNOTE_SITE_BASE ?? '/',
+  base: siteBase,
   plugins: [react(), performanceEvidencePlugin],
   build: {
     outDir: `${siteRoot}/../site-dist`,

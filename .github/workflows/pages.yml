@@ -3,12 +3,6 @@ name: Website
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/pages.yml'
-      - 'assets/brand/**'
-      - 'website/**'
-      - 'package.json'
-      - 'bun.lock'
   workflow_dispatch:
 
 permissions:

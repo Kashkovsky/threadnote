@@ -1,7 +1,10 @@
 import {createHash} from 'node:crypto';
-import {access, readFile, stat} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
+import {assertPerformanceSourceClean} from '../../scripts/site-performance-evidence.js';
 
 const root = process.cwd();
 
@@ -102,10 +105,44 @@ describe('website and standalone release boundary', () => {
       scripts: {'site:bind-performance-evidence': 'bun scripts/site-performance-evidence.ts'},
     });
     expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
+    expect(evidenceBuild).toContain('assertPerformanceSourceClean');
     expect(standaloneBuild).toContain(
       "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;",
     );
     expect(standaloneBuild).not.toContain('site-performance-evidence');
+  });
+
+  it('rejects tracked, staged, and untracked changes in performance-bound source paths', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-performance-source-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+    try {
+      await mkdir(join(repository, 'src'));
+      await writeFile(join(repository, 'src', 'tracked.ts'), 'export const value = 1;\n');
+      await writeFile(join(repository, '.gitignore'), 'src/ignored.ts\n');
+      git('init');
+      git('add', '.');
+      git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', 'commit', '-m', 'fixture');
+      expect(() => assertPerformanceSourceClean(repository)).not.toThrow();
+
+      await writeFile(join(repository, 'src', 'tracked.ts'), 'export const value = 2;\n');
+      expect(() => assertPerformanceSourceClean(repository)).toThrow('tracked working-tree modifications');
+      git('restore', 'src/tracked.ts');
+
+      await writeFile(join(repository, 'src', 'tracked.ts'), 'export const value = 3;\n');
+      git('add', 'src/tracked.ts');
+      expect(() => assertPerformanceSourceClean(repository)).toThrow('staged modifications');
+      git('restore', '--staged', '--worktree', 'src/tracked.ts');
+
+      await writeFile(join(repository, 'src', 'untracked.ts'), 'export const untracked = true;\n');
+      expect(() => assertPerformanceSourceClean(repository)).toThrow('untracked files');
+      await rm(join(repository, 'src', 'untracked.ts'));
+
+      await writeFile(join(repository, 'src', 'ignored.ts'), 'export const ignored = true;\n');
+      expect(() => assertPerformanceSourceClean(repository)).toThrow('untracked files');
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
   });
 
   it('gates the Pages deployment on website contract checks', async () => {
@@ -113,10 +150,11 @@ describe('website and standalone release boundary', () => {
 
     await expect(access(join(root, 'docs', 'index.html'))).rejects.toThrow();
     await expect(access(join(root, 'website', 'public', 'CNAME'))).rejects.toThrow();
-    expect(workflow).toContain("'assets/brand/**'");
     expect(workflow).toContain('bun run site:check');
     expect(workflow).toContain('bun run site:build');
     expect(workflow).toContain('fetch-depth: 0');
+    const pushTrigger = workflow.slice(workflow.indexOf('  push:'), workflow.indexOf('  workflow_dispatch:'));
+    expect(pushTrigger).not.toContain('paths:');
     expect(workflow).toContain('path: site-dist');
     expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);

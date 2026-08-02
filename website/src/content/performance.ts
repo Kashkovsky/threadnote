@@ -16,6 +16,8 @@ export type RetainedPerformanceArtifact = Readonly<{
     threadnote: Readonly<{
       version: string;
       commit: string;
+      lockfileSha256: string;
+      packageManifestSha256: string;
     }>;
     repository: Readonly<{
       name: string;
@@ -33,6 +35,15 @@ export type RetainedPerformanceArtifact = Readonly<{
     runtime: Readonly<{
       name: 'Bun';
       version: string;
+      target: string;
+      executionMode: 'managed-exact-head';
+      dependencyInstallation: 'bun install --frozen-lockfile';
+      executableSha256: string;
+      payloadManifestSha256: string;
+      releaseMetadataSha256: string;
+      payloadBytes: number;
+      payloadFileCount: number;
+      processLeaseInspection: 'complete';
     }>;
     database: Readonly<{
       name: 'SQLite';
@@ -126,7 +137,40 @@ export type RetainedPerformanceArtifact = Readonly<{
   }>;
 }>;
 
-export type RetainedPerformancePayload = Omit<RetainedPerformanceArtifact, 'status' | 'artifact'>;
+export type RetainedPerformanceHarnessArtifact = Readonly<{
+  createdAt: string;
+  environment: Readonly<{
+    architecture: string;
+    commit: string;
+    cpu: string;
+    dirty: false;
+    fixtureHash: string;
+    memoryBytes: number;
+    model?: Readonly<{backend: string; id: string; revision: string}>;
+    node: string;
+    operatingSystem: string;
+    packageManager: string;
+    runner: 'threadnote-code-graph-e2e';
+    runnerVersion: '1';
+  }>;
+  measurements: readonly Readonly<{
+    maximum: number;
+    mean: number;
+    minimum: number;
+    name: string;
+    p50: number;
+    p95: number;
+    p99: number;
+    samples: number;
+    unit: 'bytes' | 'count' | 'milliseconds' | 'operations_per_second' | 'percent';
+  }>[];
+  metadata: Readonly<Record<string, boolean | number | string>>;
+  suite: 'code-graph-external-repository-v1';
+  version: 1;
+  warmups: number;
+}>;
+
+export type RetainedPerformancePayload = RetainedPerformanceHarnessArtifact;
 
 export type PerformanceEvidence =
   | Readonly<{
@@ -146,6 +190,8 @@ export const retainedPerformanceArtifactFieldPaths = [
   'artifact.generatedAt',
   'source.threadnote.version',
   'source.threadnote.commit',
+  'source.threadnote.lockfileSha256',
+  'source.threadnote.packageManifestSha256',
   'source.repository.name',
   'source.repository.url',
   'source.repository.commit',
@@ -157,6 +203,15 @@ export const retainedPerformanceArtifactFieldPaths = [
   'runner.logicalCpuCount',
   'runner.runtime.name',
   'runner.runtime.version',
+  'runner.runtime.target',
+  'runner.runtime.executionMode',
+  'runner.runtime.dependencyInstallation',
+  'runner.runtime.executableSha256',
+  'runner.runtime.payloadManifestSha256',
+  'runner.runtime.releaseMetadataSha256',
+  'runner.runtime.payloadBytes',
+  'runner.runtime.payloadFileCount',
+  'runner.runtime.processLeaseInspection',
   'runner.database.name',
   'runner.database.version',
   'runner.disk.medium',
@@ -297,6 +352,19 @@ function httpsUrlAt(record: Record<string, unknown>, key: string, path: string):
   }
 }
 
+function sitePathAt(record: Record<string, unknown>, key: string, path: string): void {
+  const value = stringAt(record, key, path);
+  const parts = value.split('/').filter(Boolean);
+  const directories = parts.slice(0, -1);
+  if (
+    !value.startsWith('/') ||
+    parts.at(-1) !== 'performance-evidence.json' ||
+    directories.some(part => part === '.' || part === '..' || !/^[A-Za-z0-9._~-]+$/.test(part))
+  ) {
+    throw new Error(`Performance evidence ${path}.${key} must be a root-relative site artifact path.`);
+  }
+}
+
 function digestAt(record: Record<string, unknown>, key: string, path: string, pattern = sha256Pattern): void {
   if (!pattern.test(stringAt(record, key, path))) {
     throw new Error(`Performance evidence ${path}.${key} has an invalid digest.`);
@@ -333,7 +401,7 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   literalAt(root, 'status', 'root', 'verified');
 
   const artifact = recordAt(root.artifact, 'artifact', ['url', 'sha256', 'generatedAt']);
-  httpsUrlAt(artifact, 'url', 'artifact');
+  sitePathAt(artifact, 'url', 'artifact');
   digestAt(artifact, 'sha256', 'artifact');
   const generatedAt = stringAt(artifact, 'generatedAt', 'artifact');
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(generatedAt)) {
@@ -341,9 +409,16 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   }
 
   const source = recordAt(root.source, 'source', ['threadnote', 'repository']);
-  const threadnote = recordAt(source.threadnote, 'source.threadnote', ['version', 'commit']);
+  const threadnote = recordAt(source.threadnote, 'source.threadnote', [
+    'version',
+    'commit',
+    'lockfileSha256',
+    'packageManifestSha256',
+  ]);
   stringAt(threadnote, 'version', 'source.threadnote');
   digestAt(threadnote, 'commit', 'source.threadnote', sha40Pattern);
+  digestAt(threadnote, 'lockfileSha256', 'source.threadnote');
+  digestAt(threadnote, 'packageManifestSha256', 'source.threadnote');
   const repository = recordAt(source.repository, 'source.repository', ['name', 'url', 'commit', 'checkout']);
   stringAt(repository, 'name', 'source.repository');
   httpsUrlAt(repository, 'url', 'source.repository');
@@ -365,9 +440,30 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   stringAt(runner, 'architecture', 'runner');
   positiveNumberAt(runner, 'memoryBytes', 'runner', true);
   positiveNumberAt(runner, 'logicalCpuCount', 'runner', true);
-  const runtime = recordAt(runner.runtime, 'runner.runtime', ['name', 'version']);
+  const runtime = recordAt(runner.runtime, 'runner.runtime', [
+    'name',
+    'version',
+    'target',
+    'executionMode',
+    'dependencyInstallation',
+    'executableSha256',
+    'payloadManifestSha256',
+    'releaseMetadataSha256',
+    'payloadBytes',
+    'payloadFileCount',
+    'processLeaseInspection',
+  ]);
   literalAt(runtime, 'name', 'runner.runtime', 'Bun');
   stringAt(runtime, 'version', 'runner.runtime');
+  stringAt(runtime, 'target', 'runner.runtime');
+  literalAt(runtime, 'executionMode', 'runner.runtime', 'managed-exact-head');
+  literalAt(runtime, 'dependencyInstallation', 'runner.runtime', 'bun install --frozen-lockfile');
+  digestAt(runtime, 'executableSha256', 'runner.runtime');
+  digestAt(runtime, 'payloadManifestSha256', 'runner.runtime');
+  digestAt(runtime, 'releaseMetadataSha256', 'runner.runtime');
+  positiveNumberAt(runtime, 'payloadBytes', 'runner.runtime', true);
+  positiveNumberAt(runtime, 'payloadFileCount', 'runner.runtime', true);
+  literalAt(runtime, 'processLeaseInspection', 'runner.runtime', 'complete');
   const database = recordAt(runner.database, 'runner.database', ['name', 'version']);
   literalAt(database, 'name', 'runner.database', 'SQLite');
   stringAt(database, 'version', 'runner.database');
@@ -525,43 +621,505 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   return input as RetainedPerformanceArtifact;
 }
 
-/**
- * Validates the exact JSON payload stored in the checked-in retained artifact.
- * Artifact URL, byte digest, and timestamp are supplied only by the build-time binding.
- */
-export function validateRetainedPerformancePayload(input: unknown): RetainedPerformancePayload {
-  const payload = recordAt(input, 'payload', [
-    'schemaVersion',
-    'source',
-    'runner',
-    'inventory',
-    'graph',
-    'phases',
-    'queries',
-    'controls',
-    'parity',
-    'storage',
-    'manager',
-    'concurrency',
-  ]);
-  validateVerifiedArtifact({
-    ...payload,
-    status: 'verified',
-    artifact: {
-      url: 'https://threadnote.io/performance-evidence.json',
-      sha256: '0'.repeat(64),
-      generatedAt: '2000-01-01T00:00:00Z',
-    },
-  });
-  return input as RetainedPerformancePayload;
+type HarnessMeasurement = RetainedPerformanceHarnessArtifact['measurements'][number];
+
+const harnessLanguageControls = [
+  {display: 'java', harness: 'java'},
+  {display: 'kotlin', harness: 'kotlin'},
+  {display: 'typescript', harness: 'typescript'},
+  {display: 'bazel', harness: 'bazel-build'},
+] as const satisfies readonly {display: PerformanceControlLanguage; harness: string}[];
+
+function openRecordAt(value: unknown, path: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Performance evidence ${path} must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string): string {
+  return stringAt(metadata, key, 'harness.metadata');
+}
+
+function metadataNumber(metadata: Record<string, unknown>, key: string, integer = false): number {
+  return numberAt(metadata, key, 'harness.metadata', integer);
+}
+
+function measurementMap(artifact: RetainedPerformanceHarnessArtifact): ReadonlyMap<string, HarnessMeasurement> {
+  const measurements = new Map<string, HarnessMeasurement>();
+  for (const measurement of artifact.measurements) {
+    if (measurements.has(measurement.name)) {
+      throw new Error(`Performance harness contains duplicate measurement ${measurement.name}.`);
+    }
+    measurements.set(measurement.name, measurement);
+  }
+  return measurements;
+}
+
+function requiredMeasurement(
+  measurements: ReadonlyMap<string, HarnessMeasurement>,
+  name: string,
+  unit: HarnessMeasurement['unit'],
+  positive = true,
+): HarnessMeasurement {
+  const measurement = measurements.get(name);
+  if (!measurement || measurement.unit !== unit || (positive && measurement.maximum <= 0)) {
+    throw new Error(`Performance harness requires ${name} (${unit})${positive ? ' with a positive result' : ''}.`);
+  }
+  return measurement;
+}
+
+function parseHarnessControls(metadata: Record<string, unknown>): LanguageRecord<{
+  query: string;
+  path: string;
+  stableNodeId: string;
+}> {
+  let input: unknown;
+  try {
+    input = JSON.parse(metadataString(metadata, 'externalControlEvidence'));
+  } catch {
+    throw new Error('Performance harness metadata.externalControlEvidence must be valid JSON.');
+  }
+  const controls = recordAt(input, 'harness.metadata.externalControlEvidence', performanceControlLanguages);
+  return Object.fromEntries(
+    performanceControlLanguages.map(language => {
+      const control = recordAt(controls[language], `harness.controls.${language}`, ['query', 'path', 'stableNodeId']);
+      const query = stringAt(control, 'query', `harness.controls.${language}`);
+      const path = stringAt(control, 'path', `harness.controls.${language}`);
+      const stableNodeId = stringAt(control, 'stableNodeId', `harness.controls.${language}`);
+      if (!/^cgs_[a-f0-9]{32,64}$/.test(stableNodeId)) {
+        throw new Error(`Performance harness controls.${language}.stableNodeId is invalid.`);
+      }
+      return [language, {path, query, stableNodeId}];
+    }),
+  ) as LanguageRecord<{query: string; path: string; stableNodeId: string}>;
+}
+
+function validateHarnessRuntimeProvenance(
+  environment: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+): void {
+  const commit = stringAt(environment, 'commit', 'harness.environment');
+  digestAt(environment, 'commit', 'harness.environment', sha40Pattern);
+  literalAt(environment, 'dirty', 'harness.environment', false);
+  literalAt(metadata, 'benchmarkRuntimeProvenanceMode', 'harness.metadata', 'managed-exact-head');
+  literalAt(metadata, 'benchmarkRuntimeSourceCommit', 'harness.metadata', commit);
+  digestAt(metadata, 'benchmarkRuntimeSourceLockfileSha256', 'harness.metadata');
+  digestAt(metadata, 'benchmarkRuntimeSourcePackageManifestSha256', 'harness.metadata');
+  literalAt(metadata, 'benchmarkManagedDependencyInstallation', 'harness.metadata', 'bun install --frozen-lockfile');
+  literalAt(metadata, 'benchmarkManagedProcessLeaseInspection', 'harness.metadata', 'complete');
+  for (const key of [
+    'benchmarkManagedExecutableSha256',
+    'benchmarkManagedPayloadManifestSha256',
+    'benchmarkManagedReleaseMetadataSha256',
+  ]) {
+    digestAt(metadata, key, 'harness.metadata');
+  }
+  positiveNumberAt(metadata, 'benchmarkManagedPayloadBytes', 'harness.metadata', true);
+  positiveNumberAt(metadata, 'benchmarkManagedPayloadFileCount', 'harness.metadata', true);
+  const managedVersion = metadataString(metadata, 'benchmarkManagedVersion');
+  if (!managedVersion.endsWith(`.local.g${commit}`)) {
+    throw new Error('Performance harness managed version is not bound to its source commit.');
+  }
+  const managedRuntime = metadataString(metadata, 'benchmarkManagedRuntime');
+  const environmentRuntime = stringAt(environment, 'node', 'harness.environment');
+  if (!environmentRuntime.startsWith('bun/') || managedRuntime !== `bun-${environmentRuntime.slice(4)}`) {
+    throw new Error('Performance harness managed runtime does not match the measured Bun runtime.');
+  }
+  const target = metadataString(metadata, 'benchmarkManagedTarget');
+  const architecture = stringAt(environment, 'architecture', 'harness.environment');
+  if (!target.endsWith(`-${architecture}`)) {
+    throw new Error('Performance harness managed target does not match the measured architecture.');
+  }
+}
+
+function validateHarnessMeasurements(
+  artifact: RetainedPerformanceHarnessArtifact,
+  metadata: Record<string, unknown>,
+): void {
+  const measurements = measurementMap(artifact);
+  for (const [name, unit, positive = true] of [
+    ['cold-index', 'milliseconds'],
+    ['cold-registration-lock-and-database-setup', 'milliseconds'],
+    ['cold-inventory-and-extraction', 'milliseconds'],
+    ['cold-materialization', 'milliseconds'],
+    ['cold-reference-resolution', 'milliseconds'],
+    ['cold-activation-lexical-only', 'milliseconds'],
+    ['one-file-reindex-index', 'milliseconds'],
+    ['same-overlay-full-rebuild-index', 'milliseconds'],
+    ['hot-exact-lexical-query', 'milliseconds'],
+    ['cold-materialized-file-rows', 'count'],
+    ['cold-materialized-symbol-rows', 'count'],
+    ['cold-materialized-edge-rows', 'count'],
+    ['cold-materialization-deduplicated-reference-rows-n1', 'count'],
+    ['cold-materialized-reference-candidate-rows-n1', 'count'],
+    ['cold-materialized-lookup-key-rows-n1', 'count'],
+    ['cold-materialized-lexical-term-rows', 'count'],
+    ['sqlite-main-disk', 'bytes'],
+    ['cold-process-peak-rss', 'bytes'],
+    ['cold-sqlite-wal-peak-observed', 'bytes', false],
+    ['cold-sqlite-temp-peak-observed', 'bytes', false],
+    ['cold-sqlite-durable-database-pages-high-water-n1', 'bytes', false],
+    ['primary-query-structural-parity', 'count'],
+    ['structural-graph-digest-parity', 'count'],
+    ['manager-catalog-cold', 'milliseconds'],
+    ['manager-catalog-warm', 'milliseconds'],
+    ['manager-overview-cold', 'milliseconds'],
+    ['manager-overview-warm', 'milliseconds'],
+    ['manager-detail-cold', 'milliseconds'],
+    ['manager-render-proxy', 'milliseconds'],
+    ['manager-response-payload', 'bytes'],
+    ['manager-bounded-query', 'milliseconds'],
+    ['manager-bounded-query-payload', 'bytes'],
+  ] as const) {
+    requiredMeasurement(measurements, name, unit, positive);
+  }
+  for (const {harness} of harnessLanguageControls) {
+    const files = requiredMeasurement(measurements, `cold-materialized-file-rows-language-${harness}`, 'count');
+    requiredMeasurement(measurements, `external-query-cold-${harness}-duration`, 'milliseconds');
+    const returned = requiredMeasurement(measurements, `external-query-cold-${harness}-returned-nodes`, 'count');
+    const expected = requiredMeasurement(
+      measurements,
+      `external-query-cold-${harness}-expected-path-language-nodes`,
+      'count',
+    );
+    const parity = requiredMeasurement(
+      measurements,
+      `external-query-${harness}-same-overlay-structural-parity`,
+      'count',
+    );
+    if (files.minimum < 1 || returned.minimum < 1 || expected.minimum < 1 || parity.minimum < 1) {
+      throw new Error(`Performance harness ${harness} control did not pass every retained sample.`);
+    }
+  }
+  for (const name of ['primary-query-structural-parity', 'structural-graph-digest-parity']) {
+    if (requiredMeasurement(measurements, name, 'count').minimum < 1) {
+      throw new Error(`Performance harness ${name} did not pass.`);
+    }
+  }
+  literalAt(metadata, 'retrievalMode', 'harness.metadata', 'lexical-only');
 }
 
 /**
- * Final shape validation after build-time byte and source binding succeeds.
- * Do not use this as a substitute for `bindRetainedPerformanceArtifact`.
+ * Validates the complete benchmark harness artifact stored as the public evidence file.
+ * The site derives every displayed measurement and provenance field from this one artifact.
  */
-export function validateBoundRetainedPerformanceArtifact(input: unknown): RetainedPerformanceArtifact {
-  return validateVerifiedArtifact(input);
+export function validateRetainedPerformancePayload(input: unknown): RetainedPerformancePayload {
+  const payload = recordAt(input, 'harness', [
+    'createdAt',
+    'environment',
+    'measurements',
+    'metadata',
+    'suite',
+    'version',
+    'warmups',
+  ]);
+  literalAt(payload, 'suite', 'harness', 'code-graph-external-repository-v1');
+  literalAt(payload, 'version', 'harness', 1);
+  numberAt(payload, 'warmups', 'harness', true);
+  const createdAt = stringAt(payload, 'createdAt', 'harness');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(createdAt)) {
+    throw new Error('Performance harness createdAt must be an ISO-8601 UTC timestamp.');
+  }
+
+  const environmentInput = openRecordAt(payload.environment, 'harness.environment');
+  const environmentKeys = [
+    'architecture',
+    'commit',
+    'cpu',
+    'dirty',
+    'fixtureHash',
+    'memoryBytes',
+    'node',
+    'operatingSystem',
+    'packageManager',
+    'runner',
+    'runnerVersion',
+    ...('model' in environmentInput ? ['model'] : []),
+  ];
+  const environment = recordAt(environmentInput, 'harness.environment', environmentKeys);
+  for (const key of ['architecture', 'cpu', 'fixtureHash', 'node', 'operatingSystem', 'packageManager']) {
+    stringAt(environment, key, 'harness.environment');
+  }
+  positiveNumberAt(environment, 'memoryBytes', 'harness.environment', true);
+  literalAt(environment, 'runner', 'harness.environment', 'threadnote-code-graph-e2e');
+  literalAt(environment, 'runnerVersion', 'harness.environment', '1');
+  if ('model' in environment) {
+    const model = recordAt(environment.model, 'harness.environment.model', ['backend', 'id', 'revision']);
+    for (const key of ['backend', 'id', 'revision']) stringAt(model, key, 'harness.environment.model');
+  }
+
+  if (!Array.isArray(payload.measurements) || payload.measurements.length === 0) {
+    throw new Error('Performance harness measurements must be a non-empty array.');
+  }
+  for (const [index, inputMeasurement] of payload.measurements.entries()) {
+    const measurement = recordAt(inputMeasurement, `harness.measurements[${index}]`, [
+      'maximum',
+      'mean',
+      'minimum',
+      'name',
+      'p50',
+      'p95',
+      'p99',
+      'samples',
+      'unit',
+    ]);
+    stringAt(measurement, 'name', `harness.measurements[${index}]`);
+    const minimum = numberAt(measurement, 'minimum', `harness.measurements[${index}]`);
+    const p50 = numberAt(measurement, 'p50', `harness.measurements[${index}]`);
+    const p95 = numberAt(measurement, 'p95', `harness.measurements[${index}]`);
+    const p99 = numberAt(measurement, 'p99', `harness.measurements[${index}]`);
+    const maximum = numberAt(measurement, 'maximum', `harness.measurements[${index}]`);
+    const mean = numberAt(measurement, 'mean', `harness.measurements[${index}]`);
+    positiveNumberAt(measurement, 'samples', `harness.measurements[${index}]`, true);
+    if (!['bytes', 'count', 'milliseconds', 'operations_per_second', 'percent'].includes(String(measurement.unit))) {
+      throw new Error(`Performance harness measurement ${String(measurement.name)} has an invalid unit.`);
+    }
+    if (minimum > p50 || p50 > p95 || p95 > p99 || p99 > maximum || mean < minimum || mean > maximum) {
+      throw new Error(`Performance harness measurement ${String(measurement.name)} is not monotonic.`);
+    }
+  }
+
+  const metadata = openRecordAt(payload.metadata, 'harness.metadata');
+  for (const [key, value] of Object.entries(metadata)) {
+    if (
+      !['boolean', 'number', 'string'].includes(typeof value) ||
+      (typeof value === 'number' && !Number.isFinite(value))
+    ) {
+      throw new Error(`Performance harness metadata.${key} must be a finite primitive value.`);
+    }
+  }
+  validateHarnessRuntimeProvenance(environment, metadata);
+  const sourceCommit = stringAt(environment, 'commit', 'harness.environment');
+  const repositoryCommit = metadataString(metadata, 'externalRepositoryCommit');
+  if (
+    !sha40Pattern.test(repositoryCommit) ||
+    environment.fixtureHash !== `external-code-graph-v1:${repositoryCommit}`
+  ) {
+    throw new Error('Performance harness external repository identity is not bound to its exact commit.');
+  }
+  literalAt(
+    metadata,
+    'externalRepositoryMode',
+    'harness.metadata',
+    'clean checkout with a byte-compared, scoped one-file overlay',
+  );
+  const repositoryName = metadataString(metadata, 'externalRepositoryName');
+  const repositoryUrl = metadataString(metadata, 'externalRepositoryUrl');
+  try {
+    const parsed = new URL(repositoryUrl);
+    const expectedPath = `/${repositoryName.replace(/^\/+|\/+$/g, '')}`;
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'github.com' ||
+      parsed.pathname.replace(/\.git$/, '') !== expectedPath
+    ) {
+      throw new Error('mismatch');
+    }
+  } catch {
+    throw new Error('Performance harness repository name and public GitHub URL do not match.');
+  }
+  if (metadataString(metadata, 'releaseEvidenceSha') !== sourceCommit) {
+    throw new Error('Performance harness release evidence is not bound to its source commit.');
+  }
+  if (!/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(metadataString(metadata, 'releaseEvidenceRef'))) {
+    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
+  }
+  literalAt(metadata, 'releaseEvidenceResolvedSha', 'harness.metadata', sourceCommit);
+  positiveNumberAt(metadata, 'benchmarkLogicalCpuCount', 'harness.metadata', true);
+  metadataString(metadata, 'benchmarkDiskMedium');
+  metadataString(metadata, 'benchmarkDiskFilesystem');
+  positiveNumberAt(metadata, 'benchmarkInventoryEligibleFiles', 'harness.metadata', true);
+  metadataNumber(metadata, 'benchmarkInventoryExcludedFiles', true);
+  positiveNumberAt(metadata, 'managerNodeBudget', 'harness.metadata', true);
+  positiveNumberAt(metadata, 'managerEdgeBudget', 'harness.metadata', true);
+  literalAt(metadata, 'managerSnapshotBindingPassed', 'harness.metadata', true);
+  literalAt(metadata, 'managerStaleRequestCancellationPassed', 'harness.metadata', true);
+  const simultaneousWorktrees = positiveNumberAt(metadata, 'simultaneousWorktrees', 'harness.metadata', true);
+  if (simultaneousWorktrees < 2) throw new Error('Performance harness must exercise concurrent worktrees.');
+  literalAt(metadata, 'worktreeIsolationPassed', 'harness.metadata', true);
+  for (const key of [
+    'structuralGraphDigestCold',
+    'structuralGraphDigestIncremental',
+    'structuralGraphDigestSameOverlayReference',
+  ]) {
+    digestAt(metadata, key, 'harness.metadata');
+  }
+  if (metadata.structuralGraphDigestIncremental !== metadata.structuralGraphDigestSameOverlayReference) {
+    throw new Error('Performance harness overlay digests must match before publication.');
+  }
+  if (!/^\d+\.\d+\.\d+/.test(metadataString(metadata, 'sqliteVersion'))) {
+    throw new Error('Performance harness SQLite version is invalid.');
+  }
+  parseHarnessControls(metadata);
+  validateHarnessMeasurements(input as RetainedPerformanceHarnessArtifact, metadata);
+  return input as RetainedPerformancePayload;
+}
+
+export function retainedPerformanceArtifactFromHarness(
+  input: unknown,
+  binding: Readonly<{
+    artifactUrl: string;
+    artifactSha256: string;
+    generatedAt: string;
+    currentLockfileSha256: string;
+    currentPackageManifestSha256: string;
+  }>,
+): RetainedPerformanceArtifact {
+  const harness = validateRetainedPerformancePayload(input);
+  const metadata = harness.metadata as Record<string, unknown>;
+  if (binding.generatedAt !== harness.createdAt) {
+    throw new Error('Performance binding timestamp does not match the retained harness artifact.');
+  }
+  for (const [actual, metadataKey, label] of [
+    [binding.currentLockfileSha256, 'benchmarkRuntimeSourceLockfileSha256', 'lockfile'],
+    [binding.currentPackageManifestSha256, 'benchmarkRuntimeSourcePackageManifestSha256', 'package manifest'],
+  ] as const) {
+    if (!sha256Pattern.test(actual) || actual !== metadata[metadataKey]) {
+      throw new Error(`Performance harness ${label} SHA-256 does not match the bound source tree.`);
+    }
+  }
+  const measurements = measurementMap(harness);
+  const measurement = (name: string, unit: HarnessMeasurement['unit'], positive = true) =>
+    requiredMeasurement(measurements, name, unit, positive);
+  const count = (name: string) => measurement(name, 'count').maximum;
+  const duration = (name: string) => measurement(name, 'milliseconds').maximum;
+  const bytes = (name: string, positive = true) => measurement(name, 'bytes', positive).maximum;
+  const controlsInput = parseHarnessControls(metadata);
+  const controls = Object.fromEntries(
+    harnessLanguageControls.map(({display, harness: language}) => [
+      display,
+      {
+        ...controlsInput[display],
+        milliseconds: duration(`external-query-cold-${language}-duration`),
+        passed: true,
+      },
+    ]),
+  ) as RetainedPerformanceArtifact['controls'];
+  const query = measurement('hot-exact-lexical-query', 'milliseconds');
+  const managerQuery = measurement('manager-bounded-query', 'milliseconds');
+
+  return validateVerifiedArtifact({
+    schemaVersion: 1,
+    status: 'verified',
+    artifact: {
+      url: binding.artifactUrl,
+      sha256: binding.artifactSha256,
+      generatedAt: binding.generatedAt,
+    },
+    source: {
+      threadnote: {
+        version: metadataString(metadata, 'benchmarkManagedVersion'),
+        commit: harness.environment.commit,
+        lockfileSha256: binding.currentLockfileSha256,
+        packageManifestSha256: binding.currentPackageManifestSha256,
+      },
+      repository: {
+        name: metadataString(metadata, 'externalRepositoryName'),
+        url: metadataString(metadata, 'externalRepositoryUrl'),
+        commit: metadataString(metadata, 'externalRepositoryCommit'),
+        checkout: 'clean',
+      },
+    },
+    runner: {
+      hardware: harness.environment.cpu,
+      operatingSystem: harness.environment.operatingSystem,
+      architecture: harness.environment.architecture,
+      memoryBytes: harness.environment.memoryBytes,
+      logicalCpuCount: metadataNumber(metadata, 'benchmarkLogicalCpuCount', true),
+      runtime: {
+        name: 'Bun',
+        version: harness.environment.node.slice(4),
+        target: metadataString(metadata, 'benchmarkManagedTarget'),
+        executionMode: 'managed-exact-head',
+        dependencyInstallation: 'bun install --frozen-lockfile',
+        executableSha256: metadataString(metadata, 'benchmarkManagedExecutableSha256'),
+        payloadManifestSha256: metadataString(metadata, 'benchmarkManagedPayloadManifestSha256'),
+        releaseMetadataSha256: metadataString(metadata, 'benchmarkManagedReleaseMetadataSha256'),
+        payloadBytes: metadataNumber(metadata, 'benchmarkManagedPayloadBytes', true),
+        payloadFileCount: metadataNumber(metadata, 'benchmarkManagedPayloadFileCount', true),
+        processLeaseInspection: 'complete',
+      },
+      database: {name: 'SQLite', version: metadataString(metadata, 'sqliteVersion')},
+      disk: {
+        medium: metadataString(metadata, 'benchmarkDiskMedium'),
+        filesystem: metadataString(metadata, 'benchmarkDiskFilesystem'),
+      },
+    },
+    inventory: {
+      eligibleFiles: metadataNumber(metadata, 'benchmarkInventoryEligibleFiles', true),
+      indexedFiles: count('cold-materialized-file-rows'),
+      excludedFiles: metadataNumber(metadata, 'benchmarkInventoryExcludedFiles', true),
+      languages: Object.fromEntries(
+        harnessLanguageControls.map(({display, harness: language}) => [
+          display,
+          count(`cold-materialized-file-rows-language-${language}`),
+        ]),
+      ),
+    },
+    graph: {
+      symbols: count('cold-materialized-symbol-rows'),
+      relationships: count('cold-materialized-edge-rows'),
+      references: count('cold-materialization-deduplicated-reference-rows-n1'),
+      referenceCandidates: count('cold-materialized-reference-candidate-rows-n1'),
+      lookupKeys: count('cold-materialized-lookup-key-rows-n1'),
+      lexicalPostings: count('cold-materialized-lexical-term-rows'),
+    },
+    phases: {
+      cold: {
+        totalMilliseconds: duration('cold-index'),
+        discoveryMilliseconds: duration('cold-registration-lock-and-database-setup'),
+        extractionMilliseconds: duration('cold-inventory-and-extraction'),
+        materializationMilliseconds: duration('cold-materialization'),
+        resolutionMilliseconds: duration('cold-reference-resolution'),
+        activationMilliseconds: duration('cold-activation-lexical-only'),
+      },
+      incremental: {totalMilliseconds: duration('one-file-reindex-index'), changedFiles: 1},
+      independentRebuild: {totalMilliseconds: duration('same-overlay-full-rebuild-index')},
+    },
+    queries: {
+      sampleCount: query.samples,
+      p50Milliseconds: query.p50,
+      p95Milliseconds: query.p95,
+      maxMilliseconds: query.maximum,
+    },
+    controls,
+    parity: {
+      cleanColdDigest: metadataString(metadata, 'structuralGraphDigestCold'),
+      incrementalOverlayDigest: metadataString(metadata, 'structuralGraphDigestIncremental'),
+      independentOverlayDigest: metadataString(metadata, 'structuralGraphDigestSameOverlayReference'),
+      incrementalMatchesIndependent: true,
+    },
+    storage: {
+      databaseBytes: bytes('sqlite-main-disk'),
+      peakResidentBytes: bytes('cold-process-peak-rss'),
+      peakWalBytes: bytes('cold-sqlite-wal-peak-observed', false),
+      peakTemporaryBytes: bytes('cold-sqlite-temp-peak-observed', false),
+      peakDurableGrowthBytes: bytes('cold-sqlite-durable-database-pages-high-water-n1', false),
+    },
+    manager: {
+      catalogColdMilliseconds: duration('manager-catalog-cold'),
+      catalogWarmMilliseconds: duration('manager-catalog-warm'),
+      overviewColdMilliseconds: duration('manager-overview-cold'),
+      overviewWarmMilliseconds: duration('manager-overview-warm'),
+      detailColdMilliseconds: duration('manager-detail-cold'),
+      renderProxyMilliseconds: duration('manager-render-proxy'),
+      maxPayloadBytes: bytes('manager-response-payload'),
+      querySampleCount: managerQuery.samples,
+      queryP50Milliseconds: managerQuery.p50,
+      queryP95Milliseconds: managerQuery.p95,
+      queryMaxMilliseconds: managerQuery.maximum,
+      queryMaxPayloadBytes: bytes('manager-bounded-query-payload'),
+      nodeBudget: metadataNumber(metadata, 'managerNodeBudget', true),
+      edgeBudget: metadataNumber(metadata, 'managerEdgeBudget', true),
+      snapshotBindingPassed: true,
+      staleRequestCancellationPassed: true,
+    },
+    concurrency: {
+      simultaneousWorktrees: metadataNumber(metadata, 'simultaneousWorktrees', true),
+      isolationPassed: true,
+    },
+  });
 }
 
 export function pendingPerformanceEvidence(reason: string): PerformanceEvidence {
