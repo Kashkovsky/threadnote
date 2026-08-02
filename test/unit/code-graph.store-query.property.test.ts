@@ -8,6 +8,7 @@ import {
   codeGraphSymbolsByIdsQueryStatement,
   codeGraphTermCandidateQueryStatement,
   CodeGraphStore,
+  isCanonicalAbsoluteBazelLabel,
 } from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphProvenance} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -36,6 +37,10 @@ const edgeSpec = FC.record({
   source: FC.integer({max: 5, min: 0}),
   target: FC.integer({max: 5, min: 0}),
 });
+const bazelLabelSegment = FC.array(
+  FC.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-'),
+  {maxLength: 16, minLength: 1},
+).map(characters => characters.join(''));
 
 describe('code graph indexed query properties', () => {
   it.effect('treats a database file observed before schema publication as unavailable', () =>
@@ -289,6 +294,58 @@ describe('code graph indexed query properties', () => {
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
+
+  it.effect('preserves canonical Bazel labels for exact qualified-name lookup', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-bazel-label-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        yield* Effect.sync(() => insertBazelLabelFixture(databasePath));
+
+        const [rootTarget, nestedTarget] = yield* Effect.all([
+          store.searchSymbols(databasePath, currentSnapshotId, '//:main', 20),
+          store.searchSymbols(databasePath, currentSnapshotId, '//platform/build:runner', 20),
+        ]);
+
+        expect(rootTarget[0]).toMatchObject({
+          kind: 'target',
+          language: 'bazel-build',
+          path: 'BUILD.bazel',
+          qualifiedName: '//:main',
+          score: 0.99,
+        });
+        expect(nestedTarget[0]).toMatchObject({
+          kind: 'target',
+          language: 'bazel-build',
+          path: 'platform/build/BUILD.bazel',
+          qualifiedName: '//platform/build:runner',
+          score: 0.99,
+        });
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect.prop(
+    'distinguishes canonical absolute Bazel labels from repository paths',
+    {
+      packageSegments: FC.array(bazelLabelSegment, {maxLength: 5}),
+      repository: FC.option(bazelLabelSegment, {nil: undefined}),
+      target: bazelLabelSegment,
+    },
+    ({packageSegments, repository, target}) =>
+      Effect.sync(() => {
+        const repositoryPrefix = repository === undefined ? '' : `@${repository}`;
+        const label = `${repositoryPrefix}//${packageSegments.join('/')}:${target}`;
+        expect(isCanonicalAbsoluteBazelLabel(label)).toBe(true);
+        expect(isCanonicalAbsoluteBazelLabel(label.replace('//', '/'))).toBe(false);
+        expect(isCanonicalAbsoluteBazelLabel(`${packageSegments.join('/')}/${target}.ts`)).toBe(false);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
 });
 
 function lastEdgeById(values: readonly EdgeSpec[]): ReadonlyMap<string, CodeGraphEdge> {
@@ -471,6 +528,41 @@ function insertExactPathFixture(databasePath: string): void {
         'createButton',
         'src/feature/button.ts#createButton',
         'src/feature/button.ts',
+        spanJson,
+      );
+    })();
+  } finally {
+    database.close(false);
+  }
+}
+
+function insertBazelLabelFixture(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.transaction(() => {
+      insertRepository(database);
+      insertSnapshot(database, currentSnapshotId, undefined, 0);
+      const insert = database.query(`INSERT INTO symbols (
+        snapshot_id, id, content_hash, kind, name, qualified_name, path, language, arity,
+        lookup_keys_json, resolution_domain, resolution_scope_id, package_name, exported,
+        signature, documentation, span_json
+      ) VALUES (?, ?, ?, 'target', ?, ?, ?, 'bazel-build', NULL, '[]', 'bazel', NULL, NULL, 1, NULL, NULL, ?)`);
+      insert.run(
+        currentSnapshotId,
+        'bazel-root-main',
+        'hash-bazel-root-main',
+        'main',
+        '//:main',
+        'BUILD.bazel',
+        spanJson,
+      );
+      insert.run(
+        currentSnapshotId,
+        'bazel-platform-runner',
+        'hash-bazel-platform-runner',
+        'runner',
+        '//platform/build:runner',
+        'platform/build/BUILD.bazel',
         spanJson,
       );
     })();

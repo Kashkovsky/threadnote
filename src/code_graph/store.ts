@@ -10195,9 +10195,14 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
     .map(row => ({...symbolFromRow(row), score: Math.max(0, Math.min(1, row.score / 100))}));
 });
 
+export function isCanonicalAbsoluteBazelLabel(value: string): boolean {
+  return /^(?:@@?[^/\\\s:]+)?\/\/[^\\\s:]*:[^\\\s:]+$/u.test(value);
+}
+
 function normalizeExactSearchPath(value: string): string | undefined {
-  const normalized = value
-    .trim()
+  const trimmed = value.trim();
+  if (isCanonicalAbsoluteBazelLabel(trimmed)) return undefined;
+  const normalized = trimmed
     .replaceAll('\\', '/')
     .replace(/^\.\/+/, '')
     .replace(/\/{2,}/g, '/');
