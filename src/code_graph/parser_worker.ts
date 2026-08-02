@@ -7,8 +7,9 @@ import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, serializeBoundedCodeGraphFact} fro
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
+import {CODE_GRAPH_PARSER_WORKER_ARGUMENT} from '../worker_protocol.js';
 
-export const CODE_GRAPH_PARSER_WORKER_ARGUMENT = '--threadnote-code-graph-parser-worker';
+export {CODE_GRAPH_PARSER_WORKER_ARGUMENT};
 export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS';
 export const CODE_GRAPH_PARSER_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_IDLE_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS';

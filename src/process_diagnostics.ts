@@ -1,7 +1,7 @@
 import {Console, Effect, Fiber, FileSystem, Option, Path, Semaphore} from 'effect';
 import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
-import {readLiveStandaloneProcessLeases} from './installations.js';
+import {readLiveStandaloneProcessLeases} from './standalone_process_lease.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;

@@ -24,8 +24,9 @@ import {
 import type {LlamaCppDiagnostics} from './llama-cpp-engine.js';
 import {SystemInfo, type SystemInfoShape} from '../system.js';
 import {withThreadnoteProcessActivity} from '../../process_diagnostics.js';
+import {LOCAL_MODEL_WORKER_ARGUMENT} from '../../worker_protocol.js';
 
-export const LOCAL_MODEL_WORKER_ARGUMENT = '--threadnote-local-model-worker';
+export {LOCAL_MODEL_WORKER_ARGUMENT};
 
 const DEFAULT_REQUEST_DEADLINE_MS = 120_000;
 const DEFAULT_RESPONSE_LIMIT_BYTES = 16 * 1024 * 1024;

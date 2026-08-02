@@ -1,99 +1,133 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
-import {LOCAL_MODEL_WORKER_ARGUMENT, nativeLocalModelWorkerServer} from './effect/ai/isolated-local-model-runtime.js';
-import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, codeGraphParserWorkerServer} from './code_graph/parser_worker.js';
-import {TreeSitterRuntime} from './code_graph/tree_sitter/runtime.js';
-import {ApplicationLayer} from './effect/runtime.js';
-import {SystemInfo} from './effect/system.js';
-import {inspectCliInvocation} from './effect/cli.js';
-import {withStandaloneProcessLease} from './installations.js';
-import {mcpServerEffect} from './mcp_server.js';
-import {
-  threadnoteHomeForProcess,
-  withThreadnoteProcessRegistration,
-  type RegisteredThreadnoteProcessRole,
-} from './process_diagnostics.js';
-import {cliEffect} from './threadnote.js';
+import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, LOCAL_MODEL_WORKER_ARGUMENT} from './worker_protocol.js';
 
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
 const arguments_ = process.argv.slice(2);
 const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
-const cliOperation =
-  isLocalModelWorker || isCodeGraphParserWorker || isMcpServer ? undefined : inspectCliInvocation(arguments_).operation;
-const processRole: RegisteredThreadnoteProcessRole = isLocalModelWorker
-  ? 'local-model-worker'
-  : isCodeGraphParserWorker
-    ? 'graph-parser-worker'
-    : isMcpServer
-      ? 'mcp'
-      : cliOperation === 'manage'
-        ? 'manager'
-        : 'cli';
-const processOperation = isLocalModelWorker
-  ? 'model-stdio'
-  : isCodeGraphParserWorker
-    ? 'parser-stdio'
-    : isMcpServer
-      ? 'mcp-server'
-      : cliOperation === 'manage'
-        ? 'manager-ui'
-        : cliOperation;
-const mainProgram = isMcpServer ? Effect.scoped(mcpServerEffect) : cliEffect(arguments_);
-const processHome = threadnoteHomeForProcess(arguments_, process.env).pipe(
-  Effect.tap(home =>
-    Effect.sync(() => {
-      // Normalize CLI-only --home into the environment inherited by the
-      // crash-isolated model worker and by the direct MCP entrypoint. Runtime
-      // diagnostics and model storage must remain in the same Threadnote home.
-      process.env.THREADNOTE_HOME = home;
-    }),
-  ),
-);
-// The worker owns a separate PID-scoped release lease. If its parent is killed,
-// the release must remain pinned until the worker observes closed stdin and exits.
+
 const program = isLocalModelWorker
-  ? processHome.pipe(
-      Effect.flatMap(processHome =>
-        withStandaloneProcessLease(
-          withThreadnoteProcessRegistration(
-            processHome,
-            processRole,
-            Effect.scoped(nativeLocalModelWorkerServer),
-            processOperation,
-          ),
-        ),
-      ),
-      Effect.provide(SystemInfo.layer),
-      Effect.provide(BunServices.layer),
-    )
+  ? await localModelWorkerProgram(arguments_)
   : isCodeGraphParserWorker
-    ? processHome.pipe(
-        Effect.flatMap(processHome =>
-          withStandaloneProcessLease(
-            withThreadnoteProcessRegistration(
-              processHome,
-              processRole,
-              Effect.scoped(codeGraphParserWorkerServer),
-              processOperation,
-            ),
-          ),
-        ),
-        Effect.provide(TreeSitterRuntime.layer),
-        Effect.provide(SystemInfo.layer),
-        Effect.provide(BunServices.layer),
-      )
-    : processHome.pipe(
-        Effect.flatMap(processHome =>
-          withStandaloneProcessLease(
-            withThreadnoteProcessRegistration(processHome, processRole, mainProgram, processOperation),
-          ),
-        ),
-        Effect.provide(ApplicationLayer),
-      );
+    ? await codeGraphParserWorkerProgram(arguments_)
+    : await applicationProgram(arguments_, isMcpServer);
 
 BunRuntime.runMain(program, {
   disableErrorReporting: isLocalModelWorker || isCodeGraphParserWorker || !isMcpServer,
 });
+
+async function localModelWorkerProgram(arguments_: readonly string[]) {
+  const [model, systemModule, processDiagnostics, processLease] = await Promise.all([
+    import('./effect/ai/isolated-local-model-runtime.js'),
+    import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          'local-model-worker',
+          Effect.scoped(model.nativeLocalModelWorkerServer),
+          'model-stdio',
+        ),
+      ),
+    ),
+    Effect.provide(systemModule.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
+}
+
+async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
+  const [parser, treeSitter, systemModule, processDiagnostics, processLease] = await Promise.all([
+    import('./code_graph/parser_worker.js'),
+    import('./code_graph/tree_sitter/runtime.js'),
+    import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          'graph-parser-worker',
+          Effect.scoped(parser.codeGraphParserWorkerServer),
+          'parser-stdio',
+        ),
+      ),
+    ),
+    Effect.provide(treeSitter.TreeSitterRuntime.layer),
+    Effect.provide(systemModule.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
+}
+
+async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean) {
+  const [runtime, processDiagnostics, processLease] = await Promise.all([
+    import('./effect/runtime.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  if (isMcpServer) {
+    const {mcpServerEffect} = await import('./mcp_server.js');
+    const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+    return processHome.pipe(
+      Effect.flatMap(home =>
+        processLease.withStandaloneProcessLease(
+          processDiagnostics.withThreadnoteProcessRegistration(
+            home,
+            'mcp',
+            Effect.scoped(mcpServerEffect),
+            'mcp-server',
+          ),
+        ),
+      ),
+      Effect.provide(runtime.ApplicationLayer),
+    );
+  }
+
+  const [{inspectCliInvocation}, {cliEffect}] = await Promise.all([
+    import('./effect/cli.js'),
+    import('./threadnote.js'),
+  ]);
+  const cliOperation = inspectCliInvocation(arguments_).operation;
+  const processRole = cliOperation === 'manage' ? 'manager' : 'cli';
+  const processOperation = cliOperation === 'manage' ? 'manager-ui' : cliOperation;
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          processRole,
+          cliEffect(arguments_),
+          processOperation,
+        ),
+      ),
+    ),
+    Effect.provide(runtime.ApplicationLayer),
+  );
+}
+
+function normalizedProcessHome(
+  arguments_: readonly string[],
+  resolveHome: typeof import('./process_diagnostics.js').threadnoteHomeForProcess,
+) {
+  return resolveHome(arguments_, process.env).pipe(
+    Effect.tap(home =>
+      Effect.sync(() => {
+        // Normalize CLI-only --home into the environment inherited by the
+        // crash-isolated model worker and by the direct MCP entrypoint. Runtime
+        // diagnostics and model storage must remain in the same Threadnote home.
+        process.env.THREADNOTE_HOME = home;
+      }),
+    ),
+  );
+}

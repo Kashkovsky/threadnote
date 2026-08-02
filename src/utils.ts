@@ -25,8 +25,10 @@ import {parseResourceId} from './storage/resource-id.js';
 import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './version.js';
+import {compareVersions} from './version_compare.js';
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
+export {compareVersions} from './version_compare.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -357,73 +359,6 @@ export const httpGetText = Effect.fn('utils.httpGetText')(function* (url: string
 });
 
 export const sleep = (ms: number) => Effect.sleep(ms);
-
-/**
- * Compare two semver-ish / PEP 440 versions. Returns positive if `a > b`,
- * negative if `a < b`, zero if equal. Build metadata (`+local...`) carries no
- * precedence and is ignored. Pre-releases (`1.2.3-rc1`, `0.4.4rc1`, `.dev0`)
- * sort before the matching release; post-releases (`0.4.4.post1`) sort after
- * it. A non-integer or extra version segment never NaN-collapses a core number
- * to 0 — important so a locally-built `0.4.4+local` is not misread as `0.4.0`.
- */
-export function compareVersions(a: string, b: string): number {
-  const left = parseVersion(a);
-  const right = parseVersion(b);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = left.numbers[index] - right.numbers[index];
-    if (difference !== 0) {
-      return difference;
-    }
-  }
-  const rankDelta = suffixRank(left.suffix) - suffixRank(right.suffix);
-  if (rankDelta !== 0) {
-    return rankDelta;
-  }
-  if (left.suffix === right.suffix) {
-    return 0;
-  }
-  // Same rank class with distinct suffixes (e.g. beta.2 vs beta.10) — use
-  // numeric collation so multi-digit prerelease identifiers keep semver order.
-  return (left.suffix ?? '').localeCompare(right.suffix ?? '', 'en', {numeric: true});
-}
-
-/** PEP 440 post-releases sort after the release; pre/dev releases before it. */
-function suffixRank(suffix: string | undefined): number {
-  if (suffix === undefined) {
-    return 0;
-  }
-  return /^post/i.test(suffix) ? 1 : -1;
-}
-
-function parseVersion(version: string): {
-  readonly numbers: readonly [number, number, number];
-  readonly suffix?: string;
-} {
-  // Drop a leading `v` and build metadata (`+local...`), then split the numeric
-  // core off any pre/post/dev suffix. PEP 440 attaches the suffix without a
-  // separator (`0.4.4rc1`, `0.4.4.post1`); semver uses a dash (`0.4.4-rc1`).
-  // Parsing each core segment as a leading integer keeps a non-numeric tail
-  // from collapsing the segment to 0.
-  const normalized = version.trim().replace(/^v/, '').split('+', 1)[0];
-  const core = normalized.match(/^\d+(?:\.\d+){0,2}/)?.[0] ?? '';
-  const rawSuffix = normalized.slice(core.length).replace(/^[-_.]/, '');
-  // Only a string with a numeric core can carry a meaningful suffix; a fully
-  // non-numeric version (e.g. `abc`) coerces to 0.0.0 with no suffix.
-  const suffix = core.length > 0 && rawSuffix.length > 0 ? rawSuffix : undefined;
-  const parts = core.split('.');
-  return {
-    numbers: [
-      safeVersionNumber(Number.parseInt(parts[0] ?? '', 10)),
-      safeVersionNumber(Number.parseInt(parts[1] ?? '', 10)),
-      safeVersionNumber(Number.parseInt(parts[2] ?? '', 10)),
-    ],
-    suffix,
-  };
-}
-
-function safeVersionNumber(value: number | undefined): number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
-}
 
 /**
  * Returns a reconnect notice when a newer threadnote is installed on disk than
