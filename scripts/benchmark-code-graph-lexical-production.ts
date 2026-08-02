@@ -17,25 +17,13 @@ import type {
 } from '../src/code_graph/types.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
+import {parseLexicalProductionBenchmarkArguments} from './benchmark-code-graph-lexical-production-arguments.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 
 const ARTIFACT_VERSION = 1 as const;
-const DEFAULT_SYMBOL_COUNT = 5_000;
-const DEFAULT_BATCH_SYMBOLS = 1_000;
-const DEFAULT_QUERY_ITERATIONS = 20;
 const LEGACY_INSERT_BATCH_ROWS = 5_000;
 const LEGACY_TRANSACTION_ROWS = 100_000;
-const MAXIMUM_SYMBOLS_WITHOUT_LARGE_OPT_IN = 50_000;
-const MAXIMUM_SYMBOLS = 200_000;
 const SNAPSHOT_ID = 'lexical-production-micro';
-
-interface BenchmarkArguments {
-  readonly allowLarge: boolean;
-  readonly batchSymbols: number;
-  readonly outputPath: Option.Option<string>;
-  readonly queryIterations: number;
-  readonly symbolCount: number;
-}
 
 interface QueryMeasurements {
   readonly digest: string;
@@ -78,7 +66,7 @@ interface ExactValidationMeasurements {
 
 const benchmark = Effect.scoped(
   Effect.gen(function* () {
-    const args = parseArguments(yield* scriptArguments());
+    const args = parseLexicalProductionBenchmarkArguments(yield* scriptArguments());
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
@@ -544,38 +532,6 @@ function lexicalFixture(
   return {files, identity, symbols};
 }
 
-function parseArguments(arguments_: readonly string[]): BenchmarkArguments {
-  const outputIndex = arguments_.indexOf('--output');
-  const symbolCount = integerArgument(arguments_, '--symbols', DEFAULT_SYMBOL_COUNT);
-  const allowLarge = arguments_.includes('--allow-large');
-  if (symbolCount > MAXIMUM_SYMBOLS || (symbolCount > MAXIMUM_SYMBOLS_WITHOUT_LARGE_OPT_IN && !allowLarge)) {
-    throw new Error(
-      `--symbols must be at most ${MAXIMUM_SYMBOLS_WITHOUT_LARGE_OPT_IN} without --allow-large and ${MAXIMUM_SYMBOLS} overall.`,
-    );
-  }
-  return {
-    allowLarge,
-    batchSymbols: integerArgument(arguments_, '--batch-symbols', DEFAULT_BATCH_SYMBOLS),
-    outputPath:
-      outputIndex === -1
-        ? Option.none()
-        : Option.fromNullishOr(arguments_[outputIndex + 1]).pipe(
-            Option.filter(value => value.length > 0),
-            Option.orElseFail(() => new Error('--output requires a path.')),
-          ),
-    queryIterations: integerArgument(arguments_, '--query-iterations', DEFAULT_QUERY_ITERATIONS),
-    symbolCount,
-  };
-}
-
-function integerArgument(arguments_: readonly string[], name: string, fallback: number): number {
-  const index = arguments_.indexOf(name);
-  if (index === -1) return fallback;
-  const value = Number(arguments_[index + 1]);
-  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} requires a positive integer.`);
-  return value;
-}
-
 function percentile(values: readonly number[], quantile: number): number {
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1))] ?? 0;
@@ -592,4 +548,4 @@ function gitValue(arguments_: readonly string[]): string {
   return result.exitCode === 0 ? new TextDecoder().decode(result.stdout).trim() : 'unknown';
 }
 
-benchmark.pipe(Effect.provide(ApplicationLayer), BunRuntime.runMain);
+if (import.meta.main) benchmark.pipe(Effect.provide(ApplicationLayer), BunRuntime.runMain);
