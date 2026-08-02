@@ -1,4 +1,4 @@
-import {Console, Effect, Fiber, Ref, Schedule, Terminal} from 'effect';
+import {Clock, Console, Effect, Fiber, Ref, Schedule, Semaphore, Terminal} from 'effect';
 import {SystemInfo} from './effect/system.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
@@ -163,14 +163,76 @@ export interface ProgressIndicator {
   stop(): Effect.Effect<void>;
 }
 
+interface LineProgressState {
+  readonly family: string;
+  readonly lastEmittedAtMilliseconds: number;
+  readonly lastEmittedMessage: string;
+  readonly pendingMessage?: string;
+}
+
+const LINE_PROGRESS_INTERVAL_MILLISECONDS = 1_000;
+
 export const startProgress = Effect.fn('cliUi.startProgress')(function* (message: string) {
   const system = yield* SystemInfo;
   const environment = system.environment();
   if (!system.stdoutIsTTY || environment.CI !== undefined || environment.THREADNOTE_NO_SPINNER !== undefined) {
     yield* Console.log(message);
+    const state = yield* Ref.make<LineProgressState>({
+      family: progressMessageFamily(message),
+      lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
+      lastEmittedMessage: message,
+    });
+    const gate = yield* Semaphore.make(1);
     return {
-      update: (nextMessage: string) => Console.log(nextMessage),
-      stop: () => Effect.void,
+      update: (nextMessage: string) =>
+        gate.withPermit(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(state);
+            if (nextMessage === current.lastEmittedMessage || nextMessage === current.pendingMessage) return;
+            const now = yield* Clock.currentTimeMillis;
+            const family = progressMessageFamily(nextMessage);
+            const familyChanged = family !== current.family;
+            if (familyChanged) {
+              if (
+                current.pendingMessage !== undefined &&
+                current.pendingMessage !== current.lastEmittedMessage &&
+                current.pendingMessage !== nextMessage
+              ) {
+                yield* Console.log(current.pendingMessage);
+              }
+              yield* Console.log(nextMessage);
+              yield* Ref.set(state, {
+                family,
+                lastEmittedAtMilliseconds: now,
+                lastEmittedMessage: nextMessage,
+              });
+              return;
+            }
+            if (now - current.lastEmittedAtMilliseconds >= LINE_PROGRESS_INTERVAL_MILLISECONDS) {
+              yield* Console.log(nextMessage);
+              yield* Ref.set(state, {
+                family,
+                lastEmittedAtMilliseconds: now,
+                lastEmittedMessage: nextMessage,
+              });
+              return;
+            }
+            yield* Ref.set(state, {...current, pendingMessage: nextMessage});
+          }),
+        ),
+      stop: () =>
+        gate.withPermit(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(state);
+            if (current.pendingMessage === undefined || current.pendingMessage === current.lastEmittedMessage) return;
+            yield* Console.log(current.pendingMessage);
+            yield* Ref.set(state, {
+              family: progressMessageFamily(current.pendingMessage),
+              lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
+              lastEmittedMessage: current.pendingMessage,
+            });
+          }),
+        ),
     };
   }
 
@@ -189,3 +251,8 @@ export const startProgress = Effect.fn('cliUi.startProgress')(function* (message
     stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
+
+function progressMessageFamily(message: string): string {
+  const separator = / · |:| \(/.exec(message);
+  return separator ? message.slice(0, separator.index) : message;
+}

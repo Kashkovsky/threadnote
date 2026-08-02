@@ -12,13 +12,40 @@ import {EmbeddingFailed} from '../../src/effect/ai/errors.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
+import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
 
 const embeddingManifest = {
   ...BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!,
   dimensions: 2,
 };
+const generationManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
 
 describe('isolated local model runtime', () => {
+  it.effect('contains repeated fatal generation-child crashes as a typed failure', () => {
+    const fatalWorker = fatalLocalModelWorkerHarness();
+
+    return Effect.gen(function* () {
+      const runtime = yield* LocalModelRuntime;
+      const exit = yield* Effect.exit(
+        runtime.generate({
+          jsonSchema: {type: 'object'},
+          manifest: generationManifest,
+          maxTokens: 32,
+          modelPath: '/models/generation.gguf',
+          prompt: 'Generate safe search metadata.',
+          seed: 0,
+        }),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(exit.cause.toString()).toContain('GenerationFailed');
+        expect(exit.cause.toString()).toContain('worker retry was exhausted');
+      }
+      expect(fatalWorker.spawnCount()).toBe(2);
+    }).pipe(Effect.provide(runtimeLayer(fatalWorker.spawnWorker)));
+  });
+
   it.effect('kills a crash-banner worker, restarts it, and retries the current request once', () => {
     const processes: FakeWorkerProcess[] = [];
     const spawn: LocalModelWorkerSpawner = () => {

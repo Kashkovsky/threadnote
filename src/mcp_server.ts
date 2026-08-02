@@ -4408,24 +4408,21 @@ function runNativeReadTool(
 ): Effect.Effect<CallToolResult, never, ResourceStore> {
   // Canonical memory reads are intentionally complete. Context budgets belong
   // to derived graph/search evidence, never to user-authored memory content.
+  // Keep the canonical bytes in MCP content only: repeating them in
+  // structuredContent can make an otherwise valid read exceed a client's
+  // transport-frame policy.
   return Effect.gen(function* () {
     const store = yield* ResourceStore;
-    const resources: Array<{readonly content: string; readonly uri: string}> = [];
+    const content: Array<{readonly text: string; readonly type: 'text'}> = [];
+    const resources: Array<{readonly contentIndex: number; readonly uri: string}> = [];
     for (const uri of uris) {
-      const content = yield* store.read(resourceStoreLocation(config), uri);
-      resources.push({content, uri});
+      const text = yield* store.read(resourceStoreLocation(config), uri);
+      resources.push({contentIndex: content.length, uri});
+      content.push({text, type: 'text'});
     }
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text:
-            resources.length === 1
-              ? resources[0]!.content
-              : resources.map(resource => `=== ${resource.uri} ===\n${resource.content}`).join('\n\n'),
-        },
-      ],
-      structuredContent: {resources},
+      content,
+      structuredContent: {resources, type: 'threadnote-canonical-read', version: 1},
     } satisfies CallToolResult;
   }).pipe(
     Effect.catch(error =>

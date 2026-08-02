@@ -237,35 +237,40 @@ const stdioWithInstructionsLayer = (instructions: string): Layer.Layer<Stdio.Std
     Stdio.Stdio,
     Effect.gen(function* () {
       const stdio = yield* Stdio.Stdio;
+      const addInstructions = makeInitializeInstructionsTransform(instructions);
       return Stdio.make({
         args: stdio.args,
         stderr: options => stdio.stderr(options),
         stdin: stdio.stdin,
-        stdout: options =>
-          stdio
-            .stdout(options)
-            .pipe(Sink.mapInput((input: string | Uint8Array) => addInitializeInstructions(input, instructions))),
+        stdout: options => stdio.stdout(options).pipe(Sink.mapInput(addInstructions)),
       });
     }),
   ).pipe(Layer.provide(BunStdio.layer));
 
-function addInitializeInstructions(input: string | Uint8Array, instructions: string): string | Uint8Array {
-  const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
-  const parsed = Option.getOrUndefined(
-    Option.liftThrowable(
-      (content: string) =>
-        JSON.parse(content) as {
-          readonly result?: {
-            readonly capabilities?: unknown;
-            readonly protocolVersion?: unknown;
-            readonly serverInfo?: unknown;
-          };
-        },
-    )(text),
-  );
-  if (!parsed || parsed.result?.protocolVersion === undefined || parsed.result.serverInfo === undefined) {
-    return input;
-  }
-  const encoded = `${JSON.stringify({...parsed, result: {...parsed.result, instructions}})}\n`;
-  return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
+export function makeInitializeInstructionsTransform(
+  instructions: string,
+): (input: string | Uint8Array) => string | Uint8Array {
+  let initialized = false;
+  return input => {
+    if (initialized) return input;
+    const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
+    const parsed = Option.getOrUndefined(
+      Option.liftThrowable(
+        (content: string) =>
+          JSON.parse(content) as {
+            readonly result?: {
+              readonly capabilities?: unknown;
+              readonly protocolVersion?: unknown;
+              readonly serverInfo?: unknown;
+            };
+          },
+      )(text),
+    );
+    if (!parsed || parsed.result?.protocolVersion === undefined || parsed.result.serverInfo === undefined) {
+      return input;
+    }
+    initialized = true;
+    const encoded = `${JSON.stringify({...parsed, result: {...parsed.result, instructions}})}\n`;
+    return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
+  };
 }

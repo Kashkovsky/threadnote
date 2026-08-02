@@ -132,4 +132,11 @@ describe('Effect architecture boundaries', () => {
       expect(relative(repoRoot, path)).toBe(allowed);
     }
   });
+
+  it('keeps application inference crash-isolated in source and release executions', async () => {
+    const runtime = await readFile(join(sourceRoot, 'effect', 'runtime.ts'), 'utf8');
+    expect(runtime).toContain('isolatedLocalModelRuntimeLayer()');
+    expect(runtime).not.toContain('LocalModelRuntime.nativeLayer');
+    expect(runtime).not.toContain('THREADNOTE_STANDALONE');
+  });
 });

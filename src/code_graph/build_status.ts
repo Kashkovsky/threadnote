@@ -2,6 +2,14 @@ import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Semaphore} from 'e
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
+import {
+  codeGraphEtaMeasurement,
+  estimateCodeGraphEta,
+  makeCodeGraphEtaTracker,
+  observeCodeGraphEta,
+  type CodeGraphEtaTracker,
+} from './progress_eta.js';
+export {calibratedCodeGraphEtaConfidence} from './progress_eta.js';
 import type {
   CodeGraphActivationActivity,
   CodeGraphIndexSummary,
@@ -150,23 +158,9 @@ export interface CodeGraphBuildReporter {
 }
 
 interface ReporterState {
-  readonly completionForecasts: readonly CompletionForecast[];
-  readonly intervalSamplesMilliseconds: readonly number[];
-  readonly lastCompleted?: number;
-  readonly lastMeasuredBasis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+  readonly etaTracker: CodeGraphEtaTracker;
   readonly lastPersistedAtMilliseconds: number;
-  readonly lastSampleAtMilliseconds?: number;
-  readonly rateForecastErrorSamples: readonly number[];
-  readonly rateSamples: readonly number[];
-  readonly realizedCompletionErrorSamples: readonly number[];
-  readonly sampleCount: number;
-  readonly smoothedUnitsPerMillisecond?: number;
   readonly status: CodeGraphBuildStatus;
-}
-
-interface CompletionForecast {
-  readonly issuedAtMilliseconds: number;
-  readonly predictedCompletionAtMilliseconds: number;
 }
 
 interface ProcessObservation {
@@ -208,13 +202,8 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   const file = codeGraphBuildStatusPath(path, layout, identity.worktreeId, buildId);
   let writeSequence = 0;
   const state = yield* Ref.make<ReporterState>({
-    completionForecasts: [],
-    intervalSamplesMilliseconds: [],
+    etaTracker: makeCodeGraphEtaTracker(),
     lastPersistedAtMilliseconds: 0,
-    rateForecastErrorSamples: [],
-    rateSamples: [],
-    realizedCompletionErrorSamples: [],
-    sampleCount: 0,
     status: {
       buildId,
       counters: {},
@@ -354,24 +343,12 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         if (current.status.state === 'completed' || current.status.state === 'failed') return;
         yield* persist((latest, now) => {
           const timestamp = new Date(now).toISOString();
-          const silenceMilliseconds = Math.max(
-            0,
-            now - (latest.lastSampleAtMilliseconds ?? Date.parse(latest.status.timestamps.phaseStartedAt)),
-          );
-          const confidence = latest.status.eta
-            ? calibratedCodeGraphEtaConfidence({
-                intervalSamplesMilliseconds: latest.intervalSamplesMilliseconds,
-                rateForecastErrorSamples: latest.rateForecastErrorSamples,
-                rateSamples: latest.rateSamples,
-                realizedCompletionErrorSamples: latest.realizedCompletionErrorSamples,
-                silenceMilliseconds,
-              })
-            : undefined;
+          const eta = estimateCodeGraphEta(latest.etaTracker, now).estimate;
           return {
             ...latest,
             status: {
               ...latest.status,
-              eta: latest.status.eta && confidence ? {...latest.status.eta, confidence} : undefined,
+              eta: Option.getOrUndefined(Option.map(eta, value => ({...value, scope: 'phase' as const}))),
               timestamps: {...latest.status.timestamps, heartbeatAt: timestamp, updatedAt: timestamp},
             },
           };
@@ -382,7 +359,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       persist(
         (current, now) => observeProgress(current, progress, now),
         current => {
-          const measured = measuredProgress(progress);
+          const measured = Option.getOrUndefined(codeGraphEtaMeasurement(progress));
           const persistedCompleted = current.status.counters.completed ?? -1;
           return (
             current.status.phase !== progress.phase ||
@@ -482,86 +459,13 @@ export function observeCodeGraphBuildStatus(
 function observeProgress(current: ReporterState, progress: CodeGraphProgress, now: number): ReporterState {
   const timestamp = new Date(now).toISOString();
   const phaseChanged = current.status.phase !== progress.phase;
-  const measured = measuredProgress(progress);
-  const basisChanged = phaseChanged || current.lastMeasuredBasis !== measured?.basis;
-  const previousCompleted = basisChanged ? undefined : current.lastCompleted;
-  const previousAt = basisChanged ? undefined : current.lastSampleAtMilliseconds;
-  let rate = basisChanged ? undefined : current.smoothedUnitsPerMillisecond;
-  let sampleCount = basisChanged ? 0 : current.sampleCount;
-  let rateSamples = basisChanged ? [] : [...current.rateSamples];
-  let rateForecastErrorSamples = basisChanged ? [] : [...current.rateForecastErrorSamples];
-  let intervalSamplesMilliseconds = basisChanged ? [] : [...current.intervalSamplesMilliseconds];
-  let completionForecasts = basisChanged ? [] : [...current.completionForecasts];
-  let realizedCompletionErrorSamples = basisChanged ? [] : [...current.realizedCompletionErrorSamples];
-  if (!basisChanged && measured && measured.completed >= measured.total && current.completionForecasts.length > 0) {
-    realizedCompletionErrorSamples = current.completionForecasts.reduce(
-      (samples, forecast) => appendEtaSample(samples, realizedCompletionError(forecast, now)),
-      realizedCompletionErrorSamples,
-    );
-    completionForecasts = [];
-  }
-  if (measured && previousCompleted !== undefined && previousAt !== undefined && now > previousAt) {
-    const delta = measured.completed - previousCompleted;
-    if (delta > 0) {
-      const interval = now - previousAt;
-      const observed = delta / (now - previousAt);
-      if (rate !== undefined && rate > 0) {
-        rateForecastErrorSamples = appendEtaSample(
-          rateForecastErrorSamples,
-          Math.abs(observed - rate) / Math.max(observed, rate),
-        );
-      }
-      rateSamples = appendEtaSample(rateSamples, observed);
-      intervalSamplesMilliseconds = appendEtaSample(intervalSamplesMilliseconds, interval);
-      rate = median(rateSamples);
-      sampleCount += 1;
-    }
-  }
-  const remaining = measured && rate && rate > 0 ? Math.max(0, measured.total - measured.completed) / rate : undefined;
-  const confidence = calibratedCodeGraphEtaConfidence({
-    intervalSamplesMilliseconds,
-    rateForecastErrorSamples,
-    rateSamples,
-    realizedCompletionErrorSamples,
-    silenceMilliseconds: previousAt === undefined ? 0 : Math.max(0, now - previousAt),
-  });
-  const eta =
-    remaining === undefined || confidence === undefined
-      ? undefined
-      : {
-          basis: measured?.basis,
-          confidence,
-          remainingMilliseconds: Math.ceil(remaining / 1_000) * 1_000,
-          scope: 'phase' as const,
-        };
-  if (remaining !== undefined && measured && measured.completed < measured.total) {
-    completionForecasts = appendCompletionForecast(completionForecasts, {
-      issuedAtMilliseconds: now,
-      predictedCompletionAtMilliseconds: now + remaining,
-    });
-  }
+  const etaObservation = observeCodeGraphEta(current.etaTracker, codeGraphEtaMeasurement(progress), now);
+  const eta = Option.getOrUndefined(
+    Option.map(etaObservation.estimate, value => ({...value, scope: 'phase' as const})),
+  );
   return {
     ...current,
-    completionForecasts,
-    intervalSamplesMilliseconds,
-    lastCompleted:
-      measured === undefined
-        ? undefined
-        : previousCompleted === undefined || measured.completed !== previousCompleted
-          ? measured.completed
-          : previousCompleted,
-    lastMeasuredBasis: measured?.basis,
-    lastSampleAtMilliseconds:
-      measured === undefined
-        ? undefined
-        : previousCompleted === undefined || measured.completed !== previousCompleted
-          ? now
-          : previousAt,
-    rateForecastErrorSamples,
-    rateSamples,
-    realizedCompletionErrorSamples,
-    sampleCount,
-    smoothedUnitsPerMillisecond: rate,
+    etaTracker: etaObservation.tracker,
     status: {
       ...current.status,
       activation: progressActivation(current.status.activation, progress, timestamp),
@@ -610,91 +514,12 @@ function progressResolution(
   return {
     activity: {
       ...progress.activity,
-      startedAt: current?.activity.pass === progress.activity.pass ? current.activity.startedAt : timestamp,
+      // elapsedMilliseconds and the aggregate counters span every alias pass,
+      // so their timestamp must remain phase-scoped as well. The pass number
+      // already identifies the current bounded denominator.
+      startedAt: current?.activity.startedAt ?? timestamp,
     },
   };
-}
-
-const ETA_CALIBRATION_WINDOW = 24;
-
-/**
- * Converts recent measured throughput into a deliberately conservative ETA
- * confidence. High confidence requires low rate variance, low one-step rate
- * forecast error, and low realized phase-completion error. A long silent
- * interval always degrades it.
- */
-export function calibratedCodeGraphEtaConfidence(input: {
-  readonly intervalSamplesMilliseconds: readonly number[];
-  readonly rateForecastErrorSamples: readonly number[];
-  readonly rateSamples: readonly number[];
-  readonly realizedCompletionErrorSamples: readonly number[];
-  readonly silenceMilliseconds: number;
-}): 'high' | 'low' | 'medium' | undefined {
-  if (input.rateSamples.length < 3) return undefined;
-  const typicalInterval = median(input.intervalSamplesMilliseconds) ?? 0;
-  if (input.silenceMilliseconds > Math.max(5_000, typicalInterval * 4)) return 'low';
-  const variation = coefficientOfVariation(input.rateSamples);
-  const rateForecastError = mean(input.rateForecastErrorSamples);
-  const completionError = mean(input.realizedCompletionErrorSamples);
-  if (
-    input.rateSamples.length >= 8 &&
-    input.rateForecastErrorSamples.length >= 6 &&
-    input.realizedCompletionErrorSamples.length >= 3 &&
-    variation <= 0.2 &&
-    rateForecastError <= 0.25 &&
-    completionError <= 0.25
-  ) {
-    return 'high';
-  }
-  if (
-    input.rateSamples.length >= 4 &&
-    input.rateForecastErrorSamples.length >= 2 &&
-    variation <= 0.5 &&
-    rateForecastError <= 0.5
-  ) {
-    return 'medium';
-  }
-  return 'low';
-}
-
-function appendEtaSample(samples: readonly number[], sample: number): number[] {
-  return [...samples, sample].slice(-ETA_CALIBRATION_WINDOW);
-}
-
-function appendCompletionForecast(
-  forecasts: readonly CompletionForecast[],
-  forecast: CompletionForecast,
-): CompletionForecast[] {
-  return [...forecasts, forecast].slice(-ETA_CALIBRATION_WINDOW);
-}
-
-function realizedCompletionError(forecast: CompletionForecast, completedAtMilliseconds: number): number {
-  const predictedDuration = Math.max(1, forecast.predictedCompletionAtMilliseconds - forecast.issuedAtMilliseconds);
-  const actualDuration = Math.max(1, completedAtMilliseconds - forecast.issuedAtMilliseconds);
-  return (
-    Math.abs(forecast.predictedCompletionAtMilliseconds - completedAtMilliseconds) /
-    Math.max(predictedDuration, actualDuration)
-  );
-}
-
-function coefficientOfVariation(values: readonly number[]): number {
-  const average = mean(values);
-  if (average <= 0) return Number.POSITIVE_INFINITY;
-  const variance = values.reduce((total, value) => total + (value - average) ** 2, 0) / values.length;
-  return Math.sqrt(variance) / average;
-}
-
-function mean(values: readonly number[]): number {
-  return values.length === 0
-    ? Number.POSITIVE_INFINITY
-    : values.reduce((total, value) => total + value, 0) / values.length;
-}
-
-function median(values: readonly number[]): number | undefined {
-  if (values.length === 0) return undefined;
-  const ordered = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle];
 }
 
 function progressSubphase(progress: CodeGraphProgress): string {
@@ -798,51 +623,6 @@ function progressCounters(progress: CodeGraphProgress): CodeGraphBuildCounters {
     default:
       return {};
   }
-}
-
-function measuredProgress(progress: CodeGraphProgress):
-  | {
-      readonly basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
-      readonly completed: number;
-      readonly total: number;
-    }
-  | undefined {
-  if (progress.phase === 'materializing') {
-    const metrics = progress.metrics;
-    if (
-      metrics?.factsBytesCompleted !== undefined &&
-      metrics.factsBytesTotal !== undefined &&
-      metrics.factsBytesTotal > 0
-    ) {
-      return {
-        basis: 'final-fact-bytes',
-        completed: Math.min(metrics.factsBytesCompleted, metrics.factsBytesTotal),
-        total: metrics.factsBytesTotal,
-      };
-    }
-    if (
-      metrics?.cachedFactBytesCompleted !== undefined &&
-      metrics.cachedFactBytesTotal !== undefined &&
-      metrics.cachedFactBytesTotal > 0
-    ) {
-      return {
-        basis: 'cached-fact-bytes',
-        completed: Math.min(metrics.cachedFactBytesCompleted, metrics.cachedFactBytesTotal),
-        total: metrics.cachedFactBytesTotal,
-      };
-    }
-    if (metrics && metrics.sourceBytesTotal > 0) {
-      return {
-        basis: 'source-bytes',
-        completed: Math.min(metrics.sourceBytesCompleted, metrics.sourceBytesTotal),
-        total: metrics.sourceBytesTotal,
-      };
-    }
-  }
-  if (progress.phase === 'scanning' || progress.phase === 'materializing' || progress.phase === 'embedding') {
-    return {basis: 'files', completed: progress.completed, total: progress.total};
-  }
-  return undefined;
 }
 
 function codeGraphBuildStatusPath(

@@ -18,6 +18,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  type CodeGraphResolutionActivity,
   type CodeGraphSnapshot,
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
@@ -34,26 +35,30 @@ describe('code graph cross-process build status', () => {
 
   it('calibrates ETA confidence from variance, prediction error, and silent intervals', () => {
     const stable = {
-      intervalSamplesMilliseconds: Array.from({length: 8}, () => 1_000),
-      rateForecastErrorSamples: Array.from({length: 7}, () => 0.05),
-      rateSamples: [1, 1.02, 0.99, 1.01, 1, 0.98, 1.02, 1],
-      realizedCompletionErrorSamples: Array.from({length: 6}, () => 0.08),
+      completed: 500,
+      cumulativeRate: 1,
+      intervalSamplesMilliseconds: Array.from({length: 24}, () => 1_000),
+      rateForecastErrorSamples: Array.from({length: 23}, () => 0.05),
+      rateSamples: Array.from({length: 24}, (_, index) => 1 + ((index % 3) - 1) * 0.01),
+      sampleCount: 24,
       silenceMilliseconds: 1_000,
+      total: 1_000,
     };
     expect(calibratedCodeGraphEtaConfidence(stable)).toBe('high');
     expect(
       calibratedCodeGraphEtaConfidence({
         ...stable,
-        rateForecastErrorSamples: [0.9, 0.1, 0.8, 0.2, 0.95, 0.05, 0.7],
-        rateSamples: [0.1, 2, 0.2, 3, 0.1, 2.5, 0.3, 4],
-        realizedCompletionErrorSamples: [0.9, 0.8, 0.95, 0.7],
+        rateForecastErrorSamples: Array.from({length: 23}, (_, index) => (index % 2 === 0 ? 0.9 : 0.1)),
+        rateSamples: Array.from({length: 24}, (_, index) => (index % 2 === 0 ? 0.1 : 4)),
       }),
     ).toBe('low');
     expect(calibratedCodeGraphEtaConfidence({...stable, silenceMilliseconds: 60_000})).toBe('low');
-    expect(calibratedCodeGraphEtaConfidence({...stable, rateSamples: stable.rateSamples.slice(0, 2)})).toBeUndefined();
+    expect(
+      calibratedCodeGraphEtaConfidence({...stable, rateSamples: stable.rateSamples.slice(0, 2), sampleCount: 2}),
+    ).toBeUndefined();
   });
 
-  it('withholds high ETA confidence until a reporter observes accurate phase completion forecasts', async () => {
+  it('publishes a reporter ETA only after stable phase-local throughput', async () => {
     const confidenceFor = async (delays: readonly number[]) => {
       const home = await mkdtemp('threadnote-graph-eta-reporter-');
       homes.push(home);
@@ -63,24 +68,26 @@ describe('code graph cross-process build status', () => {
           const identity = fixtureIdentity(home);
           const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
           const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
-          yield* reporter.progress({completed: 0, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
+          yield* reporter.progress({completed: 0, phase: 'materializing', reused: 0, total: 50, unit: 'files'});
           for (const [index, delay] of delays.entries()) {
             yield* Effect.sleep(delay);
             yield* reporter.progress({
               completed: index + 1,
               phase: 'materializing',
               reused: 0,
-              total: 10,
+              total: 50,
               unit: 'files',
             });
           }
-          return (yield* readCodeGraphBuildStatuses(layout))[0]?.eta?.confidence;
+          return (yield* readCodeGraphBuildStatuses(layout))[0]?.eta;
         }),
       );
     };
 
-    expect(await confidenceFor(Array.from({length: 10}, () => 30))).toBe('high');
-    expect(await confidenceFor([5, 90, 5, 100, 5, 80, 5, 110, 5, 90])).toBe('low');
+    const stable = await confidenceFor(Array.from({length: 24}, () => 50));
+    expect(stable).toMatchObject({scope: 'phase'});
+    expect(['high', 'medium']).toContain(stable?.confidence);
+    expect(await confidenceFor(Array.from({length: 24}, (_, index) => (index % 2 === 0 ? 5 : 90)))).toBeUndefined();
   });
 
   it('keeps active owner and queued observer jobs separate and atomically readable', async () => {
@@ -235,6 +242,37 @@ describe('code graph cross-process build status', () => {
     expect(JSON.stringify(status)).not.toContain(secretPath);
   });
 
+  it('keeps cumulative resolution activity anchored to the phase across alias passes', async () => {
+    const home = await mkdtemp('threadnote-graph-resolution-phase-time-');
+    homes.push(home);
+    const observations = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({
+          activity: resolutionActivity({pass: 1, referencesCompleted: 5_000, referencesExamined: 5_000}),
+          phase: 'resolving',
+          subphase: 'references',
+        });
+        const first = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        yield* Effect.sleep(10);
+        yield* reporter.progress({
+          activity: resolutionActivity({pass: 2, referencesCompleted: 5_000, referencesExamined: 15_000}),
+          phase: 'resolving',
+          subphase: 'references',
+        });
+        const second = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return {first, second};
+      }),
+    );
+
+    expect(observations.second.resolution?.activity.pass).toBe(2);
+    expect(observations.second.resolution?.activity.startedAt).toBe(observations.first.resolution?.activity.startedAt);
+    expect(observations.second.timestamps.phaseStartedAt).toBe(observations.first.timestamps.phaseStartedAt);
+  });
+
   it('persists privacy-safe materialization substages, row totals, timings, and TEMP database high-water', async () => {
     const home = await mkdtemp('threadnote-graph-build-materialization-progress-');
     homes.push(home);
@@ -345,7 +383,6 @@ describe('code graph cross-process build status', () => {
 
     expect(status).toMatchObject({
       counters: {completed: 5, reused: 90, total: 10},
-      eta: {basis: 'final-fact-bytes', scope: 'phase'},
       materialization: {
         activity: {
           batchCompleted: 5,
@@ -388,6 +425,7 @@ describe('code graph cross-process build status', () => {
       phase: 'materializing',
       subphase: 'committing',
     });
+    expect(status).not.toHaveProperty('eta');
     expect(Date.parse(status.materialization!.activity!.startedAt)).toBeGreaterThan(0);
     expect(JSON.stringify(status)).not.toContain(home);
   });
@@ -797,6 +835,23 @@ describe('code graph cross-process build status', () => {
     expect(output.human).toContain('Ready snapshot: cgsn_');
   });
 });
+
+function resolutionActivity(
+  overrides: Pick<CodeGraphResolutionActivity, 'pass' | 'referencesCompleted' | 'referencesExamined'>,
+): CodeGraphResolutionActivity {
+  return {
+    aliasesDiscovered: 2,
+    elapsedMilliseconds: overrides.referencesExamined,
+    matchingMilliseconds: 100,
+    pageCompleted: 1,
+    pageTotal: 2,
+    pagesCompleted: overrides.referencesExamined / 5_000,
+    referencesTotal: 10_000,
+    resolved: 3,
+    transactionMilliseconds: 50,
+    ...overrides,
+  };
+}
 
 function fixtureIdentity(home: string): RepositoryIdentity {
   return {

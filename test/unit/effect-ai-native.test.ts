@@ -7,10 +7,37 @@ import {InferenceInterrupted} from '../../src/effect/ai/errors.js';
 import {LlamaCppEngine} from '../../src/effect/ai/llama-cpp-engine.js';
 import {nodeLlamaCppEngineLayer, resolveNativeEmbeddingGpuLayers} from '../../src/effect/ai/node-llama-cpp.js';
 import {llamaStructuredGeneratorLayer, StructuredGenerator} from '../../src/effect/ai/structured-generator.js';
-import {localModelRuntimeLayer, LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
+import {
+  localGenerationContextSize,
+  localModelRuntimeLayer,
+  LocalModelRuntime,
+} from '../../src/effect/ai/local-model-runtime.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 
 describe('Effect AI native harness', () => {
+  it('sizes generation context for the request while preserving the model limit for large prompts', () => {
+    const manifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
+    const small = localGenerationContextSize({
+      jsonSchema: {properties: {searchPhrases: {type: 'array'}}, type: 'object'},
+      manifest,
+      maxTokens: 192,
+      modelPath: '/models/generation.gguf',
+      prompt: 'Generate safe search metadata for a short memory.',
+      system: 'Return JSON.',
+    });
+    const large = localGenerationContextSize({
+      jsonSchema: {properties: {draft: {type: 'string'}}, type: 'object'},
+      manifest,
+      maxTokens: 4_000,
+      modelPath: '/models/generation.gguf',
+      prompt: 'x'.repeat(manifest.contextLimit),
+      system: 'Return JSON.',
+    });
+
+    expect(small).toBe(2_048);
+    expect(large).toBe(manifest.contextLimit);
+  });
+
   it('limits the built-in embedding model to zero GPU layers only on Darwin arm64', () => {
     const embedding = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!;
     const modelDarwinArm64GpuLayers =

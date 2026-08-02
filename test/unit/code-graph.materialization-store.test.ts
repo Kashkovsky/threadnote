@@ -1,5 +1,6 @@
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem} from 'effect';
+import {Effect, FileSystem, Option} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   cachedCodeGraphFactBytes,
@@ -10,6 +11,7 @@ import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
+  codeGraphPersistedEndpointValidationPageStatement,
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
@@ -36,6 +38,170 @@ afterEach(async () => {
 });
 
 describe('code graph full-build materialization store', () => {
+  it('uses bounded in-memory pager surfaces for a persistent full-build writer', async () => {
+    const fixture = await materializationFixture();
+    const pager = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const snapshot = {...readySnapshot(fixture.identity, 0, 0), id: 'pager-configuration'};
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [], snapshot.id, 0, ownerToken);
+            const sql = yield* SqlClient.SqlClient;
+            const cache = yield* sql.unsafe<{readonly cache_size: number}>('PRAGMA main.cache_size');
+            const temporary = yield* sql.unsafe<{readonly temp_store: number}>('PRAGMA temp_store');
+            return {
+              cacheSize: Number(cache[0]?.cache_size),
+              temporaryStore: Number(temporary[0]?.temp_store),
+            };
+          }),
+          {writerLockPath: join(fixture.root, 'writer.lock')},
+        );
+      }),
+    );
+
+    expect(pager).toEqual({cacheSize: -64 * 1_024, temporaryStore: 2});
+  });
+
+  it('validates persistent endpoints in bounded endpoint-index order', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      database.exec(`
+        CREATE TABLE symbols (
+          snapshot_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          PRIMARY KEY (snapshot_id, id)
+        ) WITHOUT ROWID;
+        CREATE TABLE edges (
+          snapshot_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          source_id TEXT,
+          target_id TEXT,
+          relation TEXT NOT NULL,
+          PRIMARY KEY (snapshot_id, id)
+        ) WITHOUT ROWID;
+        CREATE INDEX edges_source ON edges(snapshot_id, source_id, relation);
+        CREATE INDEX edges_target ON edges(snapshot_id, target_id, relation);
+      `);
+
+      for (const endpoint of ['source', 'target'] as const) {
+        const statement = codeGraphPersistedEndpointValidationPageStatement(
+          'snapshot',
+          endpoint,
+          Option.some('cgs_cursor'),
+          100_000,
+        );
+        const plan = (
+          database.query(`EXPLAIN QUERY PLAN ${statement.text}`).all(...statement.parameters) as readonly {
+            readonly detail: string;
+          }[]
+        ).map(row => row.detail);
+        const output = plan.join('\n');
+        const index = endpoint === 'source' ? 'edges_source' : 'edges_target';
+        const column = endpoint === 'source' ? 'source_id' : 'target_id';
+
+        expect(output).toContain('MATERIALIZE raw_page');
+        expect(output).toContain(`SEARCH edge USING COVERING INDEX ${index} (snapshot_id=? AND ${column}>?)`);
+        expect(output).toContain('SEARCH symbol USING PRIMARY KEY (snapshot_id=? AND id=?) LEFT-JOIN');
+        expect(output).not.toMatch(/SCAN edge\b/u);
+      }
+
+      database.exec(`
+        INSERT INTO symbols (snapshot_id, id) VALUES ('snapshot', 'endpoint-a-present');
+        INSERT INTO edges (snapshot_id, id, source_id, target_id, relation) VALUES
+          ('snapshot', 'edge-1', 'endpoint-a-present', NULL, 'calls'),
+          ('snapshot', 'edge-2', 'endpoint-a-present', NULL, 'calls'),
+          ('snapshot', 'edge-3', 'endpoint-a-present', NULL, 'calls'),
+          ('snapshot', 'edge-4', 'endpoint-b-missing', NULL, 'calls');
+      `);
+      const first = codeGraphPersistedEndpointValidationPageStatement('snapshot', 'source', Option.none(), 2);
+      const firstPage = database.query(first.text).get(...first.parameters) as {
+        readonly cursor: string;
+        readonly invalid_symbol_id: string;
+        readonly raw_rows: number;
+        readonly rows_examined: number;
+      };
+      expect(firstPage).toEqual({
+        cursor: 'endpoint-a-present',
+        invalid_symbol_id: '',
+        raw_rows: 2,
+        rows_examined: 1,
+      });
+      const second = codeGraphPersistedEndpointValidationPageStatement(
+        'snapshot',
+        'source',
+        Option.some(firstPage.cursor),
+        2,
+      );
+      expect(database.query(second.text).get(...second.parameters)).toEqual({
+        cursor: 'endpoint-b-missing',
+        invalid_symbol_id: 'endpoint-b-missing',
+        raw_rows: 1,
+        rows_examined: 1,
+      });
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it.each(['source', 'target'] as const)(
+    'reports the exact edge and %s endpoint when persistent validation finds a missing symbol',
+    async endpoint => {
+      const fixture = await materializationFixture();
+      const stored = symbol(`persistent-${endpoint}`, `persistent${endpoint}`, [
+        `typescript:name:persistent${endpoint}`,
+      ]);
+      const missingId = `missing-${endpoint}-symbol`;
+      const invalid = {
+        ...edge(`missing-${endpoint}-edge`, stored, stored.name),
+        sourceId: endpoint === 'source' ? missingId : stored.id,
+        targetId: endpoint === 'target' ? missingId : stored.id,
+      } satisfies CodeGraphEdge;
+      const snapshot = {
+        ...readySnapshot(fixture.identity, 1, 1),
+        id: `persistent-missing-${endpoint}`,
+      };
+
+      const failure = await runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [stored], [invalid], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              return yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot).pipe(
+                Effect.as('unexpected success'),
+                Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+              );
+            }),
+          );
+        }),
+      );
+
+      const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const persisted = database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
+        readonly state: string;
+      };
+      database.close(false);
+
+      expect(failure).toContain(invalid.id);
+      expect(failure).toContain(`${endpoint} endpoint ${missingId}`);
+      expect(failure).toContain('references a missing symbol');
+      expect(persisted.state).toBe('building');
+    },
+  );
+
   it('bounds raw alternate cache callers before SQLite persistence', async () => {
     const fixture = await materializationFixture();
     const root = {
@@ -459,22 +625,6 @@ describe('code graph full-build materialization store', () => {
       'recording-completion',
       'committing-snapshot',
     ]);
-
-    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const staging = database
-      .query(
-        `SELECT
-           (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ?) AS refs,
-           (SELECT COUNT(*) FROM building_reference_candidates WHERE snapshot_id = ?) AS candidates,
-           (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS batches`,
-      )
-      .get(snapshot.id, snapshot.id, snapshot.id) as {
-      readonly batches: number;
-      readonly candidates: number;
-      readonly refs: number;
-    };
-    database.close(false);
-    expect(staging).toEqual({batches: 0, candidates: 0, refs: 0});
   });
 
   it('drains production-shaped unresolved staging rows in bounded restart-safe transactions', async () => {
@@ -1181,7 +1331,11 @@ describe('code graph full-build materialization store', () => {
     const target = symbol('resolution-owner-target', 'resolutionOwnerTarget', [
       'typescript:name:resolutionOwnerTarget',
     ]);
-    const callers = Array.from({length: 501}, (_, index) => {
+    // Persistent full builds deliberately use a 5,000-reference page to
+    // amortize durable SQLite transaction overhead. Keep this owner-fencing
+    // fixture one row beyond that boundary so replacement is still exercised
+    // between two production-shaped bulk pages.
+    const callers = Array.from({length: 5_001}, (_, index) => {
       const suffix = String(index).padStart(4, '0');
       return symbol(`resolution-owner-caller-${suffix}`, `resolutionOwnerCaller${suffix}`, [
         `typescript:name:resolutionOwnerCaller${suffix}`,

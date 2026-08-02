@@ -12,6 +12,12 @@ interface TextContent {
   readonly type: 'text';
 }
 
+interface CanonicalReadStructuredContent {
+  readonly resources: readonly {readonly contentIndex: number; readonly uri: string}[];
+  readonly type: 'threadnote-canonical-read';
+  readonly version: 1;
+}
+
 const CORE_TOOL_NAMES = [
   'recall_context',
   'inspect_code_graph',
@@ -246,19 +252,41 @@ describe('Threadnote MCP toolsets', () => {
         });
 
         const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const resources = (
-          result.structuredContent as
-            {readonly resources?: readonly {readonly content?: unknown; readonly uri?: unknown}[]} | undefined
-        )?.resources;
+        const structured = result.structuredContent as CanonicalReadStructuredContent | undefined;
         const content = Array.isArray(result.content) ? result.content : [];
         const text = (content[0] as TextContent | undefined)?.text;
 
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(resources).toHaveLength(1);
-        expect(resources?.[0]?.uri).toBe(uri);
-        expect(resources?.[0]?.content).toBe(text);
+        expect(structured).toEqual({
+          resources: [{contentIndex: 0, uri}],
+          type: 'threadnote-canonical-read',
+          version: 1,
+        });
         expect(text).toContain(largeText);
         expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(1_024 * 1_024);
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
+
+  it('returns an exact 8.5 MiB canonical memory through the default MCP client buffer', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/default-buffer-read.md';
+        const content = canonicalMemoryContent('default-buffer-read', 'd'.repeat(8 * 1_024 * 1_024 + 512 * 1_024));
+        await writeCanonicalMemory(fixture.home, 'default-buffer-read.md', content);
+
+        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
+
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.content).toEqual([{text: content, type: 'text'}]);
+        expect(result.structuredContent).toEqual({
+          resources: [{contentIndex: 0, uri}],
+          type: 'threadnote-canonical-read',
+          version: 1,
+        });
+        expect(Buffer.byteLength(content)).toBeGreaterThan(8 * 1_024 * 1_024);
+        expect(Buffer.byteLength(content)).toBeLessThan(9 * 1_024 * 1_024);
       },
       {toolset: 'core'},
     );
@@ -272,22 +300,20 @@ describe('Threadnote MCP toolsets', () => {
         await writeCanonicalMemory(fixture.home, 'oversized-read-contract.md', content);
 
         const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const resources = (
-          result.structuredContent as
-            {readonly resources?: readonly {readonly content?: unknown; readonly uri?: unknown}[]} | undefined
-        )?.resources;
         const output = Array.isArray(result.content) ? result.content : [];
         const text = (output[0] as TextContent | undefined)?.text;
 
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(10 * 1_024 * 1_024);
         expect(text).toBe(content);
-        expect(resources).toEqual([{content, uri}]);
+        expect(result.structuredContent).toEqual({
+          resources: [{contentIndex: 0, uri}],
+          type: 'threadnote-canonical-read',
+          version: 1,
+        });
       },
-      // The MCP SDK client defaults to a 10 MiB inbound frame. That is a
-      // client transport policy, not a Threadnote read limit. The response
-      // intentionally carries the complete canonical content in both MCP
-      // representations, so allow enough room to exercise the server contract.
+      // The SDK's default inbound frame is finite client policy, not a
+      // Threadnote read limit. Increase it to verify an uncapped server read.
       {maxBufferSize: 32 * 1_024 * 1_024, toolset: 'core'},
     );
   }, 40_000);
@@ -309,23 +335,22 @@ describe('Threadnote MCP toolsets', () => {
         const result = await client.callTool({arguments: {uris: [firstUri, secondUri]}, name: 'read'}, undefined, {
           timeout: 30_000,
         });
-        const resources = (
-          result.structuredContent as
-            {readonly resources?: readonly {readonly content?: unknown; readonly uri?: unknown}[]} | undefined
-        )?.resources;
         const output = Array.isArray(result.content) ? result.content : [];
-        const text = (output[0] as TextContent | undefined)?.text;
-        const expectedText = [`=== ${firstUri} ===\n${firstContent}`, `=== ${secondUri} ===\n${secondContent}`].join(
-          '\n\n',
-        );
 
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(resources).toEqual([
-          {content: firstContent, uri: firstUri},
-          {content: secondContent, uri: secondUri},
+        expect(output).toEqual([
+          {text: firstContent, type: 'text'},
+          {text: secondContent, type: 'text'},
         ]);
-        expect(text).toBe(expectedText);
-        expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(10 * 1_024 * 1_024);
+        expect(result.structuredContent).toEqual({
+          resources: [
+            {contentIndex: 0, uri: firstUri},
+            {contentIndex: 1, uri: secondUri},
+          ],
+          type: 'threadnote-canonical-read',
+          version: 1,
+        });
+        expect(Buffer.byteLength(firstContent) + Buffer.byteLength(secondContent)).toBeGreaterThan(10 * 1_024 * 1_024);
       },
       {maxBufferSize: 32 * 1_024 * 1_024, toolset: 'full'},
     );
@@ -376,10 +401,6 @@ describe('Threadnote MCP toolsets', () => {
         );
 
         const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const resources = (
-          result.structuredContent as
-            {readonly resources?: readonly {readonly content?: unknown; readonly uri?: unknown}[]} | undefined
-        )?.resources;
         const output = Array.isArray(result.content) ? result.content : [];
         const primary = output[0] as TextContent | undefined;
         const warning = output[1] as TextContent | undefined;
@@ -388,7 +409,11 @@ describe('Threadnote MCP toolsets', () => {
         expect(output).toHaveLength(2);
         expect(primary).toEqual({text: content, type: 'text'});
         expect(Buffer.byteLength(primary?.text ?? '')).toBeGreaterThan(1_024 * 1_024);
-        expect(resources).toEqual([{content, uri}]);
+        expect(result.structuredContent).toEqual({
+          resources: [{contentIndex: 0, uri}],
+          type: 'threadnote-canonical-read',
+          version: 1,
+        });
         expect(warning?.type).toBe('text');
         expect(warning?.text).toContain('Auto-sync warning:');
         expect(warning?.text).not.toContain('Large-sync-warning-read');

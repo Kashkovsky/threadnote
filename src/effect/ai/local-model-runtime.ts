@@ -16,6 +16,9 @@ import type {InferenceInterrupted, ModelSessionError, NativeRuntimeError, Rerank
 import type {SystemInfo} from '../system.js';
 
 const EMBEDDING_BATCH_SIZE = 32;
+const GENERATION_CONTEXT_MINIMUM = 2_048;
+const GENERATION_CONTEXT_RESERVE = 512;
+const GENERATION_CONTEXT_QUANTUM = 1_024;
 
 export interface LocalEmbeddingRequest {
   readonly inputs: readonly string[];
@@ -177,7 +180,7 @@ function generateNative(
       const engine = yield* engineContext;
       const services = yield* Layer.buildWithScope(
         llamaStructuredGeneratorLayer({
-          contextSize: request.manifest.contextLimit,
+          contextSize: localGenerationContextSize(request),
           modelId: request.manifest.id,
           modelPath: request.modelPath,
         }),
@@ -186,6 +189,27 @@ function generateNative(
       return yield* Context.get(services, StructuredGenerator).generate(request);
     }),
   );
+}
+
+/**
+ * Allocate enough native context for the concrete request, rather than the
+ * model's maximum on every small metadata enrichment. UTF-8 bytes are a
+ * conservative tokenizer-independent upper bound for prompt material; larger
+ * consolidation requests still receive the manifest's full context window.
+ */
+export function localGenerationContextSize(request: LocalGenerationRequest): number {
+  const inputBytes = new TextEncoder().encode(
+    [request.system ?? '', request.prompt, JSON.stringify(request.jsonSchema)].join('\n'),
+  ).byteLength;
+  const requested = roundUp(
+    Math.max(GENERATION_CONTEXT_MINIMUM, inputBytes + request.maxTokens + GENERATION_CONTEXT_RESERVE),
+    GENERATION_CONTEXT_QUANTUM,
+  );
+  return Math.min(request.manifest.contextLimit, requested);
+}
+
+function roundUp(value: number, quantum: number): number {
+  return Math.ceil(value / quantum) * quantum;
 }
 
 function modelCacheKey(request: {readonly manifest: LocalModelManifest; readonly modelPath: string}): string {

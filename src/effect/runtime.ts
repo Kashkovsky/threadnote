@@ -7,7 +7,6 @@ import {SystemInfo} from './system.js';
 import {LocalModelStore} from '../models/store.js';
 import {LocalModelCatalog} from '../models/catalog.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
-import {LocalModelRuntime} from './ai/local-model-runtime.js';
 import {isolatedLocalModelRuntimeLayer} from './ai/isolated-local-model-runtime.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import {CodeGraphIndexer} from '../code_graph/indexer.js';
@@ -28,11 +27,11 @@ const localModelStoreLayer = LocalModelStore.layer.pipe(
 );
 const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 
-const localModelRuntimeLayer = (
-  typeof THREADNOTE_STANDALONE !== 'undefined' && THREADNOTE_STANDALONE
-    ? isolatedLocalModelRuntimeLayer()
-    : LocalModelRuntime.nativeLayer
-).pipe(Layer.provideMerge(systemLayer));
+// Keep native inference outside the application process in every runtime,
+// including `bun src/standalone.ts` during development. A fatal native crash
+// must only terminate the worker so optional enrichment can fail closed while
+// the CLI or MCP process still stores the canonical memory.
+const localModelRuntimeLayer = isolatedLocalModelRuntimeLayer().pipe(Layer.provideMerge(systemLayer));
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
 const codeGraphAnalysisLayer = CodeGraphAnalysis.layer.pipe(Layer.provideMerge(codeGraphStoreLayer));
 const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));

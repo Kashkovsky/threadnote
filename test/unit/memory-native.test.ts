@@ -1,16 +1,107 @@
 import {expect, it} from '@effect/vitest';
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Context, Effect, FileSystem, Layer, Option, Path, Scope} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
+import {isolatedLocalModelRuntimeLayer} from '../../src/effect/ai/isolated-local-model-runtime.js';
+import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runExportPack, runForget, runImportPack, runList, runRead, runRecall, runRemember} from '../../src/memory.js';
+import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
+import {LocalModelCatalog} from '../../src/models/catalog.js';
+import {selectLocalModel} from '../../src/models/selection.js';
+import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
+import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
+
+const generationManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
 
 describe('native memory workflow', () => {
+  it.effect('stores canonical memory when optional enrichment repeatedly crashes its native child', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const scope = yield* Scope.Scope;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-enrichment-crash-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const catalog = yield* LocalModelCatalog;
+        yield* selectLocalModel(home, catalog, 'generation', generationManifest.id);
+
+        const fatalWorker = fatalLocalModelWorkerHarness();
+        const isolatedContext = yield* Layer.buildWithScope(
+          isolatedLocalModelRuntimeLayer({
+            idleTimeoutMs: 0,
+            requestDeadlineMs: 2_000,
+            spawnWorker: fatalWorker.spawnWorker,
+          }),
+          scope,
+        );
+        const isolatedRuntime = Context.get(isolatedContext, LocalModelRuntime);
+        const modelPath = path.join(home, 'models', 'synthetic-generation.gguf');
+        const installation = {
+          bytes: generationManifest.size,
+          installed: true,
+          modelId: generationManifest.id,
+          partialBytes: 0,
+          path: modelPath,
+          verified: true,
+        };
+        const modelStore = LocalModelStore.of({
+          install: () => Effect.die(new Error('Unexpected model install')),
+          path: () => modelPath,
+          remove: () => Effect.die(new Error('Unexpected model removal')),
+          status: () => Effect.succeed(installation),
+          verify: () => Effect.die(new Error('Unexpected model verification')),
+        } satisfies LocalModelStoreShape);
+
+        const remembered = yield* captureConsole(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            sourceAgentClient: 'test',
+            text: 'Canonical memory survives a fatal optional enrichment worker.',
+            topic: 'fatal-enrichment-containment',
+          }).pipe(
+            Effect.provideService(LocalModelRuntime, isolatedRuntime),
+            Effect.provideService(LocalModelStore, modelStore),
+          ),
+        );
+
+        const canonicalPath = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'fatal-enrichment-containment.md',
+        );
+        expect(yield* fs.exists(canonicalPath)).toBe(true);
+        expect(yield* fs.readFileString(canonicalPath)).toContain(
+          'Canonical memory survives a fatal optional enrichment worker.',
+        );
+        expect(remembered.output).toContain('Local AI memory enrichment skipped:');
+        expect(remembered.output).toContain('Stored memory:');
+        expect(fatalWorker.spawnCount()).toBe(2);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('stores, reads, lists, recalls, and forgets in the owned canonical store', () =>
     Effect.scoped(
       Effect.gen(function* () {

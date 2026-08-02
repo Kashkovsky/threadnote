@@ -20,6 +20,12 @@ import {SystemInfo} from '../effect/system.js';
 import type {CodeGraphProgress} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
 import {codeGraphLayout} from './layout.js';
+import {
+  codeGraphEtaMeasurement,
+  makeCodeGraphEtaTracker,
+  observeCodeGraphEta,
+  type CodeGraphEtaTracker,
+} from './progress_eta.js';
 import {resolveRepositoryIdentity} from './repository.js';
 
 export interface CodeGraphWatchOptions {
@@ -107,16 +113,11 @@ interface WatchStartDecision {
 
 interface ProgressTracker {
   buildId: string;
+  etaTracker: CodeGraphEtaTracker;
   estimatedPhaseRemainingMilliseconds?: number;
   estimateConfidence?: CodeGraphProgressTiming['estimateConfidence'];
-  lastCompleted?: number;
-  lastMeasurementBasis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
-  lastSampleAtMilliseconds?: number;
   phase?: CodeGraphProgress['phase'];
   phaseStartedAtMilliseconds: number;
-  sampleCount: number;
-  rateSamples: number[];
-  smoothedUnitsPerMillisecond?: number;
   startedAtMilliseconds: number;
   updatedAtMilliseconds: number;
 }
@@ -124,8 +125,6 @@ interface ProgressTracker {
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEFAULT_MAXIMUM_WATCHERS = 32;
 const DEFAULT_SWEEP_INTERVAL_MILLISECONDS = 60_000;
-const PROGRESS_ESTIMATE_MINIMUM_SAMPLES = 4;
-const PROGRESS_RATE_SAMPLE_WINDOW = 24;
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
   'threadnote/codeGraph/CodeGraphWatcher',
@@ -430,129 +429,24 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 function makeProgressTracker(startedAtMilliseconds: number, sequence: number): ProgressTracker {
   return {
     buildId: `${startedAtMilliseconds.toString(36)}-${sequence.toString(36)}`,
+    etaTracker: makeCodeGraphEtaTracker(),
     phaseStartedAtMilliseconds: startedAtMilliseconds,
-    rateSamples: [],
-    sampleCount: 0,
     startedAtMilliseconds,
     updatedAtMilliseconds: startedAtMilliseconds,
   };
 }
 
 function observeProgress(tracker: ProgressTracker, progress: CodeGraphProgress, now: number): void {
-  const work = measuredProgress(progress);
-  if (tracker.phase !== progress.phase || tracker.lastMeasurementBasis !== work?.basis) {
+  if (tracker.phase !== progress.phase) {
     tracker.phase = progress.phase;
-    tracker.lastMeasurementBasis = work?.basis;
     tracker.phaseStartedAtMilliseconds = now;
-    tracker.lastCompleted = work?.completed;
-    tracker.lastSampleAtMilliseconds = work ? now : undefined;
-    tracker.sampleCount = 0;
-    tracker.rateSamples = [];
-    tracker.smoothedUnitsPerMillisecond = undefined;
-    tracker.estimatedPhaseRemainingMilliseconds = undefined;
-    tracker.estimateConfidence = undefined;
-  } else if (work) {
-    const previousCompleted = tracker.lastCompleted;
-    const previousSampleAt = tracker.lastSampleAtMilliseconds;
-    if (
-      previousCompleted !== undefined &&
-      previousSampleAt !== undefined &&
-      work.completed > previousCompleted &&
-      now > previousSampleAt
-    ) {
-      const observedRate = (work.completed - previousCompleted) / (now - previousSampleAt);
-      tracker.rateSamples = [...tracker.rateSamples, observedRate].slice(-PROGRESS_RATE_SAMPLE_WINDOW);
-      tracker.smoothedUnitsPerMillisecond = medianProgressRate(tracker.rateSamples);
-      tracker.sampleCount += 1;
-    }
-    if (work.completed !== previousCompleted) {
-      tracker.lastCompleted = work.completed;
-      tracker.lastSampleAtMilliseconds = now;
-    }
-    const remaining = Math.max(0, work.total - work.completed);
-    const rate = tracker.smoothedUnitsPerMillisecond;
-    if (
-      remaining > 0 &&
-      rate !== undefined &&
-      rate > 0 &&
-      Number.isFinite(rate) &&
-      tracker.sampleCount >= PROGRESS_ESTIMATE_MINIMUM_SAMPLES
-    ) {
-      tracker.estimatedPhaseRemainingMilliseconds = roundUpToSecond(remaining / rate);
-      tracker.estimateConfidence = estimateConfidence(tracker.sampleCount, work.completed, work.total);
-    } else {
-      tracker.estimatedPhaseRemainingMilliseconds = undefined;
-      tracker.estimateConfidence = undefined;
-    }
   }
+  const eta = observeCodeGraphEta(tracker.etaTracker, codeGraphEtaMeasurement(progress), now);
+  tracker.etaTracker = eta.tracker;
+  const estimate = Option.getOrUndefined(eta.estimate);
+  tracker.estimatedPhaseRemainingMilliseconds = estimate?.remainingMilliseconds;
+  tracker.estimateConfidence = estimate?.confidence;
   tracker.updatedAtMilliseconds = now;
-}
-
-function measuredProgress(progress: CodeGraphProgress):
-  | {
-      readonly basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
-      readonly completed: number;
-      readonly total: number;
-    }
-  | undefined {
-  switch (progress.phase) {
-    case 'scanning':
-    case 'embedding':
-      return {basis: 'files', completed: progress.completed, total: progress.total};
-    case 'materializing': {
-      const metrics = progress.metrics;
-      if (
-        metrics?.factsBytesCompleted !== undefined &&
-        metrics.factsBytesTotal !== undefined &&
-        metrics.factsBytesTotal > 0
-      ) {
-        return {
-          basis: 'final-fact-bytes',
-          completed: Math.min(metrics.factsBytesCompleted, metrics.factsBytesTotal),
-          total: metrics.factsBytesTotal,
-        };
-      }
-      if (
-        metrics?.cachedFactBytesCompleted !== undefined &&
-        metrics.cachedFactBytesTotal !== undefined &&
-        metrics.cachedFactBytesTotal > 0
-      ) {
-        return {
-          basis: 'cached-fact-bytes',
-          completed: Math.min(metrics.cachedFactBytesCompleted, metrics.cachedFactBytesTotal),
-          total: metrics.cachedFactBytesTotal,
-        };
-      }
-      if (metrics && metrics.sourceBytesTotal > 0) {
-        return {
-          basis: 'source-bytes',
-          completed: Math.min(metrics.sourceBytesCompleted, metrics.sourceBytesTotal),
-          total: metrics.sourceBytesTotal,
-        };
-      }
-      return {basis: 'files', completed: progress.completed, total: progress.total};
-    }
-    default:
-      return undefined;
-  }
-}
-
-function medianProgressRate(values: readonly number[]): number | undefined {
-  if (values.length === 0) return undefined;
-  const ordered = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle];
-}
-
-function estimateConfidence(
-  sampleCount: number,
-  completed: number,
-  total: number,
-): CodeGraphProgressTiming['estimateConfidence'] {
-  const fraction = total === 0 ? 1 : completed / total;
-  if (sampleCount >= 6 && fraction >= 0.4) return 'high';
-  if (sampleCount >= 3 && fraction >= 0.1) return 'medium';
-  return 'low';
 }
 
 function roundUpToSecond(milliseconds: number): number {
