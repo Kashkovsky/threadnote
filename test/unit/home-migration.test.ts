@@ -1,6 +1,7 @@
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
+import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   assertSufficientHomeMigrationDiskSpace,
@@ -8,6 +9,7 @@ import {
   isLegacyHomeMigrationPending,
   isThreadnoteHomeMigrationPending,
   migrateOpenVikingHome,
+  runHomeMigration,
 } from '../../src/migration/home.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
@@ -40,6 +42,7 @@ describe('OpenViking home migration', () => {
         yield* fs.makeDirectory(path.join(legacyHome, 'logs'), {recursive: true});
         yield* fs.writeFileString(path.join(legacyHome, 'logs', 'server.log'), 'runtime noise');
         yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.json'), '{}');
+        yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.pid'), '12345\n');
         yield* fs.makeDirectory(path.join(legacyHome, 'threadnote'), {recursive: true});
         yield* fs.writeFileString(path.join(legacyHome, 'threadnote', 'local-ai-token'), 'runtime token');
         yield* fs.makeDirectory(path.join(legacyHome, 'data', 'viking'), {recursive: true});
@@ -54,6 +57,143 @@ describe('OpenViking home migration', () => {
         expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
         expect(yield* migrateOpenVikingHome({legacyHome, targetHome})).toEqual({action: 'no_legacy_content'});
         expect(yield* fs.exists(path.join(targetHome, 'layout.json'))).toBe(true);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('treats the v3 root server PID as runtime-only migration noise', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-v3-pid-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        yield* fs.makeDirectory(legacyHome, {recursive: true});
+        yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.pid'), '48291\n');
+
+        expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
+        expect(yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome})).toEqual({
+          action: 'no_legacy_content',
+        });
+        expect(yield* fs.exists(targetHome)).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('probes a wide runtime-only legacy root without enumerating it', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-wide-probe-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        yield* fs.makeDirectory(legacyHome, {recursive: true});
+        yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.pid'), '48291\n');
+        let enumeratedRoot = false;
+        const wideFileSystem = FileSystem.FileSystem.of({
+          ...fs,
+          readDirectory: (directory, options) => {
+            if (directory === legacyHome) {
+              enumeratedRoot = true;
+              return Effect.die('eligibility must not materialize a wide root directory');
+            }
+            return fs.readDirectory(directory, options);
+          },
+        });
+
+        const pending = yield* isLegacyHomeMigrationPending({legacyHome, targetHome}).pipe(
+          Effect.provideService(FileSystem.FileSystem, wideFileSystem),
+        );
+        expect(pending).toBe(false);
+        expect(enumeratedRoot).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('detects canonical content for the configured non-default account and user without enumeration', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-custom-account-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const memory = path.join(
+          legacyHome,
+          'data',
+          'viking',
+          'custom-account',
+          'user',
+          'custom-user',
+          'memories',
+          'durable',
+          'context.md',
+        );
+        yield* fs.makeDirectory(path.dirname(memory), {recursive: true});
+        yield* fs.writeFileString(memory, '# Custom account context\n');
+        const customSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_ACCOUNT: 'custom-account',
+            THREADNOTE_USER: 'custom-user',
+          }),
+        });
+
+        expect(
+          yield* isLegacyHomeMigrationPending({legacyHome, targetHome}).pipe(
+            Effect.provideService(SystemInfo, customSystem),
+          ),
+        ).toBe(true);
+        expect(
+          (yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(
+            Effect.provideService(SystemInfo, customSystem),
+          )).action,
+        ).toBe('migrated');
+        expect(
+          yield* fs.readFileString(
+            path.join(targetHome, 'data', 'custom-account', 'user', 'custom-user', 'memories', 'durable', 'context.md'),
+          ),
+        ).toContain('Custom account context');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('reports beta-only layout and model recovery without a contradictory legacy-home message', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-beta-output-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        const betaMemory = path.join(targetHome, 'data', 'viking', 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(betaMemory), {recursive: true});
+        yield* fs.writeFileString(betaMemory, '# Beta memory\n');
+        yield* fs.writeFileString(path.join(targetHome, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const preview = yield* captureConsole(runHomeMigration({legacyHome, targetHome}));
+        const applied = yield* captureConsole(runHomeMigration({apply: true, legacyHome, targetHome}));
+
+        const modelHome = path.join(root, '.threadnote-model-only');
+        yield* fs.makeDirectory(path.join(modelHome, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(modelHome, 'migration', 'legacy-local-model-v1.json'),
+          `${JSON.stringify({id: 'legacy-local-model-v1', models: ['bge-small-en-v1.5-q8'], status: 'pending', version: 1})}\n`,
+        );
+        const modelPreview = yield* captureConsole(runHomeMigration({legacyHome, targetHome: modelHome}));
+
+        expect(preview.output).toContain('Would migrate 1 account(s)');
+        expect(applied.output).toContain('Migrated 1 account(s)');
+        expect(modelPreview.output).toContain('Would preserve installed local model(s)');
+        for (const output of [preview.output, applied.output, modelPreview.output]) {
+          expect(output).not.toContain('No legacy ~/.openviking home');
+          expect(output).not.toContain('nothing to migrate');
+        }
+        expect(yield* fs.readFileString(path.join(targetHome, 'data', 'local', 'memory.md'))).toContain('Beta memory');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
@@ -150,6 +290,7 @@ describe('OpenViking home migration', () => {
         yield* fs.writeFileString(path.join(legacyHome, 'seed-manifest.yaml'), 'version: 1\nprojects: []\n');
         yield* fs.makeDirectory(path.join(legacyHome, 'logs'), {recursive: true});
         yield* fs.writeFileString(path.join(legacyHome, 'logs', 'server.log'), 'legacy runtime noise');
+        yield* fs.writeFileString(path.join(legacyHome, 'openviking-server.pid'), '48291\n');
         yield* fs.writeFileString(path.join(legacyHome, 'ov.conf'), '{"legacy":true}');
 
         expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(true);
@@ -184,6 +325,7 @@ describe('OpenViking home migration', () => {
           ),
         ).toContain('version = 4');
         expect(yield* fs.exists(path.join(targetHome, 'logs', 'server.log'))).toBe(false);
+        expect(yield* fs.exists(path.join(targetHome, 'openviking-server.pid'))).toBe(false);
         expect(yield* fs.exists(path.join(targetHome, 'ov.conf'))).toBe(false);
         expect(yield* fs.readFileString(memory)).toContain('Canonical memory');
 
@@ -1185,6 +1327,9 @@ describe('OpenViking home migration', () => {
         const legacyHome = path.join(root, '.openviking');
         const targetHome = path.join(root, '.threadnote');
         yield* fs.makeDirectory(legacyHome);
+        const canonical = path.join(legacyHome, 'data', 'viking', 'local', 'resources', 'context.md');
+        yield* fs.makeDirectory(path.dirname(canonical), {recursive: true});
+        yield* fs.writeFileString(canonical, 'canonical context');
         yield* fs.writeFileString(path.join(root, 'outside.md'), 'outside');
         yield* fs.symlink(path.join(root, 'outside.md'), path.join(legacyHome, 'escape.md'));
         const error = yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome}).pipe(Effect.flip);
@@ -1205,6 +1350,9 @@ describe('OpenViking home migration', () => {
         const legacyHome = path.join(root, '.openviking');
         const targetHome = path.join(root, '.threadnote');
         yield* fs.makeDirectory(legacyHome);
+        const canonical = path.join(legacyHome, 'data', 'viking', 'local', 'resources', 'context.md');
+        yield* fs.makeDirectory(path.dirname(canonical), {recursive: true});
+        yield* fs.writeFileString(canonical, 'canonical context');
         const target = path.join(legacyHome, 'target.md');
         yield* fs.writeFileString(target, 'target');
         yield* fs.symlink(target, path.join(legacyHome, 'absolute.md'));

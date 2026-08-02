@@ -3,6 +3,7 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {isLegacyLocalModelMigrationPending, migrateLegacyLocalModels} from '../../src/migration/models.js';
 import type {LocalModelManifest} from '../../src/models/catalog.js';
 import {readModelSelection} from '../../src/models/selection.js';
@@ -68,6 +69,54 @@ describe('legacy local model migration', () => {
 
         yield* migrateLegacyLocalModels({apply: true, home, manifests: [manifest]}).pipe(Effect.flip);
         expect(yield* fs.exists(source)).toBe(true);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a pending legacy-model symlink during eligibility and apply without touching its target', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-model-link-'});
+        const externalRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-model-link-target-'});
+        const outside = path.join(externalRoot, 'outside-model.gguf');
+        const source = path.join(home, 'threadnote', 'models', manifest.file);
+        yield* fs.writeFile(outside, modelBytes);
+        yield* fs.makeDirectory(path.dirname(source), {recursive: true});
+        yield* fs.symlink(outside, source);
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', 'legacy-local-model-v1.json'),
+          `${JSON.stringify({id: 'legacy-local-model-v1', models: [manifest.id], status: 'pending', version: 1})}\n`,
+        );
+
+        const eligibility = yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]}).pipe(Effect.flip);
+        const apply = yield* migrateLegacyLocalModels({apply: true, home, manifests: [manifest]}).pipe(Effect.flip);
+        expect(String(eligibility)).toContain('must not be a symbolic link');
+        expect(String(apply)).toContain('must not be a symbolic link');
+        expect(Array.from(yield* fs.readFile(outside))).toEqual(Array.from(modelBytes));
+        expect(yield* fs.exists(path.join(home, 'models', manifest.role, manifest.id))).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a directory at a legacy model path during eligibility and apply', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-model-directory-'});
+        const source = path.join(home, 'threadnote', 'models', manifest.file);
+        yield* fs.makeDirectory(source, {recursive: true});
+
+        const eligibility = yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]}).pipe(Effect.flip);
+        const apply = yield* migrateLegacyLocalModels({apply: true, home, manifests: [manifest]}).pipe(Effect.flip);
+        expect(String(eligibility)).toContain('must be a regular file');
+        expect(String(apply)).toContain('must be a regular file');
+        expect((yield* fs.stat(source)).type).toBe('Directory');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

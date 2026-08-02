@@ -1,7 +1,7 @@
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect, FileSystem, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
@@ -10,6 +10,7 @@ import {HttpService} from '../../src/effect/http.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {activateStandaloneRelease} from '../../src/installations.js';
+import {migrateThreadnoteStorageLayout} from '../../src/migration/layout.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -677,7 +678,7 @@ describe('post-update validation', () => {
           const fixtureRoot = path.join(temporaryRoot, 'tool');
           const home = path.join(temporaryRoot, '.threadnote');
           const legacyLayout = path.join(home, 'data', 'viking');
-          yield* fs.makeDirectory(home, {recursive: true});
+          yield* fs.makeDirectory(legacyLayout, {recursive: true});
           yield* writePostUpdateFixture(fs, path, fixtureRoot, [
             fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
           ]);
@@ -794,6 +795,81 @@ describe('post-update validation', () => {
     expect(result.noOpFailure).toContain('filesystem requirements remain pending');
     expect(result.first).toContain('Post-update actions are available.');
     expect(result.second).toBe('');
+  });
+
+  it('recovers beta data after an older repair already wrote the current layout marker', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const crypto = yield* Crypto.Crypto;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-repair-marker-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          const betaMemory = path.join(home, 'data', 'viking', 'local', 'memory.md');
+          yield* fs.makeDirectory(path.dirname(betaMemory), {recursive: true});
+          yield* fs.writeFileString(betaMemory, '# Preserved beta memory\n');
+          yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            fixtureMigration('home-recovery', {requiresPendingHomeMigration: true}),
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const system = SystemInfo.of({
+            ...baseSystem,
+            homeDirectory: temporaryRoot,
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+          let executions = 0;
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('not used'),
+            executeStreaming: () =>
+              Effect.gen(function* () {
+                executions += 1;
+                yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(
+                  Effect.provideService(Crypto.Crypto, crypto),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, system),
+                );
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }).pipe(Effect.orDie),
+          });
+          const run = () =>
+            captureConsole(
+              runPostUpdate(runtimeConfig(home), {
+                fromVersion: '4.0.0-beta.1',
+                toVersion: RELEASE_VERSION,
+                yes: true,
+              }).pipe(
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(SystemInfo, system),
+              ),
+            );
+          const first = yield* run();
+          const second = yield* run();
+          return {
+            executions,
+            first: first.output,
+            memory: yield* fs.readFileString(path.join(home, 'data', 'local', 'memory.md')),
+            second: second.output,
+            sourceExists: yield* fs.exists(path.join(home, 'data', 'viking')),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({
+      executions: 1,
+      first: expect.stringContaining('Post-update actions are available.'),
+      memory: '# Preserved beta memory\n',
+      second: '',
+      sourceExists: false,
+    });
   });
 
   it('checkpoints each successful migration before a later migration fails', async () => {

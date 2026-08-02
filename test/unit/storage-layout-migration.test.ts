@@ -1,7 +1,9 @@
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
+import {sha256FileHex, sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {
   isThreadnoteStorageLayoutMigrationPending,
   migrateThreadnoteStorageLayout,
@@ -80,6 +82,110 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(path.join(home, 'data', 'local', 'current.md'))).toBe('current beta memory');
         expect(yield* fs.readFileString(target)).toBe('legacy memory');
         expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('recovers beta.1 data even when repair already wrote the current layout marker', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-current-marker-'});
+        const source = path.join(home, 'data', 'viking', 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(source), {recursive: true});
+        yield* fs.writeFileString(source, 'beta memory');
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'migrated',
+        });
+        expect(yield* fs.readFileString(path.join(home, 'data', 'local', 'memory.md'))).toBe('beta memory');
+        expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('resumes a pending receipt even when the current layout marker already exists', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-pending-marker-'});
+        const target = path.join(home, 'data', 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(target), {recursive: true});
+        yield* fs.writeFileString(target, 'already moved');
+        const digest = yield* sha256FileHex(target);
+        const treeSha256 = yield* sha256Hex(`file\0memory.md\0${'already moved'.length}\0${digest}\n`);
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+          `${JSON.stringify({
+            accounts: [{name: 'local', treeSha256}],
+            id: STORAGE_LAYOUT_MIGRATION_ID,
+            sourceLayoutVersion: 1,
+            status: 'pending',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'resumed',
+        });
+        expect(yield* fs.readFileString(target)).toBe('already moved');
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a symbolic-link legacy root before eligibility or apply can traverse it', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-root-link-'});
+        const external = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-external-'});
+        const externalMemory = path.join(external, 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(externalMemory), {recursive: true});
+        yield* fs.writeFileString(externalMemory, 'must remain external');
+        yield* fs.makeDirectory(path.join(home, 'data'), {recursive: true});
+        yield* fs.symlink(external, path.join(home, 'data', 'viking'));
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const eligibility = yield* isThreadnoteStorageLayoutMigrationPending({home}).pipe(Effect.flip);
+        const apply = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(Effect.flip);
+        expect(eligibility).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(apply).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(yield* fs.readFileString(externalMemory)).toBe('must remain external');
+        expect(yield* fs.exists(path.join(home, 'data', 'local'))).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a non-directory legacy root before eligibility or apply can traverse it', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-root-file-'});
+        const legacyRoot = path.join(home, 'data', 'viking');
+        yield* fs.makeDirectory(path.dirname(legacyRoot), {recursive: true});
+        yield* fs.writeFileString(legacyRoot, 'not a directory');
+
+        const eligibility = yield* isThreadnoteStorageLayoutMigrationPending({home}).pipe(Effect.flip);
+        const apply = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(Effect.flip);
+        expect(eligibility).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(apply).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(yield* fs.readFileString(legacyRoot)).toBe('not a directory');
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

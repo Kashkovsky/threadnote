@@ -12,6 +12,12 @@ Post-update prompts are evidence-driven. A fresh current install, an empty or ru
 with completed matching receipts produce no migration prompt or manual follow-up command. Threadnote rechecks the
 evidence under the post-update lock before announcing or running an action.
 
+The eligibility probe is bounded and does not enumerate an arbitrary legacy-home fan-out. It recognizes the default
+`local` account, the account and user currently selected by `THREADNOTE_ACCOUNT` / `THREADNOTE_USER`, canonical
+resource and memory roots, seed state, managed-share metadata, model candidates, and resumable receipts. If a legacy
+installation used a non-default account that is no longer selected, run the migration with that identity once, for
+example `THREADNOTE_ACCOUNT=<old-account> THREADNOTE_USER=<old-user> threadnote migrate --apply`.
+
 Upgrades from earlier 4.0 betas do not depend on `~/.openviking` still existing. The same migration command resumes a
 pending receipt, flattens the short-lived `~/.threadnote/data/viking/<account>` layout, and adopts a verified model from
 the earlier `~/.threadnote/threadnote/models/` layout. Completed receipts make each step idempotent. Lexical, vector,

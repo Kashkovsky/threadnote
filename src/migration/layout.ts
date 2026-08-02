@@ -57,12 +57,14 @@ export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayou
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  const legacyRoot = path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY);
+  const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
+  const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
+  if (hasLegacyRoot || receipt?.status === 'pending') return true;
+
   const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
   if (currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION) return false;
-
-  const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
-  if (receipt) return true;
-  return yield* fs.exists(path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY));
+  return receipt?.status === 'completed';
 });
 
 /**
@@ -77,17 +79,28 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  const dataRoot = path.join(home, 'data');
+  const legacyRoot = path.join(dataRoot, LEGACY_THREADNOTE_DATA_DIRECTORY);
+  const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
+  const receiptPath = path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH);
+  const existingReceipt = yield* readMigrationReceipt(fs, receiptPath);
   const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
-  if (currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION) {
+  if (
+    currentLayoutVersion === THREADNOTE_STORAGE_LAYOUT_VERSION &&
+    !hasLegacyRoot &&
+    existingReceipt?.status !== 'pending'
+  ) {
     return {accounts: 0, action: 'already_current'} satisfies StorageLayoutMigrationResult;
   }
 
-  const dataRoot = path.join(home, 'data');
-  const legacyRoot = path.join(dataRoot, LEGACY_THREADNOTE_DATA_DIRECTORY);
-  const receiptPath = path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH);
-  const existingReceipt = yield* readMigrationReceipt(fs, receiptPath);
-  if (!(yield* fs.exists(legacyRoot)) && !existingReceipt) {
+  if (!hasLegacyRoot && !existingReceipt) {
     return {accounts: 0, action: 'no_legacy_layout'} satisfies StorageLayoutMigrationResult;
+  }
+  if (hasLegacyRoot && existingReceipt?.status === 'completed') {
+    return yield* new StorageLayoutMigrationConflict({
+      message: 'A completed storage migration receipt conflicts with a remaining legacy canonical-store directory.',
+      path: legacyRoot,
+    });
   }
 
   const receipt = existingReceipt ?? (yield* planMigration(fs, path, dataRoot, legacyRoot));
@@ -106,10 +119,14 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   }
   let resumed = false;
   for (const account of receipt.accounts) {
+    yield* inspectLegacyRoot(fs, legacyRoot);
     const source = path.join(legacyRoot, account.name);
     const target = path.join(dataRoot, account.name);
     const sourceExists = yield* fs.exists(source);
     const targetExists = yield* fs.exists(target);
+    if (sourceExists) {
+      yield* assertAccountDirectory(fs, source);
+    }
     if (sourceExists && targetExists) {
       yield* mergeDirectories(fs, path, source, target);
     } else if (sourceExists) {
@@ -131,7 +148,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
     }
   }
 
-  if (yield* fs.exists(legacyRoot)) {
+  if ((yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory') {
     const remaining = yield* fs.readDirectory(legacyRoot);
     if (remaining.length > 0) {
       return yield* new StorageLayoutMigrationConflict({
@@ -156,7 +173,7 @@ function planMigration(
   legacyRoot: string,
 ): Effect.Effect<StorageLayoutMigrationReceipt, unknown, Crypto.Crypto> {
   return Effect.gen(function* () {
-    if (!(yield* fs.exists(legacyRoot))) {
+    if ((yield* inspectLegacyRoot(fs, legacyRoot)) !== 'directory') {
       return yield* new StorageLayoutMigrationConflict({
         message: 'The pending storage migration has no legacy source directory.',
         path: legacyRoot,
@@ -168,19 +185,7 @@ function planMigration(
       validatePortableSegment(name, name);
       const source = path.join(legacyRoot, name);
       const target = path.join(dataRoot, name);
-      if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
-        return yield* new StorageLayoutMigrationConflict({
-          message: 'Symbolic links are not allowed as Threadnote account roots.',
-          path: source,
-        });
-      }
-      const info = yield* fs.stat(source);
-      if (info.type !== 'Directory') {
-        return yield* new StorageLayoutMigrationConflict({
-          message: 'Every entry in the legacy canonical store must be an account directory.',
-          path: source,
-        });
-      }
+      yield* assertAccountDirectory(fs, source);
       accounts.push({
         name,
         treeSha256: (yield* fs.exists(target))
@@ -196,6 +201,44 @@ function planMigration(
       targetLayoutVersion: THREADNOTE_STORAGE_LAYOUT_VERSION,
       version: STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION,
     };
+  });
+}
+
+function inspectLegacyRoot(fs: FileSystem.FileSystem, legacyRoot: string) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(legacyRoot).pipe(Effect.option))) {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'The legacy canonical-store root must not be a symbolic link.',
+        path: legacyRoot,
+      });
+    }
+    if (!(yield* fs.exists(legacyRoot))) return 'absent' as const;
+    const info = yield* fs.stat(legacyRoot);
+    if (info.type !== 'Directory') {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'The legacy canonical-store root must be a regular directory.',
+        path: legacyRoot,
+      });
+    }
+    return 'directory' as const;
+  });
+}
+
+function assertAccountDirectory(fs: FileSystem.FileSystem, source: string) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'Symbolic links are not allowed as Threadnote account roots.',
+        path: source,
+      });
+    }
+    const info = yield* fs.stat(source);
+    if (info.type !== 'Directory') {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'Every entry in the legacy canonical store must be an account directory.',
+        path: source,
+      });
+    }
   });
 }
 

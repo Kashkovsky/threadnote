@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256FileHex} from '../effect/digest.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
 import type {LocalModelManifest} from '../models/catalog.js';
@@ -39,7 +39,17 @@ export const isLegacyLocalModelMigrationPending = Effect.fn('legacyLocalModelMig
   const home = path.resolve(options.home);
   const manifests = options.manifests ?? BUILTIN_MODEL_MANIFESTS;
   const receipt = yield* readReceipt(fs, path.join(home, 'migration', `${LEGACY_LOCAL_MODEL_MIGRATION_ID}.json`));
-  if (receipt) return receipt.status === 'pending';
+  if (receipt?.status === 'completed') return false;
+  if (receipt?.status === 'pending') {
+    for (const modelId of receipt.models) {
+      const manifest = manifests.find(candidate => candidate.id === modelId);
+      if (!manifest) {
+        return yield* Effect.fail(new Error(`Legacy model migration receipt references unknown model ${modelId}.`));
+      }
+      yield* inspectLegacyModelCandidate(fs, path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file), manifest);
+    }
+    return true;
+  }
   return (yield* discoverLegacyModels(fs, path, home, manifests)).length > 0;
 });
 
@@ -87,7 +97,7 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
     const source = path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file);
     const directory = path.join(home, 'models', manifest.role, manifest.id);
     const target = path.join(directory, `${manifest.sha256}.gguf`);
-    const sourceExists = yield* fs.exists(source);
+    const sourceExists = yield* inspectLegacyModelCandidate(fs, source, manifest);
     const targetExists = yield* fs.exists(target);
     if (sourceExists && targetExists) {
       return yield* Effect.fail(
@@ -139,7 +149,7 @@ function discoverLegacyModels(
   return Effect.gen(function* () {
     const found: string[] = [];
     for (const manifest of manifests) {
-      if (yield* fs.exists(path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file))) {
+      if (yield* inspectLegacyModelCandidate(fs, path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file), manifest)) {
         found.push(manifest.id);
       }
     }
@@ -147,8 +157,25 @@ function discoverLegacyModels(
   });
 }
 
+function inspectLegacyModelCandidate(fs: FileSystem.FileSystem, modelPath: string, manifest: LocalModelManifest) {
+  return Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(modelPath).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must not be a symbolic link.`));
+    }
+    if (!(yield* fs.exists(modelPath))) return false;
+    const info = yield* fs.stat(modelPath);
+    if (info.type !== 'File') {
+      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must be a regular file.`));
+    }
+    return true;
+  });
+}
+
 function verifyModel(fs: FileSystem.FileSystem, modelPath: string, manifest: LocalModelManifest) {
   return Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(modelPath).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must not be a symbolic link.`));
+    }
     const info = yield* fs.stat(modelPath);
     if (info.type !== 'File' || Number(info.size) !== manifest.size) {
       return yield* Effect.fail(
