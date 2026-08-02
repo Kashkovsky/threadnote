@@ -328,7 +328,11 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   }
   const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
   for (const client of mcpClients) {
-    yield* runMcpInstall(config, client, {apply: !dryRun, name: 'threadnote'});
+    yield* runMcpInstall(config, client, {
+      apply: !dryRun,
+      dryRunApplyCommand: 'threadnote repair',
+      name: 'threadnote',
+    });
   }
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});

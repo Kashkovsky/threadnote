@@ -162,6 +162,7 @@ export interface SeedOptions {
 
 export interface McpInstallOptions {
   readonly apply?: boolean;
+  readonly dryRunApplyCommand?: string;
   readonly name?: string;
   readonly scope?: ClaudeMcpScope;
   readonly toolset?: McpToolset;

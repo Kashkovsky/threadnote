@@ -68,6 +68,18 @@ describe('MCP toolsets', () => {
     await expect(dryRunOutput('full')).resolves.toContain('THREADNOTE_MCP_TOOLSET=full');
   });
 
+  it('uses the owning repair command instead of advertising an unsupported apply flag', async () => {
+    const result = await run(
+      captureConsole(
+        runMcpInstall(runtime(), 'codex', {
+          dryRunApplyCommand: 'threadnote repair',
+        }),
+      ),
+    );
+    expect(result.output).toContain('Run `threadnote repair` without `--dry-run`');
+    expect(result.output).not.toContain('Re-run with --apply');
+  });
+
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow('Invalid MCP toolset: minimal. Expected core or full.');
   });

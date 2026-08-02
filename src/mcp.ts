@@ -28,6 +28,7 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
     if (agent === 'cursor') {
       yield* runCursorMcpInstall(config, name, {
         apply,
+        dryRunApplyCommand: options.dryRunApplyCommand,
         toolset,
       });
       return;
@@ -35,6 +36,7 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
     if (agent === 'copilot') {
       yield* runCopilotMcpInstall(config, name, {
         apply,
+        dryRunApplyCommand: options.dryRunApplyCommand,
         toolset,
       });
       return;
@@ -49,7 +51,11 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
     const removeCommand = yield* buildMcpRemoveCommand(agent, agentExecutable, name);
 
     if (!apply) {
-      yield* Console.log('Dry run. Re-run with --apply to modify the selected agent config.');
+      yield* Console.log(
+        options.dryRunApplyCommand
+          ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify the selected agent config.`
+          : 'Dry run. Re-run with --apply to modify the selected agent config.',
+      );
       if (removeCommand.cwd || command.cwd) {
         yield* Console.log(`Command working directory: ${removeCommand.cwd ?? command.cwd}`);
       }
@@ -126,6 +132,7 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
   name: string,
   options: {
     readonly apply: boolean;
+    readonly dryRunApplyCommand?: string;
     readonly toolset: McpToolset;
   },
 ) {
@@ -139,7 +146,11 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
   const nextContent = renderCursorMcpConfig(path, currentContent, name, serverConfig);
 
   if (!options.apply) {
-    yield* Console.log('Dry run. Re-run with --apply to modify Cursor MCP config.');
+    yield* Console.log(
+      options.dryRunApplyCommand
+        ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify Cursor MCP config.`
+        : 'Dry run. Re-run with --apply to modify Cursor MCP config.',
+    );
     yield* printCursorMcpSnippet(config, name, {
       toolset: options.toolset,
     });
@@ -162,6 +173,7 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   name: string,
   options: {
     readonly apply: boolean;
+    readonly dryRunApplyCommand?: string;
     readonly toolset: McpToolset;
   },
 ) {
@@ -175,7 +187,11 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   const nextContent = renderCopilotMcpConfig(path, currentContent, name, serverConfig);
 
   if (!options.apply) {
-    yield* Console.log('Dry run. Re-run with --apply to modify GitHub Copilot MCP config.');
+    yield* Console.log(
+      options.dryRunApplyCommand
+        ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify GitHub Copilot MCP config.`
+        : 'Dry run. Re-run with --apply to modify GitHub Copilot MCP config.',
+    );
     yield* printCopilotMcpSnippet(config, name, {
       toolset: options.toolset,
     });
