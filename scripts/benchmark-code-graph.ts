@@ -4,6 +4,7 @@ import {Clock, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
+  codeGraphEffectiveSymbolTermsQueryStatement,
   CodeGraphStore,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
@@ -918,11 +919,7 @@ const benchmarkCodeGraph = Effect.scoped(
 
     const databaseRoot = path.join(prepared.home, 'indexes', 'code-graph');
     const storage = yield* codeGraphStorageTelemetry(fs, path, analysisStatus.databasePath, databaseRoot);
-    const coldLexicalTermRows = sqliteRowCount(
-      analysisStatus.databasePath,
-      'SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?',
-      cold.snapshot.id,
-    );
+    const coldLexicalTermRows = sqliteLexicalTermRowCount(analysisStatus.databasePath, cold.snapshot.id);
     const sqliteVersion = sqliteVersionString(analysisStatus.databasePath);
     const coldStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       analysisStatus.databasePath,
@@ -2445,6 +2442,27 @@ function sqliteRowCount(databasePath: string, query: string, ...parameters: read
   }
 }
 
+function sqliteLexicalTermRowCount(databasePath: string, snapshotId: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const compact = database
+      .query('SELECT posting_count AS count FROM lexical_storage_formats WHERE snapshot_id = ? LIMIT 1')
+      .get(snapshotId) as {readonly count?: bigint | number} | null;
+    const row =
+      compact ??
+      (database.query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?').get(snapshotId) as {
+        readonly count?: bigint | number;
+      } | null);
+    const count = Number(row?.count ?? 0);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`Invalid SQLite lexical term row count for ${databasePath}.`);
+    }
+    return count;
+  } finally {
+    database.close(false);
+  }
+}
+
 interface CodeGraphLanguageAggregate {
   readonly files: number;
   readonly language: string;
@@ -2585,7 +2603,7 @@ interface CodeGraphStructuralDigestReadSnapshot {
 
 interface CodeGraphStructuralDigestStream {
   readonly name: string;
-  readonly parameters: readonly string[];
+  readonly parameters: readonly (number | string)[];
   readonly query: string;
 }
 
@@ -2681,6 +2699,10 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
   const digest = new Bun.CryptoHasher('sha256');
   const baseSnapshotId = Option.getOrElse(readSnapshot.baseSnapshotId, () => '');
   const effectiveParameters = [snapshotId, baseSnapshotId, snapshotId, snapshotId] as const;
+  const symbolTerms = codeGraphEffectiveSymbolTermsQueryStatement(
+    snapshotId,
+    Option.isSome(readSnapshot.baseSnapshotId) ? readSnapshot.baseSnapshotId.value : undefined,
+  );
   const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
   const streams = [
     {
@@ -2713,25 +2735,8 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
     },
     {
       name: 'symbol-terms',
-      parameters: effectiveParameters,
-      query: `WITH effective_rows AS (
-          SELECT current_rows.term, current_rows.symbol_id, current_rows.weight
-          FROM symbol_terms AS current_rows
-          WHERE current_rows.snapshot_id = ?
-          UNION ALL
-          SELECT base_rows.term, base_rows.symbol_id, base_rows.weight
-          FROM symbol_terms AS base_rows
-          WHERE base_rows.snapshot_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM symbols AS overrides
-              WHERE overrides.snapshot_id = ? AND overrides.id = base_rows.symbol_id
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM snapshot_symbol_deletions AS removed
-              WHERE removed.snapshot_id = ? AND removed.symbol_id = base_rows.symbol_id
-            )
-        )
-        SELECT term, symbol_id, weight FROM effective_rows ORDER BY term, symbol_id`,
+      parameters: symbolTerms.parameters,
+      query: symbolTerms.text,
     },
     {
       name: 'symbol-lookup',

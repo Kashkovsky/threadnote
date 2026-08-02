@@ -568,6 +568,7 @@ describe('code graph external benchmark harness', () => {
     );
 
     expect(result.pinned).toEqual(result.before);
+    expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);
     expect(result.after.digest).not.toBe(result.before.digest);
     expect(result.during).toEqual({
       activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
@@ -795,6 +796,35 @@ function seedStructuralDigestInterlockDatabase(
         ) VALUES (?, ?, ?, 'typescript', '100644', 32, 'commit')`,
       )
       .run(baseSnapshotId, privatePath, 'f'.repeat(64));
+    database.query('INSERT INTO lexical_compact_snapshots (snapshot_id) VALUES (?)').run(baseSnapshotId);
+    const lexicalSnapshot = database
+      .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+      .get(baseSnapshotId) as {readonly snapshot_key: number};
+    database
+      .query('INSERT INTO lexical_compact_terms (snapshot_key, term) VALUES (?, ?)')
+      .run(lexicalSnapshot.snapshot_key, 'private');
+    database
+      .query('INSERT INTO lexical_compact_symbols (snapshot_key, symbol_id) VALUES (?, ?)')
+      .run(lexicalSnapshot.snapshot_key, 'private-symbol');
+    const lexicalTerm = database
+      .query('SELECT term_key FROM lexical_compact_terms WHERE snapshot_key = ?')
+      .get(lexicalSnapshot.snapshot_key) as {readonly term_key: number};
+    const lexicalSymbol = database
+      .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ?')
+      .get(lexicalSnapshot.snapshot_key) as {readonly symbol_key: number};
+    database
+      .query(
+        `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(lexicalSnapshot.snapshot_key, lexicalTerm.term_key, lexicalSymbol.symbol_key, 3);
+    database
+      .query(
+        `INSERT INTO lexical_storage_formats (
+          snapshot_id, format_version, posting_count, symbol_count, term_count, created_at
+        ) VALUES (?, 1, 1, 1, 1, ?)`,
+      )
+      .run(baseSnapshotId, now);
   } finally {
     database.close(false);
   }
