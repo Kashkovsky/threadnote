@@ -5,6 +5,7 @@ import {
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
   graphCatalogPageOffsets,
+  graphCatalogContinuationHasMore,
   graphCompletedBuildResultIdentity,
   graphDisplayEdges,
   graphFocusLayoutTargets,
@@ -33,6 +34,27 @@ import {
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
+  it('uses catalog fallbacks before either a view or continuation exists', () => {
+    expect(graphCatalogContinuationHasMore(undefined, undefined, 'projectHasMore', false)).toBe(false);
+    expect(graphCatalogContinuationHasMore(undefined, undefined, 'workspaceHasMore', true)).toBe(true);
+    expect(
+      graphCatalogContinuationHasMore(
+        {
+          projectHasMore: true,
+          projectOffset: 10,
+          viewHasMore: true,
+          viewId: 'view-a',
+          viewOffset: 4,
+          workspaceHasMore: false,
+          workspaceOffset: 3,
+        },
+        'view-b',
+        'projectHasMore',
+        false,
+      ),
+    ).toBe(false);
+  });
+
   it('polls active graph builds within the two-second Manager freshness contract', () => {
     expect(graphStatusPollDelay([])).toBe(15_000);
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);

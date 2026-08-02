@@ -728,6 +728,25 @@ export interface GraphQueryVisualization extends GraphVisualization {
   readonly query: GraphQueryMetadata;
 }
 
+interface GraphCatalogContinuation {
+  readonly projectOffset: number;
+  readonly projectHasMore: boolean;
+  readonly viewOffset: number;
+  readonly viewHasMore: boolean;
+  readonly viewId: string;
+  readonly workspaceOffset: number;
+  readonly workspaceHasMore: boolean;
+}
+
+export function graphCatalogContinuationHasMore(
+  continuation: GraphCatalogContinuation | undefined,
+  viewId: string | undefined,
+  field: 'projectHasMore' | 'viewHasMore' | 'workspaceHasMore',
+  fallback: boolean,
+): boolean {
+  return continuation !== undefined && continuation.viewId === viewId ? continuation[field] : fallback;
+}
+
 export interface GraphAnalysis {
   readonly communities: readonly {
     readonly id: string;
@@ -961,15 +980,7 @@ export function GraphWorkspace(props: {
   const [catalogQuery, setCatalogQuery] = useState('');
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState('');
-  const [catalogContinuation, setCatalogContinuation] = useState<{
-    readonly projectOffset: number;
-    readonly projectHasMore: boolean;
-    readonly viewOffset: number;
-    readonly viewHasMore: boolean;
-    readonly viewId: string;
-    readonly workspaceOffset: number;
-    readonly workspaceHasMore: boolean;
-  }>();
+  const [catalogContinuation, setCatalogContinuation] = useState<GraphCatalogContinuation>();
   const catalogAbortController = useRef<AbortController | undefined>(undefined);
   const catalogRequestSequence = useRef(0);
   const baseCatalogIdentity = useMemo(
@@ -1027,18 +1038,24 @@ export function GraphWorkspace(props: {
     ? queryWorkingSet.nodeLimit >= MAX_QUERY_WORKING_SET.nodeLimit &&
       queryWorkingSet.edgeLimit >= MAX_QUERY_WORKING_SET.edgeLimit
     : workingSet.nodeLimit >= MAX_WORKING_SET.nodeLimit && workingSet.edgeLimit >= MAX_WORKING_SET.edgeLimit;
-  const projectCatalogHasMore =
-    catalogContinuation?.viewId === repository?.id
-      ? catalogContinuation.projectHasMore
-      : (repository?.projectsTruncated ?? false);
-  const workspaceCatalogHasMore =
-    catalogContinuation?.viewId === repository?.id
-      ? catalogContinuation.workspaceHasMore
-      : (repository?.workspacesTruncated ?? false);
-  const viewCatalogHasMore =
-    catalogContinuation?.viewId === repository?.id
-      ? catalogContinuation.viewHasMore
-      : (repositoryGroup?.viewsTruncated ?? false);
+  const projectCatalogHasMore = graphCatalogContinuationHasMore(
+    catalogContinuation,
+    repository?.id,
+    'projectHasMore',
+    repository?.projectsTruncated ?? false,
+  );
+  const workspaceCatalogHasMore = graphCatalogContinuationHasMore(
+    catalogContinuation,
+    repository?.id,
+    'workspaceHasMore',
+    repository?.workspacesTruncated ?? false,
+  );
+  const viewCatalogHasMore = graphCatalogContinuationHasMore(
+    catalogContinuation,
+    repository?.id,
+    'viewHasMore',
+    repositoryGroup?.viewsTruncated ?? false,
+  );
 
   useEffect(() => {
     const selection = resolveGraphSelection(repositories, repositoryId, viewId);
