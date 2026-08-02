@@ -103,6 +103,42 @@ describe('legacy local model migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('rejects symlinked legacy-model parent directories during eligibility and apply', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-model-parent-links-'});
+        for (const parent of ['threadnote', 'models'] as const) {
+          const home = path.join(root, parent, 'home');
+          const external = path.join(root, parent, 'external');
+          const externalModel =
+            parent === 'threadnote' ? path.join(external, 'models', manifest.file) : path.join(external, manifest.file);
+          yield* fs.makeDirectory(path.dirname(externalModel), {recursive: true});
+          yield* fs.writeFile(externalModel, modelBytes);
+          yield* fs.makeDirectory(home, {recursive: true});
+          if (parent === 'threadnote') {
+            yield* fs.symlink(external, path.join(home, 'threadnote'));
+          } else {
+            yield* fs.makeDirectory(path.join(home, 'threadnote'), {recursive: true});
+            yield* fs.symlink(external, path.join(home, 'threadnote', 'models'));
+          }
+
+          const eligibility = yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]}).pipe(
+            Effect.flip,
+          );
+          const apply = yield* migrateLegacyLocalModels({apply: true, home, manifests: [manifest]}).pipe(Effect.flip);
+          expect(String(eligibility)).toContain('must not be a symbolic link');
+          expect(String(apply)).toContain('must not be a symbolic link');
+          expect(Array.from(yield* fs.readFile(externalModel))).toEqual(Array.from(modelBytes));
+          expect(yield* fs.exists(path.join(home, 'models', manifest.role, manifest.id))).toBe(false);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('rejects a directory at a legacy model path during eligibility and apply', () =>
     Effect.scoped(
       Effect.gen(function* () {

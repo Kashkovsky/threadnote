@@ -234,10 +234,14 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     yield* Console.log(
       `Would migrate ${layoutMigration.accounts} account(s) from the beta.1 canonical-store layout into ~/.threadnote/data.`,
     );
+  } else if (layoutMigration.action === 'would_repair_marker') {
+    yield* Console.log('Would restore the current Threadnote storage layout marker from its completed receipt.');
   } else if (layoutMigration.action === 'migrated' || layoutMigration.action === 'resumed') {
     yield* Console.log(
       `${layoutMigration.action === 'resumed' ? 'Resumed' : 'Migrated'} ${layoutMigration.accounts} account(s) into the Threadnote storage layout.`,
     );
+  } else if (layoutMigration.action === 'repaired_marker') {
+    yield* Console.log('Restored the current Threadnote storage layout marker from its completed receipt.');
   }
   const modelMigration = yield* migrateLegacyLocalModels({
     apply: !dryRun,

@@ -412,11 +412,17 @@ export const runHomeMigration = Effect.fn('homeMigration.run')(function* (option
       yield* Console.log(
         `Would migrate ${layoutResult.accounts} account(s) from the beta.1 canonical-store layout into ~/.threadnote/data.`,
       );
+    } else if (layoutResult.action === 'would_repair_marker') {
+      reportedBetaRecovery = true;
+      yield* Console.log('Would restore the current Threadnote storage layout marker from its completed receipt.');
     } else if (layoutResult.action === 'migrated' || layoutResult.action === 'resumed') {
       reportedBetaRecovery = true;
       yield* Console.log(
         `${layoutResult.action === 'resumed' ? 'Resumed' : 'Migrated'} ${layoutResult.accounts} account(s) into the Threadnote storage layout.`,
       );
+    } else if (layoutResult.action === 'repaired_marker') {
+      reportedBetaRecovery = true;
+      yield* Console.log('Restored the current Threadnote storage layout marker from its completed receipt.');
     }
     if (modelResult.action === 'dry_run') {
       reportedBetaRecovery = true;

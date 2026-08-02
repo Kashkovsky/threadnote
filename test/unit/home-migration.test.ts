@@ -198,6 +198,44 @@ describe('OpenViking home migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('reports completed-receipt layout marker repair without claiming there is nothing to migrate', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-home-marker-output-'});
+        const legacyHome = path.join(root, '.openviking');
+        const targetHome = path.join(root, '.threadnote');
+        yield* fs.makeDirectory(path.join(targetHome, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(targetHome, 'migration', 'threadnote-storage-layout-v2.json'),
+          `${JSON.stringify({
+            accounts: [],
+            id: 'threadnote-storage-layout-v2',
+            sourceLayoutVersion: 1,
+            status: 'completed',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+
+        const preview = yield* captureConsole(runHomeMigration({legacyHome, targetHome}));
+        const applied = yield* captureConsole(runHomeMigration({apply: true, legacyHome, targetHome}));
+
+        expect(preview.output).toContain('Would restore the current Threadnote storage layout marker');
+        expect(applied.output).toContain('Restored the current Threadnote storage layout marker');
+        for (const output of [preview.output, applied.output]) {
+          expect(output).not.toContain('No legacy ~/.openviking home');
+          expect(output).not.toContain('nothing to migrate');
+        }
+        expect(JSON.parse(yield* fs.readFileString(path.join(targetHome, 'layout.json')))).toEqual({
+          createdBy: 'threadnote',
+          version: 2,
+        });
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('recognizes genuine legacy canonical content and completed receipts', () =>
     Effect.scoped(
       Effect.gen(function* () {

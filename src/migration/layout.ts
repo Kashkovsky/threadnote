@@ -29,7 +29,14 @@ interface StorageLayoutMigrationReceipt {
 
 export interface StorageLayoutMigrationResult {
   readonly accounts: number;
-  readonly action: 'already_current' | 'dry_run' | 'migrated' | 'no_legacy_layout' | 'resumed';
+  readonly action:
+    | 'already_current'
+    | 'dry_run'
+    | 'migrated'
+    | 'no_legacy_layout'
+    | 'repaired_marker'
+    | 'resumed'
+    | 'would_repair_marker';
 }
 
 export class StorageLayoutMigrationConflict extends Schema.TaggedErrorClass<StorageLayoutMigrationConflict>()(
@@ -57,6 +64,7 @@ export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayou
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  yield* assertLegacyStorageAncestors(fs, path, home);
   const legacyRoot = path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
   const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
@@ -79,6 +87,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  yield* assertLegacyStorageAncestors(fs, path, home);
   const dataRoot = path.join(home, 'data');
   const legacyRoot = path.join(dataRoot, LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
@@ -105,8 +114,12 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
 
   const receipt = existingReceipt ?? (yield* planMigration(fs, path, dataRoot, legacyRoot));
   if (receipt.status === 'completed') {
-    if (options.apply === true && currentLayoutVersion !== THREADNOTE_STORAGE_LAYOUT_VERSION) {
-      yield* writeCurrentLayoutReceipt(fs, path, home);
+    if (currentLayoutVersion !== THREADNOTE_STORAGE_LAYOUT_VERSION) {
+      if (options.apply === true) {
+        yield* writeCurrentLayoutReceipt(fs, path, home);
+        return {accounts: receipt.accounts.length, action: 'repaired_marker'} satisfies StorageLayoutMigrationResult;
+      }
+      return {accounts: receipt.accounts.length, action: 'would_repair_marker'} satisfies StorageLayoutMigrationResult;
     }
     return {accounts: receipt.accounts.length, action: 'already_current'} satisfies StorageLayoutMigrationResult;
   }
@@ -119,6 +132,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   }
   let resumed = false;
   for (const account of receipt.accounts) {
+    yield* assertLegacyStorageAncestors(fs, path, home);
     yield* inspectLegacyRoot(fs, legacyRoot);
     const source = path.join(legacyRoot, account.name);
     const target = path.join(dataRoot, account.name);
@@ -148,6 +162,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
     }
   }
 
+  yield* assertLegacyStorageAncestors(fs, path, home);
   if ((yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory') {
     const remaining = yield* fs.readDirectory(legacyRoot);
     if (remaining.length > 0) {
@@ -173,6 +188,7 @@ function planMigration(
   legacyRoot: string,
 ): Effect.Effect<StorageLayoutMigrationReceipt, unknown, Crypto.Crypto> {
   return Effect.gen(function* () {
+    yield* assertLegacyStorageAncestors(fs, path, path.dirname(dataRoot));
     if ((yield* inspectLegacyRoot(fs, legacyRoot)) !== 'directory') {
       return yield* new StorageLayoutMigrationConflict({
         message: 'The pending storage migration has no legacy source directory.',
@@ -201,6 +217,34 @@ function planMigration(
       targetLayoutVersion: THREADNOTE_STORAGE_LAYOUT_VERSION,
       version: STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION,
     };
+  });
+}
+
+function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path, home: string) {
+  return Effect.gen(function* () {
+    const dataRoot = path.join(home, 'data');
+    if (Option.isSome(yield* fs.readLink(dataRoot).pipe(Effect.option))) {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'The Threadnote data directory must not be a symbolic link during storage migration.',
+        path: dataRoot,
+      });
+    }
+    if (!(yield* fs.exists(dataRoot))) return;
+    const info = yield* fs.stat(dataRoot);
+    if (info.type !== 'Directory') {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'The Threadnote data path must be a regular directory during storage migration.',
+        path: dataRoot,
+      });
+    }
+    const canonicalHome = yield* fs.realPath(home);
+    const canonicalDataRoot = yield* fs.realPath(dataRoot);
+    if (path.resolve(canonicalDataRoot) !== path.resolve(canonicalHome, 'data')) {
+      return yield* new StorageLayoutMigrationConflict({
+        message: 'The Threadnote data directory resolves outside its owned canonical path.',
+        path: dataRoot,
+      });
+    }
   });
 }
 

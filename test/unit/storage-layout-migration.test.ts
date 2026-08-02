@@ -145,6 +145,50 @@ describe('Threadnote storage layout migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('reports and repairs a missing or stale layout marker from a completed receipt', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-marker-repair-'});
+        for (const [name, marker] of [
+          ['missing', undefined],
+          ['stale', '{"createdBy":"threadnote","version":1}\n'],
+        ] as const) {
+          const home = path.join(root, name);
+          yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+          yield* fs.writeFileString(
+            path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+            `${JSON.stringify({
+              accounts: [],
+              id: STORAGE_LAYOUT_MIGRATION_ID,
+              sourceLayoutVersion: 1,
+              status: 'completed',
+              targetLayoutVersion: 2,
+              version: 1,
+            })}\n`,
+          );
+          if (marker !== undefined) yield* fs.writeFileString(path.join(home, 'layout.json'), marker);
+
+          expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+          expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({
+            accounts: 0,
+            action: 'would_repair_marker',
+          });
+          expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+            accounts: 0,
+            action: 'repaired_marker',
+          });
+          expect(JSON.parse(yield* fs.readFileString(path.join(home, 'layout.json')))).toEqual({
+            createdBy: 'threadnote',
+            version: 2,
+          });
+          expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('rejects a symbolic-link legacy root before eligibility or apply can traverse it', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -167,6 +211,31 @@ describe('Threadnote storage layout migration', () => {
         expect(apply).toBeInstanceOf(StorageLayoutMigrationConflict);
         expect(yield* fs.readFileString(externalMemory)).toBe('must remain external');
         expect(yield* fs.exists(path.join(home, 'data', 'local'))).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a symbolic-link data parent before eligibility or apply can reach external beta data', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-data-link-'});
+        const externalData = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-external-data-'});
+        const externalMemory = path.join(externalData, 'viking', 'local', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(externalMemory), {recursive: true});
+        yield* fs.writeFileString(externalMemory, 'must remain external');
+        yield* fs.symlink(externalData, path.join(home, 'data'));
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const eligibility = yield* isThreadnoteStorageLayoutMigrationPending({home}).pipe(Effect.flip);
+        const apply = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(Effect.flip);
+        expect(eligibility).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(apply).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(yield* fs.readFileString(externalMemory)).toBe('must remain external');
+        expect(yield* fs.exists(path.join(externalData, 'local'))).toBe(false);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

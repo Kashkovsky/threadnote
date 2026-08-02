@@ -37,6 +37,7 @@ export const isLegacyLocalModelMigrationPending = Effect.fn('legacyLocalModelMig
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  yield* assertLegacyModelAncestors(fs, path, home);
   const manifests = options.manifests ?? BUILTIN_MODEL_MANIFESTS;
   const receipt = yield* readReceipt(fs, path.join(home, 'migration', `${LEGACY_LOCAL_MODEL_MIGRATION_ID}.json`));
   if (receipt?.status === 'completed') return false;
@@ -64,6 +65,7 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const home = path.resolve(options.home);
+  yield* assertLegacyModelAncestors(fs, path, home);
   const manifests = options.manifests ?? BUILTIN_MODEL_MANIFESTS;
   const receiptPath = path.join(home, 'migration', `${LEGACY_LOCAL_MODEL_MIGRATION_ID}.json`);
   const existingReceipt = yield* readReceipt(fs, receiptPath);
@@ -97,6 +99,7 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
     const source = path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file);
     const directory = path.join(home, 'models', manifest.role, manifest.id);
     const target = path.join(directory, `${manifest.sha256}.gguf`);
+    yield* assertLegacyModelAncestors(fs, path, home);
     const sourceExists = yield* inspectLegacyModelCandidate(fs, source, manifest);
     const targetExists = yield* fs.exists(target);
     if (sourceExists && targetExists) {
@@ -107,6 +110,8 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
     if (sourceExists) {
       yield* verifyModel(fs, source, manifest);
       yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+      yield* assertLegacyModelAncestors(fs, path, home);
+      yield* inspectLegacyModelCandidate(fs, source, manifest);
       yield* fs.rename(source, target);
       yield* fs.chmod(target, 0o600);
     } else if (targetExists) {
@@ -154,6 +159,29 @@ function discoverLegacyModels(
       }
     }
     return found;
+  });
+}
+
+function assertLegacyModelAncestors(fs: FileSystem.FileSystem, path: Path.Path, home: string) {
+  return Effect.gen(function* () {
+    const canonicalHome = (yield* fs.exists(home)) ? yield* fs.realPath(home) : undefined;
+    for (const relative of ['threadnote', LEGACY_MODEL_DIRECTORY] as const) {
+      const ancestor = path.join(home, relative);
+      if (Option.isSome(yield* fs.readLink(ancestor).pipe(Effect.option))) {
+        return yield* Effect.fail(new Error(`Legacy model parent ${relative} must not be a symbolic link.`));
+      }
+      if (!(yield* fs.exists(ancestor))) continue;
+      const info = yield* fs.stat(ancestor);
+      if (info.type !== 'Directory') {
+        return yield* Effect.fail(new Error(`Legacy model parent ${relative} must be a regular directory.`));
+      }
+      if (canonicalHome !== undefined) {
+        const canonicalAncestor = yield* fs.realPath(ancestor);
+        if (path.resolve(canonicalAncestor) !== path.resolve(canonicalHome, relative)) {
+          return yield* Effect.fail(new Error(`Legacy model parent ${relative} resolves outside its owned path.`));
+        }
+      }
+    }
   });
 }
 
