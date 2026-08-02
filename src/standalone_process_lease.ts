@@ -40,6 +40,13 @@ export interface StandaloneProcessLeaseDiagnostics {
 
 interface ObservedStandaloneProcessLease extends StandaloneProcessLease {
   readonly identityVerified: boolean;
+  readonly processStartIdentity: Option.Option<string>;
+}
+
+export interface SupersededStandaloneProcessTermination {
+  readonly remaining: readonly StandaloneProcessLease[];
+  readonly signaled: readonly StandaloneProcessLease[];
+  readonly skippedUnverified: readonly StandaloneProcessLease[];
 }
 
 export function installationRoot(path: Path.Path, system: SystemInfoShape): string {
@@ -167,6 +174,58 @@ export const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersio
   return [...new Set(scan.leases.map(lease => lease.version))];
 });
 
+/**
+ * Explicit developer-maintenance operation for retiring processes pinned to a
+ * superseded standalone release. Every signal is guarded by a fresh process
+ * start-identity comparison; leases without verifiable identity are reported
+ * but never signaled.
+ */
+export const terminateSupersededStandaloneProcesses = Effect.fn('installations.terminateSupersededProcesses')(
+  function* (activeVersion: string, options: {readonly gracefulWaitMilliseconds?: number} = {}) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    if (!STANDALONE_RELEASE_VERSION_PATTERN.test(activeVersion)) {
+      return yield* Effect.fail(new Error('Cannot terminate processes for an invalid active release version.'));
+    }
+    const scan = yield* liveStandaloneProcessLeases(fs, path, installationRoot(path, system), system, Option.none());
+    const superseded = scan.leases.filter(
+      lease => lease.version !== activeVersion && lease.processId !== system.processId,
+    );
+    const verified = superseded.filter(lease => lease.identityVerified);
+    const skippedUnverified = superseded.filter(lease => !lease.identityVerified).map(publicLease);
+    const candidateIds = new Set(verified.map(lease => lease.processId));
+    const roots = verified.filter(
+      lease => Option.isNone(lease.parentProcessId) || !candidateIds.has(lease.parentProcessId.value),
+    );
+    const descendants = verified.filter(lease => !roots.includes(lease));
+    const signaled = new Map<number, StandaloneProcessLease>();
+    for (const lease of roots) {
+      if (yield* signalLeaseIfStillOwned(system, lease, 'SIGTERM')) {
+        signaled.set(lease.processId, publicLease(lease));
+      }
+    }
+    yield* waitForLeasesToExit(system, roots, boundedGracefulWait(options.gracefulWaitMilliseconds));
+    for (const lease of descendants) {
+      if (yield* signalLeaseIfStillOwned(system, lease, 'SIGTERM')) {
+        signaled.set(lease.processId, publicLease(lease));
+      }
+    }
+    yield* waitForLeasesToExit(system, descendants, boundedGracefulWait(options.gracefulWaitMilliseconds));
+    for (const lease of verified) {
+      if (yield* signalLeaseIfStillOwned(system, lease, 'SIGKILL')) {
+        signaled.set(lease.processId, publicLease(lease));
+      }
+    }
+    yield* waitForLeasesToExit(system, verified, 1_000);
+    return {
+      remaining: verified.filter(lease => system.isProcessRunning(lease.processId)).map(publicLease),
+      signaled: [...signaled.values()].sort((left, right) => left.processId - right.processId),
+      skippedUnverified: skippedUnverified.sort((left, right) => left.processId - right.processId),
+    } satisfies SupersededStandaloneProcessTermination;
+  },
+);
+
 const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,
@@ -218,6 +277,7 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
             currentProcessIdentity === lease.value.processStartIdentity.value,
           parentProcessId: lease.value.parentProcessId,
           processId,
+          processStartIdentity: lease.value.processStartIdentity,
           startedAt: lease.value.startedAt,
           version,
         });
@@ -228,6 +288,54 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
   }
   return {leases: live, truncated};
 });
+
+function publicLease(lease: ObservedStandaloneProcessLease): StandaloneProcessLease {
+  return {
+    parentProcessId: lease.parentProcessId,
+    processId: lease.processId,
+    startedAt: lease.startedAt,
+    version: lease.version,
+  };
+}
+
+function signalLeaseIfStillOwned(
+  system: SystemInfoShape,
+  lease: ObservedStandaloneProcessLease,
+  signal: NodeJS.Signals,
+): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    if (!system.isProcessRunning(lease.processId) || Option.isNone(lease.processStartIdentity)) return false;
+    const identity = yield* system
+      .processStartIdentity(lease.processId)
+      .pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (identity !== lease.processStartIdentity.value) return false;
+    return yield* Effect.try({
+      try: () => {
+        system.signalProcess(lease.processId, signal);
+        return true;
+      },
+      catch: () => false,
+    }).pipe(Effect.catch(() => Effect.succeed(false)));
+  });
+}
+
+function waitForLeasesToExit(
+  system: SystemInfoShape,
+  leases: readonly ObservedStandaloneProcessLease[],
+  waitMilliseconds: number,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const iterations = Math.ceil(waitMilliseconds / 100);
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      if (leases.every(lease => !system.isProcessRunning(lease.processId))) return;
+      yield* Effect.sleep(100);
+    }
+  });
+}
+
+function boundedGracefulWait(value: number | undefined): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 30_000) : 5_000;
+}
 
 function refreshProcessLease(fs: FileSystem.FileSystem, leasePath: string, token: string) {
   return Effect.gen(function* () {

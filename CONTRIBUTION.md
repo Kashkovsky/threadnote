@@ -99,6 +99,22 @@ The suite uses a temporary Threadnote home, exercises the built standalone launc
 indexes, the local model runtime, MCP stdio, and sharing, then removes the home. It must never use or mutate a
 contributor's normal `~/.threadnote` state.
 
+### Exact-HEAD global developer runtime
+
+Before a long local benchmark or testing a host integration that launches the global `threadnote` command, install the
+clean checked-out commit into the managed standalone location:
+
+```bash
+bun run dev:install-global -- --terminate-superseded --json
+```
+
+The installer refuses a dirty worktree, embeds the full source commit in a local-only version, validates the staged
+executable and provenance receipt before atomic activation, and only terminates superseded processes whose start
+identity still matches their lease. Long local benchmarks require this exact-HEAD receipt; do not rely on whichever
+beta a launcher or editor process happened to start earlier. The exported fail-closed
+`verifyManagedDevelopmentRuntimeForSource` verifier is the preflight for long benchmark harnesses; it returns the
+sanitized version, source commit, executable digest, target, and runtime evidence without recording local paths.
+
 ## Changing MCP tools
 
 Keep tool names and the default core toolset compact and backward-compatible. When adding or changing an input:

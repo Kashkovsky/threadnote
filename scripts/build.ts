@@ -2,6 +2,7 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {javascriptStringLiteral} from './effect/javascript.js';
+import {isDevelopmentBuildVersion} from './development-runtime.js';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -23,7 +24,13 @@ const build = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(ROOT_URL);
   const outputRoot = path.join(root, 'dist');
   const manifest = yield* readPackageManifest(fs, path.join(root, 'package.json'));
-  const version = manifest.version;
+  const configuredDevelopmentVersion = Bun.env.THREADNOTE_DEVELOPMENT_BUILD_VERSION?.trim();
+  if (configuredDevelopmentVersion && !isDevelopmentBuildVersion(configuredDevelopmentVersion)) {
+    return yield* Effect.fail(
+      new Error('THREADNOTE_DEVELOPMENT_BUILD_VERSION must be a SHA-bound local development version.'),
+    );
+  }
+  const version = configuredDevelopmentVersion ?? manifest.version;
   const nativeRuntimeVersion = manifest.dependencies?.[NATIVE_RUNTIME_PACKAGE];
   if (!version || !nativeRuntimeVersion || !EXACT_PACKAGE_VERSION.test(nativeRuntimeVersion)) {
     return yield* Effect.fail(new Error('package.json must declare version and an exact node-llama-cpp dependency.'));

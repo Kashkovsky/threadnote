@@ -10,6 +10,7 @@ import {
   withStandaloneInstallationLock,
 } from '../../src/installations.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {terminateSupersededStandaloneProcesses} from '../../src/standalone_process_lease.js';
 
 describe('standalone release lifecycle', () => {
   it('tracks the active release and retains only it plus the running rollback version', async () => {
@@ -421,6 +422,139 @@ describe('standalone release lifecycle', () => {
       staleExists: true,
     });
   });
+
+  it('retires verified superseded process trees without signaling the active release', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-retirement-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const rootProcessId = 40_001;
+          const childProcessId = 40_002;
+          const activeProcessId = 40_003;
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', rootProcessId, 'root-process');
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', childProcessId, 'child-process', rootProcessId);
+          yield* writeProcessLease(fs, path, installRoot, '4.0.1', activeProcessId, 'active-process');
+          const running = new Set([rootProcessId, childProcessId, activeProcessId]);
+          const signals: Array<readonly [number, NodeJS.Signals]> = [];
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            isProcessRunning: processId => running.has(processId),
+            processId: 99_999,
+            processStartIdentity: processId =>
+              Effect.succeed(
+                processId === rootProcessId
+                  ? 'root-process'
+                  : processId === childProcessId
+                    ? 'child-process'
+                    : processId === activeProcessId
+                      ? 'active-process'
+                      : undefined,
+              ),
+            signalProcess: (processId, signal) => {
+              signals.push([processId, signal]);
+              running.delete(processId);
+            },
+          });
+
+          const termination = yield* terminateSupersededStandaloneProcesses('4.0.1', {
+            gracefulWaitMilliseconds: 0,
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {activeStillRunning: running.has(activeProcessId), signals, termination};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.signals).toEqual([
+      [40_001, 'SIGTERM'],
+      [40_002, 'SIGTERM'],
+    ]);
+    expect(result.activeStillRunning).toBe(true);
+    expect(result.termination.signaled.map(lease => lease.processId)).toEqual([40_001, 40_002]);
+    expect(result.termination.remaining).toEqual([]);
+    expect(result.termination.skippedUnverified).toEqual([]);
+  });
+
+  it('does not signal a superseded lease when the process identity changes after scanning', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-race-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const processId = 41_001;
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', processId, 'original-process');
+          let identityReads = 0;
+          const signals: Array<readonly [number, NodeJS.Signals]> = [];
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            isProcessRunning: candidate => candidate === processId,
+            processId: 99_999,
+            processStartIdentity: () =>
+              Effect.sync(() => {
+                identityReads += 1;
+                return identityReads === 1 ? 'original-process' : 'replacement-process';
+              }),
+            signalProcess: (candidate, signal) => {
+              signals.push([candidate, signal]);
+            },
+          });
+
+          const termination = yield* terminateSupersededStandaloneProcesses('4.0.1', {
+            gracefulWaitMilliseconds: 0,
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {signals, termination};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.signals).toEqual([]);
+    expect(result.termination.signaled).toEqual([]);
+    expect(result.termination.remaining.map(lease => lease.processId)).toEqual([41_001]);
+  });
+
+  it('reports but never signals superseded leases without verifiable process identity', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-unverified-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const processId = 42_001;
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', processId);
+          const signals: Array<readonly [number, NodeJS.Signals]> = [];
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            isProcessRunning: candidate => candidate === processId,
+            processId: 99_999,
+            processStartIdentity: () => Effect.succeed(undefined),
+            signalProcess: (candidate, signal) => {
+              signals.push([candidate, signal]);
+            },
+          });
+
+          const termination = yield* terminateSupersededStandaloneProcesses('4.0.1', {
+            gracefulWaitMilliseconds: 0,
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {signals, termination};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.signals).toEqual([]);
+    expect(result.termination.remaining).toEqual([]);
+    expect(result.termination.skippedUnverified.map(lease => lease.processId)).toEqual([42_001]);
+  });
 });
 
 function createRelease(
@@ -447,5 +581,31 @@ function installationTestSystem(baseSystem: SystemInfoShape, installRoot: string
       THREADNOTE_INSTALL_ROOT: installRoot,
     }),
     executablePath: `${runningRelease}/threadnote`,
+  });
+}
+
+function writeProcessLease(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  installRoot: string,
+  version: string,
+  processId: number,
+  processStartIdentity?: string,
+  parentProcessId?: number,
+) {
+  const leaseRoot = path.join(installRoot, 'leases', version);
+  return Effect.gen(function* () {
+    yield* fs.makeDirectory(leaseRoot, {recursive: true});
+    yield* fs.writeFileString(
+      path.join(leaseRoot, `${processId}.json`),
+      `${JSON.stringify({
+        parentProcessId,
+        processId,
+        processStartIdentity,
+        startedAt: '2026-08-02T08:00:00.000Z',
+        token: `lease-${processId}`,
+        version,
+      })}\n`,
+    );
   });
 }

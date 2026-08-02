@@ -27,6 +27,7 @@
     "clean": "bun scripts/clean.ts",
     "compile:targets": "bun scripts/compile-targets.ts",
     "dev": "bun src/standalone.ts",
+    "dev:install-global": "bun scripts/install-local-standalone.ts",
     "dev:mcp-server": "bun src/standalone.ts mcp-server",
     "lint": "bun --bun oxlint src test scripts website/src website/vite.config.ts",
     "lint:fix": "bun --bun oxlint --fix src test scripts website/src website/vite.config.ts",
