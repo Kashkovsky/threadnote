@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, Exit, FileSystem, Option, Path} from 'effect';
+import {Clock, Effect, Exit, Fiber, FileSystem, Option, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
@@ -15,6 +15,12 @@ import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
 import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
+import {
+  managerGraphCatalog,
+  managerGraphNodeDetail,
+  managerGraphQuery,
+  managerGraphVisualization,
+} from '../src/code_graph/visualization.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -24,6 +30,14 @@ import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
 import {LocalModelStore} from '../src/models/store.js';
 import {codeGraphMcpResponse} from '../src/mcp_server.js';
+import {credentialScrubberBlocker} from '../src/scrubber.js';
+import {
+  graphQueryRequestIsCurrent,
+  managerGraphClientRenderProxy,
+  type GraphQueryVisualization,
+  type GraphVisualization,
+} from '../src/manager_graph.js';
+import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager_graph_limits.js';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
@@ -60,6 +74,10 @@ const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS = 5 * 60_000;
 const STRUCTURAL_DIGEST_ROW_CHUNK_SIZE = 10_000;
 const LONG_SCALE_PROVENANCE_THRESHOLD = 100_000;
 const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
+const MANAGER_QUERY_NODE_LIMIT = 200;
+const MANAGER_QUERY_EDGE_LIMIT = 500;
+const SAFE_PUBLIC_CONTROL_QUERY = /^[A-Za-z0-9_./:@+-]{1,512}$/;
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -293,15 +311,65 @@ const EXTERNAL_AGGREGATE_EVIDENCE_MEASUREMENTS = [
   {name: 'cold-bazel-workspace-component-rows', unit: 'count'},
 ] as const;
 
+const EXTERNAL_MANAGER_EVIDENCE_MEASUREMENTS = [
+  {name: 'manager-catalog-cold', unit: 'milliseconds'},
+  {name: 'manager-catalog-warm', unit: 'milliseconds'},
+  {name: 'manager-overview-cold', unit: 'milliseconds'},
+  {name: 'manager-overview-warm', unit: 'milliseconds'},
+  {name: 'manager-detail-cold', unit: 'milliseconds'},
+  {name: 'manager-node-detail-cold', unit: 'milliseconds'},
+  {name: 'manager-render-proxy', unit: 'milliseconds'},
+  {name: 'manager-response-payload', unit: 'bytes'},
+  {name: 'manager-bounded-query', unit: 'milliseconds'},
+  {name: 'manager-bounded-query-payload', unit: 'bytes'},
+  {name: 'concurrent-worktree-isolation-duration', unit: 'milliseconds'},
+] as const;
+
 export const EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS = [
   ...PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS.filter(measurement => !measurement.name.startsWith('production-shape-')),
   ...EXTERNAL_AGGREGATE_EVIDENCE_MEASUREMENTS,
+  ...EXTERNAL_MANAGER_EVIDENCE_MEASUREMENTS,
 ] as const;
 
 export interface ExternalRepositoryQueryControl {
   readonly expectedLanguage: string;
   readonly expectedPath: string;
   readonly query: string;
+}
+
+export interface PublicGitHubRepositoryEvidence {
+  readonly name: string;
+  readonly url: string;
+}
+
+export interface ManagerPerformanceEvidence {
+  readonly catalogColdMilliseconds: readonly number[];
+  readonly catalogWarmMilliseconds: readonly number[];
+  readonly detailColdMilliseconds: readonly number[];
+  readonly edgeBudget: number;
+  readonly maxResponsePayloadBytes: readonly number[];
+  readonly nodeBudget: number;
+  readonly nodeDetailColdMilliseconds: readonly number[];
+  readonly overviewColdMilliseconds: readonly number[];
+  readonly overviewWarmMilliseconds: readonly number[];
+  readonly queryMilliseconds: readonly number[];
+  readonly queryPayloadBytes: readonly number[];
+  readonly renderProxyMilliseconds: readonly number[];
+  readonly snapshotBindingPassed: true;
+  readonly staleRequestCancellationPassed: true;
+}
+
+export interface ConcurrentWorktreeEvidence {
+  readonly durationMilliseconds: number;
+  readonly indexedFiles: number;
+  readonly isolationPassed: true;
+  readonly simultaneousWorktrees: number;
+  readonly topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home';
+}
+
+export interface BenchmarkStorageEnvironment {
+  readonly filesystem: string;
+  readonly medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network';
 }
 
 export type BenchmarkRuntimeProvenance =
@@ -321,6 +389,7 @@ interface PreparedCodeGraphBenchmarkFixture {
   readonly incrementalSourcePath?: string;
   readonly profile?: ProductionCodeGraphFixtureProfile;
   readonly preserveHomes?: Effect.Effect<void>;
+  readonly publicRepository?: PublicGitHubRepositoryEvidence;
   readonly queryText?: string;
   readonly referenceHome?: string;
   readonly repository: string;
@@ -360,6 +429,12 @@ const benchmarkCodeGraph = Effect.scoped(
     const largeEvidenceRun = options.profile === 'production-large' || options.repository !== undefined;
     const externalPrepared =
       options.repository !== undefined ? yield* prepareExternalCodeGraphFixture(options) : undefined;
+    if (externalPrepared && releaseEvidenceSource) {
+      assertPerformanceControlSet(externalPrepared.externalControls ?? []);
+      if (!externalPrepared.publicRepository) {
+        return yield* Effect.fail(new Error('Release-bound external evidence requires a public GitHub repository.'));
+      }
+    }
     const externalPreflight = externalPrepared
       ? yield* externalBenchmarkPreflight(
           fs,
@@ -544,25 +619,7 @@ const benchmarkCodeGraph = Effect.scoped(
       ? yield* Effect.forEach(
           prepared.externalControls,
           control =>
-            query
-              .inspect({
-                cwd: prepared.repository,
-                operation: 'query',
-                query: control.query,
-                refresh: false,
-                threadnoteHome: prepared.home,
-              })
-              .pipe(
-                Effect.map(result => ({
-                  ...assertExternalQueryPositiveControl(result, {
-                    expectedLanguage: control.expectedLanguage,
-                    expectedPath: control.expectedPath,
-                    expectedSnapshotId: cold.snapshot.id,
-                    phase: 'cold',
-                  }),
-                  language: control.expectedLanguage,
-                })),
-              ),
+            benchmarkExternalQueryControl(query, prepared.repository, prepared.home, control, cold.snapshot.id, 'cold'),
           {concurrency: 1},
         )
       : [];
@@ -703,25 +760,14 @@ const benchmarkCodeGraph = Effect.scoped(
       ? yield* Effect.forEach(
           prepared.externalControls,
           control =>
-            query
-              .inspect({
-                cwd: prepared.repository,
-                operation: 'query',
-                query: control.query,
-                refresh: false,
-                threadnoteHome: prepared.home,
-              })
-              .pipe(
-                Effect.map(result => ({
-                  ...assertExternalQueryPositiveControl(result, {
-                    expectedLanguage: control.expectedLanguage,
-                    expectedPath: control.expectedPath,
-                    expectedSnapshotId: incremental.snapshot.id,
-                    phase: 'incremental',
-                  }),
-                  language: control.expectedLanguage,
-                })),
-              ),
+            benchmarkExternalQueryControl(
+              query,
+              prepared.repository,
+              prepared.home,
+              control,
+              incremental.snapshot.id,
+              'incremental',
+            ),
           {concurrency: 1},
         )
       : [];
@@ -810,25 +856,14 @@ const benchmarkCodeGraph = Effect.scoped(
                 ? yield* Effect.forEach(
                     prepared.externalControls,
                     control =>
-                      query
-                        .inspect({
-                          cwd: prepared.repository,
-                          operation: 'query',
-                          query: control.query,
-                          refresh: false,
-                          threadnoteHome: sameOverlayReferenceHome,
-                        })
-                        .pipe(
-                          Effect.map(result => ({
-                            ...assertExternalQueryPositiveControl(result, {
-                              expectedLanguage: control.expectedLanguage,
-                              expectedPath: control.expectedPath,
-                              expectedSnapshotId: summary.snapshot.id,
-                              phase: 'same-overlay-reference',
-                            }),
-                            language: control.expectedLanguage,
-                          })),
-                        ),
+                      benchmarkExternalQueryControl(
+                        query,
+                        prepared.repository,
+                        sameOverlayReferenceHome,
+                        control,
+                        summary.snapshot.id,
+                        'same-overlay-reference',
+                      ),
                     {concurrency: 1},
                   )
                 : [];
@@ -881,6 +916,17 @@ const benchmarkCodeGraph = Effect.scoped(
     if (!analysisStatus.readySnapshot) {
       return yield* Effect.fail(new Error('Code graph benchmark could not resolve its ready snapshot for analysis.'));
     }
+    const managerPerformance = prepared.externalCommit
+      ? yield* benchmarkManagerPerformance(
+          prepared.home,
+          incremental.identity.repositoryId,
+          incremental.snapshot.id,
+          queryText,
+          options.samples,
+          options.warmups,
+        )
+      : undefined;
+    const storageEnvironment = prepared.externalCommit ? yield* benchmarkStorageEnvironment(prepared.home) : undefined;
     const analysisOptions = {
       databasePath: analysisStatus.databasePath,
       limits: {communities: 0, components: 0, hubs: 0, memberships: 0, surprisingLinks: 0},
@@ -987,6 +1033,10 @@ const benchmarkCodeGraph = Effect.scoped(
     const coldMaterializationStorage = coldTimeline.materializationStorage();
     const incrementalMaterializationStorage = incrementalTimeline.materializationStorage();
     const sameOverlayReferenceMaterializationStorage = sameOverlayReferenceTimeline.materializationStorage();
+    yield* runCheckpoint?.mark('concurrent-worktree-control') ?? Effect.void;
+    const concurrentWorktreeEvidence = prepared.externalCommit
+      ? yield* benchmarkConcurrentWorktreeIsolation(prepared.home)
+      : undefined;
     const [commit, dirty, hardware] = yield* Effect.all(
       [
         threadnoteSourceGit(threadnoteSourceRoot, ['rev-parse', 'HEAD']),
@@ -1150,6 +1200,8 @@ const benchmarkCodeGraph = Effect.scoped(
         ...externalQueryControlMeasurements('same-overlay-reference', sameOverlayReference.controls),
         ...externalQueryControlParityMeasurements(incrementalExternalQueryControls, sameOverlayReference.controls),
         ...mcpOperationMatrixMeasurements(mcpOperationMatrix),
+        ...managerPerformanceMeasurements(managerPerformance),
+        ...concurrentWorktreeMeasurements(concurrentWorktreeEvidence),
         ...(prepared.profile
           ? productionShapeMeasurements(prepared.profile, {
               edges: cold.snapshot.edgeCount,
@@ -1263,18 +1315,39 @@ const benchmarkCodeGraph = Effect.scoped(
         ...(options.scaleSymbols === undefined ? {} : {scaleSymbols: options.scaleSymbols}),
         ...(prepared.externalCommit
           ? {
+              benchmarkDiskFilesystem: storageEnvironment?.filesystem ?? 'unknown',
+              benchmarkDiskMedium: storageEnvironment?.medium ?? 'unknown',
+              benchmarkInventoryEligibleFiles: coldTimeline.inventoryEligibleFiles(),
+              benchmarkInventoryExcludedFiles: coldTimeline.inventoryExcludedFiles(),
+              benchmarkLogicalCpuCount: navigator.hardwareConcurrency,
               externalBenchmarkHomesRetained: options.retainHomes,
               externalControlCount: prepared.externalControls?.length ?? 0,
+              externalControlEvidence: retainedExternalControlEvidence(
+                prepared.externalControls ?? [],
+                coldExternalQueryControls,
+              ),
               externalControlLanguages:
                 prepared.externalControls?.map(control => control.expectedLanguage).join(',') ?? '',
               externalQueryPositiveControl:
-                'every cold and incremental control returned its expected tracked path and language; queries and paths omitted',
+                'every cold and incremental control returned its expected tracked public path and language; reviewed public controls retained',
               externalRepositoryCommit: prepared.externalCommit,
               externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
+              externalRepositoryName: prepared.publicRepository?.name ?? '',
+              externalRepositoryUrl: prepared.publicRepository?.url ?? '',
               externalSemanticOverlay:
                 'language-aware import or dependency with effective-state digest change enforcement',
               externalWorkspaceAggregate:
-                'cold total and Bazel workspace scope/component counts; repository names and roots omitted',
+                'cold total and Bazel workspace scope/component counts; local roots omitted and public GitHub identity retained',
+              managerEdgeBudget: managerPerformance?.edgeBudget ?? 0,
+              managerNodeBudget: managerPerformance?.nodeBudget ?? 0,
+              managerSnapshotBindingPassed: managerPerformance?.snapshotBindingPassed ?? false,
+              managerStaleRequestCancellationPassed: managerPerformance?.staleRequestCancellationPassed ?? false,
+              managerStaleRequestControl:
+                'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+              simultaneousWorktrees: concurrentWorktreeEvidence?.simultaneousWorktrees ?? 0,
+              worktreeIsolationIndexedFiles: concurrentWorktreeEvidence?.indexedFiles ?? 0,
+              worktreeIsolationPassed: concurrentWorktreeEvidence?.isolationPassed ?? false,
+              worktreeIsolationTopology: concurrentWorktreeEvidence?.topology ?? '',
             }
           : {}),
         ...(prepared.profile
@@ -1313,7 +1386,10 @@ const benchmarkCodeGraph = Effect.scoped(
         assertProductionLargeEvidence(artifact);
       }
     }
-    if (prepared.externalCommit) assertExternalRepositoryEvidence(artifact);
+    if (prepared.externalCommit) {
+      assertExternalRepositoryEvidence(artifact);
+      if (releaseEvidenceSource) assertExternalPerformanceEvidence(artifact);
+    }
     if (options.failOnBudget) {
       const budgetPath = yield* path.fromFileUrl(
         new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
@@ -1330,6 +1406,9 @@ const benchmarkCodeGraph = Effect.scoped(
     }
     if (prepared.externalCommit) {
       yield* verifyExternalRepositoryUnchanged(prepared.repository, prepared.externalCommit);
+      if (prepared.publicRepository) {
+        yield* verifyPublicRepositoryOrigin(prepared.repository, prepared.publicRepository);
+      }
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
@@ -1495,6 +1574,8 @@ export class IndexPhaseTimeline {
   readonly #points = new Map<IndexPhasePoint, bigint>();
   readonly #resources = new Map<IndexPhasePoint, ProcessTelemetry>();
   #lastProgressAt: bigint;
+  #inventoryEligibleFiles = 0;
+  #inventoryExcludedFiles = 0;
   #maximumActivationTransactionMilliseconds = 0;
   #maximumProgressHeartbeatGapMilliseconds = 0;
   #materializationDeduplicatedEdges = 0;
@@ -1521,6 +1602,8 @@ export class IndexPhaseTimeline {
         break;
       case 'scanning':
         this.#first('scanning:start', at, telemetry);
+        this.#inventoryEligibleFiles = Math.max(this.#inventoryEligibleFiles, progress.total);
+        this.#inventoryExcludedFiles = Math.max(this.#inventoryExcludedFiles, progress.excluded);
         if (progress.completed >= progress.total) this.#set('scanning:complete', at, telemetry);
         break;
       case 'materializing':
@@ -1648,6 +1731,14 @@ export class IndexPhaseTimeline {
 
   maximumProgressHeartbeatGapMilliseconds(): number {
     return this.#maximumProgressHeartbeatGapMilliseconds;
+  }
+
+  inventoryEligibleFiles(): number {
+    return this.#inventoryEligibleFiles;
+  }
+
+  inventoryExcludedFiles(): number {
+    return this.#inventoryExcludedFiles;
   }
 
   materializationDeduplicatedEdges(): number {
@@ -2997,6 +3088,38 @@ interface BenchmarkCodeGraphQuery {
   readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
 }
 
+const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQueryControl')(function* (
+  query: BenchmarkCodeGraphQuery,
+  repository: string,
+  threadnoteHome: string,
+  control: ExternalRepositoryQueryControl,
+  expectedSnapshotId: string,
+  phase: 'cold' | 'incremental' | 'same-overlay-reference',
+) {
+  const started = yield* Clock.currentTimeNanos;
+  const result = yield* query.inspect({
+    cwd: repository,
+    operation: 'query',
+    query: control.query,
+    refresh: false,
+    threadnoteHome,
+  });
+  const durationMilliseconds = Math.max(
+    Number.EPSILON,
+    Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
+  );
+  return {
+    ...assertExternalQueryPositiveControl(result, {
+      expectedLanguage: control.expectedLanguage,
+      expectedPath: control.expectedPath,
+      expectedSnapshotId,
+      phase,
+    }),
+    durationMilliseconds,
+    language: control.expectedLanguage,
+  } satisfies ExternalQueryControlResult;
+});
+
 const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMatrix')(function* (
   query: BenchmarkCodeGraphQuery,
   cwd: string,
@@ -3061,6 +3184,268 @@ function encodedBytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+interface TimedEffectResult<A> {
+  readonly durationMilliseconds: number;
+  readonly payloadBytes: number;
+  readonly value: A;
+}
+
+const timedJsonEffect = Effect.fn('benchmarkCodeGraph.timedJsonEffect')(function* <A>(
+  effect: Effect.Effect<A, unknown>,
+) {
+  const started = yield* Clock.currentTimeNanos;
+  const value = yield* effect;
+  const durationMilliseconds = Math.max(
+    Number.EPSILON,
+    Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
+  );
+  return {
+    durationMilliseconds,
+    payloadBytes: encodedBytes(JSON.stringify(value)),
+    value,
+  } satisfies TimedEffectResult<A>;
+});
+
+export function assertManagerVisualizationBounds(
+  label: string,
+  graph: Pick<GraphVisualization, 'edges' | 'nodes' | 'paging'>,
+  limits: {readonly edgeLimit: number; readonly nodeLimit: number},
+): void {
+  if (
+    graph.nodes.length > limits.nodeLimit ||
+    graph.edges.length > limits.edgeLimit ||
+    graph.paging.nodeLimit !== limits.nodeLimit ||
+    graph.paging.edgeLimit !== limits.edgeLimit
+  ) {
+    throw new Error(`Manager benchmark ${label} exceeded or misreported its requested graph budget.`);
+  }
+}
+
+export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.managerPerformance')(function* (
+  threadnoteHome: string,
+  expectedRepositoryId: string,
+  expectedSnapshotId: string,
+  queryText: string,
+  samples: number,
+  warmups: number,
+) {
+  const catalogCold = yield* timedJsonEffect(managerGraphCatalog(threadnoteHome));
+  const repositoryGroup = catalogCold.value.repositories.find(
+    repository => repository.repositoryId === expectedRepositoryId,
+  );
+  const indexedView = repositoryGroup?.views.find(
+    view => view.snapshot.id === expectedSnapshotId && view.snapshot.state === 'ready',
+  );
+  if (!indexedView) {
+    return yield* Effect.fail(new Error('Manager benchmark catalog did not expose the expected ready snapshot.'));
+  }
+  const expectedSnapshot = Option.some(expectedSnapshotId);
+  const catalogWarmSamples = Math.max(1, Math.min(samples, 5));
+  const catalogWarm = yield* Effect.forEach(
+    Array.from({length: catalogWarmSamples}),
+    () => timedJsonEffect(managerGraphCatalog(threadnoteHome)),
+    {concurrency: 1},
+  );
+  const overviewCold = yield* timedJsonEffect(
+    managerGraphVisualization(
+      threadnoteHome,
+      indexedView.id,
+      'all',
+      {edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT, nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT},
+      expectedSnapshot,
+    ),
+  );
+  const overviewWarm = yield* Effect.forEach(
+    Array.from({length: catalogWarmSamples}),
+    () =>
+      timedJsonEffect(
+        managerGraphVisualization(
+          threadnoteHome,
+          indexedView.id,
+          'all',
+          {edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT, nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT},
+          expectedSnapshot,
+        ),
+      ),
+    {concurrency: 1},
+  );
+  assertManagerVisualizationBounds('overview cold response', overviewCold.value, {
+    edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+    nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
+  });
+  for (const sample of overviewWarm) {
+    assertManagerVisualizationBounds('overview warm response', sample.value, {
+      edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+      nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
+    });
+  }
+  const project = indexedView.projects.find(candidate => (candidate.symbolCount ?? 1) > 0) ?? indexedView.projects[0];
+  if (!project) return yield* Effect.fail(new Error('Manager benchmark snapshot has no project detail scope.'));
+  const detailCold = yield* timedJsonEffect(
+    managerGraphVisualization(
+      threadnoteHome,
+      indexedView.id,
+      project.id,
+      {edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT, nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT},
+      expectedSnapshot,
+    ),
+  );
+  assertManagerVisualizationBounds('project detail response', detailCold.value, {
+    edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+    nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
+  });
+
+  for (let index = 0; index < warmups; index += 1) {
+    yield* managerGraphQuery(
+      threadnoteHome,
+      indexedView.id,
+      queryText,
+      {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+      expectedSnapshot,
+    );
+  }
+  const querySamples = yield* Effect.forEach(
+    Array.from({length: samples}),
+    () =>
+      timedJsonEffect(
+        managerGraphQuery(
+          threadnoteHome,
+          indexedView.id,
+          queryText,
+          {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+          expectedSnapshot,
+        ),
+      ),
+    {concurrency: 1},
+  );
+  const queryResult = querySamples[0]?.value;
+  if (!queryResult || queryResult.nodes.length === 0) {
+    return yield* Effect.fail(new Error('Manager benchmark bounded query returned no graph nodes.'));
+  }
+  for (const sample of querySamples) {
+    assertManagerVisualizationBounds('bounded query response', sample.value, {
+      edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
+      nodeLimit: MANAGER_QUERY_NODE_LIMIT,
+    });
+  }
+  const nodeDetail = yield* timedJsonEffect(
+    managerGraphNodeDetail(threadnoteHome, indexedView.id, queryResult.nodes[0]!.id, expectedSnapshot),
+  );
+  const renderGraph = [overviewCold.value, detailCold.value, queryResult].sort(
+    (left, right) => right.nodes.length + right.edges.length - (left.nodes.length + left.edges.length),
+  )[0]!;
+  const renderProxyMilliseconds: number[] = [];
+  for (let index = 0; index < samples; index += 1) {
+    const started = yield* Clock.currentTimeNanos;
+    const rendered = managerGraphClientRenderProxy(renderGraph as GraphVisualization);
+    renderProxyMilliseconds.push(
+      Math.max(Number.EPSILON, Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND),
+    );
+    if (rendered.nodes !== renderGraph.nodes.length || rendered.matchedEdges > renderGraph.edges.length) {
+      return yield* Effect.fail(new Error('Manager benchmark render proxy did not preserve its bounded graph input.'));
+    }
+  }
+
+  const staleSnapshotRejected = yield* managerGraphVisualization(
+    threadnoteHome,
+    indexedView.id,
+    'all',
+    {edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT, nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT},
+    Option.some(`cgsn_${'0'.repeat(40)}`),
+  ).pipe(Effect.match({onFailure: () => true, onSuccess: () => false}));
+  const snapshotBindingPassed =
+    overviewCold.value.repository.snapshot.id === expectedSnapshotId &&
+    detailCold.value.repository.snapshot.id === expectedSnapshotId &&
+    querySamples.every(sample => sample.value.repository.snapshot.id === expectedSnapshotId) &&
+    nodeDetail.value.snapshotId === expectedSnapshotId &&
+    staleSnapshotRejected;
+  if (!snapshotBindingPassed) {
+    return yield* Effect.fail(new Error('Manager benchmark did not preserve exact snapshot binding.'));
+  }
+
+  const scope = `${indexedView.id}:${expectedSnapshotId}:${queryText}:${MANAGER_QUERY_NODE_LIMIT}:${MANAGER_QUERY_EDGE_LIMIT}`;
+  const staleScope = `${scope}:stale`;
+  const staleController = new AbortController();
+  const currentController = new AbortController();
+  const staleFiber = yield* Effect.forkChild(
+    managerGraphQuery(
+      threadnoteHome,
+      indexedView.id,
+      queryText,
+      {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+      expectedSnapshot,
+    ),
+  );
+  staleController.abort();
+  const currentRequestResult = yield* managerGraphQuery(
+    threadnoteHome,
+    indexedView.id,
+    queryText,
+    {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+    expectedSnapshot,
+  );
+  const staleRequestResult = yield* Fiber.join(staleFiber);
+  assertManagerVisualizationBounds('aborted stale query response', staleRequestResult, {
+    edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
+    nodeLimit: MANAGER_QUERY_NODE_LIMIT,
+  });
+  assertManagerVisualizationBounds('current overlapping query response', currentRequestResult, {
+    edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
+    nodeLimit: MANAGER_QUERY_NODE_LIMIT,
+  });
+  const staleRequestCancellationPassed =
+    staleController.signal.aborted &&
+    !currentController.signal.aborted &&
+    !graphQueryRequestIsCurrent(
+      staleController.signal.aborted,
+      2,
+      1,
+      scope,
+      staleScope,
+      staleRequestResult as GraphQueryVisualization,
+      expectedSnapshotId,
+      queryText,
+    ) &&
+    graphQueryRequestIsCurrent(
+      currentController.signal.aborted,
+      2,
+      2,
+      scope,
+      scope,
+      currentRequestResult as GraphQueryVisualization,
+      expectedSnapshotId,
+      queryText,
+    );
+  if (!staleRequestCancellationPassed) {
+    return yield* Effect.fail(new Error('Manager benchmark stale-request cancellation control failed.'));
+  }
+
+  return {
+    catalogColdMilliseconds: [catalogCold.durationMilliseconds],
+    catalogWarmMilliseconds: catalogWarm.map(sample => sample.durationMilliseconds),
+    detailColdMilliseconds: [detailCold.durationMilliseconds],
+    edgeBudget: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+    maxResponsePayloadBytes: [
+      catalogCold.payloadBytes,
+      ...catalogWarm.map(sample => sample.payloadBytes),
+      overviewCold.payloadBytes,
+      ...overviewWarm.map(sample => sample.payloadBytes),
+      detailCold.payloadBytes,
+      nodeDetail.payloadBytes,
+      ...querySamples.map(sample => sample.payloadBytes),
+    ],
+    nodeBudget: MANAGER_GRAPH_MAX_NODE_LIMIT,
+    nodeDetailColdMilliseconds: [nodeDetail.durationMilliseconds],
+    overviewColdMilliseconds: [overviewCold.durationMilliseconds],
+    overviewWarmMilliseconds: overviewWarm.map(sample => sample.durationMilliseconds),
+    queryMilliseconds: querySamples.map(sample => sample.durationMilliseconds),
+    queryPayloadBytes: querySamples.map(sample => sample.payloadBytes),
+    renderProxyMilliseconds,
+    snapshotBindingPassed: true,
+    staleRequestCancellationPassed: true,
+  } satisfies ManagerPerformanceEvidence;
+});
+
 function mcpOperationMatrixMeasurements(
   results: readonly McpOperationBenchmarkResult[],
 ): ReturnType<typeof benchmarkMeasurement>[] {
@@ -3075,11 +3460,39 @@ function mcpOperationMatrixMeasurements(
   ]);
 }
 
-interface ExternalQueryControlResult {
+function managerPerformanceMeasurements(
+  evidence: ManagerPerformanceEvidence | undefined,
+): ReturnType<typeof benchmarkMeasurement>[] {
+  if (!evidence) return [];
+  return [
+    benchmarkMeasurement('manager-catalog-cold', 'milliseconds', evidence.catalogColdMilliseconds),
+    benchmarkMeasurement('manager-catalog-warm', 'milliseconds', evidence.catalogWarmMilliseconds),
+    benchmarkMeasurement('manager-overview-cold', 'milliseconds', evidence.overviewColdMilliseconds),
+    benchmarkMeasurement('manager-overview-warm', 'milliseconds', evidence.overviewWarmMilliseconds),
+    benchmarkMeasurement('manager-detail-cold', 'milliseconds', evidence.detailColdMilliseconds),
+    benchmarkMeasurement('manager-node-detail-cold', 'milliseconds', evidence.nodeDetailColdMilliseconds),
+    benchmarkMeasurement('manager-render-proxy', 'milliseconds', evidence.renderProxyMilliseconds),
+    benchmarkMeasurement('manager-response-payload', 'bytes', evidence.maxResponsePayloadBytes),
+    benchmarkMeasurement('manager-bounded-query', 'milliseconds', evidence.queryMilliseconds),
+    benchmarkMeasurement('manager-bounded-query-payload', 'bytes', evidence.queryPayloadBytes),
+  ];
+}
+
+function concurrentWorktreeMeasurements(
+  evidence: ConcurrentWorktreeEvidence | undefined,
+): ReturnType<typeof benchmarkMeasurement>[] {
+  return evidence
+    ? [benchmarkMeasurement('concurrent-worktree-isolation-duration', 'milliseconds', [evidence.durationMilliseconds])]
+    : [];
+}
+
+export interface ExternalQueryControlResult {
   readonly digest: string;
+  readonly durationMilliseconds: number;
   readonly expectedMatches: number;
   readonly language: string;
   readonly returnedNodes: number;
+  readonly stableNodeId: string;
 }
 
 function externalQueryControlMeasurements(
@@ -3087,6 +3500,9 @@ function externalQueryControlMeasurements(
   controls: readonly ExternalQueryControlResult[],
 ): ReturnType<typeof benchmarkMeasurement>[] {
   return controls.flatMap(control => [
+    benchmarkMeasurement(`external-query-${phase}-${control.language}-duration`, 'milliseconds', [
+      control.durationMilliseconds,
+    ]),
     benchmarkMeasurement(`external-query-${phase}-${control.language}-returned-nodes`, 'count', [
       control.returnedNodes,
     ]),
@@ -3103,9 +3519,89 @@ function externalQueryControlParityMeasurements(
   const referenceByLanguage = new Map(reference.map(control => [control.language, control]));
   return incremental.map(control =>
     benchmarkMeasurement(`external-query-${control.language}-same-overlay-structural-parity`, 'count', [
-      referenceByLanguage.get(control.language)?.digest === control.digest ? 1 : 0,
+      referenceByLanguage.get(control.language)?.digest === control.digest &&
+      referenceByLanguage.get(control.language)?.stableNodeId === control.stableNodeId
+        ? 1
+        : 0,
     ]),
   );
+}
+
+const performanceControlMetadataKey = (language: string): string => (language === 'bazel-build' ? 'bazel' : language);
+
+export function retainedExternalControlEvidence(
+  controls: readonly ExternalRepositoryQueryControl[],
+  coldResults: readonly ExternalQueryControlResult[],
+): string {
+  const resultByLanguage = new Map(coldResults.map(result => [result.language, result]));
+  const entries = controls
+    .map(control => {
+      const result = resultByLanguage.get(control.expectedLanguage);
+      if (!result) throw new Error('External control evidence is missing a cold query result.');
+      return [
+        performanceControlMetadataKey(control.expectedLanguage),
+        {
+          path: privacySafeExternalControlPath(control.expectedPath),
+          query: privacySafeExternalControlQuery(control.query),
+          stableNodeId: result.stableNodeId,
+        },
+      ] as const;
+    })
+    .sort(([left], [right]) => left.localeCompare(right, 'en'));
+  if (new Set(entries.map(([language]) => language)).size !== entries.length) {
+    throw new Error('External control evidence contains duplicate public language categories.');
+  }
+  return JSON.stringify(Object.fromEntries(entries));
+}
+
+function assertRetainedExternalControlEvidence(serialized: string, languages: readonly string[]): void {
+  const expectedKeys = languages.map(performanceControlMetadataKey).sort();
+  if (new Set(expectedKeys).size !== expectedKeys.length) {
+    throw new Error('External control evidence contains duplicate public language categories.');
+  }
+  const parsed = JSON.parse(serialized) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('External control evidence must be a JSON object.');
+  }
+  const evidence = parsed as Record<string, unknown>;
+  const actualKeys = Object.keys(evidence).sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error('External control evidence does not match its declared languages.');
+  }
+  for (const key of expectedKeys) {
+    const value = evidence[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('External control evidence entries must be JSON objects.');
+    }
+    const control = value as Record<string, unknown>;
+    const keys = Object.keys(control).sort();
+    if (keys.length !== 3 || keys[0] !== 'path' || keys[1] !== 'query' || keys[2] !== 'stableNodeId') {
+      throw new Error('External control evidence entries have unexpected fields.');
+    }
+    if (typeof control.path !== 'string' || privacySafeExternalControlPath(control.path) !== control.path) {
+      throw new Error('External control evidence contains an invalid public path.');
+    }
+    if (typeof control.query !== 'string' || privacySafeExternalControlQuery(control.query) !== control.query) {
+      throw new Error('External control evidence contains an invalid public query.');
+    }
+    if (typeof control.stableNodeId !== 'string' || !/^cgs_[a-f0-9]{32,64}$/.test(control.stableNodeId)) {
+      throw new Error('External control evidence contains an invalid stable node identity.');
+    }
+  }
+}
+
+export function assertPerformanceControlSet(controls: readonly ExternalRepositoryQueryControl[]): void {
+  const actual = [...new Set(controls.map(control => control.expectedLanguage))].sort();
+  const expected = [...PERFORMANCE_CONTROL_LANGUAGES].sort();
+  if (
+    controls.length !== PERFORMANCE_CONTROL_LANGUAGES.length ||
+    actual.length !== expected.length ||
+    actual.some((language, index) => language !== expected[index])
+  ) {
+    throw new Error(
+      `Release-bound external performance evidence requires exactly ${PERFORMANCE_CONTROL_LANGUAGES.join(', ')} controls.`,
+    );
+  }
 }
 
 function assertExternalQueryPositiveControl(
@@ -3116,17 +3612,27 @@ function assertExternalQueryPositiveControl(
     readonly expectedSnapshotId: string;
     readonly phase: 'cold' | 'incremental' | 'same-overlay-reference';
   },
-): {readonly digest: string; readonly expectedMatches: number; readonly returnedNodes: number} {
-  const expectedMatches = result.nodes.filter(
+): {
+  readonly digest: string;
+  readonly expectedMatches: number;
+  readonly returnedNodes: number;
+  readonly stableNodeId: string;
+} {
+  const expectedNodes = result.nodes.filter(
     node => node.path === expected.expectedPath && node.language === expected.expectedLanguage,
-  ).length;
-  if (result.snapshot.id !== expected.expectedSnapshotId || result.nodes.length === 0 || expectedMatches === 0) {
+  );
+  if (result.snapshot.id !== expected.expectedSnapshotId || result.nodes.length === 0 || expectedNodes.length === 0) {
     throw new Error(
       `External repository ${expected.phase} query did not resolve its expected tracked path and language; ` +
         'the query and path were omitted from this diagnostic.',
     );
   }
-  return {digest: queryResultStructuralDigest(result), expectedMatches, returnedNodes: result.nodes.length};
+  return {
+    digest: queryResultStructuralDigest(result),
+    expectedMatches: expectedNodes.length,
+    returnedNodes: result.nodes.length,
+    stableNodeId: expectedNodes[0]!.id,
+  };
 }
 
 function assertPrimaryQueryPositiveControl(
@@ -3261,15 +3767,97 @@ export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1):
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(artifact.metadata.sqliteVersion ?? ''))) {
     missing.push('SQLite version');
   }
+  for (const name of [
+    'benchmarkDiskFilesystem',
+    'benchmarkDiskMedium',
+    'externalControlEvidence',
+    'externalRepositoryName',
+    'externalRepositoryUrl',
+  ]) {
+    if (typeof artifact.metadata[name] !== 'string' || artifact.metadata[name].length === 0) {
+      missing.push(`${name} metadata`);
+    }
+  }
+  for (const name of [
+    'benchmarkInventoryEligibleFiles',
+    'benchmarkLogicalCpuCount',
+    'managerEdgeBudget',
+    'managerNodeBudget',
+    'simultaneousWorktrees',
+  ]) {
+    if (typeof artifact.metadata[name] !== 'number' || artifact.metadata[name] <= 0) {
+      missing.push(`${name} positive metadata`);
+    }
+  }
+  if (
+    typeof artifact.metadata.benchmarkInventoryExcludedFiles !== 'number' ||
+    artifact.metadata.benchmarkInventoryExcludedFiles < 0
+  ) {
+    missing.push('benchmarkInventoryExcludedFiles non-negative metadata');
+  }
+  if (artifact.metadata.managerSnapshotBindingPassed !== true) missing.push('Manager exact snapshot binding');
+  if (artifact.metadata.managerStaleRequestCancellationPassed !== true) {
+    missing.push('Manager stale-request cancellation');
+  }
+  if (
+    artifact.metadata.managerStaleRequestControl !==
+    'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate'
+  ) {
+    missing.push('overlapping Manager stale-result request control');
+  }
+  if (typeof artifact.metadata.simultaneousWorktrees !== 'number' || artifact.metadata.simultaneousWorktrees < 2) {
+    missing.push('at least two simultaneous worktrees');
+  }
+  if (artifact.metadata.worktreeIsolationPassed !== true) missing.push('concurrent worktree isolation');
+  if (artifact.metadata.worktreeIsolationTopology !== 'bounded-synthetic-linked-worktrees-in-measured-primary-home') {
+    missing.push('bounded shared-primary-home linked-worktree topology');
+  }
+  if (artifact.metadata.worktreeIsolationIndexedFiles !== 2) {
+    missing.push('bounded linked-worktree indexed file count');
+  }
   const controlLanguages = externalControlLanguages(artifact.metadata);
   if (controlLanguages.length === 0) missing.push('external query control languages');
   if (artifact.metadata.externalControlCount !== controlLanguages.length) missing.push('external query control count');
+  try {
+    assertRetainedExternalControlEvidence(String(artifact.metadata.externalControlEvidence ?? ''), controlLanguages);
+  } catch {
+    missing.push('privacy-safe external control evidence matching declared languages');
+  }
+  try {
+    const repository = publicGitHubRepositoryEvidence(String(artifact.metadata.externalRepositoryUrl ?? ''));
+    if (repository.name !== artifact.metadata.externalRepositoryName) {
+      missing.push('matching public GitHub repository identity');
+    }
+  } catch {
+    missing.push('public GitHub repository identity');
+  }
+  if (
+    !['rotational', 'solid-state', 'unknown', 'virtual-or-network'].includes(
+      String(artifact.metadata.benchmarkDiskMedium),
+    )
+  ) {
+    missing.push('privacy-safe disk medium category');
+  }
+  if (!/^[a-z0-9._+-]{1,64}$/.test(String(artifact.metadata.benchmarkDiskFilesystem))) {
+    missing.push('privacy-safe filesystem category');
+  }
+  if (!Number.isInteger(artifact.metadata.benchmarkLogicalCpuCount)) missing.push('integer logical CPU count');
+  if (!Number.isInteger(artifact.metadata.benchmarkInventoryEligibleFiles)) missing.push('integer eligible-file count');
+  if (!Number.isInteger(artifact.metadata.benchmarkInventoryExcludedFiles)) missing.push('integer excluded-file count');
+  if (artifact.metadata.managerNodeBudget !== MANAGER_GRAPH_MAX_NODE_LIMIT)
+    missing.push('reviewed Manager node budget');
+  if (artifact.metadata.managerEdgeBudget !== MANAGER_GRAPH_MAX_EDGE_LIMIT)
+    missing.push('reviewed Manager edge budget');
   if (artifact.metadata.mcpOperationCount !== 6) missing.push('complete six-operation MCP matrix');
   missing.push(...missingBenchmarkRuntimeProvenance(artifact));
   missing.push(...missingDeterministicParityEvidence(measurements));
   missing.push(...missingSamplerObservations(measurements));
   missing.push(...missingActivationObservations(artifact, measurements));
   for (const language of controlLanguages) {
+    const duration = measurements.get(`external-query-cold-${language}-duration`);
+    if (!duration || duration.unit !== 'milliseconds' || duration.maximum <= 0) {
+      missing.push(`external-query-cold-${language}-duration positive result`);
+    }
     for (const name of [
       `cold-materialized-file-rows-language-${language}`,
       `cold-materialized-symbol-rows-language-${language}`,
@@ -3303,6 +3891,72 @@ export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1):
   }
   if (missing.length > 0) {
     throw new Error(`External repository evidence is incomplete: ${missing.join(', ')}.`);
+  }
+}
+
+export function assertExternalPerformanceEvidence(artifact: BenchmarkArtifactV1): void {
+  assertExternalRepositoryEvidence(artifact);
+  const measurements = new Map(artifact.measurements.map(measurement => [measurement.name, measurement]));
+  const missing = [
+    ['manager-catalog-cold', 'milliseconds'],
+    ['manager-catalog-warm', 'milliseconds'],
+    ['manager-overview-cold', 'milliseconds'],
+    ['manager-overview-warm', 'milliseconds'],
+    ['manager-detail-cold', 'milliseconds'],
+    ['manager-node-detail-cold', 'milliseconds'],
+    ['manager-render-proxy', 'milliseconds'],
+    ['manager-response-payload', 'bytes'],
+    ['manager-bounded-query', 'milliseconds'],
+    ['manager-bounded-query-payload', 'bytes'],
+    ['concurrent-worktree-isolation-duration', 'milliseconds'],
+    ...PERFORMANCE_CONTROL_LANGUAGES.map(language => [`external-query-cold-${language}-duration`, 'milliseconds']),
+  ].flatMap(([name, unit]) => {
+    const measurement = measurements.get(name!);
+    return measurement?.unit === unit && measurement.maximum > 0 ? [] : [`${name} (${unit}) positive result`];
+  });
+  missing.push(...missingReleaseSourceProvenance(artifact));
+  const metadata = artifact.metadata;
+  if (metadata.benchmarkRuntimeProvenanceMode !== 'managed-exact-head') {
+    missing.push('managed exact-head benchmark runtime provenance');
+  }
+  const controlLanguages = externalControlLanguages(metadata);
+  if (
+    controlLanguages.length !== PERFORMANCE_CONTROL_LANGUAGES.length ||
+    [...controlLanguages]
+      .sort()
+      .some((language, index) => language !== [...PERFORMANCE_CONTROL_LANGUAGES].sort()[index])
+  ) {
+    missing.push('exact Java, Kotlin, TypeScript, and Bazel control set');
+  }
+  for (const name of [
+    'benchmarkDiskFilesystem',
+    'benchmarkDiskMedium',
+    'externalControlEvidence',
+    'externalRepositoryName',
+    'externalRepositoryUrl',
+  ]) {
+    if (typeof metadata[name] !== 'string' || metadata[name].length === 0) missing.push(`${name} metadata`);
+  }
+  for (const name of [
+    'benchmarkInventoryEligibleFiles',
+    'benchmarkLogicalCpuCount',
+    'managerEdgeBudget',
+    'managerNodeBudget',
+    'simultaneousWorktrees',
+  ]) {
+    if (typeof metadata[name] !== 'number' || metadata[name] <= 0) missing.push(`${name} positive metadata`);
+  }
+  if (typeof metadata.benchmarkInventoryExcludedFiles !== 'number' || metadata.benchmarkInventoryExcludedFiles < 0) {
+    missing.push('benchmarkInventoryExcludedFiles non-negative metadata');
+  }
+  if (metadata.managerSnapshotBindingPassed !== true) missing.push('Manager exact snapshot binding');
+  if (metadata.managerStaleRequestCancellationPassed !== true) missing.push('Manager stale-request cancellation');
+  if (typeof metadata.simultaneousWorktrees !== 'number' || metadata.simultaneousWorktrees < 2) {
+    missing.push('at least two simultaneous worktrees');
+  }
+  if (metadata.worktreeIsolationPassed !== true) missing.push('concurrent worktree isolation');
+  if (missing.length > 0) {
+    throw new Error(`External performance evidence is incomplete: ${missing.join(', ')}.`);
   }
 }
 
@@ -3870,12 +4524,13 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
   const repository = yield* fs.realPath(
     path.resolve((yield* repositoryGit(requestedRoot, ['rev-parse', '--show-toplevel'])).stdout.trim()),
   );
-  const [externalCommit, dirty] = yield* Effect.all(
+  const [externalCommit, dirty, origin] = yield* Effect.all(
     [
       repositoryGit(repository, ['rev-parse', 'HEAD']).pipe(Effect.map(result => result.stdout.trim())),
       repositoryGit(repository, CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS).pipe(Effect.map(result => result.stdout.trim())),
+      repositoryGit(repository, ['remote', 'get-url', 'origin']).pipe(Effect.map(result => result.stdout.trim())),
     ],
-    {concurrency: 2},
+    {concurrency: 3},
   );
   if (!EXACT_GIT_COMMIT_PATTERN.test(externalCommit)) {
     return yield* Effect.fail(new Error('External repository did not resolve to an exact Git commit.'));
@@ -3883,6 +4538,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
   if (dirty.length > 0) {
     return yield* Effect.fail(new Error('External repository benchmark requires a clean checkout.'));
   }
+  const publicRepository = publicGitHubRepositoryEvidence(origin);
 
   const artifactPath = yield* canonicalizeProspectivePath(fs, path, options.outputPath);
   const artifactContainment = path.relative(repository, artifactPath);
@@ -3904,7 +4560,11 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
         options.externalControls,
         control =>
           validateExternalTrackedRegularPath(fs, path, repository, control.expectedPath, '--control expectedPath').pipe(
-            Effect.map(expectedPath => ({...control, expectedPath})),
+            Effect.map(expectedPath => ({
+              ...control,
+              expectedPath: privacySafeExternalControlPath(expectedPath),
+              query: privacySafeExternalControlQuery(control.query),
+            })),
           ),
         {concurrency: 4},
       ),
@@ -3953,11 +4613,75 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
       homeReservation.preserve();
       referenceHomeReservation.preserve();
     }),
+    publicRepository,
     queryText: externalControls[0]!.query,
     referenceHome,
     repository,
   } satisfies PreparedCodeGraphBenchmarkFixture;
 });
+
+export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepositoryEvidence {
+  const trimmed = remote.trim();
+  const scp = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
+  const [owner, repository] = scp
+    ? ([scp[1]!, scp[2]!] as const)
+    : (() => {
+        let parsed: URL;
+        try {
+          parsed = new URL(trimmed);
+        } catch {
+          throw new Error('External benchmark origin must be a public GitHub repository URL.');
+        }
+        const allowedSshUser =
+          parsed.protocol === 'ssh:' && (parsed.username.length === 0 || parsed.username === 'git');
+        const credentialsAllowed = parsed.protocol === 'https:' ? parsed.username.length === 0 : allowedSshUser;
+        if (
+          parsed.hostname.toLowerCase() !== 'github.com' ||
+          !credentialsAllowed ||
+          parsed.password.length > 0 ||
+          parsed.port.length > 0 ||
+          parsed.search.length > 0 ||
+          parsed.hash.length > 0 ||
+          !['https:', 'ssh:'].includes(parsed.protocol)
+        ) {
+          throw new Error('External benchmark origin must be a public GitHub repository URL.');
+        }
+        const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
+        if (!match) throw new Error('External benchmark origin must be a public GitHub repository URL.');
+        return [match[1]!, match[2]!] as const;
+      })();
+  const name = `${owner}/${repository}`;
+  return {name, url: `https://github.com/${name}`};
+}
+
+export function privacySafeExternalControlQuery(query: string): string {
+  const value = query.trim();
+  if (
+    !SAFE_PUBLIC_CONTROL_QUERY.test(value) ||
+    credentialScrubberBlocker(value) !== undefined ||
+    value.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/.test(value) ||
+    value.startsWith('\\\\')
+  ) {
+    throw new Error('External benchmark controls must use a privacy-safe public symbol or repository-relative path.');
+  }
+  return value;
+}
+
+export function privacySafeExternalControlPath(path: string): string {
+  const normalized = path.replaceAll('\\', '/');
+  if (
+    normalized.length === 0 ||
+    normalized.length > 1_024 ||
+    normalized.startsWith('/') ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    credentialScrubberBlocker(normalized) !== undefined ||
+    normalized.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new Error('External benchmark control paths must be normalized repository-relative paths.');
+  }
+  return normalized;
+}
 
 const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome')(function* (
   fs: FileSystem.FileSystem,
@@ -4071,6 +4795,7 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
       hardwareConcurrency: navigator.hardwareConcurrency,
     }),
     physicalMemoryBytes: hardware.memoryBytes,
+    publicRepository: prepared.publicRepository,
     environment: benchmarkEnvironmentProvenance(),
     filesystemsShared: primaryCapacity.filesystem === referenceCapacity.filesystem,
     minimumFreeBytes,
@@ -4080,6 +4805,17 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
     tree,
     version: 1,
   } as const;
+});
+
+const verifyPublicRepositoryOrigin = Effect.fn('benchmarkCodeGraph.verifyPublicRepositoryOrigin')(function* (
+  repository: string,
+  expected: PublicGitHubRepositoryEvidence,
+) {
+  const remote = (yield* repositoryGit(repository, ['remote', 'get-url', 'origin'])).stdout.trim();
+  const actual = publicGitHubRepositoryEvidence(remote);
+  if (actual.name !== expected.name || actual.url !== expected.url) {
+    return yield* Effect.fail(new Error('External benchmark public repository identity changed during the run.'));
+  }
 });
 
 const filesystemCapacity = Effect.fn('benchmarkCodeGraph.filesystemCapacity')(function* (target: string) {
@@ -4094,6 +4830,154 @@ const filesystemCapacity = Effect.fn('benchmarkCodeGraph.filesystemCapacity')(fu
   }
   return {availableBytes: availableKilobytes * 1_024, filesystem};
 });
+
+export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storageEnvironment')(function* (
+  target: string,
+) {
+  const statArguments = process.platform === 'darwin' ? ['-f', '%T', target] : ['-f', '-c', '%T', target];
+  const filesystem = yield* runCommandEffect('stat', statArguments, {timeoutMs: 10_000}).pipe(
+    Effect.map(result => result.stdout.trim().toLowerCase()),
+    Effect.catch(() => Effect.succeed('unknown')),
+    Effect.map(value => (/^[a-z0-9._+-]{1,64}$/.test(value) ? value : 'unknown')),
+  );
+  let medium: BenchmarkStorageEnvironment['medium'] = 'unknown';
+  if (process.platform === 'darwin') {
+    const diskutil = Bun.which('diskutil') ?? '/usr/sbin/diskutil';
+    const info = yield* runCommandEffect(diskutil, ['info', target], {timeoutMs: 10_000}).pipe(
+      Effect.map(result => result.stdout),
+      Effect.catch(() => Effect.succeed('')),
+    );
+    if (/^\s*Solid State:\s+Yes\s*$/imu.test(info)) medium = 'solid-state';
+    else if (/^\s*Solid State:\s+No\s*$/imu.test(info)) medium = 'rotational';
+    else if (/^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info)) medium = 'virtual-or-network';
+  } else if (process.platform === 'linux') {
+    const source = yield* runCommandEffect('findmnt', ['-n', '-o', 'SOURCE', '--target', target], {
+      timeoutMs: 10_000,
+    }).pipe(
+      Effect.map(result => result.stdout.trim()),
+      Effect.catch(() => Effect.succeed('')),
+    );
+    if (/^(?:overlay|tmpfs|none|[a-z]+fs)(?:\[.*\])?$/iu.test(source)) medium = 'virtual-or-network';
+    else if (source.length > 0) {
+      const rotational = yield* runCommandEffect('lsblk', ['-n', '-o', 'ROTA', source], {timeoutMs: 10_000}).pipe(
+        Effect.map(result => result.stdout.trim().split(/\s+/).filter(Boolean)),
+        Effect.catch(() => Effect.succeed([] as string[])),
+      );
+      if (rotational.includes('1')) medium = 'rotational';
+      else if (rotational.includes('0')) medium = 'solid-state';
+    }
+  }
+  return {filesystem, medium} satisfies BenchmarkStorageEnvironment;
+});
+
+export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGraph.concurrentWorktreeIsolation')(
+  function* (threadnoteHome: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const indexer = yield* CodeGraphIndexer;
+    const query = yield* CodeGraphQueryService;
+    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-worktree-control-'});
+    const repository = path.join(root, 'repository');
+    const linkedWorktree = path.join(root, 'linked-worktree');
+    const started = yield* Clock.currentTimeNanos;
+    yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+    yield* fs.writeFileString(
+      path.join(repository, 'src', 'service.ts'),
+      'export const committedWorktreeSentinel = 0;\n',
+    );
+    yield* runCommandEffect('git', ['init', '--quiet'], {cwd: repository});
+    yield* runCommandEffect('git', ['config', 'user.name', 'Threadnote Benchmark'], {cwd: repository});
+    yield* runCommandEffect('git', ['config', 'user.email', 'benchmark@threadnote.invalid'], {cwd: repository});
+    yield* runCommandEffect('git', ['add', 'src/service.ts'], {cwd: repository});
+    yield* runCommandEffect('git', ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'fixture'], {
+      cwd: repository,
+    });
+    yield* runCommandEffect('git', ['worktree', 'add', '--quiet', '--detach', linkedWorktree, 'HEAD'], {
+      cwd: repository,
+    });
+    yield* Effect.all(
+      [
+        fs.writeFileString(path.join(repository, 'src', 'service.ts'), 'export const primaryWorktreeSentinel = 1;\n'),
+        fs.writeFileString(
+          path.join(linkedWorktree, 'src', 'service.ts'),
+          'export const linkedWorktreeSentinel = 2;\n',
+        ),
+      ],
+      {concurrency: 2},
+    );
+    const [primary, linked] = yield* Effect.all(
+      [indexer.index({cwd: repository, threadnoteHome}), indexer.index({cwd: linkedWorktree, threadnoteHome})],
+      {concurrency: 2},
+    );
+    const [primaryQuery, linkedQuery, primaryCrossQuery, linkedCrossQuery] = yield* Effect.all(
+      [
+        query.inspect({
+          cwd: repository,
+          operation: 'query',
+          query: 'primaryWorktreeSentinel',
+          refresh: false,
+          threadnoteHome,
+        }),
+        query.inspect({
+          cwd: linkedWorktree,
+          operation: 'query',
+          query: 'linkedWorktreeSentinel',
+          refresh: false,
+          threadnoteHome,
+        }),
+        query.inspect({
+          cwd: repository,
+          operation: 'query',
+          query: 'linkedWorktreeSentinel',
+          refresh: false,
+          threadnoteHome,
+        }),
+        query.inspect({
+          cwd: linkedWorktree,
+          operation: 'query',
+          query: 'primaryWorktreeSentinel',
+          refresh: false,
+          threadnoteHome,
+        }),
+      ],
+      {concurrency: 2},
+    );
+    const isolationPassed =
+      primary.identity.repositoryId === linked.identity.repositoryId &&
+      primary.identity.checkoutId === linked.identity.checkoutId &&
+      primary.identity.worktreeId !== linked.identity.worktreeId &&
+      primary.snapshot.worktreeId === primary.identity.worktreeId &&
+      linked.snapshot.worktreeId === linked.identity.worktreeId &&
+      primaryQuery.snapshot.worktreeId === primary.identity.worktreeId &&
+      linkedQuery.snapshot.worktreeId === linked.identity.worktreeId &&
+      primaryCrossQuery.snapshot.worktreeId === primary.identity.worktreeId &&
+      linkedCrossQuery.snapshot.worktreeId === linked.identity.worktreeId &&
+      primaryQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
+      !primaryQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+      linkedQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+      !linkedQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
+      !primaryCrossQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+      !linkedCrossQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel');
+    if (!isolationPassed) {
+      return yield* Effect.fail(new Error('Concurrent linked-worktree graph isolation control failed.'));
+    }
+    yield* fs.remove(
+      codeGraphLayout(path, threadnoteHome, primary.identity.checkoutId, primary.identity.worktreeId).repositoryRoot,
+      {force: true, recursive: true},
+    );
+    const durationMilliseconds = Math.max(
+      Number.EPSILON,
+      Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
+    );
+    return {
+      durationMilliseconds,
+      indexedFiles: primary.snapshot.fileCount + linked.snapshot.fileCount,
+      isolationPassed: true,
+      simultaneousWorktrees: 2,
+      topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+    } satisfies ConcurrentWorktreeEvidence;
+  },
+);
 
 function benchmarkEnvironmentProvenance(): Readonly<Record<string, string>> {
   return sanitizedBenchmarkEnvironmentProvenance(process.env);

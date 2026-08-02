@@ -5,6 +5,7 @@ import {
   EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS,
   PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT,
   PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS,
+  assertExternalPerformanceEvidence,
   assertExternalRepositoryEvidence,
   assertProductionReleaseEvidence,
   enforceCodeGraphBenchmarkBudget,
@@ -14,6 +15,7 @@ import {
   resolvedReleaseEvidenceSource,
 } from '../../scripts/benchmark-code-graph.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
+import {validateRetainedPerformancePayload} from '../../website/src/content/performance.js';
 
 const CODE_GRAPH_BUDGETS = 'test/evaluation/baselines/code-graph-v1/budgets.json';
 const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budgets.json';
@@ -663,6 +665,7 @@ describe('code graph release evidence', () => {
       'external-query-same-overlay-reference-java-expected-path-language-nodes',
       'external-query-java-same-overlay-structural-parity',
     ].map(name => benchmarkMeasurement(name, 'count', [1]));
+    controlMeasurements.push(benchmarkMeasurement('external-query-cold-java-duration', 'milliseconds', [10]));
     const mcpMeasurements = (['query', 'node', 'neighbors', 'explain', 'impact', 'path'] as const).flatMap(
       operation => [
         benchmarkMeasurement(`mcp-${operation}-duration`, 'milliseconds', [10]),
@@ -677,14 +680,38 @@ describe('code graph release evidence', () => {
         ...mcpMeasurements,
       ],
       {
+        benchmarkDiskFilesystem: 'ext4',
+        benchmarkDiskMedium: 'solid-state',
+        benchmarkInventoryEligibleFiles: 1,
+        benchmarkInventoryExcludedFiles: 0,
+        benchmarkLogicalCpuCount: 8,
         coldMaterializationStorageMode: 'direct-persistent',
         externalControlCount: 1,
+        externalControlEvidence: JSON.stringify({
+          java: {
+            path: 'src/Example.java',
+            query: 'ExampleService',
+            stableNodeId: `cgs_${'1'.repeat(32)}`,
+          },
+        }),
         externalControlLanguages: 'java',
         externalRepositoryCommit: '0123456789abcdef0123456789abcdef01234567',
+        externalRepositoryName: 'Example/public-repository',
+        externalRepositoryUrl: 'https://github.com/Example/public-repository',
+        managerEdgeBudget: 1_500,
+        managerNodeBudget: 500,
+        managerSnapshotBindingPassed: true,
+        managerStaleRequestCancellationPassed: true,
+        managerStaleRequestControl:
+          'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
         mcpOperationCount: 6,
         oneFileReindexMaterializationMode: 'incremental-overlay',
         sameOverlayReferenceMaterializationMode: 'full',
+        simultaneousWorktrees: 2,
         sqliteVersion: '3.49.1',
+        worktreeIsolationIndexedFiles: 2,
+        worktreeIsolationPassed: true,
+        worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
       },
       'code-graph-external-repository-v1',
     );
@@ -721,8 +748,167 @@ describe('code graph release evidence', () => {
         ),
       }),
     ).toThrow(/external-query-incremental-java-expected-path-language-nodes positive result/);
-    expect(JSON.stringify(artifact)).not.toContain('ExampleService');
-    expect(JSON.stringify(artifact)).not.toContain('src/Example.java');
+    expect(JSON.stringify(artifact)).toContain('ExampleService');
+    expect(JSON.stringify(artifact)).toContain('src/Example.java');
+    expect(JSON.stringify(artifact)).not.toMatch(/\/Users\/|[A-Za-z]:\\Users\\|threadnote:\/\//);
+  });
+
+  it('requires the complete release-bound public-repository performance contract', () => {
+    const languages = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
+    const controls = Object.fromEntries(
+      languages.map((language, index) => [
+        language === 'bazel-build' ? 'bazel' : language,
+        {
+          path: `src/control-${index}.${language === 'java' ? 'java' : language === 'kotlin' ? 'kt' : 'ts'}`,
+          query: `Control${index}`,
+          stableNodeId: `cgs_${String(index + 1).repeat(32)}`,
+        },
+      ]),
+    );
+    const controlMeasurements = languages.flatMap(language => [
+      benchmarkMeasurement(`cold-materialized-file-rows-language-${language}`, 'count', [1]),
+      benchmarkMeasurement(`cold-materialized-symbol-rows-language-${language}`, 'count', [1]),
+      benchmarkMeasurement(`external-query-cold-${language}-duration`, 'milliseconds', [10]),
+      benchmarkMeasurement(`external-query-cold-${language}-returned-nodes`, 'count', [1]),
+      benchmarkMeasurement(`external-query-cold-${language}-expected-path-language-nodes`, 'count', [1]),
+      benchmarkMeasurement(`external-query-incremental-${language}-returned-nodes`, 'count', [1]),
+      benchmarkMeasurement(`external-query-incremental-${language}-expected-path-language-nodes`, 'count', [1]),
+      benchmarkMeasurement(`external-query-same-overlay-reference-${language}-returned-nodes`, 'count', [1]),
+      benchmarkMeasurement(
+        `external-query-same-overlay-reference-${language}-expected-path-language-nodes`,
+        'count',
+        [1],
+      ),
+      benchmarkMeasurement(`external-query-${language}-same-overlay-structural-parity`, 'count', [1]),
+    ]);
+    const mcpMeasurements = (['query', 'node', 'neighbors', 'explain', 'impact', 'path'] as const).flatMap(
+      operation => [
+        benchmarkMeasurement(`mcp-${operation}-duration`, 'milliseconds', [10]),
+        benchmarkMeasurement(`mcp-${operation}-structured-output`, 'bytes', [1_024]),
+        benchmarkMeasurement(`mcp-${operation}-text-output`, 'bytes', [1_024]),
+      ],
+    );
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    const evidenceMeasurements = [
+      ...requiredReleaseMeasurements(EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS),
+      ...controlMeasurements,
+      ...mcpMeasurements,
+    ];
+    const evidenceMeasurementNames = new Set(evidenceMeasurements.map(measurement => measurement.name));
+    for (const [name, unit] of [
+      ['cold-index', 'milliseconds'],
+      ['cold-registration-lock-and-database-setup', 'milliseconds'],
+      ['cold-inventory-and-extraction', 'milliseconds'],
+      ['cold-materialization', 'milliseconds'],
+      ['cold-reference-resolution', 'milliseconds'],
+      ['cold-activation-lexical-only', 'milliseconds'],
+      ['one-file-reindex-index', 'milliseconds'],
+      ['same-overlay-full-rebuild-index', 'milliseconds'],
+      ['hot-exact-lexical-query', 'milliseconds'],
+      ['cold-materialized-file-rows', 'count'],
+      ['cold-materialized-symbol-rows', 'count'],
+      ['cold-materialized-edge-rows', 'count'],
+      ['cold-materialization-deduplicated-reference-rows-n1', 'count'],
+      ['cold-materialized-reference-candidate-rows-n1', 'count'],
+      ['cold-materialized-lookup-key-rows-n1', 'count'],
+      ['cold-materialized-lexical-term-rows', 'count'],
+      ['sqlite-main-disk', 'bytes'],
+      ['cold-process-peak-rss', 'bytes'],
+      ['cold-sqlite-wal-peak-observed', 'bytes'],
+      ['cold-sqlite-temp-peak-observed', 'bytes'],
+      ['cold-sqlite-durable-database-pages-high-water-n1', 'bytes'],
+      ['primary-query-structural-parity', 'count'],
+      ['structural-graph-digest-parity', 'count'],
+      ['manager-catalog-cold', 'milliseconds'],
+      ['manager-catalog-warm', 'milliseconds'],
+      ['manager-overview-cold', 'milliseconds'],
+      ['manager-overview-warm', 'milliseconds'],
+      ['manager-detail-cold', 'milliseconds'],
+      ['manager-render-proxy', 'milliseconds'],
+      ['manager-response-payload', 'bytes'],
+      ['manager-bounded-query', 'milliseconds'],
+      ['manager-bounded-query-payload', 'bytes'],
+    ] as const) {
+      if (!evidenceMeasurementNames.has(name)) evidenceMeasurements.push(benchmarkMeasurement(name, unit, [1]));
+    }
+    const artifact = benchmarkArtifact(
+      evidenceMeasurements,
+      {
+        benchmarkDiskFilesystem: 'apfs',
+        benchmarkDiskMedium: 'solid-state',
+        benchmarkInventoryEligibleFiles: 100,
+        benchmarkInventoryExcludedFiles: 10,
+        benchmarkLogicalCpuCount: 10,
+        benchmarkManagedDependencyInstallation: 'bun install --frozen-lockfile',
+        benchmarkManagedExecutableSha256: 'c'.repeat(64),
+        benchmarkManagedPayloadBytes: 1_024,
+        benchmarkManagedPayloadFileCount: 10,
+        benchmarkManagedPayloadManifestSha256: 'd'.repeat(64),
+        benchmarkManagedProcessLeaseInspection: 'complete',
+        benchmarkManagedReleaseMetadataSha256: 'e'.repeat(64),
+        benchmarkManagedRuntime: 'bun-test',
+        benchmarkManagedTarget: 'linux-x64',
+        benchmarkManagedVersion: `4.0.0.local.g${commit}`,
+        benchmarkRuntimeProvenanceMode: 'managed-exact-head',
+        coldMaterializationStorageMode: 'direct-persistent',
+        externalControlCount: 4,
+        externalControlEvidence: JSON.stringify(controls),
+        externalControlLanguages: languages.join(','),
+        externalRepositoryCommit: commit,
+        externalRepositoryName: 'JetBrains/intellij-community',
+        externalRepositoryUrl: 'https://github.com/JetBrains/intellij-community',
+        externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
+        managerEdgeBudget: 1_500,
+        managerNodeBudget: 500,
+        managerSnapshotBindingPassed: true,
+        managerStaleRequestCancellationPassed: true,
+        managerStaleRequestControl:
+          'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+        mcpOperationCount: 6,
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
+        releaseEvidenceResolvedSha: commit,
+        releaseEvidenceSha: commit,
+        retrievalMode: 'lexical-only',
+        sameOverlayReferenceMaterializationMode: 'full',
+        simultaneousWorktrees: 2,
+        sqliteVersion: '3.49.1',
+        structuralGraphDigestCold: '1'.repeat(64),
+        structuralGraphDigestIncremental: '2'.repeat(64),
+        structuralGraphDigestSameOverlayReference: '2'.repeat(64),
+        worktreeIsolationIndexedFiles: 2,
+        worktreeIsolationPassed: true,
+        worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+      },
+      'code-graph-external-repository-v1',
+    );
+
+    expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
+    expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    expect(() =>
+      assertExternalPerformanceEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, benchmarkRuntimeProvenanceMode: 'github-actions-clean-source'},
+      }),
+    ).toThrow(/managed exact-head benchmark runtime provenance/);
+    expect(() =>
+      assertExternalPerformanceEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, managerSnapshotBindingPassed: false},
+      }),
+    ).toThrow(/Manager exact snapshot binding/);
+    expect(() =>
+      assertExternalPerformanceEvidence({
+        ...artifact,
+        metadata: {
+          ...artifact.metadata,
+          externalControlEvidence: JSON.stringify({
+            ...controls,
+            java: {...controls.java, stableNodeId: 'not-a-stable-node'},
+          }),
+        },
+      }),
+    ).toThrow(/privacy-safe external control evidence matching declared languages/);
   });
 
   it('keeps materialization ceilings reviewed for every checked graph profile', () => {
@@ -854,7 +1040,7 @@ function benchmarkArtifact(
       node: 'bun/test',
       operatingSystem: 'linux',
       packageManager: 'bun/test',
-      runner: 'test',
+      runner: 'threadnote-code-graph-e2e',
       runnerVersion: '1',
     },
     measurements,

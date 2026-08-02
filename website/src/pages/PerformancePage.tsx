@@ -65,8 +65,8 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
       label: 'Manager',
       title: artifact ? 'Bounded views, retained measurements' : 'Manager performance remains gated',
       body: artifact
-        ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and render work with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget, snapshot binding, and stale-request cancellation.`
-        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, render, snapshot-binding, and stale-request-cancellation evidence together.',
+        ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and render work with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget, snapshot binding, and aborted stale-result rejection through the GraphWorkspace request gate.`
+        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, render, snapshot-binding, and aborted stale-result rejection evidence together.',
       detail: artifact
         ? `Query p95 ${formatDuration(artifact.manager.queryP95Milliseconds)} · max payload ${formatBytes(artifact.manager.queryMaxPayloadBytes)}`
         : 'Pending reviewed code + retained measurements',

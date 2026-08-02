@@ -92,6 +92,14 @@ describe('external code graph benchmark execution safety', () => {
             yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
             yield* fs.writeFileString(path.join(repository, 'src', 'index.ts'), 'export const indexSymbol = 1;\n');
             yield* runCommandEffect('git', ['init', '--quiet', repository]);
+            yield* runCommandEffect('git', [
+              '-C',
+              repository,
+              'remote',
+              'add',
+              'origin',
+              'https://github.com/Example/benchmark-fixture.git',
+            ]);
             yield* runCommandEffect('git', ['-C', repository, 'add', 'src/index.ts']);
             yield* runCommandEffect(
               'git',
@@ -212,9 +220,36 @@ describe('external code graph benchmark execution safety', () => {
         ).toBe(0);
         expect(result.artifactExists).toBe(true);
         expect(result.artifact?.metadata).toMatchObject({
+          externalRepositoryName: 'Example/benchmark-fixture',
+          externalRepositoryUrl: 'https://github.com/Example/benchmark-fixture',
+          managerSnapshotBindingPassed: true,
+          managerStaleRequestCancellationPassed: true,
+          managerStaleRequestControl:
+            'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
           oneFileReindexMaterializationMode: 'incremental-overlay',
           sameOverlayReferenceMaterializationMode: 'full',
+          simultaneousWorktrees: 2,
+          worktreeIsolationIndexedFiles: 2,
+          worktreeIsolationPassed: true,
+          worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
         });
+        for (const name of [
+          'external-query-cold-typescript-duration',
+          'manager-catalog-cold',
+          'manager-catalog-warm',
+          'manager-overview-cold',
+          'manager-overview-warm',
+          'manager-detail-cold',
+          'manager-render-proxy',
+          'manager-response-payload',
+          'manager-bounded-query',
+          'manager-bounded-query-payload',
+          'concurrent-worktree-isolation-duration',
+        ]) {
+          expect(result.artifact?.measurements.some((measurement: {name: string}) => measurement.name === name)).toBe(
+            true,
+          );
+        }
         expect(result.artifact?.metadata.structuralGraphDigestIncremental).toBe(
           result.artifact?.metadata.structuralGraphDigestSameOverlayReference,
         );

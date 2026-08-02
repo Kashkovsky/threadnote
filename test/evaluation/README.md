@@ -144,14 +144,17 @@ production repository that is already cloned locally, run the explicit soak mode
 
 ```sh
 bun run bench:code-graph -- \
-  --repository /path/to/clean/checkout \
+  --repository /path/to/clean/public-github-checkout \
   --incremental-path path/to/TrackedSource.java \
-  --control '{"query":"ExampleService","expectedPath":"path/to/TrackedSource.java","expectedLanguage":"java"}' \
+  --control '{"query":"PublicJavaSymbol","expectedPath":"path/to/TrackedSource.java","expectedLanguage":"java"}' \
+  --control '{"query":"PublicKotlinSymbol","expectedPath":"path/to/TrackedSource.kt","expectedLanguage":"kotlin"}' \
+  --control '{"query":"PublicTypeScriptSymbol","expectedPath":"path/to/tracked-source.ts","expectedLanguage":"typescript"}' \
+  --control '{"query":"PublicBazelSymbol","expectedPath":"path/to/rule.bzl","expectedLanguage":"bazel-build"}' \
   --home /large-volume/threadnote-primary \
   --reference-home /large-volume/threadnote-reference \
   --retain-homes \
-  --samples 1 --warmups 0 \
-  --output /path/outside/checkout/code-graph-external-n1.json
+  --samples 25 --warmups 5 \
+  --output /path/outside/checkout/code-graph-external.json
 ```
 
 The soak currently supports Linux and macOS, where both recursive process and SQLite temporary-file telemetry are
@@ -190,10 +193,20 @@ SQLite temporary root, required external sampler, and crash checkpoint. The arti
 24 KiB limits for both structured and text parts. Only latency, row counts, truncation state, and byte counts are
 retained—never graph content. All gates and final source/checkout checks run before the canonical artifact is written.
 
-The artifact omits repository paths, remote URLs, filenames, queries, and source content. It retains only expected
-language categories and aggregate counts proving that every cold, post-incremental, and reference control returned at
-least one node from its expected tracked path and language. Compare it only with the same external commit and runner
-class.
+The artifact omits local repository paths, credentials, and source content. It retains the canonical public GitHub
+repository name and HTTPS URL plus the reviewed public control queries, repository-relative paths, expected languages,
+and stable node IDs. These fields make the public result reproducible while aggregate counts prove that every cold,
+post-incremental, and reference control returned at least one node from its expected tracked path and language. Compare
+it only with the same external commit and runner class.
+
+Release-bound external evidence additionally measures cold/warm Manager catalog and overview operations, project and
+node detail, bounded Manager query latency and payload, and a deterministic client render proxy. Exact snapshot binding,
+stale/aborted request rejection, node/edge budgets, logical CPU count, filesystem, disk-medium category, and eligible and
+excluded inventory counts are mandatory binder metadata. Concurrent-worktree evidence reuses the measured primary
+Threadnote home: a bounded synthetic Git repository and one real linked worktree receive distinct dirty sentinels, are
+indexed concurrently, and are queried concurrently with positive and cross-negative controls to prove repository
+identity sharing without worktree leakage. The control reports its own duration and two indexed files; it does not
+repeat the public repository cold build.
 
 The production-large workflow additionally starts a 25 ms external sampler before it constructs the fixture, then
 uses distinct, non-overlapping bootstrap, cold-index, incremental-index, and same-overlay reference samplers. A prior
