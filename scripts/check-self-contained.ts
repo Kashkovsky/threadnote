@@ -165,6 +165,8 @@ const checkSelfContained = Effect.gen(function* () {
 
   const releaseMetadata = path.join(root, 'dist', 'release.json');
   if (yield* fs.exists(path.join(root, 'dist'))) {
+    const canonicalLogo = path.join(root, 'assets', 'brand', 'threadnote-logo.svg');
+    const packagedLogo = path.join(root, 'dist', 'assets', 'brand', 'threadnote-logo.svg');
     for (const directory of FORBIDDEN_RELEASE_DIRECTORIES) {
       if (yield* fs.exists(path.join(root, 'dist', directory))) {
         failures.push(`standalone build output contains website content: dist/${directory}`);
@@ -176,7 +178,7 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'runtime', 'node-llama-cpp.js'),
       path.join(root, 'dist', 'runtime', 'native'),
       path.join(root, 'dist', 'config', 'agent-instructions.md'),
-      path.join(root, 'dist', 'assets', 'brand', 'threadnote-logo.svg'),
+      packagedLogo,
       path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
       path.join(root, 'dist', 'assets', 'code-graph', 'runtime', 'web-tree-sitter.wasm'),
       path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'java.wasm'),
@@ -190,6 +192,13 @@ const checkSelfContained = Effect.gen(function* () {
       if (!(yield* fs.exists(required))) {
         failures.push(`standalone build output is missing: ${normalizePath(path.relative(root, required))}`);
       }
+    }
+    if (
+      (yield* fs.exists(canonicalLogo)) &&
+      (yield* fs.exists(packagedLogo)) &&
+      (yield* sha256FileHex(canonicalLogo)) !== (yield* sha256FileHex(packagedLogo))
+    ) {
+      failures.push('standalone build output does not contain the canonical Threadnote logo');
     }
     if (yield* fs.exists(path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'))) {
       yield* validateCodeGraphAssets(fs, path, path.join(root, 'dist', 'assets', 'code-graph'), failures);

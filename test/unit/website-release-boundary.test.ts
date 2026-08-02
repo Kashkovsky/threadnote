@@ -19,13 +19,14 @@ describe('website and standalone release boundary', () => {
   it('uses one small-scale graph mark across README, website, and packaged Manager surfaces', async () => {
     const canonicalPath = join(root, 'assets', 'brand', 'threadnote-logo.svg');
     const websitePath = join(root, 'website', 'public', 'threadnote-logo.svg');
-    const [canonical, website, readme, brand, managerSource, managerUi] = await Promise.all([
+    const [canonical, website, readme, brand, managerSource, managerUi, selfContainedCheck] = await Promise.all([
       readFile(canonicalPath, 'utf8'),
       readFile(websitePath, 'utf8'),
       readFile(join(root, 'README.md'), 'utf8'),
       readFile(join(root, 'website', 'src', 'components', 'Brand.tsx'), 'utf8'),
       readFile(join(root, 'src', 'manager.ts'), 'utf8'),
       readFile(join(root, 'src', 'manager_ui.tsx'), 'utf8'),
+      readFile(join(root, 'scripts', 'check-self-contained.ts'), 'utf8'),
     ]);
 
     expect(website).toBe(canonical);
@@ -35,6 +36,7 @@ describe('website and standalone release boundary', () => {
     expect(managerSource).toContain("directory: 'assets/brand'");
     expect(managerSource).not.toContain('threadnote-logo-inverted.svg');
     expect(managerUi).toContain('src="/threadnote-logo.svg"');
+    expect(selfContainedCheck).toContain('standalone build output does not contain the canonical Threadnote logo');
 
     expect(canonical).toContain('viewBox="0 0 4267 4267"');
     expect(canonical).toContain('fill="#67e8c7"');
