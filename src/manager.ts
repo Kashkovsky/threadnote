@@ -1,5 +1,5 @@
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
-import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effect';
+import {Console, Crypto, Effect, Encoding, FileSystem, Option, Path, Result} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
@@ -475,7 +475,17 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
       yield* managerGraphVisualization(
         context.config.agentContextHome,
         requiredQuery(url, 'repository'),
-        url.searchParams.get('project') ?? 'all',
+        Option.getOrElse(Option.fromNullishOr(url.searchParams.get('project')), () => 'all'),
+        {
+          ...Option.match(optionalPositiveIntegerQuery(url, 'edgeLimit'), {
+            onNone: () => ({}),
+            onSome: edgeLimit => ({edgeLimit}),
+          }),
+          ...Option.match(optionalPositiveIntegerQuery(url, 'nodeLimit'), {
+            onNone: () => ({}),
+            onSome: nodeLimit => ({nodeLimit}),
+          }),
+        },
       ),
     );
     return;
@@ -1519,6 +1529,13 @@ function requiredQuery(url: URL, name: string): string {
     throw new Error(`Missing query parameter: ${name}`);
   }
   return value;
+}
+
+function optionalPositiveIntegerQuery(url: URL, name: string): Option.Option<number> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => Number(value)),
+    Option.filter(value => Number.isSafeInteger(value) && value > 0),
+  );
 }
 
 function requireString(value: unknown, name: string): string {

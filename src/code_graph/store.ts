@@ -341,6 +341,7 @@ export interface CodeGraphVisualizationCatalog {
     readonly totalSymbols: number;
   };
   readonly activatedAt?: string;
+  readonly metrics: 'complete' | 'deferred';
   readonly model: 'legacy-fallback' | 'workspace';
   readonly projects: readonly CodeGraphVisualizationProject[];
   readonly repository: {
@@ -372,7 +373,8 @@ export type CodeGraphVisualizationScope =
   | {readonly type: 'component'; readonly value: string}
   | {readonly type: 'documentation-facet'}
   | {readonly type: 'package'; readonly value: string}
-  | {readonly type: 'path'; readonly value: string};
+  | {readonly type: 'path'; readonly value: string}
+  | {readonly type: 'unscoped'};
 
 export interface CodeGraphStoreShape {
   readonly withSession: <A, E, R>(
@@ -497,9 +499,11 @@ export interface CodeGraphStoreShape {
   ) => Effect.Effect<readonly CodeGraphSymbol[], CodeGraphStoreError>;
   readonly loadVisualizationCatalog: (
     databasePath: string,
+    metrics?: 'complete' | 'deferred',
   ) => Effect.Effect<CodeGraphVisualizationCatalog | undefined, CodeGraphStoreError>;
   readonly loadVisualizationCatalogs: (
     databasePath: string,
+    metrics?: 'complete' | 'deferred',
   ) => Effect.Effect<readonly CodeGraphVisualizationCatalog[], CodeGraphStoreError>;
   readonly loadVisualizationScopeEdges: (
     databasePath: string,
@@ -1173,17 +1177,19 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph embedding symbol page', cause)),
           ),
-        loadVisualizationCatalog: databasePath =>
+        loadVisualizationCatalog: (databasePath, metrics = 'complete') =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog()) : Effect.succeed(undefined),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog(undefined, metrics))
+                : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
           ),
-        loadVisualizationCatalogs: databasePath =>
+        loadVisualizationCatalogs: (databasePath, metrics = 'complete') =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs()) : Effect.succeed([]),
+              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs(metrics)) : Effect.succeed([]),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalogs', cause)),
           ),
@@ -10476,6 +10482,7 @@ const selectEmbeddingSymbolPage = Effect.fn('codeGraph.selectEmbeddingSymbolPage
 
 const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatalog')(function* (
   viewWorktreeId?: string,
+  metrics: 'complete' | 'deferred' = 'complete',
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -10508,6 +10515,147 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
           SELECT COUNT(*) AS count FROM workspace_components WHERE snapshot_id = ${row.id}
         `)[0]?.count ?? 0,
     ) > 0;
+  if (metrics === 'deferred') {
+    if (hasWorkspaceCatalog) {
+      const [workspaces, components, dependencies] = yield* Effect.all(
+        [
+          sql<{
+            readonly build_system: CodeGraphWorkspaceBuildSystem;
+            readonly id: string;
+            readonly name: string;
+            readonly provenance: CodeGraphWorkspaceProvenance;
+            readonly root: string;
+          }>`
+            SELECT id, build_system, name, root, provenance
+            FROM workspace_scopes
+            WHERE snapshot_id = ${row.id}
+            ORDER BY root, id
+          `,
+          sql<{
+            readonly build_system: CodeGraphWorkspaceBuildSystem;
+            readonly id: string;
+            readonly kind: CodeGraphWorkspaceComponentKind;
+            readonly name: string;
+            readonly provenance: CodeGraphWorkspaceProvenance;
+            readonly workspace_id: string;
+          }>`
+            SELECT id, workspace_id, build_system, kind, name, provenance
+            FROM workspace_components
+            WHERE snapshot_id = ${row.id}
+            ORDER BY name, root, id
+          `,
+          sql<{
+            readonly evidence: unknown;
+            readonly provenance: CodeGraphWorkspaceProvenance;
+            readonly source_component_id: string;
+            readonly target_component_id: string;
+          }>`
+            SELECT source_component_id, target_component_id, provenance, evidence
+            FROM workspace_component_dependencies
+            WHERE snapshot_id = ${row.id}
+            ORDER BY source_component_id, target_component_id, provenance
+          `,
+        ],
+        {concurrency: 1},
+      );
+      const dependenciesBySource = new Map<string, Array<(typeof dependencies)[number]>>();
+      for (const dependency of dependencies) {
+        const current = dependenciesBySource.get(dependency.source_component_id);
+        if (current) current.push(dependency);
+        else dependenciesBySource.set(dependency.source_component_id, [dependency]);
+      }
+      const projects: CodeGraphVisualizationProject[] = components.map(component => ({
+        buildSystem: component.build_system,
+        dependencies: (dependenciesBySource.get(component.id) ?? []).map(dependency => ({
+          ...(typeof dependency.evidence === 'string' ? {evidence: dependency.evidence} : {}),
+          provenance: dependency.provenance,
+          targetId: dependency.target_component_id,
+        })),
+        diagnostics: [],
+        fileCount: 0,
+        id: component.id,
+        kind: component.kind,
+        label: component.name,
+        languages: [],
+        model: 'component',
+        provenance: component.provenance,
+        sourceRoots: [],
+        symbolCount: 0,
+        workspaceId: component.workspace_id,
+        workspaceRoots: [],
+      }));
+      projects.push({
+        dependencies: [],
+        diagnostics: [],
+        fileCount: 0,
+        id: 'facet:unscoped',
+        kind: 'legacy-group',
+        label: 'Unscoped code and documentation',
+        languages: [],
+        model: 'facet',
+        provenance: 'inferred',
+        sourceRoots: [],
+        symbolCount: 0,
+        workspaceRoots: [],
+      });
+      return {
+        accounting: {
+          attributedSymbols: 0,
+          componentSymbols: 0,
+          fallbackSymbols: 0,
+          omittedSymbols: Number(row.symbol_count),
+          totalSymbols: Number(row.symbol_count),
+        },
+        ...(activatedAt ? {activatedAt} : {}),
+        metrics: 'deferred',
+        model: 'workspace',
+        projects,
+        repository: {displayName: row.display_name, repositoryId: row.repository_id},
+        snapshot: snapshotFromRow(row),
+        viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+        workspaces: workspaces.map(workspace => ({
+          buildSystem: workspace.build_system,
+          diagnostics: [],
+          id: workspace.id,
+          name: workspace.name,
+          provenance: workspace.provenance,
+          root: workspace.root,
+        })),
+      } satisfies CodeGraphVisualizationCatalog;
+    }
+    return {
+      accounting: {
+        attributedSymbols: Number(row.symbol_count),
+        componentSymbols: 0,
+        fallbackSymbols: Number(row.symbol_count),
+        omittedSymbols: 0,
+        totalSymbols: Number(row.symbol_count),
+      },
+      ...(activatedAt ? {activatedAt} : {}),
+      metrics: 'deferred',
+      model: 'legacy-fallback',
+      projects: [
+        {
+          dependencies: [],
+          diagnostics: [],
+          fileCount: Number(row.file_count),
+          id: 'facet:repository',
+          kind: 'legacy-group',
+          label: 'Repository symbols',
+          languages: [],
+          model: 'legacy-fallback',
+          provenance: 'legacy',
+          sourceRoots: [],
+          symbolCount: Number(row.symbol_count),
+          workspaceRoots: [],
+        },
+      ],
+      repository: {displayName: row.display_name, repositoryId: row.repository_id},
+      snapshot: snapshotFromRow(row),
+      viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+      workspaces: [],
+    } satisfies CodeGraphVisualizationCatalog;
+  }
   if (hasWorkspaceCatalog) {
     const [workspaces, components, unscopedGroups, dependencies] = yield* Effect.all(
       [
@@ -10599,10 +10747,11 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       ],
       {concurrency: 1},
     );
-    const dependenciesBySource = new Map<string, typeof dependencies>();
+    const dependenciesBySource = new Map<string, Array<(typeof dependencies)[number]>>();
     for (const dependency of dependencies) {
-      const current = dependenciesBySource.get(dependency.source_component_id) ?? [];
-      dependenciesBySource.set(dependency.source_component_id, [...current, dependency]);
+      const current = dependenciesBySource.get(dependency.source_component_id);
+      if (current) current.push(dependency);
+      else dependenciesBySource.set(dependency.source_component_id, [dependency]);
     }
     const projects: CodeGraphVisualizationProject[] = components.map(component => ({
       buildSystem: component.build_system,
@@ -10658,6 +10807,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         totalSymbols,
       },
       ...(activatedAt ? {activatedAt} : {}),
+      metrics: 'complete',
       model: 'workspace',
       projects,
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
@@ -10720,6 +10870,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       workspaceRoots: [],
     })),
     ...(activatedAt ? {activatedAt} : {}),
+    metrics: 'complete',
     model: 'legacy-fallback',
     repository: {
       displayName: row.display_name,
@@ -10731,7 +10882,9 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
   } satisfies CodeGraphVisualizationCatalog;
 });
 
-const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCatalogs')(function* () {
+const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCatalogs')(function* (
+  metrics: 'complete' | 'deferred' = 'complete',
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const worktrees = yield* sql<{readonly worktree_id: string}>`
@@ -10741,7 +10894,7 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
     WHERE snapshots.state = 'ready'
     ORDER BY worktree_id
   `;
-  return (yield* Effect.forEach(worktrees, row => selectVisualizationCatalog(row.worktree_id), {
+  return (yield* Effect.forEach(worktrees, row => selectVisualizationCatalog(row.worktree_id, metrics), {
     concurrency: 1,
   })).flatMap(catalog => (catalog ? [catalog] : []));
 });
@@ -10821,6 +10974,97 @@ const selectVisualizationScopeEdges = Effect.fn('codeGraph.selectVisualizationSc
   ];
 });
 
+export interface CodeGraphSqlQueryStatement {
+  readonly parameters: readonly (number | string)[];
+  readonly text: string;
+}
+
+export function codeGraphVisualizationSymbolsQueryStatement(
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  scope: CodeGraphVisualizationScope,
+  limit: number,
+): CodeGraphSqlQueryStatement {
+  const current = visualizationScopePredicate(scope, 'current_symbols');
+  const base = visualizationScopePredicate(scope, 'base_symbols');
+  const scopeIndex = scope.type === 'all' ? ' INDEXED BY symbols_export_order' : ' INDEXED BY symbols_resolution_scope';
+  const order =
+    scope.type === 'all'
+      ? 'path, qualified_name, id'
+      : `exported DESC,
+      CASE kind
+        WHEN 'package' THEN 0
+        WHEN 'module' THEN 1
+        WHEN 'class' THEN 2
+        WHEN 'interface' THEN 3
+        WHEN 'function' THEN 4
+        WHEN 'method' THEN 5
+        ELSE 6
+      END,
+      path,
+      qualified_name,
+      id`;
+  return {
+    parameters: [
+      snapshotId,
+      ...current.parameters,
+      baseSnapshotId ?? '',
+      ...base.parameters,
+      snapshotId,
+      snapshotId,
+      Math.max(1, Math.min(500, Math.floor(limit))),
+    ],
+    text: `WITH effective_symbols AS (
+      SELECT current_symbols.*
+      FROM symbols AS current_symbols${scopeIndex}
+      WHERE current_symbols.snapshot_id = ? AND ${current.text}
+      UNION ALL
+      SELECT base_symbols.*
+      FROM symbols AS base_symbols${scopeIndex}
+      WHERE base_symbols.snapshot_id = ? AND ${base.text}
+        AND NOT EXISTS (
+          SELECT 1 FROM symbols AS overrides
+          WHERE overrides.snapshot_id = ? AND overrides.id = base_symbols.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_symbol_deletions AS deletions
+          WHERE deletions.snapshot_id = ? AND deletions.symbol_id = base_symbols.id
+        )
+    )
+    SELECT *
+    FROM effective_symbols
+    ORDER BY ${order}
+    LIMIT ?`,
+  };
+}
+
+function visualizationScopePredicate(scope: CodeGraphVisualizationScope, alias: string): CodeGraphSqlQueryStatement {
+  const pathScope = `CASE WHEN instr(${alias}.path, '/') > 0 THEN substr(${alias}.path, 1, instr(${alias}.path, '/') - 1) ELSE '(root)' END`;
+  switch (scope.type) {
+    case 'all':
+      return {parameters: [], text: '1 = 1'};
+    case 'component':
+      return {parameters: [scope.value], text: `${alias}.resolution_scope_id = ?`};
+    case 'documentation-facet':
+      return {
+        parameters: [],
+        text: `${alias}.resolution_scope_id IS NULL AND (${alias}.language = 'markdown' OR ${alias}.kind IN ('document', 'heading', 'section'))`,
+      };
+    case 'package':
+      return {
+        parameters: [scope.value],
+        text: `${alias}.resolution_scope_id IS NULL AND ${alias}.package_name = ?`,
+      };
+    case 'path':
+      return {
+        parameters: [scope.value],
+        text: `${alias}.resolution_scope_id IS NULL AND (${alias}.package_name IS NULL OR trim(${alias}.package_name) = '') AND ${pathScope} = ?`,
+      };
+    case 'unscoped':
+      return {parameters: [], text: `${alias}.resolution_scope_id IS NULL`};
+  }
+}
+
 const selectVisualizationSymbols = Effect.fn('codeGraph.selectVisualizationSymbols')(function* (
   snapshotId: string,
   scope: CodeGraphVisualizationScope,
@@ -10829,44 +11073,8 @@ const selectVisualizationSymbols = Effect.fn('codeGraph.selectVisualizationSymbo
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
-  const pathScope = "CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE '(root)' END";
-  const predicate =
-    scope.type === 'component'
-      ? 'resolution_scope_id = ?'
-      : scope.type === 'documentation-facet'
-        ? "resolution_scope_id IS NULL AND (language = 'markdown' OR kind IN ('document', 'heading', 'section'))"
-        : scope.type === 'package'
-          ? 'resolution_scope_id IS NULL AND package_name = ?'
-          : scope.type === 'path'
-            ? `resolution_scope_id IS NULL AND (package_name IS NULL OR trim(package_name) = '') AND ${pathScope} = ?`
-            : '1 = 1';
-  const scopeParameters = scope.type === 'all' || scope.type === 'documentation-facet' ? [] : [scope.value];
-  const rows = yield* sql.unsafe<SymbolRow>(
-    `${effectiveSymbolsCte()}
-     SELECT *
-     FROM effective_symbols
-     WHERE ${predicate}
-     ORDER BY
-       exported DESC,
-       CASE kind
-         WHEN 'package' THEN 0
-         WHEN 'module' THEN 1
-         WHEN 'class' THEN 2
-         WHEN 'interface' THEN 3
-         WHEN 'function' THEN 4
-         WHEN 'method' THEN 5
-         ELSE 6
-       END,
-       path,
-       qualified_name,
-       id
-     LIMIT ?`,
-    [
-      ...effectiveSnapshotParameters(snapshotId, baseSnapshotId),
-      ...scopeParameters,
-      Math.max(1, Math.min(500, Math.floor(limit))),
-    ],
-  );
+  const statement = codeGraphVisualizationSymbolsQueryStatement(snapshotId, baseSnapshotId, scope, limit);
+  const rows = yield* sql.unsafe<SymbolRow>(statement.text, statement.parameters);
   return rows.map(symbolFromRow);
 });
 
@@ -10918,11 +11126,6 @@ const selectSearchSymbols = Effect.fn('codeGraph.selectSearchSymbols')(function*
 interface SearchSymbolRow extends SymbolRow {
   readonly exact_rank: number;
   readonly score: number;
-}
-
-export interface CodeGraphSqlQueryStatement {
-  readonly parameters: readonly (number | string)[];
-  readonly text: string;
 }
 
 const EXACT_SYMBOL_FIELDS = [

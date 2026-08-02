@@ -1140,6 +1140,13 @@ dd {
   white-space: nowrap;
 }
 
+.graph-stats > button {
+  border-radius: 999px;
+  font-size: 10px;
+  min-height: 26px;
+  padding: 4px 9px;
+}
+
 .gpu-badge {
   background: var(--accent-soft);
   border: 1px solid var(--accent-line);

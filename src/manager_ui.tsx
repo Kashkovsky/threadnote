@@ -11,6 +11,7 @@ import {
   type GraphNodeDetail,
   type GraphVisualization,
 } from './manager_graph.js';
+import type {ManagerGraphVisualizationLimits} from './manager_graph_limits.js';
 
 type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools';
 type NavTreeTab = 'memories' | 'resources';
@@ -1748,7 +1749,11 @@ function SharesPanel(props: {
   );
 }
 
-async function api<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+async function api<T>(
+  path: string,
+  body?: Record<string, unknown>,
+  options: {readonly signal?: AbortSignal} = {},
+): Promise<T> {
   const response = await fetch(path, {
     body: body ? JSON.stringify(body) : undefined,
     headers: {
@@ -1756,6 +1761,7 @@ async function api<T>(path: string, body?: Record<string, unknown>): Promise<T> 
       'content-type': 'application/json',
     },
     method: body ? 'POST' : 'GET',
+    signal: options.signal,
   });
   const data = (await response.json()) as {readonly error?: string};
   if (!response.ok) {
@@ -1764,19 +1770,32 @@ async function api<T>(path: string, body?: Record<string, unknown>): Promise<T> 
   return data as T;
 }
 
-function loadManagerGraph(repositoryId: string, projectId: string): Promise<GraphVisualization> {
+function loadManagerGraph(
+  repositoryId: string,
+  projectId: string,
+  limits: ManagerGraphVisualizationLimits,
+  signal: AbortSignal,
+): Promise<GraphVisualization> {
   return api<GraphVisualization>(
-    `/api/graph?repository=${encodeURIComponent(repositoryId)}&project=${encodeURIComponent(projectId)}`,
+    `/api/graph?repository=${encodeURIComponent(repositoryId)}&project=${encodeURIComponent(projectId)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
+    undefined,
+    {signal},
   );
 }
 
-function loadManagerGraphAnalysis(repositoryId: string): Promise<GraphAnalysis> {
-  return api<GraphAnalysis>(`/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}`);
+function loadManagerGraphAnalysis(repositoryId: string, signal: AbortSignal): Promise<GraphAnalysis> {
+  return api<GraphAnalysis>(`/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}`, undefined, {signal});
 }
 
-function loadManagerGraphNodeDetail(repositoryId: string, nodeId: string): Promise<GraphNodeDetail> {
+function loadManagerGraphNodeDetail(
+  repositoryId: string,
+  nodeId: string,
+  signal: AbortSignal,
+): Promise<GraphNodeDetail> {
   return api<GraphNodeDetail>(
     `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&node=${encodeURIComponent(nodeId)}`,
+    undefined,
+    {signal},
   );
 }
 

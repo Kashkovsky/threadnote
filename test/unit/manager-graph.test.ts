@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {
+  cacheGraphNodeDetail,
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
@@ -7,10 +8,12 @@ import {
   graphFocusLayoutTargets,
   graphFocusTarget,
   graphNodeSizeValues,
+  graphRequestIsCurrent,
   graphRepositoryOptionLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   graphWaiterCountForBuild,
+  graphWheelZoomFactor,
   graphWithNodeNeighborhood,
   resolveGraphSelection,
   type GraphEdge,
@@ -88,6 +91,12 @@ describe('manager graph focus', () => {
     expect(graphAnalysisRequestIsCurrent(4, 4, 'repo-a:snapshot-2', 'repo-a:snapshot-1')).toBe(false);
   });
 
+  it('rejects stale graph responses after a scope or request generation change', () => {
+    expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(true);
+    expect(graphRequestIsCurrent(8, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(false);
+    expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:other:240', 'repo:snapshot:component:240')).toBe(false);
+  });
+
   it('does not present unavailable topology as zero communities, components, or hubs', () => {
     const unavailable = graphAnalysis('unavailable', false);
     expect(graphAnalysisTopologyAvailable(unavailable)).toBe(false);
@@ -106,12 +115,18 @@ describe('manager graph focus', () => {
     });
   });
 
-  it('keeps a closer user zoom while centering the selected node', () => {
+  it('caps an excessive user zoom while centering the selected node', () => {
     expect(graphFocusTarget({x: 20, y: 30, zoom: 4.5}, {x: -90, y: 12}, 'overview')).toEqual({
       x: -90,
       y: 12,
-      zoom: 4.5,
+      zoom: 2.43,
     });
+  });
+
+  it('bounds a single wheel event before applying the global camera clamp', () => {
+    expect(graphWheelZoomFactor(-1_000_000)).toBe(1.38);
+    expect(graphWheelZoomFactor(1_000_000)).toBe(0.72);
+    expect(graphWheelZoomFactor(0)).toBe(1);
   });
 
   it('isolates incoming and outgoing selection neighborhoods after relation filtering', () => {
@@ -276,6 +291,7 @@ describe('manager graph focus', () => {
         graphNode('existing', 'CodeGraphQueryService'),
         graphNode('unrelated', 'unrelated'),
       ],
+      paging: {edgeLimit: 640, hasMore: false, nodeLimit: 240},
       projectId: 'package:threadnote',
       repository: {
         accounting: {
@@ -289,6 +305,7 @@ describe('manager graph focus', () => {
         displayName: 'threadnote',
         id: 'repository',
         label: 'repository',
+        metrics: 'complete' as const,
         model: 'workspace' as const,
         projects: [],
         snapshot: {
@@ -302,6 +319,7 @@ describe('manager graph focus', () => {
         worktreeId: 'worktree',
         workspaces: [],
       },
+      scope: {id: 'package:threadnote', label: 'threadnote'},
       stats: {
         renderedEdges: 1,
         renderedNodes: 3,
@@ -334,6 +352,20 @@ describe('manager graph focus', () => {
     expect(expanded.stats).toMatchObject({renderedEdges: 3, renderedNodes: 5});
     expect(expanded.warnings.at(-1)).toBe('Loaded 2 direct neighbors for withExclusiveFileLock.');
     expect(graph.nodes).toHaveLength(3);
+  });
+
+  it('bounds the node-detail cache and evicts the least recently refreshed entry', () => {
+    const cache = new Map<string, ReturnType<typeof nodeDetail>>();
+    for (let index = 0; index < 130; index += 1) {
+      cacheGraphNodeDetail(cache, `node-${index}`, nodeDetail(`node-${index}`, `node-${index}`, []), 128);
+    }
+    expect(cache.size).toBe(128);
+    expect(cache.has('node-0')).toBe(false);
+    expect(cache.has('node-1')).toBe(false);
+    cacheGraphNodeDetail(cache, 'node-2', cache.get('node-2')!, 128);
+    cacheGraphNodeDetail(cache, 'node-130', nodeDetail('node-130', 'node-130', []), 128);
+    expect(cache.has('node-2')).toBe(true);
+    expect(cache.has('node-3')).toBe(false);
   });
 });
 
@@ -372,6 +404,7 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
       displayName: id,
       id: viewId,
       label: viewId,
+      metrics: 'complete',
       model: 'workspace',
       projects: [],
       snapshot: {

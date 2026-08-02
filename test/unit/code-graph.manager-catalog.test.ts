@@ -6,7 +6,11 @@ import {Database} from 'bun:sqlite';
 import {Effect, Layer} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {groupManagerGraphRepositories, managerGraphCatalog} from '../../src/code_graph/visualization.js';
-import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
+import {
+  CodeGraphStore,
+  codeGraphVisualizationSymbolsQueryStatement,
+  type CodeGraphVisualizationCatalog,
+} from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import type {
@@ -217,6 +221,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         );
         return {
           catalog: yield* store.loadVisualizationCatalog(databasePath),
+          deferredCatalog: yield* store.loadVisualizationCatalog(databasePath, 'deferred'),
           scopeEdges: yield* store.loadVisualizationScopeEdges(databasePath, snapshot.id),
           unscoped: yield* store.loadVisualizationSymbols(databasePath, snapshot.id, {type: 'documentation-facet'}, 20),
         };
@@ -224,6 +229,7 @@ describe('Manager logical repository and workspace catalogs', () => {
     );
 
     expect(result.catalog?.model).toBe('workspace');
+    expect(result.catalog?.metrics).toBe('complete');
     expect(result.catalog?.projects.filter(project => project.label === 'core').map(project => project.id)).toEqual([
       'cgp_component_a',
       'cgp_component_b',
@@ -244,6 +250,18 @@ describe('Manager logical repository and workspace catalogs', () => {
       omittedSymbols: 0,
       totalSymbols: symbols.length,
     });
+    expect(result.deferredCatalog).toMatchObject({
+      accounting: {omittedSymbols: symbols.length, totalSymbols: symbols.length},
+      metrics: 'deferred',
+      model: 'workspace',
+    });
+    expect(result.deferredCatalog?.projects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({id: 'cgp_component_a', symbolCount: 0}),
+        expect.objectContaining({id: 'cgp_component_b', symbolCount: 0}),
+        expect.objectContaining({id: 'facet:unscoped', symbolCount: 0}),
+      ]),
+    );
     expect(result.unscoped.map(symbol => symbol.id)).toEqual(['symbol-doc']);
     expect(result.scopeEdges).toEqual(
       expect.arrayContaining([
@@ -270,6 +288,25 @@ describe('Manager logical repository and workspace catalogs', () => {
         }),
       ]),
     );
+    const queryPlanDatabase = new Database(databasePath, {readonly: true});
+    const componentStatement = codeGraphVisualizationSymbolsQueryStatement(
+      snapshot.id,
+      undefined,
+      {type: 'component', value: 'cgp_component_a'},
+      157,
+    );
+    const queryPlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${componentStatement.text}`)
+      .all(...componentStatement.parameters) as readonly {readonly detail: string}[];
+    expect(
+      queryPlan.some(row => row.detail.includes('symbols_resolution_scope (snapshot_id=? AND resolution_scope_id=?)')),
+    ).toBe(true);
+    const repositoryStatement = codeGraphVisualizationSymbolsQueryStatement(snapshot.id, undefined, {type: 'all'}, 157);
+    const repositoryPlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${repositoryStatement.text}`)
+      .all(...repositoryStatement.parameters) as readonly {readonly detail: string}[];
+    queryPlanDatabase.close();
+    expect(repositoryPlan.some(row => row.detail.includes('symbols_export_order (snapshot_id=?)'))).toBe(true);
   });
 
   it('groups checkouts only by logical repository identity and defaults to the newest activation', () => {
@@ -490,6 +527,7 @@ function catalogFixture(
       totalSymbols: symbolCount,
     },
     activatedAt,
+    metrics: 'complete',
     model: 'workspace',
     projects: [],
     repository: {displayName, repositoryId},

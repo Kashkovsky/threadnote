@@ -23,6 +23,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphEdge,
@@ -106,19 +107,85 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
     repositoryId: 'b'.repeat(64),
     worktreeId: 'c'.repeat(64),
   };
+  const generatedSymbols = Array.from({length: 520}, (_, index) => {
+    const suffix = index.toString().padStart(4, '0');
+    return graphSymbol(
+      `generated-${suffix}`,
+      `generatedFunction${suffix}`,
+      `packages/app/src/generated/${suffix}.ts`,
+      '@acme/app',
+      'function',
+      'cgp_app',
+    );
+  });
   const files: readonly CodeGraphInventoryFile[] = [
     graphFile('packages/app/src/index.ts', 'app-index'),
     graphFile('packages/app/src/view.ts', 'app-view'),
     graphFile('packages/core/src/api.ts', 'core-api'),
+    ...generatedSymbols.map(symbol => graphFile(symbol.path, symbol.id)),
   ];
   const symbols: readonly CodeGraphSymbol[] = [
-    graphSymbol('app', 'App', 'packages/app/src/index.ts', '@acme/app', 'class'),
-    graphSymbol('view', 'renderView', 'packages/app/src/view.ts', '@acme/app', 'function'),
-    graphSymbol('api', 'createApi', 'packages/core/src/api.ts', '@acme/core', 'function'),
+    graphSymbol('app', 'App', 'packages/app/src/index.ts', '@acme/app', 'class', 'cgp_app'),
+    graphSymbol('view', 'renderView', 'packages/app/src/view.ts', '@acme/app', 'function', 'cgp_app'),
+    graphSymbol('api', 'createApi', 'packages/core/src/api.ts', '@acme/core', 'function', 'cgp_core'),
+    ...generatedSymbols,
   ];
+  const workspace: CodeGraphWorkspace = {
+    diagnostics: [],
+    fingerprint: 'manager-workspace',
+    projects: [
+      {
+        buildSystem: 'node',
+        dependencies: ['cgp_core'],
+        dependencyDetails: [{evidence: 'package.json', provenance: 'declared', targetId: 'cgp_core'}],
+        diagnostics: [],
+        id: 'cgp_app',
+        kind: 'package',
+        languages: ['typescript'],
+        name: '@acme/app',
+        provenance: 'declared',
+        resolutionDomain: 'typescript',
+        root: 'packages/app',
+        sourceRoots: ['packages/app/src'],
+        workspaceId: 'cgw_root',
+        workspaceRoots: ['.'],
+      },
+      {
+        buildSystem: 'node',
+        dependencies: [],
+        dependencyDetails: [],
+        diagnostics: [],
+        id: 'cgp_core',
+        kind: 'package',
+        languages: ['typescript'],
+        name: '@acme/core',
+        provenance: 'declared',
+        resolutionDomain: 'typescript',
+        root: 'packages/core',
+        sourceRoots: ['packages/core/src'],
+        workspaceId: 'cgw_root',
+        workspaceRoots: ['.'],
+      },
+    ],
+    workspaces: [
+      {
+        buildSystem: 'node',
+        diagnostics: [],
+        id: 'cgw_root',
+        name: 'platform',
+        provenance: 'declared',
+        root: '.',
+      },
+    ],
+  };
   const edges: readonly CodeGraphEdge[] = [
     graphEdge('app-view', 'app', 'App', 'view', 'renderView', 'calls'),
     graphEdge('app-api', 'app', 'App', 'api', 'createApi', 'imports'),
+    ...Array.from({length: 1_600}, (_, index) => {
+      const source = generatedSymbols[index % generatedSymbols.length]!;
+      const target = generatedSymbols[(index * 17 + 1) % generatedSymbols.length]!;
+      return graphEdge(`generated-edge-${index}`, source.id, source.name, target.id, target.name, 'calls');
+    }),
   ];
   const snapshot: CodeGraphSnapshot = {
     commit: identity.headCommit,
@@ -138,7 +205,16 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
       const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
-      yield* store.activate(layout.databasePath, identity, snapshot, files, symbols, edges);
+      yield* store.initialize(layout.databasePath);
+      yield* store.withSession(
+        layout.databasePath,
+        Effect.gen(function* () {
+          yield* store.prepareActivation(layout.databasePath, files);
+          yield* store.stageWorkspaceCatalog(layout.databasePath, workspace);
+          yield* store.stageActivationFacts(layout.databasePath, symbols, edges);
+          yield* store.activateStaged(layout.databasePath, identity, snapshot);
+        }),
+      );
       yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
     }),
   );
@@ -157,7 +233,14 @@ function graphFile(path: string, hash: string): CodeGraphInventoryFile {
   };
 }
 
-function graphSymbol(id: string, name: string, path: string, packageName: string, kind: string): CodeGraphSymbol {
+function graphSymbol(
+  id: string,
+  name: string,
+  path: string,
+  packageName: string,
+  kind: string,
+  resolutionScopeId: string,
+): CodeGraphSymbol {
   return {
     contentHash: id.padEnd(64, '0'),
     documentation: `Documentation for ${name}.`,
@@ -169,6 +252,8 @@ function graphSymbol(id: string, name: string, path: string, packageName: string
     packageName,
     path,
     qualifiedName: name,
+    resolutionDomain: 'typescript',
+    resolutionScopeId,
     signature: `export ${kind} ${name}`,
     span: {column: 3, endColumn: 12, endLine: 9, line: 7},
   };
@@ -479,8 +564,8 @@ describe('manager http API', () => {
       });
       expect(catalog.repositories[0]?.views[0]?.projects).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({id: 'package:@acme/app', symbolCount: 2}),
-          expect.objectContaining({id: 'package:@acme/core', symbolCount: 1}),
+          expect.objectContaining({id: 'cgp_app', symbolCount: 0}),
+          expect.objectContaining({id: 'cgp_core', symbolCount: 0}),
         ]),
       );
 
@@ -494,22 +579,26 @@ describe('manager http API', () => {
       expect(overview.mode).toBe('overview');
       expect(overview.nodes).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({id: 'package:@acme/app', type: 'project'}),
-          expect.objectContaining({id: 'package:@acme/core', type: 'project'}),
+          expect.objectContaining({id: 'cgp_app', type: 'project'}),
+          expect.objectContaining({id: 'cgp_core', type: 'project'}),
         ]),
       );
       expect(overview.edges).toEqual(
-        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'imports'})]),
+        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'depends_on'})]),
       );
 
+      const detailStartedAt = performance.now();
       const detailResponse = await fetch(
-        `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('package:@acme/app')}`,
+        `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('cgp_app')}`,
         {headers},
       );
-      const detail = (await detailResponse.json()) as {
-        readonly edges: readonly {readonly relation: string}[];
+      const detailElapsedMilliseconds = performance.now() - detailStartedAt;
+      const detailText = await detailResponse.text();
+      const detail = JSON.parse(detailText) as {
+        readonly edges: readonly {readonly relation: string; readonly sourceId: string; readonly targetId: string}[];
         readonly mode: string;
         readonly nodes: readonly {readonly degree: number; readonly id: string; readonly type: string}[];
+        readonly paging: {readonly edgeLimit: number; readonly hasMore: boolean; readonly nodeLimit: number};
       };
       expect(detailResponse.status).toBe(200);
       expect(detail.mode).toBe('detail');
@@ -526,8 +615,34 @@ describe('manager http API', () => {
           expect.objectContaining({relation: 'imports'}),
         ]),
       );
-      expect(detail.nodes.length).toBeLessThanOrEqual(900);
-      expect(detail.edges.length).toBeLessThanOrEqual(3_000);
+      expect(detail.nodes.length).toBeLessThanOrEqual(240);
+      expect(detail.edges.length).toBeLessThanOrEqual(640);
+      const detailNodeIds = new Set(detail.nodes.map(node => node.id));
+      expect(detail.edges.every(edge => detailNodeIds.has(edge.sourceId) && detailNodeIds.has(edge.targetId))).toBe(
+        true,
+      );
+      expect(detail.paging).toEqual({edgeLimit: 640, hasMore: true, nodeLimit: 240});
+      expect(new TextEncoder().encode(detailText).byteLength).toBeLessThan(500_000);
+      expect(detailElapsedMilliseconds).toBeLessThan(1_500);
+
+      const expandedStartedAt = performance.now();
+      const expandedResponse = await fetch(
+        `${server.url}/api/graph?repository=${repositoryId}&project=${encodeURIComponent('cgp_app')}&nodeLimit=999999&edgeLimit=999999`,
+        {headers},
+      );
+      const expandedElapsedMilliseconds = performance.now() - expandedStartedAt;
+      const expandedText = await expandedResponse.text();
+      const expanded = JSON.parse(expandedText) as {
+        readonly edges: readonly unknown[];
+        readonly nodes: readonly unknown[];
+        readonly paging: {readonly edgeLimit: number; readonly nodeLimit: number};
+      };
+      expect(expandedResponse.status).toBe(200);
+      expect(expanded.paging).toMatchObject({edgeLimit: 1_500, nodeLimit: 500});
+      expect(expanded.nodes.length).toBeLessThanOrEqual(500);
+      expect(expanded.edges.length).toBeLessThanOrEqual(1_500);
+      expect(new TextEncoder().encode(expandedText).byteLength).toBeLessThan(1_250_000);
+      expect(expandedElapsedMilliseconds).toBeLessThan(2_000);
 
       const nodeResponse = await fetch(
         `${server.url}/api/graph/node?repository=${repositoryId}&node=${encodeURIComponent('app')}`,
@@ -587,7 +702,7 @@ describe('manager http API', () => {
         readonly trust: {readonly classification: string};
       };
       expect(analysisResponse.status).toBe(200);
-      expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 2, analyzedNodeCount: 3});
+      expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 1_602, analyzedNodeCount: 523});
       expect(analysis.trust.classification).toBe('untrusted-repository-data');
     } finally {
       await server.close();
