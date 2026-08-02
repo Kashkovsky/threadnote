@@ -3,7 +3,11 @@ import {Database} from 'bun:sqlite';
 import {Clock, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import type {CodeGraphSqliteWriterSettings, CodeGraphSqliteWriterTuning} from '../src/code_graph/store.js';
+import {
+  CodeGraphStore,
+  type CodeGraphSqliteWriterSettings,
+  type CodeGraphSqliteWriterTuning,
+} from '../src/code_graph/store.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
@@ -45,6 +49,9 @@ const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const EXTERNAL_SAMPLER_READY_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_STOP_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS = 1_000;
+const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
+const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS = 5 * 60_000;
+const STRUCTURAL_DIGEST_ROW_CHUNK_SIZE = 10_000;
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -887,20 +894,39 @@ const benchmarkCodeGraph = Effect.scoped(
       cold.snapshot.id,
     );
     const sqliteVersion = sqliteVersionString(analysisStatus.databasePath);
-    const coldStructuralGraphDigest = sqliteStructuralGraphDigest(analysisStatus.databasePath, cold.snapshot.id);
-    const incrementalStructuralGraphDigest = sqliteStructuralGraphDigest(
+    const coldStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
+      analysisStatus.databasePath,
+      cold.snapshot.id,
+    );
+    const incrementalStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       analysisStatus.databasePath,
       incremental.snapshot.id,
     );
+    const coldStructuralGraphDigest = coldStructuralGraphEvidence.digest;
+    const incrementalStructuralGraphDigest = incrementalStructuralGraphEvidence.digest;
     if (coldStructuralGraphDigest === incrementalStructuralGraphDigest) {
       return yield* Effect.fail(
         new Error('The semantic one-file overlay did not change the structural code graph digest.'),
       );
     }
-    const sameOverlayReferenceStructuralGraphDigest = sqliteStructuralGraphDigest(
+    const sameOverlayReferenceStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       sameOverlayReferenceLayout.databasePath,
       sameOverlayReference.summary.snapshot.id,
     );
+    const sameOverlayReferenceStructuralGraphDigest = sameOverlayReferenceStructuralGraphEvidence.digest;
+    const structuralGraphParityEvidence = codeGraphStructuralParityEvidence(
+      incrementalStructuralGraphEvidence,
+      sameOverlayReferenceStructuralGraphEvidence,
+    );
+    if (!structuralGraphParityEvidence.parity) {
+      if (options.outputPath) {
+        yield* atomicWrite(
+          `${options.outputPath}.structural-parity.json`,
+          `${JSON.stringify(structuralGraphParityEvidence, undefined, 2)}\n`,
+        );
+      }
+      return yield* Effect.fail(new Error(codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)));
+    }
     const coldLanguageCounts = sqliteLanguageCounts(analysisStatus.databasePath, cold.snapshot.id);
     const coldWorkspaceScopeRows = sqliteRowCount(
       analysisStatus.databasePath,
@@ -1181,7 +1207,7 @@ const benchmarkCodeGraph = Effect.scoped(
         structuralGraphDigestIncremental: incrementalStructuralGraphDigest,
         structuralGraphDigestSameOverlayReference: sameOverlayReferenceStructuralGraphDigest,
         structuralGraphDigestMeasurement:
-          'canonical SHA-256 over privacy-safe effective files, symbols, terms, lookup keys, edges, workspace, re-export, and analysis rows; incremental parity compares with an independent fresh-home full rebuild of the same overlay',
+          'leased, single-read-transaction canonical SHA-256 over privacy-safe effective files, symbols, terms, lookup keys, edges, workspace, re-export, and analysis rows; incremental parity compares with an independent fresh-home full rebuild of the same overlay',
         sameOverlayReferenceMaterializationMode: sameOverlayReference.summary.materialization?.mode ?? 'unreported',
         sameOverlayReferenceMaterializationStorageMode:
           sameOverlayReferenceMaterializationStorage?.materializationMode ?? 'unreported',
@@ -2479,50 +2505,177 @@ export function codeGraphStructuralDigestSymbolLookupStatement(
   };
 }
 
-function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): string {
+export interface CodeGraphStructuralDigestStreamEvidence {
+  readonly digest: string;
+  readonly name: string;
+  readonly rowCount: number;
+}
+
+export interface CodeGraphStructuralGraphEvidence {
+  readonly digest: string;
+  readonly streams: readonly CodeGraphStructuralDigestStreamEvidence[];
+}
+
+export interface CodeGraphStructuralParityMismatch {
+  readonly incremental: CodeGraphStructuralDigestStreamEvidence;
+  readonly name: string;
+  readonly sameOverlayReference: CodeGraphStructuralDigestStreamEvidence;
+}
+
+export interface CodeGraphStructuralParityEvidence {
+  readonly incremental: CodeGraphStructuralGraphEvidence;
+  readonly mismatchedStreams: readonly CodeGraphStructuralParityMismatch[];
+  readonly parity: boolean;
+  readonly sameOverlayReference: CodeGraphStructuralGraphEvidence;
+  readonly version: 1;
+}
+
+interface CodeGraphStructuralDigestOptions {
+  /** @internal Deterministic WAL interlock used by the benchmark harness regression. */
+  readonly onReadTransactionStarted?: Effect.Effect<void, unknown>;
+  /** @internal Observes lease renewal without exposing benchmark repository data. */
+  readonly onSnapshotLeaseRenewed?: Effect.Effect<void, unknown>;
+  /** @internal Allows a short renewal cadence in focused lease tests. */
+  readonly snapshotLeaseRenewalMilliseconds?: number;
+}
+
+interface CodeGraphStructuralDigestReadSnapshot {
+  readonly baseSnapshotId: Option.Option<string>;
+  readonly database: Database;
+}
+
+interface CodeGraphStructuralDigestStream {
+  readonly name: string;
+  readonly parameters: readonly string[];
+  readonly query: string;
+}
+
+/** @internal Exported so the benchmark harness can verify lease and read-snapshot interlocks. */
+export const sqliteStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.structuralGraphEvidence')(function* (
+  databasePath: string,
+  snapshotId: string,
+  options: CodeGraphStructuralDigestOptions = {},
+) {
+  const store = yield* CodeGraphStore;
+  const requestedLeaseRenewalMilliseconds =
+    options.snapshotLeaseRenewalMilliseconds ?? STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS;
+  const finiteLeaseRenewalMilliseconds = Number.isFinite(requestedLeaseRenewalMilliseconds)
+    ? Math.floor(requestedLeaseRenewalMilliseconds)
+    : STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS;
+  const leaseRenewalMilliseconds = Math.max(
+    100,
+    Math.min(STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS / 2, finiteLeaseRenewalMilliseconds),
+  );
+  const lease = yield* store.acquireSnapshotLease(
+    databasePath,
+    snapshotId,
+    STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS,
+  );
+  return yield* Effect.acquireUseRelease(
+    Effect.try({
+      catch: cause => new Error('Could not open the code graph structural digest read snapshot.', {cause}),
+      try: () => openCodeGraphStructuralDigestReadSnapshot(databasePath, snapshotId),
+    }),
+    readSnapshot =>
+      Effect.gen(function* () {
+        let lastLeaseRenewal = yield* Clock.currentTimeMillis;
+        yield* options.onReadTransactionStarted ?? Effect.void;
+        const renewLeaseIfDue = Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          if (now - lastLeaseRenewal < leaseRenewalMilliseconds) return;
+          yield* store.renewSnapshotLease(databasePath, lease, STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS);
+          lastLeaseRenewal = now;
+          yield* options.onSnapshotLeaseRenewed ?? Effect.void;
+        });
+        return yield* readCodeGraphStructuralGraphEvidence(readSnapshot, snapshotId, renewLeaseIfDue);
+      }),
+    readSnapshot =>
+      Effect.sync(() => closeCodeGraphStructuralDigestReadSnapshot(readSnapshot)).pipe(Effect.catch(() => Effect.void)),
+  ).pipe(Effect.ensuring(store.releaseSnapshotLease(databasePath, lease).pipe(Effect.catch(() => Effect.void))));
+});
+
+function openCodeGraphStructuralDigestReadSnapshot(
+  databasePath: string,
+  snapshotId: string,
+): CodeGraphStructuralDigestReadSnapshot {
   const database = new Database(databasePath, {readonly: true, strict: true});
-  const digest = new Bun.CryptoHasher('sha256');
   try {
-    const snapshot = database
-      .query('SELECT base_snapshot_id FROM snapshots WHERE id = ? AND state = ? LIMIT 1')
-      .get(snapshotId, 'ready') as {readonly base_snapshot_id?: unknown} | null;
-    if (!snapshot) throw new Error('Ready snapshot was unavailable for the structural graph digest.');
-    const baseSnapshotId = typeof snapshot.base_snapshot_id === 'string' ? snapshot.base_snapshot_id : '';
-    const effectiveParameters = [snapshotId, baseSnapshotId, snapshotId, snapshotId] as const;
-    const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
-    const streams = [
-      {
-        name: 'snapshot',
-        parameters: [snapshotId],
-        query: `SELECT commit_id, extractor_set, dirty, overlay_fingerprint,
+    database.run('BEGIN');
+    const snapshot = Option.fromNullishOr(
+      database
+        .query('SELECT base_snapshot_id FROM snapshots WHERE id = ? AND state = ? LIMIT 1')
+        .get(snapshotId, 'ready') as {readonly base_snapshot_id?: unknown} | undefined,
+    );
+    if (Option.isNone(snapshot)) throw new Error('Ready snapshot was unavailable for the structural graph digest.');
+    return {
+      baseSnapshotId:
+        typeof snapshot.value.base_snapshot_id === 'string'
+          ? Option.some(snapshot.value.base_snapshot_id)
+          : Option.none(),
+      database,
+    };
+  } catch (cause) {
+    try {
+      database.run('ROLLBACK');
+    } catch {
+      // The read transaction may not have started; closing still releases the connection.
+    }
+    database.close(false);
+    throw cause;
+  }
+}
+
+function closeCodeGraphStructuralDigestReadSnapshot(readSnapshot: CodeGraphStructuralDigestReadSnapshot): void {
+  try {
+    readSnapshot.database.run('ROLLBACK');
+  } finally {
+    readSnapshot.database.close(false);
+  }
+}
+
+const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readStructuralGraphEvidence')(function* (
+  readSnapshot: CodeGraphStructuralDigestReadSnapshot,
+  snapshotId: string,
+  renewLeaseIfDue: Effect.Effect<void, unknown>,
+) {
+  const database = readSnapshot.database;
+  const digest = new Bun.CryptoHasher('sha256');
+  const baseSnapshotId = Option.getOrElse(readSnapshot.baseSnapshotId, () => '');
+  const effectiveParameters = [snapshotId, baseSnapshotId, snapshotId, snapshotId] as const;
+  const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
+  const streams = [
+    {
+      name: 'snapshot',
+      parameters: [snapshotId],
+      query: `SELECT commit_id, extractor_set, dirty, overlay_fingerprint,
             file_count, symbol_count, edge_count
           FROM snapshots WHERE id = ? AND state = 'ready'`,
-      },
-      {
-        name: 'extractor-generation',
-        parameters: [snapshotId],
-        query: `SELECT generation FROM snapshot_extractor_generations
+    },
+    {
+      name: 'extractor-generation',
+      parameters: [snapshotId],
+      query: `SELECT generation FROM snapshot_extractor_generations
           WHERE snapshot_id = ?`,
-      },
-      {
-        name: 'files',
-        parameters: effectiveParameters,
-        query: `${effectiveSnapshotRowsCte('snapshot_files', 'snapshot_file_deletions', 'path', 'path')}
+    },
+    {
+      name: 'files',
+      parameters: effectiveParameters,
+      query: `${effectiveSnapshotRowsCte('snapshot_files', 'snapshot_file_deletions', 'path', 'path')}
           SELECT path, content_hash, language, mode, size, source
           FROM effective_rows ORDER BY path`,
-      },
-      {
-        name: 'symbols',
-        parameters: effectiveParameters,
-        query: `${effectiveSnapshotRowsCte('symbols', 'snapshot_symbol_deletions', 'symbol_id', 'id')}
+    },
+    {
+      name: 'symbols',
+      parameters: effectiveParameters,
+      query: `${effectiveSnapshotRowsCte('symbols', 'snapshot_symbol_deletions', 'symbol_id', 'id')}
           SELECT id, content_hash, kind, name, qualified_name, path, language, arity, lookup_keys_json,
             resolution_domain, resolution_scope_id, package_name, exported, signature, documentation, span_json
           FROM effective_rows ORDER BY path, qualified_name, id`,
-      },
-      {
-        name: 'symbol-terms',
-        parameters: effectiveParameters,
-        query: `WITH effective_rows AS (
+    },
+    {
+      name: 'symbol-terms',
+      parameters: effectiveParameters,
+      query: `WITH effective_rows AS (
           SELECT current_rows.term, current_rows.symbol_id, current_rows.weight
           FROM symbol_terms AS current_rows
           WHERE current_rows.snapshot_id = ?
@@ -2540,44 +2693,44 @@ function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): 
             )
         )
         SELECT term, symbol_id, weight FROM effective_rows ORDER BY term, symbol_id`,
-      },
-      {
-        name: 'symbol-lookup',
-        parameters: symbolLookup.parameters,
-        query: symbolLookup.text,
-      },
-      {
-        name: 'edges',
-        parameters: effectiveParameters,
-        query: `${effectiveSnapshotRowsCte('edges', 'snapshot_edge_deletions', 'edge_id', 'id')}
+    },
+    {
+      name: 'symbol-lookup',
+      parameters: symbolLookup.parameters,
+      query: symbolLookup.text,
+    },
+    {
+      name: 'edges',
+      parameters: effectiveParameters,
+      query: `${effectiveSnapshotRowsCte('edges', 'snapshot_edge_deletions', 'edge_id', 'id')}
           SELECT id, source_id, source_name, relation, target_id, target_name, provenance, confidence,
             evidence_path, evidence_span_json
           FROM effective_rows ORDER BY source_name, relation, target_name, id`,
-      },
-      {
-        name: 'workspace-scopes',
-        parameters: [snapshotId],
-        query: `SELECT id, build_system, name, root, provenance, diagnostics_json
+    },
+    {
+      name: 'workspace-scopes',
+      parameters: [snapshotId],
+      query: `SELECT id, build_system, name, root, provenance, diagnostics_json
           FROM workspace_scopes WHERE snapshot_id = ? ORDER BY id`,
-      },
-      {
-        name: 'workspace-components',
-        parameters: [snapshotId],
-        query: `SELECT id, workspace_id, build_system, kind, name, root, resolution_domain,
+    },
+    {
+      name: 'workspace-components',
+      parameters: [snapshotId],
+      query: `SELECT id, workspace_id, build_system, kind, name, root, resolution_domain,
             languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json
           FROM workspace_components WHERE snapshot_id = ? ORDER BY id`,
-      },
-      {
-        name: 'workspace-component-dependencies',
-        parameters: [snapshotId],
-        query: `SELECT source_component_id, target_component_id, provenance, evidence
+    },
+    {
+      name: 'workspace-component-dependencies',
+      parameters: [snapshotId],
+      query: `SELECT source_component_id, target_component_id, provenance, evidence
           FROM workspace_component_dependencies WHERE snapshot_id = ?
           ORDER BY source_component_id, target_component_id, provenance`,
-      },
-      {
-        name: 'reexport-provenance',
-        parameters: effectiveParameters,
-        query: `WITH effective_rows AS (
+    },
+    {
+      name: 'reexport-provenance',
+      parameters: effectiveParameters,
+      query: `WITH effective_rows AS (
           SELECT current_rows.source_path, current_rows.local_name,
             current_rows.target_path, current_rows.imported_name
           FROM snapshot_reexport_provenance AS current_rows
@@ -2602,48 +2755,107 @@ function sqliteStructuralGraphDigest(databasePath: string, snapshotId: string): 
         )
         SELECT source_path, local_name, target_path, imported_name
         FROM effective_rows ORDER BY source_path, local_name, target_path, imported_name`,
-      },
-      {
-        name: 'analysis-symbol-counts',
-        parameters: [snapshotId],
-        query: `SELECT language, kind, count FROM snapshot_analysis_symbol_counts
+    },
+    {
+      name: 'analysis-symbol-counts',
+      parameters: [snapshotId],
+      query: `SELECT language, kind, count FROM snapshot_analysis_symbol_counts
           WHERE snapshot_id = ? ORDER BY language, kind`,
-      },
-      {
-        name: 'analysis-edge-histogram',
-        parameters: [snapshotId],
-        query: `SELECT provenance, relation, confidence, endpoint_state, count
+    },
+    {
+      name: 'analysis-edge-histogram',
+      parameters: [snapshotId],
+      query: `SELECT provenance, relation, confidence, endpoint_state, count
           FROM snapshot_analysis_edge_histogram WHERE snapshot_id = ?
           ORDER BY provenance, relation, confidence, endpoint_state`,
-      },
-      {
-        name: 'analysis-edge-counts',
-        parameters: [snapshotId],
-        query: `SELECT provenance, relation, count, confidence_invalid, confidence_total,
+    },
+    {
+      name: 'analysis-edge-counts',
+      parameters: [snapshotId],
+      query: `SELECT provenance, relation, count, confidence_invalid, confidence_total,
             lowest_confidence, confidence_high, confidence_medium, confidence_low,
             unresolved_endpoint_count, self_loop_count, review_finding_count
           FROM snapshot_analysis_edge_counts WHERE snapshot_id = ?
           ORDER BY provenance, relation`,
-      },
-      {
-        name: 'analysis-summary-receipt',
-        parameters: [snapshotId],
-        query: `SELECT version, symbol_count, edge_count, digest
+    },
+    {
+      name: 'analysis-summary-receipt',
+      parameters: [snapshotId],
+      query: `SELECT version, symbol_count, edge_count, digest
           FROM snapshot_analysis_summary_receipts WHERE snapshot_id = ?`,
-      },
-    ] as const;
-    for (const stream of streams) {
-      digest.update(`${stream.name}\0`);
-      const statement = database.query(stream.query);
-      for (const row of statement.iterate(...stream.parameters)) {
-        digest.update(JSON.stringify(row, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)));
+    },
+  ] as const satisfies readonly CodeGraphStructuralDigestStream[];
+  const evidence: CodeGraphStructuralDigestStreamEvidence[] = [];
+  for (const stream of streams) {
+    digest.update(`${stream.name}\0`);
+    const streamDigest = new Bun.CryptoHasher('sha256');
+    streamDigest.update(`${stream.name}\0`);
+    let rowCount = 0;
+    const rows = database.query(stream.query).iterate(...stream.parameters);
+    const iterator = rows[Symbol.iterator]();
+    let complete = false;
+    while (!complete) {
+      for (let index = 0; index < STRUCTURAL_DIGEST_ROW_CHUNK_SIZE; index += 1) {
+        const next = iterator.next();
+        if (next.done) {
+          complete = true;
+          break;
+        }
+        const serialized = JSON.stringify(next.value, (_key, value) =>
+          typeof value === 'bigint' ? value.toString() : value,
+        );
+        digest.update(serialized);
         digest.update('\n');
+        streamDigest.update(serialized);
+        streamDigest.update('\n');
+        rowCount += 1;
+        if (!Number.isSafeInteger(rowCount)) {
+          return yield* Effect.fail(new Error(`Structural digest stream ${stream.name} is too large.`));
+        }
       }
+      yield* renewLeaseIfDue;
     }
-    return digest.digest('hex');
-  } finally {
-    database.close(false);
+    evidence.push({digest: streamDigest.digest('hex'), name: stream.name, rowCount});
   }
+  return {digest: digest.digest('hex'), streams: evidence};
+});
+
+export function codeGraphStructuralParityEvidence(
+  incremental: CodeGraphStructuralGraphEvidence,
+  sameOverlayReference: CodeGraphStructuralGraphEvidence,
+): CodeGraphStructuralParityEvidence {
+  const referenceStreams = new Map(sameOverlayReference.streams.map(stream => [stream.name, stream]));
+  if (
+    referenceStreams.size !== sameOverlayReference.streams.length ||
+    incremental.streams.length !== sameOverlayReference.streams.length
+  ) {
+    throw new Error('Structural graph digest evidence returned an inconsistent stream set.');
+  }
+  const mismatchedStreams = incremental.streams.flatMap(stream => {
+    const reference = referenceStreams.get(stream.name);
+    if (!reference) throw new Error('Structural graph digest evidence returned an inconsistent stream set.');
+    return stream.rowCount === reference.rowCount && stream.digest === reference.digest
+      ? []
+      : [{incremental: stream, name: stream.name, sameOverlayReference: reference}];
+  });
+  return {
+    incremental,
+    mismatchedStreams,
+    parity: incremental.digest === sameOverlayReference.digest && mismatchedStreams.length === 0,
+    sameOverlayReference,
+    version: 1,
+  };
+}
+
+export function codeGraphStructuralParityFailureMessage(evidence: CodeGraphStructuralParityEvidence): string {
+  const mismatches = evidence.mismatchedStreams
+    .map(
+      mismatch =>
+        `${mismatch.name} incremental(count=${mismatch.incremental.rowCount},sha256=${mismatch.incremental.digest}) ` +
+        `same-overlay-full(count=${mismatch.sameOverlayReference.rowCount},sha256=${mismatch.sameOverlayReference.digest})`,
+    )
+    .join('; ');
+  return `Structural graph digest parity failed: ${mismatches || 'composite digest mismatch'}.`;
 }
 
 function effectiveSnapshotRowsCte(

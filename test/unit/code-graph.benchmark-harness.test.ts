@@ -8,6 +8,8 @@ import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
+  codeGraphStructuralParityEvidence,
+  codeGraphStructuralParityFailureMessage,
   codeGraphStructuralDigestSymbolLookupStatement,
   decodeBenchmarkSource,
   externalBenchmarkPlatformSupported,
@@ -17,9 +19,12 @@ import {
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
+  sqliteStructuralGraphEvidence,
   validateSqliteWriterSettingsEvidence,
 } from '../../scripts/benchmark-code-graph.js';
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const CONTROL = JSON.stringify({
@@ -175,6 +180,22 @@ describe('code graph external benchmark harness', () => {
     expect(source).not.toContain('const coldStarted = yield* Clock.currentTimeNanos');
     expect(source).not.toContain('const incrementalStarted = yield* Clock.currentTimeNanos');
     expect(source).not.toContain('const sameOverlayReferenceStarted = yield* Clock.currentTimeNanos');
+  });
+
+  it('retains privacy-safe structural parity evidence before a failed external run exits', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    const parity = sourceSlice(
+      source,
+      'const structuralGraphParityEvidence = codeGraphStructuralParityEvidence(',
+      'const coldLanguageCounts',
+    );
+
+    expectInOrder(parity, [
+      'if (!structuralGraphParityEvidence.parity)',
+      '.structural-parity.json',
+      'JSON.stringify(structuralGraphParityEvidence',
+      'codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)',
+    ]);
   });
 
   it('accepts explicit retained homes and a validation-only preflight', () => {
@@ -436,6 +457,136 @@ describe('code graph external benchmark harness', () => {
       {numRuns: 100},
     );
   });
+
+  it('holds a real snapshot lease and one WAL read snapshot across promotion and cleanup', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-structural-digest-interlock-'});
+          const databasePath = path.join(root, 'graph-v3.sqlite');
+          const identity: RepositoryIdentity = {
+            caseMode: 'sensitive',
+            checkoutId: 'c'.repeat(64),
+            displayName: 'structural-digest-fixture',
+            gitCommonDirectory: root,
+            headCommit: '1'.repeat(40),
+            objectFormat: 'sha1',
+            repoRoot: root,
+            repositoryId: 'r'.repeat(64),
+            worktreeId: 'w'.repeat(64),
+          };
+          const baseSnapshotId = `cgsn_${'0'.repeat(40)}`;
+          const firstSnapshotId = `cgsn_${'1'.repeat(40)}`;
+          const replacementSnapshotId = `cgsn_${'2'.repeat(40)}`;
+          const privatePath = 'src/private-customer-secret.ts';
+
+          yield* store.initialize(databasePath);
+          seedStructuralDigestInterlockDatabase(
+            databasePath,
+            identity,
+            baseSnapshotId,
+            firstSnapshotId,
+            replacementSnapshotId,
+            privatePath,
+          );
+          yield* store.promote(databasePath, identity, firstSnapshotId, new Set([identity.worktreeId]));
+          const before = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
+          const replacementWriter = new Database(databasePath, {strict: true});
+          try {
+            replacementWriter
+              .query("UPDATE snapshots SET state = 'ready' WHERE id = ? AND state = 'building'")
+              .run(replacementSnapshotId);
+          } finally {
+            replacementWriter.close(false);
+          }
+          let during = {
+            activeSnapshotId: '',
+            baseFileRows: 0,
+            baseState: '',
+            firstState: '',
+            leaseRows: 0,
+          };
+          let leaseRenewals = 0;
+          const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {
+            onReadTransactionStarted: Effect.gen(function* () {
+              yield* store.promote(databasePath, identity, replacementSnapshotId, new Set([identity.worktreeId]));
+              yield* store.pruneRetiredSnapshots(databasePath);
+              const writer = new Database(databasePath, {strict: true});
+              try {
+                writer.run('PRAGMA busy_timeout = 5000');
+                writer.query('UPDATE snapshots SET commit_id = ? WHERE id = ?').run('3'.repeat(40), firstSnapshotId);
+                during = structuralDigestInterlockState(writer, baseSnapshotId, firstSnapshotId, identity.worktreeId);
+              } finally {
+                writer.close(false);
+              }
+              yield* Effect.sleep(125);
+            }),
+            onSnapshotLeaseRenewed: Effect.sync(() => {
+              leaseRenewals += 1;
+            }),
+            snapshotLeaseRenewalMilliseconds: 100,
+          });
+          const after = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
+          const mismatch = codeGraphStructuralParityEvidence(before, after);
+          const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
+          yield* store.reconcileWorktrees(databasePath, new Set([identity.worktreeId]));
+          yield* store.pruneRetiredSnapshots(databasePath);
+          const finalDatabase = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            const protectedSnapshotRows = Number(
+              (
+                finalDatabase
+                  .query('SELECT COUNT(*) AS count FROM snapshots WHERE id IN (?, ?)')
+                  .get(baseSnapshotId, firstSnapshotId) as {readonly count: number}
+              ).count,
+            );
+            const leaseRows = Number(
+              (finalDatabase.query('SELECT COUNT(*) AS count FROM snapshot_leases').get() as {readonly count: number})
+                .count,
+            );
+            return {
+              after,
+              before,
+              during,
+              failureMessage,
+              leaseRows,
+              mismatch,
+              leaseRenewals,
+              pinned,
+              privacySafeEvidence: JSON.stringify(mismatch),
+              privatePath,
+              protectedSnapshotRows,
+            };
+          } finally {
+            finalDatabase.close(false);
+          }
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.pinned).toEqual(result.before);
+    expect(result.after.digest).not.toBe(result.before.digest);
+    expect(result.during).toEqual({
+      activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
+      baseFileRows: 1,
+      baseState: 'ready',
+      firstState: 'ready',
+      leaseRows: 1,
+    });
+    expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
+    expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);
+    expect(result.failureMessage).toMatch(
+      /^Structural graph digest parity failed: snapshot incremental\(count=1,sha256=[0-9a-f]{64}\) same-overlay-full\(count=1,sha256=[0-9a-f]{64}\)\.$/,
+    );
+    expect(result.privacySafeEvidence).not.toContain(result.privatePath);
+    expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
+    expect(result.failureMessage).not.toContain(result.privatePath);
+    expect(result.protectedSnapshotRows).toBe(0);
+    expect(result.leaseRows).toBe(0);
+  });
 });
 
 const LOOKUP_PATHS = ['src/a.ts', 'src/b.ts', 'src/c.ts'] as const;
@@ -566,4 +717,122 @@ function expectInOrder(source: string, markers: readonly string[]): void {
     expect(next, `missing or out-of-order benchmark marker: ${marker}`).toBeGreaterThan(cursor);
     cursor = next;
   }
+}
+
+function seedStructuralDigestInterlockDatabase(
+  databasePath: string,
+  identity: RepositoryIdentity,
+  baseSnapshotId: string,
+  firstSnapshotId: string,
+  replacementSnapshotId: string,
+  privatePath: string,
+): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const now = new Date().toISOString();
+    database.run('PRAGMA foreign_keys = ON');
+    database
+      .query(
+        `INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(identity.repositoryId, identity.displayName, identity.objectFormat, now, now);
+    const insertSnapshot = database.query(
+      `INSERT INTO snapshots (
+        id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set, dirty, state,
+        file_count, symbol_count, edge_count, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 'ready', ?, 0, 0, ?, ?)`,
+    );
+    insertSnapshot.run(
+      baseSnapshotId,
+      identity.repositoryId,
+      identity.worktreeId,
+      identity.headCommit,
+      null,
+      'benchmark-digest-test',
+      1,
+      now,
+      now,
+    );
+    insertSnapshot.run(
+      firstSnapshotId,
+      identity.repositoryId,
+      identity.worktreeId,
+      identity.headCommit,
+      baseSnapshotId,
+      'benchmark-digest-test',
+      1,
+      now,
+      now,
+    );
+    insertSnapshot.run(
+      replacementSnapshotId,
+      identity.repositoryId,
+      identity.worktreeId,
+      identity.headCommit,
+      null,
+      'benchmark-digest-test',
+      0,
+      now,
+      now,
+    );
+    database.query("UPDATE snapshots SET state = 'building' WHERE id = ?").run(replacementSnapshotId);
+    const minimum = database
+      .query(
+        "SELECT CAST(value AS INTEGER) AS generation FROM schema_metadata WHERE key = 'minimum_extractor_generation'",
+      )
+      .get() as {readonly generation: number};
+    const insertGeneration = database.query(
+      'INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)',
+    );
+    insertGeneration.run(baseSnapshotId, minimum.generation);
+    insertGeneration.run(firstSnapshotId, minimum.generation);
+    insertGeneration.run(replacementSnapshotId, minimum.generation);
+    database
+      .query(
+        `INSERT INTO snapshot_files (
+          snapshot_id, path, content_hash, language, mode, size, source
+        ) VALUES (?, ?, ?, 'typescript', '100644', 32, 'commit')`,
+      )
+      .run(baseSnapshotId, privatePath, 'f'.repeat(64));
+  } finally {
+    database.close(false);
+  }
+}
+
+function structuralDigestInterlockState(
+  database: Database,
+  baseSnapshotId: string,
+  firstSnapshotId: string,
+  worktreeId: string,
+): {
+  readonly activeSnapshotId: string;
+  readonly baseFileRows: number;
+  readonly baseState: string;
+  readonly firstState: string;
+  readonly leaseRows: number;
+} {
+  const state = database
+    .query(
+      `SELECT
+        (SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?) AS active_snapshot_id,
+        (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = ?) AS base_file_rows,
+        (SELECT state FROM snapshots WHERE id = ?) AS base_state,
+        (SELECT state FROM snapshots WHERE id = ?) AS first_state,
+        (SELECT COUNT(*) FROM snapshot_leases WHERE snapshot_id = ?) AS lease_rows`,
+    )
+    .get(worktreeId, baseSnapshotId, baseSnapshotId, firstSnapshotId, firstSnapshotId) as {
+    readonly active_snapshot_id: string;
+    readonly base_file_rows: number;
+    readonly base_state: string;
+    readonly first_state: string;
+    readonly lease_rows: number;
+  };
+  return {
+    activeSnapshotId: state.active_snapshot_id,
+    baseFileRows: Number(state.base_file_rows),
+    baseState: state.base_state,
+    firstState: state.first_state,
+    leaseRows: Number(state.lease_rows),
+  };
 }
