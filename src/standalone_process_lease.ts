@@ -1,4 +1,4 @@
-import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {compareVersions} from './version_compare.js';
 
@@ -36,6 +36,18 @@ export interface StandaloneProcessLease {
 export interface StandaloneProcessLeaseDiagnostics {
   readonly leases: readonly StandaloneProcessLease[];
   readonly truncated: boolean;
+}
+
+/**
+ * Fail-closed process evidence for maintenance and benchmark boundaries. Unlike
+ * the user-facing diagnostics, this keeps running leases whose OS start
+ * identity could not be read so callers cannot mistake uncertainty for an
+ * idle machine.
+ */
+export interface StandaloneProcessLeaseVerification {
+  readonly truncated: boolean;
+  readonly unverified: readonly StandaloneProcessLease[];
+  readonly verified: readonly StandaloneProcessLease[];
 }
 
 interface ObservedStandaloneProcessLease extends StandaloneProcessLease {
@@ -111,31 +123,26 @@ export function readValidatedRelease(
   releaseRoot: string,
   installRoot: string,
 ) {
-  return fs.readFileString(path.join(releaseRoot, 'release.json')).pipe(
-    Effect.flatMap(content =>
-      Effect.try({
-        try: () => {
-          const value = JSON.parse(content) as unknown;
-          if (
-            typeof value !== 'object' ||
-            value === null ||
-            !('version' in value) ||
-            typeof value.version !== 'string' ||
-            !STANDALONE_RELEASE_VERSION_PATTERN.test(value.version)
-          ) {
-            return undefined;
-          }
-          const expectedRoot = path.resolve(path.join(installRoot, 'versions', value.version));
-          const resolvedRoot = path.resolve(releaseRoot);
-          return expectedRoot === resolvedRoot
-            ? ({releaseRoot: resolvedRoot, version: value.version} satisfies StandaloneActiveRelease)
-            : undefined;
-        },
-        catch: () => undefined,
-      }),
-    ),
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
+  return Effect.gen(function* () {
+    const content = yield* fs.readFileString(path.join(releaseRoot, 'release.json'));
+    const value = yield* Effect.try(() => JSON.parse(content) as unknown);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('version' in value) ||
+      typeof value.version !== 'string' ||
+      !STANDALONE_RELEASE_VERSION_PATTERN.test(value.version)
+    ) {
+      return undefined;
+    }
+    const [realInstallRoot, resolvedRoot] = yield* Effect.all([fs.realPath(installRoot), fs.realPath(releaseRoot)]);
+    const expectedRoot = path.join(realInstallRoot, 'versions', value.version);
+    const normalize = (candidate: string) =>
+      path.sep === '\\' ? path.resolve(candidate).toLocaleLowerCase('en-US') : path.resolve(candidate);
+    return normalize(expectedRoot) === normalize(resolvedRoot)
+      ? ({releaseRoot: resolvedRoot, version: value.version} satisfies StandaloneActiveRelease)
+      : undefined;
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 }
 
 export const readLiveStandaloneProcessLeases = Effect.fn('installations.readLiveProcessLeases')(function* () {
@@ -164,13 +171,51 @@ export const readLiveStandaloneProcessLeases = Effect.fn('installations.readLive
   } satisfies StandaloneProcessLeaseDiagnostics;
 });
 
+export const readStandaloneProcessLeaseVerification = Effect.fn('installations.readProcessLeaseVerification')(
+  function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const scan = yield* liveStandaloneProcessLeases(
+      fs,
+      path,
+      installationRoot(path, system),
+      system,
+      Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
+    );
+    const unique = (leases: readonly ObservedStandaloneProcessLease[]) => {
+      const byProcess = new Map<number, StandaloneProcessLease>();
+      for (const lease of [...leases].sort((left, right) => compareVersions(right.version, left.version))) {
+        if (!byProcess.has(lease.processId)) byProcess.set(lease.processId, publicLease(lease));
+      }
+      return [...byProcess.values()].sort((left, right) => left.processId - right.processId);
+    };
+    return {
+      truncated: scan.truncated,
+      unverified: unique(scan.leases.filter(lease => !lease.identityVerified)),
+      verified: unique(scan.leases.filter(lease => lease.identityVerified)),
+    } satisfies StandaloneProcessLeaseVerification;
+  },
+);
+
 export const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersions')(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,
   installRoot: string,
   system: SystemInfoShape,
 ) {
-  const scan = yield* liveStandaloneProcessLeases(fs, path, installRoot, system, Option.none());
+  const scan = yield* liveStandaloneProcessLeases(
+    fs,
+    path,
+    installRoot,
+    system,
+    Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
+  );
+  if (scan.truncated) {
+    return yield* Effect.fail(
+      new Error('Standalone release pruning could not completely inspect the live process leases.'),
+    );
+  }
   return [...new Set(scan.leases.map(lease => lease.version))];
 });
 
@@ -188,7 +233,18 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     if (!STANDALONE_RELEASE_VERSION_PATTERN.test(activeVersion)) {
       return yield* Effect.fail(new Error('Cannot terminate processes for an invalid active release version.'));
     }
-    const scan = yield* liveStandaloneProcessLeases(fs, path, installationRoot(path, system), system, Option.none());
+    const scan = yield* liveStandaloneProcessLeases(
+      fs,
+      path,
+      installationRoot(path, system),
+      system,
+      Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
+    );
+    if (scan.truncated) {
+      return yield* Effect.fail(
+        new Error('Cannot terminate superseded processes because live lease inspection was incomplete.'),
+      );
+    }
     const superseded = scan.leases.filter(
       lease => lease.version !== activeVersion && lease.processId !== system.processId,
     );
@@ -240,12 +296,22 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
   const live: ObservedStandaloneProcessLease[] = [];
   let inspected = 0;
   let truncated = false;
-  scan: for (const version of (yield* fs
-    .readDirectory(leasesRoot)
-    .pipe(Effect.catch(() => Effect.succeed([])))).sort()) {
-    if (!STANDALONE_RELEASE_VERSION_PATTERN.test(version)) continue;
+  const versions = yield* Effect.exit(fs.readDirectory(leasesRoot));
+  if (Exit.isFailure(versions)) {
+    return {leases: live, truncated: true};
+  }
+  scan: for (const version of versions.value.sort()) {
+    if (!STANDALONE_RELEASE_VERSION_PATTERN.test(version)) {
+      truncated = true;
+      continue;
+    }
     const versionRoot = path.join(leasesRoot, version);
-    for (const name of (yield* fs.readDirectory(versionRoot).pipe(Effect.catch(() => Effect.succeed([])))).sort()) {
+    const names = yield* Effect.exit(fs.readDirectory(versionRoot));
+    if (Exit.isFailure(names)) {
+      truncated = true;
+      continue;
+    }
+    for (const name of names.value.sort()) {
       if (Option.isSome(scanLimit) && inspected >= scanLimit.value) {
         truncated = true;
         break scan;
@@ -253,24 +319,26 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
       inspected += 1;
       const processId = Number(/^([1-9]\d*)\.json$/.exec(name)?.[1]);
       const leasePath = path.join(versionRoot, name);
+      if (!Number.isSafeInteger(processId) || processId <= 0) {
+        truncated = true;
+        continue;
+      }
       const lease = yield* readProcessLease(fs, leasePath);
-      const processIsRunning =
-        Option.isSome(lease) &&
-        lease.value.processId === processId &&
-        lease.value.version === version &&
-        Number.isSafeInteger(processId) &&
-        processId > 0 &&
-        system.isProcessRunning(processId);
+      if (Option.isNone(lease) || lease.value.processId !== processId || lease.value.version !== version) {
+        if (system.isProcessRunning(processId)) truncated = true;
+        else yield* fs.remove(leasePath, {force: true}).pipe(Effect.catch(() => Effect.void));
+        continue;
+      }
+      const processIsRunning = system.isProcessRunning(processId);
       const currentProcessIdentity =
-        processIsRunning && Option.isSome(lease) && Option.isSome(lease.value.processStartIdentity)
+        processIsRunning && Option.isSome(lease.value.processStartIdentity)
           ? yield* system.processStartIdentity(processId).pipe(Effect.catch(() => Effect.succeed(undefined)))
           : undefined;
       const identityMatches =
-        Option.isSome(lease) &&
-        (Option.isNone(lease.value.processStartIdentity) ||
-          currentProcessIdentity === undefined ||
-          currentProcessIdentity === lease.value.processStartIdentity.value);
-      if (processIsRunning && identityMatches && Option.isSome(lease)) {
+        Option.isNone(lease.value.processStartIdentity) ||
+        currentProcessIdentity === undefined ||
+        currentProcessIdentity === lease.value.processStartIdentity.value;
+      if (processIsRunning && identityMatches) {
         live.push({
           identityVerified:
             Option.isSome(lease.value.processStartIdentity) &&
@@ -365,7 +433,12 @@ function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string) {
 function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
   return fs.readFileString(leasePath).pipe(
     Effect.map(content => {
-      const value = JSON.parse(content) as unknown;
+      let value: unknown;
+      try {
+        value = JSON.parse(content) as unknown;
+      } catch {
+        return Option.none<ProcessLeaseFile>();
+      }
       if (
         typeof value !== 'object' ||
         value === null ||

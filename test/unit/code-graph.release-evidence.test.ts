@@ -164,6 +164,16 @@ describe('code graph release evidence', () => {
       resolvedSha: commit,
       sha: commit,
     });
+    const sha256Commit = 'a'.repeat(64);
+    expect(
+      resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', sha256Commit, sha256Commit, sha256Commit, false),
+    ).toMatchObject({sha: sha256Commit});
+    for (const invalidLength of [39, 41, 63, 65]) {
+      const invalidCommit = 'a'.repeat(invalidLength);
+      expect(() =>
+        resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', invalidCommit, invalidCommit, invalidCommit, false),
+      ).toThrow(/locally resolvable tag/);
+    }
     expect(() =>
       resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', commit, 'f'.repeat(40), commit, false),
     ).toThrow(/locally resolvable tag/);
@@ -849,6 +859,10 @@ function benchmarkArtifact(
     },
     measurements,
     metadata: {
+      benchmarkRuntimeProvenanceMode: 'github-actions-clean-source',
+      benchmarkRuntimeSourceCommit: commit,
+      benchmarkRuntimeSourceLockfileSha256: 'a'.repeat(64),
+      benchmarkRuntimeSourcePackageManifestSha256: 'b'.repeat(64),
       ...(suite.startsWith('code-graph-production-large-')
         ? {
             profile: 'production-large',

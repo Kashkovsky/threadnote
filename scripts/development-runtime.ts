@@ -1,36 +1,66 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
-import {sha256FileHex} from '../src/effect/digest.js';
+import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
-import {installationRoot, readLiveStandaloneProcessLeases} from '../src/installations.js';
+import {installationRoot} from '../src/installations.js';
+import {readStandaloneProcessLeaseVerification} from '../src/standalone_process_lease.js';
 
 export const DEVELOPMENT_INSTALL_RECEIPT = 'development-install.json';
-export const DEVELOPMENT_INSTALL_RECEIPT_VERSION = 1 as const;
+export const DEVELOPMENT_INSTALL_RECEIPT_VERSION = 2 as const;
 const SOURCE_COMMIT_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const PAYLOAD_PATH_PATTERN = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\\).+$/;
 const RELEASE_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 const DEVELOPMENT_VERSION_PATTERN =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:[0-9A-Za-z-]+\.)*local\.g([0-9a-f]{40}(?:[0-9a-f]{24})?)$/;
 
 export interface DevelopmentInstallReceiptV1 {
   readonly builtAt: string;
+  readonly dependencyInstallation: 'bun install --frozen-lockfile';
   readonly executableSha256: string;
+  readonly payloadManifest: readonly DevelopmentPayloadManifestEntryV1[];
+  readonly payloadManifestSha256: string;
   readonly releaseMetadataSha256: string;
   readonly runtime: string;
   readonly schemaVersion: typeof DEVELOPMENT_INSTALL_RECEIPT_VERSION;
   readonly sourceCommit: string;
   readonly sourceDirty: false;
+  readonly sourceLockfileSha256: string;
+  readonly sourcePackageManifestSha256: string;
   readonly target: string;
   readonly version: string;
 }
 
+export interface DevelopmentPayloadManifestEntryV1 {
+  readonly mode: number;
+  readonly path: string;
+  readonly sha256: string;
+  readonly size: number;
+}
+
 export interface DevelopmentRuntimeEvidence {
+  readonly dependencyInstallation: 'bun install --frozen-lockfile';
   readonly executableSha256: string;
+  readonly payloadBytes: number;
+  readonly payloadFileCount: number;
+  readonly payloadManifestSha256: string;
   readonly releaseMetadataSha256: string;
   readonly runtime: string;
   readonly sourceCommit: string;
+  readonly sourceLockfileSha256: string;
+  readonly sourcePackageManifestSha256: string;
   readonly target: string;
   readonly version: string;
+}
+
+export interface DevelopmentSourceDependencyEvidence {
+  readonly sourceLockfileSha256: string;
+  readonly sourcePackageManifestSha256: string;
+}
+
+export interface CanonicalDevelopmentInstallRoots {
+  readonly installRoot: string;
+  readonly versionsRoot: string;
 }
 
 interface ActiveReleasePointer {
@@ -71,9 +101,11 @@ export function developmentVersionSourceCommit(version: string): Option.Option<s
 export function parseDevelopmentInstallReceipt(value: unknown): Option.Option<DevelopmentInstallReceiptV1> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return Option.none();
   const candidate = value as Partial<DevelopmentInstallReceiptV1>;
+  const payloadManifest = parsePayloadManifest(candidate.payloadManifest);
   return candidate.schemaVersion === DEVELOPMENT_INSTALL_RECEIPT_VERSION &&
     typeof candidate.builtAt === 'string' &&
     Number.isFinite(Date.parse(candidate.builtAt)) &&
+    candidate.dependencyInstallation === 'bun install --frozen-lockfile' &&
     typeof candidate.version === 'string' &&
     isDevelopmentBuildVersion(candidate.version) &&
     typeof candidate.sourceCommit === 'string' &&
@@ -81,8 +113,15 @@ export function parseDevelopmentInstallReceipt(value: unknown): Option.Option<De
     candidate.sourceDirty === false &&
     typeof candidate.executableSha256 === 'string' &&
     SHA256_PATTERN.test(candidate.executableSha256) &&
+    Option.isSome(payloadManifest) &&
+    typeof candidate.payloadManifestSha256 === 'string' &&
+    SHA256_PATTERN.test(candidate.payloadManifestSha256) &&
     typeof candidate.releaseMetadataSha256 === 'string' &&
     SHA256_PATTERN.test(candidate.releaseMetadataSha256) &&
+    typeof candidate.sourceLockfileSha256 === 'string' &&
+    SHA256_PATTERN.test(candidate.sourceLockfileSha256) &&
+    typeof candidate.sourcePackageManifestSha256 === 'string' &&
+    SHA256_PATTERN.test(candidate.sourcePackageManifestSha256) &&
     typeof candidate.runtime === 'string' &&
     candidate.runtime.length > 0 &&
     typeof candidate.target === 'string' &&
@@ -90,6 +129,129 @@ export function parseDevelopmentInstallReceipt(value: unknown): Option.Option<De
     ? Option.some(candidate as DevelopmentInstallReceiptV1)
     : Option.none();
 }
+
+function isPayloadPath(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) === 0) return false;
+  }
+  return PAYLOAD_PATH_PATTERN.test(value);
+}
+
+function parsePayloadManifest(value: unknown): Option.Option<readonly DevelopmentPayloadManifestEntryV1[]> {
+  if (!Array.isArray(value) || value.length === 0) return Option.none();
+  const entries: DevelopmentPayloadManifestEntryV1[] = [];
+  let priorPath = '';
+  for (const candidate of value) {
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      Array.isArray(candidate) ||
+      !('path' in candidate) ||
+      typeof candidate.path !== 'string' ||
+      !isPayloadPath(candidate.path) ||
+      candidate.path <= priorPath ||
+      !('size' in candidate) ||
+      !Number.isSafeInteger(candidate.size) ||
+      Number(candidate.size) < 0 ||
+      !('sha256' in candidate) ||
+      typeof candidate.sha256 !== 'string' ||
+      !SHA256_PATTERN.test(candidate.sha256) ||
+      !('mode' in candidate) ||
+      !Number.isSafeInteger(candidate.mode) ||
+      Number(candidate.mode) < 0 ||
+      Number(candidate.mode) > 0o777
+    ) {
+      return Option.none();
+    }
+    priorPath = candidate.path;
+    entries.push({
+      mode: Number(candidate.mode),
+      path: candidate.path,
+      sha256: candidate.sha256,
+      size: Number(candidate.size),
+    });
+  }
+  if (entries.some(entry => entry.path === DEVELOPMENT_INSTALL_RECEIPT)) return Option.none();
+  return Option.some(entries);
+}
+
+export const prepareCanonicalDevelopmentInstallRoots = Effect.fn('developmentRuntime.prepareCanonicalInstallRoots')(
+  function* (configuredInstallRoot?: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const logicalInstallRoot = path.resolve(configuredInstallRoot ?? installationRoot(path, system));
+    yield* fs.makeDirectory(logicalInstallRoot, {recursive: true, mode: 0o700});
+    const realInstallRoot = yield* fs.realPath(logicalInstallRoot);
+    const logicalVersionsRoot = path.join(logicalInstallRoot, 'versions');
+    yield* fs.makeDirectory(logicalVersionsRoot, {recursive: true, mode: 0o700});
+    if (Option.isSome(yield* fs.readLink(logicalVersionsRoot).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error('The managed Threadnote versions directory must not be a symbolic link.'));
+    }
+    const realVersionsRoot = yield* fs.realPath(logicalVersionsRoot);
+    if (!canonicalPathEquals(path, system, realVersionsRoot, path.join(realInstallRoot, 'versions'))) {
+      return yield* Effect.fail(new Error('The managed Threadnote versions directory escapes the installation root.'));
+    }
+    return {installRoot: realInstallRoot, versionsRoot: realVersionsRoot} satisfies CanonicalDevelopmentInstallRoots;
+  },
+);
+
+export const collectDevelopmentPayloadManifest = Effect.fn('developmentRuntime.collectPayloadManifest')(function* (
+  root: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const realRoot = yield* fs.realPath(root);
+  const entries: DevelopmentPayloadManifestEntryV1[] = [];
+  const pending = [{directory: realRoot, relativeDirectory: ''}];
+  while (pending.length > 0) {
+    const {directory, relativeDirectory} = pending.pop()!;
+    for (const name of (yield* fs.readDirectory(directory)).sort()) {
+      const entry = path.join(directory, name);
+      const relative = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+      if (relative === DEVELOPMENT_INSTALL_RECEIPT) continue;
+      if (!isPayloadPath(relative)) {
+        return yield* Effect.fail(new Error('The development payload contains an invalid relative path.'));
+      }
+      if (Option.isSome(yield* fs.readLink(entry).pipe(Effect.option))) {
+        return yield* Effect.fail(new Error('The development payload must not contain symbolic links.'));
+      }
+      const info = yield* fs.stat(entry);
+      const expectedRealPath = path.join(realRoot, ...relative.split('/'));
+      const realEntry = yield* fs.realPath(entry);
+      if (!canonicalPathEquals(path, system, realEntry, expectedRealPath)) {
+        return yield* Effect.fail(new Error('The development payload contains a non-canonical path.'));
+      }
+      if (info.type === 'Directory') {
+        pending.push({directory: entry, relativeDirectory: relative});
+        continue;
+      }
+      if (info.type !== 'File') {
+        return yield* Effect.fail(new Error('The development payload contains an unsupported filesystem entry.'));
+      }
+      const linkCount = Option.getOrUndefined(info.nlink);
+      if (linkCount !== undefined && linkCount > 1) {
+        return yield* Effect.fail(new Error('The development payload must not contain hard-linked files.'));
+      }
+      const size = Number(info.size);
+      if (!Number.isSafeInteger(size) || size < 0) {
+        return yield* Effect.fail(new Error('The development payload contains a file with an invalid size.'));
+      }
+      entries.push({
+        mode: system.platform === 'win32' ? 0 : info.mode & 0o777,
+        path: relative,
+        sha256: yield* sha256FileHex(entry),
+        size,
+      });
+    }
+  }
+  return entries.sort((left, right) => comparePayloadPaths(left.path, right.path));
+});
+
+export const developmentPayloadManifestSha256 = Effect.fn('developmentRuntime.payloadManifestDigest')(
+  (manifest: readonly DevelopmentPayloadManifestEntryV1[]) => sha256Hex(`${JSON.stringify(manifest)}\n`),
+);
 
 export const readManagedDevelopmentRuntimeEvidence = Effect.fn('developmentRuntime.readManaged')(function* (
   expectedSourceCommit: string,
@@ -108,22 +270,19 @@ export const readManagedDevelopmentRuntimeEvidence = Effect.fn('developmentRunti
     return yield* Effect.fail(new Error('The managed Threadnote active release pointer is missing or invalid.'));
   }
   const logicalVersionsRoot = path.resolve(path.join(installRoot, 'versions'));
-  const expectedReleaseRoot = path.join(logicalVersionsRoot, active.value.version);
-  if (path.resolve(active.value.releaseRoot) !== path.resolve(expectedReleaseRoot)) {
-    return yield* Effect.fail(new Error('The managed Threadnote active release pointer escapes the versions root.'));
-  }
   const [realInstallRoot, realVersionsRoot, realReleaseRoot] = yield* Effect.all([
     fs.realPath(installRoot),
     fs.realPath(logicalVersionsRoot),
-    fs.realPath(expectedReleaseRoot),
+    fs.realPath(active.value.releaseRoot),
   ]);
-  if (realVersionsRoot !== path.join(realInstallRoot, 'versions')) {
+  if (!canonicalPathEquals(path, system, realVersionsRoot, path.join(realInstallRoot, 'versions'))) {
     return yield* Effect.fail(new Error('The managed Threadnote versions directory is not canonical.'));
   }
-  if (realReleaseRoot !== path.join(realVersionsRoot, active.value.version)) {
-    return yield* Effect.fail(new Error('The managed Threadnote active release is not a canonical release directory.'));
+  const expectedReleaseRoot = path.join(realVersionsRoot, active.value.version);
+  if (!canonicalPathEquals(path, system, realReleaseRoot, expectedReleaseRoot)) {
+    return yield* Effect.fail(new Error('The managed Threadnote active release pointer escapes the versions root.'));
   }
-  const evidence = yield* readDevelopmentReleaseEvidence(expectedReleaseRoot, expectedSourceCommit);
+  const evidence = yield* readDevelopmentReleaseEvidence(realReleaseRoot, expectedSourceCommit);
   if (evidence.version !== active.value.version) {
     return yield* Effect.fail(new Error('The managed Threadnote active pointer and release version do not match.'));
   }
@@ -139,19 +298,53 @@ export const verifyManagedDevelopmentRuntimeForSource = Effect.fn('developmentRu
   expectedSourceCommit: string,
 ) {
   const evidence = yield* readManagedDevelopmentRuntimeEvidence(expectedSourceCommit);
-  const live = yield* readLiveStandaloneProcessLeases();
+  const live = yield* readStandaloneProcessLeaseVerification();
   if (live.truncated) {
     return yield* Effect.fail(
       new Error('Managed development runtime verification could not inspect every live process lease.'),
     );
   }
-  if (live.leases.some(lease => lease.version !== evidence.version)) {
+  if (live.unverified.length > 0) {
+    return yield* Effect.fail(
+      new Error('Managed development runtime verification found live process leases with unverified identity.'),
+    );
+  }
+  if (live.verified.some(lease => lease.version !== evidence.version)) {
     return yield* Effect.fail(
       new Error('Managed development runtime verification found a process pinned to a superseded release.'),
     );
   }
-  return evidence;
+  const revalidated = yield* readManagedDevelopmentRuntimeEvidence(expectedSourceCommit);
+  if (JSON.stringify(revalidated) !== JSON.stringify(evidence)) {
+    return yield* Effect.fail(
+      new Error('Managed development runtime verification observed an active release change during preflight.'),
+    );
+  }
+  return revalidated;
 });
+
+export const verifyManagedDevelopmentRuntimeForSourceCheckout = Effect.fn('developmentRuntime.verifyForSourceCheckout')(
+  function* (sourceRoot: string, expectedSourceCommit: string) {
+    const path = yield* Path.Path;
+    const [runtime, sourceLockfileSha256, sourcePackageManifestSha256] = yield* Effect.all(
+      [
+        verifyManagedDevelopmentRuntimeForSource(expectedSourceCommit),
+        sha256FileHex(path.join(sourceRoot, 'bun.lock')),
+        sha256FileHex(path.join(sourceRoot, 'package.json')),
+      ],
+      {concurrency: 3},
+    );
+    if (
+      runtime.sourceLockfileSha256 !== sourceLockfileSha256 ||
+      runtime.sourcePackageManifestSha256 !== sourcePackageManifestSha256
+    ) {
+      return yield* Effect.fail(
+        new Error('Managed development runtime dependency evidence does not match the clean source checkout.'),
+      );
+    }
+    return runtime;
+  },
+);
 
 export const readDevelopmentReleaseEvidence = Effect.fn('developmentRuntime.readRelease')(function* (
   releaseRoot: string,
@@ -173,7 +366,8 @@ export const readDevelopmentReleaseEvidence = Effect.fn('developmentRuntime.read
     Option.getOrUndefined(sourceFromVersion) !== expectedSourceCommit ||
     metadata.value.version !== receipt.value.version ||
     metadata.value.runtime !== receipt.value.runtime ||
-    metadata.value.target !== receipt.value.target
+    metadata.value.target !== receipt.value.target ||
+    !releaseTargetMatchesHost(metadata.value.target, system)
   ) {
     return yield* Effect.fail(new Error('The managed development release does not match the exact source commit.'));
   }
@@ -186,43 +380,72 @@ export const readDevelopmentReleaseEvidence = Effect.fn('developmentRuntime.read
     fs.realPath(path.dirname(releaseRoot)),
     fs.realPath(releaseRoot),
   ]);
-  if (realReleaseRoot !== path.join(realReleaseParent, path.basename(releaseRoot))) {
+  if (!canonicalPathEquals(path, system, realReleaseRoot, path.join(realReleaseParent, path.basename(releaseRoot)))) {
     return yield* Effect.fail(new Error('The managed development release directory is not canonical.'));
   }
-  const canonicalFiles = [
-    [executable, path.join(realReleaseRoot, executableName)],
-    [path.join(releaseRoot, 'release.json'), path.join(realReleaseRoot, 'release.json')],
-    [path.join(releaseRoot, DEVELOPMENT_INSTALL_RECEIPT), path.join(realReleaseRoot, DEVELOPMENT_INSTALL_RECEIPT)],
-  ] as const;
-  for (const [file, expectedRealFile] of canonicalFiles) {
-    if ((yield* fs.realPath(file)) !== expectedRealFile) {
-      return yield* Effect.fail(new Error('The managed development release contains a non-canonical file link.'));
-    }
+  const receiptPath = path.join(releaseRoot, DEVELOPMENT_INSTALL_RECEIPT);
+  if (
+    Option.isSome(yield* fs.readLink(receiptPath).pipe(Effect.option)) ||
+    !canonicalPathEquals(
+      path,
+      system,
+      yield* fs.realPath(receiptPath),
+      path.join(realReleaseRoot, DEVELOPMENT_INSTALL_RECEIPT),
+    )
+  ) {
+    return yield* Effect.fail(new Error('The managed development release contains a non-canonical provenance file.'));
   }
-  const [executableSha256, releaseMetadataSha256, versionResult] = yield* Effect.all(
+  const receiptInfo = yield* fs.stat(receiptPath);
+  if (receiptInfo.type !== 'File' || (system.platform !== 'win32' && (receiptInfo.mode & 0o777) !== 0o600)) {
+    return yield* Effect.fail(new Error('The managed development release provenance file has unsafe permissions.'));
+  }
+  const actualPayloadManifest = yield* collectDevelopmentPayloadManifest(releaseRoot);
+  const [actualPayloadManifestSha256, receiptPayloadManifestSha256] = yield* Effect.all([
+    developmentPayloadManifestSha256(actualPayloadManifest),
+    developmentPayloadManifestSha256(receipt.value.payloadManifest),
+  ]);
+  if (
+    actualPayloadManifestSha256 !== receipt.value.payloadManifestSha256 ||
+    receiptPayloadManifestSha256 !== receipt.value.payloadManifestSha256 ||
+    JSON.stringify(actualPayloadManifest) !== JSON.stringify(receipt.value.payloadManifest)
+  ) {
+    return yield* Effect.fail(new Error('The managed development release payload manifest does not match its files.'));
+  }
+  const executableEntry = actualPayloadManifest.find(entry => entry.path === executableName);
+  const releaseMetadataEntry = actualPayloadManifest.find(entry => entry.path === 'release.json');
+  if (!executableEntry || !releaseMetadataEntry) {
+    return yield* Effect.fail(new Error('The managed development release payload omits required files.'));
+  }
+  const [executableInfo, versionResult] = yield* Effect.all(
     [
-      sha256FileHex(executable),
-      sha256FileHex(path.join(releaseRoot, 'release.json')),
+      fs.stat(executable),
       runCommandEffect(executable, ['--version'], {
         env: {...system.environment(), THREADNOTE_INSTALL_ROOT: installationRoot(path, system)},
         maxOutputBytes: 16 * 1024,
         timeoutMs: 30_000,
       }),
     ],
-    {concurrency: 3},
+    {concurrency: 2},
   );
   if (
-    executableSha256 !== receipt.value.executableSha256 ||
-    releaseMetadataSha256 !== receipt.value.releaseMetadataSha256 ||
+    executableEntry.sha256 !== receipt.value.executableSha256 ||
+    releaseMetadataEntry.sha256 !== receipt.value.releaseMetadataSha256 ||
+    (system.platform !== 'win32' && (executableInfo.mode & 0o111) === 0) ||
     versionResult.stdout.trim() !== `threadnote v${receipt.value.version}`
   ) {
     return yield* Effect.fail(new Error('The managed development release failed its digest or version check.'));
   }
   return {
-    executableSha256,
-    releaseMetadataSha256,
+    dependencyInstallation: receipt.value.dependencyInstallation,
+    executableSha256: executableEntry.sha256,
+    payloadBytes: actualPayloadManifest.reduce((total, entry) => total + entry.size, 0),
+    payloadFileCount: actualPayloadManifest.length,
+    payloadManifestSha256: actualPayloadManifestSha256,
+    releaseMetadataSha256: releaseMetadataEntry.sha256,
     runtime: receipt.value.runtime,
     sourceCommit: receipt.value.sourceCommit,
+    sourceLockfileSha256: receipt.value.sourceLockfileSha256,
+    sourcePackageManifestSha256: receipt.value.sourcePackageManifestSha256,
     target: receipt.value.target,
     version: receipt.value.version,
   } satisfies DevelopmentRuntimeEvidence;
@@ -239,11 +462,30 @@ export const stageAndValidateDevelopmentRelease = Effect.fn('developmentRuntime.
   readonly expectedSourceCommit: string;
   readonly receipt: DevelopmentInstallReceiptV1;
   readonly stagedRoot: string;
+  readonly versionsRoot: string;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const stage = Effect.gen(function* () {
+    const [realVersionsRoot, realStagedParent] = yield* Effect.all([
+      fs.realPath(input.versionsRoot),
+      fs.realPath(path.dirname(input.stagedRoot)),
+    ]);
+    if (
+      !canonicalPathEquals(path, system, realVersionsRoot, realStagedParent) ||
+      (yield* fs.exists(input.stagedRoot))
+    ) {
+      return yield* Effect.fail(new Error('The development staging path is not a fresh child of the versions root.'));
+    }
+    const distributionManifest = yield* collectDevelopmentPayloadManifest(input.distributionRoot);
+    const distributionManifestSha256 = yield* developmentPayloadManifestSha256(distributionManifest);
+    if (
+      distributionManifestSha256 !== input.receipt.payloadManifestSha256 ||
+      JSON.stringify(distributionManifest) !== JSON.stringify(input.receipt.payloadManifest)
+    ) {
+      return yield* Effect.fail(new Error('The development distribution changed before staging.'));
+    }
     yield* fs.copy(input.distributionRoot, input.stagedRoot, {overwrite: true});
     yield* fs.writeFileString(
       path.join(input.stagedRoot, DEVELOPMENT_INSTALL_RECEIPT),
@@ -287,6 +529,32 @@ function parseReleaseMetadata(value: unknown): Option.Option<ReleaseMetadata> {
     isDevelopmentBuildVersion(candidate.version)
     ? Option.some(candidate as ReleaseMetadata)
     : Option.none();
+}
+
+function canonicalPathEquals(
+  path: Path.Path,
+  system: Pick<import('../src/effect/system.js').SystemInfoShape, 'platform'>,
+  left: string,
+  right: string,
+): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.resolve(value);
+    return system.platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function comparePayloadPaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function releaseTargetMatchesHost(
+  target: string,
+  system: Pick<import('../src/effect/system.js').SystemInfoShape, 'architecture' | 'platform'>,
+): boolean {
+  const platform = system.platform === 'win32' ? 'windows' : system.platform;
+  const architecture = system.architecture === 'arm64' ? '(?:arm64|aarch64)' : system.architecture;
+  return new RegExp(`^bun-${platform}-${architecture}(?:-|$)`).test(target);
 }
 
 function readJsonOption(fs: FileSystem.FileSystem, file: string): Effect.Effect<Option.Option<unknown>> {

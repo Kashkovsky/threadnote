@@ -15,6 +15,7 @@ import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../src/code_g
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
 import {runCommandEffect} from '../src/effect/command.js';
+import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
@@ -44,6 +45,10 @@ import {
   parseCodeGraphBenchmarkSamplerArtifact,
   type CodeGraphBenchmarkSamplerArtifact,
 } from './code-graph-benchmark-sampler.js';
+import {
+  verifyManagedDevelopmentRuntimeForSourceCheckout,
+  type DevelopmentRuntimeEvidence,
+} from './development-runtime.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const EXTERNAL_SAMPLER_READY_TIMEOUT_MS = 5_000;
@@ -52,6 +57,8 @@ const EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS = 1_000;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS = 5 * 60_000;
 const STRUCTURAL_DIGEST_ROW_CHUNK_SIZE = 10_000;
+const LONG_SCALE_PROVENANCE_THRESHOLD = 100_000;
+const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -296,6 +303,15 @@ export interface ExternalRepositoryQueryControl {
   readonly query: string;
 }
 
+export type BenchmarkRuntimeProvenance =
+  | {
+      readonly mode: 'github-actions-clean-source';
+      readonly sourceCommit: string;
+      readonly sourceLockfileSha256: string;
+      readonly sourcePackageManifestSha256: string;
+    }
+  | ({readonly mode: 'managed-exact-head'; readonly processLeaseInspection: 'complete'} & DevelopmentRuntimeEvidence);
+
 interface PreparedCodeGraphBenchmarkFixture {
   readonly externalCommit?: string;
   readonly externalControls?: readonly ExternalRepositoryQueryControl[];
@@ -328,6 +344,13 @@ const benchmarkCodeGraph = Effect.scoped(
     const system = yield* SystemInfo;
     const options = parseArguments(yield* scriptArguments());
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
+    const runtimeProvenanceRequired =
+      options.profile === 'production-large' ||
+      options.repository !== undefined ||
+      (options.scaleSymbols ?? 0) >= LONG_SCALE_PROVENANCE_THRESHOLD;
+    const runtimeProvenance = runtimeProvenanceRequired
+      ? yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)
+      : undefined;
     const releaseEvidenceSource = yield* validateReleaseEvidenceSource(
       threadnoteSourceRoot,
       process.env.THREADNOTE_BENCHMARK_RELEASE_REF?.trim() || undefined,
@@ -337,7 +360,14 @@ const benchmarkCodeGraph = Effect.scoped(
     const externalPrepared =
       options.repository !== undefined ? yield* prepareExternalCodeGraphFixture(options) : undefined;
     const externalPreflight = externalPrepared
-      ? yield* externalBenchmarkPreflight(fs, path, externalPrepared, options.minimumFreeGiB, options.retainHomes)
+      ? yield* externalBenchmarkPreflight(
+          fs,
+          path,
+          externalPrepared,
+          options.minimumFreeGiB,
+          options.retainHomes,
+          runtimeProvenance,
+        )
       : undefined;
     if (options.preflight) {
       if (!externalPreflight) {
@@ -1187,6 +1217,7 @@ const benchmarkCodeGraph = Effect.scoped(
               releaseEvidenceSha: releaseEvidenceSource.sha,
             }
           : {}),
+        ...(runtimeProvenance ? benchmarkRuntimeProvenanceMetadata(runtimeProvenance) : {}),
         rssMeasurement:
           'boundary RSS plus process-lifetime resourceUsage.maxRSS; peak is cumulative, not phase-isolated',
         statusSamples,
@@ -1285,6 +1316,14 @@ const benchmarkCodeGraph = Effect.scoped(
         new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
       );
       enforceCodeGraphBenchmarkBudget(artifact, yield* readJsonFile(budgetPath), options.scaleSymbols);
+    }
+    if (runtimeProvenanceRequired) {
+      const finalRuntimeProvenance = yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot);
+      if (JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(runtimeProvenance)) {
+        return yield* Effect.fail(
+          new Error('Threadnote benchmark runtime provenance changed during the measured run.'),
+        );
+      }
     }
     if (prepared.externalCommit) {
       yield* verifyExternalRepositoryUnchanged(prepared.repository, prepared.externalCommit);
@@ -3131,6 +3170,7 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
     missing.push(...missingReleaseSourceProvenance(artifact));
     missing.push(...missingReviewedProductionProfile(artifact));
   }
+  missing.push(...missingBenchmarkRuntimeProvenance(artifact));
   missing.push(...missingProductionShapeTargetAttainment(measurements, artifact));
   missing.push(...missingDeterministicParityEvidence(measurements));
   missing.push(...missingSamplerObservations(measurements));
@@ -3196,10 +3236,10 @@ export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1):
   if (artifact.metadata.sameOverlayReferenceMaterializationMode !== 'full') {
     missing.push('same-overlay full rebuild materialization mode');
   }
-  if (!/^[0-9a-f]{40,64}$/.test(String(artifact.metadata.externalRepositoryCommit ?? ''))) {
+  if (!EXACT_GIT_COMMIT_PATTERN.test(String(artifact.metadata.externalRepositoryCommit ?? ''))) {
     missing.push('exact external repository commit');
   }
-  if (!/^[0-9a-f]{40,64}$/.test(artifact.environment.commit) || artifact.environment.dirty) {
+  if (!EXACT_GIT_COMMIT_PATTERN.test(artifact.environment.commit) || artifact.environment.dirty) {
     missing.push('clean exact Threadnote source commit');
   }
   if (
@@ -3214,6 +3254,7 @@ export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1):
   if (controlLanguages.length === 0) missing.push('external query control languages');
   if (artifact.metadata.externalControlCount !== controlLanguages.length) missing.push('external query control count');
   if (artifact.metadata.mcpOperationCount !== 6) missing.push('complete six-operation MCP matrix');
+  missing.push(...missingBenchmarkRuntimeProvenance(artifact));
   missing.push(...missingDeterministicParityEvidence(measurements));
   missing.push(...missingSamplerObservations(measurements));
   missing.push(...missingActivationObservations(artifact, measurements));
@@ -3342,12 +3383,54 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
   return typeof ref === 'string' &&
     /^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) &&
     typeof sha === 'string' &&
-    /^[0-9a-f]{40,64}$/.test(sha) &&
+    EXACT_GIT_COMMIT_PATTERN.test(sha) &&
     resolvedSha === sha &&
     sha === artifact.environment.commit &&
     !artifact.environment.dirty
     ? []
     : ['clean exact release source provenance'];
+}
+
+function missingBenchmarkRuntimeProvenance(artifact: BenchmarkArtifactV1): readonly string[] {
+  const metadata = artifact.metadata;
+  const mode = metadata.benchmarkRuntimeProvenanceMode;
+  const sourceCommit = metadata.benchmarkRuntimeSourceCommit;
+  const sourceLockfileSha256 = metadata.benchmarkRuntimeSourceLockfileSha256;
+  const sourcePackageManifestSha256 = metadata.benchmarkRuntimeSourcePackageManifestSha256;
+  if (
+    (mode !== 'managed-exact-head' && mode !== 'github-actions-clean-source') ||
+    sourceCommit !== artifact.environment.commit ||
+    typeof sourceCommit !== 'string' ||
+    !EXACT_GIT_COMMIT_PATTERN.test(sourceCommit) ||
+    typeof sourceLockfileSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(sourceLockfileSha256) ||
+    typeof sourcePackageManifestSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(sourcePackageManifestSha256) ||
+    artifact.environment.dirty
+  ) {
+    return ['clean exact benchmark runtime provenance'];
+  }
+  if (mode === 'github-actions-clean-source') return [];
+  const managedVersion = metadata.benchmarkManagedVersion;
+  return metadata.benchmarkManagedProcessLeaseInspection === 'complete' &&
+    metadata.benchmarkManagedDependencyInstallation === 'bun install --frozen-lockfile' &&
+    typeof managedVersion === 'string' &&
+    managedVersion.endsWith(`.local.g${sourceCommit}`) &&
+    typeof metadata.benchmarkManagedPayloadFileCount === 'number' &&
+    metadata.benchmarkManagedPayloadFileCount > 0 &&
+    typeof metadata.benchmarkManagedPayloadBytes === 'number' &&
+    metadata.benchmarkManagedPayloadBytes > 0 &&
+    [
+      metadata.benchmarkManagedExecutableSha256,
+      metadata.benchmarkManagedPayloadManifestSha256,
+      metadata.benchmarkManagedReleaseMetadataSha256,
+    ].every(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)) &&
+    typeof metadata.benchmarkManagedRuntime === 'string' &&
+    metadata.benchmarkManagedRuntime.length > 0 &&
+    typeof metadata.benchmarkManagedTarget === 'string' &&
+    metadata.benchmarkManagedTarget.length > 0
+    ? []
+    : ['complete managed exact-HEAD benchmark runtime provenance'];
 }
 
 function missingActivationObservations(
@@ -3401,6 +3484,99 @@ const threadnoteSourceGit = Effect.fn('benchmarkCodeGraph.threadnoteSourceGit')(
     repositoryGit(sourceRoot, args).pipe(Effect.map(result => result.stdout.trim())),
 );
 
+export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.validateRuntimeProvenance')(function* (
+  sourceRoot: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const [sourceCommit, dirty] = yield* Effect.all(
+    [
+      threadnoteSourceGit(sourceRoot, ['rev-parse', 'HEAD']),
+      threadnoteSourceGit(sourceRoot, CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS),
+    ],
+    {concurrency: 2},
+  );
+  if (!EXACT_GIT_COMMIT_PATTERN.test(sourceCommit) || dirty.length > 0) {
+    return yield* Effect.fail(
+      new Error('Long code-graph benchmarks require a clean Threadnote checkout at an exact Git commit.'),
+    );
+  }
+  const environment = system.environment();
+  if (environment.GITHUB_ACTIONS === 'true') {
+    const githubWorkspace = environment.GITHUB_WORKSPACE?.trim();
+    const githubSha = environment.GITHUB_SHA?.trim();
+    const githubRunId = environment.GITHUB_RUN_ID?.trim();
+    const githubRepository = environment.GITHUB_REPOSITORY?.trim();
+    if (
+      environment.CI !== 'true' ||
+      githubSha !== sourceCommit ||
+      !EXACT_GIT_COMMIT_PATTERN.test(githubSha ?? '') ||
+      !githubWorkspace ||
+      !/^\d+$/.test(githubRunId ?? '') ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(githubRepository ?? '')
+    ) {
+      return yield* Effect.fail(
+        new Error('GitHub Actions benchmark provenance is incomplete or does not match the checkout commit.'),
+      );
+    }
+    const [realSourceRoot, realGithubWorkspace, sourceLockfileSha256, sourcePackageManifestSha256] = yield* Effect.all(
+      [
+        fs.realPath(sourceRoot),
+        fs.realPath(githubWorkspace),
+        sha256FileHex(path.join(sourceRoot, 'bun.lock')),
+        sha256FileHex(path.join(sourceRoot, 'package.json')),
+      ],
+      {concurrency: 4},
+    );
+    const normalize = (value: string) =>
+      system.platform === 'win32' ? path.resolve(value).toLocaleLowerCase('en-US') : path.resolve(value);
+    if (normalize(realSourceRoot) !== normalize(realGithubWorkspace)) {
+      return yield* Effect.fail(new Error('GitHub Actions benchmark provenance is not bound to this workspace.'));
+    }
+    yield* verifyBenchmarkSourceUnchanged(sourceRoot, sourceCommit);
+    return {
+      mode: 'github-actions-clean-source',
+      sourceCommit,
+      sourceLockfileSha256,
+      sourcePackageManifestSha256,
+    } satisfies BenchmarkRuntimeProvenance;
+  }
+  const managed = yield* verifyManagedDevelopmentRuntimeForSourceCheckout(sourceRoot, sourceCommit);
+  yield* verifyBenchmarkSourceUnchanged(sourceRoot, sourceCommit);
+  return {
+    ...managed,
+    mode: 'managed-exact-head',
+    processLeaseInspection: 'complete',
+  } satisfies BenchmarkRuntimeProvenance;
+});
+
+function benchmarkRuntimeProvenanceMetadata(
+  provenance: BenchmarkRuntimeProvenance,
+): Readonly<Record<string, boolean | number | string>> {
+  const common = {
+    benchmarkRuntimeProvenanceMode: provenance.mode,
+    benchmarkRuntimeSourceCommit: provenance.sourceCommit,
+    benchmarkRuntimeSourceLockfileSha256: provenance.sourceLockfileSha256,
+    benchmarkRuntimeSourcePackageManifestSha256: provenance.sourcePackageManifestSha256,
+  } as const;
+  return provenance.mode === 'github-actions-clean-source'
+    ? common
+    : {
+        ...common,
+        benchmarkManagedDependencyInstallation: provenance.dependencyInstallation,
+        benchmarkManagedExecutableSha256: provenance.executableSha256,
+        benchmarkManagedPayloadBytes: provenance.payloadBytes,
+        benchmarkManagedPayloadFileCount: provenance.payloadFileCount,
+        benchmarkManagedPayloadManifestSha256: provenance.payloadManifestSha256,
+        benchmarkManagedProcessLeaseInspection: provenance.processLeaseInspection,
+        benchmarkManagedReleaseMetadataSha256: provenance.releaseMetadataSha256,
+        benchmarkManagedRuntime: provenance.runtime,
+        benchmarkManagedTarget: provenance.target,
+        benchmarkManagedVersion: provenance.version,
+      };
+}
+
 export function resolvedReleaseEvidenceSource(
   ref: string,
   sha: string,
@@ -3410,7 +3586,7 @@ export function resolvedReleaseEvidenceSource(
 ): {readonly ref: string; readonly resolvedSha: string; readonly sha: string} {
   if (
     !/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) ||
-    !/^[0-9a-f]{40,64}$/.test(sha) ||
+    !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
     resolvedSha !== sha ||
     checkoutCommit !== sha ||
     dirty
@@ -3432,7 +3608,7 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
     ref === undefined ||
     sha === undefined ||
     !/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) ||
-    !/^[0-9a-f]{40,64}$/.test(sha)
+    !EXACT_GIT_COMMIT_PATTERN.test(sha)
   ) {
     return yield* Effect.fail(
       new Error('Release benchmark provenance requires a Threadnote 4 release tag and its exact commit SHA.'),
@@ -3668,7 +3844,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
     ],
     {concurrency: 2},
   );
-  if (!/^[0-9a-f]{40,64}$/.test(externalCommit)) {
+  if (!EXACT_GIT_COMMIT_PATTERN.test(externalCommit)) {
     return yield* Effect.fail(new Error('External repository did not resolve to an exact Git commit.'));
   }
   if (dirty.length > 0) {
@@ -3814,6 +3990,7 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
   prepared: PreparedCodeGraphBenchmarkFixture,
   minimumFreeGiB: number,
   retainHomes: boolean,
+  runtimeProvenance: BenchmarkRuntimeProvenance | undefined,
 ) {
   const system = yield* SystemInfo;
   if (!externalBenchmarkPlatformSupported(process.platform)) {
@@ -3823,6 +4000,9 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
   }
   if (!prepared.externalCommit || !prepared.incrementalSourcePath || !prepared.referenceHome) {
     return yield* Effect.fail(new Error('External benchmark preflight requires a complete prepared fixture.'));
+  }
+  if (!runtimeProvenance) {
+    return yield* Effect.fail(new Error('External benchmark preflight requires exact runtime provenance.'));
   }
   const source = decodeBenchmarkSource(
     yield* fs.readFile(path.join(prepared.repository, prepared.incrementalSourcePath)),
@@ -3862,6 +4042,7 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
     filesystemsShared: primaryCapacity.filesystem === referenceCapacity.filesystem,
     minimumFreeBytes,
     retainHomes,
+    runtimeProvenance,
     semanticOverlaySupported: true,
     tree,
     version: 1,

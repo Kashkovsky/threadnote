@@ -10,9 +10,41 @@ import {
   withStandaloneInstallationLock,
 } from '../../src/installations.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {terminateSupersededStandaloneProcesses} from '../../src/standalone_process_lease.js';
+import {
+  readValidatedRelease,
+  readStandaloneProcessLeaseVerification,
+  terminateSupersededStandaloneProcesses,
+} from '../../src/standalone_process_lease.js';
 
 describe('standalone release lifecycle', () => {
+  it.skipIf(process.platform === 'win32')(
+    'rejects release-directory symlinks during lifecycle validation',
+    async () => {
+      const validated = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-release-link-validation-'});
+            const installRoot = path.join(root, 'install');
+            const outsideRelease = path.join(root, 'outside-release');
+            const linkedRelease = path.join(installRoot, 'versions', '4.0.0');
+            yield* fs.makeDirectory(path.dirname(linkedRelease), {recursive: true});
+            yield* fs.makeDirectory(outsideRelease);
+            yield* fs.writeFileString(
+              path.join(outsideRelease, 'release.json'),
+              `${JSON.stringify({version: '4.0.0'})}\n`,
+            );
+            yield* fs.symlink(outsideRelease, linkedRelease);
+            return yield* readValidatedRelease(fs, path, linkedRelease, installRoot);
+          }),
+        ).pipe(Effect.provide(ApplicationLayer)),
+      );
+
+      expect(validated).toBeUndefined();
+    },
+  );
+
   it('tracks the active release and retains only it plus the running rollback version', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -554,6 +586,59 @@ describe('standalone release lifecycle', () => {
     expect(result.signals).toEqual([]);
     expect(result.termination.remaining).toEqual([]);
     expect(result.termination.skippedUnverified.map(lease => lease.processId)).toEqual([42_001]);
+  });
+
+  it('fails closed on malformed live leases and retains every release while inspection is incomplete', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-incomplete-'});
+          const installRoot = path.join(root, 'install');
+          const versionsRoot = path.join(installRoot, 'versions');
+          for (const version of ['4.0.0', '4.0.1', '4.0.2']) {
+            const releaseRoot = path.join(versionsRoot, version);
+            yield* fs.makeDirectory(releaseRoot, {recursive: true});
+            yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify({version})}\n`);
+          }
+          const processId = 43_001;
+          const leaseRoot = path.join(installRoot, 'leases', '4.0.0');
+          yield* fs.makeDirectory(leaseRoot, {recursive: true});
+          yield* fs.writeFileString(path.join(leaseRoot, `${processId}.json`), '{malformed');
+          yield* fs.makeDirectory(path.join(installRoot, 'leases', 'unexpected-directory'));
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            executablePath: path.join(versionsRoot, '4.0.1', 'threadnote'),
+            isProcessRunning: candidate => candidate === processId,
+            processId: 99_999,
+          });
+          const verification = yield* readStandaloneProcessLeaseVerification().pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          const terminationFailure = yield* terminateSupersededStandaloneProcesses('4.0.2').pipe(
+            Effect.provideService(SystemInfo, testSystem),
+            Effect.flip,
+          );
+          const pruning = yield* pruneStandaloneReleases(path.join(versionsRoot, '4.0.2'), false).pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          return {
+            pruning,
+            staleReleaseExists: yield* fs.exists(path.join(versionsRoot, '4.0.0')),
+            terminationFailure: String(terminationFailure),
+            verification,
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.verification).toEqual({truncated: true, unverified: [], verified: []});
+    expect(result.terminationFailure).toContain('inspection was incomplete');
+    expect(result.pruning.complete).toBe(false);
+    expect(result.staleReleaseExists).toBe(true);
   });
 });
 

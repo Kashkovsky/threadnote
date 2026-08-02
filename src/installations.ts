@@ -219,41 +219,53 @@ export const pruneStandaloneReleases = Effect.fn('installations.pruneReleases')(
   const system = yield* SystemInfo;
   const root = installationRoot(path, system);
   const expectedActive = yield* readValidatedRelease(fs, path, activeReleaseRoot, root);
-  if (!expectedActive) return;
+  if (!expectedActive) return {complete: false, failedRemovals: 0} as const;
   const activePath = path.join(root, ACTIVE_RELEASE_FILE);
   const activePointerExists = yield* fs.exists(activePath);
   const activePointer = yield* readActiveRelease(fs, activePath);
   if (activePointerExists && !activePointer) {
     yield* Console.warn('WARN skipping release pruning because the active release pointer is invalid.');
-    return;
+    return {complete: false, failedRemovals: 0} as const;
   }
   const currentActive = activePointer
     ? yield* readValidatedRelease(fs, path, activePointer.releaseRoot, root)
     : undefined;
   if (activePointer && currentActive?.version !== activePointer.version) {
     yield* Console.warn('WARN skipping release pruning because the active release pointer is not valid.');
-    return;
+    return {complete: false, failedRemovals: 0} as const;
   }
   if (currentActive && currentActive.releaseRoot !== expectedActive.releaseRoot) {
     yield* Console.warn(
       `WARN skipping stale release pruning for ${expectedActive.version}; ${currentActive.version} is now active.`,
     );
-    return;
+    return {complete: false, failedRemovals: 0} as const;
   }
   const active = currentActive ?? expectedActive;
   const versionsRoot = path.join(root, 'versions');
-  if (!(yield* fs.exists(versionsRoot))) return;
+  if (!(yield* fs.exists(versionsRoot))) return {complete: false, failedRemovals: 0} as const;
   const releases = (yield* Effect.forEach(yield* fs.readDirectory(versionsRoot), name =>
     readValidatedRelease(fs, path, path.join(versionsRoot, name), root),
   )).filter((release): release is ActiveRelease => release !== undefined);
   const keep = new Set<string>([active.version]);
   const running = yield* readValidatedRelease(fs, path, path.dirname(system.executablePath), root);
   if (running) keep.add(running.version);
-  for (const version of yield* liveReleaseLeaseVersions(fs, path, root, system)) keep.add(version);
+  const liveVersions = yield* liveReleaseLeaseVersions(fs, path, root, system).pipe(
+    Effect.catch(cause =>
+      Effect.gen(function* () {
+        yield* Console.warn(
+          `WARN skipping release pruning because process inspection was incomplete: ${String(cause)}`,
+        );
+        return undefined;
+      }),
+    ),
+  );
+  if (!liveVersions) return {complete: false, failedRemovals: 0} as const;
+  for (const version of liveVersions) keep.add(version);
   for (const release of releases.sort((left, right) => compareVersions(right.version, left.version))) {
     if (keep.size >= RETAINED_RELEASE_COUNT) break;
     keep.add(release.version);
   }
+  let failedRemovals = 0;
   for (const release of releases) {
     if (keep.has(release.version)) continue;
     if (dryRun) {
@@ -262,11 +274,20 @@ export const pruneStandaloneReleases = Effect.fn('installations.pruneReleases')(
       yield* fs.remove(release.releaseRoot, {recursive: true}).pipe(
         Effect.tap(() => Console.log(`Removed superseded standalone release: ${release.releaseRoot}`)),
         Effect.catch(cause =>
-          Console.warn(`WARN could not remove superseded standalone release ${release.releaseRoot}: ${String(cause)}`),
+          Effect.sync(() => {
+            failedRemovals += 1;
+          }).pipe(
+            Effect.andThen(
+              Console.warn(
+                `WARN could not remove superseded standalone release ${release.releaseRoot}: ${String(cause)}`,
+              ),
+            ),
+          ),
         ),
       );
     }
   }
+  return {complete: failedRemovals === 0, failedRemovals} as const;
 });
 
 export function withStandaloneInstallationLock<A, E, R>(effect: Effect.Effect<A, E, R>, dryRun = false) {

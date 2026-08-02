@@ -45,6 +45,20 @@ describe('external code graph benchmark execution safety', () => {
               {timeoutMs: 10_000},
             );
 
+            const sourceDirty =
+              (yield* runCommandEffect('git', [
+                '-C',
+                path.resolve('.'),
+                '-c',
+                'core.fsmonitor=false',
+                '-c',
+                'core.untrackedCache=false',
+                '-c',
+                'status.showUntrackedFiles=all',
+                'status',
+                '--porcelain=v1',
+                '--untracked-files=all',
+              ])).stdout.trim().length > 0;
             const common = [
               '--repository',
               repository,
@@ -80,20 +94,6 @@ describe('external code graph benchmark execution safety', () => {
               runBenchmark(script, [...common, '--minimum-free-gib', '8000000']),
             );
             const lowDiskHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
-            const sourceDirty =
-              (yield* runCommandEffect('git', [
-                '-C',
-                path.resolve('.'),
-                '-c',
-                'core.fsmonitor=false',
-                '-c',
-                'core.untrackedCache=false',
-                '-c',
-                'status.showUntrackedFiles=all',
-                'status',
-                '--porcelain=v1',
-                '--untracked-files=all',
-              ])).stdout.trim().length > 0;
             const actual = yield* Effect.promise(() =>
               runBenchmark(script, [...common, '--minimum-free-gib', '1', '--samples', '1', '--warmups', '0']),
             );
@@ -117,26 +117,30 @@ describe('external code graph benchmark execution safety', () => {
         ).pipe(Effect.provide(ApplicationLayer)),
       );
 
-      expect(result.first.exitCode).toBe(0);
-      expect(result.second.exitCode).toBe(0);
       expect(result.firstHomesReleased).toBe(true);
       expect(result.secondHomesReleased).toBe(true);
-      expect(result.preflightArtifactExists).toBe(true);
-      expect(result.dirty.exitCode).not.toBe(0);
-      expect(`${result.dirty.stderr}\n${result.dirty.stdout}`).toContain('requires a clean checkout');
-      expect(result.lowDisk.exitCode).not.toBe(0);
-      expect(`${result.lowDisk.stderr}\n${result.lowDisk.stdout}`).toContain(
-        'External benchmark preflight requires at least 8000000 GiB',
-      );
       expect(result.lowDiskHomesReleased).toBe(true);
       if (result.sourceDirty) {
+        for (const attempt of [result.first, result.second, result.dirty, result.lowDisk, result.actual]) {
+          expect(attempt.exitCode).not.toBe(0);
+          expect(`${attempt.stderr}\n${attempt.stdout}`).toContain('clean Threadnote checkout');
+        }
+        expect(result.preflightArtifactExists).toBe(false);
         expect(result.actual.exitCode).not.toBe(0);
-        expect(`${result.actual.stderr}\n${result.actual.stdout}`).toContain('clean exact Threadnote source commit');
         expect(`${result.actual.stderr}\n${result.actual.stdout}`).not.toContain(
           'one-file reindex incremental-overlay materialization mode',
         );
         expect(result.artifactExists).toBe(false);
       } else {
+        expect(result.first.exitCode).toBe(0);
+        expect(result.second.exitCode).toBe(0);
+        expect(result.preflightArtifactExists).toBe(true);
+        expect(result.dirty.exitCode).not.toBe(0);
+        expect(`${result.dirty.stderr}\n${result.dirty.stdout}`).toContain('requires a clean checkout');
+        expect(result.lowDisk.exitCode).not.toBe(0);
+        expect(`${result.lowDisk.stderr}\n${result.lowDisk.stdout}`).toContain(
+          'External benchmark preflight requires at least 8000000 GiB',
+        );
         expect(
           result.actual.exitCode,
           `benchmark stderr:\n${result.actual.stderr}\nbenchmark stdout:\n${result.actual.stdout}`,
@@ -156,8 +160,20 @@ describe('external code graph benchmark execution safety', () => {
 });
 
 async function runBenchmark(script: string, args: readonly string[]) {
+  const sourceCommit = Bun.spawnSync({cmd: ['git', 'rev-parse', 'HEAD'], stderr: 'pipe', stdout: 'pipe'})
+    .stdout.toString()
+    .trim();
   const child = Bun.spawn({
     cmd: [process.execPath, script, ...args],
+    env: {
+      ...process.env,
+      CI: 'true',
+      GITHUB_ACTIONS: 'true',
+      GITHUB_REPOSITORY: 'Kashkovsky/threadnote',
+      GITHUB_RUN_ID: '1',
+      GITHUB_SHA: sourceCommit,
+      GITHUB_WORKSPACE: process.cwd(),
+    },
     stderr: 'pipe',
     stdout: 'pipe',
   });

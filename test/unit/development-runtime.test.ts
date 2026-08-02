@@ -3,10 +3,13 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   DEVELOPMENT_INSTALL_RECEIPT_VERSION,
+  collectDevelopmentPayloadManifest,
   developmentBuildVersion,
+  developmentPayloadManifestSha256,
   developmentVersionSourceCommit,
   isDevelopmentBuildVersion,
   parseDevelopmentInstallReceipt,
+  prepareCanonicalDevelopmentInstallRoots,
   readDevelopmentReleaseEvidence,
   readManagedDevelopmentRuntimeEvidence,
   stageAndValidateDevelopmentRelease,
@@ -24,8 +27,13 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const sourceCommitArbitrary = fc
-  .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: 40, minLength: 40})
-  .map(characters => characters.join(''));
+  .constantFrom(40, 64)
+  .chain(length =>
+    fc
+      .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: length, minLength: length})
+      .map(characters => characters.join('')),
+  );
+const TEST_TARGET = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
 
 describe('exact-head development runtime', () => {
   it('parses only the explicit developer installer switches', () => {
@@ -59,6 +67,15 @@ describe('exact-head development runtime', () => {
     );
   });
 
+  it('accepts only exact 40- or 64-character Git object identities', () => {
+    for (const length of [40, 64]) {
+      expect(developmentBuildVersion('4.0.0-beta.30', 'a'.repeat(length))).toContain(`local.g${'a'.repeat(length)}`);
+    }
+    for (const length of [39, 41, 63, 65]) {
+      expect(() => developmentBuildVersion('4.0.0-beta.30', 'a'.repeat(length))).toThrow('exact Git commit');
+    }
+  });
+
   it('rejects malformed or dirty provenance receipts', () => {
     const sourceCommit = 'a'.repeat(40);
     const receipt = validReceipt(developmentBuildVersion('4.0.0-beta.30', sourceCommit), sourceCommit);
@@ -82,20 +99,15 @@ describe('exact-head development runtime', () => {
           const installRoot = path.join(root, 'install');
           const releaseRoot = path.join(installRoot, 'versions', version);
           const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
-          yield* fs.makeDirectory(releaseRoot, {recursive: true});
-          yield* fs.writeFileString(path.join(releaseRoot, executableName), 'exact executable bytes\n');
-          const metadata = {
-            executable: executableName,
-            runtime: 'bun-test',
-            target: 'test-target',
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
             version,
-          };
-          yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify(metadata)}\n`);
-          const receipt = validReceipt(version, sourceCommit, {
-            executableSha256: yield* sha256FileHex(path.join(releaseRoot, executableName)),
-            releaseMetadataSha256: yield* sha256FileHex(path.join(releaseRoot, 'release.json')),
-          });
-          yield* fs.writeFileString(path.join(releaseRoot, 'development-install.json'), `${JSON.stringify(receipt)}\n`);
+            sourceCommit,
+            executableName,
+            'exact executable bytes',
+          );
           yield* fs.writeFileString(
             path.join(installRoot, 'active-release.json'),
             `${JSON.stringify({releaseRoot, version})}\n`,
@@ -117,10 +129,117 @@ describe('exact-head development runtime', () => {
     expect(evidence).toMatchObject({
       runtime: 'bun-test',
       sourceCommit: 'b'.repeat(40),
-      target: 'test-target',
+      target: TEST_TARGET,
     });
     expect(Object.keys(evidence)).not.toContain('releaseRoot');
     expect(Object.keys(evidence)).not.toContain('executable');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects payload content, membership, mode, link, and receipt-permission changes',
+    async () => {
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-payload-'});
+            const sourceCommit = '7'.repeat(40);
+            const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+            const releaseRoot = path.join(root, 'release');
+            const executableName = 'threadnote';
+            yield* writeDevelopmentReleaseFixture(
+              fs,
+              path,
+              releaseRoot,
+              version,
+              sourceCommit,
+              executableName,
+              'payload-release',
+            );
+            const nested = path.join(releaseRoot, 'assets', 'nested.txt');
+            yield* fs.makeDirectory(path.dirname(nested), {recursive: true});
+            yield* fs.writeFileString(nested, 'original payload\n', {mode: 0o644});
+            yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, executableName);
+            const commandExecutor = versionCommandExecutor(version);
+            const validate = readDevelopmentReleaseEvidence(releaseRoot, sourceCommit).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(SystemInfo, baseSystem),
+            );
+            yield* validate;
+
+            yield* fs.writeFileString(nested, 'mutated payload\n');
+            const contentFailure = String(yield* validate.pipe(Effect.flip));
+            yield* fs.writeFileString(nested, 'original payload\n');
+
+            const unexpected = path.join(releaseRoot, 'unexpected.txt');
+            yield* fs.writeFileString(unexpected, 'unexpected\n');
+            const membershipFailure = String(yield* validate.pipe(Effect.flip));
+            yield* fs.remove(unexpected);
+
+            yield* fs.chmod(nested, 0o600);
+            const modeFailure = String(yield* validate.pipe(Effect.flip));
+            yield* fs.chmod(nested, 0o644);
+
+            const linked = path.join(releaseRoot, 'linked.txt');
+            yield* fs.symlink(nested, linked);
+            const linkFailure = String(yield* validate.pipe(Effect.flip));
+            yield* fs.remove(linked);
+
+            const receiptPath = path.join(releaseRoot, 'development-install.json');
+            yield* fs.chmod(receiptPath, 0o644);
+            const receiptModeFailure = String(yield* validate.pipe(Effect.flip));
+            return {contentFailure, linkFailure, membershipFailure, modeFailure, receiptModeFailure};
+          }),
+        ).pipe(Effect.provide(ApplicationLayer)),
+      );
+
+      expect(result.contentFailure).toContain('payload manifest does not match');
+      expect(result.membershipFailure).toContain('payload manifest does not match');
+      expect(result.modeFailure).toContain('payload manifest does not match');
+      expect(result.linkFailure).toContain('must not contain symbolic links');
+      expect(result.receiptModeFailure).toContain('unsafe permissions');
+    },
+  );
+
+  it('rejects an otherwise attested payload compiled for another host target', async () => {
+    const failure = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-wrong-target-'});
+          const sourceCommit = '6'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const releaseRoot = path.join(root, 'release');
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'wrong-target-release',
+          );
+          const wrongTarget = baseSystem.platform === 'linux' ? 'bun-darwin-x64' : 'bun-linux-x64';
+          yield* fs.writeFileString(
+            path.join(releaseRoot, 'release.json'),
+            `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: wrongTarget, version})}\n`,
+          );
+          yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, executableName, wrongTarget);
+          return yield* readDevelopmentReleaseEvidence(releaseRoot, sourceCommit).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+            Effect.provideService(SystemInfo, baseSystem),
+            Effect.flip,
+          );
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(String(failure)).toContain('does not match the exact source commit');
   });
 
   it.skipIf(process.platform === 'win32')('rejects a symlinked managed release directory', async () => {
@@ -157,7 +276,7 @@ describe('exact-head development runtime', () => {
       ).pipe(Effect.provide(ApplicationLayer)),
     );
 
-    expect(String(failure)).toContain('not a canonical release directory');
+    expect(String(failure)).toContain('escapes the versions root');
   });
 
   it.skipIf(process.platform === 'win32')('rejects a symlinked managed versions directory', async () => {
@@ -197,6 +316,81 @@ describe('exact-head development runtime', () => {
 
     expect(String(failure)).toContain('versions directory is not canonical');
   });
+
+  it.skipIf(process.platform === 'win32')('rejects a symlinked versions root before build or staging', async () => {
+    const failure = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-prestage-link-'});
+          const installRoot = path.join(root, 'install');
+          const outsideVersionsRoot = path.join(root, 'outside-versions');
+          yield* fs.makeDirectory(installRoot, {recursive: true});
+          yield* fs.makeDirectory(outsideVersionsRoot, {recursive: true});
+          yield* fs.symlink(outsideVersionsRoot, path.join(installRoot, 'versions'));
+          return yield* prepareCanonicalDevelopmentInstallRoots(installRoot).pipe(
+            Effect.provideService(SystemInfo, baseSystem),
+            Effect.flip,
+          );
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(String(failure)).toContain('must not be a symbolic link');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'supports a canonical install root reached through a parent symlink',
+    async () => {
+      const evidence = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-parent-link-'});
+            const realInstallRoot = path.join(root, 'physical-install');
+            const logicalInstallRoot = path.join(root, 'logical-install');
+            const sourceCommit = '9'.repeat(40);
+            const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+            const executableName = 'threadnote';
+            const realReleaseRoot = path.join(realInstallRoot, 'versions', version);
+            yield* writeDevelopmentReleaseFixture(
+              fs,
+              path,
+              realReleaseRoot,
+              version,
+              sourceCommit,
+              executableName,
+              'parent-link-release',
+            );
+            yield* fs.symlink(realInstallRoot, logicalInstallRoot);
+            yield* fs.writeFileString(
+              path.join(logicalInstallRoot, 'active-release.json'),
+              `${JSON.stringify({releaseRoot: path.join(logicalInstallRoot, 'versions', version), version})}\n`,
+            );
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: logicalInstallRoot}),
+            });
+            const roots = yield* prepareCanonicalDevelopmentInstallRoots(logicalInstallRoot).pipe(
+              Effect.provideService(SystemInfo, testSystem),
+            );
+            const runtime = yield* readManagedDevelopmentRuntimeEvidence(sourceCommit).pipe(
+              Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+              Effect.provideService(SystemInfo, testSystem),
+            );
+            return {roots, runtime};
+          }),
+        ).pipe(Effect.provide(ApplicationLayer)),
+      );
+
+      expect(evidence.roots.installRoot).toContain('physical-install');
+      expect(evidence.runtime.version).toContain(`local.g${'9'.repeat(40)}`);
+    },
+  );
 
   it('binds managed provenance to the active pointer version', async () => {
     const failure = await Effect.runPromise(
@@ -256,20 +450,14 @@ describe('exact-head development runtime', () => {
           const binRoot = path.join(root, 'bin');
           const releaseRoot = path.join(installRoot, 'versions', version);
           const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
-          yield* fs.makeDirectory(releaseRoot, {recursive: true});
-          yield* fs.writeFileString(path.join(releaseRoot, executableName), 'reusable executable bytes\n');
-          yield* fs.writeFileString(
-            path.join(releaseRoot, 'release.json'),
-            `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: 'test-target', version})}\n`,
-          );
-          yield* fs.writeFileString(
-            path.join(releaseRoot, 'development-install.json'),
-            `${JSON.stringify(
-              validReceipt(version, sourceCommit, {
-                executableSha256: yield* sha256FileHex(path.join(releaseRoot, executableName)),
-                releaseMetadataSha256: yield* sha256FileHex(path.join(releaseRoot, 'release.json')),
-              }),
-            )}\n`,
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'reusable executable bytes',
           );
           const testSystem = SystemInfo.of({
             ...baseSystem,
@@ -288,6 +476,8 @@ describe('exact-head development runtime', () => {
           // before this installer acquires the mutation lock.
           yield* fs.remove(releaseRoot, {force: true, recursive: true});
           const failure = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
             commit: sourceCommit,
             executableName,
             releaseRoot,
@@ -355,6 +545,8 @@ describe('exact-head development runtime', () => {
             }),
           });
           const installed = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
             commit: sourceCommit,
             executableName,
             releaseRoot,
@@ -379,6 +571,93 @@ describe('exact-head development runtime', () => {
     expect(result.releaseBytes).toBe('concurrent-winner\n');
     expect(result.stagedExists).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'repairs exact managed launcher modes and executes the CLI launcher before success',
+    async () => {
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-launcher-mode-'});
+            const installRoot = path.join(root, 'install');
+            const binRoot = path.join(root, 'bin');
+            const sourceCommit = '8'.repeat(40);
+            const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+            const releaseRoot = path.join(installRoot, 'versions', version);
+            yield* writeDevelopmentReleaseFixture(
+              fs,
+              path,
+              releaseRoot,
+              version,
+              sourceCommit,
+              'threadnote',
+              'launcher-mode-release',
+            );
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              environment: () => ({
+                ...baseSystem.environment(),
+                THREADNOTE_BIN_DIR: binRoot,
+                THREADNOTE_INSTALL_ROOT: installRoot,
+              }),
+            });
+            const [cliLauncher, mcpLauncher, cliBody, mcpBody] = yield* Effect.all([
+              commandLauncherPath('cli'),
+              commandLauncherPath('mcp'),
+              renderCommandShim(releaseRoot, 'cli'),
+              renderCommandShim(releaseRoot, 'mcp'),
+            ]).pipe(Effect.provideService(SystemInfo, testSystem));
+            yield* fs.makeDirectory(binRoot, {recursive: true});
+            yield* fs.writeFileString(cliLauncher, cliBody, {mode: 0o644});
+            yield* fs.writeFileString(mcpLauncher, mcpBody, {mode: 0o777});
+            yield* fs.chmod(cliLauncher, 0o644);
+            yield* fs.chmod(mcpLauncher, 0o777);
+            const invocations: Array<{readonly arguments: readonly string[]; readonly executable: string}> = [];
+            const executor = CommandExecutor.of({
+              execute: (executable, arguments_) => {
+                invocations.push({arguments: arguments_, executable});
+                return Effect.succeed({
+                  exitCode: 0,
+                  stderr: '',
+                  stdout:
+                    arguments_[0] === 'doctor'
+                      ? 'Running Threadnote doctor checks.\nSummary: all checks complete.\n'
+                      : `threadnote v${version}\n`,
+                });
+              },
+              executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
+            });
+            const installed = yield* activateLocalStandaloneRelease({
+              canonicalInstallRoot: yield* fs.realPath(installRoot),
+              canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+              commit: sourceCommit,
+              executableName: 'threadnote',
+              releaseRoot,
+              reused: true,
+              stagedRoot: Option.none(),
+              terminateSuperseded: false,
+              version,
+            }).pipe(Effect.provideService(CommandExecutor, executor), Effect.provideService(SystemInfo, testSystem));
+            return {
+              cliMode: (yield* fs.stat(cliLauncher)).mode & 0o777,
+              installed,
+              invocations,
+              mcpMode: (yield* fs.stat(mcpLauncher)).mode & 0o777,
+              cliLauncher,
+            };
+          }),
+        ).pipe(Effect.provide(ApplicationLayer)),
+      );
+
+      expect(result.installed.launchersVerified).toBe(true);
+      expect(result.cliMode).toBe(0o755);
+      expect(result.mcpMode).toBe(0o755);
+      expect(result.invocations).toContainEqual({arguments: ['--version'], executable: result.cliLauncher});
+    },
+  );
 
   it('restores the prior active pointer and launchers when launcher verification fails', async () => {
     const result = await Effect.runPromise(
@@ -427,6 +706,8 @@ describe('exact-head development runtime', () => {
           }).pipe(Effect.provideService(SystemInfo, testSystem));
           const launchers = yield* setup;
           const failure = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
             commit: sourceCommit,
             executableName,
             releaseRoot,
@@ -468,20 +749,28 @@ describe('exact-head development runtime', () => {
           const sourceCommit = 'c'.repeat(40);
           const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
           const distributionRoot = path.join(root, 'dist');
-          const stagedRoot = path.join(root, 'versions', `.${version}.fixture.staging`);
+          const versionsRoot = path.join(root, 'versions');
+          const stagedRoot = path.join(versionsRoot, `.${version}.fixture.staging`);
           const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
           yield* fs.makeDirectory(distributionRoot, {recursive: true});
           yield* fs.writeFileString(path.join(distributionRoot, executableName), 'built executable bytes\n');
+          if (baseSystem.platform !== 'win32') {
+            yield* fs.chmod(path.join(distributionRoot, executableName), 0o755);
+          }
           yield* fs.writeFileString(
             path.join(distributionRoot, 'release.json'),
-            `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: 'test-target', version})}\n`,
+            `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: TEST_TARGET, version})}\n`,
           );
+          const payloadManifest = yield* collectDevelopmentPayloadManifest(distributionRoot);
           const receipt = validReceipt(version, sourceCommit, {
             // A syntactically valid but intentionally wrong digest forces the
             // validation failure after the stage has been copied and written.
             executableSha256: '0'.repeat(64),
+            payloadManifest,
+            payloadManifestSha256: yield* developmentPayloadManifestSha256(payloadManifest),
             releaseMetadataSha256: yield* sha256FileHex(path.join(distributionRoot, 'release.json')),
           });
+          yield* fs.makeDirectory(versionsRoot, {recursive: true});
           const testSystem = SystemInfo.of({
             ...baseSystem,
             environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: path.join(root, 'install')}),
@@ -493,6 +782,7 @@ describe('exact-head development runtime', () => {
             expectedSourceCommit: sourceCommit,
             receipt,
             stagedRoot,
+            versionsRoot,
           }).pipe(
             Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
             Effect.provideService(SystemInfo, testSystem),
@@ -515,13 +805,18 @@ function validReceipt(
 ): DevelopmentInstallReceiptV1 {
   return {
     builtAt: '2026-08-02T08:00:00.000Z',
+    dependencyInstallation: 'bun install --frozen-lockfile',
     executableSha256: '1'.repeat(64),
+    payloadManifest: [{mode: 0o644, path: 'release.json', sha256: '3'.repeat(64), size: 1}],
+    payloadManifestSha256: '4'.repeat(64),
     releaseMetadataSha256: '2'.repeat(64),
     runtime: 'bun-test',
     schemaVersion: DEVELOPMENT_INSTALL_RECEIPT_VERSION,
     sourceCommit,
     sourceDirty: false,
-    target: 'test-target',
+    sourceLockfileSha256: '5'.repeat(64),
+    sourcePackageManifestSha256: '6'.repeat(64),
+    target: TEST_TARGET,
     version,
     ...overrides,
   };
@@ -554,18 +849,41 @@ function writeDevelopmentReleaseFixture(
   return Effect.gen(function* () {
     yield* fs.makeDirectory(releaseRoot, {recursive: true});
     yield* fs.writeFileString(path.join(releaseRoot, executableName), `${executableMarker}\n`);
+    if (process.platform !== 'win32') yield* fs.chmod(path.join(releaseRoot, executableName), 0o755);
     yield* fs.writeFileString(
       path.join(releaseRoot, 'release.json'),
-      `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: 'test-target', version})}\n`,
+      `${JSON.stringify({executable: executableName, runtime: 'bun-test', target: TEST_TARGET, version})}\n`,
     );
+    yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, executableName);
+  });
+}
+
+function refreshDevelopmentReceipt(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  releaseRoot: string,
+  version: string,
+  sourceCommit: string,
+  executableName: string,
+  target = TEST_TARGET,
+) {
+  return Effect.gen(function* () {
+    const receiptPath = path.join(releaseRoot, 'development-install.json');
+    yield* fs.remove(receiptPath, {force: true});
+    const payloadManifest = yield* collectDevelopmentPayloadManifest(releaseRoot);
     yield* fs.writeFileString(
-      path.join(releaseRoot, 'development-install.json'),
+      receiptPath,
       `${JSON.stringify(
         validReceipt(version, sourceCommit, {
           executableSha256: yield* sha256FileHex(path.join(releaseRoot, executableName)),
+          payloadManifest,
+          payloadManifestSha256: yield* developmentPayloadManifestSha256(payloadManifest),
           releaseMetadataSha256: yield* sha256FileHex(path.join(releaseRoot, 'release.json')),
+          target,
         }),
       )}\n`,
+      {mode: 0o600},
     );
+    if (process.platform !== 'win32') yield* fs.chmod(receiptPath, 0o600);
   });
 }
