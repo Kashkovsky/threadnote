@@ -2,10 +2,10 @@ import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {
   performanceControlLanguages,
-  performanceEvidence,
   retainedPerformanceArtifactFieldPaths,
   type RetainedPerformanceArtifact,
 } from '../content/performance';
+import {performanceEvidence} from '../content/performanceEvidence';
 import {setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
@@ -53,32 +53,38 @@ const pipeline = [
   },
 ] as const;
 
-const surfaces = [
-  {
-    label: 'CLI',
-    title: 'Operational detail for the person waiting',
-    body: 'File and language activity, phase timings, row counts, persistence stages, storage high-water, and liveness make long cold builds observable.',
-    detail: 'Interactive progress · privacy-safe diagnostics',
-  },
-  {
-    label: 'Manager',
-    title: 'Bounded views instead of whole-graph hydration',
-    body: 'Indexed catalog, overview, and detail requests fetch bounded topology on demand. Stale requests are cancelled and the viewport controls label work.',
-    detail: 'Paged topology · detail on demand · stable camera',
-  },
-  {
-    label: 'Graph MCP',
-    title: 'Concise evidence for the agent',
-    body: 'Graph responses stay deliberately bounded so a large repository cannot flood an agent context. Stable IDs support precise node, neighbor, path, and impact follow-ups.',
-    detail: 'Small result · explicit drill-down',
-  },
-  {
-    label: 'Memory MCP',
-    title: 'Canonical memory reads stay complete',
-    body: 'Recall returns ranked pointers. Reading a selected canonical memory returns the complete record; graph response budgets are never reused to truncate memory content.',
-    detail: 'Ranked recall · uncapped canonical read',
-  },
-] as const;
+function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
+  return [
+    {
+      label: 'CLI',
+      title: 'Operational detail for the person waiting',
+      body: 'File and language activity, phase timings, row counts, persistence stages, storage high-water, and liveness make long cold builds observable.',
+      detail: 'Interactive progress · privacy-safe diagnostics',
+    },
+    {
+      label: 'Manager',
+      title: artifact ? 'Bounded views, retained measurements' : 'Manager performance remains gated',
+      body: artifact
+        ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and render work with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget, snapshot binding, and stale-request cancellation.`
+        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, render, snapshot-binding, and stale-request-cancellation evidence together.',
+      detail: artifact
+        ? `Query p95 ${formatDuration(artifact.manager.queryP95Milliseconds)} · max payload ${formatBytes(artifact.manager.queryMaxPayloadBytes)}`
+        : 'Pending reviewed code + retained measurements',
+    },
+    {
+      label: 'Graph MCP',
+      title: 'Concise evidence for the agent',
+      body: 'Graph responses stay deliberately bounded so a large repository cannot flood an agent context. Stable IDs support precise node, neighbor, path, and impact follow-ups.',
+      detail: 'Small result · explicit drill-down',
+    },
+    {
+      label: 'Memory MCP',
+      title: 'Canonical memory reads stay complete',
+      body: 'Recall returns ranked pointers. Reading a selected canonical memory returns the complete record; graph response budgets are never reused to truncate memory content.',
+      detail: 'Ranked recall · uncapped canonical read',
+    },
+  ] as const;
+}
 
 const proofGroups = [
   {
@@ -190,7 +196,7 @@ function ProvenanceCard({artifact}: {artifact: RetainedPerformanceArtifact | und
         </dl>
         <p>
           The page publishes no provisional result values. Numbers appear only after one complete artifact passes the
-          strict provenance, controls, parity, storage, query, and Manager evidence adapter.
+          build-time byte and source binding plus strict controls, parity, storage, query, and Manager validation.
         </p>
       </aside>
     );
@@ -240,6 +246,7 @@ export default function PerformancePage() {
   const artifact = performanceEvidence.state === 'verified' ? performanceEvidence.artifact : undefined;
   const metrics = scaleCards(artifact);
   const phases = phaseCards(artifact);
+  const surfaces = surfaceCards(artifact);
 
   return (
     <SiteShell page="performance" fullBleed>

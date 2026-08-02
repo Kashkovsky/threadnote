@@ -84,6 +84,30 @@ describe('website and standalone release boundary', () => {
     expect(manifest.scripts['site:check']).toContain('site:test');
   });
 
+  it('keeps retained evidence binding Bun-only and outside the standalone payload', async () => {
+    const [evidenceBuild, viteConfig, standaloneBuild, manifest] = await Promise.all([
+      readFile(join(root, 'scripts', 'site-performance-evidence.ts'), 'utf8'),
+      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
+      readFile(join(root, 'scripts', 'build.ts'), 'utf8'),
+      readFile(join(root, 'package.json'), 'utf8'),
+    ]);
+
+    expect(evidenceBuild).toContain("new Bun.CryptoHasher('sha256')");
+    expect(evidenceBuild).toContain('performance-evidence.json');
+    expect(evidenceBuild).toContain('evidence.binding.json');
+    expect(evidenceBuild).not.toMatch(/from ['"]node:/);
+    expect(viteConfig).not.toMatch(/from ['"]node:/);
+    expect(viteConfig).toContain('virtual:threadnote-performance-evidence');
+    expect(JSON.parse(manifest)).toMatchObject({
+      scripts: {'site:bind-performance-evidence': 'bun scripts/site-performance-evidence.ts'},
+    });
+    expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
+    expect(standaloneBuild).toContain(
+      "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;",
+    );
+    expect(standaloneBuild).not.toContain('site-performance-evidence');
+  });
+
   it('gates the Pages deployment on website contract checks', async () => {
     const workflow = await readFile(join(root, '.github', 'workflows', 'pages.yml'), 'utf8');
 
@@ -92,6 +116,7 @@ describe('website and standalone release boundary', () => {
     expect(workflow).toContain("'assets/brand/**'");
     expect(workflow).toContain('bun run site:check');
     expect(workflow).toContain('bun run site:build');
+    expect(workflow).toContain('fetch-depth: 0');
     expect(workflow).toContain('path: site-dist');
     expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
@@ -151,6 +176,7 @@ describe('website and standalone release boundary', () => {
     expect(JSON.parse(manifest)).toMatchObject({homepage: `${origin}/`});
     expect(pagesWorkflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
     expect(ciWorkflow).toMatch(/^ {10}THREADNOTE_SITE_BASE: \/$/m);
+    expect(ciWorkflow).toContain('fetch-depth: 0');
 
     for (const source of [sitemap, robots, readme, manifest, pagesWorkflow, ciWorkflow]) {
       expect(source).not.toContain('kashkovsky.github.io/threadnote');

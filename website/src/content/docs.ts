@@ -1343,7 +1343,7 @@ threadnote graph export --format svg --output code-graph.svg`,
           },
           {
             type: 'paragraph',
-            text: 'The [Performance page](/performance/) documents the bounded indexing architecture and publishes final large-repository values only from one retained exact-HEAD artifact with provenance, polyglot controls, resource high-water, query and Manager timings, and incremental-versus-independent-rebuild digest parity.',
+            text: 'The [Performance page](../performance/) documents the bounded indexing architecture and publishes final large-repository values only from one retained exact-HEAD artifact with provenance, polyglot controls, resource high-water, query and Manager timings, and incremental-versus-independent-rebuild digest parity.',
           },
         ],
       },

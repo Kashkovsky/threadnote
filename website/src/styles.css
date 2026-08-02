@@ -5204,6 +5204,18 @@ p {
   }
 }
 
+@media (max-width: 760px) {
+  .site-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .site-footer__links {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+  }
+}
+
 @media (max-width: 680px) {
   .section-grid,
   .content-section,

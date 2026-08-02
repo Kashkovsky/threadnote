@@ -110,8 +110,15 @@ export type RetainedPerformanceArtifact = Readonly<{
     detailColdMilliseconds: number;
     renderProxyMilliseconds: number;
     maxPayloadBytes: number;
+    querySampleCount: number;
+    queryP50Milliseconds: number;
+    queryP95Milliseconds: number;
+    queryMaxMilliseconds: number;
+    queryMaxPayloadBytes: number;
     nodeBudget: number;
     edgeBudget: number;
+    snapshotBindingPassed: true;
+    staleRequestCancellationPassed: true;
   }>;
   concurrency: Readonly<{
     simultaneousWorktrees: number;
@@ -119,11 +126,7 @@ export type RetainedPerformanceArtifact = Readonly<{
   }>;
 }>;
 
-export type PendingPerformanceArtifact = Readonly<{
-  schemaVersion: 1;
-  status: 'pending';
-  reason: string;
-}>;
+export type RetainedPerformancePayload = Omit<RetainedPerformanceArtifact, 'status' | 'artifact'>;
 
 export type PerformanceEvidence =
   | Readonly<{
@@ -220,8 +223,15 @@ export const retainedPerformanceArtifactFieldPaths = [
   'manager.detailColdMilliseconds',
   'manager.renderProxyMilliseconds',
   'manager.maxPayloadBytes',
+  'manager.querySampleCount',
+  'manager.queryP50Milliseconds',
+  'manager.queryP95Milliseconds',
+  'manager.queryMaxMilliseconds',
+  'manager.queryMaxPayloadBytes',
   'manager.nodeBudget',
   'manager.edgeBudget',
+  'manager.snapshotBindingPassed',
+  'manager.staleRequestCancellationPassed',
   'concurrency.simultaneousWorktrees',
   'concurrency.isolationPassed',
 ] as const;
@@ -473,8 +483,15 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'detailColdMilliseconds',
     'renderProxyMilliseconds',
     'maxPayloadBytes',
+    'querySampleCount',
+    'queryP50Milliseconds',
+    'queryP95Milliseconds',
+    'queryMaxMilliseconds',
+    'queryMaxPayloadBytes',
     'nodeBudget',
     'edgeBudget',
+    'snapshotBindingPassed',
+    'staleRequestCancellationPassed',
   ]);
   for (const key of [
     'catalogColdMilliseconds',
@@ -486,7 +503,17 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   ]) {
     positiveNumberAt(manager, key, 'manager');
   }
-  for (const key of ['maxPayloadBytes', 'nodeBudget', 'edgeBudget']) positiveNumberAt(manager, key, 'manager', true);
+  for (const key of ['maxPayloadBytes', 'querySampleCount', 'queryMaxPayloadBytes', 'nodeBudget', 'edgeBudget']) {
+    positiveNumberAt(manager, key, 'manager', true);
+  }
+  const managerQueryP50 = positiveNumberAt(manager, 'queryP50Milliseconds', 'manager');
+  const managerQueryP95 = positiveNumberAt(manager, 'queryP95Milliseconds', 'manager');
+  const managerQueryMax = positiveNumberAt(manager, 'queryMaxMilliseconds', 'manager');
+  if (managerQueryP50 > managerQueryP95 || managerQueryP95 > managerQueryMax) {
+    throw new Error('Performance evidence Manager query percentiles must be monotonic.');
+  }
+  literalAt(manager, 'snapshotBindingPassed', 'manager', true);
+  literalAt(manager, 'staleRequestCancellationPassed', 'manager', true);
 
   const concurrency = recordAt(root.concurrency, 'concurrency', ['simultaneousWorktrees', 'isolationPassed']);
   const simultaneousWorktrees = positiveNumberAt(concurrency, 'simultaneousWorktrees', 'concurrency', true);
@@ -499,44 +526,45 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
 }
 
 /**
- * Strict public adapter for one retained, exact-HEAD benchmark artifact.
- * Unknown or partial verified data fails closed instead of rendering a claim.
+ * Validates the exact JSON payload stored in the checked-in retained artifact.
+ * Artifact URL, byte digest, and timestamp are supplied only by the build-time binding.
  */
-export function adaptRetainedPerformanceArtifact(input: unknown): PerformanceEvidence {
-  const root = recordAt(
-    input,
-    'root',
-    typeof input === 'object' && input !== null && (input as Record<string, unknown>).status === 'pending'
-      ? ['schemaVersion', 'status', 'reason']
-      : [
-          'schemaVersion',
-          'status',
-          'artifact',
-          'source',
-          'runner',
-          'inventory',
-          'graph',
-          'phases',
-          'queries',
-          'controls',
-          'parity',
-          'storage',
-          'manager',
-          'concurrency',
-        ],
-  );
-  literalAt(root, 'schemaVersion', 'root', 1);
-  if (root.status === 'pending') {
-    return {state: 'pending', reason: stringAt(root, 'reason', 'root')};
-  }
-  return {state: 'verified', artifact: validateVerifiedArtifact(input)};
+export function validateRetainedPerformancePayload(input: unknown): RetainedPerformancePayload {
+  const payload = recordAt(input, 'payload', [
+    'schemaVersion',
+    'source',
+    'runner',
+    'inventory',
+    'graph',
+    'phases',
+    'queries',
+    'controls',
+    'parity',
+    'storage',
+    'manager',
+    'concurrency',
+  ]);
+  validateVerifiedArtifact({
+    ...payload,
+    status: 'verified',
+    artifact: {
+      url: 'https://threadnote.io/performance-evidence.json',
+      sha256: '0'.repeat(64),
+      generatedAt: '2000-01-01T00:00:00Z',
+    },
+  });
+  return input as RetainedPerformancePayload;
 }
 
-const retainedPerformanceArtifact: PendingPerformanceArtifact = {
-  schemaVersion: 1,
-  status: 'pending',
-  reason:
-    'Final exact-HEAD cold, incremental, independent-rebuild, query, storage, and Manager evidence is still being retained and reviewed.',
-};
+/**
+ * Final shape validation after build-time byte and source binding succeeds.
+ * Do not use this as a substitute for `bindRetainedPerformanceArtifact`.
+ */
+export function validateBoundRetainedPerformanceArtifact(input: unknown): RetainedPerformanceArtifact {
+  return validateVerifiedArtifact(input);
+}
 
-export const performanceEvidence = adaptRetainedPerformanceArtifact(retainedPerformanceArtifact);
+export function pendingPerformanceEvidence(reason: string): PerformanceEvidence {
+  if (reason.trim().length === 0) throw new Error('Pending performance evidence requires a reason.');
+  return {state: 'pending', reason};
+}

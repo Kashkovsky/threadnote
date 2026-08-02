@@ -1,14 +1,15 @@
 import {access, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
+import {
+  bindRetainedPerformanceArtifact,
+  performanceArtifactPublicUrl,
+  sha256Hex,
+} from '../../scripts/site-performance-evidence.js';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
-import {
-  adaptRetainedPerformanceArtifact,
-  performanceEvidence,
-  retainedPerformanceArtifactFieldPaths,
-} from '../../website/src/content/performance.js';
+import {retainedPerformanceArtifactFieldPaths} from '../../website/src/content/performance.js';
 import {proTips} from '../../website/src/content/proTips.js';
 
 const root = process.cwd();
@@ -101,12 +102,6 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
 
   return {
     schemaVersion: 1,
-    status: 'verified',
-    artifact: {
-      url: 'https://github.com/Kashkovsky/threadnote/releases/download/example/performance.json',
-      sha256: 'a'.repeat(64),
-      generatedAt: '2026-08-02T20:00:00Z',
-    },
     source: {
       threadnote: {version: '4.0.0-beta.example', commit: 'b'.repeat(40)},
       repository: {
@@ -175,10 +170,34 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       detailColdMilliseconds: 10,
       renderProxyMilliseconds: 2,
       maxPayloadBytes: 400_000,
+      querySampleCount: 20,
+      queryP50Milliseconds: 6,
+      queryP95Milliseconds: 14,
+      queryMaxMilliseconds: 24,
+      queryMaxPayloadBytes: 120_000,
       nodeBudget: 500,
       edgeBudget: 1_500,
+      snapshotBindingPassed: true,
+      staleRequestCancellationPassed: true,
     },
     concurrency: {simultaneousWorktrees: 3, isolationPassed: true},
+  };
+}
+
+function fixtureBytes(fixture: Record<string, unknown>): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(fixture));
+}
+
+function fixtureBinding(
+  artifactBytes: Uint8Array,
+  overrides: Partial<Record<'artifactSha256' | 'sourceThreadnoteCommit' | 'sourceTreeSha256', string>> = {},
+): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    artifactSha256: overrides.artifactSha256 ?? sha256Hex(artifactBytes),
+    generatedAt: '2026-08-02T20:00:00Z',
+    sourceThreadnoteCommit: overrides.sourceThreadnoteCommit ?? 'b'.repeat(40),
+    sourceTreeSha256: overrides.sourceTreeSha256 ?? 'f'.repeat(64),
   };
 }
 
@@ -382,25 +401,109 @@ describe('Threadnote 4 website content', () => {
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
 
-  it('fails closed until one complete retained performance artifact is available', async () => {
+  it('binds verified performance evidence to exact local bytes and source', () => {
+    const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
+    const evidence = bindRetainedPerformanceArtifact({
+      artifactBytes,
+      binding: fixtureBinding(artifactBytes),
+      currentSourceTreeSha256: 'f'.repeat(64),
+    });
+
+    expect(evidence).toMatchObject({
+      state: 'verified',
+      artifact: {
+        artifact: {
+          url: performanceArtifactPublicUrl,
+          sha256: sha256Hex(artifactBytes),
+          generatedAt: '2026-08-02T20:00:00Z',
+        },
+        source: {threadnote: {commit: 'b'.repeat(40)}},
+      },
+    });
+  });
+
+  it('rejects retained artifact tampering and a wrong bound SHA-256', () => {
+    const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
+    const binding = fixtureBinding(artifactBytes);
+    const tamperedBytes = new Uint8Array([...artifactBytes, 10]);
+
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: tamperedBytes,
+        binding,
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('artifact SHA-256 mismatch');
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes,
+        binding: fixtureBinding(artifactBytes, {artifactSha256: '0'.repeat(64)}),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('artifact SHA-256 mismatch');
+  });
+
+  it('rejects evidence bound to the wrong source commit or source tree', () => {
+    const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
+
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes,
+        binding: fixtureBinding(artifactBytes, {sourceThreadnoteCommit: '9'.repeat(40)}),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('different Threadnote source commits');
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes,
+        binding: fixtureBinding(artifactBytes),
+        currentSourceTreeSha256: '8'.repeat(64),
+      }),
+    ).toThrow('does not match the current Threadnote source tree');
+  });
+
+  it('rejects partial, extra, and mixed retained result payloads', () => {
+    const partial = verifiedPerformanceFixture();
+    delete partial.graph;
+    const partialBytes = fixtureBytes(partial);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: partialBytes,
+        binding: fixtureBinding(partialBytes),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('unexpected or missing fields');
+
+    const extra = verifiedPerformanceFixture();
+    extra.unreviewedResult = 42;
+    const extraBytes = fixtureBytes(extra);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: extraBytes,
+        binding: fixtureBinding(extraBytes),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('unexpected or missing fields');
+
+    const mismatched = verifiedPerformanceFixture();
+    const parity = mismatched.parity as Record<string, unknown>;
+    parity.independentOverlayDigest = '0'.repeat(64);
+    const mismatchedBytes = fixtureBytes(mismatched);
+    expect(() =>
+      bindRetainedPerformanceArtifact({
+        artifactBytes: mismatchedBytes,
+        binding: fixtureBinding(mismatchedBytes),
+        currentSourceTreeSha256: 'f'.repeat(64),
+      }),
+    ).toThrow('overlay digests must match');
+  });
+
+  it('keeps the Performance page pending until bound evidence is emitted at build time', async () => {
     const [pageSource, evidenceSource] = await Promise.all([
       readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'content', 'performance.ts'), 'utf8'),
     ]);
 
-    expect(performanceEvidence).toMatchObject({state: 'pending'});
-    const verifiedFixture = verifiedPerformanceFixture();
-    expect(adaptRetainedPerformanceArtifact(verifiedFixture)).toMatchObject({state: 'verified'});
-    expect(() => adaptRetainedPerformanceArtifact({schemaVersion: 1, status: 'verified'})).toThrow(
-      'unexpected or missing fields',
-    );
-    expect(() =>
-      adaptRetainedPerformanceArtifact({schemaVersion: 1, status: 'pending', reason: 'still running', value: 1}),
-    ).toThrow('unexpected or missing fields');
-    const mismatchedFixture = structuredClone(verifiedFixture);
-    const parity = mismatchedFixture.parity as Record<string, unknown>;
-    parity.independentOverlayDigest = 'f'.repeat(64);
-    expect(() => adaptRetainedPerformanceArtifact(mismatchedFixture)).toThrow('overlay digests must match');
     expect(retainedPerformanceArtifactFieldPaths).toEqual(
       expect.arrayContaining([
         'artifact.url',
@@ -430,6 +533,10 @@ describe('Threadnote 4 website content', () => {
         'storage.peakTemporaryBytes',
         'manager.overviewColdMilliseconds',
         'manager.renderProxyMilliseconds',
+        'manager.queryP95Milliseconds',
+        'manager.queryMaxPayloadBytes',
+        'manager.snapshotBindingPassed',
+        'manager.staleRequestCancellationPassed',
         'concurrency.simultaneousWorktrees',
       ]),
     );
@@ -443,7 +550,7 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('returns the complete record');
     expect(pageSource).toContain('Your agents will love it');
     expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
-    expect(evidenceSource).toContain('Strict public adapter for one retained, exact-HEAD benchmark artifact');
+    expect(evidenceSource).toContain('Do not use this as a substitute for `bindRetainedPerformanceArtifact`');
   });
 
   it('documents the explicit publishing and supported hook boundaries', () => {
@@ -527,8 +634,18 @@ describe('Threadnote 4 website content', () => {
     expect(content).toContain('64 MiB per-artifact source budget');
     expect(content).toContain('not repository or graph-size admission caps');
     expect(content).toContain('threadnote graph export --format graphml');
-    expect(content).toContain('[Performance page](/performance/)');
+    expect(content).toContain('[Performance page](../performance/)');
     expect(content).toContain('incremental-versus-independent-rebuild digest parity');
+  });
+
+  it('keeps the docs Performance link inside a configured Pages subpath', () => {
+    const content = JSON.stringify(docsSections);
+    const relativeLink = content.match(/\[Performance page\]\(([^)]+)\)/)?.[1];
+
+    expect(relativeLink).toBe('../performance/');
+    expect(new URL(relativeLink ?? '', 'https://example.test/threadnote/docs/').pathname).toBe(
+      '/threadnote/performance/',
+    );
   });
 
   it('pins the Manager canvas to its stage without a resize feedback loop', async () => {
@@ -538,6 +655,18 @@ describe('Threadnote 4 website content', () => {
     expect(styles).toMatch(/\.manager-demo-scene\s*{[^}]*position: absolute;[^}]*inset: 0;/s);
     expect(styles).toMatch(/\.manager-demo-scene-canvas\s*{[^}]*display: block;[^}]*height: 100%;/s);
     expect(styles).not.toContain('.manager-demo-graph-stage > div:first-child');
+  });
+
+  it('collapses the footer before its six links can overflow narrow tablet widths', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const tabletStart = styles.indexOf('@media (max-width: 760px)');
+    const mobileStart = styles.indexOf('@media (max-width: 680px)', tabletStart);
+    const tabletFooter = styles.slice(tabletStart, mobileStart);
+
+    expect(tabletStart).toBeGreaterThan(-1);
+    expect(mobileStart).toBeGreaterThan(tabletStart);
+    expect(tabletFooter).toMatch(/\.site-footer\s*{[^}]*grid-template-columns: 1fr;/s);
+    expect(tabletFooter).toMatch(/\.site-footer__links\s*{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/s);
   });
 
   it('includes a project-bound social card and Pages marker', async () => {

@@ -37,6 +37,24 @@ and incremental phases, Java/Kotlin/TypeScript/Bazel controls, query and Manager
 high-water, and incremental-versus-independent-rebuild digest parity, every result value remains explicitly pending.
 Do not replace pending values with observations copied from separate runs.
 
+Verified values require both `website/public/performance-evidence.json` and
+`website/performance/evidence.binding.json`. The Vite build hashes the exact public JSON bytes, checks the sidecar
+SHA-256 and UTC timestamp, verifies the benchmarked Threadnote commit is an ancestor of the website build, rejects any
+runtime-source change since that commit, and compares a deterministic source-tree digest before exposing a verified
+virtual module to React. Missing both files is the valid pending state; a partial pair or any mismatch fails the build.
+CI and Pages use full Git history so source-commit verification cannot silently degrade in shallow checkouts.
+
+After producing and reviewing the complete payload, install and bind it with:
+
+```bash
+cp /absolute/path/to/reviewed-performance-evidence.json website/public/performance-evidence.json
+bun run site:bind-performance-evidence
+```
+
+The binding command validates the exact payload, verifies its Threadnote source commit against the current runtime
+tree, computes both SHA-256 digests, and writes `website/performance/evidence.binding.json`. Commit the public payload
+and generated sidecar together; never hand-edit the binding.
+
 ## Content and interaction contracts
 
 - Treat current source, CLI help, MCP schemas, checked-in guides, and ADRs as authoritative. The historical GitHub wiki
