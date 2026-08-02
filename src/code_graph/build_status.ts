@@ -36,12 +36,14 @@ export interface CodeGraphBuildCounters {
   readonly edges?: number;
   readonly embedded?: number;
   readonly excluded?: number;
+  readonly pagesCompleted?: number;
   readonly reused?: number;
   readonly resolved?: number;
+  readonly rowsDeleted?: number;
   readonly skipped?: number;
   readonly symbols?: number;
   readonly total?: number;
-  readonly unit?: 'files' | 'references' | 'symbols';
+  readonly unit?: 'files' | 'references' | 'snapshots' | 'symbols';
 }
 
 export interface CodeGraphBuildActivity {
@@ -179,6 +181,7 @@ const VALID_PHASES = new Set<CodeGraphProgress['phase']>([
   'activating',
   'embedding',
   'materializing',
+  'reclaiming',
   'registering',
   'resolving',
   'scanning',
@@ -368,6 +371,8 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             (progress.phase === 'materializing' &&
               (current.status.subphase !== progressSubphase(progress) ||
                 (measured !== undefined && measured.completed > persistedCompleted))) ||
+            (progress.phase === 'reclaiming' &&
+              progress.pagesCompleted > (current.status.counters.pagesCompleted ?? -1)) ||
             (progress.phase === 'resolving' &&
               progress.subphase === 'references' &&
               progress.activity !== undefined &&
@@ -533,10 +538,12 @@ function progressSubphase(progress: CodeGraphProgress): string {
       return progress.activity?.stage ?? 'facts';
     case 'registering':
       return 'registration';
+    case 'reclaiming':
+      return 'superseded-snapshots';
     case 'scanning':
       return progress.activity?.stage ?? 'inventory';
     case 'waiting':
-      return 'repository-lock';
+      return progress.reason ?? 'repository-lock';
   }
 }
 
@@ -598,6 +605,14 @@ function progressCounters(progress: CodeGraphProgress): CodeGraphBuildCounters {
       return {
         completed: progress.completed,
         reused: progress.reused,
+        total: progress.total,
+        unit: progress.unit,
+      };
+    case 'reclaiming':
+      return {
+        completed: progress.completed,
+        pagesCompleted: progress.pagesCompleted,
+        rowsDeleted: progress.rowsDeleted,
         total: progress.total,
         unit: progress.unit,
       };
@@ -1290,8 +1305,10 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
     'edges',
     'embedded',
     'excluded',
+    'pagesCompleted',
     'reused',
     'resolved',
+    'rowsDeleted',
     'skipped',
     'symbols',
     'total',
@@ -1300,7 +1317,8 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
     const counter = value[key];
     if (counter !== undefined && (!Number.isSafeInteger(counter) || Number(counter) < 0)) return undefined;
   }
-  if (value.unit !== undefined && !['files', 'references', 'symbols'].includes(String(value.unit))) return undefined;
+  if (value.unit !== undefined && !['files', 'references', 'snapshots', 'symbols'].includes(String(value.unit)))
+    return undefined;
   return Object.fromEntries(
     [...keys, 'unit' as const].flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]])),
   ) as CodeGraphBuildCounters;

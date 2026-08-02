@@ -106,8 +106,10 @@ export interface GraphBuildStatus {
     readonly completed?: number;
     readonly edges?: number;
     readonly excluded?: number;
+    readonly pagesCompleted?: number;
     readonly reused?: number;
     readonly resolved?: number;
+    readonly rowsDeleted?: number;
     readonly skipped?: number;
     readonly symbols?: number;
     readonly total?: number;
@@ -2058,9 +2060,13 @@ function GraphBuildProgress(props: {
         </div>
       )}
       <p>
-        {completed === undefined || total === undefined
-          ? 'Preparing phase counters'
-          : `${completed.toLocaleString()} / ${total.toLocaleString()} ${build.counters.unit ?? 'items'}`}
+        {build.phase === 'reclaiming'
+          ? `${(completed ?? 0).toLocaleString()} / ${(total ?? 0).toLocaleString()} snapshots · ${(
+              build.counters.pagesCompleted ?? 0
+            ).toLocaleString()} pages · ${(build.counters.rowsDeleted ?? 0).toLocaleString()} rows reclaimed`
+          : completed === undefined || total === undefined
+            ? 'Preparing phase counters'
+            : `${completed.toLocaleString()} / ${total.toLocaleString()} ${build.counters.unit ?? 'items'}`}
         {' · '}last progress {formatBuildDuration(lastProgress)} ago
         {progressSilent && build.coordination?.role === 'owner'
           ? ' · progress is silent; lock owner is still alive'

@@ -1,5 +1,5 @@
 import {Database} from 'bun:sqlite';
-import {Effect, FileSystem, Option} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
@@ -627,6 +627,57 @@ describe('code graph full-build materialization store', () => {
     ]);
   });
 
+  it('atomically activates a self-contained dirty full build without publishing a reusable base', async () => {
+    const fixture = await materializationFixture();
+    const materialization: CodeGraphStagingProgress[] = [];
+    const stored = symbol('dirty-direct-symbol', 'dirtyDirectSymbol', ['typescript:name:dirtyDirectSymbol']);
+    const snapshot = {
+      ...readySnapshot(fixture.identity, 1, 0),
+      dirty: true,
+      id: 'dirty-direct-full',
+    } satisfies CodeGraphSnapshot;
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              [stored],
+              [],
+              [],
+              progress => Effect.sync(() => materialization.push(progress)),
+              0,
+            );
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            const invisible = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return {
+              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+              invisible,
+              ready: yield* store.readySnapshotById(fixture.databasePath, snapshot.id),
+              receipt: yield* store.reusableBaseReceipt(fixture.databasePath, snapshot.id),
+            };
+          }),
+        );
+      }),
+    );
+
+    expect(result.invisible).toBeUndefined();
+    expect(result.ready).toMatchObject({baseSnapshotId: undefined, dirty: true, state: 'ready'});
+    expect(result.graph.symbols).toEqual([stored]);
+    expect(result.receipt).toBeUndefined();
+    expect(materialization.some(progress => (progress.durableDatabaseBytes ?? 0) > 0)).toBe(true);
+    expect(materialization.every(progress => progress.temporaryDatabaseBytes === undefined)).toBe(true);
+  });
+
   it('drains production-shaped unresolved staging rows in bounded restart-safe transactions', async () => {
     const fixture = await materializationFixture();
     const activation: CodeGraphActivationProgress[] = [];
@@ -830,7 +881,7 @@ describe('code graph full-build materialization store', () => {
     let cleanupConnectionOpened = false;
     let cleanupConnectionOpenedWhileGateHeld = false;
 
-    await runEffect(
+    const remainingAfterContention = await runEffect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const store = yield* CodeGraphStore;
@@ -866,15 +917,137 @@ describe('code graph full-build materialization store', () => {
             },
           ),
         );
+        const remaining = readCompletedBuildRows(fixture.databasePath, snapshot.id);
+        yield* store.withSession(fixture.databasePath, Effect.void, {
+          cleanupCompletedBuildRows: true,
+          onCompletedBuildCleanupConnection: () =>
+            Effect.sync(() => {
+              cleanupConnectionOpened = true;
+            }),
+          writerLockPath,
+        });
         for (let attempt = 0; attempt < 100 && !cleanupConnectionOpened; attempt += 1) {
           yield* Effect.promise(() => Bun.sleep(10));
         }
+        return remaining;
       }),
     );
 
     expect(cleanupConnectionOpenedWhileGateHeld).toBe(false);
+    expect(remainingAfterContention.batches).toBe(1);
     expect(cleanupConnectionOpened).toBe(true);
     expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({batches: 0, candidates: 0, refs: 0});
+  });
+
+  it('gives a waiting foreground writer priority between detached cleanup sweeps', async () => {
+    const fixture = await materializationFixture();
+    const writerLockPath = join(fixture.root, 'checkout-writer.lock');
+    const snapshot = readySnapshot(fixture.identity, 1, 0);
+    const stored = symbol('cleanup-priority', 'cleanupPriority', ['typescript:name:cleanupPriority']);
+    const foregroundFacts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path: fixture.file.path,
+      symbols: [],
+    };
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [stored], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          }),
+        );
+      }),
+    );
+
+    const seeded = new Database(fixture.databasePath, {strict: true});
+    const insertReceipt = seeded.prepare(
+      `INSERT INTO building_materialization_batches (
+         snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, term_count,
+         lookup_count, reference_count, candidate_count, reexport_count, completed_at
+       ) VALUES (?, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?)`,
+    );
+    seeded.transaction(() => {
+      for (let index = 0; index < 3_100; index += 1) {
+        insertReceipt.run(snapshot.id, index, `cleanup-priority-${index}`, new Date().toISOString());
+      }
+    })();
+    seeded.close(false);
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        const cleanupConnections = yield* Ref.make(0);
+        const firstCleanupEntered = yield* Deferred.make<void>();
+        const releaseFirstCleanup = yield* Deferred.make<void>();
+        const secondCleanupEntered = yield* Deferred.make<void>();
+        const foregroundContended = yield* Deferred.make<void>();
+        const foregroundAcquired = yield* Deferred.make<void>();
+        const releaseForeground = yield* Deferred.make<void>();
+
+        yield* store.withSession(fixture.databasePath, Effect.void, {
+          cleanupCompletedBuildRows: true,
+          onCompletedBuildCleanupConnection: () =>
+            Ref.updateAndGet(cleanupConnections, count => count + 1).pipe(
+              Effect.flatMap(sweep =>
+                sweep === 1
+                  ? Deferred.succeed(firstCleanupEntered, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseFirstCleanup)),
+                    )
+                  : sweep === 2
+                    ? Deferred.succeed(secondCleanupEntered, undefined).pipe(Effect.asVoid)
+                    : Effect.void,
+              ),
+            ),
+          writerLockPath,
+        });
+        yield* Deferred.await(firstCleanupEntered);
+
+        const foreground = yield* store
+          .withSession(
+            fixture.databasePath,
+            store.cacheFacts(fixture.databasePath, [fixture.file], [foregroundFacts], 'foreground-priority'),
+            {
+              onWriterAcquired: () =>
+                Deferred.succeed(foregroundAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseForeground))),
+              onWriterContention: () => Deferred.succeed(foregroundContended, undefined).pipe(Effect.asVoid),
+              writerLockPath,
+            },
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(foregroundContended);
+        yield* Deferred.succeed(releaseFirstCleanup, undefined);
+        yield* Deferred.await(foregroundAcquired);
+        yield* Effect.sleep('100 millis');
+
+        const cleanupConnectionsBeforeForeground = yield* Ref.get(cleanupConnections);
+        const secondSweepStartedBeforeForeground = yield* Deferred.isDone(secondCleanupEntered);
+        yield* Deferred.succeed(releaseForeground, undefined);
+        yield* Fiber.join(foreground);
+        const remainingAfterForeground = readCompletedBuildRows(fixture.databasePath, snapshot.id).batches;
+        yield* store.withSession(fixture.databasePath, Effect.void, {
+          cleanupCompletedBuildRows: true,
+          writerLockPath,
+        });
+        const cleaned = yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
+        return {
+          cleaned,
+          cleanupConnectionsBeforeForeground,
+          remainingAfterForeground,
+          secondSweepStartedBeforeForeground,
+        };
+      }),
+    );
+
+    expect(result.cleanupConnectionsBeforeForeground).toBe(1);
+    expect(result.secondSweepStartedBeforeForeground).toBe(false);
+    expect(result.remainingAfterForeground).toBeGreaterThan(1_000);
+    expect(result.cleaned).toEqual({batches: 0, candidates: 0, refs: 0});
   });
 
   it('resumes committed direct batches across sessions and discards a caught failed build', async () => {

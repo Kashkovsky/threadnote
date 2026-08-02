@@ -1575,8 +1575,9 @@ export function compactCodeGraphMcpProgress(progress: CodeGraphProgress | undefi
   const envelope = {type: 'code-graph-progress' as const, version: 1 as const};
   switch (progress.phase) {
     case 'registering':
-    case 'waiting':
       return {...envelope, phase: progress.phase};
+    case 'waiting':
+      return {...envelope, phase: progress.phase, ...(progress.reason === undefined ? {} : {reason: progress.reason})};
     case 'scanning':
       return {
         ...envelope,
@@ -1613,6 +1614,16 @@ export function compactCodeGraphMcpProgress(progress: CodeGraphProgress | undefi
         completed: progress.completed,
         phase: progress.phase,
         reused: progress.reused,
+        total: progress.total,
+        unit: progress.unit,
+      };
+    case 'reclaiming':
+      return {
+        ...envelope,
+        completed: progress.completed,
+        pagesCompleted: progress.pagesCompleted,
+        phase: progress.phase,
+        rowsDeleted: progress.rowsDeleted,
         total: progress.total,
         unit: progress.unit,
       };

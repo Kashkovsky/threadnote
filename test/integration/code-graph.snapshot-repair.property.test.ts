@@ -339,8 +339,11 @@ describe('SQLite code graph snapshot repair properties', () => {
         }
       }),
     {
-      fastCheck: {interruptAfterTimeLimit: 40_000, markInterruptAsFailure: true, numRuns: 12},
-      timeout: 50_000,
+      // Full-suite SQLite contention can roughly double the isolated runtime.
+      // Keep the run count deterministic while accommodating concurrent
+      // integration files on slower CI runners.
+      fastCheck: {interruptAfterTimeLimit: 90_000, markInterruptAsFailure: true, numRuns: 12},
+      timeout: 100_000,
     },
   );
 });

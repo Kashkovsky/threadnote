@@ -37,6 +37,7 @@ import {
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
+import type {CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -350,6 +351,8 @@ describe('native code graph lifecycle', () => {
     expect(resultB.nodes.some(node => node.name === 'ensureBranchBVectorIndex')).toBe(true);
     expect(resultB.nodes.some(node => node.name === 'ensureBranchAVectorIndex')).toBe(false);
     expect(resultA.snapshot.worktreeId).not.toBe(resultB.snapshot.worktreeId);
+    expect(resultA.snapshot.id).toMatch(/-direct$/);
+    expect(resultB.snapshot.id).toMatch(/-direct$/);
 
     git(root, ['worktree', 'remove', '--force', worktreeB]);
     const health = await runEffect(
@@ -368,7 +371,7 @@ describe('native code graph lifecycle', () => {
         return yield* store.diagnose(database);
       }),
     );
-    expect(health).toMatchObject({activeSnapshots: 1, readySnapshots: 2});
+    expect(health).toMatchObject({activeSnapshots: 1, readySnapshots: 1});
   });
 
   it('shares immutable clean snapshots without coupling worktree activation', async () => {
@@ -439,7 +442,7 @@ describe('native code graph lifecycle', () => {
         const graph = yield* CodeGraphQueryService;
         const indexer = yield* CodeGraphIndexer;
         const store = yield* CodeGraphStore;
-        yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+        const indexed = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
         const dirty = yield* graph.inspect({
           cwd: worktreeA,
           operation: 'query',
@@ -461,9 +464,17 @@ describe('native code graph lifecycle', () => {
           result.first.identity.checkoutId,
           'graph-v3.sqlite',
         );
-        return {clean, dirty, health: yield* store.diagnose(database)};
+        return {clean, dirty, health: yield* store.diagnose(database), indexed};
       }),
     );
+    const materialization = afterDirty.indexed.materialization;
+    expect(materialization).toMatchObject({
+      fallbackReason: 'resolution-surface-changed',
+      mode: 'full',
+    });
+    expect(materialization?.stagedFiles).toBe(materialization?.totalFiles);
+    expect(afterDirty.indexed.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+    expect(afterDirty.indexed.snapshot.id).toMatch(/-direct$/);
     expect(afterDirty.dirty.nodes.some(node => node.name === 'ensureDirtyVectorIndex')).toBe(true);
     expect(afterDirty.clean.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
     expect(afterDirty.health).toMatchObject({
@@ -482,8 +493,8 @@ describe('native code graph lifecycle', () => {
       const cacheWrites = database
         .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM cache_write_audit')
         .get();
-      expect(stored?.count).toBeLessThan(result.first.snapshot.symbolCount);
-      expect(changedFiles?.count).toBe(1);
+      expect(stored?.count).toBe(afterDirty.indexed.snapshot.symbolCount);
+      expect(changedFiles?.count).toBe(afterDirty.indexed.snapshot.fileCount);
       expect(cacheWrites?.count).toBe(1);
     } finally {
       database.close();
@@ -703,7 +714,8 @@ describe('native code graph lifecycle', () => {
       }),
     );
 
-    expect(cachedHashes).toEqual([committedHash, latestHash].sort());
+    expect(cachedHashes).toEqual([latestHash]);
+    expect(cachedHashes).not.toContain(committedHash);
     expect(cachedHashes).not.toContain(intermediateHash);
     expect(unchanged.reusedFiles).toBe(unchanged.snapshot.fileCount);
   });
@@ -945,12 +957,24 @@ describe('native code graph lifecycle', () => {
     ['dynamic re-export aliases', createDynamicAliasRepository, 'dynamic-aliases'],
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
+    ['only changed graph-ineligible content', createNoMaterializedChangesRepository, 'no-materialized-changes'],
+    ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'fact-budget-expanded'],
   ] as const)('fails closed to full materialization for %s', async (_label, createRepository, fallbackReason) => {
     const root = createRepository();
+    const storageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
     const result = await runEffect(
       Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: join(root, '.threadnote-test-home')});
+        return yield* indexer.index({
+          cwd: root,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase === 'materializing' && progress.metrics?.storage !== undefined) {
+                storageObservations.push(progress.metrics.storage);
+              }
+            }),
+          threadnoteHome: join(root, '.threadnote-test-home'),
+        });
       }),
     );
 
@@ -959,6 +983,25 @@ describe('native code graph lifecycle', () => {
     expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
       true,
     );
+    expect(storageObservations.at(-1)).toMatchObject({
+      materializationMode: 'direct-persistent',
+      temporaryDatabaseBytes: 0,
+      temporaryDatabaseHighWaterBytes: 0,
+    });
+    const database = new Database(codeGraphDatabasePath(join(root, '.threadnote-test-home'), result), {readonly: true});
+    try {
+      const snapshots = database
+        .query<
+          {readonly base_snapshot_id: unknown; readonly dirty: number; readonly id: string; readonly state: string},
+          []
+        >('SELECT id, base_snapshot_id, dirty, state FROM snapshots ORDER BY id')
+        .all();
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({dirty: 1, id: result.snapshot.id, state: 'ready'});
+      expect(snapshots[0]?.base_snapshot_id).toBeNull();
+    } finally {
+      database.close();
+    }
   });
 
   it('indexes aggregate symbols across parser batches without a repository-scale cap', async () => {
@@ -2038,6 +2081,99 @@ describe('native code graph lifecycle', () => {
     90_000,
   );
 
+  it.skipIf(process.platform === 'win32')(
+    'retains and resumes the exact interrupted clean build for the current worktree',
+    async () => {
+      const root = createManySourceRepository(140);
+      const home = join(root, '.threadnote-test-home');
+      const marker = join(root, '.clean-persistent-build');
+      const helper = join(import.meta.dirname, '../helpers/code-graph-direct-interrupt-child.ts');
+      const child = spawn(process.execPath, [helper, root, home, marker], {
+        cwd: process.cwd(),
+        env: {...process.env, NODE_ENV: 'test'},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', chunk => (stderr += String(chunk)));
+      try {
+        await waitForPath(marker, 45_000);
+        child.kill('SIGKILL');
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('exit', () => resolve());
+        });
+
+        const identity = await runEffect(resolveRepositoryIdentity(root));
+        const databasePath = join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          'graph-v3.sqlite',
+        );
+        const interruptedDatabase = new Database(databasePath, {readonly: true});
+        const interrupted = interruptedDatabase
+          .query<{readonly id: string; readonly started_at: string}, [string]>(
+            "SELECT id, started_at FROM snapshots WHERE worktree_id = ? AND dirty = 0 AND state = 'building' LIMIT 1",
+          )
+          .get(identity.worktreeId);
+        expect(interrupted).toBeDefined();
+        const interruptedId = interrupted!.id;
+        const startedAt = interrupted!.started_at;
+        expect(
+          interruptedDatabase
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
+            )
+            .get(interruptedId)?.count,
+        ).toBe(1);
+        interruptedDatabase.close();
+
+        const resumed = await runEffect(
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            return yield* indexer.index({cwd: root, threadnoteHome: home});
+          }),
+        );
+
+        expect(resumed.snapshot).toMatchObject({dirty: false, id: interruptedId, state: 'ready'});
+        const readyDatabase = new Database(databasePath, {readonly: true});
+        try {
+          expect(
+            readyDatabase
+              .query<{readonly started_at: string; readonly state: string}, [string]>(
+                'SELECT started_at, state FROM snapshots WHERE id = ?',
+              )
+              .get(interruptedId),
+          ).toEqual({started_at: startedAt, state: 'ready'});
+          expect(
+            readyDatabase
+              .query<{readonly count: number}, [string]>(
+                'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
+              )
+              .get(interruptedId)?.count,
+          ).toBe(0);
+          expect(
+            readyDatabase
+              .query<{readonly count: number}, [string]>(
+                'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
+              )
+              .get(interruptedId)?.count,
+          ).toBe(0);
+        } finally {
+          readyDatabase.close();
+        }
+      } catch (error) {
+        throw new Error(`Clean-build resume fixture failed: ${stderr}`, {cause: error});
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    },
+    90_000,
+  );
+
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
     const root = createFixtureRepository();
     git(root, ['branch', 'graph-process-a']);
@@ -2125,8 +2261,7 @@ describe('native code graph lifecycle', () => {
           .all();
         expect(overlays).toHaveLength(2);
         expect(new Set(overlays.map(row => row.worktree_id)).size).toBe(2);
-        expect(new Set(overlays.map(row => row.base_snapshot_id)).size).toBe(1);
-        expect(overlays[0]?.base_snapshot_id).toMatch(/^cgsn_/);
+        expect(overlays.every(row => row.base_snapshot_id === null)).toBe(true);
       } finally {
         database.close();
       }
@@ -2136,6 +2271,128 @@ describe('native code graph lifecycle', () => {
       if (second?.running()) second.kill();
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'reclaims an interrupted persistent build after its linked worktree is removed',
+    async () => {
+      const root = createManySourceRepository(140);
+      git(root, ['branch', 'graph-orphan']);
+      const worktreeRoot = temporaryDirectory('threadnote-code-graph-orphan-worktree-');
+      const orphanWorktree = join(worktreeRoot, 'orphan');
+      git(root, ['worktree', 'add', orphanWorktree, 'graph-orphan']);
+      const home = join(root, '.threadnote-test-home');
+      const marker = join(root, '.orphan-persistent-build');
+      const helper = join(import.meta.dirname, '../helpers/code-graph-direct-interrupt-child.ts');
+      const orphanIdentity = await runEffect(resolveRepositoryIdentity(orphanWorktree));
+      const child = spawn(process.execPath, [helper, orphanWorktree, home, marker], {
+        cwd: process.cwd(),
+        env: {...process.env, NODE_ENV: 'test'},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', chunk => (stderr += String(chunk)));
+      try {
+        await waitForPath(marker, 45_000);
+        const markerProgress = JSON.parse(readFileSync(marker, 'utf8')) as {
+          readonly batchesCompleted: number;
+          readonly batchesTotal: number;
+          readonly snapshotMode?: string;
+        };
+        expect(markerProgress).toMatchObject({batchesCompleted: 1, snapshotMode: 'direct-persistent'});
+        expect(markerProgress.batchesTotal).toBeGreaterThan(1);
+        child.kill('SIGKILL');
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('exit', () => resolve());
+        });
+
+        const databasePath = join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          orphanIdentity.checkoutId,
+          'graph-v3.sqlite',
+        );
+        const interruptedDatabase = new Database(databasePath, {readonly: true});
+        const interrupted = interruptedDatabase
+          .query<{readonly id: string}, [string]>(
+            "SELECT id FROM snapshots WHERE worktree_id = ? AND dirty = 0 AND state = 'building' LIMIT 1",
+          )
+          .get(orphanIdentity.worktreeId);
+        expect(interrupted).toBeDefined();
+        const interruptedId = interrupted!.id;
+        expect(
+          interruptedDatabase
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
+            )
+            .get(interruptedId)?.count,
+        ).toBeGreaterThan(0);
+        interruptedDatabase.close();
+
+        git(root, ['worktree', 'remove', '--force', orphanWorktree]);
+        const reclamationProgress: Array<{readonly completed: number; readonly total: number}> = [];
+        const survivor = await runEffect(
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            return yield* indexer.index({
+              cwd: root,
+              onProgress: progress =>
+                progress.phase === 'reclaiming'
+                  ? Effect.sync(() => reclamationProgress.push({completed: progress.completed, total: progress.total}))
+                  : Effect.void,
+              threadnoteHome: home,
+            });
+          }),
+        );
+
+        expect(reclamationProgress[0]).toEqual({completed: 0, total: 1});
+        expect(reclamationProgress.at(-1)).toEqual({completed: 1, total: 1});
+        const reclaimedDatabase = new Database(databasePath, {readonly: true});
+        try {
+          expect(
+            reclaimedDatabase
+              .query<{readonly state: string; readonly worktree_id: string}, [string]>(
+                'SELECT state, worktree_id FROM snapshots WHERE id = ?',
+              )
+              .get(interruptedId),
+          ).toEqual({state: 'ready', worktree_id: survivor.identity.worktreeId});
+          expect(survivor.snapshot.id).toBe(interruptedId);
+          for (const table of ['snapshot_build_owners', 'building_materialization_batches'] as const) {
+            expect(
+              reclaimedDatabase
+                .query<{readonly count: number}, [string]>(
+                  `SELECT COUNT(*) AS count FROM ${table} WHERE snapshot_id = ?`,
+                )
+                .get(interruptedId)?.count,
+            ).toBe(0);
+          }
+          expect(
+            reclaimedDatabase
+              .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+              .get(interruptedId)?.count,
+          ).toBe(survivor.snapshot.symbolCount);
+          expect(reclaimedDatabase.query('PRAGMA foreign_key_check').all()).toEqual([]);
+        } finally {
+          reclaimedDatabase.close();
+        }
+      } catch (error) {
+        throw new Error(`Removed-worktree cleanup fixture failed: ${stderr}`, {cause: error});
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        if (existsSync(orphanWorktree)) {
+          try {
+            git(root, ['worktree', 'remove', '--force', orphanWorktree]);
+          } catch {
+            // Temporary-root cleanup remains the final fallback for a partially registered worktree.
+          }
+        }
+      }
+    },
+    90_000,
+  );
 
   it('rejects a derived repository symlink before opening SQLite', async () => {
     const root = createFixtureRepository();
@@ -2912,6 +3169,47 @@ function createAddedFileRepository(): string {
 function createDeletedFileRepository(): string {
   const root = createManySourceRepository(4);
   rmSync(join(root, 'src/file-000.ts'));
+  return root;
+}
+
+function createNoMaterializedChangesRepository(): string {
+  const root = createManySourceRepository(4);
+  const excluded = join(root, 'tracked.unsupported-fixture');
+  writeFileSync(excluded, 'committed\n');
+  git(root, ['add', 'tracked.unsupported-fixture']);
+  git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '-qm',
+    'tracked unsupported fixture',
+  ]);
+  writeFileSync(excluded, 'dirty\n');
+  return root;
+}
+
+function createFactBudgetExpandedRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-expanded-facts-');
+  const sourceRoot = join(root, 'src');
+  mkdirSync(sourceRoot, {recursive: true});
+  git(root, ['init', '-q']);
+  const identifierPadding = 'x'.repeat(192);
+  for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+    const declarations = Array.from(
+      {length: 2_000},
+      (_, symbolIndex) =>
+        `export function expanded_${fileIndex}_${symbolIndex}_${identifierPadding}(): number { return ${symbolIndex}; }`,
+    );
+    writeFileSync(join(sourceRoot, `expanded-${fileIndex}.ts`), `// base-state\n${declarations.join('\n')}\n`);
+  }
+  git(root, ['add', '.']);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+    const sourcePath = join(sourceRoot, `expanded-${fileIndex}.ts`);
+    writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('// base-state', '// work-state'));
+  }
   return root;
 }
 

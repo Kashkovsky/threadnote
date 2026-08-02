@@ -39,7 +39,10 @@ describe('code graph JSON progress coalescing', () => {
   it('preserves phase and substage transitions without waiting for the liveness interval', () => {
     const events: readonly CodeGraphProgress[] = [
       {phase: 'registering'},
+      {phase: 'waiting', reason: 'repository-lock'},
+      {phase: 'waiting', reason: 'database-writer'},
       scanning(0, 10),
+      {completed: 0, pagesCompleted: 0, phase: 'reclaiming', rowsDeleted: 0, total: 1, unit: 'snapshots'},
       scanning(0, 10, 'reading'),
       scanning(0, 10, 'extracting'),
       materializing('loading-cache'),
@@ -69,6 +72,28 @@ describe('code graph JSON progress coalescing', () => {
     expect(before.emit).toBe(true);
     expect(terminal.emit).toBe(true);
     expect(duplicate.emit).toBe(false);
+  });
+
+  it('emits reclamation liveness and completion without inventing an ETA', () => {
+    const started = codeGraphJsonProgressDecision(
+      {},
+      {completed: 0, pagesCompleted: 0, phase: 'reclaiming', rowsDeleted: 0, total: 1, unit: 'snapshots'},
+      0,
+    );
+    const page = codeGraphJsonProgressDecision(
+      started.state,
+      {completed: 0, pagesCompleted: 1, phase: 'reclaiming', rowsDeleted: 5_000, total: 1, unit: 'snapshots'},
+      CODE_GRAPH_JSON_PROGRESS_INTERVAL_MILLISECONDS,
+    );
+    const complete = codeGraphJsonProgressDecision(
+      page.state,
+      {completed: 1, pagesCompleted: 2, phase: 'reclaiming', rowsDeleted: 5_001, total: 1, unit: 'snapshots'},
+      CODE_GRAPH_JSON_PROGRESS_INTERVAL_MILLISECONDS + 1,
+    );
+
+    expect(started.emit).toBe(true);
+    expect(page.emit).toBe(true);
+    expect(complete.emit).toBe(true);
   });
 
   it('re-establishes liveness if the wall clock moves backward', () => {

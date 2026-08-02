@@ -292,6 +292,15 @@ export type CodeGraphProgress =
     }
   | {
       readonly phase: 'waiting';
+      readonly reason?: 'database-writer' | 'repository-lock' | 'request-lock' | 'snapshot-build';
+    }
+  | {
+      readonly completed: number;
+      readonly pagesCompleted: number;
+      readonly phase: 'reclaiming';
+      readonly rowsDeleted: number;
+      readonly total: number;
+      readonly unit: 'snapshots';
     }
   | {
       readonly accepted: number;

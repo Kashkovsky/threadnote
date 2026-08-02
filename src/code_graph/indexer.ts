@@ -32,6 +32,7 @@ import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js'
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   CodeGraphStore,
+  type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
   type CodeGraphStagingProgress,
@@ -102,6 +103,18 @@ type IncrementalOverlayAssessment =
       readonly reason: CodeGraphOverlayFallbackReason;
     };
 
+type IncrementalOverlayPreassessment =
+  | {
+      readonly committedWorkspace: CodeGraphWorkspace;
+      readonly facts: readonly CodeGraphFileFacts[];
+      readonly files: readonly CodeGraphInventoryFile[];
+      readonly mode: 'compatible';
+    }
+  | {
+      readonly mode: 'fallback';
+      readonly reason: CodeGraphOverlayFallbackReason;
+    };
+
 export interface CodeGraphCommitLease {
   readonly leaseToken: string;
   readonly snapshot: CodeGraphSnapshot;
@@ -142,7 +155,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             );
             const requestedOverlay = request.force ? undefined : yield* worktreeOverlayState(initialIdentity);
             const requestKey = requestedOverlay
-              ? codeGraphBuildRequestKey(initialIdentity, requestedOverlay, languagePacks)
+              ? codeGraphBuildRequestKey(initialIdentity, requestedOverlay, languagePacks, request.incrementalOverlay)
               : undefined;
             const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
@@ -169,7 +182,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             return yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
-              () => (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+              () =>
+                (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
+                  Effect.catch(() => Effect.void),
+                ),
               'index-repository',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
@@ -208,8 +224,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           identity,
                           currentOverlay,
                           requestKey,
+                          options.incrementalOverlay === false,
                         );
                         if (completedByOwner) {
+                          yield* store.retireIncompleteWorktreeSnapshots(
+                            layout.databasePath,
+                            identity.repositoryId,
+                            identity.worktreeId,
+                            new Set(),
+                            retiredSnapshotCleanupReporter(options.onProgress),
+                            activeWorktreeIds,
+                          );
                           const analysisSummaryBackfilled = yield* prepareReadyAnalysisSummary({
                             databasePath: layout.databasePath,
                             onProgress: options.onProgress,
@@ -262,13 +287,43 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const forceGeneration = options.force
                         ? (yield* crypto.randomUUIDv4).replaceAll('-', '').slice(0, 16)
                         : undefined;
-                      const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
+                      const forcedSnapshotId = forcedSnapshotIdentity(logicalSnapshotId, forceGeneration);
+                      const directSnapshotId = directFullSnapshotIdentity(logicalSnapshotId);
+                      const resumedForcedBuild = options.force
+                        ? yield* store.resumableForcedBuild(layout.databasePath, logicalSnapshotId)
+                        : undefined;
+                      const readyCandidateIds = inventory.dirty
+                        ? options.incrementalOverlay === false
+                          ? [directSnapshotId]
+                          : [logicalSnapshotId, directSnapshotId]
+                        : [logicalSnapshotId];
                       const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-                      const reusableReady =
-                        !options.force && existing?.id !== snapshotId
-                          ? yield* store.readySnapshotById(layout.databasePath, snapshotId)
-                          : existing;
-                      if (!options.force && reusableReady?.id === snapshotId) {
+                      const reusableReady = !options.force
+                        ? existing && readyCandidateIds.includes(existing.id)
+                          ? existing
+                          : yield* firstReadySnapshotById(store, layout.databasePath, readyCandidateIds)
+                        : undefined;
+                      // A ready candidate wins this request. Do not preserve an
+                      // interrupted logical/direct sibling that cannot be used on
+                      // the early-return path: a repository-sized persistent build
+                      // would otherwise remain reachable forever unless the user
+                      // explicitly selected that other materialization mode again.
+                      const retainedSnapshotIds = reusableReady
+                        ? new Set<string>()
+                        : options.force
+                          ? new Set([resumedForcedBuild?.id ?? forcedSnapshotId])
+                          : inventory.dirty
+                            ? new Set(readyCandidateIds)
+                            : new Set([logicalSnapshotId]);
+                      yield* store.retireIncompleteWorktreeSnapshots(
+                        layout.databasePath,
+                        identity.repositoryId,
+                        identity.worktreeId,
+                        retainedSnapshotIds,
+                        retiredSnapshotCleanupReporter(options.onProgress),
+                        activeWorktreeIds,
+                      );
+                      if (reusableReady) {
                         let analysisSummaryBackfilled = false;
                         let analysisSummaryPrepared = false;
                         if (existing?.id !== reusableReady.id) {
@@ -303,7 +358,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           activeWorktreeIds,
                           embedding,
                           existing,
-                          fallbackSnapshotId: snapshotId,
+                          fallbackSnapshotId: forcedSnapshotId,
                           force: options.force === true,
                           fs,
                           identity,
@@ -317,11 +372,91 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           threadnoteHome: options.threadnoteHome,
                         });
                       }
-                      const committedBase = inventory.dirty
-                        ? yield* ensureCommittedBase({
+                      const canAttemptIncrementalOverlay =
+                        inventory.dirty && options.incrementalOverlay !== false && options.force !== true;
+                      const resumableDirectBuild =
+                        inventory.dirty && !options.force
+                          ? yield* store.resumableBuildById(layout.databasePath, directSnapshotId)
+                          : undefined;
+                      const workspace = yield* languagePacks.discoverWorkspace(inventory.files);
+                      let committedBase: CommittedBaseResult | undefined;
+                      let incrementalAssessment: IncrementalOverlayAssessment | undefined;
+                      let incrementalPrepared = false;
+                      let building: CodeGraphSnapshot;
+                      let persistentOwnerToken: string | undefined;
+                      if (resumedForcedBuild) {
+                        building = resumedForcedBuild;
+                        incrementalAssessment = {mode: 'fallback', reason: 'forced-full-rebuild'};
+                        persistentOwnerToken = yield* store.claimPersistentBuild(
+                          layout.databasePath,
+                          identity,
+                          building,
+                        );
+                      } else if (resumableDirectBuild) {
+                        building = resumableDirectBuild;
+                        incrementalAssessment = {
+                          mode: 'fallback',
+                          reason: options.incrementalOverlay === false ? 'disabled' : 'staging-unavailable',
+                        };
+                        persistentOwnerToken = yield* store.claimPersistentBuild(
+                          layout.databasePath,
+                          identity,
+                          building,
+                        );
+                      } else if (!inventory.dirty && !options.force) {
+                        building = {
+                          commit: identity.headCommit,
+                          dirty: false,
+                          edgeCount: 0,
+                          extractorSet,
+                          fileCount: 0,
+                          id: logicalSnapshotId,
+                          repositoryId: identity.repositoryId,
+                          state: 'building',
+                          symbolCount: 0,
+                          worktreeId: identity.worktreeId,
+                        };
+                        persistentOwnerToken = yield* store.claimPersistentBuild(
+                          layout.databasePath,
+                          identity,
+                          building,
+                        );
+                      } else if (!canAttemptIncrementalOverlay) {
+                        building = {
+                          commit: identity.headCommit,
+                          dirty: inventory.dirty,
+                          edgeCount: 0,
+                          extractorSet,
+                          fileCount: 0,
+                          id: options.force ? forcedSnapshotId : directSnapshotId,
+                          overlayFingerprint: inventory.overlayFingerprint,
+                          repositoryId: identity.repositoryId,
+                          state: 'building',
+                          symbolCount: 0,
+                          worktreeId: identity.worktreeId,
+                        };
+                        incrementalAssessment = {
+                          mode: 'fallback',
+                          reason: options.force ? 'forced-full-rebuild' : 'disabled',
+                        };
+                        persistentOwnerToken = yield* store.claimPersistentBuild(
+                          layout.databasePath,
+                          identity,
+                          building,
+                        );
+                      } else {
+                        const preassessment = yield* assessIncrementalOverlayCompatibility(
+                          {extractorSet, inventory, languagePacks, layout, store},
+                          workspace,
+                        );
+                        let incrementalBuilding: CodeGraphSnapshot | undefined;
+                        if (preassessment.mode === 'fallback') {
+                          incrementalAssessment = preassessment;
+                        } else {
+                          committedBase = yield* ensureCommittedBase({
                             activeWorktreeIds,
                             embedding,
-                            force: options.force === true,
+                            force: false,
                             forceGeneration,
                             fs,
                             identity,
@@ -332,23 +467,93 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             startedAt,
                             store,
                             threadnoteHome: options.threadnoteHome,
-                          })
-                        : undefined;
-                      const building: CodeGraphSnapshot = {
-                        baseSnapshotId: committedBase?.snapshot.id,
-                        commit: identity.headCommit,
-                        dirty: inventory.dirty,
-                        edgeCount: 0,
-                        extractorSet,
-                        fileCount: 0,
-                        id: snapshotId,
-                        overlayFingerprint: inventory.overlayFingerprint,
-                        repositoryId: identity.repositoryId,
-                        state: 'building',
-                        symbolCount: 0,
-                        worktreeId: identity.worktreeId,
-                      };
-                      yield* store.markBuilding(layout.databasePath, identity, building);
+                          });
+                          incrementalBuilding = {
+                            baseSnapshotId: committedBase.snapshot.id,
+                            commit: identity.headCommit,
+                            dirty: inventory.dirty,
+                            edgeCount: 0,
+                            extractorSet,
+                            fileCount: 0,
+                            id: logicalSnapshotId,
+                            overlayFingerprint: inventory.overlayFingerprint,
+                            repositoryId: identity.repositoryId,
+                            state: 'building',
+                            symbolCount: 0,
+                            worktreeId: identity.worktreeId,
+                          };
+                          incrementalAssessment = yield* assessIncrementalOverlay(
+                            {
+                              building: incrementalBuilding,
+                              committedBase,
+                              force: false,
+                              incrementalOverlayEnabled: true,
+                              inventory,
+                              languagePacks,
+                              layout,
+                              store,
+                            },
+                            workspace,
+                            preassessment,
+                          );
+                        }
+                        if (incrementalAssessment.mode === 'eligible') {
+                          if (committedBase === undefined) {
+                            return yield* Effect.fail(
+                              new Error('Incremental code graph preparation requires a committed base snapshot.'),
+                            );
+                          }
+                          const incrementalReusedFiles = inventory.files.length - incrementalAssessment.files.length;
+                          yield* options.onProgress?.({
+                            completed: 0,
+                            phase: 'materializing',
+                            reused: incrementalReusedFiles,
+                            total: incrementalAssessment.files.length,
+                            unit: 'files',
+                          }) ?? Effect.void;
+                          incrementalPrepared =
+                            incrementalAssessment.reuse === 'persisted-base'
+                              ? yield* store.preparePersistedIncrementalActivation(
+                                  layout.databasePath,
+                                  committedBase.snapshot.id,
+                                  incrementalAssessment.files,
+                                  incrementalAssessment.facts,
+                                )
+                              : yield* store.replaceStagedModifiedFiles(
+                                  layout.databasePath,
+                                  committedBase.snapshot.id,
+                                  incrementalAssessment.files,
+                                  incrementalAssessment.facts,
+                                );
+                          if (!incrementalPrepared) {
+                            incrementalAssessment = {mode: 'fallback', reason: 'staging-identity-mismatch'};
+                          }
+                        }
+                        if (incrementalPrepared && incrementalBuilding !== undefined) {
+                          building = incrementalBuilding;
+                          yield* store.markBuilding(layout.databasePath, identity, building);
+                        } else {
+                          building = {
+                            commit: identity.headCommit,
+                            dirty: inventory.dirty,
+                            edgeCount: 0,
+                            extractorSet,
+                            fileCount: 0,
+                            id: directSnapshotId,
+                            overlayFingerprint: inventory.overlayFingerprint,
+                            repositoryId: identity.repositoryId,
+                            state: 'building',
+                            symbolCount: 0,
+                            worktreeId: identity.worktreeId,
+                          };
+                          committedBase = undefined;
+                          persistentOwnerToken = yield* store.claimPersistentBuild(
+                            layout.databasePath,
+                            identity,
+                            building,
+                          );
+                        }
+                      }
                       return yield* buildAndActivate({
                         activeWorktreeIds,
                         activatePointer: true,
@@ -361,17 +566,21 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         identity,
                         inventory,
                         committedBase,
+                        incrementalAssessment,
                         incrementalOverlayEnabled: options.incrementalOverlay !== false,
+                        incrementalPrepared,
                         languagePacks,
                         layout,
                         onProgress: options.onProgress,
+                        persistentOwnerToken,
                         startedAt,
                         store,
                         threadnoteHome: options.threadnoteHome,
+                        workspace,
                       }).pipe(
                         Effect.catch(cause =>
                           store
-                            .markFailed(layout.databasePath, snapshotId, messageOf(cause))
+                            .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
                             .pipe(Effect.andThen(Effect.fail(cause))),
                         ),
                       );
@@ -437,7 +646,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             return yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
-              () => (options.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+              () =>
+                (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
+                  Effect.catch(() => Effect.void),
+                ),
               'ensure-commit',
               Effect.gen(function* () {
                 if ((yield* fs.readLink(layout.repositoryRoot).pipe(Effect.option))._tag === 'Some') {
@@ -549,9 +761,26 @@ function withCodeGraphProcessLock<A, E, R>(
 function writerSessionOptions(layout: CodeGraphLayout, onProgress: CodeGraphIndexOptions['onProgress']) {
   return {
     cleanupCompletedBuildRows: true,
-    onWriterContention: () => (onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+    onWriterContention: () =>
+      (onProgress?.({phase: 'waiting', reason: 'database-writer'}) ?? Effect.void).pipe(
+        Effect.catch(() => Effect.void),
+      ),
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
+}
+
+function retiredSnapshotCleanupReporter(onProgress: CodeGraphIndexOptions['onProgress']) {
+  return (progress: CodeGraphRetiredSnapshotCleanupProgress) =>
+    (
+      onProgress?.({
+        completed: progress.snapshotsCompleted,
+        pagesCompleted: progress.pagesCompleted,
+        phase: 'reclaiming',
+        rowsDeleted: progress.rowsDeleted,
+        total: progress.snapshotsTotal,
+        unit: 'snapshots',
+      }) ?? Effect.void
+    ).pipe(Effect.catch(() => Effect.void));
 }
 
 function withSharedCleanRequestGate<A, E, R>(input: {
@@ -570,7 +799,10 @@ function withSharedCleanRequestGate<A, E, R>(input: {
     codeGraphRequestBuildLockPath(input.path, input.threadnoteHome, input.checkoutId, input.requestKey),
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
-      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+      onContention: () =>
+        (input.onProgress?.({phase: 'waiting', reason: 'request-lock'}) ?? Effect.void).pipe(
+          Effect.catch(() => Effect.void),
+        ),
     },
     input.effect,
   );
@@ -582,6 +814,7 @@ const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnap
   identity: RepositoryIdentity,
   overlay: {readonly dirty: boolean; readonly fingerprint?: string},
   requestKey: string,
+  requireDirectFull: boolean,
 ) {
   const statuses = yield* readCodeGraphBuildStatuses(layout);
   const completed = statuses.find(
@@ -593,7 +826,8 @@ const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnap
     !ready ||
     ready.commit !== identity.headCommit ||
     ready.dirty !== overlay.dirty ||
-    (overlay.dirty && ready.overlayFingerprint !== overlay.fingerprint)
+    (overlay.dirty && ready.overlayFingerprint !== overlay.fingerprint) ||
+    (overlay.dirty && requireDirectFull && (ready.baseSnapshotId !== undefined || !ready.id.endsWith('-direct')))
   ) {
     return undefined;
   }
@@ -691,18 +925,20 @@ function codeGraphBuildRequestKey(
   identity: Pick<RepositoryIdentity, 'checkoutId' | 'headCommit' | 'repositoryId' | 'worktreeId'>,
   overlay: {readonly dirty: boolean; readonly fingerprint?: string},
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  incrementalOverlay: boolean | undefined,
 ): string {
   const parserIdentities = languagePacks.cacheIdentities.join('\n');
   const derivationIdentities = languagePacks.packs.map(packDerivationIdentity).sort(compareCodeUnits).join('\n');
   return sha256HexSync(
     [
-      'code-graph-build-request-v1',
+      'code-graph-build-request-v2',
       CODE_GRAPH_EXTRACTOR_SET_VERSION,
       identity.repositoryId,
       identity.checkoutId,
       overlay.dirty ? identity.worktreeId : 'shared-commit',
       identity.headCommit,
       overlay.dirty ? (overlay.fingerprint ?? 'dirty-without-fingerprint') : 'clean',
+      overlay.dirty && incrementalOverlay === false ? 'direct-full' : 'default',
       'ignore-policy:3',
       parserIdentities,
       derivationIdentities,
@@ -744,7 +980,10 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
     ),
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
-      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+      onContention: () =>
+        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(
+          Effect.catch(() => Effect.void),
+        ),
     },
     Effect.gen(function* () {
       if (!input.force) {
@@ -879,7 +1118,10 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
     ),
     {
       ...CODE_GRAPH_LOCK_OPTIONS,
-      onContention: () => (input.onProgress?.({phase: 'waiting'}) ?? Effect.void).pipe(Effect.catch(() => Effect.void)),
+      onContention: () =>
+        (input.onProgress?.({phase: 'waiting', reason: 'snapshot-build'}) ?? Effect.void).pipe(
+          Effect.catch(() => Effect.void),
+        ),
     },
     Effect.gen(function* () {
       if (!input.force) {
@@ -952,7 +1194,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
+  readonly incrementalAssessment?: IncrementalOverlayAssessment;
   readonly incrementalOverlayEnabled?: boolean;
+  readonly incrementalPrepared?: boolean;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
@@ -960,39 +1204,46 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
+  readonly workspace?: CodeGraphWorkspace;
 }) {
-  const workspace = yield* input.languagePacks.discoverWorkspace(input.inventory.files);
+  const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
   const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
-  const incrementalAssessment = input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined;
+  const incrementalAssessment =
+    input.incrementalAssessment ??
+    (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
   let fallbackReason: CodeGraphOverlayFallbackReason | undefined =
     incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.reason : undefined;
   let incrementalApplied = false;
   if (incrementalAssessment?.mode === 'eligible') {
     const incrementalReusedFiles = input.inventory.files.length - incrementalAssessment.files.length;
-    yield* input.onProgress?.({
-      completed: 0,
-      phase: 'materializing',
-      reused: incrementalReusedFiles,
-      total: incrementalAssessment.files.length,
-      unit: 'files',
-    }) ?? Effect.void;
+    if (input.incrementalPrepared !== true) {
+      yield* input.onProgress?.({
+        completed: 0,
+        phase: 'materializing',
+        reused: incrementalReusedFiles,
+        total: incrementalAssessment.files.length,
+        unit: 'files',
+      }) ?? Effect.void;
+    }
     incrementalApplied =
-      incrementalAssessment.reuse === 'persisted-base'
-        ? yield* input.store.preparePersistedIncrementalActivation(
-            input.layout.databasePath,
-            input.committedBase!.snapshot.id,
-            incrementalAssessment.files,
-            incrementalAssessment.facts,
-          )
-        : yield* input.store.replaceStagedModifiedFiles(
-            input.layout.databasePath,
-            input.committedBase!.snapshot.id,
-            incrementalAssessment.files,
-            incrementalAssessment.facts,
-          );
+      input.incrementalPrepared === true
+        ? true
+        : incrementalAssessment.reuse === 'persisted-base'
+          ? yield* input.store.preparePersistedIncrementalActivation(
+              input.layout.databasePath,
+              input.committedBase!.snapshot.id,
+              incrementalAssessment.files,
+              incrementalAssessment.facts,
+            )
+          : yield* input.store.replaceStagedModifiedFiles(
+              input.layout.databasePath,
+              input.committedBase!.snapshot.id,
+              incrementalAssessment.files,
+              incrementalAssessment.facts,
+            );
     if (incrementalApplied) {
       materializedFiles = incrementalAssessment.files.length;
       for (const diagnostic of [
@@ -1028,10 +1279,11 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     }
     const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
     const cachedFactBytesTotal = cachedMetadata.bytes;
+    const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
     const storageEstimate = estimatedMaterializationStorageBytes(
       cachedFactBytesTotal,
       sourceBytesTotal,
-      input.inventory.dirty ? 'temporary-staged' : 'direct-persistent',
+      directPersistentMaterialization ? 'direct-persistent' : 'temporary-staged',
       'cached-fact-bytes',
     );
     const system = yield* SystemInfo;
@@ -1161,7 +1413,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     yield* input.store.prepareActivation(
       input.layout.databasePath,
       input.inventory.files,
-      input.inventory.dirty ? undefined : input.building.id,
+      directPersistentMaterialization ? input.building.id : undefined,
       undefined,
       input.persistentOwnerToken,
     );
@@ -1343,7 +1595,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       }
     }
     batchesTotal = persistentBatchCursor;
-    if (!input.inventory.dirty) {
+    if (directPersistentMaterialization) {
       yield* input.store.finalizePersistentMaterializationPlan(input.layout.databasePath, persistentBatchCursor);
     }
     yield* input.onProgress?.({
@@ -1510,19 +1762,29 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     readonly store: CodeGraphStoreShape;
   },
   workspace: CodeGraphWorkspace,
+  suppliedPreassessment?: IncrementalOverlayPreassessment,
 ) {
   if (input.incrementalOverlayEnabled === false) {
     return {mode: 'fallback', reason: 'disabled'} satisfies IncrementalOverlayAssessment;
   }
   if (input.force) return {mode: 'fallback', reason: 'forced-full-rebuild'} satisfies IncrementalOverlayAssessment;
+  const preassessment =
+    suppliedPreassessment ??
+    (yield* assessIncrementalOverlayCompatibility(
+      {
+        extractorSet: input.building.extractorSet,
+        inventory: input.inventory,
+        languagePacks: input.languagePacks,
+        layout: input.layout,
+        store: input.store,
+      },
+      workspace,
+    ));
+  if (preassessment.mode === 'fallback') return preassessment;
   if (!input.committedBase)
     return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
   if (input.building.extractorSet !== input.committedBase.snapshot.extractorSet) {
     return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayAssessment;
-  }
-  const committedWorkspace = yield* input.languagePacks.discoverWorkspace(input.inventory.committedFiles);
-  if (committedWorkspace.fingerprint !== workspace.fingerprint) {
-    return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayAssessment;
   }
   let reuse: 'persisted-base' | 'staged-base' = 'staged-base';
   if (!input.committedBase.stagingReusable) {
@@ -1531,12 +1793,56 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
       !receipt ||
       receipt.formatVersion !== CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION ||
       receipt.resolutionSurfaceVersion !== 1 ||
-      receipt.workspaceFingerprint !== committedWorkspace.fingerprint ||
+      receipt.workspaceFingerprint !== preassessment.committedWorkspace.fingerprint ||
       receipt.fileSetFingerprint !== reusableBaseFileSetFingerprint(input.inventory.committedFiles)
     ) {
       return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
     }
     reuse = 'persisted-base';
+  }
+  let reusableFacts = preassessment.facts;
+  if (reuse === 'persisted-base') {
+    const seeds = reusableReexportSeeds(preassessment.facts);
+    if (seeds.length > 0) {
+      const reexports = yield* input.store.reusableReexports(
+        input.layout.databasePath,
+        input.committedBase.snapshot.id,
+        seeds,
+      );
+      if (reexports === undefined) {
+        return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
+      }
+      reusableFacts = enrichPersistedTypeScriptReexports(preassessment.facts, reexports);
+    }
+  }
+  const finalBatches = finalCodeGraphFactBatches(reusableFacts);
+  if (finalBatches.length !== 1) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
+  }
+  return {
+    facts: finalBatches[0]!.map(value => value.facts),
+    files: preassessment.files,
+    mode: 'eligible',
+    reuse,
+  } satisfies IncrementalOverlayAssessment;
+});
+
+const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncrementalOverlayCompatibility')(function* (
+  input: {
+    readonly extractorSet: string;
+    readonly inventory: CodeGraphInventory;
+    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+    readonly layout: CodeGraphLayout;
+    readonly store: CodeGraphStoreShape;
+  },
+  workspace: CodeGraphWorkspace,
+) {
+  if (input.extractorSet !== extractorSetIdentity(input.inventory.committedFiles, input.languagePacks)) {
+    return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
+  }
+  const committedWorkspace = yield* input.languagePacks.discoverWorkspace(input.inventory.committedFiles);
+  if (committedWorkspace.fingerprint !== workspace.fingerprint) {
+    return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayPreassessment;
   }
   const committedByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file]));
   const effectiveByPath = new Map(input.inventory.files.map(file => [file.path, file]));
@@ -1544,7 +1850,7 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     committedByPath.size !== effectiveByPath.size ||
     [...committedByPath].some(([path]) => !effectiveByPath.has(path))
   ) {
-    return {mode: 'fallback', reason: 'file-set-changed'} satisfies IncrementalOverlayAssessment;
+    return {mode: 'fallback', reason: 'file-set-changed'} satisfies IncrementalOverlayPreassessment;
   }
   const modifiedFiles = input.inventory.files.filter(file => {
     const committed = committedByPath.get(file.path)!;
@@ -1557,7 +1863,7 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     );
   });
   if (modifiedFiles.length === 0) {
-    return {mode: 'fallback', reason: 'no-materialized-changes'} satisfies IncrementalOverlayAssessment;
+    return {mode: 'fallback', reason: 'no-materialized-changes'} satisfies IncrementalOverlayPreassessment;
   }
   const committedFiles = modifiedFiles.map(file => committedByPath.get(file.path)!);
   const [committedCache, effectiveCache] = yield* Effect.all(
@@ -1571,7 +1877,7 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     committedFiles.some(file => !committedCache.facts.has(file.path)) ||
     modifiedFiles.some(file => !effectiveCache.facts.has(file.path))
   ) {
-    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayAssessment;
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
   const committedFacts = attributeInventoryFacts(
     input.inventory.committedFiles,
@@ -1584,7 +1890,7 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     modifiedFiles.map(file => input.languagePacks.postprocessFile(file, effectiveCache.facts.get(file.path)!)),
   );
   if (hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts)) {
-    return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayAssessment;
+    return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayPreassessment;
   }
   const committedFactsByPath = new Map(committedFacts.map(file => [file.path, file]));
   if (
@@ -1593,33 +1899,17 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
       return !committed || !hasSameCodeGraphResolutionSurface(committed.symbols, file.symbols);
     })
   ) {
-    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayAssessment;
+    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
   }
-  let reusableFacts = effectiveFacts;
-  if (reuse === 'persisted-base') {
-    const seeds = reusableReexportSeeds(effectiveFacts);
-    if (seeds.length > 0) {
-      const reexports = yield* input.store.reusableReexports(
-        input.layout.databasePath,
-        input.committedBase.snapshot.id,
-        seeds,
-      );
-      if (reexports === undefined) {
-        return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
-      }
-      reusableFacts = enrichPersistedTypeScriptReexports(effectiveFacts, reexports);
-    }
-  }
-  const finalBatches = finalCodeGraphFactBatches(reusableFacts);
-  if (finalBatches.length !== 1) {
-    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
+  if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
   }
   return {
-    facts: finalBatches[0]!.map(value => value.facts),
+    committedWorkspace,
+    facts: effectiveFacts,
     files: modifiedFiles,
-    mode: 'eligible',
-    reuse,
-  } satisfies IncrementalOverlayAssessment;
+    mode: 'compatible',
+  } satisfies IncrementalOverlayPreassessment;
 });
 
 function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
@@ -2132,9 +2422,28 @@ export function snapshotIdentity(
   ).slice(0, 40)}`;
 }
 
+export function directFullSnapshotIdentity(logicalSnapshotId: string): string {
+  if (!/^cgsn_[0-9a-f]{40}$/.test(logicalSnapshotId)) {
+    throw new Error('Logical snapshot identity is invalid.');
+  }
+  return `${logicalSnapshotId}-direct`;
+}
+
 function forcedSnapshotIdentity(logicalSnapshotId: string, forceGeneration: string | undefined): string {
   return forceGeneration ? `${logicalSnapshotId}-full-${forceGeneration}` : logicalSnapshotId;
 }
+
+const firstReadySnapshotById = Effect.fn('codeGraph.firstReadySnapshotById')(function* (
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  snapshotIds: readonly string[],
+) {
+  for (const snapshotId of snapshotIds) {
+    const ready = yield* store.readySnapshotById(databasePath, snapshotId);
+    if (ready) return ready;
+  }
+  return undefined;
+});
 
 function embeddingSymbolSource(store: CodeGraphStoreShape, databasePath: string, snapshotId: string) {
   return {

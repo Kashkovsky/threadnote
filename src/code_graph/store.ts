@@ -3,7 +3,7 @@ import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'e
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {ensureBoundedCodeGraphFact, type BoundedCodeGraphFact, type CodeGraphCacheFactInput} from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
@@ -188,6 +188,24 @@ export interface CodeGraphDatabaseHealth {
 
 export interface CodeGraphDatabaseRepair {
   readonly removedSnapshots: number;
+}
+
+export interface CodeGraphRetiredSnapshotCleanupProgress {
+  readonly pagesCompleted: number;
+  readonly rowsDeleted: number;
+  readonly snapshotsCompleted: number;
+  readonly snapshotsTotal: number;
+}
+
+export type CodeGraphRetiredSnapshotCleanupProgressCallback = (
+  progress: CodeGraphRetiredSnapshotCleanupProgress,
+) => Effect.Effect<void, never>;
+
+interface OrphanedIncompleteSnapshotCandidate {
+  readonly id: string;
+  readonly ownerToken: Option.Option<string>;
+  readonly startedAt: string;
+  readonly state: 'building' | 'failed' | 'retired';
 }
 
 export interface LoadedCodeGraphFacts {
@@ -515,6 +533,18 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     logicalSnapshotId: string,
   ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreError>;
+  readonly resumableBuildById: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreError>;
+  readonly retireIncompleteWorktreeSnapshots: (
+    databasePath: string,
+    repositoryId: string,
+    worktreeId: string,
+    retainedSnapshotIds: ReadonlySet<string>,
+    onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
+    activeWorktreeIds?: ReadonlySet<string>,
+  ) => Effect.Effect<number, CodeGraphStoreError>;
   readonly markFailed: (
     databasePath: string,
     snapshotId: string,
@@ -616,6 +646,8 @@ export interface CodeGraphDatabaseSessionOptions {
   readonly onPersistentSchemaMigrationPhase?: (
     phase: CodeGraphPersistentSchemaMigrationPhase,
   ) => Effect.Effect<void, never>;
+  /** @internal Deterministic checkout-writer acquisition observer used by coordination tests. */
+  readonly onWriterAcquired?: () => Effect.Effect<void, never>;
   readonly onWriterContention?: () => Effect.Effect<void, never>;
   /** @internal The caller already owns this database's checkout-wide writer gate. */
   readonly writerGateHeld?: boolean;
@@ -660,6 +692,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               writerLockPath,
               {
                 ...CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS,
+                onAcquired: () => options?.onWriterAcquired?.() ?? Effect.void,
                 onContention: () => options?.onWriterContention?.() ?? Effect.void,
               },
               effect,
@@ -703,8 +736,12 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           });
           const runSweep =
             writerLockPath === undefined
-              ? cleanupSweep
-              : withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS, cleanupSweep).pipe(
+              ? cleanupSweep.pipe(Effect.map(Option.some))
+              : withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS, cleanupSweep).pipe(
+                  Effect.map(Option.some),
+                  Effect.catch(error =>
+                    isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error),
+                  ),
                   Effect.provideService(Crypto.Crypto, crypto),
                   Effect.provideService(Path.Path, path),
                   Effect.provideService(SystemInfo, system),
@@ -712,8 +749,14 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           const cleanup = Effect.gen(function* () {
             for (;;) {
               const result = yield* runSweep;
-              if (!result.remaining) return;
-              yield* Effect.yieldNow;
+              // Detached cleanup is opportunistic. Once a foreground writer
+              // contends, stop this fiber and leave the reconstructible rows
+              // for the next session or maintenance pass.
+              if (Option.isNone(result) || !result.value.remaining) return;
+              // Foreground writers poll the checkout gate every 25 ms. Detached
+              // cleanup never queues on that gate and waits for two polling
+              // windows before another bounded page.
+              yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
           });
           yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
@@ -1103,7 +1146,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     const sql = yield* SqlClient.SqlClient;
                     yield* initializeSchema(sql);
                     yield* upsertRepository(sql, identity);
-                    yield* sql`
+                    const registered = yield* sql<{readonly id: string}>`
                       INSERT INTO snapshots (
                         id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
                         dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
@@ -1112,8 +1155,31 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                         ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
                         ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
                       )
-                      ON CONFLICT(id) DO NOTHING
+                      ON CONFLICT(id) DO UPDATE SET
+                        state = 'building',
+                        file_count = 0,
+                        symbol_count = 0,
+                        edge_count = 0,
+                        started_at = excluded.started_at,
+                        completed_at = NULL,
+                        failure_summary = NULL
+                      WHERE snapshots.repository_id = excluded.repository_id
+                        AND snapshots.worktree_id = excluded.worktree_id
+                        AND snapshots.commit_id = excluded.commit_id
+                        AND snapshots.base_snapshot_id IS excluded.base_snapshot_id
+                        AND snapshots.extractor_set = excluded.extractor_set
+                        AND snapshots.dirty = excluded.dirty
+                        AND snapshots.overlay_fingerprint IS excluded.overlay_fingerprint
+                        AND snapshots.state IN ('building', 'failed', 'retired')
+                      RETURNING id
                     `;
+                    if (registered.length !== 1) {
+                      return yield* Effect.fail(
+                        new CodeGraphStoreError(
+                          `Snapshot identity ${snapshot.id} already belongs to incompatible or ready content.`,
+                        ),
+                      );
+                    }
                   }),
                 ),
               ),
@@ -1137,6 +1203,48 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load resumable forced code graph snapshot', cause)),
           ),
+        resumableBuildById: (databasePath, snapshotId) =>
+          fs.exists(databasePath).pipe(
+            Effect.flatMap(exists =>
+              exists ? useDatabase(databasePath, selectResumableBuildById(snapshotId)) : Effect.succeed(undefined),
+            ),
+            Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
+          ),
+        retireIncompleteWorktreeSnapshots: (
+          databasePath,
+          repositoryId,
+          worktreeId,
+          retainedSnapshotIds,
+          onProgress,
+          activeWorktreeIds,
+        ) =>
+          Effect.gen(function* () {
+            yield* prepare(databasePath);
+            const orphaned =
+              activeWorktreeIds === undefined
+                ? []
+                : yield* useDatabase(
+                    databasePath,
+                    Effect.gen(function* () {
+                      const now = yield* Clock.currentTimeMillis;
+                      const candidates = yield* selectOrphanedIncompleteSnapshots(repositoryId, activeWorktreeIds, now);
+                      return candidates.filter(candidate =>
+                        orphanedIncompleteSnapshotSafeToReclaim(candidate, now, system.isProcessRunning),
+                      );
+                    }),
+                  );
+            return yield* useDatabase(
+              databasePath,
+              retireIncompleteWorktreeSnapshots(
+                repositoryId,
+                worktreeId,
+                retainedSnapshotIds,
+                effect => withWriterGate(databasePath, effect),
+                onProgress,
+                orphaned,
+              ),
+            );
+          }).pipe(Effect.mapError(cause => storeError('retire incomplete code graph snapshots', cause))),
         markFailed: (databasePath, snapshotId, summary, ownerToken) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -1448,6 +1556,14 @@ const CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS = {
   staleAfterMilliseconds: 120_000,
   waitTimeoutMilliseconds: Number.POSITIVE_INFINITY,
 } as const;
+
+const CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS = {
+  ...CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS,
+  waitTimeoutMilliseconds: 0,
+} as const;
+
+const CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS = CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS.retryIntervalMilliseconds * 2;
+const CODE_GRAPH_ORPHANED_UNOWNED_BUILD_MINIMUM_AGE_MILLISECONDS = 15 * 60_000;
 
 function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: string): string | undefined {
   if (path.basename(databasePath) !== `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`) return undefined;
@@ -3980,8 +4096,13 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* configureConnection(sql);
   yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
   yield* observe('validating-input', 'started');
-  if (snapshot.dirty || snapshot.baseSnapshotId !== undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError('Persistent full activation only accepts clean snapshots.'));
+  if (snapshot.baseSnapshotId !== undefined) {
+    return yield* Effect.fail(
+      new CodeGraphStoreError('Persistent full activation only accepts self-contained snapshots.'),
+    );
+  }
+  if (snapshot.dirty && reusableBaseReceipt !== undefined) {
+    return yield* Effect.fail(new CodeGraphStoreError('Dirty snapshots cannot publish a reusable clean-base receipt.'));
   }
   const stateRows = yield* sql<{
     readonly repository_id: string;
@@ -4461,6 +4582,421 @@ const selectResumableForcedBuild = Effect.fn('codeGraph.selectResumableForcedBui
     LIMIT 1
   `;
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectResumableBuildById = Effect.fn('codeGraph.selectResumableBuildById')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots'))) return undefined;
+  const rows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'building' LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectOrphanedIncompleteSnapshots = Effect.fn('codeGraph.selectOrphanedIncompleteSnapshots')(function* (
+  repositoryId: string,
+  activeWorktreeIds: ReadonlySet<string>,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots'))) return [];
+  const rows = yield* sql<{
+    readonly id: string;
+    readonly owner_token: unknown;
+    readonly started_at: string;
+    readonly state: OrphanedIncompleteSnapshotCandidate['state'];
+    readonly worktree_id: string;
+  }>`
+    SELECT snapshot.id, snapshot.started_at, snapshot.state, snapshot.worktree_id, owner.owner_token
+    FROM snapshots AS snapshot
+    LEFT JOIN snapshot_build_owners AS owner ON owner.snapshot_id = snapshot.id
+    WHERE snapshot.repository_id = ${repositoryId}
+      AND snapshot.state IN ('building', 'failed', 'retired')
+      AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+      AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+      AND snapshot.id NOT IN (
+        SELECT base_snapshot_id
+        FROM snapshots
+        WHERE base_snapshot_id IS NOT NULL
+          AND id IN (
+            SELECT snapshot_id FROM active_snapshots
+            UNION
+            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+          )
+      )
+    ORDER BY snapshot.id
+  `;
+  return rows
+    .filter(row => !activeWorktreeIds.has(row.worktree_id))
+    .map(row => ({
+      id: row.id,
+      ownerToken: sqlTextOption(row.owner_token),
+      startedAt: row.started_at,
+      state: row.state,
+    }));
+});
+
+function orphanedIncompleteSnapshotSafeToReclaim(
+  candidate: OrphanedIncompleteSnapshotCandidate,
+  now: number,
+  isProcessRunning: (processId: number) => boolean,
+): boolean {
+  if (candidate.state === 'failed' || candidate.state === 'retired') return true;
+  const processId = Option.flatMap(candidate.ownerToken, persistentBuildOwnerProcessId);
+  if (Option.isSome(processId)) return !isProcessRunning(processId.value);
+  const startedAt = Date.parse(candidate.startedAt);
+  return Number.isFinite(startedAt) && now - startedAt >= CODE_GRAPH_ORPHANED_UNOWNED_BUILD_MINIMUM_AGE_MILLISECONDS;
+}
+
+function persistentBuildOwnerProcessId(ownerToken: string): Option.Option<number> {
+  const separator = ownerToken.indexOf(':');
+  if (separator <= 0) return Option.none();
+  const processId = Number(ownerToken.slice(0, separator));
+  return Number.isSafeInteger(processId) && processId > 0 ? Option.some(processId) : Option.none();
+}
+
+const retireOrphanedIncompleteSnapshot = Effect.fn('codeGraph.retireOrphanedIncompleteSnapshot')(function* (
+  sql: SqlClient.SqlClient,
+  repositoryId: string,
+  candidate: OrphanedIncompleteSnapshotCandidate,
+  now: number,
+) {
+  if (candidate.state === 'retired') return 0;
+  const completedAt = new Date(now).toISOString();
+  const rows = yield* Option.match(candidate.ownerToken, {
+    onNone: () =>
+      sql<{readonly id: string}>`
+        UPDATE snapshots
+        SET state = 'retired', completed_at = COALESCE(completed_at, ${completedAt})
+        WHERE id = ${candidate.id}
+          AND repository_id = ${repositoryId}
+          AND state IN ('building', 'failed')
+          AND NOT EXISTS (
+            SELECT 1 FROM snapshot_build_owners AS owner WHERE owner.snapshot_id = snapshots.id
+          )
+          AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
+          AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+          AND id NOT IN (
+            SELECT base_snapshot_id
+            FROM snapshots
+            WHERE base_snapshot_id IS NOT NULL
+              AND id IN (
+                SELECT snapshot_id FROM active_snapshots
+                UNION
+                SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+              )
+          )
+        RETURNING id
+      `,
+    onSome: ownerToken =>
+      sql<{readonly id: string}>`
+        UPDATE snapshots
+        SET state = 'retired', completed_at = COALESCE(completed_at, ${completedAt})
+        WHERE id = ${candidate.id}
+          AND repository_id = ${repositoryId}
+          AND state IN ('building', 'failed')
+          AND EXISTS (
+            SELECT 1
+            FROM snapshot_build_owners AS owner
+            WHERE owner.snapshot_id = snapshots.id AND owner.owner_token = ${ownerToken}
+          )
+          AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
+          AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+          AND id NOT IN (
+            SELECT base_snapshot_id
+            FROM snapshots
+            WHERE base_snapshot_id IS NOT NULL
+              AND id IN (
+                SELECT snapshot_id FROM active_snapshots
+                UNION
+                SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+              )
+          )
+        RETURNING id
+      `,
+  });
+  return rows.length;
+});
+
+const selectExactReclaimableSnapshot = Effect.fn('codeGraph.selectExactReclaimableSnapshot')(function* (
+  sql: SqlClient.SqlClient,
+  repositoryId: string,
+  snapshotId: string,
+  now: number,
+) {
+  const rows = yield* sql<{readonly id: string}>`
+    SELECT id
+    FROM snapshots AS candidate
+    WHERE candidate.id = ${snapshotId}
+      AND candidate.repository_id = ${repositoryId}
+      AND candidate.state = 'retired'
+      AND candidate.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+      AND candidate.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+      AND candidate.id NOT IN (
+        SELECT base_snapshot_id
+        FROM snapshots
+        WHERE base_snapshot_id IS NOT NULL
+          AND id IN (
+            SELECT snapshot_id FROM active_snapshots
+            UNION
+            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+          )
+      )
+    LIMIT 1
+  `;
+  return rows[0]?.id;
+});
+
+const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteWorktreeSnapshots')(function* (
+  repositoryId: string,
+  worktreeId: string,
+  retainedSnapshotIds: ReadonlySet<string>,
+  writerGate?: CodeGraphWriterGate,
+  onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
+  orphaned: readonly OrphanedIncompleteSnapshotCandidate[] = [],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
+  const retained = [...retainedSnapshotIds];
+  const result = yield* runWrite(
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const retire = () =>
+          retained.length === 0
+            ? sql<{readonly id: string}>`
+                UPDATE snapshots
+                SET state = 'retired', completed_at = COALESCE(completed_at, ${new Date().toISOString()})
+                WHERE repository_id = ${repositoryId}
+                  AND worktree_id = ${worktreeId}
+                  AND state IN ('building', 'failed')
+                  AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
+                  AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+                  AND id NOT IN (
+                    SELECT base_snapshot_id
+                    FROM snapshots
+                    WHERE base_snapshot_id IS NOT NULL
+                      AND id IN (
+                        SELECT snapshot_id FROM active_snapshots
+                        UNION
+                        SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+                      )
+                  )
+                RETURNING id
+              `
+            : sql<{readonly id: string}>`
+                UPDATE snapshots
+                SET state = 'retired', completed_at = COALESCE(completed_at, ${new Date().toISOString()})
+                WHERE repository_id = ${repositoryId}
+                  AND worktree_id = ${worktreeId}
+                  AND state IN ('building', 'failed')
+                  AND NOT (${sql.in('id', retained)})
+                  AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
+                  AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+                  AND id NOT IN (
+                    SELECT base_snapshot_id
+                    FROM snapshots
+                    WHERE base_snapshot_id IS NOT NULL
+                      AND id IN (
+                        SELECT snapshot_id FROM active_snapshots
+                        UNION
+                        SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+                      )
+                  )
+                RETURNING id
+              `;
+        const retired = yield* retire();
+        let orphanedRetired = 0;
+        for (const candidate of orphaned) {
+          orphanedRetired += yield* retireOrphanedIncompleteSnapshot(sql, repositoryId, candidate, now);
+        }
+        // Retention only protects resumable building/failed identities above.
+        // A ready snapshot may have retired the logical or direct sibling that
+        // appears in the next run's candidate set; keeping that already-retired
+        // row would leak its full graph forever across mode switches.
+        const reclaimable = yield* sql<{readonly id: string}>`
+          SELECT id
+          FROM snapshots AS candidate
+          WHERE candidate.repository_id = ${repositoryId}
+            AND candidate.worktree_id = ${worktreeId}
+            AND candidate.state = 'retired'
+            AND candidate.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+            AND candidate.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+            AND candidate.id NOT IN (
+              SELECT base_snapshot_id
+              FROM snapshots
+              WHERE base_snapshot_id IS NOT NULL
+                AND id IN (
+                  SELECT snapshot_id FROM active_snapshots
+                  UNION
+                  SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+                )
+            )
+          ORDER BY id
+        `;
+        const orphanedReclaimable: string[] = [];
+        for (const candidate of orphaned) {
+          const snapshotId = yield* selectExactReclaimableSnapshot(sql, repositoryId, candidate.id, now);
+          if (snapshotId !== undefined) orphanedReclaimable.push(snapshotId);
+        }
+        const reclaimableIds = [...new Set([...reclaimable.map(snapshot => snapshot.id), ...orphanedReclaimable])].sort(
+          compareCodeUnits,
+        );
+        for (const snapshotIds of chunk(reclaimableIds, 100)) {
+          yield* sql`DELETE FROM snapshot_build_owners WHERE ${sql.in('snapshot_id', snapshotIds)}`;
+        }
+        return {reclaimable: reclaimableIds, retired: retired.length + orphanedRetired};
+      }),
+    ),
+  );
+  if (result.reclaimable.length > 0) {
+    yield* reclaimRetiredSnapshotRows(sql, result.reclaimable, runWrite, onProgress);
+  }
+  return result.retired;
+});
+
+/**
+ * Superseded persistent builds can own repository-sized durable tables. Reclaim
+ * their exact identities before the replacement build starts, one transaction
+ * at a time. The writer gate is released between pages so linked worktrees can
+ * make progress; unlike best-effort detached cleanup, this required path waits
+ * through contention until every still-eligible target is gone.
+ */
+const reclaimRetiredSnapshotRows = Effect.fn('codeGraph.reclaimRetiredSnapshotRows')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotIds: readonly string[],
+  writerGate: CodeGraphWriterGate,
+  onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
+) {
+  const targets = [...new Set(snapshotIds)].sort(compareCodeUnits);
+  if (targets.length === 0) return;
+  const targetBatches = [...chunk(targets, 100)];
+  let pagesCompleted = 0;
+  let rowsDeleted = 0;
+  let snapshotsCompleted = 0;
+  yield* onProgress?.({
+    pagesCompleted,
+    rowsDeleted,
+    snapshotsCompleted,
+    snapshotsTotal: targets.length,
+  }) ?? Effect.void;
+  for (let index = 0; index < targetBatches.length; index += 1) {
+    const targetBatch = targetBatches[index]!;
+    for (;;) {
+      const page = yield* writerGate(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targetBatch)));
+      pagesCompleted += 1;
+      rowsDeleted += page.rowsDeleted;
+      if (page.complete) snapshotsCompleted += targetBatch.length;
+      yield* onProgress?.({
+        pagesCompleted,
+        rowsDeleted,
+        snapshotsCompleted,
+        snapshotsTotal: targets.length,
+      }) ?? Effect.void;
+      if (page.complete) break;
+      yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
+    }
+    if (index + 1 < targetBatches.length) {
+      yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
+    }
+  }
+});
+
+const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPage')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotIds: readonly string[],
+) {
+  const now = yield* Clock.currentTimeMillis;
+  const snapshotPlaceholders = snapshotIds.map(() => '?').join(', ');
+  for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
+    const key = `(${spec.keyColumns.join(', ')})`;
+    yield* sql.unsafe(
+      `DELETE FROM ${spec.table}
+       WHERE ${key} IN (
+         SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+         FROM ${spec.table} AS candidate
+         JOIN snapshots AS snapshot ON snapshot.id = candidate.snapshot_id
+         WHERE candidate.snapshot_id IN (${snapshotPlaceholders})
+           AND snapshot.state = 'retired'
+           AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+           AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?)
+           AND snapshot.id NOT IN (
+             SELECT base_snapshot_id
+             FROM snapshots
+             WHERE base_snapshot_id IS NOT NULL
+               AND id IN (
+                 SELECT snapshot_id FROM active_snapshots
+                 UNION
+                 SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?
+               )
+           )
+         ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+         LIMIT ?
+       )`,
+      [...snapshotIds, now, now, spec.batchRows],
+    );
+    const changes = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
+    const deleted = Number(changes[0]?.count ?? 0);
+    if (!Number.isSafeInteger(deleted) || deleted < 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+    }
+    if (deleted > 0) return {complete: false, rowsDeleted: deleted};
+  }
+  yield* sql.unsafe(
+    `DELETE FROM snapshots
+     WHERE id IN (
+       SELECT snapshot.id
+       FROM snapshots AS snapshot
+       WHERE snapshot.id IN (${snapshotPlaceholders})
+         AND snapshot.state = 'retired'
+         AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+         AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?)
+         AND snapshot.id NOT IN (
+           SELECT base_snapshot_id
+           FROM snapshots
+           WHERE base_snapshot_id IS NOT NULL
+             AND id IN (
+               SELECT snapshot_id FROM active_snapshots
+               UNION
+               SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?
+             )
+         )
+       ORDER BY snapshot.id
+       LIMIT 100
+     )`,
+    [...snapshotIds, now, now],
+  );
+  const removed = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
+  const removedCount = Number(removed[0]?.count ?? 0);
+  if (!Number.isSafeInteger(removedCount) || removedCount < 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
+  }
+  const remaining = yield* sql.unsafe<{readonly present: number}>(
+    `SELECT EXISTS(
+       SELECT 1
+       FROM snapshots AS snapshot
+       WHERE snapshot.id IN (${snapshotPlaceholders})
+         AND snapshot.state = 'retired'
+         AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+         AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?)
+         AND snapshot.id NOT IN (
+           SELECT base_snapshot_id
+           FROM snapshots
+           WHERE base_snapshot_id IS NOT NULL
+             AND id IN (
+               SELECT snapshot_id FROM active_snapshots
+               UNION
+               SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?
+             )
+         )
+       LIMIT 1
+     ) AS present`,
+    [...snapshotIds, now, now],
+  );
+  return {complete: Number(remaining[0]?.present ?? 0) === 0, rowsDeleted: removedCount};
 });
 
 const assertPersistentBuildOwner = Effect.fn('codeGraph.assertPersistentBuildOwner')(function* (
@@ -7487,6 +8023,36 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     keyColumns: ['snapshot_id', 'batch_index'],
     maximumBatchRows: 20_000,
     table: 'building_materialization_batches',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'batch_index'],
+    maximumBatchRows: 20_000,
+    table: 'building_analysis_batches',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'language', 'kind'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_analysis_symbol_counts',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'provenance', 'relation', 'confidence', 'endpoint_state'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_analysis_edge_histogram',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'provenance', 'relation'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_analysis_edge_counts',
+  },
+  {
+    batchRows: 1_000,
+    keyColumns: ['snapshot_id'],
+    maximumBatchRows: 1_000,
+    table: 'snapshot_analysis_summary_receipts',
   },
   {
     batchRows: 1_000,

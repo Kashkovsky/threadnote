@@ -101,7 +101,7 @@ describe('code graph cross-process build status', () => {
         const owner = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* owner.progress({completed: 8, phase: 'materializing', reused: 5, total: 20, unit: 'files'});
         const observer = yield* makeCodeGraphBuildReporter(identity, layout);
-        yield* observer.progress({phase: 'waiting'});
+        yield* observer.progress({phase: 'waiting', reason: 'database-writer'});
         return yield* readCodeGraphBuildStatuses(layout);
       }),
     );
@@ -110,6 +110,7 @@ describe('code graph cross-process build status', () => {
     expect(new Set(statuses.map(status => status.buildId)).size).toBe(2);
     expect(statuses.every(status => status.observation.liveness === 'active')).toBe(true);
     expect(statuses.map(status => status.state).sort()).toEqual(['queued', 'running']);
+    expect(statuses.find(status => status.state === 'queued')?.subphase).toBe('database-writer');
     expect(statuses.find(status => status.state === 'running')?.counters).toMatchObject({
       completed: 8,
       reused: 5,
@@ -117,6 +118,49 @@ describe('code graph cross-process build status', () => {
       unit: 'files',
     });
     expect(JSON.stringify(statuses)).not.toContain(home);
+  });
+
+  it('persists privacy-safe superseded-snapshot reclamation progress', async () => {
+    const home = await mkdtemp('threadnote-graph-reclaim-status-');
+    homes.push(home);
+    const status = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = fixtureIdentity(home);
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({
+          completed: 0,
+          pagesCompleted: 0,
+          phase: 'reclaiming',
+          rowsDeleted: 0,
+          total: 1,
+          unit: 'snapshots',
+        });
+        yield* reporter.progress({
+          completed: 0,
+          pagesCompleted: 3,
+          phase: 'reclaiming',
+          rowsDeleted: 15_000,
+          total: 1,
+          unit: 'snapshots',
+        });
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
+      }),
+    );
+
+    expect(status).toMatchObject({
+      counters: {
+        completed: 0,
+        pagesCompleted: 3,
+        rowsDeleted: 15_000,
+        total: 1,
+        unit: 'snapshots',
+      },
+      phase: 'reclaiming',
+      subphase: 'superseded-snapshots',
+    });
+    expect(JSON.stringify(status)).not.toContain(home);
   });
 
   it('persists materialization commits while throttling ordinary steady-state counter writes', async () => {

@@ -94,10 +94,12 @@ function codeGraphJsonProgressSubstage(progress: CodeGraphProgress): string {
       return `${progress.phase}/${progress.activity?.stage ?? 'facts'}`;
     case 'registering':
       return `${progress.phase}/registration`;
+    case 'reclaiming':
+      return `${progress.phase}/superseded-snapshots`;
     case 'scanning':
       return `${progress.phase}/${progress.activity?.stage ?? 'inventory'}`;
     case 'waiting':
-      return `${progress.phase}/repository-lock`;
+      return `${progress.phase}/${progress.reason ?? 'repository-lock'}`;
   }
 }
 
@@ -106,6 +108,7 @@ function codeGraphJsonProgressTerminal(progress: CodeGraphProgress): string | un
     case 'scanning':
     case 'materializing':
     case 'embedding':
+    case 'reclaiming':
       return progress.completed >= progress.total ? progress.phase : undefined;
     case 'resolving':
       return progress.subphase === 'complete' ? `${progress.phase}/${progress.subphase}` : undefined;

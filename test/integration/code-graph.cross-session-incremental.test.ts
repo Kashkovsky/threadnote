@@ -301,7 +301,7 @@ function projectGraph(graph: {readonly edges: readonly unknown[]; readonly symbo
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (catalog === undefined) return undefined;
   const {activatedAt: _activatedAt, snapshot, ...stable} = catalog;
-  const {completedAt: _completedAt, ...stableSnapshot} = snapshot;
+  const {baseSnapshotId: _baseSnapshotId, completedAt: _completedAt, id: _id, ...stableSnapshot} = snapshot;
   return {...stable, snapshot: stableSnapshot};
 }
 

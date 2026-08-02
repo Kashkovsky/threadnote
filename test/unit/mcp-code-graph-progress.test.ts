@@ -104,6 +104,37 @@ describe('MCP code graph indexing progress', () => {
     expect(serialized.length).toBeLessThan(300);
   });
 
+  it('reports the compact reason for a queued graph build', () => {
+    expect(compactCodeGraphMcpProgress({phase: 'waiting', reason: 'database-writer'})).toEqual({
+      phase: 'waiting',
+      reason: 'database-writer',
+      type: 'code-graph-progress',
+      version: 1,
+    });
+  });
+
+  it('keeps required stale-storage reclamation progress concise', () => {
+    expect(
+      compactCodeGraphMcpProgress({
+        completed: 0,
+        pagesCompleted: 42,
+        phase: 'reclaiming',
+        rowsDeleted: 210_000,
+        total: 1,
+        unit: 'snapshots',
+      }),
+    ).toEqual({
+      completed: 0,
+      pagesCompleted: 42,
+      phase: 'reclaiming',
+      rowsDeleted: 210_000,
+      total: 1,
+      type: 'code-graph-progress',
+      unit: 'snapshots',
+      version: 1,
+    });
+  });
+
   it('bounds MCP graph evidence and omits indexing-only symbol fields', () => {
     const result = verboseCodeGraphResult();
     const compact = compactCodeGraphMcpResult(result);

@@ -417,6 +417,8 @@ function renderBuildCounters(status: ObservedCodeGraphBuildStatus): string | und
     counters.resolved === undefined ? undefined : `${counters.resolved} references linked`,
     counters.skipped === undefined ? undefined : `${counters.skipped} skipped`,
     counters.excluded === undefined ? undefined : `${counters.excluded} excluded`,
+    counters.pagesCompleted === undefined ? undefined : `${counters.pagesCompleted} cleanup pages`,
+    counters.rowsDeleted === undefined ? undefined : `${counters.rowsDeleted} rows reclaimed`,
     counters.symbols === undefined ? undefined : `${counters.symbols} symbols`,
     counters.edges === undefined ? undefined : `${counters.edges} edges`,
   ].filter((value): value is string => value !== undefined);
@@ -1002,7 +1004,18 @@ function progressMessage(progress: CodeGraphProgress): string {
     case 'registering':
       return 'Registering repository index';
     case 'waiting':
-      return 'Waiting for another code graph build to finish';
+      switch (progress.reason) {
+        case 'database-writer':
+          return 'Waiting for the code graph database writer';
+        case 'request-lock':
+          return 'Waiting for the matching code graph request';
+        case 'snapshot-build':
+          return 'Waiting for the matching code graph snapshot build';
+        case 'repository-lock':
+          return 'Waiting for another code graph build to finish';
+        default:
+          return 'Waiting for another code graph build to finish';
+      }
     case 'scanning': {
       const summary =
         `Scanning · ${progress.completed}/${progress.total} eligible files · ${progress.accepted} accepted · ` +
@@ -1032,6 +1045,11 @@ function progressMessage(progress: CodeGraphProgress): string {
     }
     case 'materializing':
       return materializationProgressMessage(progress);
+    case 'reclaiming':
+      return (
+        `Reclaiming superseded graph storage · ${progress.completed}/${progress.total} snapshots · ` +
+        `${progress.pagesCompleted.toLocaleString()} pages · ${progress.rowsDeleted.toLocaleString()} rows`
+      );
     case 'resolving':
       if (progress.subphase === 'complete') {
         return `Resolved · ${progress.symbols} symbols · ${progress.edges} relationships · ${progress.resolved} references linked`;
