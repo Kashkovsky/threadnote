@@ -1193,6 +1193,220 @@ describe('code graph full-build materialization store', () => {
     expect(result.cleaned).toEqual({batches: 0, candidates: 0, refs: 0});
   });
 
+  it('resumes compacted reference payloads without durable candidate rows', async () => {
+    const fixture = await materializationFixture();
+    const caller = symbol('compacted-caller', 'compactedCaller', ['typescript:name:compactedCaller']);
+    const unresolved = edge('compacted-edge', caller, 'missingCompactedTarget');
+    const reference: CodeGraphReference = {
+      edgeId: unresolved.id,
+      evidencePath: fixture.file.path,
+      evidenceSpan: unresolved.evidenceSpan,
+      lookupTiers: [
+        ['typescript:name:zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
+        ['typescript:name:alpha'],
+      ],
+      provenance: 'syntactic',
+      relation: 'calls',
+      resolutionDomain: 'typescript',
+      sourceId: caller.id,
+      sourceName: caller.name,
+      targetName: unresolved.targetName,
+    };
+    const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'compacted-reference-resume'};
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+          }),
+        );
+      }),
+    );
+
+    const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:zeta'], ['typescript:name:alpha']];
+    const expectedPayload = JSON.stringify(expectedLookupTiers);
+    const interrupted = new Database(fixture.databasePath, {readonly: true, strict: true});
+    const stored = interrupted
+      .query(
+        `SELECT lookup_tiers_json, candidate_count, candidate_payload_bytes
+         FROM building_references
+         WHERE snapshot_id = ? AND edge_id = ?`,
+      )
+      .get(snapshot.id, unresolved.id) as {
+      readonly candidate_count: number;
+      readonly candidate_payload_bytes: number;
+      readonly lookup_tiers_json: string;
+    };
+    const durableCandidates = interrupted
+      .query('SELECT COUNT(*) AS count FROM building_reference_candidates WHERE snapshot_id = ?')
+      .get(snapshot.id) as {readonly count: number};
+    const receipt = interrupted
+      .query('SELECT candidate_count FROM building_materialization_batches WHERE snapshot_id = ?')
+      .get(snapshot.id) as {readonly candidate_count: number};
+    interrupted.close(false);
+
+    expect(stored).toEqual({
+      candidate_count: 3,
+      candidate_payload_bytes: new TextEncoder().encode(expectedPayload).byteLength,
+      lookup_tiers_json: expectedPayload,
+    });
+    expect(durableCandidates.count).toBe(0);
+    expect(receipt.candidate_count).toBe(3);
+
+    const resumed = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+            const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
+          }),
+        );
+      }),
+    );
+
+    expect(resumed.resolution.resolved).toBe(0);
+    expect(resumed.graph.edges).toEqual([unresolved]);
+  });
+
+  it('keeps compacted candidates isolated across interleaved worktree builds', async () => {
+    const fixture = await materializationFixture();
+    const secondIdentity: RepositoryIdentity = {
+      ...fixture.identity,
+      checkoutId: 'd'.repeat(64),
+      worktreeId: 'x'.repeat(64),
+    };
+    const buildFacts = (suffix: string) => {
+      const caller = symbol(`interleaved-caller-${suffix}`, `interleavedCaller${suffix}`, [
+        `typescript:name:interleavedCaller${suffix}`,
+      ]);
+      const target = symbol(`interleaved-target-${suffix}`, `interleavedTarget${suffix}`, [
+        `typescript:name:interleavedTarget${suffix}`,
+      ]);
+      const unresolved = edge('interleaved-shared-edge', caller, target.name);
+      const reference: CodeGraphReference = {
+        edgeId: unresolved.id,
+        evidencePath: fixture.file.path,
+        evidenceSpan: unresolved.evidenceSpan,
+        lookupTiers: [[`typescript:name:interleavedTarget${suffix}`]],
+        provenance: 'syntactic',
+        relation: 'calls',
+        resolutionDomain: 'typescript',
+        sourceId: caller.id,
+        sourceName: caller.name,
+        targetName: target.name,
+      };
+      return {caller, reference, target, unresolved};
+    };
+    const first = buildFacts('A');
+    const second = buildFacts('B');
+    const firstSnapshot = {...readySnapshot(fixture.identity, 2, 1), id: 'interleaved-worktree-a'};
+    const secondSnapshot = {...readySnapshot(secondIdentity, 2, 1), id: 'interleaved-worktree-b'};
+
+    const stage = (identity: RepositoryIdentity, snapshot: CodeGraphSnapshot, facts: ReturnType<typeof buildFacts>) =>
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(
+                fixture.databasePath,
+                [facts.caller, facts.target],
+                [facts.unresolved],
+                [facts.reference],
+                undefined,
+                0,
+              );
+            }),
+          );
+        }),
+      );
+    await stage(fixture.identity, firstSnapshot, first);
+    await stage(secondIdentity, secondSnapshot, second);
+
+    const staged = new Database(fixture.databasePath, {readonly: true, strict: true});
+    const payloads = staged
+      .query(
+        `SELECT snapshot_id, lookup_tiers_json
+         FROM building_references
+         WHERE edge_id = 'interleaved-shared-edge'
+         ORDER BY snapshot_id`,
+      )
+      .all() as readonly {readonly lookup_tiers_json: string; readonly snapshot_id: string}[];
+    const durableCandidateRows = staged.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get() as {
+      readonly count: number;
+    };
+    staged.close(false);
+    expect(payloads).toEqual([
+      {
+        lookup_tiers_json: '[["typescript:name:interleavedTargetA"]]',
+        snapshot_id: firstSnapshot.id,
+      },
+      {
+        lookup_tiers_json: '[["typescript:name:interleavedTargetB"]]',
+        snapshot_id: secondSnapshot.id,
+      },
+    ]);
+    expect(durableCandidateRows.count).toBe(0);
+
+    const finish = (identity: RepositoryIdentity, snapshot: CodeGraphSnapshot, facts: ReturnType<typeof buildFacts>) =>
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(
+                fixture.databasePath,
+                [facts.caller, facts.target],
+                [facts.unresolved],
+                [facts.reference],
+                undefined,
+                0,
+              );
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, identity, snapshot);
+              return yield* store.loadGraph(fixture.databasePath, snapshot.id);
+            }),
+          );
+        }),
+      );
+    const firstGraph = await finish(fixture.identity, firstSnapshot, first);
+    const secondGraph = await finish(secondIdentity, secondSnapshot, second);
+
+    expect(firstGraph.edges).toHaveLength(1);
+    expect(firstGraph.edges[0]?.targetId).toBe(first.target.id);
+    expect(secondGraph.edges).toHaveLength(1);
+    expect(secondGraph.edges[0]?.targetId).toBe(second.target.id);
+  });
+
   it('resumes committed direct batches across sessions and discards a caught failed build', async () => {
     const fixture = await materializationFixture();
     const original = symbol('resume-original', 'resumeOriginal', ['typescript:name:resumeOriginal']);
@@ -1874,15 +2088,22 @@ describe('code graph full-build materialization store', () => {
               );
               yield* store.resolveStagedReferences(fixture.databasePath);
               yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-              return yield* store.loadGraph(fixture.databasePath, snapshot.id);
+              yield* store.ensureAnalysisSummary(fixture.databasePath, snapshot.id);
+              return {
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                search: yield* store.searchSymbols(fixture.databasePath, snapshot.id, 'parity caller target', 10),
+                summary: Option.getOrThrow(yield* store.loadAnalysisSummary(fixture.databasePath, snapshot.id)),
+              };
             }),
           );
         }),
       );
 
     const [direct, legacy] = await Promise.all([build(directFixture, true), build(legacyFixture, false)]);
-    expect(direct.symbols).toEqual(legacy.symbols);
-    expect(direct.edges).toEqual(legacy.edges);
+    expect(direct.graph.symbols).toEqual(legacy.graph.symbols);
+    expect(direct.graph.edges).toEqual(legacy.graph.edges);
+    expect(direct.search).toEqual(legacy.search);
+    expect(direct.summary.digest).toBe(legacy.summary.digest);
   });
 
   it('reports actual changed and deleted rows while activating a base-backed full overlay', async () => {
@@ -2942,7 +3163,8 @@ function readPersistentResolutionState(databasePath: string, snapshotId: string)
       .all(snapshotId),
     references: database
       .query(
-        `SELECT edge_id, resolution_domain, exported_only, alias_lookup_keys_json
+        `SELECT edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes
          FROM building_references
          WHERE snapshot_id = ?
          ORDER BY edge_id`,

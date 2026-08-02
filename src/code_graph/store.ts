@@ -1946,6 +1946,9 @@ const PERSISTENT_EXTENSION_TABLES = [
       requiredColumn('resolution_domain', 'TEXT'),
       requiredColumn('exported_only', 'INTEGER'),
       requiredColumn('alias_lookup_keys_json', 'TEXT'),
+      requiredColumn('lookup_tiers_json', 'TEXT'),
+      requiredColumn('candidate_count', 'INTEGER'),
+      requiredColumn('candidate_payload_bytes', 'INTEGER'),
     ],
     createSql: `CREATE TABLE IF NOT EXISTS building_references (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -1953,6 +1956,9 @@ const PERSISTENT_EXTENSION_TABLES = [
       resolution_domain TEXT NOT NULL,
       exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
       alias_lookup_keys_json TEXT NOT NULL,
+      lookup_tiers_json TEXT NOT NULL,
+      candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+      candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
       PRIMARY KEY (snapshot_id, edge_id)
     ) WITHOUT ROWID`,
     group: 'build',
@@ -2023,9 +2029,30 @@ const LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT = {
   name: 'snapshot_build_owners',
 } as const satisfies PersistentExtensionTableContract;
 
+const LEGACY_BUILDING_REFERENCES_V3_TABLE = 'legacy_building_references_v3';
+const LEGACY_BUILDING_REFERENCES_V3_CONTRACT = {
+  columns: [
+    requiredColumn('snapshot_id', 'TEXT', 1),
+    requiredColumn('edge_id', 'TEXT', 2),
+    requiredColumn('resolution_domain', 'TEXT'),
+    requiredColumn('exported_only', 'INTEGER'),
+    requiredColumn('alias_lookup_keys_json', 'TEXT'),
+  ],
+  createSql: `CREATE TABLE building_references (
+    snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    edge_id TEXT NOT NULL,
+    resolution_domain TEXT NOT NULL,
+    exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
+    alias_lookup_keys_json TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, edge_id)
+  ) WITHOUT ROWID`,
+  group: 'build',
+  name: 'building_references',
+} as const satisfies PersistentExtensionTableContract;
+
 const REMOVED_BETA30_INDEXES = ['snapshot_symbol_lookup_key', 'terms_lookup', 'terms_symbol'] as const;
 export const CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES = PERSISTENT_EXTENSION_TABLES.map(table => table.name);
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 3;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 4;
 
 function persistentExtensionTableInspection(
   sql: SqlClient.SqlClient,
@@ -2119,6 +2146,35 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           CHECK (expected_batch_count IS NULL OR expected_batch_count >= 0)
         `);
         yield* observe?.('added-materialization-plan') ?? Effect.void;
+      }
+      if (revision[0]?.value === '3') {
+        const legacyReferences = yield* persistentExtensionTableInspection(sql, LEGACY_BUILDING_REFERENCES_V3_CONTRACT);
+        const alreadyRenamed = yield* tableExists(sql, LEGACY_BUILDING_REFERENCES_V3_TABLE);
+        if (legacyReferences.compatible && !alreadyRenamed) {
+          const completedAt = new Date().toISOString();
+          yield* sql`
+            UPDATE snapshots
+            SET state = 'retired',
+                completed_at = COALESCE(completed_at, ${completedAt}),
+                failure_summary = COALESCE(
+                  failure_summary,
+                  'Persistent reference candidate format changed; rebuild required.'
+                )
+            WHERE state IN ('building', 'failed')
+          `;
+          const retired = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
+          if (Number(retired[0]?.count ?? 0) > 0) yield* observe?.('retired-incomplete') ?? Effect.void;
+          // Renaming the old reference surface is metadata-only. Its rows and
+          // the much larger row-per-candidate table remain available to the
+          // bounded maintenance collector instead of being dropped in this
+          // schema transaction.
+          yield* sql.unsafe(`ALTER TABLE building_references RENAME TO ${LEGACY_BUILDING_REFERENCES_V3_TABLE}`);
+          const currentReferences = PERSISTENT_EXTENSION_TABLES.find(table => table.name === 'building_references');
+          if (currentReferences === undefined) {
+            return yield* Effect.fail(new CodeGraphStoreError('Current persistent reference schema is unavailable.'));
+          }
+          yield* sql.unsafe(currentReferences.createSql);
+        }
       }
       const inspections = yield* inspectPersistentExtensionTables(sql);
       const extensionSchemaCompatible = inspections.every(inspection => inspection.exists && inspection.compatible);
@@ -2510,10 +2566,10 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     ) WITHOUT ROWID
   `);
   // Clean full builds write directly into the final snapshot tables while the
-  // snapshot remains `building`. These two resolution surfaces and the batch
-  // receipt are durable so an interrupted build can resume without replaying
-  // already committed multi-gigabyte fact batches. They are unreachable from
-  // graph readers and cascade with an abandoned snapshot during repair.
+  // snapshot remains `building`. Reference lookup tiers live as one compact
+  // payload per reference, while the legacy candidate table remains available
+  // only for bounded cleanup of pre-compaction databases. Batch receipts make
+  // interrupted builds resumable without replaying committed fact batches.
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS building_references (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -2521,6 +2577,9 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       resolution_domain TEXT NOT NULL,
       exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
       alias_lookup_keys_json TEXT NOT NULL,
+      lookup_tiers_json TEXT NOT NULL,
+      candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+      candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
       PRIMARY KEY (snapshot_id, edge_id)
     ) WITHOUT ROWID
   `);
@@ -4137,6 +4196,12 @@ const PERSISTED_FULL_RESOLUTION_DRAIN_SPECS = [
     batchRows: 5_000,
     keyColumns: ['snapshot_id', 'edge_id'],
     maximumBatchRows: 20_000,
+    table: LEGACY_BUILDING_REFERENCES_V3_TABLE,
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'edge_id'],
+    maximumBatchRows: 20_000,
     table: 'building_references',
   },
 ] as const;
@@ -4172,6 +4237,7 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   let totalDeleted = 0;
   for (const spec of COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     let batchRows: number = spec.batchRows;
     let pages = 0;
     for (;;) {
@@ -4212,6 +4278,7 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
   }
   let remaining = false;
   for (const spec of COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     const rows = yield* sql.unsafe<{readonly present: number}>(
       `SELECT EXISTS(
          SELECT 1
@@ -5063,6 +5130,7 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
   const now = yield* Clock.currentTimeMillis;
   const snapshotPlaceholders = snapshotIds.map(() => '?').join(', ');
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     const key = `(${spec.keyColumns.join(', ')})`;
     yield* sql.unsafe(
       `DELETE FROM ${spec.table}
@@ -5639,11 +5707,6 @@ const preparePersistedFullResolutionViews = Effect.fn('codeGraph.preparePersiste
     CREATE TEMP VIEW activation_references AS
     SELECT edge_id, resolution_domain, exported_only, alias_lookup_keys_json
     FROM building_references WHERE snapshot_id = ${snapshotSelector}
-  `);
-  yield* sql.unsafe(`
-    CREATE TEMP VIEW activation_reference_candidates AS
-    SELECT edge_id, tier, lookup_key
-    FROM building_reference_candidates WHERE snapshot_id = ${snapshotSelector}
   `);
 });
 
@@ -6460,6 +6523,26 @@ function analysisEndpointState(sourceId: string | undefined, targetId: string | 
   return sourceId === targetId ? 2 : 0;
 }
 
+interface CompactedReferenceLookupTiers {
+  readonly candidateCount: number;
+  readonly json: string;
+  readonly payloadBytes: number;
+  readonly tiers: readonly (readonly string[])[];
+}
+
+const referenceCandidateEncoder = new TextEncoder();
+
+function compactReferenceLookupTiers(lookupTiers: readonly (readonly string[])[]): CompactedReferenceLookupTiers {
+  const tiers = lookupTiers.map(tier => [...new Set(tier)].sort(compareCodeUnits));
+  const json = JSON.stringify(tiers);
+  return {
+    candidateCount: tiers.reduce((total, tier) => total + tier.length, 0),
+    json,
+    payloadBytes: referenceCandidateEncoder.encode(json).byteLength,
+    tiers,
+  };
+}
+
 const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(function* (
   sql: SqlClient.SqlClient,
   snapshotId: string,
@@ -6634,42 +6717,31 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         sortedBy(references, reference => reference.edgeId),
         ACTIVATION_REFERENCE_BATCH_ROWS,
       )) {
+        const compacted = batch.map(reference => ({
+          candidates: compactReferenceLookupTiers(reference.lookupTiers),
+          reference,
+        }));
         yield* sql.unsafe(
           `INSERT INTO building_references (
-            snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json
-          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
-          batch.flatMap(reference => [
+            snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+            lookup_tiers_json, candidate_count, candidate_payload_bytes
+          ) VALUES ${compacted.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          compacted.flatMap(({candidates, reference}) => [
             snapshotId,
             reference.edgeId,
             reference.resolutionDomain,
             reference.exportedOnly === true ? 1 : 0,
             JSON.stringify(reference.aliasLookupKeys ?? []),
+            candidates.json,
+            candidates.candidateCount,
+            candidates.payloadBytes,
           ]),
         );
         yield* observer('references', batch.length);
-        const candidates = [
-          ...uniqueBy(
-            batch.flatMap(reference =>
-              reference.lookupTiers.flatMap((tier, tierIndex) =>
-                tier.map(key => [snapshotId, reference.edgeId, tierIndex, key] as const),
-              ),
-            ),
-            row => `${row[1]}\0${row[2]}\0${row[3]}`,
-          ),
-        ].sort(
-          (left, right) =>
-            compareCodeUnits(left[1], right[1]) || left[2] - right[2] || compareCodeUnits(left[3], right[3]),
-        );
+        const candidates = compacted.reduce((total, entry) => total + entry.candidates.candidateCount, 0);
         yield* observer('reference-candidates', 0, true);
-        for (const candidateBatch of chunk(candidates, ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS)) {
-          yield* sql.unsafe(
-            `INSERT INTO building_reference_candidates (snapshot_id, edge_id, tier, lookup_key)
-             VALUES ${candidateBatch.map(() => '(?, ?, ?, ?)').join(', ')}`,
-            candidateBatch.flat(),
-          );
-          candidateCount += candidateBatch.length;
-          yield* observer('reference-candidates', candidateBatch.length);
-        }
+        candidateCount += candidates;
+        yield* observer('reference-candidates', candidates);
         const reexports = [
           ...uniqueBy(batch.flatMap(normalizedReexportProvenance), reexport =>
             [reexport.sourcePath, reexport.localName, reexport.targetPath, reexport.importedName].join('\0'),
@@ -6968,12 +7040,137 @@ interface ActivationResolutionRow {
 const RESOLUTION_PAGE_ROWS = 500;
 // A sampled 232k-file graph resolved a 5,000-reference page with roughly 80k
 // candidate matches in less than four seconds once persistent writes bypassed
-// row triggers. Keep connection-private/delta pages conservative, while
-// amortizing durable transaction and pager overhead for clean full builds.
+// row triggers. Keep connection-private/delta pages conservative, while clean
+// full-build pages are independently bounded by reference count, candidate
+// count, and encoded payload bytes before their lookup tiers are decoded.
 const PERSISTENT_FULL_RESOLUTION_PAGE_ROWS = 5_000;
+const PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES = 100_000;
+const PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES = 8 * 1_024 * 1_024;
 const PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS = 256;
 const REEXPORT_CLOSURE_SEED_PAGE_ROWS = 100;
 const REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS = 10_000;
+
+export interface CodeGraphPersistentReferencePageLimits {
+  readonly candidateCount: number;
+  readonly payloadBytes: number;
+  readonly references: number;
+}
+
+interface PersistedFullReferencePageRow {
+  readonly candidate_count: number;
+  readonly candidate_payload_bytes: number;
+  readonly edge_id: string;
+  readonly lookup_tiers_json: string;
+}
+
+interface PersistedFullReferenceTotalsRow {
+  readonly candidate_count: number;
+  readonly count: number;
+  readonly payload_bytes: number;
+}
+
+/** @internal Exposed so property tests can verify all three page bounds. */
+export function codeGraphPersistentReferencePageStatement(
+  snapshotId: string,
+  cursor: string,
+  limits: CodeGraphPersistentReferencePageLimits = {
+    candidateCount: PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
+    payloadBytes: PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
+    references: PERSISTENT_FULL_RESOLUTION_PAGE_ROWS,
+  },
+): CodeGraphSqlQueryStatement {
+  const references = positivePageLimit(limits.references, PERSISTENT_FULL_RESOLUTION_PAGE_ROWS);
+  const candidateCount = positivePageLimit(limits.candidateCount, PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES);
+  const payloadBytes = positivePageLimit(limits.payloadBytes, PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES);
+  return {
+    parameters: [snapshotId, cursor, references, candidateCount, payloadBytes],
+    text: `WITH bounded AS MATERIALIZED (
+        SELECT edge_id, lookup_tiers_json, candidate_count, candidate_payload_bytes
+        FROM building_references
+        WHERE snapshot_id = ? AND edge_id > ?
+        ORDER BY edge_id
+        LIMIT ?
+      ),
+      measured AS (
+        SELECT edge_id, lookup_tiers_json, candidate_count, candidate_payload_bytes,
+          ROW_NUMBER() OVER (ORDER BY edge_id) AS ordinal,
+          SUM(candidate_count) OVER (
+            ORDER BY edge_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS cumulative_candidate_count,
+          SUM(candidate_payload_bytes) OVER (
+            ORDER BY edge_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS cumulative_payload_bytes
+        FROM bounded
+      )
+      SELECT edge_id, lookup_tiers_json, candidate_count, candidate_payload_bytes
+      FROM measured
+      WHERE ordinal = 1
+         OR (cumulative_candidate_count <= ? AND cumulative_payload_bytes <= ?)
+      ORDER BY edge_id`,
+  };
+}
+
+function positivePageLimit(value: number, fallback: number): number {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function persistentFullReferencePageTotal(row: PersistedFullReferenceTotalsRow): number {
+  const references = Number(row.count);
+  if (!Number.isSafeInteger(references) || references <= 0) return 0;
+  const candidates = Math.max(0, Number(row.candidate_count));
+  const payloadBytes = Math.max(0, Number(row.payload_bytes));
+  return Math.max(
+    Math.ceil(references / PERSISTENT_FULL_RESOLUTION_PAGE_ROWS),
+    Math.ceil(candidates / PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES),
+    Math.ceil(payloadBytes / PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES),
+  );
+}
+
+function decodePersistedReferenceCandidateRows(
+  references: readonly PersistedFullReferencePageRow[],
+): Effect.Effect<readonly (readonly [string, string, number])[], CodeGraphStoreError> {
+  return Effect.try({
+    try: () => {
+      const rows: Array<readonly [string, string, number]> = [];
+      for (const reference of references) {
+        if (
+          !Number.isSafeInteger(reference.candidate_count) ||
+          reference.candidate_count < 0 ||
+          !Number.isSafeInteger(reference.candidate_payload_bytes) ||
+          reference.candidate_payload_bytes < 0
+        ) {
+          throw new CodeGraphStoreError('Stored reference candidate metadata is invalid.');
+        }
+        const parsed: unknown = JSON.parse(reference.lookup_tiers_json);
+        if (
+          !Array.isArray(parsed) ||
+          !parsed.every(tier => Array.isArray(tier) && tier.every(lookupKey => typeof lookupKey === 'string'))
+        ) {
+          throw new CodeGraphStoreError('Stored reference lookup tiers are invalid.');
+        }
+        const compacted = compactReferenceLookupTiers(parsed);
+        if (
+          compacted.json !== reference.lookup_tiers_json ||
+          compacted.candidateCount !== reference.candidate_count ||
+          compacted.payloadBytes !== reference.candidate_payload_bytes
+        ) {
+          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
+        }
+        for (const [tier, lookupKeys] of compacted.tiers.entries()) {
+          for (const lookupKey of lookupKeys) rows.push([lookupKey, reference.edge_id, tier]);
+        }
+      }
+      return rows.sort(
+        (left, right) =>
+          compareCodeUnits(left[0], right[0]) || compareCodeUnits(left[1], right[1]) || left[2] - right[2],
+      );
+    },
+    catch: cause =>
+      cause instanceof CodeGraphStoreError
+        ? cause
+        : new CodeGraphStoreError('Stored reference candidate payload could not be decoded.'),
+  });
+}
 
 /** @internal Exposed so regression tests can verify the SQLite access plan. */
 export function codeGraphPersistedDeltaResolutionPageStatement(
@@ -7461,13 +7658,21 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   let transactionMilliseconds = 0;
   const preparationCountStartedAt = yield* Clock.currentTimeMillis;
   const preparationCountRows = persistentFull
-    ? yield* sql<{readonly count: number}>`
-        SELECT COUNT(*) AS count
+    ? yield* sql<PersistedFullReferenceTotalsRow>`
+        SELECT COUNT(*) AS count,
+          COALESCE(SUM(candidate_count), 0) AS candidate_count,
+          COALESCE(SUM(candidate_payload_bytes), 0) AS payload_bytes
         FROM building_references
         WHERE snapshot_id = ${persistentFull.snapshotId}
       `
-    : yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM activation_references`;
+    : yield* sql<PersistedFullReferenceTotalsRow>`
+        SELECT COUNT(*) AS count, 0 AS candidate_count, 0 AS payload_bytes
+        FROM activation_references
+      `;
   const preparationReferencesTotal = Number(preparationCountRows[0]?.count ?? 0);
+  const preparationPageTotal = persistentFull
+    ? persistentFullReferencePageTotal(preparationCountRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0})
+    : Math.ceil(preparationReferencesTotal / pageRows);
   matchingMilliseconds += (yield* Clock.currentTimeMillis) - preparationCountStartedAt;
   const reportPreparation = (aliases: number) =>
     Effect.gen(function* () {
@@ -7478,7 +7683,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         elapsedMilliseconds,
         matchingMilliseconds,
         pageCompleted: 0,
-        pageTotal: Math.ceil(preparationReferencesTotal / pageRows),
+        pageTotal: preparationPageTotal,
         pagesCompleted: 0,
         pass: 1,
         referencesCompleted: 0,
@@ -7504,17 +7709,24 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   for (;;) {
     const countStartedAt = yield* Clock.currentTimeMillis;
     const countRows = persistentFull
-      ? yield* sql<{readonly count: number}>`
-          SELECT COUNT(*) AS count
+      ? yield* sql<PersistedFullReferenceTotalsRow>`
+          SELECT COUNT(*) AS count,
+            COALESCE(SUM(candidate_count), 0) AS candidate_count,
+            COALESCE(SUM(candidate_payload_bytes), 0) AS payload_bytes
           FROM building_references
           WHERE snapshot_id = ${persistentFull.snapshotId}
         `
-      : yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM activation_references`;
+      : yield* sql<PersistedFullReferenceTotalsRow>`
+          SELECT COUNT(*) AS count, 0 AS candidate_count, 0 AS payload_bytes
+          FROM activation_references
+        `;
     const referencesTotal = Number(countRows[0]?.count ?? 0);
     matchingMilliseconds += (yield* Clock.currentTimeMillis) - countStartedAt;
     if (referencesTotal === 0) break;
     const pass = passesCompleted + 1;
-    const pageTotal = Math.ceil(referencesTotal / pageRows);
+    let pageTotal = persistentFull
+      ? persistentFullReferencePageTotal(countRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0})
+      : Math.ceil(referencesTotal / pageRows);
     let cursor = '';
     let pageCompleted = 0;
     let referencesCompleted = 0;
@@ -7537,15 +7749,15 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     yield* Effect.yieldNow;
     for (;;) {
       const pageStartedAt = yield* Clock.currentTimeMillis;
-      const pending = persistentFull
-        ? yield* sql.unsafe<{readonly edge_id: string}>(
-            `SELECT edge_id
-             FROM building_references
-             WHERE snapshot_id = ? AND edge_id > ?
-             ORDER BY edge_id
-             LIMIT ${pageRows}`,
-            [persistentFull.snapshotId, cursor],
-          )
+      let persistentPage = Option.none<readonly PersistedFullReferencePageRow[]>();
+      if (persistentFull) {
+        const statement = codeGraphPersistentReferencePageStatement(persistentFull.snapshotId, cursor);
+        persistentPage = Option.some(
+          yield* sql.unsafe<PersistedFullReferencePageRow>(statement.text, statement.parameters),
+        );
+      }
+      const pending = Option.isSome(persistentPage)
+        ? persistentPage.value
         : yield* sql.unsafe<{readonly edge_id: string}>(
             `SELECT edge_id
              FROM activation_references
@@ -7556,7 +7768,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           );
       if (pending.length === 0) break;
       const batchEnd = pending.at(-1)!.edge_id;
-      if (persistentFull) {
+      if (persistentFull && Option.isSome(persistentPage)) {
         yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
         yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
         yield* sql.unsafe('DELETE FROM activation_resolution_lookup_page');
@@ -7576,15 +7788,14 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           [persistentFull.snapshotId, cursor, batchEnd],
         );
         yield* Effect.yieldNow;
-        yield* sql.unsafe(
-          `INSERT INTO activation_resolution_candidate_page (lookup_key, edge_id, tier)
-           SELECT candidate.lookup_key, candidate.edge_id, candidate.tier
-           FROM activation_resolution_reference_page AS reference
-           CROSS JOIN building_reference_candidates AS candidate
-             ON candidate.snapshot_id = ? AND candidate.edge_id = reference.edge_id
-           ORDER BY candidate.lookup_key, candidate.edge_id, candidate.tier`,
-          [persistentFull.snapshotId],
-        );
+        const candidateRows = yield* decodePersistedReferenceCandidateRows(persistentPage.value);
+        for (const candidateBatch of chunk(candidateRows, ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS)) {
+          yield* sql.unsafe(
+            `INSERT INTO activation_resolution_candidate_page (lookup_key, edge_id, tier)
+             VALUES ${candidateBatch.map(() => '(?, ?, ?)').join(', ')}`,
+            candidateBatch.flat(),
+          );
+        }
         yield* Effect.yieldNow;
         // Aggregate each requested lookup set once. Joining the edge-ordered
         // candidate surface directly to snapshot_symbol_lookup multiplied hot
@@ -7874,11 +8085,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                 [persistentFull.snapshotId],
               );
               yield* adjustPersistedAnalysisResolutionEdges(sql, persistentFull.snapshotId);
-              // Candidate rows are build-only and become unreachable as soon
-              // as their owning reference is removed below. Deleting them in
-              // every resolution transaction rewrites the large edge-ordered
-              // candidate B-tree on the critical path. Leave them for the
-              // existing bounded post-activation collector instead.
+              // The compact candidate payload is owned by this reference row,
+              // so one bounded delete retires both after a successful page.
               yield* sql.unsafe(
                 `DELETE FROM building_references
                  WHERE snapshot_id = ?
@@ -7931,6 +8139,11 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       resolvedInPass += rows.length;
       resolved += rows.length;
       pageCompleted += 1;
+      // Aggregate candidate/byte ceilings normally predict the exact page
+      // count. Pathological alternating payload shapes can require more pages;
+      // grow the denominator before emitting so persisted status remains valid
+      // without a repository-wide boundary pre-scan.
+      pageTotal = Math.max(pageTotal, pageCompleted);
       pagesCompleted += 1;
       referencesCompleted += pending.length;
       referencesExamined += pending.length;
@@ -8115,6 +8328,12 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     batchRows: 5_000,
     keyColumns: ['snapshot_id', 'edge_id'],
     maximumBatchRows: 20_000,
+    table: LEGACY_BUILDING_REFERENCES_V3_TABLE,
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'edge_id'],
+    maximumBatchRows: 20_000,
     table: 'building_references',
   },
   {
@@ -8247,6 +8466,7 @@ const clearSnapshotOwnedRows = Effect.fn('codeGraph.clearSnapshotOwnedRows')(fun
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     let batchRows: number = spec.batchRows;
     for (;;) {
       const startedAt = performance.now();
@@ -8299,6 +8519,7 @@ const pruneRetiredSnapshotRows = Effect.fn('codeGraph.pruneRetiredSnapshotRows')
   yield* runWrite(initializeSchema(sql));
   yield* drainCompletedPersistentBuildRows(sql, snapshotId, runWrite);
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     let batchRows: number = spec.batchRows;
     for (;;) {
       const startedAt = performance.now();

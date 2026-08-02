@@ -199,6 +199,128 @@ describe('code graph persistent schema migration', () => {
     }
   });
 
+  it('retires revision 3 row-per-candidate builds before enabling compact reference payloads', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-candidate-compaction');
+    const interrupted = snapshot(fixture.identity, 'interrupted-before-candidate-compaction');
+    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
+    downgradeReferenceCandidatesToRevision3(fixture.databasePath, interrupted.id);
+
+    const preserved = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+        return yield* store.loadGraph(fixture.databasePath, ready.id);
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      const referenceColumns = database.query('PRAGMA table_info(building_references)').all() as readonly {
+        readonly name: string;
+      }[];
+      expect(preserved.symbols).toHaveLength(1);
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+        state: 'retired',
+      });
+      expect(referenceColumns.map(column => column.name)).toEqual([
+        'snapshot_id',
+        'edge_id',
+        'resolution_domain',
+        'exported_only',
+        'alias_lookup_keys_json',
+        'lookup_tiers_json',
+        'candidate_count',
+        'candidate_payload_bytes',
+      ]);
+      expect(database.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get()).toEqual({count: 1});
+      expect(database.query('SELECT COUNT(*) AS count FROM legacy_building_references_v3').get()).toEqual({count: 1});
+      expect(
+        database.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
+      ).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.pruneRetiredSnapshots(fixture.databasePath);
+      }),
+    );
+    const cleaned = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(cleaned.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get()).toEqual({count: 0});
+      expect(cleaned.query('SELECT COUNT(*) AS count FROM legacy_building_references_v3').get()).toEqual({count: 0});
+      expect(cleaned.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toBeNull();
+    } finally {
+      cleaned.close(false);
+    }
+  });
+
+  it('rolls back the revision 3 candidate-table rename when schema publication faults', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-candidate-compaction-fault');
+    const interrupted = snapshot(fixture.identity, 'interrupted-before-candidate-compaction-fault');
+    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
+    downgradeReferenceCandidatesToRevision3(fixture.databasePath, interrupted.id);
+    const beforeFailure = readMigrationState(fixture.databasePath);
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+            onPersistentSchemaMigrationPhase: phase =>
+              phase === 'created-extensions'
+                ? Effect.die(new Error('fault after compact reference schema creation'))
+                : Effect.void,
+          });
+        }),
+      ),
+    ).rejects.toThrow('fault after compact reference schema creation');
+
+    const interruptedDatabase = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(readMigrationState(fixture.databasePath)).toEqual(beforeFailure);
+      expect(interruptedDatabase.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+        state: 'building',
+      });
+      expect(
+        interruptedDatabase
+          .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+          .get(),
+      ).toEqual({value: '3'});
+      expect(
+        interruptedDatabase
+          .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'legacy_building_references_v3'")
+          .get(),
+      ).toEqual({count: 0});
+      expect(interruptedDatabase.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get()).toEqual({
+        count: 1,
+      });
+    } finally {
+      interruptedDatabase.close(false);
+    }
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+    const healed = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(healed.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({state: 'retired'});
+      expect(
+        healed.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
+      ).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+    } finally {
+      healed.close(false);
+    }
+  });
+
   it('atomically rolls back an interrupted additive materialization-plan migration', async () => {
     const fixture = await migrationFixture();
     const ready = snapshot(fixture.identity, 'ready-before-plan-fault');
@@ -644,8 +766,9 @@ function downgradeBuildOwnerPlanColumnOnly(databasePath: string, interruptedSnap
     database
       .query(
         `INSERT INTO building_references (
-           snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json
-         ) VALUES (?, 'retained-edge', 'typescript', 0, '[]')`,
+           snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes
+         ) VALUES (?, 'retained-edge', 'typescript', 0, '[]', '[["typescript:name:retained"]]', 1, 30)`,
       )
       .run(interruptedSnapshotId);
     database
@@ -654,6 +777,45 @@ function downgradeBuildOwnerPlanColumnOnly(databasePath: string, interruptedSnap
          VALUES (?, 'retained-edge', 0, 'typescript:name:retained')`,
       )
       .run(interruptedSnapshotId);
+    database.exec('COMMIT');
+  } catch (error) {
+    if (database.inTransaction) database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeReferenceCandidatesToRevision3(databasePath: string, interruptedSnapshotId: string) {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    database.exec('BEGIN IMMEDIATE');
+    database.exec(`
+      DROP TABLE building_references;
+      CREATE TABLE building_references (
+        snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+        edge_id TEXT NOT NULL,
+        resolution_domain TEXT NOT NULL,
+        exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
+        alias_lookup_keys_json TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, edge_id)
+      ) WITHOUT ROWID;
+    `);
+    database
+      .query(
+        `INSERT INTO building_references (
+           snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json
+         ) VALUES (?, 'revision-3-edge', 'typescript', 0, '[]')`,
+      )
+      .run(interruptedSnapshotId);
+    database
+      .query(
+        `INSERT INTO building_reference_candidates (snapshot_id, edge_id, tier, lookup_key)
+         VALUES (?, 'revision-3-edge', 0, 'typescript:name:revision3')`,
+      )
+      .run(interruptedSnapshotId);
+    database.query("UPDATE schema_metadata SET value = '3' WHERE key = 'persistent_extension_schema_revision'").run();
     database.exec('COMMIT');
   } catch (error) {
     if (database.inTransaction) database.exec('ROLLBACK');
