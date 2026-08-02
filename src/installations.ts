@@ -1,4 +1,4 @@
-import {Clock, Console, Crypto, Effect, FileSystem, Path} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
@@ -18,6 +18,7 @@ const INSTALLATION_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: 10 * 60_000,
 } as const;
 const PROCESS_LEASE_HEARTBEAT_MILLISECONDS = 30_000;
+const PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT = 1_024;
 
 interface ActiveRelease {
   readonly releaseRoot: string;
@@ -50,11 +51,34 @@ export interface StandalonePromotionFaultInjection {
   readonly afterStep?: (step: StandalonePromotionStep) => Effect.Effect<void, unknown>;
 }
 
-interface ProcessLease {
+interface ProcessLeaseFile {
+  readonly parentProcessId: Option.Option<number>;
   readonly processId: number;
-  readonly processStartIdentity?: string;
+  readonly processStartIdentity: Option.Option<string>;
+  readonly startedAt: Option.Option<string>;
   readonly token: string;
   readonly version: string;
+}
+
+/**
+ * Privacy-safe process evidence retained by standalone releases predating the
+ * runtime process registry. Paths and ownership tokens intentionally never
+ * leave the installation module.
+ */
+export interface StandaloneProcessLease {
+  readonly parentProcessId: Option.Option<number>;
+  readonly processId: number;
+  readonly startedAt: Option.Option<string>;
+  readonly version: string;
+}
+
+export interface StandaloneProcessLeaseDiagnostics {
+  readonly leases: readonly StandaloneProcessLease[];
+  readonly truncated: boolean;
+}
+
+interface ObservedStandaloneProcessLease extends StandaloneProcessLease {
+  readonly identityVerified: boolean;
 }
 
 export function installationRoot(path: Path.Path, system: SystemInfoShape): string {
@@ -322,6 +346,7 @@ export function withStandaloneProcessLease<A, E, R>(effect: Effect.Effect<A, E, 
         `${JSON.stringify(
           {
             executable: system.executablePath,
+            parentProcessId: process.ppid,
             processId: system.processId,
             processStartIdentity,
             startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
@@ -591,42 +616,102 @@ const writePrivateJsonAtomically = Effect.fn('installations.writePrivateJsonAtom
   }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
 });
 
+export const readLiveStandaloneProcessLeases = Effect.fn('installations.readLiveProcessLeases')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const scan = yield* liveStandaloneProcessLeases(
+    fs,
+    path,
+    installationRoot(path, system),
+    system,
+    Option.some(PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT),
+  );
+  const unique = new Map<number, StandaloneProcessLease>();
+  // Pruning remains conservative when identity lookup is unavailable, but a
+  // user-facing diagnostic must not label an unrelated reused PID as
+  // Threadnote without a verified start identity.
+  for (const lease of scan.leases
+    .filter(lease => lease.identityVerified)
+    .sort((left, right) => compareVersions(right.version, left.version))) {
+    if (!unique.has(lease.processId)) unique.set(lease.processId, lease);
+  }
+  return {
+    leases: [...unique.values()].sort((left, right) => left.processId - right.processId),
+    truncated: scan.truncated,
+  } satisfies StandaloneProcessLeaseDiagnostics;
+});
+
 const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersions')(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,
   installRoot: string,
   system: SystemInfoShape,
 ) {
+  const scan = yield* liveStandaloneProcessLeases(fs, path, installRoot, system, Option.none());
+  return [...new Set(scan.leases.map(lease => lease.version))];
+});
+
+const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  installRoot: string,
+  system: SystemInfoShape,
+  scanLimit: Option.Option<number>,
+) {
   const leasesRoot = path.join(installRoot, 'leases');
-  if (!(yield* fs.exists(leasesRoot))) return [] as readonly string[];
-  const live = new Set<string>();
-  for (const version of yield* fs.readDirectory(leasesRoot)) {
+  if (!(yield* fs.exists(leasesRoot))) {
+    return {leases: [] as readonly ObservedStandaloneProcessLease[], truncated: false};
+  }
+  const live: ObservedStandaloneProcessLease[] = [];
+  let inspected = 0;
+  let truncated = false;
+  scan: for (const version of (yield* fs
+    .readDirectory(leasesRoot)
+    .pipe(Effect.catch(() => Effect.succeed([])))).sort()) {
     if (!RELEASE_VERSION_PATTERN.test(version)) continue;
     const versionRoot = path.join(leasesRoot, version);
-    for (const name of yield* fs.readDirectory(versionRoot).pipe(Effect.catch(() => Effect.succeed([])))) {
+    for (const name of (yield* fs.readDirectory(versionRoot).pipe(Effect.catch(() => Effect.succeed([])))).sort()) {
+      if (Option.isSome(scanLimit) && inspected >= scanLimit.value) {
+        truncated = true;
+        break scan;
+      }
+      inspected += 1;
       const processId = Number(/^([1-9]\d*)\.json$/.exec(name)?.[1]);
       const leasePath = path.join(versionRoot, name);
       const lease = yield* readProcessLease(fs, leasePath);
       const processIsRunning =
-        lease?.processId === processId &&
-        lease.version === version &&
+        Option.isSome(lease) &&
+        lease.value.processId === processId &&
+        lease.value.version === version &&
         Number.isSafeInteger(processId) &&
         processId > 0 &&
         system.isProcessRunning(processId);
       const currentProcessIdentity =
-        processIsRunning && lease?.processStartIdentity ? yield* system.processStartIdentity(processId) : undefined;
+        processIsRunning && Option.isSome(lease) && Option.isSome(lease.value.processStartIdentity)
+          ? yield* system.processStartIdentity(processId).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          : undefined;
       const identityMatches =
-        !lease?.processStartIdentity ||
-        currentProcessIdentity === undefined ||
-        currentProcessIdentity === lease.processStartIdentity;
-      if (processIsRunning && identityMatches) {
-        live.add(version);
+        Option.isSome(lease) &&
+        (Option.isNone(lease.value.processStartIdentity) ||
+          currentProcessIdentity === undefined ||
+          currentProcessIdentity === lease.value.processStartIdentity.value);
+      if (processIsRunning && identityMatches && Option.isSome(lease)) {
+        live.push({
+          identityVerified:
+            Option.isSome(lease.value.processStartIdentity) &&
+            currentProcessIdentity === lease.value.processStartIdentity.value,
+          parentProcessId: lease.value.parentProcessId,
+          processId,
+          startedAt: lease.value.startedAt,
+          version,
+        });
       } else {
         yield* fs.remove(leasePath, {force: true}).pipe(Effect.catch(() => Effect.void));
       }
     }
   }
-  return [...live];
+  return {leases: live, truncated};
 });
 
 function refreshProcessLease(fs: FileSystem.FileSystem, leasePath: string, token: string) {
@@ -648,7 +733,10 @@ function removeOwnedLease(fs: FileSystem.FileSystem, leasePath: string, token: s
 }
 
 function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string) {
-  return readProcessLease(fs, leasePath).pipe(Effect.map(lease => lease?.token));
+  return readProcessLease(fs, leasePath).pipe(
+    Effect.map(Option.map(lease => lease.token)),
+    Effect.map(Option.getOrUndefined),
+  );
 }
 
 function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
@@ -671,16 +759,29 @@ function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
           value.processStartIdentity !== undefined &&
           typeof value.processStartIdentity !== 'string')
       ) {
-        return undefined;
+        return Option.none<ProcessLeaseFile>();
       }
-      return {
+      const parentProcessId =
+        'parentProcessId' in value && Number.isSafeInteger(value.parentProcessId) && Number(value.parentProcessId) >= 0
+          ? Option.some(Number(value.parentProcessId))
+          : Option.none<number>();
+      const processStartIdentity =
+        'processStartIdentity' in value && typeof value.processStartIdentity === 'string'
+          ? Option.some(value.processStartIdentity)
+          : Option.none<string>();
+      const startedAt =
+        'startedAt' in value && typeof value.startedAt === 'string' && Number.isFinite(Date.parse(value.startedAt))
+          ? Option.some(value.startedAt)
+          : Option.none<string>();
+      return Option.some({
+        parentProcessId,
         processId: value.processId,
-        processStartIdentity:
-          'processStartIdentity' in value ? (value.processStartIdentity as string | undefined) : undefined,
+        processStartIdentity,
+        startedAt,
         token: value.token,
         version: value.version,
-      } satisfies ProcessLease;
+      } satisfies ProcessLeaseFile);
     }),
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.catch(() => Effect.succeed(Option.none<ProcessLeaseFile>())),
   );
 }

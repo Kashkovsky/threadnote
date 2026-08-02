@@ -18,6 +18,7 @@ import {getJsonEffect, HttpService} from './effect/http.js';
 import {sha256FileHex} from './effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {
+  activeInstalledVersion,
   activateStandaloneRelease,
   installationRoot,
   promoteStandaloneReleaseDirectory,
@@ -58,6 +59,7 @@ const POST_UPDATE_LOCK_OPTIONS = {
 interface UpdateInfo {
   readonly channel: UpdateChannel;
   readonly currentVersion: string;
+  readonly installedVersion: string | undefined;
   readonly isChannelSwitch: boolean;
   readonly isUpdateAvailable: boolean;
   readonly isVersionUpgrade: boolean;
@@ -123,6 +125,7 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
     const info = yield* getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: false,
+      preferInstalledVersion: false,
       source,
       requestedChannel: undefined,
     });
@@ -145,6 +148,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: true,
+      preferInstalledVersion: true,
       source,
       requestedChannel,
     }),
@@ -193,6 +197,14 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   if (!info.isUpdateAvailable && options.force !== true) {
+    if (info.installedVersion !== undefined) {
+      const path = yield* Path.Path;
+      const activeReleaseRoot = path.join(installationRoot(path, system), 'versions', info.installedVersion);
+      yield* withStandaloneInstallationLock(
+        installCommandShim(options.dryRun === true, activeReleaseRoot),
+        options.dryRun === true,
+      );
+    }
     yield* Console.log(success('Threadnote is up to date.'));
     return;
   }
@@ -627,12 +639,18 @@ function getUpdateInfo(
   options: {
     readonly allowCacheWrite: boolean;
     readonly preferFresh: boolean;
+    readonly preferInstalledVersion: boolean;
     readonly source: string;
     readonly requestedChannel: UpdateChannel | undefined;
   },
 ) {
   return Effect.gen(function* () {
-    const currentVersion = yield* currentPackageVersion();
+    const packageVersion = yield* currentPackageVersion();
+    const installedVersion =
+      options.preferInstalledVersion && !requiresFreshStandaloneInstall(packageVersion)
+        ? yield* activeInstalledVersion()
+        : undefined;
+    const currentVersion = installedVersion ?? packageVersion;
     const inferredChannel = selectUpdateChannel(currentVersion);
     const channel = selectUpdateChannel(currentVersion, options.requestedChannel);
     const cached = options.preferFresh ? undefined : yield* readFreshCache(config, options.source, channel);
@@ -650,6 +668,7 @@ function getUpdateInfo(
     return {
       channel,
       currentVersion,
+      installedVersion,
       isChannelSwitch,
       isUpdateAvailable: latestVersion !== undefined && (isChannelSwitch || isVersionUpgrade),
       isVersionUpgrade,

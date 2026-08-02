@@ -1,6 +1,7 @@
 import {Console, Effect, Fiber, FileSystem, Option, Path, Semaphore} from 'effect';
 import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
+import {readLiveStandaloneProcessLeases} from './installations.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;
@@ -10,15 +11,23 @@ const PROCESS_MEMORY_QUERY_TIMEOUT_MS = 5_000;
 const SAFE_OPERATION = /^[a-z][a-z0-9-]{0,47}$/;
 
 export type ThreadnoteProcessRole =
-  'cli' | 'graph-builder' | 'graph-parser-worker' | 'graph-waiter' | 'local-model-worker' | 'manager' | 'mcp';
+  | 'cli'
+  | 'graph-builder'
+  | 'graph-parser-worker'
+  | 'graph-waiter'
+  | 'legacy'
+  | 'local-model-worker'
+  | 'manager'
+  | 'mcp';
+export type RegisteredThreadnoteProcessRole = Exclude<ThreadnoteProcessRole, 'legacy'>;
 
 interface ProcessRegistrationFile {
-  readonly baseRole: ThreadnoteProcessRole;
+  readonly baseRole: RegisteredThreadnoteProcessRole;
   readonly currentOperation?: string;
   readonly parentProcessId: number;
   readonly processId: number;
   readonly processStartIdentity?: string;
-  readonly role: ThreadnoteProcessRole;
+  readonly role: RegisteredThreadnoteProcessRole;
   readonly schemaVersion: typeof PROCESS_DIAGNOSTICS_SCHEMA_VERSION;
   readonly startedAt: string;
   readonly token: string;
@@ -31,6 +40,7 @@ export interface ThreadnoteProcessDiagnostic {
   readonly parentProcessId: number;
   readonly parentRole?: ThreadnoteProcessRole;
   readonly processId: number;
+  readonly releaseVersion?: string;
   readonly role: ThreadnoteProcessRole;
   readonly rssBytes?: number;
   readonly startedAt: string;
@@ -44,7 +54,7 @@ export interface ThreadnoteProcessDiagnostics {
 
 interface ActiveProcessRegistration {
   readonly baseOperation?: string;
-  readonly baseRole: ThreadnoteProcessRole;
+  readonly baseRole: RegisteredThreadnoteProcessRole;
   readonly directory: string;
   readonly file: string;
   readonly fileSystem: FileSystem.FileSystem;
@@ -62,7 +72,7 @@ interface ActiveProcessRegistration {
 
 interface ProcessActivity {
   readonly operation: string;
-  readonly role: ThreadnoteProcessRole;
+  readonly role: RegisteredThreadnoteProcessRole;
   readonly sequence: number;
 }
 
@@ -96,7 +106,7 @@ export const threadnoteHomeForProcess = Effect.fn('processDiagnostics.home')(fun
 
 export function withThreadnoteProcessRegistration<A, E, R>(
   home: string,
-  baseRole: ThreadnoteProcessRole,
+  baseRole: RegisteredThreadnoteProcessRole,
   effect: Effect.Effect<A, E, R>,
   baseOperation?: string,
 ): Effect.Effect<A, E, R | SystemInfo | FileSystem.FileSystem | Path.Path> {
@@ -108,7 +118,7 @@ export function withThreadnoteProcessRegistration<A, E, R>(
 }
 
 export function withThreadnoteProcessActivity<A, E, R>(
-  role: ThreadnoteProcessRole,
+  role: RegisteredThreadnoteProcessRole,
   operation: string,
   effect: Effect.Effect<A, E, R>,
   options: ThreadnoteProcessActivityOptions = {},
@@ -175,20 +185,33 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
     live.push(value);
   }
 
-  const memoryByProcess = new Map(
-    processMemoryBytes(
-      live.map(value => value.processId),
-      system.platform,
-      system.environment(),
-    ),
+  // Standalone releases before the runtime registry still retain a private,
+  // PID/start-identity-bound lease so updates do not delete their executable.
+  // Merge only that bounded installation evidence; never inspect or expose
+  // arbitrary process command lines, which may contain memory text or paths.
+  const releaseLeaseDiagnostics = yield* readLiveStandaloneProcessLeases().pipe(
+    Effect.catch(() => Effect.succeed({leases: [] as const, truncated: false})),
   );
-  if (live.some(value => value.processId === system.processId) && !memoryByProcess.has(system.processId)) {
-    const rssBytes = system.memoryUsage().rss;
-    if (Number.isSafeInteger(rssBytes) && rssBytes >= 0) memoryByProcess.set(system.processId, rssBytes);
-  }
-  const roleByProcess = new Map(live.map(value => [value.processId, value.role] as const));
+  const releaseLeases = releaseLeaseDiagnostics.leases;
+  const releaseLeaseByProcess = new Map(releaseLeases.map(lease => [lease.processId, lease] as const));
+  const registeredProcessIds = new Set(live.map(value => value.processId));
   const now = Date.now();
-  const sorted = live
+  const legacy = releaseLeases
+    .filter(lease => !registeredProcessIds.has(lease.processId))
+    .map(lease => {
+      const startedAt = Option.getOrElse(lease.startedAt, () => new Date(now).toISOString());
+      return {
+        ageMilliseconds: Math.max(0, now - Date.parse(startedAt)),
+        parentProcessId: Option.getOrElse(lease.parentProcessId, () => 0),
+        processId: lease.processId,
+        releaseVersion: lease.version,
+        role: 'legacy' as const,
+        startedAt,
+      };
+    });
+
+  const roleByProcess = new Map(live.map(value => [value.processId, value.role] as const));
+  const current = live
     .sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.processId - right.processId)
     .map(value => ({
       ageMilliseconds: Math.max(0, now - Date.parse(value.startedAt)),
@@ -198,15 +221,41 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
         ? {}
         : {parentRole: roleByProcess.get(value.parentProcessId)}),
       processId: value.processId,
+      ...(releaseLeaseByProcess.get(value.processId) === undefined
+        ? {}
+        : {releaseVersion: releaseLeaseByProcess.get(value.processId)!.version}),
       role: value.role,
-      ...(memoryByProcess.get(value.processId) === undefined ? {} : {rssBytes: memoryByProcess.get(value.processId)}),
       startedAt: value.startedAt,
-    }))
-    .slice(0, PROCESS_DIAGNOSTICS_LIMIT);
+    }));
+  const candidates = [...current, ...legacy].sort(
+    (left, right) => left.startedAt.localeCompare(right.startedAt) || left.processId - right.processId,
+  );
+  // Bound the OS memory query to the same privacy-safe rows the command can
+  // return. A damaged private lease tree must not turn diagnostics into an
+  // unbounded command line or PowerShell query.
+  const selected = candidates.slice(0, PROCESS_DIAGNOSTICS_LIMIT);
+  const memoryByProcess = new Map(
+    processMemoryBytes(
+      selected.map(value => value.processId),
+      system.platform,
+      system.environment(),
+    ),
+  );
+  if (selected.some(value => value.processId === system.processId) && !memoryByProcess.has(system.processId)) {
+    const rssBytes = system.memoryUsage().rss;
+    if (Number.isSafeInteger(rssBytes) && rssBytes >= 0) memoryByProcess.set(system.processId, rssBytes);
+  }
+  const sorted = selected.map(value => ({
+    ...value,
+    ...(memoryByProcess.get(value.processId) === undefined ? {} : {rssBytes: memoryByProcess.get(value.processId)}),
+  }));
   return {
     processes: sorted,
     schemaVersion: PROCESS_DIAGNOSTICS_SCHEMA_VERSION,
-    truncated: live.length > PROCESS_DIAGNOSTICS_LIMIT || candidateNames.length < eligibleNames.length,
+    truncated:
+      releaseLeaseDiagnostics.truncated ||
+      live.length + legacy.length > PROCESS_DIAGNOSTICS_LIMIT ||
+      candidateNames.length < eligibleNames.length,
   } satisfies ThreadnoteProcessDiagnostics;
 });
 
@@ -228,23 +277,53 @@ export const runProcessDiagnostics = Effect.fn('processDiagnostics.run')(functio
     yield* Console.log('No live Threadnote processes found.');
     return;
   }
-  yield* Console.log('PID\tPPID\tROLE\tAGE\tRSS\tOPERATION');
+  yield* Console.log('PID\tPPID\tROLE\tVERSION\tAGE\tRSS\tOPERATION');
   for (const process of diagnostics.processes) {
     yield* Console.log(
       [
         process.processId,
-        process.parentProcessId,
+        process.parentProcessId === 0 ? '-' : process.parentProcessId,
         process.role,
+        process.releaseVersion ?? '-',
         formatDuration(process.ageMilliseconds),
         process.rssBytes === undefined ? 'unknown' : formatBytes(process.rssBytes),
         process.currentOperation ?? '-',
       ].join('\t'),
     );
   }
+  if (diagnostics.processes.some(process => process.role === 'legacy')) {
+    yield* Console.log(
+      'Legacy entries predate runtime registration; restart their owning agent sessions to retire old releases safely.',
+    );
+  }
   if (diagnostics.truncated) yield* Console.log(`Showing the first ${PROCESS_DIAGNOSTICS_LIMIT} live processes.`);
 });
 
-function registerThreadnoteProcess(home: string, baseRole: ThreadnoteProcessRole, baseOperation?: string) {
+export const legacyProcessDoctorCheck = Effect.fn('processDiagnostics.doctorCheck')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const diagnostics = yield* readThreadnoteProcessDiagnostics(config);
+  const legacy = diagnostics.processes.filter(process => process.role === 'legacy');
+  if (legacy.length === 0) {
+    return {
+      detail: 'no unregistered standalone processes detected',
+      name: 'standalone process lifecycle',
+      status: 'ok' as const,
+    };
+  }
+  const versions = [...new Set(legacy.flatMap(process => (process.releaseVersion ? [process.releaseVersion] : [])))]
+    .sort()
+    .join(', ');
+  return {
+    detail:
+      `${legacy.length} live pre-registry process(es)${versions ? ` from ${versions}` : ''}; ` +
+      'restart their owning agent sessions to retire old releases safely',
+    name: 'standalone process lifecycle',
+    status: 'warn' as const,
+  };
+});
+
+function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteProcessRole, baseOperation?: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -409,8 +488,8 @@ function isProcessRegistrationFile(value: unknown): value is ProcessRegistration
   const candidate = value as Partial<ProcessRegistrationFile>;
   return (
     candidate.schemaVersion === PROCESS_DIAGNOSTICS_SCHEMA_VERSION &&
-    isThreadnoteProcessRole(candidate.baseRole) &&
-    isThreadnoteProcessRole(candidate.role) &&
+    isRegisteredThreadnoteProcessRole(candidate.baseRole) &&
+    isRegisteredThreadnoteProcessRole(candidate.role) &&
     Number.isSafeInteger(candidate.processId) &&
     (candidate.processId ?? 0) > 0 &&
     Number.isSafeInteger(candidate.parentProcessId) &&
@@ -426,7 +505,7 @@ function isProcessRegistrationFile(value: unknown): value is ProcessRegistration
   );
 }
 
-function isThreadnoteProcessRole(value: unknown): value is ThreadnoteProcessRole {
+function isRegisteredThreadnoteProcessRole(value: unknown): value is RegisteredThreadnoteProcessRole {
   return (
     value === 'cli' ||
     value === 'graph-builder' ||

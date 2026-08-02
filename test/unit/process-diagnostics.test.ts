@@ -5,23 +5,126 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
-import {afterEach, describe} from 'vitest';
+import {afterEach, beforeEach, describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
   readThreadnoteProcessDiagnostics,
+  legacyProcessDoctorCheck,
   threadnoteHomeForProcess,
   withThreadnoteProcessActivity,
   withThreadnoteProcessRegistration,
 } from '../../src/process_diagnostics.js';
 
 let temporaryRoot: string | undefined;
+let installationTemporaryRoot: string | undefined;
+let previousInstallationRoot: string | undefined;
+
+beforeEach(async () => {
+  previousInstallationRoot = process.env.THREADNOTE_INSTALL_ROOT;
+  installationTemporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-process-installation-'));
+  process.env.THREADNOTE_INSTALL_ROOT = installationTemporaryRoot;
+});
 
 afterEach(async () => {
   if (temporaryRoot) await rm(temporaryRoot, {force: true, recursive: true});
+  if (installationTemporaryRoot) await rm(installationTemporaryRoot, {force: true, recursive: true});
+  if (previousInstallationRoot === undefined) delete process.env.THREADNOTE_INSTALL_ROOT;
+  else process.env.THREADNOTE_INSTALL_ROOT = previousInstallationRoot;
   temporaryRoot = undefined;
+  installationTemporaryRoot = undefined;
+  previousInstallationRoot = undefined;
 });
 
 describe('process diagnostics', () => {
+  it.effect('reports a validated pre-registry release lease without exposing its private fields', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-legacy-process-home-'});
+      const legacyProcessId = 1_234_567;
+      const legacyVersion = '4.0.0-beta.19';
+      const leasePath = join(installationTemporaryRoot!, 'leases', legacyVersion, `${legacyProcessId}.json`);
+      yield* fileSystem.makeDirectory(join(installationTemporaryRoot!, 'leases', legacyVersion), {recursive: true});
+      yield* fileSystem.writeFileString(
+        leasePath,
+        `${JSON.stringify({
+          executable: '/private/repository/path/threadnote',
+          parentProcessId: 7654,
+          processId: legacyProcessId,
+          processStartIdentity: 'matching-process-identity',
+          startedAt: '2026-08-01T00:00:00.000Z',
+          token: 'private-ownership-token',
+          version: legacyVersion,
+        })}\n`,
+      );
+      const olderVersion = '4.0.0-beta.18';
+      const olderLeaseDirectory = join(installationTemporaryRoot!, 'leases', olderVersion);
+      yield* fileSystem.makeDirectory(olderLeaseDirectory, {recursive: true});
+      yield* fileSystem.writeFileString(
+        join(olderLeaseDirectory, `${legacyProcessId}.json`),
+        `${JSON.stringify({
+          processId: legacyProcessId,
+          processStartIdentity: 'matching-process-identity',
+          startedAt: '2026-08-01T00:00:00.000Z',
+          token: 'older-private-ownership-token',
+          version: olderVersion,
+        })}\n`,
+      );
+      const forgedRegistryPath = join(home, 'runtime', 'processes', `${legacyProcessId}.json`);
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(
+        forgedRegistryPath,
+        `${JSON.stringify({
+          baseRole: 'legacy',
+          parentProcessId: 7654,
+          processId: legacyProcessId,
+          role: 'legacy',
+          schemaVersion: 1,
+          startedAt: '2026-08-01T00:00:00.000Z',
+          token: 'not-a-valid-current-registry-role',
+          updatedAt: '2026-08-01T00:00:00.000Z',
+        })}\n`,
+      );
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: processId => processId === legacyProcessId,
+        processStartIdentity: processId =>
+          Effect.succeed(processId === legacyProcessId ? 'matching-process-identity' : undefined),
+      });
+
+      const diagnostics = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      const doctor = yield* legacyProcessDoctorCheck({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      expect(diagnostics.processes).toEqual([
+        expect.objectContaining({
+          parentProcessId: 7654,
+          processId: legacyProcessId,
+          releaseVersion: legacyVersion,
+          role: 'legacy',
+        }),
+      ]);
+      expect(JSON.stringify(diagnostics)).not.toContain('private-ownership-token');
+      expect(JSON.stringify(diagnostics)).not.toContain('/private/repository/path');
+      expect(doctor).toMatchObject({status: 'warn'});
+      expect(doctor.detail).toContain(legacyVersion);
+      expect(yield* fileSystem.exists(forgedRegistryPath)).toBe(false);
+
+      const reusedPidSystem = SystemInfo.of({
+        ...testSystem,
+        processStartIdentity: () => Effect.succeed('replacement-process-identity'),
+      });
+      expect(
+        (yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+          Effect.provideService(SystemInfo, reusedPidSystem),
+        )).processes,
+      ).toEqual([]);
+      expect(yield* fileSystem.exists(leasePath)).toBe(false);
+    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
+  );
+
   it.effect('reports base and nested graph roles, then removes its owned registration', () =>
     Effect.gen(function* () {
       temporaryRoot = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-process-diagnostics-')));

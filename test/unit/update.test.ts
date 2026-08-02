@@ -1,11 +1,15 @@
+import {mkdtemp, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {Effect, FileSystem, Path} from 'effect';
-import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {sha256FileHex} from '../../src/effect/digest.js';
 import {HttpService} from '../../src/effect/http.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {activateStandaloneRelease} from '../../src/installations.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -34,12 +38,25 @@ import * as utils from '../../src/utils.js';
 const OFFICIAL_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_VERSION = '4.0.0';
 const defaultToolRootImplementation = vi.mocked(utils.toolRoot).getMockImplementation();
+let isolatedInstallationRoot: string | undefined;
+let previousInstallationRoot: string | undefined;
 
-beforeEach(() => {
+beforeEach(async () => {
+  previousInstallationRoot = process.env.THREADNOTE_INSTALL_ROOT;
+  isolatedInstallationRoot = await mkdtemp(join(tmpdir(), 'threadnote-update-installation-'));
+  process.env.THREADNOTE_INSTALL_ROOT = isolatedInstallationRoot;
   vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(RELEASE_VERSION));
   if (defaultToolRootImplementation) {
     vi.mocked(utils.toolRoot).mockImplementation(defaultToolRootImplementation);
   }
+});
+
+afterEach(async () => {
+  if (isolatedInstallationRoot) await rm(isolatedInstallationRoot, {force: true, recursive: true});
+  if (previousInstallationRoot === undefined) delete process.env.THREADNOTE_INSTALL_ROOT;
+  else process.env.THREADNOTE_INSTALL_ROOT = previousInstallationRoot;
+  isolatedInstallationRoot = undefined;
+  previousInstallationRoot = undefined;
 });
 
 describe('standalone release selection', () => {
@@ -161,6 +178,128 @@ describe('standalone release selection', () => {
 });
 
 describe('standalone updater', () => {
+  it('updates the active installation when a newer local development binary invokes the updater', async () => {
+    const activeVersion = '4.0.0-beta.19';
+    const latestVersion = '4.0.0-beta.30';
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-local-update-test-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const binRoot = path.join(temporaryRoot, 'bin');
+          const oldReleaseRoot = path.join(installRoot, 'versions', activeVersion);
+          yield* fs.makeDirectory(oldReleaseRoot, {recursive: true});
+          yield* fs.writeFileString(
+            path.join(oldReleaseRoot, 'release.json'),
+            `${JSON.stringify({version: activeVersion})}\n`,
+          );
+          const artifactName = releaseArtifactName(baseSystem);
+          const archivePath = path.join(temporaryRoot, artifactName);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeReleaseArchive(archivePath, artifactName, executableName, latestVersion);
+          const checksum = yield* sha256FileHex(archivePath);
+          const http = updateHttpService(fs, archivePath, checksum, artifactName, [
+            releaseResponse(latestVersion, true, artifactName),
+          ]);
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          yield* activateStandaloneRelease(oldReleaseRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
+
+          const captured = yield* captureConsole(
+            runUpdate(runtimeConfig(path.join(temporaryRoot, 'home')), {
+              allowUntrustedSource: true,
+              beta: true,
+              postUpdate: false,
+              repair: false,
+              source: 'http://127.0.0.1:4312/releases',
+            }).pipe(Effect.provideService(HttpService, http), Effect.provideService(SystemInfo, testSystem)),
+          );
+          const launcher = path.join(binRoot, baseSystem.platform === 'win32' ? 'threadnote.cmd' : 'threadnote');
+          return {
+            active: JSON.parse(yield* fs.readFileString(path.join(installRoot, 'active-release.json'))) as {
+              version: string;
+            },
+            captured,
+            launcher: yield* fs.readFileString(launcher),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.captured.output).toContain(`Current version: ${activeVersion}`);
+    expect(result.captured.output).toContain(`Installed standalone Threadnote ${latestVersion}`);
+    expect(result.active.version).toBe(latestVersion);
+    expect(result.launcher).toContain(latestVersion);
+  });
+
+  it('repairs a managed launcher when the active installation is already current', async () => {
+    const latestVersion = '4.0.0-beta.30';
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-launcher-repair-test-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const binRoot = path.join(temporaryRoot, 'bin');
+          const releaseRoot = path.join(installRoot, 'versions', latestVersion);
+          yield* fs.makeDirectory(releaseRoot, {recursive: true});
+          yield* fs.writeFileString(
+            path.join(releaseRoot, 'release.json'),
+            `${JSON.stringify({version: latestVersion})}\n`,
+          );
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          yield* activateStandaloneRelease(releaseRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
+          const launcher = path.join(binRoot, baseSystem.platform === 'win32' ? 'threadnote.cmd' : 'threadnote');
+          yield* fs.makeDirectory(binRoot, {recursive: true});
+          yield* fs.writeFileString(
+            launcher,
+            baseSystem.platform === 'win32'
+              ? '@echo off\r\nrem Generated by threadnote\r\nold-release\\threadnote.exe %*\r\n'
+              : '#!/usr/bin/env sh\n# Generated by threadnote\nexec old-release/threadnote "$@"\n',
+          );
+          const http = HttpService.of({
+            downloadToFile: () => Effect.die('up-to-date repair must not download'),
+            getJson: () => Effect.succeed({body: [releaseResponse(latestVersion, true)], status: 200}),
+            getStatus: () => Effect.die('not used'),
+            getText: () => Effect.die('not used'),
+          });
+          const captured = yield* captureConsole(
+            runUpdate(runtimeConfig(path.join(temporaryRoot, 'home')), {beta: true}).pipe(
+              Effect.provideService(HttpService, http),
+              Effect.provideService(SystemInfo, testSystem),
+            ),
+          );
+          return {captured, launcher: yield* fs.readFileString(launcher)};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.captured.output).toContain('Threadnote is up to date.');
+    expect(result.captured.output).toContain('Wrote command launcher:');
+    expect(result.launcher).toContain(latestVersion);
+    expect(result.launcher).not.toContain('old-release');
+  });
+
   it('installs a verified archive atomically and points stable launchers at the versioned release', async () => {
     vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
     const result = await Effect.runPromise(

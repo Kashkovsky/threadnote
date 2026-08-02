@@ -12,7 +12,7 @@ import {mcpServerEffect} from './mcp_server.js';
 import {
   threadnoteHomeForProcess,
   withThreadnoteProcessRegistration,
-  type ThreadnoteProcessRole,
+  type RegisteredThreadnoteProcessRole,
 } from './process_diagnostics.js';
 import {cliEffect} from './threadnote.js';
 
@@ -23,7 +23,7 @@ const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUM
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const cliOperation =
   isLocalModelWorker || isCodeGraphParserWorker || isMcpServer ? undefined : inspectCliInvocation(arguments_).operation;
-const processRole: ThreadnoteProcessRole = isLocalModelWorker
+const processRole: RegisteredThreadnoteProcessRole = isLocalModelWorker
   ? 'local-model-worker'
   : isCodeGraphParserWorker
     ? 'graph-parser-worker'

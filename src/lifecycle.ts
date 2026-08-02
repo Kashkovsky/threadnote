@@ -12,6 +12,7 @@ import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
 import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstallationLock} from './installations.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
+import {legacyProcessDoctorCheck} from './process_diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {
   currentRecallCorpusGeneration,
@@ -135,6 +136,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     },
   ];
   checks.push(yield* safeDoctorCheck('threadnote shim', commandShimCheck()));
+  checks.push(yield* safeDoctorCheck('standalone process lifecycle', legacyProcessDoctorCheck(config)));
   checks.push(
     yield* safeDoctorCheck(
       'Threadnote home',
