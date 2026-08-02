@@ -30,6 +30,7 @@ import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} 
 import {compareCodeUnits} from './ordering.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {
+  CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   CodeGraphStore,
   type CodeGraphRetiredSnapshotCleanupProgress,
@@ -307,9 +308,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           : [logicalSnapshotId, directSnapshotId]
                         : [logicalSnapshotId];
                       const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+                      const reusableExisting = existing
+                        ? yield* store.currentLexicalReadySnapshotById(layout.databasePath, existing.id)
+                        : undefined;
                       const reusableReady = !options.force
-                        ? existing && readyCandidateIds.includes(existing.id)
-                          ? existing
+                        ? reusableExisting && readyCandidateIds.includes(reusableExisting.id)
+                          ? reusableExisting
                           : yield* firstReadySnapshotById(store, layout.databasePath, readyCandidateIds)
                         : undefined;
                       // A ready candidate wins this request. Do not preserve an
@@ -832,7 +836,7 @@ const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnap
     status => status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId,
   );
   if (!completed?.result?.snapshotId) return undefined;
-  const ready = yield* store.readySnapshotById(layout.databasePath, completed.result.snapshotId);
+  const ready = yield* store.currentLexicalReadySnapshotById(layout.databasePath, completed.result.snapshotId);
   if (
     !ready ||
     ready.commit !== identity.headCommit ||
@@ -942,8 +946,9 @@ function codeGraphBuildRequestKey(
   const derivationIdentities = languagePacks.packs.map(packDerivationIdentity).sort(compareCodeUnits).join('\n');
   return sha256HexSync(
     [
-      'code-graph-build-request-v2',
+      'code-graph-build-request-v3',
       CODE_GRAPH_EXTRACTOR_SET_VERSION,
+      `lexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}`,
       identity.repositoryId,
       identity.checkoutId,
       overlay.dirty ? identity.worktreeId : 'shared-commit',
@@ -998,7 +1003,10 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
     },
     Effect.gen(function* () {
       if (!input.force) {
-        const ready = yield* input.store.readySnapshotById(input.layout.databasePath, input.logicalSnapshotId);
+        const ready = yield* input.store.currentLexicalReadySnapshotById(
+          input.layout.databasePath,
+          input.logicalSnapshotId,
+        );
         if (ready) {
           let analysisSummaryBackfilled = false;
           let analysisSummaryPrepared = false;
@@ -1102,7 +1110,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   const extractorSet = extractorSetIdentity(cleanInventory.files, input.languagePacks);
   const logicalSnapshotId = snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files);
   const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, input.forceGeneration);
-  const existing = yield* input.store.readySnapshotById(input.layout.databasePath, snapshotId);
+  const existing = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, snapshotId);
   if (existing) {
     const lease = yield* input.store
       .acquireSnapshotLease(input.layout.databasePath, existing.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
@@ -1136,7 +1144,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
     },
     Effect.gen(function* () {
       if (!input.force) {
-        const ready = yield* input.store.readySnapshotById(input.layout.databasePath, logicalSnapshotId);
+        const ready = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, logicalSnapshotId);
         if (ready) {
           return {
             diagnostics: [],
@@ -1696,7 +1704,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
             input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
         }),
     );
-    const activated = yield* input.store.readySnapshotById(input.layout.databasePath, ready.id);
+    const activated = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, ready.id);
     if (!activated) {
       return yield* Effect.fail(new Error('Activated code graph snapshot could not be read back from its store.'));
     }
@@ -2442,7 +2450,7 @@ export function snapshotIdentity(
     .sort()
     .join('\n');
   return `cgsn_${sha256HexSync(
-    `snapshot-v1\n${identity.repositoryId}\n${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n${extractorSet}\n${inventory}`,
+    `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n${extractorSet}\n${inventory}`,
   ).slice(0, 40)}`;
 }
 
@@ -2463,7 +2471,7 @@ const firstReadySnapshotById = Effect.fn('codeGraph.firstReadySnapshotById')(fun
   snapshotIds: readonly string[],
 ) {
   for (const snapshotId of snapshotIds) {
-    const ready = yield* store.readySnapshotById(databasePath, snapshotId);
+    const ready = yield* store.currentLexicalReadySnapshotById(databasePath, snapshotId);
     if (ready) return ready;
   }
   return undefined;

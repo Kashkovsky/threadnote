@@ -69,6 +69,12 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              ready.id,
+              new Set([fixture.identity.worktreeId]),
+            );
           }),
         );
       }),
@@ -82,6 +88,11 @@ describe('code graph persistent schema migration', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(fixture.databasePath);
         const legacySearch = yield* store.searchSymbols(fixture.databasePath, ready.id, preserved.name, 10);
+        const legacyGraph = yield* store.loadGraph(fixture.databasePath, ready.id);
+        const legacyReusableReceipt = yield* store.reusableBaseReceipt(fixture.databasePath, ready.id);
+        const legacyReadyById = yield* store.readySnapshotById(fixture.databasePath, ready.id);
+        const legacyCurrentReadyById = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, ready.id);
+        const legacyActiveReady = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
@@ -91,11 +102,24 @@ describe('code graph persistent schema migration', () => {
           }),
         );
         const compactSearch = yield* store.searchSymbols(fixture.databasePath, replacement.id, compact.name, 10);
-        return {compactSearch, legacySearch};
+        return {
+          compactSearch,
+          legacyActiveReady,
+          legacyCurrentReadyById,
+          legacyGraph,
+          legacyReadyById,
+          legacyReusableReceipt,
+          legacySearch,
+        };
       }),
     );
 
     expect(result.legacySearch.map(symbol => symbol.id)).toEqual([preserved.id]);
+    expect(result.legacyGraph.symbols.map(symbol => symbol.id)).toEqual([preserved.id]);
+    expect(result.legacyActiveReady?.id).toBe(ready.id);
+    expect(result.legacyReadyById?.id).toBe(ready.id);
+    expect(result.legacyCurrentReadyById).toBeUndefined();
+    expect(result.legacyReusableReceipt).toBeUndefined();
     expect(result.compactSearch.map(symbol => symbol.id)).toEqual([compact.id]);
     const database = new Database(fixture.databasePath, {readonly: true, strict: true});
     try {
@@ -115,6 +139,292 @@ describe('code graph persistent schema migration', () => {
     } finally {
       database.close(false);
     }
+  });
+
+  it('retires ready snapshots instead of silently emptying them when revision 5 lexical tables drift', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-revision-5-lexical-drift');
+    const preserved = graphSymbol('ready-before-revision-5-lexical-drift');
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              ready.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+          }),
+        );
+      }),
+    );
+
+    const drifted = new Database(fixture.databasePath, {strict: true});
+    try {
+      drifted.exec('PRAGMA foreign_keys = OFF');
+      drifted.exec('DROP TABLE lexical_compact_postings');
+    } finally {
+      drifted.close(false);
+    }
+    const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+        });
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(phases).toContain('retired-incompatible-ready');
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(ready.id)).toEqual({state: 'retired'});
+      expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: 0});
+      expect(
+        database
+          .query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'lexical_compact_postings'",
+          )
+          .get(),
+      ).toEqual({count: 1});
+      // Missing additive read tables retire the snapshot without synchronously
+      // cascading its repository-sized compact rows. Bounded retired-snapshot
+      // maintenance removes this receipt and the remaining dictionaries.
+      expect(database.query('SELECT COUNT(*) AS count FROM lexical_storage_formats').get()).toEqual({count: 1});
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('adds a missing build-only lexical counter without invalidating a ready compact graph', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-additive-lexical-counter');
+    const preserved = graphSymbol('ready-before-additive-lexical-counter');
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              ready.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+          }),
+        );
+      }),
+    );
+
+    const drifted = new Database(fixture.databasePath, {strict: true});
+    drifted.exec('DROP TABLE building_lexical_counters');
+    drifted.close(false);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(ready.id)).toEqual({state: 'ready'});
+      expect(database.query('SELECT snapshot_id FROM active_snapshots').get()).toEqual({snapshot_id: ready.id});
+      expect(database.query('SELECT COUNT(*) AS count FROM lexical_storage_formats').get()).toEqual({count: 1});
+      expect(
+        database
+          .query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'building_lexical_counters'",
+          )
+          .get(),
+      ).toEqual({count: 1});
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('retires revision 5 ready snapshots when compact dictionary uniqueness drifts', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-compact-unique-drift');
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [graphSymbol('compact-unique-drift')], []);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              ready.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+          }),
+        );
+      }),
+    );
+    recreateCompactTermsWithoutUniqueConstraint(fixture.databasePath);
+
+    const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+        });
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(phases).toContain('retired-incompatible-ready');
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(ready.id)).toEqual({state: 'retired'});
+      expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: 0});
+      const indexes = database.query("PRAGMA index_list('lexical_compact_terms')").all() as readonly {
+        readonly name: string;
+        readonly unique: number;
+      }[];
+      const uniqueColumns = indexes
+        .filter(index => index.unique === 1)
+        .map(index =>
+          (database.query(`PRAGMA index_info('${index.name}')`).all() as readonly {readonly name: string}[]).map(
+            column => column.name,
+          ),
+        );
+      expect(uniqueColumns).toContainEqual(['snapshot_key', 'term']);
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('repairs a compact postings table whose weight check constraint drifted', async () => {
+    const fixture = await migrationFixture();
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+    const drifted = new Database(fixture.databasePath, {strict: true});
+    drifted.exec('PRAGMA foreign_keys = OFF');
+    drifted.exec(`
+      DROP TABLE lexical_compact_postings;
+      CREATE TABLE lexical_compact_postings (
+        snapshot_key INTEGER NOT NULL REFERENCES lexical_compact_snapshots(snapshot_key) ON DELETE CASCADE,
+        term_key INTEGER NOT NULL,
+        symbol_key INTEGER NOT NULL,
+        weight INTEGER NOT NULL,
+        PRIMARY KEY (snapshot_key, term_key, symbol_key)
+      ) WITHOUT ROWID;
+    `);
+    drifted.close(false);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      const definition = database
+        .query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'lexical_compact_postings'")
+        .get() as {readonly sql: string};
+      expect(definition.sql).toMatch(/CHECK\s*\(\s*weight\s+BETWEEN\s+1\s+AND\s+5\s*\)/i);
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('rolls back an interrupted revision 5 lexical retirement and heals on the next open', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-interrupted-revision-5-lexical-retirement');
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(
+              fixture.databasePath,
+              [graphSymbol('interrupted-lexical-retirement')],
+              [],
+            );
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              ready.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+          }),
+        );
+      }),
+    );
+    const drifted = new Database(fixture.databasePath, {strict: true});
+    drifted.exec('PRAGMA foreign_keys = OFF');
+    drifted.exec('DROP TABLE lexical_compact_postings');
+    drifted.close(false);
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+            onPersistentSchemaMigrationPhase: phase =>
+              phase === 'retired-incompatible-ready'
+                ? Effect.die(new Error('fault after ready lexical retirement'))
+                : Effect.void,
+          });
+        }),
+      ),
+    ).rejects.toThrow('fault after ready lexical retirement');
+
+    const interrupted = new Database(fixture.databasePath, {readonly: true, strict: true});
+    expect(interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(ready.id)).toEqual({state: 'ready'});
+    expect(interrupted.query('SELECT snapshot_id FROM active_snapshots').get()).toEqual({snapshot_id: ready.id});
+    expect(
+      interrupted
+        .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'lexical_compact_postings'")
+        .get(),
+    ).toEqual({count: 0});
+    interrupted.close(false);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+      }),
+    );
+    const healed = new Database(fixture.databasePath, {readonly: true, strict: true});
+    expect(healed.query('SELECT state FROM snapshots WHERE id = ?').get(ready.id)).toEqual({state: 'retired'});
+    expect(healed.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: 0});
+    expect(
+      healed
+        .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'lexical_compact_postings'")
+        .get(),
+    ).toEqual({count: 1});
+    healed.close(false);
   });
 
   it('preserves ready beta data and restarts an incomplete pre-fingerprint build before materializing', async () => {
@@ -763,6 +1073,31 @@ async function seedReadyAndInterruptedMigration(
       );
     }),
   );
+}
+
+function recreateCompactTermsWithoutUniqueConstraint(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    database.exec('BEGIN IMMEDIATE');
+    database.exec(`
+      CREATE TABLE lexical_compact_terms_drifted (
+        term_key INTEGER PRIMARY KEY NOT NULL,
+        snapshot_key INTEGER NOT NULL REFERENCES lexical_compact_snapshots(snapshot_key) ON DELETE CASCADE,
+        term TEXT NOT NULL
+      );
+      INSERT INTO lexical_compact_terms_drifted (term_key, snapshot_key, term)
+      SELECT term_key, snapshot_key, term FROM lexical_compact_terms;
+      DROP TABLE lexical_compact_terms;
+      ALTER TABLE lexical_compact_terms_drifted RENAME TO lexical_compact_terms;
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    if (database.inTransaction) database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close(false);
+  }
 }
 
 function downgradePersistentExtensionSchema(

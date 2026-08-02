@@ -9,7 +9,10 @@ import {
   materializationRowsWithStoreProgress,
   materializationStoragePlan,
   materializationStorageShortfalls,
+  snapshotIdentity,
 } from '../../src/code_graph/indexer.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphMaterializationRows, CodeGraphReference} from '../../src/code_graph/types.js';
 
 const byteCount = FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0});
@@ -27,6 +30,18 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
+  it('includes the compact lexical format in deterministic snapshot identity', () => {
+    const identity = {headCommit: 'a'.repeat(40), repositoryId: 'b'.repeat(64), worktreeId: 'c'.repeat(64)};
+    const files = [{contentHash: 'd'.repeat(64), path: 'src/index.ts', source: 'commit'}];
+    const extractorSet = 'extractor-set';
+    const inventory = `${files[0]!.path}\0${files[0]!.contentHash}\0${files[0]!.source}`;
+    const expected = sha256HexSync(
+      `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\nshared-commit\n${identity.headCommit}\nclean\n${extractorSet}\n${inventory}`,
+    ).slice(0, 40);
+
+    expect(snapshotIdentity(identity, false, extractorSet, files)).toBe(`cgsn_${expected}`);
+  });
+
   it('splits high-density low-source-byte facts before one SQLite writer transaction becomes pathological', () => {
     const files = Array.from({length: 7}, (_, index) => ({path: `src/dense-${index}.ts`, size: 32}));
     const factBytes = new Map(files.map(file => [file.path, 4 * 1_048_576]));

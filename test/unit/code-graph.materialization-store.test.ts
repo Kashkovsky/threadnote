@@ -12,6 +12,7 @@ import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
+  codeGraphCompactLexicalDeepAuditStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphPersistedEndpointValidationPageStatement,
   codeGraphTermCandidateQueryStatement,
@@ -1584,6 +1585,16 @@ describe('code graph full-build materialization store', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, resumedOwnerToken);
             yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
             const resumedCounts = yield* store.stagedFactCounts(fixture.databasePath);
+            const sql = yield* SqlClient.SqlClient;
+            const resumedLexicalCounters = yield* sql<{
+              readonly completed_batch_count: number;
+              readonly posting_count: number;
+              readonly symbol_count: number;
+              readonly term_count: number;
+            }>`
+              SELECT completed_batch_count, posting_count, symbol_count, term_count
+              FROM building_lexical_counters WHERE snapshot_id = ${snapshot.id}
+            `;
             const mismatch = yield* store
               .stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0)
               .pipe(
@@ -1608,6 +1619,7 @@ describe('code graph full-build materialization store', () => {
               graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
               mismatch,
               resumedCounts,
+              resumedLexicalCounters,
             };
           }),
         );
@@ -1615,6 +1627,9 @@ describe('code graph full-build materialization store', () => {
     );
 
     expect(result.resumedCounts).toEqual({edges: 0, symbols: 1});
+    expect(result.resumedLexicalCounters).toEqual([
+      expect.objectContaining({completed_batch_count: 1, symbol_count: 1}),
+    ]);
     expect(result.mismatch).toContain('batch contents changed');
     expect(result.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
     const lexical = new Database(fixture.databasePath, {readonly: true, strict: true});
@@ -1625,10 +1640,100 @@ describe('code graph full-build materialization store', () => {
     const legacyRows = lexical
       .query('SELECT COUNT(*) AS count FROM symbol_terms WHERE snapshot_id = ?')
       .get(snapshot.id) as {readonly count: number};
+    const auditStatement = codeGraphCompactLexicalDeepAuditStatement(snapshot.id);
+    const deepAudit = lexical.query(auditStatement.text).get(...auditStatement.parameters) as {
+      readonly expected_posting_count: number;
+      readonly expected_symbol_count: number;
+      readonly expected_term_count: number;
+      readonly posting_count: number;
+      readonly symbol_count: number;
+      readonly term_count: number;
+    };
     lexical.close(false);
     expect(receipt).toMatchObject({posting_count: terms.length, symbol_count: 1});
     expect(new Set(terms.map(row => row.symbol_id))).toEqual(new Set([replacement.id]));
     expect(legacyRows.count).toBe(0);
+    expect(deepAudit).toMatchObject({
+      posting_count: deepAudit.expected_posting_count,
+      symbol_count: deepAudit.expected_symbol_count,
+      term_count: deepAudit.expected_term_count,
+    });
+  });
+
+  it('retires and rebuilds a same-identity ready snapshot whose compact receipt is missing', async () => {
+    const fixture = await materializationFixture();
+    const original = symbol('same-id-original', 'sameIdOriginal', ['typescript:name:sameIdOriginal']);
+    const replacement = symbol('same-id-replacement', 'sameIdReplacement', ['typescript:name:sameIdReplacement']);
+    const snapshot = readySnapshot(fixture.identity, 1, 0);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              snapshot.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+          }),
+        );
+      }),
+    );
+
+    const damaged = new Database(fixture.databasePath, {strict: true});
+    damaged.query('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?').run(snapshot.id);
+    damaged.close(false);
+
+    const rebuilt = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        const literalReady = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
+        const reusableReady = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id);
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            yield* store.promote(
+              fixture.databasePath,
+              fixture.identity,
+              snapshot.id,
+              new Set([fixture.identity.worktreeId]),
+            );
+            return {
+              active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
+              current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
+              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+              literalReady,
+              reusableReady,
+            };
+          }),
+        );
+      }),
+    );
+
+    expect(rebuilt.literalReady?.id).toBe(snapshot.id);
+    expect(rebuilt.reusableReady).toBeUndefined();
+    expect(rebuilt.current?.id).toBe(snapshot.id);
+    expect(rebuilt.active?.id).toBe(snapshot.id);
+    expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
   });
 
   it('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', async () => {
@@ -1658,8 +1763,46 @@ describe('code graph full-build materialization store', () => {
 
     const interrupted = new Database(fixture.databasePath, {strict: true});
     interrupted.transaction(() => {
+      const compact = interrupted
+        .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+        .get(snapshot.id) as {readonly snapshot_key: number};
+      const compactSymbol = interrupted
+        .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ? LIMIT 1')
+        .get(compact.snapshot_key) as {readonly symbol_key: number};
+      interrupted
+        .query(
+          `WITH RECURSIVE sequence(value) AS (
+             SELECT 0
+             UNION ALL
+             SELECT value + 1 FROM sequence WHERE value < 6000
+           )
+           INSERT INTO lexical_compact_terms (snapshot_key, term)
+           SELECT ?, 'cleanup-extra-' || printf('%05d', value) FROM sequence`,
+        )
+        .run(compact.snapshot_key);
+      interrupted
+        .query(
+          `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+           SELECT ?, term_key, ?, 1
+           FROM lexical_compact_terms
+           WHERE snapshot_key = ? AND term LIKE 'cleanup-extra-%'`,
+        )
+        .run(compact.snapshot_key, compactSymbol.symbol_key, compact.snapshot_key);
       interrupted.query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'building'").run(snapshot.id);
       interrupted.query('DELETE FROM snapshot_build_owners WHERE snapshot_id = ?').run(snapshot.id);
+      interrupted.exec(`
+        CREATE TRIGGER reject_compact_snapshot_cascade
+        BEFORE DELETE ON snapshots
+        WHEN OLD.id = '${snapshot.id}' AND EXISTS (
+          SELECT 1
+          FROM lexical_compact_snapshots AS compact
+          JOIN lexical_compact_postings AS posting ON posting.snapshot_key = compact.snapshot_key
+          WHERE compact.snapshot_id = OLD.id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'compact children must be paged before snapshot deletion');
+        END
+      `);
     })();
     const retiredState = interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
       readonly state: string;
@@ -1667,9 +1810,18 @@ describe('code graph full-build materialization store', () => {
     const staleRows = interrupted
       .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
       .get(snapshot.id) as {readonly count: number};
+    const stalePostings = interrupted
+      .query(
+        `SELECT COUNT(*) AS count
+         FROM lexical_compact_postings AS posting
+         JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = posting.snapshot_key
+         WHERE compact.snapshot_id = ?`,
+      )
+      .get(snapshot.id) as {readonly count: number};
     interrupted.close(false);
     expect(retiredState.state).toBe('retired');
     expect(staleRows.count).toBe(1);
+    expect(stalePostings.count).toBeGreaterThan(5_000);
 
     const graph = await runEffect(
       Effect.gen(function* () {
@@ -1694,6 +1846,14 @@ describe('code graph full-build materialization store', () => {
     expect(graph.snapshot.state).toBe('ready');
     expect(graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
     expect(graph.symbols.some(entry => entry.id === stale.id)).toBe(false);
+    const storage = new Database(fixture.databasePath, {readonly: true, strict: true});
+    const freelist = storage.query('PRAGMA freelist_count').get() as {readonly freelist_count: number};
+    const pages = storage.query('PRAGMA page_count').get() as {readonly page_count: number};
+    storage.close(false);
+    // Logical reclamation stays bounded; physical file compaction remains an
+    // explicit, disk-preflighted `graph compact` operation.
+    expect(freelist.freelist_count).toBeGreaterThan(0);
+    expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
   });
 
   it('cannot promote an interrupted attributed sub-batch plan and resumes to the full deterministic graph', async () => {

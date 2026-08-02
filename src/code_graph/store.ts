@@ -571,6 +571,10 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
   ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreError>;
+  readonly currentLexicalReadySnapshotById: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreError>;
   readonly readySnapshotForCommit: (
     databasePath: string,
     repositoryId: string,
@@ -1343,6 +1347,15 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load ready code graph snapshot by identity', cause)),
           ),
+        currentLexicalReadySnapshotById: (databasePath, snapshotId) =>
+          fs.exists(databasePath).pipe(
+            Effect.flatMap(exists =>
+              exists
+                ? useReadOnlyDatabase(databasePath, selectCurrentLexicalReadySnapshotById(snapshotId))
+                : Effect.succeed(undefined),
+            ),
+            Effect.mapError(cause => storeError('load current-format ready code graph snapshot by identity', cause)),
+          ),
         readySnapshotForCommit: (databasePath, repositoryId, commit, extractorSet) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
@@ -1802,6 +1815,7 @@ export type CodeGraphPersistentSchemaMigrationPhase =
   | 'dropped-incompatible'
   | 'dropped-obsolete-indexes'
   | 'recorded-revision'
+  | 'retired-incompatible-ready'
   | 'retired-incomplete'
   | 'validated';
 
@@ -1818,6 +1832,8 @@ interface PersistentExtensionTableContract {
   readonly foreignKeys?: readonly PersistentExtensionForeignKeyContract[];
   readonly group: PersistentExtensionGroup;
   readonly name: string;
+  readonly requiredDefinitionPatterns?: readonly RegExp[];
+  readonly uniqueKeys?: readonly (readonly string[])[];
   readonly withoutRowid?: boolean;
 }
 
@@ -1849,6 +1865,17 @@ interface SqliteForeignKeyRow {
   readonly on_delete: string;
   readonly table: string;
   readonly to: string;
+}
+
+interface SqliteIndexListRow {
+  readonly name: string;
+  readonly partial: number;
+  readonly unique: number;
+}
+
+interface SqliteIndexInfoRow {
+  readonly name: string;
+  readonly seqno: number;
 }
 
 const requiredColumn = (name: string, type: string, primaryKeyPosition = 0): PersistentExtensionColumnContract => ({
@@ -2076,6 +2103,30 @@ const PERSISTENT_EXTENSION_TABLES = [
     name: 'building_materialization_batches',
   },
   {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('completed_batch_count', 'INTEGER'),
+      requiredColumn('posting_count', 'INTEGER'),
+      requiredColumn('symbol_count', 'INTEGER'),
+      requiredColumn('term_count', 'INTEGER'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS building_lexical_counters (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      completed_batch_count INTEGER NOT NULL CHECK (completed_batch_count >= 0),
+      posting_count INTEGER NOT NULL CHECK (posting_count >= 0),
+      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
+      term_count INTEGER NOT NULL CHECK (term_count >= 0)
+    ) WITHOUT ROWID`,
+    group: 'build',
+    name: 'building_lexical_counters',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*completed_batch_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*posting_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*symbol_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*term_count\s*>=\s*0\s*\)/i,
+    ],
+  },
+  {
     columns: [requiredColumn('snapshot_key', 'INTEGER', 1), requiredColumn('snapshot_id', 'TEXT')],
     createSql: `CREATE TABLE IF NOT EXISTS lexical_compact_snapshots (
       snapshot_key INTEGER PRIMARY KEY NOT NULL,
@@ -2084,6 +2135,7 @@ const PERSISTENT_EXTENSION_TABLES = [
     foreignKeys: [{from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshots', to: 'id'}],
     group: 'lexical',
     name: 'lexical_compact_snapshots',
+    uniqueKeys: [['snapshot_id']],
     withoutRowid: false,
   },
   {
@@ -2101,6 +2153,7 @@ const PERSISTENT_EXTENSION_TABLES = [
     foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
     group: 'lexical',
     name: 'lexical_compact_terms',
+    uniqueKeys: [['snapshot_key', 'term']],
     withoutRowid: false,
   },
   {
@@ -2118,6 +2171,7 @@ const PERSISTENT_EXTENSION_TABLES = [
     foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
     group: 'lexical',
     name: 'lexical_compact_symbols',
+    uniqueKeys: [['snapshot_key', 'symbol_id']],
     withoutRowid: false,
   },
   {
@@ -2137,6 +2191,7 @@ const PERSISTENT_EXTENSION_TABLES = [
     foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
     group: 'lexical',
     name: 'lexical_compact_postings',
+    requiredDefinitionPatterns: [/CHECK\s*\(\s*weight\s+BETWEEN\s+1\s+AND\s+5\s*\)/i],
   },
   {
     columns: [
@@ -2157,6 +2212,12 @@ const PERSISTENT_EXTENSION_TABLES = [
     ) WITHOUT ROWID`,
     group: 'lexical',
     name: 'lexical_storage_formats',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*format_version\s*=\s*1\s*\)/i,
+      /CHECK\s*\(\s*posting_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*symbol_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*term_count\s*>=\s*0\s*\)/i,
+    ],
   },
 ] as const satisfies readonly PersistentExtensionTableContract[];
 
@@ -2214,6 +2275,10 @@ function persistentExtensionTableInspection(
     }
     const columns = yield* sql.unsafe<SqliteTableColumnRow>(`PRAGMA table_info("${contract.name}")`);
     const foreignKeys = yield* sql.unsafe<SqliteForeignKeyRow>(`PRAGMA foreign_key_list("${contract.name}")`);
+    const indexes =
+      contract.uniqueKeys === undefined
+        ? []
+        : yield* sql.unsafe<SqliteIndexListRow>(`PRAGMA index_list("${contract.name}")`);
     const compatibleColumns =
       columns.length === contract.columns.length &&
       columns.every((column, index) => {
@@ -2264,10 +2329,29 @@ function persistentExtensionTableInspection(
           key.onDelete === expected.onDelete
         );
       });
+    const actualUniqueKeys: (readonly string[])[] = [];
+    for (const index of indexes) {
+      if (Number(index.unique) !== 1 || Number(index.partial) !== 0) continue;
+      const escapedIndexName = index.name.replaceAll('"', '""');
+      const indexedColumns = yield* sql.unsafe<SqliteIndexInfoRow>(`PRAGMA index_info("${escapedIndexName}")`);
+      actualUniqueKeys.push(
+        [...indexedColumns].sort((left, right) => Number(left.seqno) - Number(right.seqno)).map(column => column.name),
+      );
+    }
+    const compatibleUniqueKeys = (contract.uniqueKeys ?? []).every(expected =>
+      actualUniqueKeys.some(
+        actual => actual.length === expected.length && actual.every((column, index) => column === expected[index]),
+      ),
+    );
+    const compatibleDefinition = (contract.requiredDefinitionPatterns ?? []).every(pattern => pattern.test(definition));
     const expectsWithoutRowid = contract.withoutRowid ?? true;
     return {
       compatible:
-        compatibleColumns && compatibleForeignKeys && /\bWITHOUT\s+ROWID\b/i.test(definition) === expectsWithoutRowid,
+        compatibleColumns &&
+        compatibleForeignKeys &&
+        compatibleUniqueKeys &&
+        compatibleDefinition &&
+        /\bWITHOUT\s+ROWID\b/i.test(definition) === expectsWithoutRowid,
       exists: true,
       group: contract.group,
       name: contract.name,
@@ -2376,6 +2460,9 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           .map(inspection => inspection.group),
       );
       const missingTable = inspections.some(inspection => !inspection.exists);
+      const lexicalReadSurfaceMissing = inspections.some(
+        inspection => inspection.group === 'lexical' && !inspection.exists,
+      );
       const incomplete = yield* sql<{readonly count: number}>`
         SELECT COUNT(*) AS count FROM snapshots WHERE state IN ('building', 'failed')
       `;
@@ -2399,6 +2486,35 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           WHERE state IN ('building', 'failed')
         `;
         yield* observe?.('retired-incomplete') ?? Effect.void;
+      }
+      // Revision 5 is the first schema that can claim compact lexical storage.
+      // If any table in that contract is missing or incompatible, keeping a
+      // ready snapshot while replacing its dictionaries would make the graph
+      // appear healthy but return no lexical candidates. Invalidate the ready
+      // pointer atomically and let the normal snapshot-identity path rebuild it.
+      // Revision 4 snapshots remain readable from legacy symbol_terms while the
+      // new compact tables are introduced alongside them.
+      if (
+        recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+        (incompatibleGroups.has('lexical') || lexicalReadSurfaceMissing)
+      ) {
+        if (yield* tableExists(sql, 'active_snapshots')) {
+          yield* sql`
+            DELETE FROM active_snapshots
+            WHERE snapshot_id IN (SELECT id FROM snapshots WHERE state = 'ready')
+          `;
+        }
+        yield* sql`
+          UPDATE snapshots
+          SET state = 'retired',
+              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              failure_summary = COALESCE(
+                failure_summary,
+                'Compact lexical storage schema changed; rebuild required.'
+              )
+          WHERE state = 'ready'
+        `;
+        yield* observe?.('retired-incompatible-ready') ?? Effect.void;
       }
       for (const group of incompatibleGroups) {
         for (const table of [...PERSISTENT_EXTENSION_TABLES].reverse()) {
@@ -3739,7 +3855,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
     Effect.gen(function* () {
       yield* materializeCleanSnapshotAnalysisSummary(sql, snapshot);
       yield* recordSnapshotAnalysisReceipt(sql, snapshot);
-      yield* recordCompactLexicalFormat(sql, snapshot.id, copiedTerms.postingCount);
+      yield* recordCompactLexicalFormat(sql, snapshot.id, copiedTerms, copiedTerms.postingCount, snapshot.symbolCount);
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (!snapshot.dirty && reusableBaseReceipt) {
         yield* sql`
@@ -3799,8 +3915,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
   const observe = activationProgressObserver(onProgress);
   yield* observe('validating-input', 'started');
   let activated = false;
-  let compactPostingCount = 0;
-  let compactSymbolCount = 0;
+  let compactLexicalReceipt: CompactLexicalFormatReceipt = {postingCount: 0, symbolCount: 0, termCount: 0};
   const baseSnapshotId = snapshot.baseSnapshotId;
   if (baseSnapshotId) {
     const base = yield* sql<{readonly id: string}>`
@@ -3947,9 +4062,8 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* observe('copying-symbols', 'completed', Number(counts.symbols));
           yield* observe('copying-terms', 'started');
           const compact = yield* copyActivationCompactLexicalFacts(sql, snapshot.id, 'all');
-          compactPostingCount = compact.postingCount;
-          compactSymbolCount = compact.symbolCount;
-          yield* observe('copying-terms', 'completed', compactPostingCount);
+          compactLexicalReceipt = compact;
+          yield* observe('copying-terms', 'completed', compact.postingCount);
           yield* observe('copying-edges', 'started');
           yield* sql`
             INSERT INTO edges (
@@ -4016,9 +4130,8 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* observe('copying-symbols', 'completed', changedSymbols + deletedSymbols);
           yield* observe('copying-terms', 'started');
           const compact = yield* copyActivationCompactLexicalFacts(sql, snapshot.id, 'changed');
-          compactPostingCount = compact.postingCount;
-          compactSymbolCount = compact.symbolCount;
-          yield* observe('copying-terms', 'completed', compactPostingCount);
+          compactLexicalReceipt = compact;
+          yield* observe('copying-terms', 'completed', compact.postingCount);
           yield* observe('copying-edges', 'started');
           yield* sql`
             INSERT INTO edges (
@@ -4062,10 +4175,16 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           ownedSymbols[0]?.count ?? 0,
           'activation symbol count',
         );
-        if (compactSymbolCount !== expectedCompactSymbols) {
+        if (compactLexicalReceipt.symbolCount !== expectedCompactSymbols) {
           return yield* Effect.fail(new CodeGraphStoreError('Compact lexical activation symbol count changed.'));
         }
-        yield* recordCompactLexicalFormat(sql, snapshot.id, compactPostingCount);
+        yield* recordCompactLexicalFormat(
+          sql,
+          snapshot.id,
+          compactLexicalReceipt,
+          compactLexicalReceipt.postingCount,
+          expectedCompactSymbols,
+        );
       }
       if (baseSnapshotId) {
         yield* ensureReadySnapshotAnalysisSummary(sql, baseSnapshotId);
@@ -4423,6 +4542,12 @@ const COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS = [
     maximumBatchRows: 5_000,
     table: 'building_analysis_batches',
   },
+  {
+    batchRows: 1,
+    keyColumns: ['snapshot_id'],
+    maximumBatchRows: 1,
+    table: 'building_lexical_counters',
+  },
 ] as const;
 
 /**
@@ -4536,28 +4661,51 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   if (validatedEdges !== snapshot.edgeCount) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent edge count does not match the ready snapshot.'));
   }
-  const counts = yield* sql<{readonly files: number; readonly symbols: number; readonly terms: number}>`
+  const counts = yield* sql<{
+    readonly completed_batches: number;
+    readonly files: number;
+    readonly postings: number;
+    readonly symbols: number;
+    readonly terms: number;
+  }>`
     SELECT
       (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = ${snapshot.id}) AS files,
-      (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${snapshot.id}) AS symbols,
-      (SELECT COALESCE(SUM(term_count), 0)
-       FROM building_materialization_batches WHERE snapshot_id = ${snapshot.id}) AS terms
+      completed_batch_count AS completed_batches,
+      posting_count AS postings,
+      symbol_count AS symbols,
+      term_count AS terms
+    FROM building_lexical_counters
+    WHERE snapshot_id = ${snapshot.id}
+    LIMIT 1
   `;
   if (
     Number(counts[0]?.files ?? -1) !== snapshot.fileCount ||
-    Number(counts[0]?.symbols ?? -1) !== snapshot.symbolCount
+    Number(counts[0]?.symbols ?? -1) !== snapshot.symbolCount ||
+    Number(counts[0]?.completed_batches ?? -1) < 0
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build fact counts do not match the snapshot.'));
   }
-  const compactPostingCount = Number(counts[0]?.terms ?? -1);
-  if (!Number.isSafeInteger(compactPostingCount) || compactPostingCount < 0) {
+  const compactLexicalReceipt = {
+    postingCount: Number(counts[0]?.postings ?? -1),
+    symbolCount: Number(counts[0]?.symbols ?? -1),
+    termCount: Number(counts[0]?.terms ?? -1),
+  } satisfies CompactLexicalFormatReceipt;
+  if (
+    [compactLexicalReceipt.postingCount, compactLexicalReceipt.symbolCount, compactLexicalReceipt.termCount].some(
+      count => !Number.isSafeInteger(count) || count < 0,
+    )
+  ) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent compact lexical row count is invalid.'));
   }
   const reuseRows = reusableBaseReceipt
     ? yield* countPersistedFullReuseRows(sql, snapshot.id, observe)
     : {aliasCount: 0, lookupCount: 0, reexportCount: 0};
-  const compactLexicalReceipt = yield* validateCompactLexicalFormat(sql, snapshot.id, compactPostingCount);
-  yield* observe('validating-input', 'progress', compactPostingCount);
+  yield* validatedCompactLexicalReceipt(
+    compactLexicalReceipt,
+    compactLexicalReceipt.postingCount,
+    snapshot.symbolCount,
+  );
+  yield* observe('validating-input', 'progress', compactLexicalReceipt.postingCount);
   yield* observe('validating-input', 'completed', snapshot.fileCount + snapshot.symbolCount + snapshot.edgeCount);
 
   yield* configurePublicationDurability(sql);
@@ -4700,6 +4848,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   onProgress?: CodeGraphActivationProgressCallback,
 ) {
   const observe = activationProgressObserver(onProgress);
+  let compactLexicalReceipt = Option.none<CompactLexicalFormatReceipt>();
   yield* configureConnection(sql);
   yield* observe('validating-input', 'started');
   if (!snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
@@ -4852,6 +5001,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         if (compact.symbolCount !== Number(staged.symbols) || compact.postingCount !== Number(staged.terms)) {
           return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental compact lexical rows changed.'));
         }
+        compactLexicalReceipt = Option.some(compact);
         yield* observe('copying-terms', 'completed', compact.postingCount);
         yield* sql`
           INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id)
@@ -4885,7 +5035,16 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
       yield* materializeOverlaySnapshotAnalysisSummary(sql, snapshot, baseSnapshotId);
       yield* recordSnapshotAnalysisReceipt(sql, snapshot);
       if (existing[0]?.state !== 'ready') {
-        yield* recordCompactLexicalFormat(sql, snapshot.id, Number(staged.terms));
+        if (Option.isNone(compactLexicalReceipt)) {
+          return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental lexical receipt is unavailable.'));
+        }
+        yield* recordCompactLexicalFormat(
+          sql,
+          snapshot.id,
+          compactLexicalReceipt.value,
+          Number(staged.terms),
+          Number(staged.symbols),
+        );
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
@@ -4940,6 +5099,17 @@ function storeFreshFacts(
   });
 }
 
+function persistentSnapshotBuildIdentityMatches(current: CodeGraphSnapshot, requested: CodeGraphSnapshot): boolean {
+  return (
+    current.repositoryId === requested.repositoryId &&
+    current.commit === requested.commit &&
+    current.dirty === requested.dirty &&
+    current.extractorSet === requested.extractorSet &&
+    current.baseSnapshotId === requested.baseSnapshotId &&
+    current.overlayFingerprint === requested.overlayFingerprint
+  );
+}
+
 const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapshotBuild')(function* (
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
@@ -4949,10 +5119,50 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
   const sql = yield* SqlClient.SqlClient;
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   yield* runWrite(initializeSchema(sql));
+  const retiredUnusableReady = yield* runWrite(
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const existing = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
+        const current = existing[0] ? snapshotFromRow(existing[0]) : undefined;
+        if (
+          current === undefined ||
+          current.state !== 'ready' ||
+          !persistentSnapshotBuildIdentityMatches(current, snapshot)
+        ) {
+          return false;
+        }
+        const compatible = yield* sql<{readonly count: number}>`
+          SELECT COUNT(*) AS count
+          FROM lexical_storage_formats
+          WHERE snapshot_id = ${snapshot.id}
+            AND format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+        `;
+        if (Number(compatible[0]?.count ?? 0) === 1) return false;
+        yield* sql`
+          UPDATE snapshots
+          SET state = 'retired',
+              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              failure_summary = COALESCE(
+                failure_summary,
+                'Compact lexical storage receipt changed; rebuild required.'
+              )
+          WHERE id = ${snapshot.id} AND state = 'ready'
+            AND NOT EXISTS (
+              SELECT 1 FROM lexical_storage_formats
+              WHERE snapshot_id = snapshots.id
+                AND format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+            )
+        `;
+        const retired = yield* lastStatementChangeCount(sql);
+        if (retired === 1) yield* sql`DELETE FROM active_snapshots WHERE snapshot_id = ${snapshot.id}`;
+        return retired === 1;
+      }),
+    ),
+  );
   const prior = yield* sql<{readonly state: CodeGraphSnapshot['state']}>`
     SELECT state FROM snapshots WHERE id = ${snapshot.id} LIMIT 1
   `;
-  if (prior[0]?.state === 'retired') {
+  if (retiredUnusableReady || prior[0]?.state === 'retired') {
     // Owner-aware failure first publishes `retired`, then reclaims rows in
     // bounded transactions. A process may die at that exact boundary. The
     // deterministic snapshot identity must remain retryable without requiring
@@ -4967,12 +5177,7 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
         if (existing[0]) {
           const current = snapshotFromRow(existing[0]);
           if (
-            current.repositoryId !== snapshot.repositoryId ||
-            current.commit !== snapshot.commit ||
-            current.dirty !== snapshot.dirty ||
-            current.extractorSet !== snapshot.extractorSet ||
-            current.baseSnapshotId !== snapshot.baseSnapshotId ||
-            current.overlayFingerprint !== snapshot.overlayFingerprint ||
+            !persistentSnapshotBuildIdentityMatches(current, snapshot) ||
             !['building', 'failed'].includes(current.state)
           ) {
             return yield* Effect.fail(
@@ -5350,6 +5555,47 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
 ) {
   const now = yield* Clock.currentTimeMillis;
   const snapshotPlaceholders = snapshotIds.map(() => '?').join(', ');
+  const compactTargets = yield* sql.unsafe<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>(
+    `SELECT compact.snapshot_key, compact.snapshot_id
+     FROM lexical_compact_snapshots AS compact
+     JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
+     WHERE snapshot.id IN (${snapshotPlaceholders})
+       AND snapshot.state = 'retired'
+       AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
+       AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?)
+       AND snapshot.id NOT IN (
+         SELECT base_snapshot_id
+         FROM snapshots
+         WHERE base_snapshot_id IS NOT NULL
+           AND id IN (
+             SELECT snapshot_id FROM active_snapshots
+             UNION
+             SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ?
+           )
+       )
+     ORDER BY compact.snapshot_id
+     LIMIT 1`,
+    [...snapshotIds, now, now],
+  );
+  const compactTarget = compactTargets[0];
+  if (compactTarget !== undefined) {
+    const compactSnapshotKey = yield* validatedCompactLexicalCount(compactTarget.snapshot_key, 'cleanup snapshot key');
+    for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
+      const statement = compactLexicalCleanupPageStatement(spec, compactSnapshotKey, spec.batchRows, Option.none());
+      yield* sql.unsafe(statement.text, statement.parameters);
+      const deleted = yield* lastStatementChangeCount(sql);
+      if (deleted > 0) return {complete: false, rowsDeleted: deleted};
+    }
+    yield* sql.unsafe('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?', [compactTarget.snapshot_id]);
+    const formatsDeleted = yield* lastStatementChangeCount(sql);
+    yield* sql.unsafe('DELETE FROM lexical_compact_snapshots WHERE snapshot_key = ? AND snapshot_id = ?', [
+      compactSnapshotKey,
+      compactTarget.snapshot_id,
+    ]);
+    const snapshotsDeleted = yield* lastStatementChangeCount(sql);
+    const metadataDeleted = formatsDeleted + snapshotsDeleted;
+    if (metadataDeleted > 0) return {complete: false, rowsDeleted: metadataDeleted};
+  }
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
     if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
     const key = `(${spec.keyColumns.join(', ')})`;
@@ -5475,6 +5721,12 @@ const registerPersistentMaterializationPlan = Effect.fn('codeGraph.registerPersi
       new CodeGraphStoreError('Persisted full-build materialization plan changed; discard and rebuild it.'),
     );
   }
+  yield* sql`
+    INSERT INTO building_lexical_counters (
+      snapshot_id, completed_batch_count, posting_count, symbol_count, term_count
+    ) VALUES (${snapshotId}, 0, 0, 0, 0)
+    ON CONFLICT(snapshot_id) DO NOTHING
+  `;
 });
 
 const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersistentMaterializationPlan')(function* (
@@ -5544,6 +5796,7 @@ const assertPersistentMaterializationComplete = Effect.fn('codeGraph.assertPersi
       readonly expected_batches: number;
       readonly invalid_analysis_receipts: number;
       readonly invalid_materialization_receipts: number;
+      readonly lexical_batches: number;
       readonly materialization_receipts: number;
     }>`
       SELECT
@@ -5565,7 +5818,11 @@ const assertPersistentMaterializationComplete = Effect.fn('codeGraph.assertPersi
           SELECT COUNT(*) FROM building_analysis_batches AS receipt
           WHERE receipt.snapshot_id = owner.snapshot_id
             AND receipt.batch_index >= COALESCE(owner.expected_batch_count, -1)
-        ) AS invalid_analysis_receipts
+        ) AS invalid_analysis_receipts,
+        COALESCE((
+          SELECT completed_batch_count FROM building_lexical_counters AS lexical
+          WHERE lexical.snapshot_id = owner.snapshot_id
+        ), -1) AS lexical_batches
       FROM snapshot_build_owners AS owner
       WHERE owner.snapshot_id = ${snapshotId} AND owner.owner_token = ${ownerToken}
       LIMIT 1
@@ -5576,6 +5833,7 @@ const assertPersistentMaterializationComplete = Effect.fn('codeGraph.assertPersi
       expected < 0 ||
       Number(row?.materialization_receipts ?? -1) !== expected ||
       Number(row?.analysis_receipts ?? -1) !== expected ||
+      Number(row?.lexical_batches ?? -1) !== expected ||
       Number(row?.invalid_materialization_receipts ?? -1) !== 0 ||
       Number(row?.invalid_analysis_receipts ?? -1) !== 0
     ) {
@@ -6447,12 +6705,6 @@ interface CompactLexicalSnapshotKeyRow {
   readonly snapshot_key: number | bigint;
 }
 
-interface CompactLexicalCountsRow {
-  readonly posting_count: number | bigint;
-  readonly symbol_count: number | bigint;
-  readonly term_count: number | bigint;
-}
-
 function validatedCompactLexicalCount(
   value: number | bigint,
   description: string,
@@ -6490,6 +6742,7 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
 ) {
   const snapshotKey = yield* ensureCompactLexicalSnapshot(sql, snapshotId);
   const orderedSymbols = sortedBy(symbols, symbol => symbol.id);
+  let symbolCount = 0;
   for (const batch of chunk(orderedSymbols, ACTIVATION_SYMBOL_BATCH_ROWS)) {
     yield* sql.unsafe(
       `INSERT INTO lexical_compact_symbols (snapshot_key, symbol_id)
@@ -6500,10 +6753,12 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
     if (inserted !== batch.length) {
       return yield* Effect.fail(new CodeGraphStoreError('Compact lexical symbol dictionary lost rows.'));
     }
+    symbolCount += inserted;
   }
 
   yield* observer?.('terms', 0, true) ?? Effect.void;
   let postingCount = 0;
+  let termCount = 0;
   let termBatch: Array<readonly [string, string, number]> = [];
   const flush = () => {
     if (termBatch.length === 0) return Effect.void;
@@ -6519,6 +6774,7 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
            VALUES ${termRows.map(() => '(?, ?)').join(', ')}`,
           termRows.flatMap(term => [snapshotKey, term]),
         );
+        termCount += yield* lastStatementChangeCount(sql);
       }
       yield* sql.unsafe(
         `WITH input(term, symbol_id, weight) AS (
@@ -6552,7 +6808,7 @@ const stageCompactLexicalFacts = Effect.fn('codeGraph.stageCompactLexicalFacts')
   }
   yield* flush();
   yield* observer?.('terms', 0, true) ?? Effect.void;
-  return postingCount;
+  return {postingCount, symbolCount, termCount} satisfies CompactLexicalFormatReceipt;
 });
 
 type CompactActivationSymbolSelection = 'all' | 'changed';
@@ -6584,6 +6840,7 @@ const copyActivationCompactLexicalFacts = Effect.fn('codeGraph.copyActivationCom
      ORDER BY posting.term`,
     [snapshotKey],
   );
+  const termCount = yield* lastStatementChangeCount(sql);
   yield* sql.unsafe(
     `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
      SELECT ?, terms.term_key, symbols.symbol_key, posting.weight
@@ -6608,7 +6865,7 @@ const copyActivationCompactLexicalFacts = Effect.fn('codeGraph.copyActivationCom
       new CodeGraphStoreError(`Compact lexical activation lost ${expectedPostings - postingCount} posting(s).`),
     );
   }
-  return {postingCount, symbolCount};
+  return {postingCount, symbolCount, termCount} satisfies CompactLexicalFormatReceipt;
 });
 
 interface CompactLexicalFormatReceipt {
@@ -6617,47 +6874,52 @@ interface CompactLexicalFormatReceipt {
   readonly termCount: number;
 }
 
-const validateCompactLexicalFormat = Effect.fn('codeGraph.validateCompactLexicalFormat')(function* (
-  sql: SqlClient.SqlClient,
-  snapshotId: string,
+/**
+ * Explicit deep-maintenance audit. Normal publication trusts the cumulative
+ * counters committed with each resumable batch and never scans every posting.
+ * This statement intentionally performs exact counts for tests and operator-
+ * initiated evidence collection.
+ */
+export function codeGraphCompactLexicalDeepAuditStatement(snapshotId: string): CodeGraphSqlQueryStatement {
+  return {
+    parameters: [snapshotId],
+    text: `SELECT
+      format.posting_count AS expected_posting_count,
+      format.symbol_count AS expected_symbol_count,
+      format.term_count AS expected_term_count,
+      (SELECT COUNT(*) FROM lexical_compact_postings AS posting
+       WHERE posting.snapshot_key = compact.snapshot_key) AS posting_count,
+      (SELECT COUNT(*) FROM lexical_compact_symbols AS symbol
+       WHERE symbol.snapshot_key = compact.snapshot_key) AS symbol_count,
+      (SELECT COUNT(*) FROM lexical_compact_terms AS term
+       WHERE term.snapshot_key = compact.snapshot_key) AS term_count
+    FROM lexical_storage_formats AS format
+    JOIN lexical_compact_snapshots AS compact ON compact.snapshot_id = format.snapshot_id
+    WHERE format.snapshot_id = ?
+      AND format.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+    LIMIT 1`,
+  };
+}
+
+function validatedCompactLexicalReceipt(
+  receipt: CompactLexicalFormatReceipt,
   expectedPostingCount: number,
-) {
-  if (!Number.isSafeInteger(expectedPostingCount) || expectedPostingCount < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Expected compact lexical posting count is invalid.'));
+  expectedSymbolCount: number,
+): Effect.Effect<CompactLexicalFormatReceipt, CodeGraphStoreError> {
+  const counts = [receipt.postingCount, receipt.symbolCount, receipt.termCount];
+  if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
+    return Effect.fail(new CodeGraphStoreError('Compact lexical receipt contains an invalid count.'));
   }
-  const rows = yield* sql<CompactLexicalCountsRow>`
-    SELECT
-      (SELECT COUNT(*)
-       FROM lexical_compact_postings AS posting
-       JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = posting.snapshot_key
-       WHERE compact.snapshot_id = ${snapshotId}) AS posting_count,
-      (SELECT COUNT(*)
-       FROM lexical_compact_symbols AS symbol
-       JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = symbol.snapshot_key
-       WHERE compact.snapshot_id = ${snapshotId}) AS symbol_count,
-      (SELECT COUNT(*)
-       FROM lexical_compact_terms AS term
-       JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = term.snapshot_key
-       WHERE compact.snapshot_id = ${snapshotId}) AS term_count
-  `;
-  const row = rows[0];
-  const postingCount = yield* validatedCompactLexicalCount(row?.posting_count ?? 0, 'posting count');
-  const symbolCount = yield* validatedCompactLexicalCount(row?.symbol_count ?? 0, 'symbol count');
-  const termCount = yield* validatedCompactLexicalCount(row?.term_count ?? 0, 'term count');
-  const ownedSymbols = yield* sql<{readonly count: number | bigint}>`
-    SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ${snapshotId}
-  `;
-  const expectedSymbols = yield* validatedCompactLexicalCount(ownedSymbols[0]?.count ?? 0, 'owned symbol count');
-  if (postingCount !== expectedPostingCount || symbolCount !== expectedSymbols) {
-    return yield* Effect.fail(
+  if (receipt.postingCount !== expectedPostingCount || receipt.symbolCount !== expectedSymbolCount) {
+    return Effect.fail(
       new CodeGraphStoreError(
-        `Compact lexical receipt mismatch (${postingCount}/${expectedPostingCount} postings, ` +
-          `${symbolCount}/${expectedSymbols} symbols).`,
+        `Compact lexical receipt mismatch (${receipt.postingCount}/${expectedPostingCount} postings, ` +
+          `${receipt.symbolCount}/${expectedSymbolCount} symbols).`,
       ),
     );
   }
-  return {postingCount, symbolCount, termCount} satisfies CompactLexicalFormatReceipt;
-});
+  return Effect.succeed(receipt);
+}
 
 const publishCompactLexicalFormat = Effect.fn('codeGraph.publishCompactLexicalFormat')(function* (
   sql: SqlClient.SqlClient,
@@ -6683,10 +6945,15 @@ const publishCompactLexicalFormat = Effect.fn('codeGraph.publishCompactLexicalFo
 const recordCompactLexicalFormat = Effect.fn('codeGraph.recordCompactLexicalFormat')(function* (
   sql: SqlClient.SqlClient,
   snapshotId: string,
+  receipt: CompactLexicalFormatReceipt,
   expectedPostingCount: number,
+  expectedSymbolCount: number,
 ) {
-  const receipt = yield* validateCompactLexicalFormat(sql, snapshotId, expectedPostingCount);
-  yield* publishCompactLexicalFormat(sql, snapshotId, receipt);
+  yield* publishCompactLexicalFormat(
+    sql,
+    snapshotId,
+    yield* validatedCompactLexicalReceipt(receipt, expectedPostingCount, expectedSymbolCount),
+  );
 });
 
 function stageActivationEdges(
@@ -7033,6 +7300,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   let termCount = 0;
   let candidateCount = 0;
   let reexportCount = 0;
+  let compactBatchCounts: CompactLexicalFormatReceipt = {postingCount: 0, symbolCount: 0, termCount: 0};
   const resumed = yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* observer('validating', 0, true);
@@ -7128,7 +7396,8 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       yield* observer('symbols', 0, true);
       yield* observer('lookup-keys', 0, true);
 
-      termCount = yield* stageCompactLexicalFacts(sql, snapshotId, symbols, observer);
+      compactBatchCounts = yield* stageCompactLexicalFacts(sql, snapshotId, symbols, observer);
+      termCount = compactBatchCounts.postingCount;
 
       yield* observer('edges', 0, true);
       for (const batch of chunk(
@@ -7233,6 +7502,30 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
           ${boundedReferences.length}, ${candidateCount}, ${reexportCount}, ${new Date().toISOString()}
         )
       `;
+      const lexicalCounter = yield* sql<{
+        readonly completed_batch_count: number;
+        readonly posting_count: number;
+        readonly symbol_count: number;
+        readonly term_count: number;
+      }>`
+        INSERT INTO building_lexical_counters (
+          snapshot_id, completed_batch_count, posting_count, symbol_count, term_count
+        ) VALUES (
+          ${snapshotId}, 1, ${compactBatchCounts.postingCount}, ${compactBatchCounts.symbolCount},
+          ${compactBatchCounts.termCount}
+        )
+        ON CONFLICT(snapshot_id) DO UPDATE SET
+          completed_batch_count = building_lexical_counters.completed_batch_count + 1,
+          posting_count = building_lexical_counters.posting_count + excluded.posting_count,
+          symbol_count = building_lexical_counters.symbol_count + excluded.symbol_count,
+          term_count = building_lexical_counters.term_count + excluded.term_count
+        RETURNING completed_batch_count, posting_count, symbol_count, term_count
+      `;
+      if (Number(lexicalCounter[0]?.completed_batch_count ?? -1) !== batchIndex + 1) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Compact lexical counters no longer match contiguous batch receipts.'),
+        );
+      }
       yield* observer('receipt', 1, true);
       yield* observer('committing', 0, true);
       return undefined;
@@ -8764,15 +9057,81 @@ const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetir
 });
 
 interface CompactLexicalCleanupSpec {
+  readonly batchRows: number;
+  readonly indexName?: string;
   readonly keyColumns: readonly string[];
+  readonly maximumBatchRows: number;
   readonly table: 'lexical_compact_postings' | 'lexical_compact_symbols' | 'lexical_compact_terms';
 }
 
-const COMPACT_LEXICAL_CLEANUP_SPECS = [
-  {keyColumns: ['snapshot_key', 'term_key', 'symbol_key'], table: 'lexical_compact_postings'},
-  {keyColumns: ['symbol_key'], table: 'lexical_compact_symbols'},
-  {keyColumns: ['term_key'], table: 'lexical_compact_terms'},
-] as const satisfies readonly CompactLexicalCleanupSpec[];
+const COMPACT_LEXICAL_CLEANUP_SPECS: readonly CompactLexicalCleanupSpec[] = [
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_key', 'term_key', 'symbol_key'],
+    maximumBatchRows: 20_000,
+    table: 'lexical_compact_postings',
+  },
+  {
+    batchRows: 5_000,
+    indexName: 'sqlite_autoindex_lexical_compact_symbols_1',
+    keyColumns: ['snapshot_key', 'symbol_id'],
+    maximumBatchRows: 20_000,
+    table: 'lexical_compact_symbols',
+  },
+  {
+    batchRows: 5_000,
+    indexName: 'sqlite_autoindex_lexical_compact_terms_1',
+    keyColumns: ['snapshot_key', 'term'],
+    maximumBatchRows: 20_000,
+    table: 'lexical_compact_terms',
+  },
+];
+
+function compactLexicalCleanupPageStatement(
+  spec: CompactLexicalCleanupSpec,
+  snapshotKey: number,
+  batchRows: number,
+  retiredSnapshotId: Option.Option<string>,
+): CodeGraphSqlQueryStatement {
+  const key = `(${spec.keyColumns.join(', ')})`;
+  const retirement = Option.match(retiredSnapshotId, {
+    onNone: () => ({parameters: [] as readonly string[], predicate: ''}),
+    onSome: snapshotId => ({
+      parameters: [snapshotId],
+      predicate: `AND EXISTS (
+        SELECT 1
+        FROM lexical_compact_snapshots AS compact
+        JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
+        WHERE compact.snapshot_key = candidate.snapshot_key
+          AND compact.snapshot_id = ?
+          AND snapshot.state = 'retired'
+      )`,
+    }),
+  });
+  return {
+    parameters: [snapshotKey, ...retirement.parameters, batchRows],
+    text: `DELETE FROM ${spec.table}
+      WHERE ${key} IN (
+        SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+        FROM ${spec.table} AS candidate${spec.indexName ? ` INDEXED BY ${spec.indexName}` : ''}
+        WHERE candidate.snapshot_key = ?
+          ${retirement.predicate}
+        ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+        LIMIT ?
+      )`,
+  };
+}
+
+/** @internal Exact indexed cleanup statement retained for query-plan regression tests. */
+export function codeGraphCompactLexicalCleanupPageStatement(
+  table: CompactLexicalCleanupSpec['table'],
+  snapshotKey: number,
+  batchRows: number,
+): CodeGraphSqlQueryStatement {
+  const spec = COMPACT_LEXICAL_CLEANUP_SPECS.find(candidate => candidate.table === table);
+  if (spec === undefined) throw new Error(`Unknown compact lexical cleanup table: ${table}`);
+  return compactLexicalCleanupPageStatement(spec, snapshotKey, batchRows, Option.none());
+}
 
 const clearCompactLexicalSnapshotRows = Effect.fn('codeGraph.clearCompactLexicalSnapshotRows')(function* (
   sql: SqlClient.SqlClient,
@@ -8781,34 +9140,33 @@ const clearCompactLexicalSnapshotRows = Effect.fn('codeGraph.clearCompactLexical
   ownerToken?: string,
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
+  const compactRows = yield* sql<CompactLexicalSnapshotKeyRow>`
+    SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ${snapshotId} LIMIT 1
+  `;
+  const compactSnapshotKey = compactRows[0]
+    ? yield* validatedCompactLexicalCount(compactRows[0].snapshot_key, 'cleanup snapshot key')
+    : undefined;
   for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
-    let batchRows = 5_000;
+    if (compactSnapshotKey === undefined) break;
+    let batchRows: number = spec.batchRows;
     for (;;) {
       const startedAt = performance.now();
       const deleted = yield* runWrite(
         sql.withTransaction(
           Effect.gen(function* () {
             if (ownerToken !== undefined) yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
-            const key = `(${spec.keyColumns.join(', ')})`;
-            yield* sql.unsafe(
-              `DELETE FROM ${spec.table}
-               WHERE ${key} IN (
-                 SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-                 FROM ${spec.table} AS candidate
-                 JOIN lexical_compact_snapshots AS compact
-                   ON compact.snapshot_key = candidate.snapshot_key
-                 WHERE compact.snapshot_id = ?
-                 ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-                 LIMIT ?
-               )`,
-              [snapshotId, batchRows],
-            );
+            const statement = compactLexicalCleanupPageStatement(spec, compactSnapshotKey, batchRows, Option.none());
+            yield* sql.unsafe(statement.text, statement.parameters);
             return yield* lastStatementChangeCount(sql);
           }),
         ),
       );
       if (deleted === 0) break;
-      batchRows = nextPersistentActivationBatchRows(batchRows, Math.max(0, performance.now() - startedAt), 20_000);
+      batchRows = nextPersistentActivationBatchRows(
+        batchRows,
+        Math.max(0, performance.now() - startedAt),
+        spec.maximumBatchRows,
+      );
       yield* Effect.yieldNow;
     }
   }
@@ -8828,60 +9186,72 @@ const pruneRetiredCompactLexicalRows = Effect.fn('codeGraph.pruneRetiredCompactL
   writerGate: CodeGraphWriterGate,
   snapshotId?: string,
 ) {
-  for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
-    let batchRows = 5_000;
-    for (;;) {
-      const startedAt = performance.now();
-      const deleted = yield* writerGate(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const key = `(${spec.keyColumns.join(', ')})`;
-            yield* sql.unsafe(
-              `DELETE FROM ${spec.table}
-               WHERE ${key} IN (
-                 SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-                 FROM ${spec.table} AS candidate
-                 JOIN lexical_compact_snapshots AS compact
-                   ON compact.snapshot_key = candidate.snapshot_key
-                 JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
-                 WHERE snapshot.state = 'retired'
-                   AND (? IS NULL OR snapshot.id = ?)
-                 ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
-                 LIMIT ?
-               )`,
-              [snapshotId ?? null, snapshotId ?? null, batchRows],
-            );
-            return yield* lastStatementChangeCount(sql);
-          }),
-        ),
-      );
-      if (deleted === 0) break;
-      batchRows = nextPersistentActivationBatchRows(batchRows, Math.max(0, performance.now() - startedAt), 20_000);
+  for (;;) {
+    const targets = yield* sql<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>`
+      SELECT compact.snapshot_key, compact.snapshot_id
+      FROM lexical_compact_snapshots AS compact
+      JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
+      WHERE snapshot.state = 'retired'
+        AND (${snapshotId ?? null} IS NULL OR snapshot.id = ${snapshotId ?? null})
+      ORDER BY compact.snapshot_id
+      LIMIT 1
+    `;
+    const target = targets[0];
+    if (target === undefined) break;
+    const compactSnapshotKey = yield* validatedCompactLexicalCount(target.snapshot_key, 'cleanup snapshot key');
+    for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
+      let batchRows: number = spec.batchRows;
+      for (;;) {
+        const startedAt = performance.now();
+        const deleted = yield* writerGate(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const statement = compactLexicalCleanupPageStatement(
+                spec,
+                compactSnapshotKey,
+                batchRows,
+                Option.some(target.snapshot_id),
+              );
+              yield* sql.unsafe(statement.text, statement.parameters);
+              return yield* lastStatementChangeCount(sql);
+            }),
+          ),
+        );
+        if (deleted === 0) break;
+        batchRows = nextPersistentActivationBatchRows(
+          batchRows,
+          Math.max(0, performance.now() - startedAt),
+          spec.maximumBatchRows,
+        );
+        yield* Effect.yieldNow;
+      }
+    }
+    const metadataDeleted = yield* writerGate(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql.unsafe(
+            `DELETE FROM lexical_storage_formats
+             WHERE snapshot_id = ?
+               AND EXISTS (SELECT 1 FROM snapshots WHERE id = ? AND state = 'retired')`,
+            [target.snapshot_id, target.snapshot_id],
+          );
+          const formatRows = yield* lastStatementChangeCount(sql);
+          yield* sql.unsafe(
+            `DELETE FROM lexical_compact_snapshots
+             WHERE snapshot_key = ? AND snapshot_id = ?
+               AND EXISTS (SELECT 1 FROM snapshots WHERE id = ? AND state = 'retired')`,
+            [compactSnapshotKey, target.snapshot_id, target.snapshot_id],
+          );
+          return formatRows + (yield* lastStatementChangeCount(sql));
+        }),
+      ),
+    );
+    if (metadataDeleted === 0) {
+      // The snapshot stopped being retired between pages. The next selection
+      // either chooses another target or observes that cleanup is complete.
       yield* Effect.yieldNow;
     }
   }
-  yield* writerGate(
-    sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql.unsafe(
-          `DELETE FROM lexical_storage_formats
-           WHERE snapshot_id IN (
-             SELECT id FROM snapshots
-             WHERE state = 'retired' AND (? IS NULL OR id = ?)
-           )`,
-          [snapshotId ?? null, snapshotId ?? null],
-        );
-        yield* sql.unsafe(
-          `DELETE FROM lexical_compact_snapshots
-           WHERE snapshot_id IN (
-             SELECT id FROM snapshots
-             WHERE state = 'retired' AND (? IS NULL OR id = ?)
-           )`,
-          [snapshotId ?? null, snapshotId ?? null],
-        );
-      }),
-    ),
-  );
 });
 
 const purgeSnapshotTerms = Effect.fn('codeGraph.purgeSnapshotTerms')(function* (
@@ -9002,6 +9372,12 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     keyColumns: ['snapshot_id', 'batch_index'],
     maximumBatchRows: 20_000,
     table: 'building_analysis_batches',
+  },
+  {
+    batchRows: 1,
+    keyColumns: ['snapshot_id'],
+    maximumBatchRows: 1,
+    table: 'building_lexical_counters',
   },
   {
     batchRows: 5_000,
@@ -9246,6 +9622,27 @@ const selectReadySnapshotById = Effect.fn('codeGraph.selectReadySnapshotById')(f
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
 
+const selectCurrentLexicalReadySnapshotById = Effect.fn('codeGraph.selectCurrentLexicalReadySnapshotById')(function* (
+  snapshotId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+    return undefined;
+  }
+  const rows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots
+    WHERE id = ${snapshotId} AND state = 'ready'
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = snapshots.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+    LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
 const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotForCommit')(function* (
   repositoryId: string,
   commit: string,
@@ -9262,6 +9659,11 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
       AND dirty = 0
       AND (${extractorSet ?? null} IS NULL OR extractor_set = ${extractorSet ?? null})
       AND state = 'ready'
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = snapshots.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
     ORDER BY completed_at DESC, id
     LIMIT 1
   `;
@@ -9291,6 +9693,11 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
       AND snapshot.state = 'ready'
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = receipt.snapshot_id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
       AND (
         receipt.lookup_count = 0 OR EXISTS (
           SELECT 1 FROM snapshot_symbol_lookup AS lookup
@@ -10632,13 +11039,13 @@ function compactLexicalTermBranch(alias: string, placeholders: string, base: boo
      AND ${alias}_format.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
     JOIN lexical_compact_terms AS ${alias}_terms INDEXED BY sqlite_autoindex_lexical_compact_terms_1
       ON ${alias}_terms.snapshot_key = ${alias}_snapshot.snapshot_key
-    JOIN lexical_compact_postings AS ${alias}_postings
-      ON ${alias}_postings.snapshot_key = ${alias}_snapshot.snapshot_key
-     AND ${alias}_postings.term_key = ${alias}_terms.term_key
-    JOIN lexical_compact_symbols AS ${alias}_symbols
-      ON ${alias}_symbols.snapshot_key = ${alias}_snapshot.snapshot_key
-     AND ${alias}_symbols.symbol_key = ${alias}_postings.symbol_key
+    CROSS JOIN lexical_compact_postings AS ${alias}_postings
+    CROSS JOIN lexical_compact_symbols AS ${alias}_symbols
     WHERE ${alias}_snapshot.snapshot_id = ?
+      AND ${alias}_postings.snapshot_key = ${alias}_snapshot.snapshot_key
+      AND ${alias}_postings.term_key = ${alias}_terms.term_key
+      AND ${alias}_symbols.snapshot_key = ${alias}_snapshot.snapshot_key
+      AND ${alias}_symbols.symbol_key = ${alias}_postings.symbol_key
       ${termPredicate}
       ${suppression}`;
 }

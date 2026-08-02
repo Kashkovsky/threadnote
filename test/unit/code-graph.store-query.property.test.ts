@@ -4,6 +4,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphAdjacencyQueryStatement,
+  codeGraphCompactLexicalCleanupPageStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolsByIdsQueryStatement,
@@ -176,8 +177,29 @@ describe('code graph indexed query properties', () => {
         const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-query-plan-'});
         const databasePath = path.join(root, 'graph-v3.sqlite');
         yield* store.initialize(databasePath);
-        const database = new Database(databasePath, {readonly: true, strict: true});
+        yield* Effect.sync(() => {
+          const highCardinalityBase = Array.from({length: 4_000}, (_, index) => ({
+            symbol: index,
+            term: index === 0 ? 'progress' : `base-noise-${index}`,
+            weight: 1,
+          }));
+          const highCardinalityCurrent = Array.from({length: 2_000}, (_, index) => ({
+            symbol: index,
+            term: index === 1 ? 'manager' : `current-noise-${index}`,
+            weight: 1,
+          }));
+          insertLexicalOverlayFixture(
+            databasePath,
+            highCardinalityBase,
+            highCardinalityCurrent,
+            new Set(),
+            'compact',
+            'compact',
+          );
+        });
+        const database = new Database(databasePath, {strict: true});
         try {
+          database.exec('ANALYZE');
           const adjacency = codeGraphAdjacencyQueryStatement(
             currentSnapshotId,
             baseSnapshotId,
@@ -223,9 +245,26 @@ describe('code graph indexed query properties', () => {
           expect(termPlan).toContain(
             'SEARCH current_compact_postings USING PRIMARY KEY (snapshot_key=? AND term_key=?)',
           );
-          expect(termPlan.join('\n')).not.toMatch(
-            /SCAN (?:current_legacy_terms|base_legacy_terms|current_compact_postings|base_compact_postings|symbol_terms)/u,
+          expect(termPlan).toContain(
+            'SEARCH base_compact_terms USING COVERING INDEX sqlite_autoindex_lexical_compact_terms_1 (snapshot_key=? AND term=?)',
           );
+          expect(termPlan).toContain('SEARCH base_compact_postings USING PRIMARY KEY (snapshot_key=? AND term_key=?)');
+          expect(termPlan.join('\n')).not.toMatch(
+            /SCAN (?:current_legacy_terms|base_legacy_terms|current_compact_postings|base_compact_postings|current_compact_symbols|base_compact_symbols|symbol_terms)/u,
+          );
+          const compactSnapshot = database
+            .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+            .get(currentSnapshotId) as {readonly snapshot_key: number};
+          for (const table of [
+            'lexical_compact_postings',
+            'lexical_compact_symbols',
+            'lexical_compact_terms',
+          ] as const) {
+            const cleanup = codeGraphCompactLexicalCleanupPageStatement(table, compactSnapshot.snapshot_key, 5_000);
+            const cleanupPlan = queryPlan(database, cleanup.text, cleanup.parameters).join('\n');
+            expect(cleanupPlan).toMatch(/SEARCH candidate USING (?:PRIMARY KEY|COVERING INDEX).*snapshot_key=/u);
+            expect(cleanupPlan).not.toMatch(/SCAN candidate|USE TEMP B-TREE/u);
+          }
         } finally {
           database.close(false);
         }
