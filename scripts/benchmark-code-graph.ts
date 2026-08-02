@@ -371,9 +371,15 @@ const benchmarkCodeGraph = Effect.scoped(
         )
       : undefined;
     if (options.preflight) {
-      if (!externalPreflight) {
+      if (!externalPreflight || !externalPrepared) {
         return yield* Effect.fail(new Error('External benchmark preflight was not prepared.'));
       }
+      yield* revalidateExternalBenchmarkPreflightState(
+        threadnoteSourceRoot,
+        externalPrepared.repository,
+        externalPrepared.externalCommit,
+        runtimeProvenance,
+      );
       if (options.outputPath) {
         yield* atomicWrite(
           `${options.outputPath}.preflight.json`,
@@ -3554,6 +3560,28 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
     mode: 'managed-exact-head',
     processLeaseInspection: 'complete',
   } satisfies BenchmarkRuntimeProvenance;
+});
+
+export const revalidateExternalBenchmarkPreflightState = Effect.fn(
+  'benchmarkCodeGraph.revalidateExternalPreflightState',
+)(function* (
+  sourceRoot: string,
+  externalRepository: string,
+  expectedExternalCommit: string | undefined,
+  expectedRuntimeProvenance: BenchmarkRuntimeProvenance | undefined,
+) {
+  if (!expectedExternalCommit || !expectedRuntimeProvenance) {
+    return yield* Effect.fail(new Error('External benchmark preflight has incomplete provenance.'));
+  }
+  const runtimeProvenance = yield* validateBenchmarkRuntimeProvenance(sourceRoot);
+  if (JSON.stringify(runtimeProvenance) !== JSON.stringify(expectedRuntimeProvenance)) {
+    return yield* Effect.fail(new Error('Threadnote benchmark runtime provenance changed during preflight.'));
+  }
+  yield* verifyExternalRepositoryUnchanged(externalRepository, expectedExternalCommit);
+  // Keep the source checkout check last so no artifact is emitted after a
+  // repository-only validation whose source evidence has already drifted.
+  yield* verifyBenchmarkSourceUnchanged(sourceRoot, expectedRuntimeProvenance.sourceCommit);
+  return runtimeProvenance;
 });
 
 function benchmarkRuntimeProvenanceMetadata(

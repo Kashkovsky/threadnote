@@ -1,7 +1,12 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {
+  revalidateExternalBenchmarkPreflightState,
+  validateBenchmarkRuntimeProvenance,
+} from '../../scripts/benchmark-code-graph.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 
 const CONTROL = JSON.stringify({
   expectedLanguage: 'typescript',
@@ -10,6 +15,66 @@ const CONTROL = JSON.stringify({
 });
 
 describe('external code graph benchmark execution safety', () => {
+  it('rejects source and external checkout drift before emitting preflight evidence', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-benchmark-preflight-drift-'});
+          const sourceRepository = path.join(root, 'threadnote-source');
+          const externalRepository = path.join(root, 'external-source');
+          yield* fs.makeDirectory(sourceRepository, {recursive: true});
+          yield* fs.writeFileString(path.join(sourceRepository, 'bun.lock'), 'fixture lock\n');
+          yield* fs.writeFileString(path.join(sourceRepository, 'package.json'), '{}\n');
+          yield* fs.writeFileString(path.join(sourceRepository, 'source.ts'), 'export const source = 1;\n');
+          const sourceCommit = yield* initializeGitRepository(sourceRepository);
+          yield* fs.makeDirectory(externalRepository, {recursive: true});
+          yield* fs.writeFileString(path.join(externalRepository, 'external.ts'), 'export const external = 1;\n');
+          const externalCommit = yield* initializeGitRepository(externalRepository);
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              CI: 'true',
+              GITHUB_ACTIONS: 'true',
+              GITHUB_REPOSITORY: 'Kashkovsky/threadnote',
+              GITHUB_RUN_ID: '123',
+              GITHUB_SHA: sourceCommit,
+              GITHUB_WORKSPACE: sourceRepository,
+            }),
+          });
+          const initial = yield* validateBenchmarkRuntimeProvenance(sourceRepository).pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+
+          yield* fs.writeFileString(path.join(sourceRepository, 'source.ts'), 'export const source = 2;\n');
+          const sourceFailure = yield* revalidateExternalBenchmarkPreflightState(
+            sourceRepository,
+            externalRepository,
+            externalCommit,
+            initial,
+          ).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
+          yield* fs.writeFileString(path.join(sourceRepository, 'source.ts'), 'export const source = 1;\n');
+
+          yield* fs.writeFileString(path.join(externalRepository, 'external.ts'), 'export const external = 2;\n');
+          const externalFailure = yield* revalidateExternalBenchmarkPreflightState(
+            sourceRepository,
+            externalRepository,
+            externalCommit,
+            initial,
+          ).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
+          return {externalFailure: String(externalFailure), initial, sourceFailure: String(sourceFailure)};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.initial.mode).toBe('github-actions-clean-source');
+    expect(result.sourceFailure).toContain('clean Threadnote checkout');
+    expect(result.externalFailure).toContain('External repository changed during the benchmark');
+  });
+
   it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
     'preflights every run, sees config-hidden dirt, and releases prospective homes',
     async () => {
@@ -157,6 +222,30 @@ describe('external code graph benchmark execution safety', () => {
     },
     30_000,
   );
+});
+
+const initializeGitRepository = Effect.fn('benchmarkPreflightTest.initializeGitRepository')(function* (
+  repository: string,
+) {
+  yield* runCommandEffect('git', ['init', '--quiet', repository]);
+  yield* runCommandEffect('git', ['-C', repository, 'add', '.']);
+  yield* runCommandEffect(
+    'git',
+    [
+      '-C',
+      repository,
+      '-c',
+      'user.name=Threadnote Benchmark',
+      '-c',
+      'user.email=benchmark@threadnote.invalid',
+      'commit',
+      '--quiet',
+      '-m',
+      'fixture',
+    ],
+    {timeoutMs: 10_000},
+  );
+  return (yield* runCommandEffect('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
 });
 
 async function runBenchmark(script: string, args: readonly string[]) {

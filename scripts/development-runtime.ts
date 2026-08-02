@@ -238,6 +238,11 @@ export const collectDevelopmentPayloadManifest = Effect.fn('developmentRuntime.c
       if (!Number.isSafeInteger(size) || size < 0) {
         return yield* Effect.fail(new Error('The development payload contains a file with an invalid size.'));
       }
+      if (system.platform !== 'win32' && (info.mode & 0o7000) !== 0) {
+        return yield* Effect.fail(
+          new Error('The development payload contains a file with unsupported special permission bits.'),
+        );
+      }
       entries.push({
         mode: system.platform === 'win32' ? 0 : info.mode & 0o777,
         path: relative,
@@ -396,7 +401,7 @@ export const readDevelopmentReleaseEvidence = Effect.fn('developmentRuntime.read
     return yield* Effect.fail(new Error('The managed development release contains a non-canonical provenance file.'));
   }
   const receiptInfo = yield* fs.stat(receiptPath);
-  if (receiptInfo.type !== 'File' || (system.platform !== 'win32' && (receiptInfo.mode & 0o777) !== 0o600)) {
+  if (receiptInfo.type !== 'File' || (system.platform !== 'win32' && (receiptInfo.mode & 0o7777) !== 0o600)) {
     return yield* Effect.fail(new Error('The managed development release provenance file has unsafe permissions.'));
   }
   const actualPayloadManifest = yield* collectDevelopmentPayloadManifest(releaseRoot);

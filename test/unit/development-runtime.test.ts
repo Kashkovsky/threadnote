@@ -21,7 +21,7 @@ import {
   parseLocalStandaloneInstallArguments,
 } from '../../scripts/install-local-standalone.js';
 import {commandLauncherPath, renderCommandShim} from '../../src/command-shim.js';
-import {CommandExecutor} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {sha256FileHex} from '../../src/effect/digest.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -182,15 +182,58 @@ describe('exact-head development runtime', () => {
             const modeFailure = String(yield* validate.pipe(Effect.flip));
             yield* fs.chmod(nested, 0o644);
 
+            const specialPayloadModeFileSystem = FileSystem.FileSystem.of({
+              ...fs,
+              stat: file =>
+                fs
+                  .stat(file)
+                  .pipe(
+                    Effect.map(info =>
+                      path.basename(file) === 'nested.txt' ? {...info, mode: info.mode | 0o4000} : info,
+                    ),
+                  ),
+            });
+            const specialModeFailure = String(
+              yield* validate.pipe(
+                Effect.provideService(FileSystem.FileSystem, specialPayloadModeFileSystem),
+                Effect.flip,
+              ),
+            );
+
             const linked = path.join(releaseRoot, 'linked.txt');
             yield* fs.symlink(nested, linked);
             const linkFailure = String(yield* validate.pipe(Effect.flip));
             yield* fs.remove(linked);
 
             const receiptPath = path.join(releaseRoot, 'development-install.json');
+            const specialReceiptModeFileSystem = FileSystem.FileSystem.of({
+              ...fs,
+              stat: file =>
+                fs
+                  .stat(file)
+                  .pipe(
+                    Effect.map(info =>
+                      path.basename(file) === 'development-install.json' ? {...info, mode: info.mode | 0o4000} : info,
+                    ),
+                  ),
+            });
+            const receiptSpecialModeFailure = String(
+              yield* validate.pipe(
+                Effect.provideService(FileSystem.FileSystem, specialReceiptModeFileSystem),
+                Effect.flip,
+              ),
+            );
             yield* fs.chmod(receiptPath, 0o644);
             const receiptModeFailure = String(yield* validate.pipe(Effect.flip));
-            return {contentFailure, linkFailure, membershipFailure, modeFailure, receiptModeFailure};
+            return {
+              contentFailure,
+              linkFailure,
+              membershipFailure,
+              modeFailure,
+              receiptModeFailure,
+              receiptSpecialModeFailure,
+              specialModeFailure,
+            };
           }),
         ).pipe(Effect.provide(ApplicationLayer)),
       );
@@ -198,8 +241,10 @@ describe('exact-head development runtime', () => {
       expect(result.contentFailure).toContain('payload manifest does not match');
       expect(result.membershipFailure).toContain('payload manifest does not match');
       expect(result.modeFailure).toContain('payload manifest does not match');
+      expect(result.specialModeFailure).toContain('unsupported special permission bits');
       expect(result.linkFailure).toContain('must not contain symbolic links');
       expect(result.receiptModeFailure).toContain('unsafe permissions');
+      expect(result.receiptSpecialModeFailure).toContain('unsafe permissions');
     },
   );
 
@@ -659,6 +704,79 @@ describe('exact-head development runtime', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32')('executes the real POSIX CLI launcher before reporting success', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-real-launcher-'});
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const sourceCommit = '4'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            'threadnote',
+            'placeholder',
+          );
+          const executable = path.join(releaseRoot, 'threadnote');
+          yield* fs.writeFileString(
+            executable,
+            [
+              '#!/bin/sh',
+              'if [ "$1" = "doctor" ]; then',
+              "  printf '%s\\n' 'Running Threadnote doctor checks.' 'Summary: all checks complete.'",
+              'elif [ "$1" = "--version" ]; then',
+              `  printf '%s\\n' 'threadnote v${version}'`,
+              'else',
+              '  exit 64',
+              'fi',
+              '',
+            ].join('\n'),
+            {mode: 0o755},
+          );
+          yield* fs.chmod(executable, 0o755);
+          yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, 'threadnote');
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const installed = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+            commit: sourceCommit,
+            executableName: 'threadnote',
+            releaseRoot,
+            reused: true,
+            stagedRoot: Option.none(),
+            terminateSuperseded: false,
+            version,
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+          const launcher = yield* commandLauncherPath('cli').pipe(Effect.provideService(SystemInfo, testSystem));
+          const versionResult = yield* runCommandEffect(launcher, ['--version']).pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          return {installed, launcherMode: (yield* fs.stat(launcher)).mode & 0o777, versionResult};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.installed.launchersVerified).toBe(true);
+    expect(result.launcherMode).toBe(0o755);
+    expect(result.versionResult.stdout.trim()).toBe(`threadnote v${result.installed.version}`);
+  });
+
   it('restores the prior active pointer and launchers when launcher verification fails', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -736,6 +854,184 @@ describe('exact-head development runtime', () => {
     expect(result.activePointer).toBe(result.priorPointer);
     expect(result.cli).toBe(result.priorCli);
     expect(result.mcp).toBe('unmanaged launcher\n');
+  });
+
+  it('attempts every rollback restore and surfaces multiple independent restore failures', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-rollback-aggregate-'});
+          const sourceCommit = '5'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          const priorVersion = '4.0.0-beta.29';
+          const priorReleaseRoot = path.join(installRoot, 'versions', priorVersion);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'aggregate-rollback-release',
+          );
+          yield* fs.makeDirectory(priorReleaseRoot, {recursive: true});
+          const activePointer = path.join(installRoot, 'active-release.json');
+          const priorPointer = `${JSON.stringify({releaseRoot: priorReleaseRoot, version: priorVersion})}\n`;
+          yield* fs.writeFileString(activePointer, priorPointer, {mode: 0o600});
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const [cliLauncher, mcpLauncher, priorCli] = yield* Effect.all([
+            commandLauncherPath('cli'),
+            commandLauncherPath('mcp'),
+            renderCommandShim(priorReleaseRoot, 'cli'),
+          ]).pipe(Effect.provideService(SystemInfo, testSystem));
+          yield* fs.makeDirectory(binRoot, {recursive: true});
+          yield* fs.writeFileString(cliLauncher, priorCli, {mode: 0o755});
+          yield* fs.writeFileString(mcpLauncher, 'unmanaged launcher\n', {mode: 0o755});
+          const rollbackAttempts: string[] = [];
+          const failingFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            rename: (source, target) => {
+              if (source.endsWith('.rollback')) {
+                rollbackAttempts.push(target);
+                if (target === cliLauncher || target === mcpLauncher) {
+                  return fs.rename(path.join(root, `injected-missing-${path.basename(target)}`), target);
+                }
+              }
+              return fs.rename(source, target);
+            },
+          });
+          const failure = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+            commit: sourceCommit,
+            executableName,
+            releaseRoot,
+            reused: true,
+            stagedRoot: Option.none(),
+            terminateSuperseded: false,
+            version,
+          }).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+            Effect.provideService(FileSystem.FileSystem, failingFileSystem),
+            Effect.provideService(SystemInfo, testSystem),
+            Effect.flip,
+          );
+          return {
+            activePointer: yield* fs.readFileString(activePointer),
+            errorMessages: nestedErrorMessages(failure),
+            failure: String(failure),
+            rollbackAttempts,
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.failure).toContain('rollback was incomplete');
+    expect(result.rollbackAttempts).toHaveLength(3);
+    expect(result.errorMessages.filter(message => message.startsWith('Could not restore the'))).toHaveLength(2);
+    expect(result.activePointer).toContain('4.0.0-beta.29');
+  });
+
+  it('keeps a valid activation active while reporting independent cleanup failures', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-cleanup-failures-'});
+          const sourceCommit = '6'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          const stagedRoot = path.join(installRoot, 'versions', `.${version}.fixture.staging`);
+          const leasesRoot = path.join(installRoot, 'leases');
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'cleanup-active-release',
+          );
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            stagedRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'cleanup-disposable-stage',
+          );
+          yield* fs.makeDirectory(leasesRoot, {recursive: true});
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const missing = path.join(root, 'injected-missing-path');
+          const failingFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            readDirectory: directory =>
+              directory === leasesRoot ? fs.readDirectory(missing) : fs.readDirectory(directory),
+            remove: (target, options) =>
+              target === stagedRoot ? fs.rename(missing, path.join(root, 'never-created')) : fs.remove(target, options),
+          });
+          const installed = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+            commit: sourceCommit,
+            executableName,
+            releaseRoot,
+            reused: false,
+            stagedRoot: Option.some(stagedRoot),
+            terminateSuperseded: false,
+            version,
+          }).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+            Effect.provideService(FileSystem.FileSystem, failingFileSystem),
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          return {
+            activePointer: JSON.parse(yield* fs.readFileString(path.join(installRoot, 'active-release.json'))) as {
+              readonly version: string;
+            },
+            installed,
+            stagedExists: yield* fs.exists(stagedRoot),
+          };
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.installed).toMatchObject({
+      active: true,
+      cleanupComplete: false,
+      cleanupIssues: ['process-inspection', 'release-pruning', 'staging-removal'],
+      doctorVerified: true,
+      launchersVerified: true,
+    });
+    expect(result.activePointer.version).toBe(result.installed.version);
+    expect(result.stagedExists).toBe(true);
   });
 
   it('removes a disposable staging directory when pre-activation validation fails', async () => {
@@ -835,6 +1131,16 @@ function versionCommandExecutor(version: string) {
       }),
     executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
   });
+}
+
+function nestedErrorMessages(value: unknown): readonly string[] {
+  if (value instanceof AggregateError) {
+    return [value.message, ...value.errors.flatMap(nestedErrorMessages)];
+  }
+  if (value instanceof Error) {
+    return [value.message, ...nestedErrorMessages(value.cause)];
+  }
+  return [];
 }
 
 function writeDevelopmentReleaseFixture(
