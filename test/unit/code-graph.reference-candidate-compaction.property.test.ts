@@ -43,14 +43,12 @@ describe('persistent reference candidate compaction', () => {
 
             expect(actual.map(row => row.edge_id)).toEqual(expected.map(row => row.edgeId));
             expect(actual.length).toBeLessThanOrEqual(limits.references);
-            if (actual.length > 1) {
-              expect(actual.reduce((total, row) => total + row.candidate_count, 0)).toBeLessThanOrEqual(
-                limits.candidateCount,
-              );
-              expect(actual.reduce((total, row) => total + row.candidate_payload_bytes, 0)).toBeLessThanOrEqual(
-                limits.payloadBytes,
-              );
-            }
+            expect(actual.reduce((total, row) => total + row.candidate_count, 0)).toBeLessThanOrEqual(
+              limits.candidateCount,
+            );
+            expect(actual.reduce((total, row) => total + row.candidate_payload_bytes, 0)).toBeLessThanOrEqual(
+              limits.payloadBytes,
+            );
           } finally {
             database.close(false);
           }
@@ -58,6 +56,35 @@ describe('persistent reference candidate compaction', () => {
       ),
       {numRuns: 200},
     );
+  });
+
+  it('accepts exact first-row limits and rejects either first-row overflow', () => {
+    const database = candidateDatabase([
+      {candidateCount: 7, payloadBytes: 11},
+      {candidateCount: 1, payloadBytes: 1},
+    ]);
+    try {
+      const exact = codeGraphPersistentReferencePageStatement('snapshot', '', {
+        candidateCount: 7,
+        payloadBytes: 11,
+        references: 1,
+      });
+      expect(database.query(exact.text).all(...exact.parameters)).toHaveLength(1);
+      const candidateOverflow = codeGraphPersistentReferencePageStatement('snapshot', '', {
+        candidateCount: 6,
+        payloadBytes: 11,
+        references: 1,
+      });
+      expect(database.query(candidateOverflow.text).all(...candidateOverflow.parameters)).toEqual([]);
+      const payloadOverflow = codeGraphPersistentReferencePageStatement('snapshot', '', {
+        candidateCount: 7,
+        payloadBytes: 10,
+        references: 1,
+      });
+      expect(database.query(payloadOverflow.text).all(...payloadOverflow.parameters)).toEqual([]);
+    } finally {
+      database.close(false);
+    }
   });
 });
 
@@ -95,10 +122,7 @@ function boundedPrefix(
   let candidates = 0;
   let payloadBytes = 0;
   for (const value of values) {
-    if (
-      selected.length > 0 &&
-      (candidates + value.candidateCount > candidateLimit || payloadBytes + value.payloadBytes > payloadLimit)
-    ) {
+    if (candidates + value.candidateCount > candidateLimit || payloadBytes + value.payloadBytes > payloadLimit) {
       break;
     }
     selected.push(value);

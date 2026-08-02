@@ -137,7 +137,10 @@ describe('external code graph benchmark execution safety', () => {
         );
         expect(result.artifactExists).toBe(false);
       } else {
-        expect(result.actual.exitCode).toBe(0);
+        expect(
+          result.actual.exitCode,
+          `benchmark stderr:\n${result.actual.stderr}\nbenchmark stdout:\n${result.actual.stdout}`,
+        ).toBe(0);
         expect(result.artifactExists).toBe(true);
         expect(result.artifact?.metadata).toMatchObject({
           oneFileReindexMaterializationMode: 'incremental-overlay',

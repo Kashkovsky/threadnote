@@ -5,7 +5,14 @@ import * as SqlError from 'effect/unstable/sql/SqlError';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {ensureBoundedCodeGraphFact, type BoundedCodeGraphFact, type CodeGraphCacheFactInput} from './fact_budget.js';
+import {
+  areCodeGraphLookupTiersWithinCandidateBudget,
+  CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
+  ensureBoundedCodeGraphFact,
+  isCodeGraphReferenceWithinCandidateBudget,
+  type BoundedCodeGraphFact,
+  type CodeGraphCacheFactInput,
+} from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
 import type {
   CodeGraphEdge,
@@ -6321,9 +6328,10 @@ function stageActivationReferences(
   observer?: ActivationStagingObserver,
 ) {
   return Effect.gen(function* () {
+    const boundedReferences = references.filter(isCodeGraphReferenceWithinCandidateBudget);
     yield* observer?.('references', 0, true) ?? Effect.void;
     for (const batch of chunk(
-      sortedBy(references, reference => reference.edgeId),
+      sortedBy(boundedReferences, reference => reference.edgeId),
       ACTIVATION_REFERENCE_BATCH_ROWS,
     )) {
       yield* sql.unsafe(
@@ -6614,7 +6622,8 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   if (!Number.isSafeInteger(batchIndex) || batchIndex < 0) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
   }
-  const batchFingerprint = yield* persistedFullBatchFingerprint(symbols, edges, references);
+  const boundedReferences = references.filter(isCodeGraphReferenceWithinCandidateBudget);
+  const batchFingerprint = yield* persistedFullBatchFingerprint(symbols, edges, boundedReferences);
 
   let lookupCount = 0;
   let termCount = 0;
@@ -6772,7 +6781,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
 
       yield* observer('references', 0, true);
       for (const batch of chunk(
-        sortedBy(references, reference => reference.edgeId),
+        sortedBy(boundedReferences, reference => reference.edgeId),
         ACTIVATION_REFERENCE_BATCH_ROWS,
       )) {
         const compacted = batch.map(reference => ({
@@ -6842,7 +6851,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
           reference_count, candidate_count, reexport_count, completed_at
         ) VALUES (
           ${snapshotId}, ${batchIndex}, ${batchFingerprint}, ${symbols.length}, ${edges.length}, ${termCount}, ${lookupCount},
-          ${references.length}, ${candidateCount}, ${reexportCount}, ${new Date().toISOString()}
+          ${boundedReferences.length}, ${candidateCount}, ${reexportCount}, ${new Date().toISOString()}
         )
       `;
       yield* observer('receipt', 1, true);
@@ -7102,7 +7111,7 @@ const RESOLUTION_PAGE_ROWS = 500;
 // full-build pages are independently bounded by reference count, candidate
 // count, and encoded payload bytes before their lookup tiers are decoded.
 const PERSISTENT_FULL_RESOLUTION_PAGE_ROWS = 5_000;
-const PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES = 100_000;
+const PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES = CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM;
 const PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES = 8 * 1_024 * 1_024;
 const PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS = 256;
 const REEXPORT_CLOSURE_SEED_PAGE_ROWS = 100;
@@ -7162,8 +7171,7 @@ export function codeGraphPersistentReferencePageStatement(
       )
       SELECT edge_id, lookup_tiers_json, candidate_count, candidate_payload_bytes
       FROM measured
-      WHERE ordinal = 1
-         OR (cumulative_candidate_count <= ? AND cumulative_payload_bytes <= ?)
+      WHERE cumulative_candidate_count <= ? AND cumulative_payload_bytes <= ?
       ORDER BY edge_id`,
   };
 }
@@ -7194,10 +7202,25 @@ function decodePersistedReferenceCandidateRows(
         if (
           !Number.isSafeInteger(reference.candidate_count) ||
           reference.candidate_count < 0 ||
+          reference.candidate_count > PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES ||
           !Number.isSafeInteger(reference.candidate_payload_bytes) ||
-          reference.candidate_payload_bytes < 0
+          reference.candidate_payload_bytes < 0 ||
+          reference.candidate_payload_bytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES
         ) {
           throw new CodeGraphStoreError('Stored reference candidate metadata is invalid.');
+        }
+        // Metadata makes the SQL page selection cheap, but is not a trust
+        // boundary. Measure the actual UTF-8 payload before JSON.parse so a
+        // corrupt row cannot turn a compact page into an unbounded decode.
+        if (reference.lookup_tiers_json.length > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES) {
+          throw new CodeGraphStoreError('Stored reference candidate payload exceeds its byte budget.');
+        }
+        const actualPayloadBytes = referenceCandidateEncoder.encode(reference.lookup_tiers_json).byteLength;
+        if (
+          actualPayloadBytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES ||
+          actualPayloadBytes !== reference.candidate_payload_bytes
+        ) {
+          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
         }
         const parsed: unknown = JSON.parse(reference.lookup_tiers_json);
         if (
@@ -7205,6 +7228,9 @@ function decodePersistedReferenceCandidateRows(
           !parsed.every(tier => Array.isArray(tier) && tier.every(lookupKey => typeof lookupKey === 'string'))
         ) {
           throw new CodeGraphStoreError('Stored reference lookup tiers are invalid.');
+        }
+        if (!areCodeGraphLookupTiersWithinCandidateBudget(parsed)) {
+          throw new CodeGraphStoreError('Stored reference candidate payload exceeds its cardinality budget.');
         }
         const compacted = compactReferenceLookupTiers(parsed);
         if (

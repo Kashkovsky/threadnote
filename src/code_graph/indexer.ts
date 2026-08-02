@@ -75,6 +75,8 @@ export {
   cachedCodeGraphFactBytes,
   cachedCodeGraphFactByteUpperBound,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
+  CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC,
   compactCachedFileRelationships,
   finalCodeGraphFactBatches,
 } from './fact_budget.js';

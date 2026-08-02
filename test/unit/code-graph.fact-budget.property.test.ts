@@ -7,6 +7,8 @@ import {
   cachedCodeGraphFactBytes,
   cachedCodeGraphFactByteUpperBound,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
+  CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC,
   createCachedCodeGraphFactsAttributor,
   factMaterializationBatches,
   finalCodeGraphFactBatches,
@@ -227,9 +229,42 @@ describe('cached code graph fact persistence budget', () => {
     const pack = identityTestPack();
     const current = packCacheIdentity(pack);
 
-    expect(CODE_GRAPH_PARSER_FACTS_VERSION).toBe('parser-facts-v3-bounded-final-attribution');
+    expect(CODE_GRAPH_PARSER_FACTS_VERSION).toBe('parser-facts-v4-bounded-reference-candidates');
     expect(current).toBe(testPackCacheIdentity(pack, CODE_GRAPH_PARSER_FACTS_VERSION));
     expect(current).not.toBe(testPackCacheIdentity(pack, 'parser-facts-v1'));
+  });
+
+  it('preserves an oversized reference edge as unresolved with a privacy-safe diagnostic', () => {
+    const path = 'src/reference-candidate-budget.ts';
+    const owner = graphSymbol('candidate-budget-owner', 'function', path, 1, true);
+    const unresolved = graphEdge('candidate-budget-edge', 'calls', path, 2, owner.id, undefined, 'target');
+    const oversized = graphReference(unresolved, 'ignored');
+    const facts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [unresolved],
+      path,
+      references: [
+        {
+          ...oversized,
+          lookupTiers: [
+            Array.from(
+              {length: CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM + 1},
+              (_, index) => `lookup:${index}`,
+            ),
+          ],
+        },
+      ],
+      symbols: [owner],
+    };
+
+    const bounded = budgetCachedCodeGraphFacts(facts);
+
+    expect(cachedCodeGraphFactBytes(facts)).toBeLessThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+    expect(bounded.edges).toEqual([unresolved]);
+    expect(bounded.references).toEqual([]);
+    expect(bounded.diagnostics).toContain(CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC);
+    expect(CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC).not.toContain(path);
+    expect(CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC).not.toContain(unresolved.targetName);
   });
 
   it('re-budgets rationale and resolution amplification before final staging', () => {

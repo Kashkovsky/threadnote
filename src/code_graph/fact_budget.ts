@@ -9,10 +9,13 @@ import type {
 } from './types.js';
 
 export const CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM = 8 * 1_048_576;
-export const CODE_GRAPH_PARSER_FACTS_VERSION = 'parser-facts-v3-bounded-final-attribution' as const;
+export const CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM = 100_000;
+export const CODE_GRAPH_PARSER_FACTS_VERSION = 'parser-facts-v4-bounded-reference-candidates' as const;
 
 const CACHED_FACT_BUDGET_DIAGNOSTIC =
   'Cached code graph facts exceeded the per-file persistence budget; lower-priority relationships and documentation were omitted.';
+export const CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC =
+  'A code graph relationship exceeded the per-reference resolution budget; the relationship was preserved as unresolved.';
 const boundedCodeGraphFactBrand: unique symbol = Symbol('threadnote/BoundedCodeGraphFact');
 const cachedFactEncoder = new TextEncoder();
 
@@ -131,7 +134,7 @@ export function budgetCachedCodeGraphFacts(
   facts: CodeGraphFileFacts,
   maximumBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
 ): CodeGraphFileFacts {
-  const compacted = compactCachedFileRelationships(facts);
+  const compacted = budgetCodeGraphReferenceCandidates(compactCachedFileRelationships(facts));
   if (cachedCodeGraphFactByteUpperBound(compacted) <= maximumBytes) return compacted;
   if (cachedCodeGraphFactBytes(compacted) <= maximumBytes) return compacted;
 
@@ -266,6 +269,42 @@ export function budgetCachedCodeGraphFacts(
   }
 
   return output();
+}
+
+/**
+ * Removes only the resolution payload for pathological references. Their edge
+ * remains in the graph as unresolved, so one file can never reject its
+ * repository or expand a bounded resolution page beyond its cardinality cap.
+ */
+export function budgetCodeGraphReferenceCandidates(facts: CodeGraphFileFacts): CodeGraphFileFacts {
+  if (facts.references === undefined) return facts;
+  const references = facts.references.filter(isCodeGraphReferenceWithinCandidateBudget);
+  if (references.length === facts.references.length) return facts;
+  return {
+    ...facts,
+    diagnostics: facts.diagnostics.includes(CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC)
+      ? facts.diagnostics
+      : [...facts.diagnostics, CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC],
+    references,
+  };
+}
+
+export function isCodeGraphReferenceWithinCandidateBudget(reference: CodeGraphReference): boolean {
+  return areCodeGraphLookupTiersWithinCandidateBudget(reference.lookupTiers);
+}
+
+export function areCodeGraphLookupTiersWithinCandidateBudget(lookupTiers: readonly (readonly string[])[]): boolean {
+  let candidates = 0;
+  for (const tier of lookupTiers) {
+    const unique = new Set<string>();
+    for (const lookupKey of tier) {
+      if (unique.has(lookupKey)) continue;
+      unique.add(lookupKey);
+      candidates += 1;
+      if (candidates > CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM) return false;
+    }
+  }
+  return true;
 }
 
 /** First edge wins; the last reference for one edge retains attribution semantics. */

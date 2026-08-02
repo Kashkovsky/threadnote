@@ -5,6 +5,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/fact_budget.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
@@ -1202,7 +1203,7 @@ describe('code graph full-build materialization store', () => {
       evidencePath: fixture.file.path,
       evidenceSpan: unresolved.evidenceSpan,
       lookupTiers: [
-        ['typescript:name:zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
+        ['typescript:name:żółw🙂zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
         ['typescript:name:alpha'],
       ],
       provenance: 'syntactic',
@@ -1231,7 +1232,7 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:zeta'], ['typescript:name:alpha']];
+    const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:żółw🙂zeta'], ['typescript:name:alpha']];
     const expectedPayload = JSON.stringify(expectedLookupTiers);
     const interrupted = new Database(fixture.databasePath, {readonly: true, strict: true});
     const stored = interrupted
@@ -1283,6 +1284,118 @@ describe('code graph full-build materialization store', () => {
 
     expect(resumed.resolution.resolved).toBe(0);
     expect(resumed.graph.edges).toEqual([unresolved]);
+  });
+
+  it('keeps an oversized direct reference edge unresolved without persisting its candidates', async () => {
+    const fixture = await materializationFixture();
+    const caller = symbol('oversized-reference-caller', 'oversizedReferenceCaller', [
+      'typescript:name:oversizedReferenceCaller',
+    ]);
+    const unresolved = edge('oversized-reference-edge', caller, 'oversizedReferenceTarget');
+    const reference: CodeGraphReference = {
+      edgeId: unresolved.id,
+      evidencePath: fixture.file.path,
+      evidenceSpan: unresolved.evidenceSpan,
+      lookupTiers: Array.from({length: CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM + 1}, () => [
+        'typescript:name:repeatedAcrossTiers',
+      ]),
+      provenance: 'syntactic',
+      relation: 'calls',
+      resolutionDomain: 'typescript',
+      sourceId: caller.id,
+      sourceName: caller.name,
+      targetName: unresolved.targetName,
+    };
+    const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'oversized-reference-budget'};
+
+    const graph = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return yield* store.loadGraph(fixture.databasePath, snapshot.id);
+          }),
+        );
+      }),
+    );
+
+    expect(graph.edges).toEqual([unresolved]);
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT COUNT(*) AS count FROM building_references').get()).toEqual({count: 0});
+      expect(database.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get()).toEqual({count: 0});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('checks actual compact payload bytes before parsing corrupted JSON', async () => {
+    const fixture = await materializationFixture();
+    const caller = symbol('corrupt-payload-caller', 'corruptPayloadCaller', ['typescript:name:corruptPayloadCaller']);
+    const unresolved = edge('corrupt-payload-edge', caller, 'corruptPayloadTarget');
+    const reference: CodeGraphReference = {
+      edgeId: unresolved.id,
+      evidencePath: fixture.file.path,
+      evidenceSpan: unresolved.evidenceSpan,
+      lookupTiers: [['typescript:name:corruptPayloadTarget🙂']],
+      provenance: 'syntactic',
+      relation: 'calls',
+      resolutionDomain: 'typescript',
+      sourceId: caller.id,
+      sourceName: caller.name,
+      targetName: unresolved.targetName,
+    };
+    const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'corrupt-reference-payload'};
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+          }),
+        );
+      }),
+    );
+    const corrupted = new Database(fixture.databasePath, {strict: true});
+    corrupted
+      .query('UPDATE building_references SET lookup_tiers_json = ? WHERE snapshot_id = ?')
+      .run('🙂{not-json', snapshot.id);
+    corrupted.close(false);
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+            }),
+          );
+        }),
+      ),
+    ).rejects.toThrow('metadata does not match its payload');
   });
 
   it('keeps compacted candidates isolated across interleaved worktree builds', async () => {
