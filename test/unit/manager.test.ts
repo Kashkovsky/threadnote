@@ -221,6 +221,47 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
   return checkoutId;
 }
 
+async function promoteManagerGraphReplacement(config: RuntimeConfig): Promise<string> {
+  const checkoutId = 'a'.repeat(64);
+  const identity: RepositoryIdentity = {
+    caseMode: 'sensitive',
+    checkoutId,
+    displayName: 'acme/platform',
+    gitCommonDirectory: join(config.agentContextHome, 'repository', '.git'),
+    headCommit: '2'.repeat(40),
+    objectFormat: 'sha1',
+    remoteIdentity: 'github.com/acme/platform',
+    repoRoot: join(config.agentContextHome, 'repository'),
+    repositoryId: 'b'.repeat(64),
+    worktreeId: 'c'.repeat(64),
+  };
+  const symbol = graphSymbol('replacement', 'Replacement', 'src/replacement.ts', '@acme/new', 'class', 'cgp_new');
+  const file = graphFile(symbol.path, symbol.id);
+  const snapshot: CodeGraphSnapshot = {
+    commit: identity.headCommit,
+    completedAt: new Date().toISOString(),
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
+    fileCount: 1,
+    id: 'manager-graph-snapshot-replacement',
+    repositoryId: identity.repositoryId,
+    state: 'ready',
+    symbolCount: 1,
+    worktreeId: identity.worktreeId,
+  };
+  await runEffect(
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+      yield* store.activate(layout.databasePath, identity, snapshot, [file], [symbol], []);
+      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+    }),
+  );
+  return snapshot.id;
+}
+
 function graphFile(path: string, hash: string): CodeGraphInventoryFile {
   return {
     blobId: hash,
@@ -563,10 +604,7 @@ describe('manager http API', () => {
         worktreeId: 'c'.repeat(64),
       });
       expect(catalog.repositories[0]?.views[0]?.projects).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({id: 'cgp_app', symbolCount: 0}),
-          expect.objectContaining({id: 'cgp_core', symbolCount: 0}),
-        ]),
+        expect.arrayContaining([expect.objectContaining({id: 'cgp_app'}), expect.objectContaining({id: 'cgp_core'})]),
       );
 
       const overviewResponse = await fetch(`${server.url}/api/graph?repository=${repositoryId}&project=all`, {headers});
@@ -584,7 +622,10 @@ describe('manager http API', () => {
         ]),
       );
       expect(overview.edges).toEqual(
-        expect.arrayContaining([expect.objectContaining({count: 1, relation: 'depends_on'})]),
+        expect.arrayContaining([
+          expect.objectContaining({count: 1, relation: 'depends_on'}),
+          expect.objectContaining({count: 1, relation: 'imports'}),
+        ]),
       );
 
       const detailStartedAt = performance.now();
@@ -704,6 +745,63 @@ describe('manager http API', () => {
       expect(analysisResponse.status).toBe(200);
       expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 1_602, analyzedNodeCount: 523});
       expect(analysis.trust.classification).toBe('untrusted-repository-data');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('pins graph, node detail, and analysis reads to the catalog snapshot across promotion', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const checkoutId = await seedManagerGraph(config);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret'};
+      const catalog = (await (await fetch(`${server.url}/api/graphs`, {headers})).json()) as {
+        readonly repositories: readonly {
+          readonly defaultViewId: string;
+          readonly views: readonly {readonly id: string; readonly snapshot: {readonly id: string}}[];
+        }[];
+      };
+      const view = catalog.repositories[0]!.views[0]!;
+      const originalSnapshotId = view.snapshot.id;
+      expect(originalSnapshotId).toBe('manager-graph-snapshot');
+      const replacementSnapshotId = await promoteManagerGraphReplacement(config);
+
+      const pinnedGraphResponse = await fetch(
+        `${server.url}/api/graph?repository=${checkoutId}&snapshot=${originalSnapshotId}&project=cgp_app`,
+        {headers},
+      );
+      const pinnedGraph = (await pinnedGraphResponse.json()) as {
+        readonly nodes: readonly {readonly id: string}[];
+        readonly repository: {readonly snapshot: {readonly id: string}};
+      };
+      expect(pinnedGraphResponse.status).toBe(200);
+      expect(pinnedGraph.repository.snapshot.id).toBe(originalSnapshotId);
+      expect(pinnedGraph.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
+
+      const pinnedNodeResponse = await fetch(
+        `${server.url}/api/graph/node?repository=${checkoutId}&snapshot=${originalSnapshotId}&node=app`,
+        {headers},
+      );
+      const pinnedNode = (await pinnedNodeResponse.json()) as {readonly snapshotId: string};
+      expect(pinnedNodeResponse.status).toBe(200);
+      expect(pinnedNode.snapshotId).toBe(originalSnapshotId);
+
+      const pinnedAnalysisResponse = await fetch(
+        `${server.url}/api/graph/analysis?repository=${checkoutId}&snapshot=${originalSnapshotId}`,
+        {headers},
+      );
+      const pinnedAnalysis = (await pinnedAnalysisResponse.json()) as {
+        readonly statistics: {readonly analyzedNodeCount: number};
+      };
+      expect(pinnedAnalysisResponse.status).toBe(200);
+      expect(pinnedAnalysis.statistics.analyzedNodeCount).toBe(523);
+
+      const currentGraph = (await (
+        await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})
+      ).json()) as {readonly repository: {readonly snapshot: {readonly id: string}}};
+      expect(currentGraph.repository.snapshot.id).toBe(replacementSnapshotId);
     } finally {
       await server.close();
     }

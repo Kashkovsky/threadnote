@@ -7,6 +7,7 @@ import {
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
+  graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
   graphRequestIsCurrent,
   graphRepositoryOptionLabel,
@@ -95,6 +96,16 @@ describe('manager graph focus', () => {
     expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(true);
     expect(graphRequestIsCurrent(8, 7, 'repo:snapshot:component:240', 'repo:snapshot:component:240')).toBe(false);
     expect(graphRequestIsCurrent(7, 7, 'repo:snapshot:other:240', 'repo:snapshot:component:240')).toBe(false);
+  });
+
+  it('rejects a late node detail after rapid selection, cancellation, or snapshot promotion', () => {
+    const selected = nodeDetail('selected', 'selected', []);
+    expect(graphNodeDetailRequestIsCurrent(false, selected, 'snapshot', 'selected')).toBe(true);
+    expect(graphNodeDetailRequestIsCurrent(true, selected, 'snapshot', 'selected')).toBe(false);
+    expect(graphNodeDetailRequestIsCurrent(false, selected, 'snapshot', 'next-selection')).toBe(false);
+    expect(
+      graphNodeDetailRequestIsCurrent(false, {...selected, snapshotId: 'previous-snapshot'}, 'snapshot', 'selected'),
+    ).toBe(false);
   });
 
   it('does not present unavailable topology as zero communities, components, or hubs', () => {
@@ -406,7 +417,9 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
       label: viewId,
       metrics: 'complete',
       model: 'workspace',
+      projectCount: 0,
       projects: [],
+      projectsTruncated: false,
       snapshot: {
         commit: 'abcdef01',
         dirty: false,
@@ -416,7 +429,9 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
         symbolCount: 0,
       },
       worktreeId: viewId,
+      workspaceCount: 0,
       workspaces: [],
+      workspacesTruncated: false,
     })),
   };
 }
@@ -481,6 +496,7 @@ function nodeDetail(id: string, label: string, relationships: ReturnType<typeof 
       span: {column: 1, endColumn: 10, endLine: 1, line: 1},
     },
     relationships,
+    snapshotId: 'snapshot',
     stats: {
       incoming: relationships.filter(item => item.direction === 'incoming').length,
       outgoing: relationships.filter(item => item.direction === 'outgoing').length,

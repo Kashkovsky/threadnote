@@ -8,6 +8,12 @@ import {
   type GraphVisualization,
 } from '../../src/manager_graph.js';
 import {
+  managerGraphDetailWorkingSet,
+  representativeManagerGraphEdges,
+  type ManagerGraphEdge,
+} from '../../src/code_graph/visualization.js';
+import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
@@ -104,12 +110,94 @@ describe('Manager graph properties', () => {
           expect(expanded.edges.every(edge => nodeSet.has(edge.sourceId) && nodeSet.has(edge.targetId))).toBe(true);
           expect(expanded.stats.renderedNodes).toBe(expanded.nodes.length);
           expect(expanded.stats.renderedEdges).toBe(expanded.edges.length);
+          expect(expanded.nodes.length).toBeLessThanOrEqual(MANAGER_GRAPH_MAX_NODE_LIMIT);
+          expect(expanded.edges.length).toBeLessThanOrEqual(MANAGER_GRAPH_MAX_EDGE_LIMIT);
         },
       ),
       {numRuns: 100},
     );
   });
+
+  it('marks node-budget truncation and preserves the selected unscoped facet on every seed', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: 80}), fc.integer({min: 1, max: 24}), (neighborCount, nodeLimit) => {
+        const seed = codeGraphSymbol('seed', undefined);
+        const neighbors = Array.from({length: neighborCount}, (_, index) =>
+          codeGraphSymbol(`neighbor-${index}`, 'cgp_external'),
+        );
+        const edges = neighbors.map((neighbor, index) => codeGraphEdge(`edge-${index}`, seed.id, neighbor.id));
+        const loadedNeighbors = neighbors.slice(0, Math.max(0, nodeLimit - 1));
+        const result = managerGraphDetailWorkingSet([seed], loadedNeighbors, edges, 'facet:unscoped', {
+          edgeLimit: 100,
+          nodeLimit,
+        });
+        expect(result.nodes.find(node => node.id === seed.id)?.projectId).toBe('facet:unscoped');
+        expect(result.nodes.filter(node => node.id !== seed.id).every(node => node.projectId === 'cgp_external')).toBe(
+          true,
+        );
+        expect(result.truncated).toBe(neighborCount > loadedNeighbors.length);
+        const visible = new Set(result.nodes.map(node => node.id));
+        expect(result.edges.every(edge => visible.has(edge.sourceId) && visible.has(edge.targetId))).toBe(true);
+      }),
+      {numRuns: 120},
+    );
+  });
+
+  it('gives every connected retained overview node incident evidence when the budget permits', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 2, max: 120}), nodeCount => {
+        const nodeIds = Array.from({length: nodeCount}, (_, index) => `component-${index}`);
+        const candidates: ManagerGraphEdge[] = nodeIds.slice(1).map((nodeId, index) => ({
+          confidence: 1,
+          count: index + 1,
+          id: `edge-${index}`,
+          provenance: 'resolved',
+          relation: 'imports',
+          sourceId: nodeIds[index]!,
+          targetId: nodeId,
+        }));
+        const selected = representativeManagerGraphEdges(candidates, nodeIds, nodeIds.length);
+        expect(selected.length).toBeLessThanOrEqual(nodeIds.length);
+        expect(
+          nodeIds.every(nodeId => selected.some(edge => edge.sourceId === nodeId || edge.targetId === nodeId)),
+        ).toBe(true);
+      }),
+      {numRuns: 100},
+    );
+  });
 });
+
+function codeGraphSymbol(id: string, resolutionScopeId: string | undefined): CodeGraphSymbol {
+  return {
+    contentHash: id,
+    exported: true,
+    id,
+    kind: 'function',
+    language: 'typescript',
+    lookupKeys: [],
+    name: id,
+    path: `src/${id}.ts`,
+    qualifiedName: id,
+    resolutionDomain: 'typescript',
+    ...(resolutionScopeId ? {resolutionScopeId} : {}),
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
+function codeGraphEdge(id: string, sourceId: string, targetId: string): CodeGraphEdge {
+  return {
+    confidence: 1,
+    evidencePath: 'src/seed.ts',
+    evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    id,
+    provenance: 'resolved',
+    relation: 'calls',
+    sourceId,
+    sourceName: sourceId,
+    targetId,
+    targetName: targetId,
+  };
+}
 
 function baseGraph(): GraphVisualization {
   return {
@@ -168,6 +256,7 @@ function graphNodeDetail(relationships: GraphNodeDetail['relationships']): Graph
       span: {column: 1, endColumn: 2, endLine: 1, line: 1},
     },
     relationships,
+    snapshotId: 'snapshot',
     stats: {incoming: 0, outgoing: 0, provenances: [], relations: [], truncated: false},
   };
 }

@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
-import {Effect, Layer} from 'effect';
+import {Effect, Layer, Option} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {groupManagerGraphRepositories, managerGraphCatalog} from '../../src/code_graph/visualization.js';
 import {
@@ -45,6 +45,9 @@ describe('Manager logical repository and workspace catalogs', () => {
     const legacy = new Database(databasePath);
     legacy.run("INSERT INTO schema_metadata (key, value) VALUES ('legacy_marker', 'preserve-me')");
     legacy.run('DROP INDEX symbols_resolution_scope');
+    legacy.run('DROP INDEX symbols_visualization_scope_v2');
+    legacy.run('DROP INDEX symbols_visualization_package_v2');
+    legacy.run('DROP INDEX symbols_visualization_path_v2');
     legacy.run('DROP TABLE workspace_component_dependencies');
     legacy.run('DROP TABLE workspace_components');
     legacy.run('DROP TABLE workspace_scopes');
@@ -219,11 +222,45 @@ describe('Manager logical repository and workspace catalogs', () => {
             yield* store.promote(databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
           }),
         );
+        const highFanStartedAt = performance.now();
+        const highFanSummary = yield* store.relationshipSummaryForNode(
+          databasePath,
+          snapshot.id,
+          'symbol-a-1',
+          ['resolved'],
+          128,
+        );
+        const highFanElapsedMilliseconds = performance.now() - highFanStartedAt;
+        const representativeStartedAt = performance.now();
+        const representativeEdges = yield* store.representativeEdgesForNodes(
+          databasePath,
+          snapshot.id,
+          ['symbol-a-1', 'symbol-a-2', 'symbol-b'],
+          'both',
+          20,
+          ['resolved'],
+        );
+        const representativeElapsedMilliseconds = performance.now() - representativeStartedAt;
         return {
+          boundedScopeEdges: yield* store.loadVisualizationScopeEdgeSummary(
+            databasePath,
+            snapshot.id,
+            ['cgp_component_a', 'cgp_component_b', 'facet:unscoped'],
+            20,
+          ),
           catalog: yield* store.loadVisualizationCatalog(databasePath),
           deferredCatalog: yield* store.loadVisualizationCatalog(databasePath, 'deferred'),
+          highFanElapsedMilliseconds,
+          highFanSummary,
+          representativeElapsedMilliseconds,
+          representativeEdges,
           scopeEdges: yield* store.loadVisualizationScopeEdges(databasePath, snapshot.id),
           unscoped: yield* store.loadVisualizationSymbols(databasePath, snapshot.id, {type: 'documentation-facet'}, 20),
+          unscopedCatalog: yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+            projectId: Option.some('facet:unscoped'),
+            projectLimit: 1,
+            snapshotId: Option.some(snapshot.id),
+          }),
         };
       }).pipe(Effect.provide(storeLayer)),
     );
@@ -263,6 +300,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       ]),
     );
     expect(result.unscoped.map(symbol => symbol.id)).toEqual(['symbol-doc']);
+    expect(result.unscopedCatalog?.projects.map(project => project.id)).toEqual(['facet:unscoped']);
     expect(result.scopeEdges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -288,6 +326,17 @@ describe('Manager logical repository and workspace catalogs', () => {
         }),
       ]),
     );
+    expect(result.boundedScopeEdges.edges).toEqual(
+      expect.arrayContaining([expect.objectContaining({sourceId: 'cgp_component_a', targetId: 'cgp_component_b'})]),
+    );
+    expect(result.highFanSummary).toMatchObject({sampledEdges: 128, truncated: true});
+    expect(result.highFanElapsedMilliseconds).toBeLessThan(1_000);
+    expect(result.representativeEdges.truncated).toBe(true);
+    const representativeEndpoints = new Set(
+      result.representativeEdges.edges.flatMap(item => [item.sourceId, item.targetId]),
+    );
+    expect([...representativeEndpoints]).toEqual(expect.arrayContaining(['symbol-a-1', 'symbol-a-2', 'symbol-b']));
+    expect(result.representativeElapsedMilliseconds).toBeLessThan(1_000);
     const queryPlanDatabase = new Database(databasePath, {readonly: true});
     const componentStatement = codeGraphVisualizationSymbolsQueryStatement(
       snapshot.id,
@@ -298,9 +347,37 @@ describe('Manager logical repository and workspace catalogs', () => {
     const queryPlan = queryPlanDatabase
       .query(`EXPLAIN QUERY PLAN ${componentStatement.text}`)
       .all(...componentStatement.parameters) as readonly {readonly detail: string}[];
-    expect(
-      queryPlan.some(row => row.detail.includes('symbols_resolution_scope (snapshot_id=? AND resolution_scope_id=?)')),
-    ).toBe(true);
+    expect(queryPlan.some(row => row.detail.includes('symbols_visualization_scope_v2'))).toBe(true);
+    const unscopedStatement = codeGraphVisualizationSymbolsQueryStatement(
+      snapshot.id,
+      undefined,
+      {type: 'unscoped'},
+      20,
+    );
+    const unscopedPlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${unscopedStatement.text}`)
+      .all(...unscopedStatement.parameters) as readonly {readonly detail: string}[];
+    expect(unscopedPlan.some(row => row.detail.includes('symbols_visualization_scope_v2'))).toBe(true);
+    const packageStatement = codeGraphVisualizationSymbolsQueryStatement(
+      snapshot.id,
+      undefined,
+      {type: 'package', value: 'threadnote'},
+      20,
+    );
+    const packagePlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${packageStatement.text}`)
+      .all(...packageStatement.parameters) as readonly {readonly detail: string}[];
+    expect(packagePlan.some(row => row.detail.includes('symbols_visualization_package_v2'))).toBe(true);
+    const pathStatement = codeGraphVisualizationSymbolsQueryStatement(
+      snapshot.id,
+      undefined,
+      {type: 'path', value: 'scripts'},
+      20,
+    );
+    const pathPlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${pathStatement.text}`)
+      .all(...pathStatement.parameters) as readonly {readonly detail: string}[];
+    expect(pathPlan.some(row => row.detail.includes('symbols_visualization_path_v2'))).toBe(true);
     const repositoryStatement = codeGraphVisualizationSymbolsQueryStatement(snapshot.id, undefined, {type: 'all'}, 157);
     const repositoryPlan = queryPlanDatabase
       .query(`EXPLAIN QUERY PLAN ${repositoryStatement.text}`)
@@ -330,6 +407,127 @@ describe('Manager logical repository and workspace catalogs', () => {
       `${'a'.repeat(64)}.${'1'.repeat(64)}`,
     ]);
     expect(groups[0]?.views[0]?.label).toMatch(/abcdef01 · clean · 2026-07-31 10:00Z · checkout b{8} · worktree 2{8}/);
+  });
+
+  it('bounds a production-shaped Bazel catalog without loading dependency evidence', async () => {
+    const root = temporaryRoot('threadnote-bazel-catalog-');
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root, '9'.repeat(64));
+    const snapshot = readySnapshot(identity, 5_000, 5_000, 4_999, '2026-08-01T12:00:00.000Z');
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(
+          databasePath,
+          identity,
+          {...snapshot, edgeCount: 0, fileCount: 0, symbolCount: 0},
+          [],
+          [],
+          [],
+        );
+        yield* store.promote(databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const database = new Database(databasePath);
+    database.run(
+      `INSERT INTO workspace_scopes
+       (snapshot_id, id, build_system, name, root, provenance, diagnostics_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [snapshot.id, 'cgw_bazel', 'bazel', 'public-monorepo', '.', 'declared', '[]'],
+    );
+    const insertComponent = database.prepare(
+      `INSERT INTO workspace_components
+       (snapshot_id, id, workspace_id, build_system, kind, name, root, resolution_domain,
+        languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertDependency = database.prepare(
+      `INSERT INTO workspace_component_dependencies
+       (snapshot_id, source_component_id, target_component_id, provenance, evidence)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    database.transaction(() => {
+      for (let index = 0; index < 5_000; index += 1) {
+        const suffix = index.toString().padStart(5, '0');
+        insertComponent.run(
+          snapshot.id,
+          `cgp_bazel_${suffix}`,
+          'cgw_bazel',
+          'bazel',
+          'target',
+          `//apps/service-${suffix}:library`,
+          `apps/service-${suffix}`,
+          'jvm',
+          '["java","kotlin"]',
+          `["apps/service-${suffix}/src"]`,
+          '["."]',
+          'declared',
+          '[]',
+        );
+        // The catalog endpoint intentionally never reads this potentially large evidence payload.
+        if (index > 0) {
+          insertDependency.run(
+            snapshot.id,
+            `cgp_bazel_${suffix}`,
+            `cgp_bazel_${(index - 1).toString().padStart(5, '0')}`,
+            'declared',
+            `discarded-evidence-${'x'.repeat(2_048)}`,
+          );
+        }
+      }
+    })();
+    database.close();
+
+    const startedAt = performance.now();
+    const catalog = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+          includeDependencies: false,
+          projectLimit: 160,
+          workspaceLimit: 64,
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const elapsedMilliseconds = performance.now() - startedAt;
+    const payload = JSON.stringify(catalog);
+    const detailStartedAt = performance.now();
+    const detailCatalog = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+          includeDependencies: false,
+          projectId: Option.some('cgp_bazel_04999'),
+          projectLimit: 1,
+          snapshotId: Option.some(snapshot.id),
+          workspaceLimit: 64,
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const detailElapsedMilliseconds = performance.now() - detailStartedAt;
+    const sourceSummaryStartedAt = performance.now();
+    const sourceSummary = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationScopeEdgeSummary(
+          databasePath,
+          snapshot.id,
+          Array.from({length: 5_000}, (_, index) => `cgp_bazel_${index.toString().padStart(5, '0')}`),
+          1_500,
+        );
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const sourceSummaryElapsedMilliseconds = performance.now() - sourceSummaryStartedAt;
+    expect(catalog).toMatchObject({projectCount: 5_001, projectsTruncated: true, workspaceCount: 1});
+    expect(catalog?.projects).toHaveLength(160);
+    expect(catalog?.projects.every(project => project.dependencies.length === 0)).toBe(true);
+    expect(payload).not.toContain('discarded-evidence');
+    expect(new TextEncoder().encode(payload).byteLength).toBeLessThan(100_000);
+    expect(elapsedMilliseconds).toBeLessThan(1_500);
+    expect(detailCatalog?.projects.map(project => project.id)).toEqual(['cgp_bazel_04999']);
+    expect(detailElapsedMilliseconds).toBeLessThan(500);
+    expect(sourceSummary).toEqual({edges: [], sampledScopes: 0, truncated: true});
+    expect(sourceSummaryElapsedMilliseconds).toBeLessThan(1_500);
   });
 
   it('surfaces an unreadable database without exposing its local path', async () => {
@@ -451,7 +649,7 @@ function symbol(id: string, path: string, name: string, language: string, resolu
 }
 
 function edgeFixtures(): readonly CodeGraphEdge[] {
-  const intra = Array.from({length: 1_201}, (_, index) =>
+  const intra = Array.from({length: 12_001}, (_, index) =>
     edge(`edge-${index.toString().padStart(4, '0')}`, 'symbol-a-1', 'symbol-a-2'),
   );
   return [
@@ -529,7 +727,9 @@ function catalogFixture(
     activatedAt,
     metrics: 'complete',
     model: 'workspace',
+    projectCount: 0,
     projects: [],
+    projectsTruncated: false,
     repository: {displayName, repositoryId},
     snapshot: {
       commit: 'abcdef0123456789abcdef0123456789abcdef01',
@@ -545,6 +745,8 @@ function catalogFixture(
       worktreeId: 'worktree',
     },
     viewWorktreeId,
+    workspaceCount: 0,
     workspaces: [],
+    workspacesTruncated: false,
   };
 }

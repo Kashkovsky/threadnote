@@ -1,5 +1,10 @@
 import {describe, expect, it} from 'vitest';
-import {managerGraphClientRenderProxy, type GraphEdge, type GraphVisualization} from '../../src/manager_graph.js';
+import {
+  graphFocusLayoutTargets,
+  managerGraphClientRenderProxy,
+  type GraphEdge,
+  type GraphVisualization,
+} from '../../src/manager_graph.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
@@ -31,6 +36,29 @@ describe('Manager graph production-shaped budgets', () => {
     expect(result).toEqual({labels: expect.any(Number), matchedEdges: 1_500, nodes: 500});
     expect(result.labels).toBeLessThanOrEqual(180);
     expect(elapsedMilliseconds).toBeLessThan(2_000);
+  });
+
+  it('lays out a maximum-cardinality focused neighborhood without an all-pairs UI stall', () => {
+    const nodes = Array.from({length: MANAGER_GRAPH_MAX_NODE_LIMIT}, (_, index) => ({
+      id: `node-${index}`,
+      label: `ProductionNode${index}`,
+      radius: 7,
+      x: (index % 25) * 12,
+      y: Math.floor(index / 25) * 12,
+    }));
+    const edges = nodes.slice(1).map(node => ({sourceId: nodes[0]!.id, targetId: node.id}));
+    const labelSizes = new Map(nodes.map(node => [node.id, {height: 15, width: 120}]));
+    graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+
+    const startedAt = performance.now();
+    let result = graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+    for (let iteration = 1; iteration < 5; iteration += 1) {
+      result = graphFocusLayoutTargets(nodes, nodes[0]!.id, edges, labelSizes, 2.8);
+    }
+    const elapsedMilliseconds = performance.now() - startedAt;
+
+    expect(result.size).toBe(MANAGER_GRAPH_MAX_NODE_LIMIT);
+    expect(elapsedMilliseconds).toBeLessThan(250);
   });
 });
 

@@ -1772,28 +1772,38 @@ async function api<T>(
 
 function loadManagerGraph(
   repositoryId: string,
+  snapshotId: string,
   projectId: string,
   limits: ManagerGraphVisualizationLimits,
   signal: AbortSignal,
 ): Promise<GraphVisualization> {
   return api<GraphVisualization>(
-    `/api/graph?repository=${encodeURIComponent(repositoryId)}&project=${encodeURIComponent(projectId)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
+    `/api/graph?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&project=${encodeURIComponent(projectId)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
     undefined,
     {signal},
   );
 }
 
-function loadManagerGraphAnalysis(repositoryId: string, signal: AbortSignal): Promise<GraphAnalysis> {
-  return api<GraphAnalysis>(`/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}`, undefined, {signal});
+function loadManagerGraphAnalysis(
+  repositoryId: string,
+  snapshotId: string,
+  signal: AbortSignal,
+): Promise<GraphAnalysis> {
+  return api<GraphAnalysis>(
+    `/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}`,
+    undefined,
+    {signal},
+  );
 }
 
 function loadManagerGraphNodeDetail(
   repositoryId: string,
+  snapshotId: string,
   nodeId: string,
   signal: AbortSignal,
 ): Promise<GraphNodeDetail> {
   return api<GraphNodeDetail>(
-    `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&node=${encodeURIComponent(nodeId)}`,
+    `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&node=${encodeURIComponent(nodeId)}`,
     undefined,
     {signal},
   );

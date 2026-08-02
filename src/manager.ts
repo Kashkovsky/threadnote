@@ -486,6 +486,7 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
             onSome: nodeLimit => ({nodeLimit}),
           }),
         },
+        optionalNonEmptyQuery(url, 'snapshot'),
       ),
     );
     return;
@@ -494,7 +495,11 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(
       response,
       200,
-      yield* managerGraphAnalysis(context.config.agentContextHome, requiredQuery(url, 'repository')),
+      yield* managerGraphAnalysis(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        optionalNonEmptyQuery(url, 'snapshot'),
+      ),
     );
     return;
   }
@@ -506,6 +511,7 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
         context.config.agentContextHome,
         requiredQuery(url, 'repository'),
         requiredQuery(url, 'node'),
+        optionalNonEmptyQuery(url, 'snapshot'),
       ),
     );
     return;
@@ -1535,6 +1541,13 @@ function optionalPositiveIntegerQuery(url: URL, name: string): Option.Option<num
   return Option.fromNullishOr(url.searchParams.get(name)).pipe(
     Option.map(value => Number(value)),
     Option.filter(value => Number.isSafeInteger(value) && value > 0),
+  );
+}
+
+function optionalNonEmptyQuery(url: URL, name: string): Option.Option<string> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => value.trim()),
+    Option.filter(value => value.length > 0),
   );
 }
 

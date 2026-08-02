@@ -11,13 +11,13 @@ import {
 
 interface GraphProject {
   readonly buildSystem?: string;
-  readonly fileCount: number;
+  readonly fileCount?: number;
   readonly id: string;
   readonly kind?: string;
   readonly label: string;
   readonly model?: 'component' | 'facet' | 'legacy-fallback';
   readonly provenance?: string;
-  readonly symbolCount: number;
+  readonly symbolCount?: number;
   readonly workspaceId?: string;
 }
 
@@ -53,10 +53,14 @@ export interface GraphRepository {
   readonly label: string;
   readonly metrics: 'complete' | 'deferred';
   readonly model: 'legacy-fallback' | 'workspace';
+  readonly projectCount: number;
   readonly projects: readonly GraphProject[];
+  readonly projectsTruncated: boolean;
   readonly snapshot: GraphSnapshot;
   readonly worktreeId: string;
+  readonly workspaceCount: number;
   readonly workspaces: readonly GraphWorkspaceDescriptor[];
+  readonly workspacesTruncated: boolean;
 }
 
 export interface GraphRepositoryGroup {
@@ -394,9 +398,11 @@ export interface GraphNodeDetail {
     };
     readonly relation: string;
   }[];
+  readonly snapshotId: string;
   readonly stats: {
     readonly incoming: number;
     readonly outgoing: number;
+    readonly sampledEdges?: number;
     readonly provenances: readonly {readonly count: number; readonly provenance: string}[];
     readonly relations: readonly {
       readonly count: number;
@@ -441,6 +447,15 @@ export function graphRequestIsCurrent(
   return currentSequence === requestedSequence && currentScope === requestedScope;
 }
 
+export function graphNodeDetailRequestIsCurrent(
+  aborted: boolean,
+  detail: Pick<GraphNodeDetail, 'node' | 'snapshotId'>,
+  expectedSnapshotId: string,
+  expectedNodeId: string,
+): boolean {
+  return !aborted && detail.snapshotId === expectedSnapshotId && detail.node.id === expectedNodeId;
+}
+
 export function cacheGraphNodeDetail(
   cache: Map<string, GraphNodeDetail>,
   key: string,
@@ -458,29 +473,36 @@ export function cacheGraphNodeDetail(
 
 export function graphWithNodeNeighborhood(graph: GraphVisualization, detail: GraphNodeDetail): GraphVisualization {
   if (graph.mode !== 'detail') return graph;
-  const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
+  const nodesById = new Map(graph.nodes.slice(0, MANAGER_GRAPH_MAX_NODE_LIMIT).map(node => [node.id, node]));
   const existingRoot = nodesById.get(detail.node.id);
-  nodesById.set(detail.node.id, {
-    ...existingRoot,
-    degree: existingRoot?.degree ?? 0,
-    exported: detail.node.exported,
-    id: detail.node.id,
-    kind: detail.node.kind,
-    label: detail.node.label,
-    language: detail.node.language,
-    packageName: detail.node.packageName,
-    path: detail.node.path,
-    projectId: detail.node.projectId,
-    qualifiedName: detail.node.qualifiedName,
-    signature: detail.node.signature,
-    type: 'symbol',
-  });
+  if (existingRoot || nodesById.size < MANAGER_GRAPH_MAX_NODE_LIMIT) {
+    nodesById.set(detail.node.id, {
+      ...existingRoot,
+      degree: existingRoot?.degree ?? 0,
+      exported: detail.node.exported,
+      id: detail.node.id,
+      kind: detail.node.kind,
+      label: detail.node.label,
+      language: detail.node.language,
+      packageName: detail.node.packageName,
+      path: detail.node.path,
+      projectId: detail.node.projectId,
+      qualifiedName: detail.node.qualifiedName,
+      signature: detail.node.signature,
+      type: 'symbol',
+    });
+  }
 
-  const edgesById = new Map(graph.edges.map(edge => [edge.id, edge]));
+  const edgesById = new Map(graph.edges.slice(0, MANAGER_GRAPH_MAX_EDGE_LIMIT).map(edge => [edge.id, edge]));
+  let truncated = graph.nodes.length > nodesById.size || graph.edges.length > edgesById.size;
   for (const relationship of detail.relationships.slice(0, MAX_EXPANDED_NEIGHBOR_EDGES)) {
     const relatedId = relationship.related.id;
     if (!relatedId || relatedId === detail.node.id) continue;
     if (!nodesById.has(relatedId)) {
+      if (nodesById.size >= MANAGER_GRAPH_MAX_NODE_LIMIT) {
+        truncated = true;
+        continue;
+      }
       nodesById.set(relatedId, {
         degree: 0,
         id: relatedId,
@@ -493,6 +515,10 @@ export function graphWithNodeNeighborhood(graph: GraphVisualization, detail: Gra
       });
     }
     if (!edgesById.has(relationship.id)) {
+      if (edgesById.size >= MANAGER_GRAPH_MAX_EDGE_LIMIT || !nodesById.has(detail.node.id)) {
+        truncated = true;
+        continue;
+      }
       const outgoing = relationship.direction === 'outgoing';
       edgesById.set(relationship.id, {
         confidence: relationship.confidence,
@@ -519,10 +545,12 @@ export function graphWithNodeNeighborhood(graph: GraphVisualization, detail: Gra
       renderedEdges: edges.length,
       renderedNodes: nodes.length,
     },
-    warnings:
-      addedNodes > 0
-        ? [...graph.warnings, `Loaded ${addedNodes.toLocaleString()} direct neighbors for ${detail.node.label}.`]
-        : graph.warnings,
+    paging: {...graph.paging, hasMore: graph.paging.hasMore || truncated || detail.stats.truncated},
+    warnings: [
+      ...graph.warnings,
+      ...(addedNodes > 0 ? [`Loaded ${addedNodes.toLocaleString()} direct neighbors for ${detail.node.label}.`] : []),
+      ...(truncated ? ['Direct-neighbor expansion reached the global Manager graph budget.'] : []),
+    ],
   };
 }
 
@@ -685,14 +713,20 @@ export function managerGraphClientRenderProxy(
 
 export function GraphWorkspace(props: {
   readonly catalog?: GraphCatalog;
-  readonly loadAnalysis: (repositoryId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
+  readonly loadAnalysis: (repositoryId: string, snapshotId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
   readonly loadGraph: (
     repositoryId: string,
+    snapshotId: string,
     projectId: string,
     limits: ManagerGraphVisualizationLimits,
     signal: AbortSignal,
   ) => Promise<GraphVisualization>;
-  readonly loadNodeDetail: (repositoryId: string, nodeId: string, signal: AbortSignal) => Promise<GraphNodeDetail>;
+  readonly loadNodeDetail: (
+    repositoryId: string,
+    snapshotId: string,
+    nodeId: string,
+    signal: AbortSignal,
+  ) => Promise<GraphNodeDetail>;
   readonly onRefresh: () => void;
 }): React.ReactElement {
   const [repositoryId, setRepositoryId] = useState('');
@@ -762,12 +796,6 @@ export function GraphWorkspace(props: {
   }, [repositories, repositoryId, viewId]);
 
   useEffect(() => {
-    if (repository && projectId !== 'all' && !repository.projects.some(project => project.id === projectId)) {
-      setProjectId('all');
-    }
-  }, [projectId, repository]);
-
-  useEffect(() => {
     if (!repository) {
       setBaseGraph(undefined);
       setExpandedNeighborhood(undefined);
@@ -786,7 +814,7 @@ export function GraphWorkspace(props: {
     setRelationFilter('all');
     setSizeMetric('connections');
     void props
-      .loadGraph(repository.id, projectId, workingSet, controller.signal)
+      .loadGraph(repository.id, repository.snapshot.id, projectId, workingSet, controller.signal)
       .then(next => {
         if (
           graphRequestIsCurrent(graphRequestSequence.current, requestSequence, graphScopeRef.current, requestedScope)
@@ -839,7 +867,7 @@ export function GraphWorkspace(props: {
     setAnalysisLoading(true);
     setAnalysisError('');
     void props
-      .loadAnalysis(repository.id, controller.signal)
+      .loadAnalysis(repository.id, repository.snapshot.id, controller.signal)
       .then(next => {
         if (
           graphAnalysisRequestIsCurrent(
@@ -903,9 +931,12 @@ export function GraphWorkspace(props: {
     setNodeDetailLoading(true);
     setNodeDetailError('');
     void props
-      .loadNodeDetail(repository.id, selectedNode.id, controller.signal)
+      .loadNodeDetail(repository.id, repository.snapshot.id, selectedNode.id, controller.signal)
       .then(detail => {
-        if (controller.signal.aborted) return;
+        if (
+          !graphNodeDetailRequestIsCurrent(controller.signal.aborted, detail, repository.snapshot.id, selectedNode.id)
+        )
+          return;
         cacheGraphNodeDetail(nodeDetailCache.current, key, detail);
         setNodeDetail(detail);
         setExpandedNeighborhood(detail);
@@ -914,6 +945,7 @@ export function GraphWorkspace(props: {
       })
       .catch(cause => {
         if (!controller.signal.aborted && !isAbortError(cause)) {
+          setExpandedNeighborhood(undefined);
           setNodeDetailError(cause instanceof Error ? cause.message : String(cause));
         }
       })
@@ -1064,7 +1096,7 @@ export function GraphWorkspace(props: {
                   {projects.map(project => (
                     <option key={project.id} value={project.id}>
                       {project.label} · {graphProjectBadge(project)} ·{' '}
-                      {repository?.metrics === 'deferred' ? 'count on demand' : compactNumber(project.symbolCount)}
+                      {repository?.metrics === 'deferred' ? 'count on demand' : compactNumber(project.symbolCount ?? 0)}
                     </option>
                   ))}
                 </optgroup>
@@ -1075,7 +1107,7 @@ export function GraphWorkspace(props: {
               .map(project => (
                 <option key={project.id} value={project.id}>
                   {project.label} · {graphProjectBadge(project)} ·{' '}
-                  {repository?.metrics === 'deferred' ? 'count on demand' : compactNumber(project.symbolCount)}
+                  {repository?.metrics === 'deferred' ? 'count on demand' : compactNumber(project.symbolCount ?? 0)}
                 </option>
               ))}
           </select>
@@ -1777,7 +1809,9 @@ function GraphSummary(props: {
       <h3>{props.graph.scope.label}</h3>
       <p>
         {props.graph.mode === 'overview'
-          ? 'Node size reflects indexed symbol volume. Double-click a component to explore its symbol graph.'
+          ? props.graph.repository.metrics === 'complete'
+            ? 'Node size reflects indexed symbol volume. Double-click a component to explore its symbol graph.'
+            : 'Node size reflects visible relationship degree. Double-click a component to explore its symbol graph.'
           : `Node size reflects ${sizeMetricLabel(props.sizeMetric).toLowerCase()} among the filtered relationships.`}
       </p>
       <dl className="metric-list">
@@ -1822,7 +1856,11 @@ function GraphSummary(props: {
         </span>
         <span>
           <i className="legend-size" /> Size ·{' '}
-          {props.graph.mode === 'overview' ? 'Component symbols' : sizeMetricLabel(props.sizeMetric)}
+          {props.graph.mode === 'overview'
+            ? props.graph.repository.metrics === 'complete'
+              ? 'Component symbols'
+              : 'Visible relationships'
+            : sizeMetricLabel(props.sizeMetric)}
         </span>
       </div>
       <section className="graph-analysis-summary">
@@ -2643,18 +2681,13 @@ export function graphFocusLayoutTargets(
     }
   }
 
-  for (let iteration = 0; iteration < 72; iteration += 1) {
+  for (let iteration = 0; iteration < 18; iteration += 1) {
     for (const node of focusNodes.filter(node => !node.fixed)) {
       node.x += (node.anchorX - node.x) * 0.006;
       node.y += (node.anchorY - node.y) * 0.006;
     }
-    for (let leftIndex = 0; leftIndex < focusNodes.length; leftIndex += 1) {
-      const left = focusNodes[leftIndex]!;
-      for (let rightIndex = leftIndex + 1; rightIndex < focusNodes.length; rightIndex += 1) {
-        const right = focusNodes[rightIndex]!;
-        if (!left.highlighted && !right.highlighted) continue;
-        separateFocusNodes(left, right, labelSizes, safeZoom);
-      }
+    for (const [leftIndex, rightIndex] of focusCollisionPairs(focusNodes, labelSizes, safeZoom)) {
+      separateFocusNodes(focusNodes[leftIndex]!, focusNodes[rightIndex]!, labelSizes, safeZoom);
     }
     for (const node of animatedNeighbors) {
       const deltaX = node.x - selectedNode.x;
@@ -2668,6 +2701,45 @@ export function graphFocusLayoutTargets(
     }
   }
   return new Map(focusNodes.map(node => [node.id, {x: node.x, y: node.y}]));
+}
+
+function focusCollisionPairs(
+  nodes: readonly {
+    readonly fixed: boolean;
+    readonly highlighted: boolean;
+    readonly id: string;
+    readonly label: string;
+    readonly radius: number;
+    readonly x: number;
+    readonly y: number;
+  }[],
+  labelSizes: ReadonlyMap<string, {readonly height: number; readonly width: number}>,
+  zoom: number,
+): readonly (readonly [number, number])[] {
+  const bounds = nodes
+    .map((node, index) => {
+      const boxes = focusNodeBoxes(node, labelSizes.get(node.id), zoom, node.fixed);
+      return {
+        bottom: Math.max(...boxes.map(box => box.bottom)),
+        highlighted: node.highlighted,
+        index,
+        left: Math.min(...boxes.map(box => box.left)),
+        right: Math.max(...boxes.map(box => box.right)),
+        top: Math.min(...boxes.map(box => box.top)),
+      };
+    })
+    .sort((left, right) => left.left - right.left || left.index - right.index);
+  const pairs: Array<readonly [number, number]> = [];
+  for (const [leftPosition, left] of bounds.entries()) {
+    for (let rightPosition = leftPosition + 1; rightPosition < bounds.length; rightPosition += 1) {
+      const right = bounds[rightPosition]!;
+      if (right.left >= left.right) break;
+      if (!left.highlighted && !right.highlighted) continue;
+      if (Math.min(left.bottom, right.bottom) <= Math.max(left.top, right.top)) continue;
+      pairs.push([left.index, right.index]);
+    }
+  }
+  return pairs;
 }
 
 function separateFocusNodes(
@@ -2770,7 +2842,9 @@ function focusNodeBoxes(
 
 function overviewLayout(nodes: readonly GraphNode[]): readonly PositionedNode[] {
   const ordered = [...nodes].sort(
-    (left, right) => (right.symbolCount ?? 0) - (left.symbolCount ?? 0) || compareCodeUnits(left.label, right.label),
+    (left, right) =>
+      (right.symbolCount ?? right.degree) - (left.symbolCount ?? left.degree) ||
+      compareCodeUnits(left.label, right.label),
   );
   return ordered.map((node, index) => {
     const angle = index * 2.399963;
@@ -2825,7 +2899,7 @@ function positionNode(
 ): PositionedNode {
   const radius =
     node.type === 'project'
-      ? 8 + Math.min(14, Math.sqrt(Math.max(1, Math.log2((node.symbolCount ?? 1) + 1))) * 3)
+      ? 8 + Math.min(14, Math.sqrt(Math.max(1, Math.log2((node.symbolCount ?? sizeValue) + 1))) * 3)
       : 4 + Math.min(11, Math.log2(Math.max(0, sizeValue) + 1) * 2);
   return {
     ...node,

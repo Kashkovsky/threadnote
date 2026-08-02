@@ -343,14 +343,18 @@ export interface CodeGraphVisualizationCatalog {
   readonly activatedAt?: string;
   readonly metrics: 'complete' | 'deferred';
   readonly model: 'legacy-fallback' | 'workspace';
+  readonly projectCount: number;
   readonly projects: readonly CodeGraphVisualizationProject[];
+  readonly projectsTruncated: boolean;
   readonly repository: {
     readonly displayName: string;
     readonly repositoryId: string;
   };
   readonly snapshot: CodeGraphSnapshot;
   readonly viewWorktreeId: string;
+  readonly workspaceCount: number;
   readonly workspaces: readonly CodeGraphVisualizationWorkspace[];
+  readonly workspacesTruncated: boolean;
 }
 
 export interface CodeGraphVisualizationRelationshipSummary {
@@ -366,6 +370,36 @@ export interface CodeGraphVisualizationRelationshipSummary {
     readonly outgoing: number;
     readonly relation: CodeGraphEdge['relation'];
   }[];
+  readonly sampledEdges: number;
+  readonly truncated: boolean;
+}
+
+export interface CodeGraphVisualizationScopeEdgeSummary {
+  readonly edges: readonly CodeGraphVisualizationScopeEdge[];
+  readonly sampledScopes: number;
+  readonly truncated: boolean;
+}
+
+export interface CodeGraphVisualizationEdgePage {
+  readonly edges: readonly CodeGraphEdge[];
+  readonly truncated: boolean;
+}
+
+export interface CodeGraphVisualizationCatalogOptions {
+  readonly includeDependencies?: boolean;
+  readonly projectId?: Option.Option<string>;
+  readonly projectLimit?: number;
+  readonly snapshotId?: Option.Option<string>;
+  readonly workspaceLimit?: number;
+}
+
+interface DeferredVisualizationComponentRow {
+  readonly build_system: CodeGraphWorkspaceBuildSystem;
+  readonly id: string;
+  readonly kind: CodeGraphWorkspaceComponentKind;
+  readonly name: string;
+  readonly provenance: CodeGraphWorkspaceProvenance;
+  readonly workspace_id: string;
 }
 
 export type CodeGraphVisualizationScope =
@@ -500,15 +534,23 @@ export interface CodeGraphStoreShape {
   readonly loadVisualizationCatalog: (
     databasePath: string,
     metrics?: 'complete' | 'deferred',
+    options?: CodeGraphVisualizationCatalogOptions,
   ) => Effect.Effect<CodeGraphVisualizationCatalog | undefined, CodeGraphStoreError>;
   readonly loadVisualizationCatalogs: (
     databasePath: string,
     metrics?: 'complete' | 'deferred',
+    options?: CodeGraphVisualizationCatalogOptions,
   ) => Effect.Effect<readonly CodeGraphVisualizationCatalog[], CodeGraphStoreError>;
   readonly loadVisualizationScopeEdges: (
     databasePath: string,
     snapshotId: string,
   ) => Effect.Effect<readonly CodeGraphVisualizationScopeEdge[], CodeGraphStoreError>;
+  readonly loadVisualizationScopeEdgeSummary: (
+    databasePath: string,
+    snapshotId: string,
+    scopeIds: readonly string[],
+    limit: number,
+  ) => Effect.Effect<CodeGraphVisualizationScopeEdgeSummary, CodeGraphStoreError>;
   readonly loadVisualizationSymbols: (
     databasePath: string,
     snapshotId: string,
@@ -523,11 +565,20 @@ export interface CodeGraphStoreShape {
     limit: number,
     allowedProvenances: readonly CodeGraphProvenance[],
   ) => Effect.Effect<readonly CodeGraphEdge[], CodeGraphStoreError>;
+  readonly representativeEdgesForNodes: (
+    databasePath: string,
+    snapshotId: string,
+    nodeIds: readonly string[],
+    direction: 'both' | 'incoming' | 'outgoing',
+    limit: number,
+    allowedProvenances: readonly CodeGraphProvenance[],
+  ) => Effect.Effect<CodeGraphVisualizationEdgePage, CodeGraphStoreError>;
   readonly relationshipSummaryForNode: (
     databasePath: string,
     snapshotId: string,
     nodeId: string,
     allowedProvenances: readonly CodeGraphProvenance[],
+    limit?: number,
   ) => Effect.Effect<CodeGraphVisualizationRelationshipSummary, CodeGraphStoreError>;
   readonly findSymbolsByPathAndName: (
     databasePath: string,
@@ -1177,19 +1228,21 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
             Effect.mapError(cause => storeError('load code graph embedding symbol page', cause)),
           ),
-        loadVisualizationCatalog: (databasePath, metrics = 'complete') =>
+        loadVisualizationCatalog: (databasePath, metrics = 'complete', options = {}) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog(undefined, metrics))
+                ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog(undefined, metrics, options))
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
           ),
-        loadVisualizationCatalogs: (databasePath, metrics = 'complete') =>
+        loadVisualizationCatalogs: (databasePath, metrics = 'complete', options = {}) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
-              exists ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs(metrics)) : Effect.succeed([]),
+              exists
+                ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs(metrics, options))
+                : Effect.succeed([]),
             ),
             Effect.mapError(cause => storeError('load code graph visualization catalogs', cause)),
           ),
@@ -1202,10 +1255,27 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load code graph visualization scope edges', cause)),
           ),
+        loadVisualizationScopeEdgeSummary: (databasePath, snapshotId, scopeIds, limit) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useReadOnlyDatabase(databasePath, selectVisualizationScopeEdgeSummary(snapshotId, scopeIds, limit)),
+            ),
+            Effect.mapError(cause => storeError('load bounded code graph visualization scope edges', cause)),
+          ),
         loadVisualizationSymbols: (databasePath, snapshotId, scope, limit) =>
           prepare(databasePath).pipe(
             Effect.andThen(useReadOnlyDatabase(databasePath, selectVisualizationSymbols(snapshotId, scope, limit))),
             Effect.mapError(cause => storeError('load code graph visualization symbols', cause)),
+          ),
+        representativeEdgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useReadOnlyDatabase(
+                databasePath,
+                selectRepresentativeEdgesForNodes(snapshotId, nodeIds, direction, limit, allowedProvenances),
+              ),
+            ),
+            Effect.mapError(cause => storeError('load representative code graph adjacency', cause)),
           ),
         markBuilding: (databasePath, identity, snapshot) =>
           prepare(databasePath).pipe(
@@ -1389,12 +1459,12 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),
           ),
-        relationshipSummaryForNode: (databasePath, snapshotId, nodeId, allowedProvenances) =>
+        relationshipSummaryForNode: (databasePath, snapshotId, nodeId, allowedProvenances, limit) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useReadOnlyDatabase(
                 databasePath,
-                selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances),
+                selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances, limit),
               ),
             ),
             Effect.mapError(cause => storeError('summarize code graph relationships', cause)),
@@ -2926,6 +2996,36 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name ON symbols(snapshot_id, name)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_resolution_scope ON symbols(snapshot_id, resolution_scope_id)');
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_scope');
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_package');
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_path');
+  const visualizationKindOrder = `CASE kind
+    WHEN 'package' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3
+    WHEN 'function' THEN 4 WHEN 'method' THEN 5 ELSE 6 END`;
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS symbols_visualization_scope_v2
+    ON symbols(snapshot_id, resolution_scope_id, exported DESC, (${visualizationKindOrder}), id)
+  `);
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS symbols_visualization_package_v2
+    ON symbols(
+      snapshot_id, resolution_scope_id, package_name, exported DESC,
+      (${visualizationKindOrder}), id
+    )
+    WHERE resolution_scope_id IS NULL
+  `);
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS symbols_visualization_path_v2
+    ON symbols(
+      snapshot_id,
+      resolution_scope_id,
+      (CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE '(root)' END),
+      exported DESC,
+      (${visualizationKindOrder}),
+      id
+    )
+    WHERE resolution_scope_id IS NULL AND (package_name IS NULL OR trim(package_name) = '')
+  `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(snapshot_id, name COLLATE NOCASE)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS symbols_qualified_nocase ON symbols(snapshot_id, qualified_name COLLATE NOCASE)',
@@ -10483,15 +10583,21 @@ const selectEmbeddingSymbolPage = Effect.fn('codeGraph.selectEmbeddingSymbolPage
 const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatalog')(function* (
   viewWorktreeId?: string,
   metrics: 'complete' | 'deferred' = 'complete',
+  options: CodeGraphVisualizationCatalogOptions = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const projectLimit = boundedVisualizationCatalogLimit(options.projectLimit, 160, 500);
+  const workspaceLimit = boundedVisualizationCatalogLimit(options.workspaceLimit, 64, 128);
+  const requestedProjectId = Option.getOrUndefined(options.projectId ?? Option.none());
+  const requestedSnapshotId = Option.getOrUndefined(options.snapshotId ?? Option.none());
   const rows = yield* sql<SnapshotRow & {readonly activated_at: unknown; readonly display_name: string}>`
     SELECT snapshots.*, repositories.display_name, active_snapshots.activated_at
      FROM snapshots
      JOIN repositories ON repositories.id = snapshots.repository_id
      LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
      WHERE snapshots.state = 'ready'
+       AND (${requestedSnapshotId ?? null} IS NULL OR snapshots.id = ${requestedSnapshotId ?? null})
        AND (
          ${viewWorktreeId ?? null} IS NULL
          OR active_snapshots.worktree_id = ${viewWorktreeId ?? null}
@@ -10517,8 +10623,52 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
     ) > 0;
   if (metrics === 'deferred') {
     if (hasWorkspaceCatalog) {
-      const [workspaces, components, dependencies] = yield* Effect.all(
+      const requestedComponentId = requestedProjectId?.startsWith('cgp_') ? requestedProjectId : undefined;
+      const includeUnscoped = requestedProjectId === undefined || requestedProjectId === 'facet:unscoped';
+      const componentLimit =
+        requestedProjectId === 'facet:unscoped'
+          ? 0
+          : requestedProjectId === undefined
+            ? Math.max(0, projectLimit - 1)
+            : projectLimit;
+      const componentsEffect =
+        componentLimit === 0
+          ? Effect.succeed<readonly DeferredVisualizationComponentRow[]>([])
+          : requestedComponentId
+            ? sql<DeferredVisualizationComponentRow>`
+                SELECT id, workspace_id, build_system, kind, name, provenance
+                FROM workspace_components
+                WHERE snapshot_id = ${row.id} AND id = ${requestedComponentId}
+                LIMIT ${componentLimit}
+              `
+            : sql.unsafe<DeferredVisualizationComponentRow>(
+                `WITH dependency_degree AS (
+                   SELECT component_id, COUNT(*) AS degree
+                   FROM (
+                     SELECT source_component_id AS component_id
+                     FROM workspace_component_dependencies
+                     WHERE snapshot_id = ?
+                     UNION ALL
+                     SELECT target_component_id AS component_id
+                     FROM workspace_component_dependencies
+                     WHERE snapshot_id = ?
+                   )
+                   GROUP BY component_id
+                 )
+                 SELECT component.id, component.workspace_id, component.build_system, component.kind,
+                   component.name, component.provenance
+                 FROM workspace_components AS component
+                 LEFT JOIN dependency_degree ON dependency_degree.component_id = component.id
+                 WHERE component.snapshot_id = ?
+                 ORDER BY COALESCE(dependency_degree.degree, 0) DESC, component.name, component.root, component.id
+                 LIMIT ?`,
+                [row.id, row.id, row.id, componentLimit],
+              );
+      const [workspaceCountRows, workspaces, componentCountRows, components] = yield* Effect.all(
         [
+          sql<{readonly count: number}>`
+            SELECT COUNT(*) AS count FROM workspace_scopes WHERE snapshot_id = ${row.id}
+          `,
           sql<{
             readonly build_system: CodeGraphWorkspaceBuildSystem;
             readonly id: string;
@@ -10530,34 +10680,32 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
             FROM workspace_scopes
             WHERE snapshot_id = ${row.id}
             ORDER BY root, id
+            LIMIT ${workspaceLimit}
           `,
-          sql<{
-            readonly build_system: CodeGraphWorkspaceBuildSystem;
-            readonly id: string;
-            readonly kind: CodeGraphWorkspaceComponentKind;
-            readonly name: string;
-            readonly provenance: CodeGraphWorkspaceProvenance;
-            readonly workspace_id: string;
-          }>`
-            SELECT id, workspace_id, build_system, kind, name, provenance
-            FROM workspace_components
-            WHERE snapshot_id = ${row.id}
-            ORDER BY name, root, id
+          sql<{readonly count: number}>`
+            SELECT COUNT(*) AS count FROM workspace_components WHERE snapshot_id = ${row.id}
           `,
-          sql<{
-            readonly evidence: unknown;
-            readonly provenance: CodeGraphWorkspaceProvenance;
-            readonly source_component_id: string;
-            readonly target_component_id: string;
-          }>`
-            SELECT source_component_id, target_component_id, provenance, evidence
-            FROM workspace_component_dependencies
-            WHERE snapshot_id = ${row.id}
-            ORDER BY source_component_id, target_component_id, provenance
-          `,
+          componentsEffect,
         ],
         {concurrency: 1},
       );
+      const componentIds = components.map(component => component.id);
+      const dependencies =
+        options.includeDependencies === true && componentIds.length > 0
+          ? yield* sql.unsafe<{
+              readonly provenance: CodeGraphWorkspaceProvenance;
+              readonly source_component_id: string;
+              readonly target_component_id: string;
+            }>(
+              `SELECT source_component_id, target_component_id, provenance
+               FROM workspace_component_dependencies
+               WHERE snapshot_id = ?
+                 AND source_component_id IN (${componentIds.map(() => '?').join(', ')})
+                 AND target_component_id IN (${componentIds.map(() => '?').join(', ')})
+               ORDER BY source_component_id, target_component_id, provenance`,
+              [row.id, ...componentIds, ...componentIds],
+            )
+          : [];
       const dependenciesBySource = new Map<string, Array<(typeof dependencies)[number]>>();
       for (const dependency of dependencies) {
         const current = dependenciesBySource.get(dependency.source_component_id);
@@ -10567,7 +10715,6 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       const projects: CodeGraphVisualizationProject[] = components.map(component => ({
         buildSystem: component.build_system,
         dependencies: (dependenciesBySource.get(component.id) ?? []).map(dependency => ({
-          ...(typeof dependency.evidence === 'string' ? {evidence: dependency.evidence} : {}),
           provenance: dependency.provenance,
           targetId: dependency.target_component_id,
         })),
@@ -10584,20 +10731,25 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         workspaceId: component.workspace_id,
         workspaceRoots: [],
       }));
-      projects.push({
-        dependencies: [],
-        diagnostics: [],
-        fileCount: 0,
-        id: 'facet:unscoped',
-        kind: 'legacy-group',
-        label: 'Unscoped code and documentation',
-        languages: [],
-        model: 'facet',
-        provenance: 'inferred',
-        sourceRoots: [],
-        symbolCount: 0,
-        workspaceRoots: [],
-      });
+      if (includeUnscoped && projects.length < projectLimit) {
+        projects.push({
+          dependencies: [],
+          diagnostics: [],
+          fileCount: 0,
+          id: 'facet:unscoped',
+          kind: 'legacy-group',
+          label: 'Unscoped code and documentation',
+          languages: [],
+          model: 'facet',
+          provenance: 'inferred',
+          sourceRoots: [],
+          symbolCount: 0,
+          workspaceRoots: [],
+        });
+      }
+      const componentCount = Number(componentCountRows[0]?.count ?? 0);
+      const workspaceCount = Number(workspaceCountRows[0]?.count ?? 0);
+      const totalProjectCount = componentCount + 1;
       return {
         accounting: {
           attributedSymbols: 0,
@@ -10609,10 +10761,13 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         ...(activatedAt ? {activatedAt} : {}),
         metrics: 'deferred',
         model: 'workspace',
+        projectCount: totalProjectCount,
         projects,
+        projectsTruncated: projects.length < totalProjectCount,
         repository: {displayName: row.display_name, repositoryId: row.repository_id},
         snapshot: snapshotFromRow(row),
         viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+        workspaceCount,
         workspaces: workspaces.map(workspace => ({
           buildSystem: workspace.build_system,
           diagnostics: [],
@@ -10621,6 +10776,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
           provenance: workspace.provenance,
           root: workspace.root,
         })),
+        workspacesTruncated: workspaces.length < workspaceCount,
       } satisfies CodeGraphVisualizationCatalog;
     }
     return {
@@ -10634,6 +10790,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       ...(activatedAt ? {activatedAt} : {}),
       metrics: 'deferred',
       model: 'legacy-fallback',
+      projectCount: 1,
       projects: [
         {
           dependencies: [],
@@ -10650,10 +10807,13 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
           workspaceRoots: [],
         },
       ],
+      projectsTruncated: false,
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
       viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+      workspaceCount: 0,
       workspaces: [],
+      workspacesTruncated: false,
     } satisfies CodeGraphVisualizationCatalog;
   }
   if (hasWorkspaceCatalog) {
@@ -10809,10 +10969,13 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       ...(activatedAt ? {activatedAt} : {}),
       metrics: 'complete',
       model: 'workspace',
+      projectCount: projects.length,
       projects,
+      projectsTruncated: false,
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
       viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+      workspaceCount: workspaces.length,
       workspaces: workspaces.map(workspace => ({
         buildSystem: workspace.build_system,
         diagnostics: parseStringArray(workspace.diagnostics_json),
@@ -10821,6 +10984,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         provenance: workspace.provenance,
         root: workspace.root,
       })),
+      workspacesTruncated: false,
     } satisfies CodeGraphVisualizationCatalog;
   }
   const projects = yield* sql.unsafe<{
@@ -10855,6 +11019,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       omittedSymbols: 0,
       totalSymbols: Number(row.symbol_count),
     },
+    projectCount: projects.length,
     projects: projects.map(project => ({
       dependencies: [],
       diagnostics: [],
@@ -10869,6 +11034,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       symbolCount: Number(project.symbol_count),
       workspaceRoots: [],
     })),
+    projectsTruncated: false,
     ...(activatedAt ? {activatedAt} : {}),
     metrics: 'complete',
     model: 'legacy-fallback',
@@ -10878,12 +11044,15 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
     },
     snapshot: snapshotFromRow(row),
     viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+    workspaceCount: 0,
     workspaces: [],
+    workspacesTruncated: false,
   } satisfies CodeGraphVisualizationCatalog;
 });
 
 const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCatalogs')(function* (
   metrics: 'complete' | 'deferred' = 'complete',
+  options: CodeGraphVisualizationCatalogOptions = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -10893,8 +11062,9 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
     LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
     WHERE snapshots.state = 'ready'
     ORDER BY worktree_id
+    LIMIT 32
   `;
-  return (yield* Effect.forEach(worktrees, row => selectVisualizationCatalog(row.worktree_id, metrics), {
+  return (yield* Effect.forEach(worktrees, row => selectVisualizationCatalog(row.worktree_id, metrics, options), {
     concurrency: 1,
   })).flatMap(catalog => (catalog ? [catalog] : []));
 });
@@ -10974,6 +11144,115 @@ const selectVisualizationScopeEdges = Effect.fn('codeGraph.selectVisualizationSc
   ];
 });
 
+const MANAGER_SCOPE_SAMPLE_SYMBOLS_PER_SCOPE = 6;
+const MANAGER_SCOPE_SAMPLE_MAX_SCOPES = 500;
+const MANAGER_SCOPE_SAMPLE_PROVENANCES: readonly CodeGraphProvenance[] = ['declared', 'resolved', 'syntactic'];
+
+const selectVisualizationScopeEdgeSummary = Effect.fn('codeGraph.selectVisualizationScopeEdgeSummary')(function* (
+  snapshotId: string,
+  requestedScopeIds: readonly string[],
+  limit: number,
+) {
+  const safeLimit = Math.max(1, Math.min(1_500, Math.floor(limit)));
+  const scopeIds = [...new Set(requestedScopeIds)].slice(0, MANAGER_SCOPE_SAMPLE_MAX_SCOPES).sort(compareCodeUnits);
+  if (scopeIds.length === 0) return {edges: [], sampledScopes: 0, truncated: false};
+  const scopeSet = new Set(scopeIds);
+  const perScopeEdgeLimit = Math.max(2, Math.min(16, Math.ceil(safeLimit / scopeIds.length) * 2));
+  let truncated = requestedScopeIds.length > scopeIds.length;
+  let sampledScopes = 0;
+  const sampledEdges = new Map<string, CodeGraphEdge>();
+  for (const scopeId of scopeIds) {
+    const symbolPage = yield* selectVisualizationSymbols(
+      snapshotId,
+      visualizationScopeFromProjectId(scopeId),
+      MANAGER_SCOPE_SAMPLE_SYMBOLS_PER_SCOPE + 1,
+    );
+    const seeds = symbolPage.slice(0, MANAGER_SCOPE_SAMPLE_SYMBOLS_PER_SCOPE);
+    if (seeds.length === 0) continue;
+    sampledScopes += 1;
+    if (symbolPage.length > seeds.length) truncated = true;
+    const page = yield* selectRepresentativeEdgesForNodes(
+      snapshotId,
+      seeds.map(symbol => symbol.id),
+      'both',
+      perScopeEdgeLimit,
+      MANAGER_SCOPE_SAMPLE_PROVENANCES,
+    );
+    if (page.truncated) truncated = true;
+    for (const edge of page.edges) sampledEdges.set(edge.id, edge);
+  }
+  const endpointIds = [...new Set([...sampledEdges.values()].flatMap(edge => [edge.sourceId, edge.targetId]))].filter(
+    isDefinedString,
+  );
+  const endpointSymbols = yield* selectSymbolsByIds(snapshotId, endpointIds);
+  const symbolsById = new Map(endpointSymbols.map(symbol => [symbol.id, symbol]));
+  const aggregated = new Map<string, CodeGraphVisualizationScopeEdge>();
+  for (const edge of sampledEdges.values()) {
+    if (!edge.sourceId || !edge.targetId) continue;
+    const source = symbolsById.get(edge.sourceId);
+    const target = symbolsById.get(edge.targetId);
+    if (!source || !target) continue;
+    const sourceId = visualizationScopeIdForSymbol(source, scopeSet);
+    const targetId = visualizationScopeIdForSymbol(target, scopeSet);
+    if (!sourceId || !targetId || sourceId === targetId || !scopeSet.has(sourceId) || !scopeSet.has(targetId)) continue;
+    const key = `${sourceId}\0${targetId}\0${edge.provenance}\0${edge.relation}`;
+    const current = aggregated.get(key);
+    aggregated.set(key, {
+      confidence: Math.max(current?.confidence ?? 0, edge.confidence),
+      count: (current?.count ?? 0) + 1,
+      provenance: edge.provenance,
+      relation: edge.relation,
+      sourceId,
+      targetId,
+      type: 'source-relationship',
+    });
+  }
+  const ordered = [...aggregated.values()].sort(compareVisualizationScopeEdges);
+  if (ordered.length > safeLimit) truncated = true;
+  return {edges: ordered.slice(0, safeLimit), sampledScopes, truncated};
+});
+
+function visualizationScopeFromProjectId(projectId: string): CodeGraphVisualizationScope {
+  if (projectId.startsWith('cgp_')) return {type: 'component', value: projectId};
+  if (projectId === 'facet:unscoped') return {type: 'unscoped'};
+  if (projectId === 'facet:unscoped-documentation') return {type: 'documentation-facet'};
+  if (projectId.startsWith('package:')) return {type: 'package', value: projectId.slice('package:'.length)};
+  if (projectId.startsWith('path:')) return {type: 'path', value: projectId.slice('path:'.length)};
+  return {type: 'all'};
+}
+
+function visualizationScopeIdForSymbol(
+  symbol: CodeGraphSymbol,
+  visibleScopes: ReadonlySet<string>,
+): string | undefined {
+  if (symbol.resolutionScopeId) return symbol.resolutionScopeId;
+  if (visibleScopes.has('facet:unscoped')) return 'facet:unscoped';
+  if (symbol.language === 'markdown' || ['document', 'heading', 'section'].includes(symbol.kind)) {
+    return 'facet:unscoped-documentation';
+  }
+  const packageName = symbol.packageName?.trim();
+  if (packageName) return `package:${packageName}`;
+  return `path:${symbol.path.split('/')[0] || '(root)'}`;
+}
+
+function compareVisualizationScopeEdges(
+  left: CodeGraphVisualizationScopeEdge,
+  right: CodeGraphVisualizationScopeEdge,
+): number {
+  return (
+    right.count - left.count ||
+    right.confidence - left.confidence ||
+    compareCodeUnits(left.sourceId, right.sourceId) ||
+    compareCodeUnits(left.targetId, right.targetId) ||
+    compareCodeUnits(left.relation, right.relation) ||
+    compareCodeUnits(left.provenance, right.provenance)
+  );
+}
+
+function isDefinedString(value: string | undefined): value is string {
+  return typeof value === 'string';
+}
+
 export interface CodeGraphSqlQueryStatement {
   readonly parameters: readonly (number | string)[];
   readonly text: string;
@@ -10987,55 +11266,75 @@ export function codeGraphVisualizationSymbolsQueryStatement(
 ): CodeGraphSqlQueryStatement {
   const current = visualizationScopePredicate(scope, 'current_symbols');
   const base = visualizationScopePredicate(scope, 'base_symbols');
-  const scopeIndex = scope.type === 'all' ? ' INDEXED BY symbols_export_order' : ' INDEXED BY symbols_resolution_scope';
+  const scopeIndex = visualizationScopeIndex(scope);
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
   const order =
     scope.type === 'all'
       ? 'path, qualified_name, id'
       : `exported DESC,
       CASE kind
-        WHEN 'package' THEN 0
-        WHEN 'module' THEN 1
-        WHEN 'class' THEN 2
-        WHEN 'interface' THEN 3
-        WHEN 'function' THEN 4
-        WHEN 'method' THEN 5
-        ELSE 6
+        WHEN 'package' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3
+        WHEN 'function' THEN 4 WHEN 'method' THEN 5 ELSE 6
       END,
-      path,
-      qualified_name,
       id`;
   return {
     parameters: [
       snapshotId,
       ...current.parameters,
+      safeLimit,
       baseSnapshotId ?? '',
       ...base.parameters,
       snapshotId,
       snapshotId,
-      Math.max(1, Math.min(500, Math.floor(limit))),
+      safeLimit,
+      safeLimit,
     ],
     text: `WITH effective_symbols AS (
-      SELECT current_symbols.*
-      FROM symbols AS current_symbols${scopeIndex}
-      WHERE current_symbols.snapshot_id = ? AND ${current.text}
+      SELECT * FROM (
+        SELECT current_symbols.*
+        FROM symbols AS current_symbols${scopeIndex}
+        WHERE current_symbols.snapshot_id = ? AND ${current.text}
+        ORDER BY ${order}
+        LIMIT ?
+      )
       UNION ALL
-      SELECT base_symbols.*
-      FROM symbols AS base_symbols${scopeIndex}
-      WHERE base_symbols.snapshot_id = ? AND ${base.text}
-        AND NOT EXISTS (
-          SELECT 1 FROM symbols AS overrides
-          WHERE overrides.snapshot_id = ? AND overrides.id = base_symbols.id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM snapshot_symbol_deletions AS deletions
-          WHERE deletions.snapshot_id = ? AND deletions.symbol_id = base_symbols.id
-        )
+      SELECT * FROM (
+        SELECT base_symbols.*
+        FROM symbols AS base_symbols${scopeIndex}
+        WHERE base_symbols.snapshot_id = ? AND ${base.text}
+          AND NOT EXISTS (
+            SELECT 1 FROM symbols AS overrides
+            WHERE overrides.snapshot_id = ? AND overrides.id = base_symbols.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM snapshot_symbol_deletions AS deletions
+            WHERE deletions.snapshot_id = ? AND deletions.symbol_id = base_symbols.id
+          )
+        ORDER BY ${order}
+        LIMIT ?
+      )
     )
     SELECT *
     FROM effective_symbols
     ORDER BY ${order}
     LIMIT ?`,
   };
+}
+
+function visualizationScopeIndex(scope: CodeGraphVisualizationScope): string {
+  switch (scope.type) {
+    case 'all':
+      return ' INDEXED BY symbols_export_order';
+    case 'package':
+      return ' INDEXED BY symbols_visualization_package_v2';
+    case 'path':
+      return ' INDEXED BY symbols_visualization_path_v2';
+    case 'component':
+    case 'unscoped':
+      return ' INDEXED BY symbols_visualization_scope_v2';
+    case 'documentation-facet':
+      return ' INDEXED BY symbols_resolution_scope';
+  }
 }
 
 function visualizationScopePredicate(scope: CodeGraphVisualizationScope, alias: string): CodeGraphSqlQueryStatement {
@@ -11726,47 +12025,115 @@ const selectEdgesForNodes = Effect.fn('codeGraph.selectEdgesForNodes')(function*
   return rows.map(edgeFromRow);
 });
 
+const selectRepresentativeEdgesForNodes = Effect.fn('codeGraph.selectRepresentativeEdgesForNodes')(function* (
+  snapshotId: string,
+  nodeIds: readonly string[],
+  direction: 'both' | 'incoming' | 'outgoing',
+  limit: number,
+  allowedProvenances: readonly CodeGraphProvenance[],
+) {
+  const ids = [...new Set(nodeIds)].slice(0, 500).sort(compareCodeUnits);
+  const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+  if (ids.length === 0 || allowedProvenances.length === 0) return {edges: [], truncated: false};
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const perNodeLimit = Math.max(2, Math.min(16, Math.ceil(safeLimit / ids.length) * 2));
+  const pages: Array<{readonly nodeId: string; readonly rows: readonly EdgeRow[]}> = [];
+  let truncated = false;
+  for (const nodeId of ids) {
+    const statement = codeGraphAdjacencyQueryStatement(
+      snapshotId,
+      baseSnapshotId,
+      [nodeId],
+      direction,
+      perNodeLimit + 1,
+      allowedProvenances,
+    );
+    const rows = yield* sql.unsafe<EdgeRow>(statement.text, statement.parameters);
+    if (rows.length > perNodeLimit) truncated = true;
+    pages.push({nodeId, rows: rows.slice(0, perNodeLimit)});
+  }
+  const selected = representativeEdgeRows(pages, safeLimit);
+  const uniqueCandidates = new Set(pages.flatMap(page => page.rows.map(row => row.id))).size;
+  if (uniqueCandidates > selected.length) truncated = true;
+  return {edges: selected.map(edgeFromRow), truncated};
+});
+
+function representativeEdgeRows(
+  pages: readonly {readonly nodeId: string; readonly rows: readonly EdgeRow[]}[],
+  limit: number,
+): readonly EdgeRow[] {
+  const output = new Map<string, EdgeRow>();
+  const coveredNodes = new Set<string>();
+  for (const page of pages) {
+    const representative = page.rows[0];
+    if (!representative) continue;
+    coveredNodes.add(page.nodeId);
+    if (!output.has(representative.id) && output.size < limit) output.set(representative.id, representative);
+  }
+  if (output.size >= limit) return [...output.values()];
+  const remaining = pages
+    .flatMap(page => page.rows.slice(coveredNodes.has(page.nodeId) ? 1 : 0))
+    .sort(compareEdgeRowsByPriority);
+  for (const row of remaining) {
+    if (!output.has(row.id)) output.set(row.id, row);
+    if (output.size >= limit) break;
+  }
+  return [...output.values()];
+}
+
+function compareEdgeRowsByPriority(left: EdgeRow, right: EdgeRow): number {
+  const provenanceRank = (value: CodeGraphProvenance): number =>
+    value === 'declared' ? 0 : value === 'resolved' ? 1 : value === 'syntactic' ? 2 : 3;
+  return (
+    provenanceRank(left.provenance) - provenanceRank(right.provenance) ||
+    Number(right.confidence) - Number(left.confidence) ||
+    compareCodeUnits(left.source_name, right.source_name) ||
+    compareCodeUnits(left.relation, right.relation) ||
+    compareCodeUnits(left.target_name, right.target_name) ||
+    compareCodeUnits(left.id, right.id)
+  );
+}
+
 const selectRelationshipSummaryForNode = Effect.fn('codeGraph.selectRelationshipSummaryForNode')(function* (
   snapshotId: string,
   nodeId: string,
   allowedProvenances: readonly CodeGraphProvenance[],
+  limit = 2_000,
 ) {
   if (allowedProvenances.length === 0) {
-    return {incoming: 0, outgoing: 0, provenances: [], relations: []};
+    return {incoming: 0, outgoing: 0, provenances: [], relations: [], sampledEdges: 0, truncated: false};
   }
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
-  const adjacent = effectiveAdjacentEdgesCte(snapshotId, baseSnapshotId, [nodeId], 'both', allowedProvenances);
-  const rows = yield* sql.unsafe<{
-    readonly count: number;
-    readonly incoming: number;
-    readonly outgoing: number;
-    readonly provenance: CodeGraphProvenance;
-    readonly relation: CodeGraphEdge['relation'];
-  }>(
-    `${adjacent.text}
-     SELECT relation, provenance, COUNT(*) AS count,
-       SUM(CASE WHEN target_id = ? THEN 1 ELSE 0 END) AS incoming,
-       SUM(CASE WHEN source_id = ? THEN 1 ELSE 0 END) AS outgoing
-     FROM adjacent_edges
-     GROUP BY relation, provenance
-     ORDER BY count DESC, relation, provenance`,
-    [...adjacent.parameters, nodeId, nodeId],
+  const safeLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+  const statement = codeGraphAdjacencyQueryStatement(
+    snapshotId,
+    baseSnapshotId,
+    [nodeId],
+    'both',
+    safeLimit + 1,
+    allowedProvenances,
   );
+  const page = yield* sql.unsafe<EdgeRow>(statement.text, statement.parameters);
+  const rows = page.slice(0, safeLimit);
   const relationCounts = new Map<CodeGraphEdge['relation'], {count: number; incoming: number; outgoing: number}>();
   const provenanceCounts = new Map<CodeGraphProvenance, number>();
   let incoming = 0;
   let outgoing = 0;
   for (const row of rows) {
+    const rowIncoming = row.target_id === nodeId ? 1 : 0;
+    const rowOutgoing = row.source_id === nodeId ? 1 : 0;
     const relation = relationCounts.get(row.relation) ?? {count: 0, incoming: 0, outgoing: 0};
-    relation.count += row.count;
-    relation.incoming += row.incoming;
-    relation.outgoing += row.outgoing;
+    relation.count += 1;
+    relation.incoming += rowIncoming;
+    relation.outgoing += rowOutgoing;
     relationCounts.set(row.relation, relation);
-    provenanceCounts.set(row.provenance, (provenanceCounts.get(row.provenance) ?? 0) + row.count);
-    incoming += row.incoming;
-    outgoing += row.outgoing;
+    provenanceCounts.set(row.provenance, (provenanceCounts.get(row.provenance) ?? 0) + 1);
+    incoming += rowIncoming;
+    outgoing += rowOutgoing;
   }
   return {
     incoming,
@@ -11777,6 +12144,8 @@ const selectRelationshipSummaryForNode = Effect.fn('codeGraph.selectRelationship
     relations: [...relationCounts]
       .map(([relation, counts]) => ({...counts, relation}))
       .sort((left, right) => right.count - left.count || compareCodeUnits(left.relation, right.relation)),
+    sampledEdges: rows.length,
+    truncated: page.length > safeLimit,
   };
 });
 
@@ -11884,6 +12253,12 @@ function sqlTextOption(value: unknown): Option.Option<string> {
 
 function boundedPageLimit(value: number): number {
   return Number.isSafeInteger(value) ? Math.max(1, Math.min(2_000, value)) : 500;
+}
+
+function boundedVisualizationCatalogLimit(value: number | undefined, fallback: number, maximum: number): number {
+  return value === undefined || !Number.isSafeInteger(value)
+    ? fallback
+    : Math.max(1, Math.min(maximum, Math.floor(value)));
 }
 
 function boundedAggregatePageLimit(value: number): number {
