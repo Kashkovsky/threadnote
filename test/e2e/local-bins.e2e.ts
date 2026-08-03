@@ -951,19 +951,29 @@ describe('built self-contained distribution', () => {
         name: 'recall_context',
       });
       expect(invalidRecall.isError).toBe(true);
-      const productionLog = await readFile(join(home, 'logs', 'threadnote.log'), 'utf8');
-      const mcpLogEntries = parseProductionLog(productionLog).filter(entry => entry.component === 'mcp');
-      expect(mcpLogEntries).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({event: 'invocation.finished', operation: 'health', outcome: 'success'}),
-          expect.objectContaining({
-            errorType: 'McpToolError',
-            event: 'invocation.finished',
-            operation: 'recall_context',
-            outcome: 'failure',
-          }),
-        ]),
-      );
+      let productionLog = '';
+      await expect
+        .poll(
+          async () => {
+            productionLog = await readFile(join(home, 'logs', 'threadnote.log'), 'utf8');
+            const mcpLogEntries = parseProductionLog(productionLog).filter(entry => entry.component === 'mcp');
+            return {
+              health: mcpLogEntries.some(
+                entry =>
+                  entry.event === 'invocation.finished' && entry.operation === 'health' && entry.outcome === 'success',
+              ),
+              invalidRecall: mcpLogEntries.some(
+                entry =>
+                  entry.errorType === 'McpToolError' &&
+                  entry.event === 'invocation.finished' &&
+                  entry.operation === 'recall_context' &&
+                  entry.outcome === 'failure',
+              ),
+            };
+          },
+          {interval: 50, timeout: 10_000},
+        )
+        .toEqual({health: true, invalidRecall: true});
       expect(productionLog).not.toContain(privatePayloadMarker);
       const recall = await client.callTool({
         arguments: {query: 'MCP-OBSIDIAN-881'},

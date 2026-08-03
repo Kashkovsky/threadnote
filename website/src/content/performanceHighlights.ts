@@ -3,8 +3,7 @@ import intellijQueryEvidence from '../../../test/evaluation/candidates/threadnot
 import lexicalProductionEvidence from '../../../test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-lexical-production-100k-2026-08-02.json' with {type: 'json'};
 import type {PerformanceControlLanguage} from './performance.js';
 
-const intellijEvidenceCommit = 'b42baea0dfd00d5d9eb38569cce646f26ac16279';
-const lexicalEvidenceCommit = '00faf82c0c79141139d8c3181d50956ce7c55c11';
+const publicEvidenceCommit = '2172d719b5f2138d34fcc0370c1ccda501be82dc';
 const evidenceDirectory = 'test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max';
 
 function requireLanguageControl(language: string) {
@@ -75,8 +74,8 @@ export const checkedInPerformanceEvidence = {
     ]),
   ) as Readonly<Record<PerformanceControlLanguage, Readonly<{milliseconds: number; query: string}>>>,
   artifacts: {
-    query: `https://github.com/Kashkovsky/threadnote/blob/${intellijEvidenceCommit}/${evidenceDirectory}/code-graph-intellij-query-2026-08-01.json`,
-    analysis: `https://github.com/Kashkovsky/threadnote/blob/${intellijEvidenceCommit}/${evidenceDirectory}/code-graph-intellij-analysis-summary-2026-08-01.json`,
-    lexicalStorage: `https://github.com/Kashkovsky/threadnote/blob/${lexicalEvidenceCommit}/${evidenceDirectory}/code-graph-lexical-production-100k-2026-08-02.json`,
+    query: `https://github.com/Kashkovsky/threadnote/blob/${publicEvidenceCommit}/${evidenceDirectory}/code-graph-intellij-query-2026-08-01.json`,
+    analysis: `https://github.com/Kashkovsky/threadnote/blob/${publicEvidenceCommit}/${evidenceDirectory}/code-graph-intellij-analysis-summary-2026-08-01.json`,
+    lexicalStorage: `https://github.com/Kashkovsky/threadnote/blob/${publicEvidenceCommit}/${evidenceDirectory}/code-graph-lexical-production-100k-2026-08-02.json`,
   },
 } as const;
