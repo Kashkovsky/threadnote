@@ -167,24 +167,28 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
             path: source,
           });
         }
-        if (!sourceExists) {
-          const targetDigest = yield* digestDirectory(fs, path, target, (candidate, type) =>
+        const sourceHasMaterial =
+          sourceExists &&
+          (yield* hasBoundedMigrationTreeContent(fs, path, source, (candidate, type) =>
             shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+          ));
+        if (!sourceHasMaterial) {
+          if (!targetExists) {
+            return yield* new StorageLayoutMigrationConflict({
+              message: `Canonical account "${account.name}" is missing for the pending migration receipt.`,
+              path: target,
+            });
+          }
+          const targetDigest = yield* verifyResumedTargetDigest(
+            fs,
+            path,
+            legacyRoot,
+            sourceExists ? source : undefined,
+            target,
+            account,
           );
           if (targetDigest !== account.treeSha256) {
-            const legacyTargetDigest = yield* digestDirectory(fs, path, target);
-            if (legacyTargetDigest !== account.treeSha256) {
-              return yield* new StorageLayoutMigrationConflict({
-                message: `Canonical account "${account.name}" does not match the pending migration receipt.`,
-                path: target,
-              });
-            }
-            receipt = {
-              ...receipt,
-              accounts: receipt.accounts.map(current =>
-                current.name === account.name ? {...current, treeSha256: targetDigest} : current,
-              ),
-            };
+            receipt = replaceAccountDigest(receipt, account.name, targetDigest);
           }
           resumed = true;
           return;
@@ -298,6 +302,41 @@ function mergePendingMigrationPlans(
   const accounts = new Map(existing.accounts.map(account => [account.name, account]));
   for (const account of current.accounts) accounts.set(account.name, account);
   return {...existing, accounts: [...accounts.values()].sort((left, right) => left.name.localeCompare(right.name))};
+}
+
+function replaceAccountDigest(
+  receipt: StorageLayoutMigrationReceipt,
+  account: string,
+  treeSha256: string,
+): StorageLayoutMigrationReceipt {
+  return {
+    ...receipt,
+    accounts: receipt.accounts.map(current => (current.name === account ? {...current, treeSha256} : current)),
+  };
+}
+
+function verifyResumedTargetDigest(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  legacyRoot: string,
+  source: string | undefined,
+  target: string,
+  account: AccountMigration,
+): Effect.Effect<string, unknown, Crypto.Crypto> {
+  return Effect.gen(function* () {
+    const targetDigest = yield* digestDirectory(fs, path, target, (candidate, type) =>
+      shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+    );
+    if (targetDigest === account.treeSha256) return targetDigest;
+    const legacyDigest = source
+      ? yield* digestMergedDirectories(fs, path, source, target)
+      : yield* digestDirectory(fs, path, target);
+    if (legacyDigest === account.treeSha256) return targetDigest;
+    return yield* new StorageLayoutMigrationConflict({
+      message: `Canonical account "${account.name}" does not match the pending migration receipt.`,
+      path: target,
+    });
+  });
 }
 
 function shouldIncludeLegacyCanonicalStorePath(

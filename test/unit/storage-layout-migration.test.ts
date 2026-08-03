@@ -409,6 +409,38 @@ describe('Threadnote storage layout migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('rejects an empty residual source scaffold when its canonical target is incomplete', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-empty-residual-resume-'});
+        yield* fs.makeDirectory(path.join(home, 'data', 'viking', 'local'), {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'data', 'local'), {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+          `${JSON.stringify({
+            accounts: [{name: 'local', treeSha256: 'a'.repeat(64)}],
+            id: STORAGE_LAYOUT_MIGRATION_ID,
+            sourceLayoutVersion: 1,
+            status: 'pending',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+
+        const failure = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(Effect.flip);
+        expect(failure).toBeInstanceOf(StorageLayoutMigrationConflict);
+        const receipt = JSON.parse(
+          yield* fs.readFileString(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`)),
+        ) as {readonly status: string};
+        expect(receipt.status).toBe('pending');
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('reports and repairs a missing or stale layout marker from a completed receipt', () =>
     Effect.scoped(
       Effect.gen(function* () {
