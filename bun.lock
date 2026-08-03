@@ -17,7 +17,7 @@
       },
       "devDependencies": {
         "@effect/ai-openai-compat": "4.0.0-beta.99",
-        "@effect/platform-bun": "4.0.0-beta.99",
+        "@effect/platform-bun": "4.0.0-beta.102",
         "@effect/vitest": "4.0.0-beta.99",
         "@fontsource-variable/jetbrains-mono": "5.3.0",
         "@fontsource-variable/spline-sans": "5.3.0",
@@ -97,9 +97,9 @@
 
     "@effect/ai-openai-compat": ["@effect/ai-openai-compat@4.0.0-beta.99", "", { "peerDependencies": { "effect": "^4.0.0-beta.99" } }, "sha512-f5alvCgFnQeB579/lZrft9vUz66KbPAEy6QRIEd/VAkpS/sEVdCEh6QoCtnC7CNkzxb3K+xVp2pfdZXqr999XA=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.99", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.99" }, "peerDependencies": { "effect": "^4.0.0-beta.99" } }, "sha512-CCjzD7BY6wvG8tWEBvup2Ko4ME65RX2zZnt8sD+SLwrSEEGJhTliwmQyjyesm8WjAJpALv8NL9/Tv17ocxUPNg=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.102", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.102" }, "peerDependencies": { "effect": "^4.0.0-beta.102" } }, "sha512-hTIb0jjTfXhNgnDq2OX5wrigc0OSvTT0VWWb1PLpMM395RJPu8rCIbTlGhy0NS7kZOd8FfgNi9e0sDhgyu+5Ag=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-beta.99", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.0" }, "peerDependencies": { "effect": "^4.0.0-beta.99" } }, "sha512-POBAowafsAAb3bH1x1rJlWnv32yMAazFgEuRW5LhkW/JJA5VGoEk9OnuoUkIH1OW6K/X6IrdNpqcO+5e9lPQJA=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-beta.102", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.0" }, "peerDependencies": { "effect": "^4.0.0-beta.102" } }, "sha512-gVd793I72MrkX4dXo7eYtRKfNj0RW4eMRfVEKEJI16h2+mBDCzQ+gqMrog2hSTHQnaIbvbYShNQ4TVGuRCYZeQ=="],
 
     "@effect/sql-sqlite-bun": ["@effect/sql-sqlite-bun@4.0.0-beta.99", "", { "peerDependencies": { "effect": "^4.0.0-beta.99" } }, "sha512-3htc9hPNghxCGdUgx4f/yzoUchTYnnueBb03n+62gqXXdi7GI1bEhtGPkFhXHkmoyAdcmddEO79aoGPmdyyyAA=="],
 
