@@ -191,7 +191,7 @@ describe('Effect CLI', () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-large-generic-output-'));
     const memoryText = `generic-output-start\n${'x'.repeat(128 * 1024)}\ngeneric-output-end`;
     try {
-      const result = await runCliThroughDelayedTextPipe(
+      const result = await runCliThroughTextPipe(
         [
           'remember',
           '--home',
@@ -501,16 +501,15 @@ async function runCliThroughJsonPipe(args: readonly string[]) {
       process.execPath,
       '-e',
       [
-        '// Let the producer fill the operating-system pipe before reading.',
-        'await Bun.sleep(2_000);',
+        '// Read immediately, matching common consumers such as jq.',
         'const text = await new Response(Bun.stdin.stream()).text();',
         'const value = JSON.parse(text);',
         'const nodes = Array.isArray(value.nodes) ? value.nodes : [];',
-        'console.log(JSON.stringify({',
+        'await Bun.write(Bun.stdout, JSON.stringify({',
         '  allNamesMatched: nodes.every(node => node.name?.startsWith("pipedOutputSymbol")),',
         '  bytes: new TextEncoder().encode(text).byteLength,',
         '  nodeCount: nodes.length,',
-        '}));',
+        '}) + "\\n");',
       ].join('\n'),
     ],
     {
@@ -538,7 +537,7 @@ async function runCliThroughJsonPipe(args: readonly string[]) {
   };
 }
 
-async function runCliThroughDelayedTextPipe(args: readonly string[], input: string) {
+async function runCliThroughTextPipe(args: readonly string[], input: string) {
   const producer = Bun.spawn([process.execPath, 'src/standalone.ts', ...args], {
     cwd: process.cwd(),
     env: {...process.env, NO_COLOR: '1'},
@@ -551,13 +550,12 @@ async function runCliThroughDelayedTextPipe(args: readonly string[], input: stri
       process.execPath,
       '-e',
       [
-        'await Bun.sleep(500);',
         'const text = await new Response(Bun.stdin.stream()).text();',
-        'console.log(JSON.stringify({',
+        'await Bun.write(Bun.stdout, JSON.stringify({',
         '  bytes: new TextEncoder().encode(text).byteLength,',
         '  hasEnd: text.includes("generic-output-end"),',
         '  hasStart: text.includes("generic-output-start"),',
-        '}));',
+        '}) + "\\n");',
       ].join('\n'),
     ],
     {

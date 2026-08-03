@@ -1,6 +1,7 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Layer} from 'effect';
 import {CommandExecutor} from './command.js';
+import {CliOutput} from './cli_output.js';
 import {HttpService} from './http.js';
 import {ResourceStore} from './resource-store.js';
 import {SystemInfo} from './system.js';
@@ -57,6 +58,7 @@ const codeGraphQueryLayer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(
 const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
 
 const ApplicationServicesLayer = Layer.mergeAll(
+  CliOutput.layer,
   codeGraphQueryLayer,
   codeGraphAnalysisLayer,
   codeGraphWatcherLayer,

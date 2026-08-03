@@ -1,4 +1,5 @@
 import {Console, Effect} from 'effect';
+import {CliOutput} from './cli_output.js';
 
 function capturingConsole(parent: Console.Console, lines: string[]): Console.Console {
   const append = (...args: readonly unknown[]): void => {
@@ -17,8 +18,15 @@ export function captureConsole<A, E, R>(
   return Console.consoleWith(parent => {
     const lines: string[] = [];
     const service = capturingConsole(parent, lines);
+    const cliOutput = CliOutput.of({
+      writeFinal: output =>
+        Effect.sync(() => {
+          lines.push(output);
+        }),
+    });
     return effect.pipe(
       Effect.provideService(Console.Console, service),
+      Effect.provideService(CliOutput, cliOutput),
       Effect.map(value => ({output: lines.join('\n'), value})),
     );
   });

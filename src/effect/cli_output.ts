@@ -1,35 +1,43 @@
-import {Console, Effect} from 'effect';
+import {Context, Effect, Layer} from 'effect';
 
-/**
- * Emits a complete final CLI payload and waits until Bun has drained stdout.
- *
- * Effect's Console service remains the emission boundary so Manager and test
- * capture layers keep working. Bun's console write itself is asynchronous when
- * stdout is a pipe, however, and a one-shot CLI can otherwise exit after only
- * one platform pipe buffer has been delivered.
- */
-export function makeFinalCliOutput(drain: () => Promise<void>) {
+export interface CliOutputShape {
+  readonly writeFinal: (output: string) => Effect.Effect<void, Error>;
+}
+
+export function makeFinalCliOutput(write: (output: string) => Promise<void>) {
   return Effect.fn('cliOutput.writeFinal')(function* (output: string) {
-    yield* Console.log(output);
     yield* Effect.tryPromise({
-      try: drain,
-      catch: cause => new Error('Failed to drain Threadnote CLI output.', {cause}),
+      try: () => write(output),
+      catch: cause => new Error('Failed to write complete Threadnote CLI output.', {cause}),
     });
   });
 }
 
-const drainBunStdout = () =>
-  new Promise<void>((resolve, reject) => {
-    // Effect Console ultimately queues through Bun's Node-compatible stdout.
-    // Its write callback is the cross-platform completion signal for that
-    // queue; a separate BunFile writer does not drain already queued console
-    // bytes in a compiled standalone executable.
-    process.stdout.write('', error => (error ? reject(error) : resolve()));
-  });
+const writeBunStdout = async (output: string): Promise<void> => {
+  const stdout = Bun.stdout.writer({highWaterMark: 64 * 1024});
+  stdout.write(`${output}\n`);
+  await stdout.flush();
+  await stdout.end();
+};
 
+export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/CliOutput') {
+  static readonly layer = Layer.succeed(
+    CliOutput,
+    CliOutput.of({
+      writeFinal: makeFinalCliOutput(writeBunStdout),
+    }),
+  );
+}
+
+/** Best-effort barrier for ordinary small Console output at one-shot CLI exit. */
 export const drainCliStdout = Effect.tryPromise({
-  try: drainBunStdout,
+  try: async () => {
+    await Bun.write(Bun.stdout, '');
+  },
   catch: cause => new Error('Failed to drain Threadnote CLI output.', {cause}),
 });
 
-export const writeFinalCliOutput = makeFinalCliOutput(drainBunStdout);
+export const writeFinalCliOutput = Effect.fn('cliOutput.writeFinalFromService')(function* (output: string) {
+  const cliOutput = yield* CliOutput;
+  yield* cliOutput.writeFinal(output);
+});

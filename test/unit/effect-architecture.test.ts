@@ -44,6 +44,7 @@ describe('Effect architecture boundaries', () => {
     const allowed = new Set([
       'src/effect/archive.ts',
       'src/effect/ai/isolated-local-model-runtime.ts',
+      'src/effect/cli_output.ts',
       'src/effect/console.ts',
       'src/effect/errors.ts',
       'src/effect/system.ts',

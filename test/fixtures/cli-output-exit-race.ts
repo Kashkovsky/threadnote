@@ -1,11 +1,12 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {makeFinalCliOutput} from '../../src/effect/cli_output.js';
 
-const writeDelayedFinalOutput = makeFinalCliOutput(async () => {
+const writeDelayedFinalOutput = makeFinalCliOutput(async output => {
   await Bun.sleep(500);
-  await new Promise<void>((resolve, reject) => {
-    process.stdout.write('', error => (error ? reject(error) : resolve()));
-  });
+  const stdout = Bun.stdout.writer({highWaterMark: 64 * 1024});
+  stdout.write(`${output}\n`);
+  await stdout.flush();
+  await stdout.end();
 });
 
 const value = 'x'.repeat(128 * 1024);
