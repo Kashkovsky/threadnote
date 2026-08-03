@@ -1,8 +1,13 @@
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {makeCodeGraphWatcher, type CodeGraphWatchOptions} from '../../src/code_graph/watcher.js';
+import {
+  makeCodeGraphWatcher,
+  prewarmCandidatesFromRefOutput,
+  type CodeGraphWatchOptions,
+} from '../../src/code_graph/watcher.js';
 
 const options: CodeGraphWatchOptions = {
   cwd: '/fixture/repository',
@@ -11,6 +16,31 @@ const options: CodeGraphWatchOptions = {
 };
 
 describe('CodeGraphWatcher', () => {
+  it('admits at most two unique non-current ref tips for prewarming', () => {
+    const objectId = fc
+      .array(fc.integer({max: 15, min: 0}), {maxLength: 40, minLength: 40})
+      .map(values => values.map(value => value.toString(16)).join(''));
+    fc.assert(
+      fc.property(
+        fc.array(objectId, {maxLength: 20}),
+        objectId,
+        fc.integer({max: 20, min: -5}),
+        (ids, current, limit) => {
+          const candidates = prewarmCandidatesFromRefOutput(
+            [...ids, current, 'not-an-object-id', ...ids].join('\n'),
+            current,
+            limit,
+          );
+          expect(candidates.length).toBeLessThanOrEqual(2);
+          expect(new Set(candidates).size).toBe(candidates.length);
+          expect(candidates).not.toContain(current);
+          expect(candidates.every(value => /^[0-9a-f]{40}$/u.test(value))).toBe(true);
+        },
+      ),
+      {numRuns: 250},
+    );
+  });
+
   it('deduplicates concurrent session registrations and finalizes the watcher with the session scope', async () => {
     const counts = await Effect.runPromise(
       Effect.gen(function* () {

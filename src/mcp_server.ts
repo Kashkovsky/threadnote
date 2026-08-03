@@ -883,7 +883,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           }
         }
         const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (refreshStatus?.state === 'failed' || refreshStatus?.state === 'indexing') {
+        if (codeGraphRefreshBlocksReadyInspection(status, refreshStatus)) {
           return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
@@ -1805,6 +1805,14 @@ const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(f
     yield* Effect.sleep(MCP_CODE_GRAPH_POLL_MILLISECONDS);
   }
 });
+
+export function codeGraphRefreshBlocksReadyInspection(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+): boolean {
+  if (refreshStatus?.state === 'failed') return true;
+  return refreshStatus?.state === 'indexing' && (!status.readySnapshot || status.stale);
+}
 
 function codeGraphRefreshResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',

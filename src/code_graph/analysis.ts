@@ -505,6 +505,9 @@ export const analyzeCodeGraphWithLease = Effect.fn('codeGraph.analyzeWithSnapsho
     Math.max(2 * 60_000, budget.maxDurationMilliseconds + SNAPSHOT_LEASE_BUFFER_MILLISECONDS),
   );
   const lease = yield* store.acquireSnapshotLease(options.databasePath, options.snapshot.id, leaseDuration);
+  if (typeof store.ensureAnalysisSummary === 'function') {
+    yield* store.ensureAnalysisSummary(options.databasePath, options.snapshot.id).pipe(Effect.catch(() => Effect.void));
+  }
   return yield* store
     .withSession(options.databasePath, analyzeCodeGraph(store, options), {readOnly: true})
     .pipe(

@@ -15,8 +15,10 @@ import {
   SynchronizedRef,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
-import {CommandExecutor} from '../effect/command.js';
+import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
+import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import type {CommandResult} from '../types.js';
 import type {CodeGraphProgress} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
 import {codeGraphLayout} from './layout.js';
@@ -137,12 +139,39 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
       const commandExecutor = yield* CommandExecutor;
       const systemInfo = yield* SystemInfo;
       const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const scope = yield* Effect.scope;
+      const prewarmSemaphore = yield* Semaphore.make(1);
+      const prewarmedCommits = yield* SynchronizedRef.make(new Set<string>());
       const run = (
         options: CodeGraphWatchOptions,
         initialRefresh: boolean,
         requestRefresh: () => Effect.Effect<void>,
       ) => watchRepository(fs, path, options, initialRefresh, requestRefresh);
-      const refresh = (options: CodeGraphWatchOptions) => indexRepository(indexer, options).pipe(Effect.asVoid);
+      const schedulePrewarm = (options: CodeGraphWatchOptions) =>
+        systemInfo.environment().THREADNOTE_CODE_GRAPH_PREWARM === '0'
+          ? Effect.void
+          : prewarmLikelyCleanSnapshots({
+              commandExecutor,
+              indexer,
+              options,
+              path,
+              prewarmedCommits,
+              prewarmSemaphore,
+              store,
+            }).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, systemInfo),
+              Effect.forkIn(scope),
+              Effect.asVoid,
+            );
+      const refresh = (options: CodeGraphWatchOptions) =>
+        indexRepository(indexer, options).pipe(
+          Effect.tap(() => schedulePrewarm(options)),
+          Effect.asVoid,
+        );
       const watcher = yield* makeCodeGraphWatcher(run, refresh);
       return CodeGraphWatcher.of({
         ...watcher,
@@ -542,6 +571,92 @@ function persistedRefreshStatus(status: ObservedCodeGraphBuildStatus): CodeGraph
     },
   };
 }
+
+const PREWARM_REFS = [
+  'refs/remotes/origin/main',
+  'refs/remotes/origin/master',
+  'refs/heads/main',
+  'refs/heads/master',
+] as const;
+
+/** @internal Deterministic and property-tested admission for bounded prewarming. */
+export function prewarmCandidatesFromRefOutput(output: string, currentCommit: string, maximum = 2): readonly string[] {
+  const limit = Number.isSafeInteger(maximum) && maximum > 0 ? Math.min(maximum, 2) : 2;
+  return [
+    ...new Set(
+      output
+        .split(/\r?\n/u)
+        .map(value => value.trim().toLowerCase())
+        .filter(value => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(value) && value !== currentCommit.toLowerCase()),
+    ),
+  ].slice(0, limit);
+}
+
+const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnapshots')(function* (input: {
+  readonly commandExecutor: {
+    readonly execute: (
+      executable: string,
+      args: readonly string[],
+      options?: CommandOptions,
+    ) => Effect.Effect<CommandResult, unknown>;
+  };
+  readonly indexer: CodeGraphIndexerShape;
+  readonly options: CodeGraphWatchOptions;
+  readonly path: Path.Path;
+  readonly prewarmedCommits: SynchronizedRef.SynchronizedRef<Set<string>>;
+  readonly prewarmSemaphore: Semaphore.Semaphore;
+  readonly store: CodeGraphStoreShape;
+}) {
+  const identity = yield* resolveRepositoryIdentity(input.options.cwd);
+  const refs = yield* input.commandExecutor.execute(
+    'git',
+    ['-C', identity.repoRoot, 'for-each-ref', '--format=%(objectname)', ...PREWARM_REFS],
+    {allowFailure: true, maxOutputBytes: 16 * 1024, timeoutMs: 10_000},
+  );
+  const commits = prewarmCandidatesFromRefOutput(refs.stdout, identity.headCommit);
+  if (commits.length === 0) return;
+  const layout = codeGraphLayout(input.path, input.options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+  yield* input.prewarmSemaphore.withPermit(
+    Effect.forEach(
+      commits,
+      commit =>
+        Effect.gen(function* () {
+          const key = `${identity.checkoutId}:${commit}`;
+          const reserved = yield* SynchronizedRef.modify(input.prewarmedCommits, current => {
+            if (current.has(key)) return [false, current] as const;
+            const next = new Set(current);
+            if (next.size >= 64) next.delete(next.values().next().value!);
+            next.add(key);
+            return [true, next] as const;
+          });
+          if (!reserved) return;
+          yield* input.indexer
+            .ensureCommit({
+              commit,
+              cwd: input.options.cwd,
+              threadnoteHome: input.options.threadnoteHome,
+            })
+            .pipe(
+              Effect.flatMap(lease => input.store.releaseSnapshotLease(layout.databasePath, lease.leaseToken)),
+              Effect.catch(cause =>
+                SynchronizedRef.update(input.prewarmedCommits, current => {
+                  const next = new Set(current);
+                  next.delete(key);
+                  return next;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.logDebug(
+                      `Code graph prewarm skipped ${commit}: ${cause instanceof Error ? cause.message : String(cause)}`,
+                    ),
+                  ),
+                ),
+              ),
+            );
+        }),
+      {concurrency: 1, discard: true},
+    ),
+  );
+});
 
 const indexRepository = (indexer: CodeGraphIndexerShape, options: CodeGraphWatchOptions) =>
   indexer

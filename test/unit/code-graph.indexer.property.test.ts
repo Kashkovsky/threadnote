@@ -7,6 +7,7 @@ import {
   deduplicateMaterializationRelationships,
   estimatedMaterializationStorageBytes,
   factMaterializationBatches,
+  graphContentIdentity,
   materializationRowsWithStoreProgress,
   materializationStoragePlan,
   materializationStorageShortfalls,
@@ -14,7 +15,11 @@ import {
   snapshotIdentity,
 } from '../../src/code_graph/indexer.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../../src/code_graph/store.js';
+import {
+  CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
+  materializedFileShardIdentity,
+  materializedShardDerivationIdentity,
+} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphMaterializationRows, CodeGraphReference} from '../../src/code_graph/types.js';
 
 const byteCount = FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0});
@@ -42,6 +47,47 @@ describe('code graph indexer properties', () => {
     ).slice(0, 40);
 
     expect(snapshotIdentity(identity, false, extractorSet, files)).toBe(`cgsn_${expected}`);
+  });
+
+  it('keeps graph content identity independent of commit order while detecting every eligible content change', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            contentHash: fc.string({maxLength: 64, minLength: 1}),
+            language: fc.constantFrom('typescript', 'python', 'markdown'),
+            mode: fc.constantFrom('100644', '100755'),
+            path: fc.stringMatching(/^[a-z][a-z0-9]{0,8}\.ts$/),
+          }),
+          {minLength: 1, selector: file => file.path},
+        ),
+        files => {
+          const original = graphContentIdentity('extractor-set', files);
+          expect(graphContentIdentity('extractor-set', [...files].reverse())).toBe(original);
+
+          const changed = files.map((file, index) =>
+            index === 0 ? {...file, contentHash: `${file.contentHash}0`} : file,
+          );
+          expect(graphContentIdentity('extractor-set', changed)).not.toBe(original);
+          expect(graphContentIdentity('other-extractor-set', files)).not.toBe(original);
+        },
+      ),
+      {numRuns: 250},
+    );
+  });
+
+  it('makes materialized shard identity content-addressed and derivation-context sensitive', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (extractor, workspace, fileSet, path) => {
+        const derivation = materializedShardDerivationIdentity(extractor, workspace, fileSet);
+        const shard = materializedFileShardIdentity('content-hash', extractor, derivation, path);
+        expect(materializedFileShardIdentity('content-hash', extractor, derivation, path)).toBe(shard);
+        expect(materializedFileShardIdentity('changed-content', extractor, derivation, path)).not.toBe(shard);
+        expect(materializedFileShardIdentity('content-hash', extractor, derivation, `${path}/changed`)).not.toBe(shard);
+        expect(materializedShardDerivationIdentity(extractor, workspace, `${fileSet}/changed`)).not.toBe(derivation);
+      }),
+      {numRuns: 250},
+    );
   });
 
   it('splits high-density low-source-byte facts before one SQLite writer transaction becomes pathological', () => {

@@ -173,7 +173,7 @@ describe('platform benchmark workflow', () => {
     const releaseCommand = release.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(evidence.needs).toBeUndefined();
-    expect(releaseEvidence.on.push?.tags).toEqual(['v4.0.0-beta.*', 'v4.0.0-rc.*', 'v4.0.0']);
+    expect(releaseEvidence.on.push?.tags).toEqual(['v4.*']);
     expect(evidence.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(evidence.with).toMatchObject({
       strict: false,

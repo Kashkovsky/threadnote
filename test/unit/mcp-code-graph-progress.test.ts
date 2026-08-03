@@ -6,6 +6,7 @@ import {
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
   codeGraphMcpResponse,
+  codeGraphRefreshBlocksReadyInspection,
   codeGraphQueryTimeoutResult,
   codeGraphRetryAfterMilliseconds,
   compactCodeGraphMcpProgress,
@@ -18,6 +19,20 @@ import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 
 describe('MCP code graph indexing progress', () => {
+  it('allows a current ready graph to serve while optional enrichment continues', () => {
+    const indexing = indexingStatus(60_000);
+
+    expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'ready'}, stale: false}, indexing)).toBe(false);
+    expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, indexing)).toBe(true);
+    expect(codeGraphRefreshBlocksReadyInspection({stale: true}, indexing)).toBe(true);
+    expect(
+      codeGraphRefreshBlocksReadyInspection(
+        {readySnapshot: {id: 'ready'}, stale: false},
+        {message: 'fixture failed', state: 'failed'},
+      ),
+    ).toBe(true);
+  });
+
   it('derives a bounded adaptive poll interval from the phase estimate', () => {
     expect(codeGraphRetryAfterMilliseconds(undefined)).toBe(5_000);
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(4_000))).toBe(3_000);

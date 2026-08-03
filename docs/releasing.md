@@ -58,14 +58,13 @@ checksums but are not OS code-signed.
    dispatch a duplicate production-large run for the same tag.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
-   `v4.0.0-beta.9`.
+   `v4.0.1`.
 6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
 
-Every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag starts a separate production-large evidence workflow on
-`ubuntu-24.04`; the publishing workflow never waits for it and its conclusion reports distribution status only. The
-evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded time to upload the
-latest privacy-safe checkpoint and summary. Incomplete release observations are reported but never delay publication;
+Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
+never waits for it. The evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded
+time to upload the latest privacy-safe checkpoint and summary. Incomplete release observations are reported but never delay publication;
 scheduled or explicitly requested strict runs still fail when the profile does not complete inside the same bound.
 Aggregate phase/materialization evidence, failure checkpoints, exact source commit, and upload digest are retained for
 90 days. Treat a successful result as `n=1` same-runner evidence, not as a portable p95. The heavy-tail job remains

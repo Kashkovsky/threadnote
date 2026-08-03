@@ -134,6 +134,8 @@ export interface CodeGraphSnapshot {
   readonly edgeCount: number;
   readonly extractorSet: string;
   readonly fileCount: number;
+  /** Content-addressed graph input identity, independent of commit and worktree pointers. */
+  readonly graphContentId?: string;
   readonly id: string;
   readonly overlayFingerprint?: string;
   readonly repositoryId: string;
@@ -380,7 +382,7 @@ export interface CodeGraphIndexSummary {
   readonly identity: RepositoryIdentity;
   readonly materialization?: {
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
-    readonly mode: 'full' | 'incremental-overlay' | 'reused-snapshot';
+    readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
     readonly stagedFiles: number;
     readonly totalFiles: number;
   };

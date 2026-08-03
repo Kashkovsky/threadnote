@@ -104,6 +104,8 @@ describe('persisted code graph analysis summaries', () => {
             [...effectiveEdgeMap.values()],
           );
 
+          yield* store.ensureAnalysisSummary?.(databasePath, overlaySnapshot.id);
+          yield* store.ensureAnalysisSummary?.(databasePath, rebuiltSnapshot.id);
           const overlay = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, overlaySnapshot.id));
           const rebuilt = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, rebuiltSnapshot.id));
           expect(overlay).toEqual(rebuilt);
@@ -201,6 +203,8 @@ describe('persisted code graph analysis summaries', () => {
           effectiveEdges,
         );
 
+        yield* store.ensureAnalysisSummary?.(databasePath, overlay.id);
+        yield* store.ensureAnalysisSummary?.(databasePath, rebuilt.id);
         const actual = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, overlay.id));
         const expected = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, rebuilt.id));
         expect(actual).toEqual(expected);
@@ -248,6 +252,7 @@ describe('persisted code graph analysis summaries', () => {
           }),
         );
 
+        yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
         const summary = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, ready.id));
         expect(summary).toMatchObject({edgeCount: 1, symbolCount: 2});
         expect(summary.edges).toEqual([expect.objectContaining({count: 1, provenance: 'resolved', relation: 'calls'})]);
@@ -317,6 +322,7 @@ describe('persisted code graph analysis summaries', () => {
           }),
         );
 
+        yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
         const summary = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, ready.id));
         expect(summary.edges).toEqual([
           expect.objectContaining({

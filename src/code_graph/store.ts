@@ -42,6 +42,7 @@ interface SnapshotRow {
   readonly edge_count: number;
   readonly extractor_set: string;
   readonly file_count: number;
+  readonly graph_content_id: unknown;
   readonly id: string;
   readonly overlay_fingerprint: unknown;
   readonly repository_id: string;
@@ -101,6 +102,12 @@ export interface CodeGraphReusableBaseReceipt extends CodeGraphReusableBaseRecei
   readonly resolutionSurfaceVersion: number;
   readonly reexportCount: number;
   readonly snapshotId: string;
+}
+
+export interface CodeGraphReusableCleanBase {
+  readonly files: readonly CodeGraphInventoryFile[];
+  readonly receipt: CodeGraphReusableBaseReceipt;
+  readonly snapshot: CodeGraphSnapshot;
 }
 
 export interface CodeGraphReusableReexport {
@@ -451,11 +458,24 @@ export interface CodeGraphStoreShape {
     promotionLeaseDurationMilliseconds?: number,
     onProgress?: CodeGraphActivationProgressCallback,
   ) => Effect.Effect<Option.Option<string>, CodeGraphStoreError>;
+  readonly activateCleanSnapshotAlias?: (
+    databasePath: string,
+    identity: RepositoryIdentity,
+    snapshot: CodeGraphSnapshot,
+    baseSnapshotId: string,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
     databasePath: string,
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly cacheMaterializedFileShards: (
+    databasePath: string,
+    files: readonly CodeGraphInventoryFile[],
+    facts: readonly CodeGraphCacheFactInput[],
+    extractorSet: string,
+    derivationIdentity: string,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly acquireSnapshotLease: (
     databasePath: string,
@@ -485,6 +505,10 @@ export interface CodeGraphStoreShape {
     baseSnapshotId: string,
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphFileFacts[],
+    options?: {
+      readonly deletedPaths?: readonly string[];
+      readonly resolutionClosure?: 'changed' | 'full';
+    },
   ) => Effect.Effect<boolean, CodeGraphStoreError>;
   readonly replaceStagedModifiedFiles: (
     databasePath: string,
@@ -502,6 +526,12 @@ export interface CodeGraphStoreShape {
     files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
     extractorSet: string,
     options?: {readonly decode?: boolean},
+  ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
+  readonly loadMaterializedFileShards: (
+    databasePath: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+    extractorSet: string,
+    derivationIdentity: string,
   ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
   readonly loadGraph: (databasePath: string, snapshotId: string) => Effect.Effect<StoredCodeGraph, CodeGraphStoreError>;
   readonly loadSymbols: (
@@ -659,6 +689,14 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
   ) => Effect.Effect<CodeGraphReusableBaseReceipt | undefined, CodeGraphStoreError>;
+  readonly reusableCleanBase?: (
+    databasePath: string,
+    repositoryId: string,
+    extractorSet: string,
+    workspaceFingerprint: string,
+    fileSetFingerprint: string,
+    graphContentId?: string,
+  ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
   readonly reusableReexports: (
     databasePath: string,
     snapshotId: string,
@@ -1006,6 +1044,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       identity,
                       snapshot,
                       mode.baseSnapshotId,
+                      reusableBaseReceipt,
                       promotionLease,
                       onProgress,
                     ),
@@ -1042,6 +1081,23 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             }
             return Option.map(promotionLease, lease => lease.token);
           }).pipe(Effect.mapError(cause => storeError('activate staged code graph snapshot', cause))),
+        activateCleanSnapshotAlias: (databasePath, identity, snapshot, baseSnapshotId) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* ensureSchemaInitialized(databasePath, sql);
+                  yield* withWriterGate(
+                    databasePath,
+                    activateCleanSnapshotAlias(sql, identity, snapshot, baseSnapshotId),
+                  );
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('activate clean code graph snapshot alias', cause)),
+          ),
         cacheFacts: (databasePath, files, facts, extractorSet) =>
           Effect.gen(function* () {
             const bounded = yield* Effect.sync(() => facts.map(ensureBoundedCodeGraphFact));
@@ -1058,6 +1114,24 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }),
             );
           }).pipe(Effect.mapError(cause => storeError('cache code graph file facts', cause))),
+        cacheMaterializedFileShards: (databasePath, files, facts, extractorSet, derivationIdentity) =>
+          Effect.gen(function* () {
+            const bounded = yield* Effect.sync(() => facts.map(ensureBoundedCodeGraphFact));
+            yield* prepare(databasePath);
+            yield* useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* ensureSchemaInitialized(databasePath, sql);
+                yield* withWriterGate(
+                  databasePath,
+                  sql.withTransaction(
+                    storeMaterializedFileShards(sql, files, bounded, extractorSet, derivationIdentity),
+                  ),
+                );
+              }),
+            );
+          }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
         promote: (databasePath, identity, snapshotId, activeWorktreeIds) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -1129,7 +1203,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('finalize persistent code graph materialization plan', cause)),
           ),
-        preparePersistedIncrementalActivation: (databasePath, baseSnapshotId, files, facts) =>
+        preparePersistedIncrementalActivation: (databasePath, baseSnapshotId, files, facts, options) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -1137,7 +1211,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 Effect.gen(function* () {
                   const sql = yield* SqlClient.SqlClient;
                   yield* ensureSchemaInitialized(databasePath, sql);
-                  return yield* preparePersistedIncrementalActivation(baseSnapshotId, files, facts);
+                  return yield* preparePersistedIncrementalActivation(baseSnapshotId, files, facts, options);
                 }),
               ),
             ),
@@ -1185,6 +1259,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               useReadOnlyDatabase(databasePath, selectCachedFacts(files, extractorSet, options?.decode !== false)),
             ),
             Effect.mapError(cause => storeError('load cached code graph facts', cause)),
+          ),
+        loadMaterializedFileShards: (databasePath, files, extractorSet, derivationIdentity) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useReadOnlyDatabase(databasePath, selectMaterializedFileShards(files, extractorSet, derivationIdentity)),
+            ),
+            Effect.mapError(cause => storeError('load materialized code graph file shards', cause)),
           ),
         loadGraph: (databasePath, snapshotId) =>
           prepare(databasePath).pipe(
@@ -1314,14 +1395,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     yield* upsertRepository(sql, identity);
                     const registered = yield* sql<{readonly id: string}>`
                       INSERT INTO snapshots (
-                        id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
+                        id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
                         dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
                       ) VALUES (
                         ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
-                        ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
+                        ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
+                        ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
                         ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
                       )
                       ON CONFLICT(id) DO UPDATE SET
+                        graph_content_id = excluded.graph_content_id,
                         state = 'building',
                         file_count = 0,
                         symbol_count = 0,
@@ -1332,6 +1415,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       WHERE snapshots.repository_id = excluded.repository_id
                         AND snapshots.worktree_id = excluded.worktree_id
                         AND snapshots.commit_id = excluded.commit_id
+                        AND snapshots.graph_content_id = excluded.graph_content_id
                         AND snapshots.base_snapshot_id IS excluded.base_snapshot_id
                         AND snapshots.extractor_set = excluded.extractor_set
                         AND snapshots.dirty = excluded.dirty
@@ -1473,6 +1557,31 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
+          ),
+        reusableCleanBase: (
+          databasePath,
+          repositoryId,
+          extractorSet,
+          workspaceFingerprint,
+          fileSetFingerprint,
+          graphContentId,
+        ) =>
+          fs.exists(databasePath).pipe(
+            Effect.flatMap(exists =>
+              exists
+                ? useReadOnlyDatabase(
+                    databasePath,
+                    selectReusableCleanBase(
+                      repositoryId,
+                      extractorSet,
+                      workspaceFingerprint,
+                      fileSetFingerprint,
+                      graphContentId,
+                    ),
+                  )
+                : Effect.succeed(undefined),
+            ),
+            Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
           ),
         reusableReexports: (databasePath, snapshotId, seeds) =>
           fs.exists(databasePath).pipe(
@@ -1935,7 +2044,7 @@ function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: string):
   );
 }
 
-type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical';
+type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical' | 'shards';
 
 export type CodeGraphPersistentSchemaMigrationPhase =
   | 'added-materialization-plan'
@@ -2347,6 +2456,52 @@ const PERSISTENT_EXTENSION_TABLES = [
       /CHECK\s*\(\s*term_count\s*>=\s*0\s*\)/i,
     ],
   },
+  {
+    columns: [
+      requiredColumn('id', 'TEXT', 1),
+      requiredColumn('content_hash', 'TEXT'),
+      requiredColumn('extractor_set', 'TEXT'),
+      requiredColumn('derivation_identity', 'TEXT'),
+      requiredColumn('path_hint', 'TEXT'),
+      requiredColumn('facts_json', 'TEXT'),
+      requiredColumn('created_at', 'TEXT'),
+      requiredColumn('last_used_at', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS materialized_file_shards (
+      id TEXT PRIMARY KEY NOT NULL,
+      content_hash TEXT NOT NULL,
+      extractor_set TEXT NOT NULL,
+      derivation_identity TEXT NOT NULL,
+      path_hint TEXT NOT NULL,
+      facts_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL,
+      UNIQUE (content_hash, extractor_set, derivation_identity, path_hint)
+    ) WITHOUT ROWID`,
+    foreignKeys: [],
+    group: 'shards',
+    name: 'materialized_file_shards',
+    uniqueKeys: [['content_hash', 'extractor_set', 'derivation_identity', 'path_hint']],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('path', 'TEXT', 2),
+      requiredColumn('shard_id', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS snapshot_file_shards (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      shard_id TEXT NOT NULL REFERENCES materialized_file_shards(id) ON DELETE CASCADE,
+      PRIMARY KEY (snapshot_id, path)
+    ) WITHOUT ROWID`,
+    foreignKeys: [
+      {from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshots', to: 'id'},
+      {from: 'shard_id', onDelete: 'CASCADE', table: 'materialized_file_shards', to: 'id'},
+    ],
+    group: 'shards',
+    name: 'snapshot_file_shards',
+  },
 ] as const satisfies readonly PersistentExtensionTableContract[];
 
 const LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT = {
@@ -2387,7 +2542,7 @@ const LEGACY_BUILDING_REFERENCES_V3_CONTRACT = {
 
 const REMOVED_BETA30_INDEXES = ['snapshot_symbol_lookup_key', 'terms_lookup', 'terms_symbol'] as const;
 export const CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES = PERSISTENT_EXTENSION_TABLES.map(table => table.name);
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 5;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 6;
 
 function persistentExtensionTableInspection(
   sql: SqlClient.SqlClient,
@@ -2709,6 +2864,7 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
       worktree_id TEXT NOT NULL,
       commit_id TEXT NOT NULL,
+      graph_content_id TEXT,
       base_snapshot_id TEXT,
       extractor_set TEXT NOT NULL,
       dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
@@ -2722,6 +2878,11 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       failure_summary TEXT
     )
   `);
+  yield* ensureColumn(sql, 'snapshots', 'graph_content_id', 'TEXT');
+  // Older graph-v3 databases predate explicit content identity. Their snapshot
+  // ID is a collision-safe migration sentinel; freshly observed snapshots use
+  // the commit-independent cgc_ identity generated by the indexer.
+  yield* sql.unsafe('UPDATE snapshots SET graph_content_id = id WHERE graph_content_id IS NULL');
   yield* migratePersistentExtensionTables(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_extractor_generations (
@@ -3043,6 +3204,9 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_worktree_state ON snapshots(worktree_id, state)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_commit ON snapshots(repository_id, commit_id)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS snapshots_graph_content ON snapshots(repository_id, graph_content_id, state)',
+  );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name ON symbols(snapshot_id, name)');
@@ -3904,11 +4068,12 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
       yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
       yield* sql`
         INSERT INTO snapshots (
-          id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
+          id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
           dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at
         ) VALUES (
           ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
-          NULL, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0}, ${snapshot.overlayFingerprint ?? null},
+          ${snapshot.graphContentId ?? snapshot.id}, NULL, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
+          ${snapshot.overlayFingerprint ?? null},
           'building', ${snapshot.fileCount}, ${snapshot.symbolCount}, ${snapshot.edgeCount}, ${startedAt}, NULL
         )
       `;
@@ -4011,9 +4176,8 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
 
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* materializeCleanSnapshotAnalysisSummary(sql, snapshot);
-      yield* recordSnapshotAnalysisReceipt(sql, snapshot);
       yield* recordCompactLexicalFormat(sql, snapshot.id, copiedTerms, copiedTerms.postingCount, snapshot.symbolCount);
+      yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (!snapshot.dirty && reusableBaseReceipt) {
         yield* sql`
@@ -4159,11 +4323,12 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
         yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
         yield* sql`
           INSERT INTO snapshots (
-            id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
+            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at
           ) VALUES (
             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
-            ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
+            ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet},
+            ${snapshot.dirty ? 1 : 0},
             ${snapshot.overlayFingerprint ?? null}, 'building', ${snapshot.fileCount}, ${snapshot.symbolCount},
             ${snapshot.edgeCount},
             ${startedAt}, NULL
@@ -4343,14 +4508,9 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           compactLexicalReceipt.postingCount,
           expectedCompactSymbols,
         );
+        if (baseSnapshotId) yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
+        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
       }
-      if (baseSnapshotId) {
-        yield* ensureReadySnapshotAnalysisSummary(sql, baseSnapshotId);
-        yield* materializeOverlaySnapshotAnalysisSummary(sql, snapshot, baseSnapshotId);
-      } else {
-        yield* materializeCleanSnapshotAnalysisSummary(sql, snapshot);
-      }
-      yield* recordSnapshotAnalysisReceipt(sql, snapshot);
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (activated && !baseSnapshotId && !snapshot.dirty && reusableBaseReceipt) {
         yield* observe('copying-lookup-keys', 'started');
@@ -4875,9 +5035,8 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
       Effect.gen(function* () {
         yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
         yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
-        yield* materializeSnapshotAnalysisEdgeCounts(sql, snapshot.id);
-        yield* recordSnapshotAnalysisReceipt(sql, snapshot);
         yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
+        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
         yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
         if (reusableBaseReceipt) {
           yield* sql`
@@ -4962,12 +5121,19 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
     readonly symbols: number;
   }>`
     SELECT
-      base.file_count AS files,
+      base.file_count
+        - (
+            SELECT COUNT(*)
+            FROM snapshot_files AS file
+            JOIN activation_incremental_paths AS changed ON changed.path = file.path
+            WHERE file.snapshot_id = base.id
+          )
+        + (SELECT COUNT(*) FROM activation_files) AS files,
       base.symbol_count
         - (
             SELECT COUNT(*)
             FROM symbols AS symbol
-            JOIN activation_files AS changed ON changed.path = symbol.path
+            JOIN activation_incremental_paths AS changed ON changed.path = symbol.path
             WHERE symbol.snapshot_id = base.id
           )
         + (SELECT COUNT(*) FROM activation_symbols) AS symbols,
@@ -4975,7 +5141,7 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
         - (
             SELECT COUNT(*)
             FROM edges AS edge
-            JOIN activation_files AS changed ON changed.path = edge.evidence_path
+            JOIN activation_incremental_paths AS changed ON changed.path = edge.evidence_path
             WHERE edge.snapshot_id = base.id
           )
         + (SELECT COUNT(*) FROM activation_edges) AS edges
@@ -4997,11 +5163,113 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
   return counts;
 });
 
+const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAlias')(function* (
+  sql: SqlClient.SqlClient,
+  identity: RepositoryIdentity,
+  snapshot: CodeGraphSnapshot,
+  baseSnapshotId: string,
+) {
+  yield* configureConnection(sql);
+  if (snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
+    return yield* Effect.fail(new CodeGraphStoreError('Clean snapshot alias has the wrong base snapshot.'));
+  }
+  const baseRows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots
+    WHERE id = ${baseSnapshotId} AND repository_id = ${snapshot.repositoryId}
+      AND extractor_set = ${snapshot.extractorSet} AND state = 'ready'
+      AND dirty = 0 AND base_snapshot_id IS NULL
+    LIMIT 1
+  `;
+  const base = baseRows[0];
+  if (
+    !base ||
+    Number(base.file_count) !== snapshot.fileCount ||
+    Number(base.symbol_count) !== snapshot.symbolCount ||
+    Number(base.edge_count) !== snapshot.edgeCount ||
+    !(yield* selectReusableBaseReceipt(baseSnapshotId))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError(`Reusable clean base ${baseSnapshotId} is unavailable.`));
+  }
+  const baseGraphContentId = Option.getOrUndefined(sqlTextOption(base.graph_content_id)) ?? base.id;
+  if (snapshot.graphContentId !== undefined && snapshot.graphContentId !== baseGraphContentId) {
+    return yield* Effect.fail(new CodeGraphStoreError('Clean snapshot alias has different graph content.'));
+  }
+  const prior = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
+  if (prior[0]?.state === 'ready') {
+    const existing = snapshotFromRow(prior[0]);
+    if (
+      existing.baseSnapshotId === baseSnapshotId &&
+      existing.commit === snapshot.commit &&
+      existing.repositoryId === snapshot.repositoryId &&
+      existing.extractorSet === snapshot.extractorSet &&
+      (existing.graphContentId ?? existing.id) === (snapshot.graphContentId ?? baseGraphContentId) &&
+      !existing.dirty
+    ) {
+      return;
+    }
+    return yield* Effect.fail(
+      new CodeGraphStoreError(`Snapshot alias ${snapshot.id} already has incompatible content.`),
+    );
+  }
+  const completedAt = new Date().toISOString();
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* upsertRepository(sql, identity);
+      yield* purgeSnapshotTerms(sql, snapshot.id);
+      yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
+      yield* sql`
+        INSERT INTO snapshots (
+          id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+          dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count,
+          started_at, completed_at
+        ) VALUES (
+          ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+          ${snapshot.graphContentId ?? baseGraphContentId}, ${baseSnapshotId}, ${snapshot.extractorSet},
+          0, NULL, 'ready', ${snapshot.fileCount},
+          ${snapshot.symbolCount}, ${snapshot.edgeCount}, ${completedAt}, ${completedAt}
+        )
+      `;
+      yield* sql`
+        INSERT INTO workspace_scopes (
+          snapshot_id, id, build_system, name, root, provenance, diagnostics_json
+        )
+        SELECT ${snapshot.id}, id, build_system, name, root, provenance, diagnostics_json
+        FROM workspace_scopes WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`
+        INSERT INTO workspace_components (
+          snapshot_id, id, workspace_id, build_system, kind, name, root, resolution_domain,
+          languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json
+        )
+        SELECT ${snapshot.id}, id, workspace_id, build_system, kind, name, root, resolution_domain,
+          languages_json, source_roots_json, workspace_roots_json, provenance, diagnostics_json
+        FROM workspace_components WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`
+        INSERT INTO workspace_component_dependencies (
+          snapshot_id, source_component_id, target_component_id, provenance, evidence
+        )
+        SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
+        FROM workspace_component_dependencies WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`
+        INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
+        SELECT ${snapshot.id}, path, shard_id
+        FROM snapshot_file_shards WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`INSERT INTO lexical_compact_snapshots (snapshot_id) VALUES (${snapshot.id})`;
+      yield* publishCompactLexicalFormat(sql, snapshot.id, {postingCount: 0, symbolCount: 0, termCount: 0});
+      yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+    }),
+  );
+});
+
 const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersistedIncrementalSnapshot')(function* (
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
   baseSnapshotId: string,
+  reusableBaseReceipt: CodeGraphReusableBaseReceiptInput | undefined,
   promotionLease: Option.Option<CodeGraphActivationLease> = Option.none(),
   onProgress?: CodeGraphActivationProgressCallback,
 ) {
@@ -5009,7 +5277,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   let compactLexicalReceipt = Option.none<CompactLexicalFormatReceipt>();
   yield* configureConnection(sql);
   yield* observe('validating-input', 'started');
-  if (!snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
+  if (snapshot.baseSnapshotId !== baseSnapshotId) {
     return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental activation has the wrong base snapshot.'));
   }
   const completedAt = new Date().toISOString();
@@ -5026,7 +5294,11 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           new CodeGraphStoreError(`Reusable base receipt ${baseSnapshotId} is unavailable or incomplete.`),
         );
       }
-      if (!(yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId))) {
+      const closureRows = yield* sql<{readonly value: string}>`
+        SELECT value FROM activation_state WHERE key = 'resolution_closure' LIMIT 1
+      `;
+      const fullResolutionClosure = closureRows[0]?.value === 'full';
+      if (!fullResolutionClosure && !(yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId))) {
         return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental resolution surface changed.'));
       }
       const changedPathsOnly = yield* sql<{readonly id: string}>`
@@ -5050,12 +5322,18 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
                AND NOT EXISTS (
                  SELECT 1 FROM symbols AS base
                  WHERE base.snapshot_id = ${baseSnapshotId} AND base.id = edge.source_id
+                   AND NOT EXISTS (
+                     SELECT 1 FROM activation_incremental_paths AS changed WHERE changed.path = base.path
+                   )
                ))
            OR (edge.target_id IS NOT NULL
                AND NOT EXISTS (SELECT 1 FROM activation_symbols AS current WHERE current.id = edge.target_id)
                AND NOT EXISTS (
                  SELECT 1 FROM symbols AS base
                  WHERE base.snapshot_id = ${baseSnapshotId} AND base.id = edge.target_id
+                   AND NOT EXISTS (
+                     SELECT 1 FROM activation_incremental_paths AS changed WHERE changed.path = base.path
+                   )
                ))
         LIMIT 1
       `;
@@ -5099,12 +5377,14 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
         yield* sql`
           INSERT INTO snapshots (
-            id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
+            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count,
             started_at, completed_at
           ) VALUES (
             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
-            ${baseSnapshotId}, ${snapshot.extractorSet}, 1, ${snapshot.overlayFingerprint ?? null},
+            ${snapshot.graphContentId ?? snapshot.id}, ${baseSnapshotId}, ${snapshot.extractorSet},
+            ${snapshot.dirty ? 1 : 0},
+            ${snapshot.dirty ? (snapshot.overlayFingerprint ?? null) : null},
             'building', ${snapshot.fileCount}, ${snapshot.symbolCount}, ${snapshot.edgeCount},
             ${startedAt}, NULL
           )
@@ -5140,6 +5420,14 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           SELECT ${snapshot.id}, path, content_hash, language, mode, size, source
           FROM activation_files
         `;
+        yield* sql`
+          INSERT INTO snapshot_file_deletions (snapshot_id, path)
+          SELECT ${snapshot.id}, base.path
+          FROM snapshot_files AS base
+          JOIN activation_incremental_paths AS changed ON changed.path = base.path
+          WHERE base.snapshot_id = ${baseSnapshotId}
+            AND NOT EXISTS (SELECT 1 FROM activation_files AS current WHERE current.path = base.path)
+        `;
         yield* observe('copying-files', 'completed', Number(staged.files));
         yield* observe('copying-symbols', 'started');
         yield* sql`
@@ -5165,7 +5453,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id)
           SELECT ${snapshot.id}, base.id
           FROM symbols AS base
-          JOIN activation_files AS changed ON changed.path = base.path
+          JOIN activation_incremental_paths AS changed ON changed.path = base.path
           WHERE base.snapshot_id = ${baseSnapshotId}
             AND NOT EXISTS (SELECT 1 FROM activation_symbols AS current WHERE current.id = base.id)
         `;
@@ -5183,15 +5471,12 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           INSERT INTO snapshot_edge_deletions (snapshot_id, edge_id)
           SELECT ${snapshot.id}, base.id
           FROM edges AS base
-          JOIN activation_files AS changed ON changed.path = base.evidence_path
+          JOIN activation_incremental_paths AS changed ON changed.path = base.evidence_path
           WHERE base.snapshot_id = ${baseSnapshotId}
             AND NOT EXISTS (SELECT 1 FROM activation_edges AS current WHERE current.id = base.id)
         `;
         yield* observe('copying-edges', 'completed', Number(staged.edges));
       }
-      yield* ensureReadySnapshotAnalysisSummary(sql, baseSnapshotId);
-      yield* materializeOverlaySnapshotAnalysisSummary(sql, snapshot, baseSnapshotId);
-      yield* recordSnapshotAnalysisReceipt(sql, snapshot);
       if (existing[0]?.state !== 'ready') {
         if (Option.isNone(compactLexicalReceipt)) {
           return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental lexical receipt is unavailable.'));
@@ -5203,6 +5488,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           Number(staged.terms),
           Number(staged.symbols),
         );
+        yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
+        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
@@ -5257,10 +5544,127 @@ function storeFreshFacts(
   });
 }
 
+export function materializedShardDerivationIdentity(
+  extractorSet: string,
+  workspaceFingerprint: string,
+  fileSetFingerprint: string,
+): string {
+  return `cgfd_${sha256HexSync(
+    `materialized-file-derivation-v1\n${extractorSet}\n${workspaceFingerprint}\n${fileSetFingerprint}`,
+  ).slice(0, 40)}`;
+}
+
+export function materializedFileShardIdentity(
+  contentHash: string,
+  extractorSet: string,
+  derivationIdentity: string,
+  path: string,
+): string {
+  return `cgfs_${sha256HexSync(
+    `materialized-file-shard-v1\n${contentHash}\n${extractorSet}\n${derivationIdentity}\n${path}`,
+  ).slice(0, 40)}`;
+}
+
+const associateSnapshotFileShards = Effect.fn('codeGraph.associateSnapshotFileShards')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  extractorSet: string,
+  receipt: CodeGraphReusableBaseReceiptInput | undefined,
+) {
+  if (!receipt) return;
+  const derivationIdentity = materializedShardDerivationIdentity(
+    extractorSet,
+    receipt.workspaceFingerprint,
+    receipt.fileSetFingerprint,
+  );
+  yield* sql`
+    INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
+    SELECT ${snapshotId}, file.path, shard.id
+    FROM snapshot_files AS file
+    JOIN materialized_file_shards AS shard
+      ON shard.content_hash = file.content_hash
+     AND shard.path_hint = file.path
+     AND shard.extractor_set = ${extractorSet}
+     AND shard.derivation_identity = ${derivationIdentity}
+    WHERE file.snapshot_id = ${snapshotId}
+    ON CONFLICT(snapshot_id, path) DO UPDATE SET shard_id = excluded.shard_id
+  `;
+});
+
+const inheritSnapshotFileShards = Effect.fn('codeGraph.inheritSnapshotFileShards')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  baseSnapshotId: string,
+) {
+  yield* sql`
+    INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
+    SELECT ${snapshotId}, base.path, base.shard_id
+    FROM snapshot_file_shards AS base
+    WHERE base.snapshot_id = ${baseSnapshotId}
+      AND NOT EXISTS (
+        SELECT 1 FROM snapshot_files AS current
+        WHERE current.snapshot_id = ${snapshotId} AND current.path = base.path
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM snapshot_file_deletions AS deleted
+        WHERE deleted.snapshot_id = ${snapshotId} AND deleted.path = base.path
+      )
+    ON CONFLICT(snapshot_id, path) DO NOTHING
+  `;
+});
+
+function storeMaterializedFileShards(
+  sql: SqlClient.SqlClient,
+  files: readonly CodeGraphInventoryFile[],
+  facts: readonly BoundedCodeGraphFact[],
+  extractorSet: string,
+  derivationIdentity: string,
+) {
+  return Effect.gen(function* () {
+    const filesByPath = new Map(files.map(file => [file.path, file]));
+    if (filesByPath.size !== files.length || facts.length !== files.length) {
+      return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard inputs are inconsistent.'));
+    }
+    const now = new Date().toISOString();
+    for (const bounded of facts) {
+      const file = filesByPath.get(bounded.facts.path);
+      if (!file) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError(
+            `Materialized file shard does not match the indexed inventory: ${bounded.facts.path}.`,
+          ),
+        );
+      }
+      const shardId = materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path);
+      const stored = yield* sql<{readonly id: string}>`
+        INSERT INTO materialized_file_shards (
+          id, content_hash, extractor_set, derivation_identity, path_hint,
+          facts_json, created_at, last_used_at
+        ) VALUES (
+          ${shardId}, ${file.contentHash}, ${extractorSet}, ${derivationIdentity}, ${file.path},
+          ${bounded.json}, ${now}, ${now}
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          facts_json = excluded.facts_json,
+          last_used_at = excluded.last_used_at
+        WHERE materialized_file_shards.content_hash = excluded.content_hash
+          AND materialized_file_shards.extractor_set = excluded.extractor_set
+          AND materialized_file_shards.derivation_identity = excluded.derivation_identity
+          AND materialized_file_shards.path_hint = excluded.path_hint
+        RETURNING id
+      `;
+      if (stored[0]?.id !== shardId) {
+        return yield* Effect.fail(new CodeGraphStoreError(`Materialized file shard identity collision: ${shardId}.`));
+      }
+    }
+  });
+}
+
 function persistentSnapshotBuildIdentityMatches(current: CodeGraphSnapshot, requested: CodeGraphSnapshot): boolean {
   return (
     current.repositoryId === requested.repositoryId &&
     current.commit === requested.commit &&
+    (current.graphContentId ?? current.id) === (requested.graphContentId ?? requested.id) &&
     current.dirty === requested.dirty &&
     current.extractorSet === requested.extractorSet &&
     current.baseSnapshotId === requested.baseSnapshotId &&
@@ -5345,11 +5749,12 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
         } else {
           yield* sql`
           INSERT INTO snapshots (
-            id, repository_id, worktree_id, commit_id, base_snapshot_id, extractor_set,
+            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
           ) VALUES (
             ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
-            ${snapshot.baseSnapshotId ?? null}, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
+            ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
+            ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
             ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
           )
         `;
@@ -7805,14 +8210,34 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   baseSnapshotId: string,
   files: readonly CodeGraphInventoryFile[],
   facts: readonly CodeGraphFileFacts[],
+  options: {
+    readonly deletedPaths?: readonly string[];
+    readonly resolutionClosure?: 'changed' | 'full';
+  } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
-  if (files.length === 0 || facts.length !== files.length) return false;
+  const resolutionClosure = options.resolutionClosure ?? 'changed';
+  const deletedPaths = [...new Set(options.deletedPaths ?? [])];
+  if (
+    (files.length === 0 && (resolutionClosure !== 'full' || deletedPaths.length === 0)) ||
+    facts.length !== files.length
+  ) {
+    return false;
+  }
   const paths = new Set(files.map(file => file.path));
   if (paths.size !== files.length || facts.some(file => !paths.has(file.path))) return false;
+  if (deletedPaths.some(path => paths.has(path))) return false;
   if (!(yield* selectReusableBaseReceipt(baseSnapshotId))) return false;
 
   yield* prepareActivationTables(sql);
+  const incrementalPaths = [...paths, ...deletedPaths].sort();
+  for (const batch of chunk(incrementalPaths, ACTIVATION_FILE_BATCH_ROWS)) {
+    yield* sql.unsafe(
+      `INSERT INTO activation_incremental_paths (path)
+       VALUES ${batch.map(() => '(?)').join(', ')}`,
+      batch,
+    );
+  }
   yield* stageActivationFiles(sql, files);
   const symbols = facts.flatMap(file => file.symbols);
   yield* stageActivationSymbols(sql, symbols);
@@ -7825,14 +8250,17 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     sql,
     facts.flatMap(file => file.references ?? []),
   );
-  const safe = yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId);
+  const safe = resolutionClosure === 'full' || (yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId));
   if (!safe) {
     yield* prepareActivationTables(sql);
     return false;
   }
   yield* sql`
     INSERT INTO activation_state (key, value)
-    VALUES ('mode', 'persisted-delta'), ('base_snapshot_id', ${baseSnapshotId})
+    VALUES
+      ('mode', 'persisted-delta'),
+      ('base_snapshot_id', ${baseSnapshotId}),
+      ('resolution_closure', ${resolutionClosure})
   `;
   return true;
 });
@@ -8190,7 +8618,7 @@ export function codeGraphPersistedDeltaResolutionPageStatement(
          AND (candidate.relation <> 'overrides' OR lookup.symbol_id IS NOT candidate.source_id)
         WHERE NOT EXISTS (
           SELECT 1
-          FROM activation_files AS changed
+          FROM activation_incremental_paths AS changed
           WHERE changed.path = lookup.evidence_path
         )
           AND NOT EXISTS (
@@ -9192,7 +9620,6 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   yield* initializeSchema(sql);
-  yield* sql.withTransaction(ensureReadySnapshotAnalysisSummary(sql, snapshotId));
   const retainedWorktreeIds = [...new Set([...activeWorktreeIds, identity.worktreeId])];
   yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -9531,6 +9958,12 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     batchRows: 5_000,
     keyColumns: ['snapshot_id', 'path'],
     maximumBatchRows: 20_000,
+    table: 'snapshot_file_shards',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'path'],
+    maximumBatchRows: 20_000,
     table: 'snapshot_files',
   },
   {
@@ -9793,6 +10226,7 @@ const pruneCachedFileBlobs = Effect.fn('codeGraph.pruneCachedFileBlobs')(functio
 ) {
   if (acceptedExtractorSets === undefined) {
     yield* pruneUnreferencedFileBlobs(sql);
+    yield* pruneUnreferencedMaterializedFileShards(sql);
     return;
   }
   if (acceptedExtractorSets.length === 0) {
@@ -9809,7 +10243,19 @@ const pruneCachedFileBlobs = Effect.fn('codeGraph.pruneCachedFileBlobs')(functio
         )`,
     acceptedExtractorSets,
   );
+  yield* pruneUnreferencedMaterializedFileShards(sql);
 });
+
+const pruneUnreferencedMaterializedFileShards = Effect.fn('codeGraph.pruneUnreferencedMaterializedFileShards')(
+  function* (sql: SqlClient.SqlClient) {
+    yield* sql.unsafe(`
+      DELETE FROM materialized_file_shards
+      WHERE NOT EXISTS (
+        SELECT 1 FROM snapshot_file_shards WHERE snapshot_file_shards.shard_id = materialized_file_shards.id
+      )
+    `);
+  },
+);
 
 const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function* (worktreeId: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -9882,6 +10328,67 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
     LIMIT 1
   `;
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(function* (
+  repositoryId: string,
+  extractorSet: string,
+  workspaceFingerprint: string,
+  fileSetFingerprint: string,
+  graphContentId?: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const candidates = yield* sql<SnapshotRow>`
+    SELECT snapshot.*
+    FROM snapshots AS snapshot
+    JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+    WHERE snapshot.repository_id = ${repositoryId}
+      AND snapshot.extractor_set = ${extractorSet}
+      AND snapshot.state = 'ready'
+      AND snapshot.dirty = 0
+      AND snapshot.base_snapshot_id IS NULL
+      AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND receipt.resolution_surface_version = 1
+      AND receipt.workspace_fingerprint = ${workspaceFingerprint}
+    ORDER BY
+      CASE WHEN snapshot.graph_content_id = ${graphContentId ?? null} THEN 0 ELSE 1 END,
+      CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
+      snapshot.completed_at DESC,
+      snapshot.id
+    LIMIT 1
+  `;
+  const row = candidates[0];
+  if (!row) return undefined;
+  const receipt = yield* selectReusableBaseReceipt(row.id);
+  if (!receipt) return undefined;
+  const files = yield* sql<{
+    readonly content_hash: string;
+    readonly language: string;
+    readonly mode: string;
+    readonly path: string;
+    readonly size: number;
+    readonly source: string;
+  }>`
+    SELECT content_hash, language, mode, path, size, source
+    FROM snapshot_files
+    WHERE snapshot_id = ${row.id}
+    ORDER BY path
+  `;
+  if (files.length !== Number(row.file_count) || files.some(file => file.source !== 'commit')) return undefined;
+  return {
+    files: files.map(file => ({
+      blobId: `snapshot:${file.content_hash}`,
+      contentHash: file.content_hash,
+      language: file.language,
+      mode: file.mode,
+      path: file.path,
+      size: Number(file.size),
+      source: 'commit' as const,
+    })),
+    receipt,
+    snapshot: snapshotFromRow(row),
+  } satisfies CodeGraphReusableCleanBase;
 });
 
 const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (snapshotId: string) {
@@ -10053,6 +10560,46 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
         bytesByPath.set(row.path_hint, factBytes);
       } catch {
         // A malformed cache row is disposable and will be replaced after extraction.
+      }
+    }
+  }
+  return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+});
+
+const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFileShards')(function* (
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+  derivationIdentity: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const output = new Map<string, CodeGraphFileFacts>();
+  const bytesByPath = new Map<string, number>();
+  const keys = new Set<string>();
+  let bytes = 0;
+  for (const batch of chunk(files, 200)) {
+    if (batch.length === 0) continue;
+    const rows = yield* sql.unsafe<{
+      readonly facts_bytes: number;
+      readonly facts_json: string;
+      readonly path_hint: string;
+    }>(
+      `SELECT path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+       FROM materialized_file_shards
+       WHERE extractor_set = ? AND derivation_identity = ?
+         AND (${batch.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
+      [extractorSet, derivationIdentity, ...batch.flatMap(file => [file.contentHash, file.path])],
+    );
+    for (const row of rows) {
+      try {
+        const bounded = ensureBoundedCodeGraphFact(JSON.parse(row.facts_json) as CodeGraphFileFacts);
+        output.set(row.path_hint, bounded.facts);
+        keys.add(row.path_hint);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.path_hint, factBytes);
+      } catch {
+        // Materialized shards are disposable; malformed rows are ignored and rebuilt.
       }
     }
   }
@@ -12576,6 +13123,7 @@ function snapshotFromRow(row: SnapshotRow): CodeGraphSnapshot {
     edgeCount: row.edge_count,
     extractorSet: row.extractor_set,
     fileCount: row.file_count,
+    graphContentId: Option.getOrUndefined(sqlTextOption(row.graph_content_id)),
     id: row.id,
     overlayFingerprint: Option.getOrUndefined(sqlTextOption(row.overlay_fingerprint)),
     repositoryId: row.repository_id,
