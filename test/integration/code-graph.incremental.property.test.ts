@@ -30,6 +30,12 @@ interface BarrelScenario {
   readonly revision: number;
 }
 
+interface CleanSurfaceChangeScenario {
+  readonly fileCount: number;
+  readonly mutation: 'arity' | 'export' | 'rename';
+  readonly sourceSeed: number;
+}
+
 const scenarioArbitrary = FC.record({
   baseTargets: FC.array(FC.integer({max: 31, min: 0}), {maxLength: 7, minLength: 7}),
   dirtyMask: FC.array(FC.boolean(), {maxLength: 7, minLength: 7}),
@@ -70,6 +76,12 @@ const barrelScenarioArbitrary = FC.record({
   dirtyArities: [dirtyZero ? 0 : -1, dirtyTwo ? 2 : -1].filter(arity => arity >= 0),
   revision,
 }));
+
+const cleanSurfaceChangeScenarioArbitrary = FC.record({
+  fileCount: FC.integer({max: 7, min: 3}),
+  mutation: FC.constantFrom('arity' as const, 'export' as const, 'rename' as const),
+  sourceSeed: FC.integer({max: 31, min: 0}),
+});
 
 describe('code graph incremental-overlay differential properties', () => {
   it.effect.prop(
@@ -203,6 +215,137 @@ describe('code graph incremental-overlay differential properties', () => {
     {
       fastCheck: {interruptAfterTimeLimit: 90_000, markInterruptAsFailure: true, numRuns: 10},
       timeout: 100_000,
+    },
+  );
+
+  it.effect.prop(
+    'matches a full rebuild after randomized compatible changes are committed cleanly',
+    {scenario: scenarioArbitrary},
+    ({scenario}) =>
+      Effect.promise(async () => {
+        const root = createRepository(scenario);
+        const incrementalHome = join(root, '.threadnote-clean-incremental-home');
+        const fullHome = join(root, '.threadnote-clean-full-home');
+        try {
+          const base = await runEffect(
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              return yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            }),
+          );
+          applyDirtyScenario(root, scenario);
+          commitScenarioFiles(root, scenario, 'compatible clean property change');
+          const result = await runEffect(
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              const path = yield* Path.Path;
+              const query = yield* CodeGraphQueryService;
+              const store = yield* CodeGraphStore;
+              const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              const full = yield* indexer.index({cwd: root, threadnoteHome: fullHome});
+              const incrementalLayout = codeGraphLayout(
+                path,
+                incrementalHome,
+                incremental.identity.checkoutId,
+                incremental.identity.worktreeId,
+              );
+              const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+              const [incrementalQuery, fullQuery] = yield* Effect.all(
+                [
+                  query.inspect({
+                    cwd: root,
+                    operation: 'query',
+                    query: 'symbol0',
+                    refresh: false,
+                    threadnoteHome: incrementalHome,
+                  }),
+                  query.inspect({
+                    cwd: root,
+                    operation: 'query',
+                    query: 'symbol0',
+                    refresh: false,
+                    threadnoteHome: fullHome,
+                  }),
+                ],
+                {concurrency: 1},
+              );
+              return {
+                full,
+                fullCatalog: yield* store.loadVisualizationCatalog(fullLayout.databasePath),
+                fullGraph: yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id),
+                fullQuery,
+                incremental,
+                incrementalCatalog: yield* store.loadVisualizationCatalog(incrementalLayout.databasePath),
+                incrementalGraph: yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id),
+                incrementalHealth: yield* store.diagnose(incrementalLayout.databasePath),
+                incrementalQuery,
+              };
+            }),
+          );
+
+          expect(result.incremental.materialization).toEqual({
+            mode: 'incremental-clean',
+            stagedFiles: scenario.dirty.size,
+            totalFiles: scenario.fileCount,
+          });
+          expect(result.incremental.snapshot).toMatchObject({baseSnapshotId: base.snapshot.id, dirty: false});
+          expect(result.full.materialization).toEqual({
+            mode: 'full',
+            stagedFiles: scenario.fileCount,
+            totalFiles: scenario.fileCount,
+          });
+          expect(normalizeGraph(result.incrementalGraph)).toEqual(normalizeGraph(result.fullGraph));
+          expect(normalizeCatalog(result.incrementalCatalog)).toEqual(normalizeCatalog(result.fullCatalog));
+          expect(normalizeQuery(result.incrementalQuery)).toEqual(normalizeQuery(result.fullQuery));
+          expect(result.incrementalHealth).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+        } finally {
+          rmSync(root, {force: true, recursive: true});
+        }
+      }),
+    {
+      fastCheck: {interruptAfterTimeLimit: 90_000, markInterruptAsFailure: true, numRuns: 8},
+      timeout: 100_000,
+    },
+  );
+
+  it.effect.prop(
+    'fails closed to full materialization for randomized clean resolution-surface changes',
+    {scenario: cleanSurfaceChangeScenarioArbitrary},
+    ({scenario}) =>
+      Effect.promise(async () => {
+        const source = scenario.sourceSeed % scenario.fileCount;
+        const baseScenario = simpleScenario(scenario.fileCount);
+        const root = createRepository(baseScenario);
+        const home = join(root, '.threadnote-clean-surface-home');
+        try {
+          const base = await runEffect(
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              return yield* indexer.index({cwd: root, threadnoteHome: home});
+            }),
+          );
+          writeSurfaceChangedSource(root, baseScenario, source, scenario.mutation);
+          commitPaths(root, [`src/file-${source}.ts`], `clean ${scenario.mutation} surface change`);
+          const result = await runEffect(
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              return yield* indexer.index({cwd: root, threadnoteHome: home});
+            }),
+          );
+
+          expect(result.materialization).toEqual({
+            mode: 'incremental-clean',
+            stagedFiles: scenario.fileCount,
+            totalFiles: scenario.fileCount,
+          });
+          expect(result.snapshot).toMatchObject({baseSnapshotId: base.snapshot.id, dirty: false, state: 'ready'});
+        } finally {
+          rmSync(root, {force: true, recursive: true});
+        }
+      }),
+    {
+      fastCheck: {interruptAfterTimeLimit: 60_000, markInterruptAsFailure: true, numRuns: 6},
+      timeout: 70_000,
     },
   );
 
@@ -773,6 +916,52 @@ function applyDirtyScenario(root: string, scenario: DifferentialScenario): void 
   for (const source of scenario.dirty) {
     writeSource(root, source, scenario.dirtyTargets[source]!, scenario.fileCount, scenario.salt + source + 1);
   }
+}
+
+function commitScenarioFiles(root: string, scenario: DifferentialScenario, message: string): void {
+  commitPaths(
+    root,
+    [...scenario.dirty].map(source => `src/file-${source}.ts`),
+    message,
+  );
+}
+
+function commitPaths(root: string, paths: readonly string[], message: string): void {
+  git(root, ['add', ...paths]);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', message]);
+}
+
+function simpleScenario(fileCount: number): DifferentialScenario {
+  const targets = Array.from({length: fileCount}, (_, source) => (source + 1) % fileCount);
+  return {
+    baseTargets: targets,
+    dirty: new Set(),
+    dirtyTargets: targets,
+    fileCount,
+    salt: 0,
+  };
+}
+
+function writeSurfaceChangedSource(
+  root: string,
+  scenario: DifferentialScenario,
+  source: number,
+  mutation: CleanSurfaceChangeScenario['mutation'],
+): void {
+  const target = differentFile(scenario.baseTargets[source]!, source, scenario.fileCount);
+  const exported = mutation === 'export' ? '' : 'export ';
+  const name = mutation === 'rename' ? `renamed${source}` : `symbol${source}`;
+  const parameters = mutation === 'arity' ? 'value: number' : '';
+  writeFileSync(
+    join(root, 'src', `file-${source}.ts`),
+    [
+      `import {symbol${target}} from './file-${target}.js';`,
+      `${exported}function ${name}(${parameters}): number {`,
+      `  return symbol${target}();`,
+      '}',
+      '',
+    ].join('\n'),
+  );
 }
 
 function restoreCleanScenario(root: string, scenario: DifferentialScenario): void {
