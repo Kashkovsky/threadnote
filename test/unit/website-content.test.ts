@@ -702,6 +702,9 @@ describe('Threadnote 4 website content', () => {
       expect(() =>
         execFileSync('git', ['cat-file', '-e', `${target[1]}:${target[2]}`], {cwd: root, stdio: 'pipe'}),
       ).not.toThrow();
+      expect(() =>
+        execFileSync('git', ['merge-base', '--is-ancestor', target[1], 'HEAD'], {cwd: root, stdio: 'pipe'}),
+      ).not.toThrow();
     }
     expect(performancePage).not.toMatch(/>Pending<|pending artifact|evidence pending/i);
     expect(performancePage).toContain('aria-label={`Open the pinned');
