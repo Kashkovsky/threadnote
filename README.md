@@ -73,11 +73,15 @@ threadnote mcp-install codex --apply # or claude / cursor / copilot
 threadnote doctor
 ```
 
-Install the current Threadnote 4 beta on macOS or Linux:
+To opt into prerelease builds, install the Threadnote 4 beta channel on macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
 ```
+
+On POSIX systems the installer adds `~/.local/bin` to the detected shell profile when needed. A piped installer cannot
+change its parent shell, so it also prints absolute next commands and the shell-specific `PATH` command that works
+immediately; open a new terminal or run that command before invoking `threadnote` by name.
 
 Windows PowerShell, once Threadnote 4 Windows publishing is re-enabled:
 

@@ -27,6 +27,26 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 The PowerShell installer path is available for testing but no official Windows 4 asset is published until Authenticode
 signing is re-enabled.
 
+## The installer finished but `threadnote` is not found
+
+The POSIX launcher lives in `~/.local/bin`. When that directory is absent from `PATH`, the standalone installer adds an
+idempotent entry to the detected zsh, bash, fish, or POSIX shell profile. A child installer cannot modify the shell that
+launched it, so either open a new terminal or apply the command printed by the installer:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For fish, use:
+
+```fish
+set -gx PATH "$HOME/.local/bin" $PATH
+```
+
+The absolute command printed at the end of installation also works immediately, for example
+`"$HOME/.local/bin/threadnote" doctor --dry-run`. A custom `THREADNOTE_BIN_DIR` is never added to a profile
+automatically; add that directory to `PATH` yourself or use its absolute launcher path.
+
 ## Start and stop do not launch a service
 
 Threadnote 4 owns no daemon. `threadnote start` verifies the on-demand runtime and `threadnote stop` is a compatibility

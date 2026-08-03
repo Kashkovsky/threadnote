@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process';
-import {chmod, mkdir, mkdtemp, readFile, rm, stat, utimes} from 'node:fs/promises';
+import {chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {promisify} from 'node:util';
@@ -19,9 +19,10 @@ posixIt('POSIX bootstrap verifies and installs the standalone Bun release withou
   const artifact = join(root, artifactName);
   const checksum = `${artifact}.sha256`;
   const installRoot = join(root, 'install');
-  const binRoot = join(root, 'bin');
   const userHome = join(root, 'user');
-  await Promise.all([mkdir(installRoot, {recursive: true}), mkdir(binRoot, {recursive: true}), mkdir(userHome)]);
+  const binRoot = join(userHome, '.local', 'bin');
+  await Promise.all([mkdir(installRoot, {recursive: true}), mkdir(userHome)]);
+  await mkdir(binRoot, {recursive: true});
 
   try {
     await execute(process.execPath, [join(process.cwd(), 'scripts', 'archive-release.ts')], {
@@ -80,6 +81,11 @@ posixIt('POSIX bootstrap verifies and installs the standalone Bun release withou
       codesign: `#!/bin/sh
 set -eu
 printf 'codesign %s\\n' "$*" >> "$THREADNOTE_TEST_SIGNATURE_LOG"
+if [ "\${THREADNOTE_TEST_CODESIGN_FAIL:-}" = 1 ]; then
+  printf '%s\\n' 'simulated signature failure detail' >&2
+  exit 1
+fi
+printf '%s\\n' 'valid on disk' >&2
 `,
       curl: `#!/bin/sh
 set -eu
@@ -132,6 +138,34 @@ esac
         await chmod(file, 0o755);
       }),
     );
+    const officialSignatureFailure = await execute(
+      'sh',
+      [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+      {
+        env: {
+          HOME: officialUserHome,
+          PATH: `${officialToolsRoot}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          THREADNOTE_BIN_DIR: officialBinRoot,
+          THREADNOTE_INSTALL_ROOT: officialInstallRoot,
+          THREADNOTE_TEST_ARTIFACT: artifact,
+          THREADNOTE_TEST_CHECKSUM: officialChecksum,
+          THREADNOTE_TEST_CODESIGN_FAIL: '1',
+          THREADNOTE_TEST_RELEASES: officialReleases,
+          THREADNOTE_TEST_SIGNATURE_LOG: signatureLog,
+          USER: 'standalone-installer-e2e',
+          USERPROFILE: officialUserHome,
+        },
+        timeout: 600_000,
+      },
+    ).catch((cause: unknown) => cause);
+    expect(
+      `${String((officialSignatureFailure as {readonly stdout?: unknown}).stdout)}${String(
+        (officialSignatureFailure as {readonly stderr?: unknown}).stderr,
+      )}`,
+    ).toContain('simulated signature failure detail');
+    expect(String((officialSignatureFailure as {readonly stderr?: unknown}).stderr)).toContain(
+      'Release signature validation failed',
+    );
     const officialInstall = await execute(
       'sh',
       [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
@@ -158,6 +192,7 @@ esac
     expect(signatureCommands).toMatch(/codesign .*\.so(?:\s|$)/);
     expect(signatureCommands).toMatch(/codesign .*threadnote(?:\s|$)/);
     expect(signatureCommands).not.toContain('spctl');
+    expect(`${officialInstall.stdout}${officialInstall.stderr}`).not.toContain('valid on disk');
 
     const assetRequests: string[] = [];
     let transientArchiveFailures = 2;
@@ -230,7 +265,7 @@ esac
       const installEnvironment = {
         HOME: userHome,
         PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
-        THREADNOTE_BIN_DIR: binRoot,
+        SHELL: '/bin/zsh',
         THREADNOTE_INSTALL_ROOT: installRoot,
         THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}`,
         THREADNOTE_RELEASE_SOURCE: `http://127.0.0.1:${server.port}/releases`,
@@ -299,6 +334,10 @@ esac
       expect(output).toContain(`Installed standalone Threadnote ${packageManifest.version}`);
       expect(output).toContain('Wrote command launcher');
       expect(output).toContain('Threadnote is installed');
+      expect(output).toContain(`Added ~/.local/bin to PATH in ${join(userHome, '.zshrc')}`);
+      expect(output).toContain('The installer cannot change the current parent shell.');
+      expect(output).toContain('export PATH="$HOME/.local/bin:$PATH"');
+      expect(output).toContain(`'${join(binRoot, 'threadnote')}' doctor --dry-run`);
       expect(output).not.toMatch(/\bnpm\b|Python|OpenViking/i);
       expect(assetRequests.filter(name => name === artifactName)).toHaveLength(archiveRequestsBeforeInstall + 3);
       const installedExecutable = join(installRoot, 'versions', packageManifest.version, 'threadnote');
@@ -316,6 +355,141 @@ esac
         },
       });
       expect(launcherVersion.stdout).toContain(packageManifest.version);
+      const profiledVersion = await execute(
+        'sh',
+        [
+          '-c',
+          '. "$HOME/.zshrc"; . "$HOME/.zshrc"; printf "%s\\n" "$PATH"; command -v threadnote; threadnote --version',
+        ],
+        {
+          env: {
+            HOME: userHome,
+            PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+            USER: 'standalone-installer-e2e',
+            USERPROFILE: userHome,
+          },
+        },
+      );
+      expect(
+        profiledVersion.stdout
+          .split('\n')[0]
+          ?.split(':')
+          .filter(entry => entry === binRoot),
+      ).toHaveLength(1);
+      expect(profiledVersion.stdout).toContain(join(binRoot, 'threadnote'));
+      expect(profiledVersion.stdout).toContain(packageManifest.version);
+      const repeatedInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {env: installEnvironment, timeout: 600_000},
+      );
+      expect(`${repeatedInstall.stdout}${repeatedInstall.stderr}`).toContain(
+        `Command directory is already referenced by ${join(userHome, '.zshrc')}`,
+      );
+      const tildeBinRoot = join(userHome, 'custom bin');
+      const tildeInstall = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'], {
+        env: {...installEnvironment, THREADNOTE_BIN_DIR: '  ~/custom bin  '},
+        timeout: 600_000,
+      });
+      expect(`${tildeInstall.stdout}${tildeInstall.stderr}`).toContain(
+        `'${join(tildeBinRoot, 'threadnote')}' doctor --dry-run`,
+      );
+      expect((await execute(join(tildeBinRoot, 'threadnote'), ['--version'])).stdout).toContain(
+        packageManifest.version,
+      );
+
+      const relativeBinRoot = join(await realpath(userHome), 'relative-bin');
+      const relativeInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          cwd: userHome,
+          env: {...installEnvironment, THREADNOTE_BIN_DIR: '  relative-bin  '},
+          timeout: 600_000,
+        },
+      );
+      expect(`${relativeInstall.stdout}${relativeInstall.stderr}`).toContain(
+        `'${join(relativeBinRoot, 'threadnote')}' doctor --dry-run`,
+      );
+      expect((await execute(join(relativeBinRoot, 'threadnote'), ['--version'])).stdout).toContain(
+        packageManifest.version,
+      );
+
+      const collapsedRelativeInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          cwd: userHome,
+          env: {...installEnvironment, THREADNOTE_BIN_DIR: '  missing/..  '},
+          timeout: 600_000,
+        },
+      );
+      expect(`${collapsedRelativeInstall.stdout}${collapsedRelativeInstall.stderr}`).toContain(
+        `'${join(await realpath(userHome), 'threadnote')}' doctor --dry-run`,
+      );
+
+      const collapsedTildeInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          env: {...installEnvironment, THREADNOTE_BIN_DIR: '  ~/missing/..  '},
+          timeout: 600_000,
+        },
+      );
+      expect(`${collapsedTildeInstall.stdout}${collapsedTildeInstall.stderr}`).toContain(
+        `'${join(userHome, 'threadnote')}' doctor --dry-run`,
+      );
+
+      const fishInstall = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'], {
+        env: {...installEnvironment, SHELL: '/usr/bin/fish'},
+        timeout: 600_000,
+      });
+      expect(`${fishInstall.stdout}${fishInstall.stderr}`).toContain('set -gx PATH "$HOME/.local/bin" $PATH');
+      expect(await readFile(join(userHome, '.config', 'fish', 'config.fish'), 'utf8')).toContain(
+        'fish_add_path "$HOME/.local/bin"',
+      );
+
+      const staleBinRoot = join(userHome, 'stale-bin');
+      await mkdir(staleBinRoot, {recursive: true});
+      await Bun.write(join(staleBinRoot, 'threadnote'), '#!/bin/sh\nprintf "%s\\n" "threadnote v0.0.0-stale"\n');
+      await chmod(join(staleBinRoot, 'threadnote'), 0o755);
+      const shadowedInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          env: {...installEnvironment, PATH: `${staleBinRoot}:${binRoot}:/usr/bin:/bin:/usr/sbin:/sbin`},
+          timeout: 600_000,
+        },
+      );
+      expect(`${shadowedInstall.stdout}${shadowedInstall.stderr}`).toContain(
+        `'${join(binRoot, 'threadnote')}' doctor --dry-run`,
+      );
+      expect(`${shadowedInstall.stdout}${shadowedInstall.stderr}`).not.toContain('\n  threadnote doctor --dry-run');
+
+      const unmanagedBinRoot = join(userHome, 'unmanaged-bin');
+      const unmanagedExecuted = join(userHome, 'unmanaged-executed');
+      await mkdir(unmanagedBinRoot, {recursive: true});
+      await Bun.write(
+        join(unmanagedBinRoot, 'threadnote'),
+        '#!/bin/sh\nprintf "%s\\n" executed > "$THREADNOTE_TEST_UNMANAGED_EXECUTED"\nprintf "%s\\n" "not threadnote"\n',
+      );
+      await chmod(join(unmanagedBinRoot, 'threadnote'), 0o755);
+      const unmanagedInstall = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          env: {
+            ...installEnvironment,
+            THREADNOTE_BIN_DIR: unmanagedBinRoot,
+            THREADNOTE_TEST_UNMANAGED_EXECUTED: unmanagedExecuted,
+          },
+          timeout: 600_000,
+        },
+      ).catch((cause: unknown) => cause);
+      expect(String((unmanagedInstall as {readonly stderr?: unknown}).stderr)).toContain(
+        `The cli launcher at ${join(unmanagedBinRoot, 'threadnote')} is not managed by this Threadnote release`,
+      );
+      await expect(stat(unmanagedExecuted)).rejects.toThrow();
       const versionsRoot = join(installRoot, 'versions');
       const releaseRoot = join(versionsRoot, packageManifest.version);
       const promotionBackup = join(versionsRoot, `.${packageManifest.version}.promotion-backup`);
@@ -424,6 +598,9 @@ esac
       expect(
         JSON.parse(await readFile(join(installRoot, 'versions', packageManifest.version, 'release.json'), 'utf8')),
       ).toMatchObject({version: packageManifest.version});
+      expect((await readFile(join(userHome, '.zshrc'), 'utf8')).match(/>>> threadnote command path >>>/g)).toHaveLength(
+        1,
+      );
     } finally {
       server.stop(true);
     }
