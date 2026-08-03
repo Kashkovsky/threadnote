@@ -147,10 +147,10 @@ export default function ThreadScene() {
           window.cancelAnimationFrame(frame);
           frame = 0;
         };
-        const render = (timestamp: number) => {
+        const render = () => {
           frame = 0;
           if (disposed || !inViewport || !pageVisible) return;
-          timer.update(timestamp);
+          timer.update();
           const elapsed = timer.getElapsed();
           group.rotation.y = Math.sin(elapsed * 0.24) * 0.12;
           group.rotation.x = Math.cos(elapsed * 0.18) * 0.035;

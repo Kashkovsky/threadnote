@@ -232,15 +232,29 @@ function GraphSearchShowcase() {
           </header>
           <div className="graph-showcase__manager-body">
             <div className="graph-showcase__manager-map" aria-hidden="true">
-              <i className="graph-showcase__edge graph-showcase__edge--one" />
-              <i className="graph-showcase__edge graph-showcase__edge--two" />
-              <i className="graph-showcase__edge graph-showcase__edge--three" />
-              <i className="graph-showcase__edge graph-showcase__edge--four" />
-              <span className="graph-showcase__node graph-showcase__node--one" />
-              <span className="graph-showcase__node graph-showcase__node--two" />
-              <span className="graph-showcase__node graph-showcase__node--three" />
-              <span className="graph-showcase__node graph-showcase__node--four" />
-              <span className="graph-showcase__node graph-showcase__node--five" />
+              <svg viewBox="0 0 720 360" preserveAspectRatio="xMidYMid meet">
+                <g className="graph-showcase__manager-edges">
+                  <path d="M112 84 C196 86 255 136 356 180" />
+                  <path d="M178 192 C246 192 286 185 356 180" />
+                  <path d="M114 294 C212 286 278 224 356 180" />
+                  <path d="M350 58 C350 101 353 137 356 180" />
+                  <path d="M356 180 C437 138 495 95 596 78" />
+                  <path d="M356 180 C424 184 481 188 550 194" />
+                  <path d="M356 180 C430 225 505 278 606 294" />
+                  <path d="M112 84 C225 42 273 48 350 58" className="is-secondary" />
+                  <path d="M550 194 C579 222 596 254 606 294" className="is-secondary" />
+                </g>
+                <g className="graph-showcase__manager-nodes">
+                  <circle cx="112" cy="84" r="10" className="is-teal" />
+                  <circle cx="178" cy="192" r="8" className="is-amber" />
+                  <circle cx="114" cy="294" r="9" className="is-teal" />
+                  <circle cx="350" cy="58" r="8" className="is-blue" />
+                  <circle cx="356" cy="180" r="17" className="is-core" />
+                  <circle cx="596" cy="78" r="10" className="is-blue" />
+                  <circle cx="550" cy="194" r="9" className="is-teal" />
+                  <circle cx="606" cy="294" r="10" className="is-violet" />
+                </g>
+              </svg>
             </div>
             <dl>
               <div>
@@ -257,7 +271,7 @@ function GraphSearchShowcase() {
               </div>
               <div>
                 <dt>Top hub</dt>
-                <dd>PaymentGateway</dd>
+                <dd>RequestCoordinator</dd>
               </div>
               <div>
                 <dt>Surprising links</dt>

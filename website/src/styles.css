@@ -1262,6 +1262,7 @@ p {
 
 .graph-showcase__manager-map {
   position: relative;
+  display: grid;
   overflow: hidden;
   background:
     radial-gradient(circle at 48% 48%, rgba(103, 232, 199, 0.075), transparent 37%),
@@ -1274,85 +1275,53 @@ p {
     auto;
 }
 
-.graph-showcase__node,
-.graph-showcase__edge {
-  position: absolute;
+.graph-showcase__manager-map svg {
   display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
 }
 
-.graph-showcase__node {
-  z-index: 2;
-  width: 18px;
-  height: 18px;
-  background: #111923;
-  border: 2px solid var(--teal);
-  border-radius: 50%;
-  box-shadow: 0 0 22px rgba(103, 232, 199, 0.2);
+.graph-showcase__manager-edges path {
+  fill: none;
+  stroke: rgba(103, 232, 199, 0.34);
+  stroke-linecap: round;
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
 }
 
-.graph-showcase__node--one {
-  top: 46%;
-  left: 45%;
-  width: 28px;
-  height: 28px;
-  border-color: var(--violet);
+.graph-showcase__manager-edges path:nth-child(2n) {
+  stroke: rgba(192, 140, 255, 0.38);
 }
 
-.graph-showcase__node--two {
-  top: 22%;
-  left: 20%;
+.graph-showcase__manager-edges .is-secondary {
+  stroke: rgba(95, 159, 255, 0.25);
+  stroke-dasharray: 4 7;
 }
 
-.graph-showcase__node--three {
-  top: 20%;
-  right: 17%;
-  border-color: var(--blue);
+.graph-showcase__manager-nodes circle {
+  fill: #111923;
+  stroke: var(--teal);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
-.graph-showcase__node--four {
-  bottom: 18%;
-  left: 19%;
-  border-color: var(--amber);
+.graph-showcase__manager-nodes .is-core {
+  fill: rgba(192, 140, 255, 0.12);
+  stroke: var(--violet);
+  stroke-width: 2.5;
 }
 
-.graph-showcase__node--five {
-  right: 21%;
-  bottom: 20%;
+.graph-showcase__manager-nodes .is-blue {
+  stroke: var(--blue);
 }
 
-.graph-showcase__edge {
-  z-index: 1;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(103, 232, 199, 0.24), rgba(192, 140, 255, 0.58));
-  transform-origin: left center;
+.graph-showcase__manager-nodes .is-amber {
+  stroke: var(--amber);
 }
 
-.graph-showcase__edge--one {
-  top: 28%;
-  left: 24%;
-  width: 34%;
-  transform: rotate(35deg);
-}
-
-.graph-showcase__edge--two {
-  top: 52%;
-  left: 48%;
-  width: 36%;
-  transform: rotate(-43deg);
-}
-
-.graph-showcase__edge--three {
-  bottom: 28%;
-  left: 23%;
-  width: 37%;
-  transform: rotate(-30deg);
-}
-
-.graph-showcase__edge--four {
-  top: 55%;
-  left: 50%;
-  width: 34%;
-  transform: rotate(37deg);
+.graph-showcase__manager-nodes .is-violet {
+  stroke: var(--violet);
 }
 
 .graph-showcase__manager-body dl {
@@ -2991,6 +2960,19 @@ p {
   overflow-y: auto;
 }
 
+.search-dialog__results-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 14px 10px;
+  color: var(--muted);
+  font:
+    8px/1.2 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .search-dialog__results > button {
   display: grid;
   grid-template-columns: 1fr 18px;
@@ -3004,9 +2986,16 @@ p {
   border-radius: 6px;
 }
 
-.search-dialog__results > button:hover {
+.search-dialog__results > button:hover,
+.search-dialog__results > button[aria-selected='true'] {
   background: var(--panel-raised);
   border-color: var(--line);
+}
+
+.search-dialog__results > button:focus-visible {
+  border-color: rgba(103, 232, 199, 0.48);
+  outline: 1px solid rgba(103, 232, 199, 0.28);
+  outline-offset: -2px;
 }
 
 .search-dialog__results small,
@@ -3033,8 +3022,16 @@ p {
   overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.search-dialog__results mark {
+  color: var(--text);
+  background: rgba(103, 232, 199, 0.14);
+  border-radius: 2px;
 }
 
 .search-dialog__results svg {
@@ -5385,6 +5382,10 @@ p {
   }
 
   .graph-showcase__manager-map {
+    min-height: 270px;
+  }
+
+  .graph-showcase__manager-map svg {
     min-height: 270px;
   }
 

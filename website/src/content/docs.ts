@@ -31,6 +31,7 @@ export interface DocsArticle {
   id: string;
   title: string;
   summary: string;
+  keywords?: string[];
   body: DocsBlock[];
 }
 
@@ -398,17 +399,27 @@ export const docsSections: DocsSection[] = [
       {
         id: 'what-is-threadnote',
         title: 'What is Threadnote?',
-        summary: 'A local-first memory and code-intelligence layer shared by the coding agents your team already uses.',
+        summary:
+          'A local-first memory and current-source intelligence layer shared by the coding agents your team already uses.',
+        keywords: [
+          'code search',
+          'polyglot code graph',
+          'current worktree',
+          'dependency graph',
+          'impact analysis',
+          'agent memory',
+        ],
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives Codex, Claude Code, Cursor, and Copilot a common engineering memory without forcing the team into one chat product. Personal working state stays local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
+            text: 'Threadnote gives Codex, Claude Code, Cursor, and Copilot two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
           },
           {
             type: 'list',
             items: [
               'Memory recall answers what the team learned, decided, or handed off.',
-              'The native code graph answers what the current commit and worktree define, call, import, extend, or may affect.',
+              'Polyglot graph search finds current symbols and concepts across language and project boundaries, then follows definitions, calls, imports, inheritance, paths, and reverse impact.',
+              'Whole-repository graph analysis surfaces structural communities, groups, hubs, confidence, and surprising cross-boundary links without flooding an agent context window.',
               'A pinned local embedding model improves recall without sending memory text to a hosted embedding service.',
               'The Manager and Obsidian bridge provide visual and human-readable views while canonical files remain authoritative.',
             ],
@@ -416,6 +427,14 @@ export const docsSections: DocsSection[] = [
           {
             type: 'note',
             text: 'Repository files remain authoritative. Threadnote is the operational context layer that helps an agent find the right file, memory, and current-code evidence at the right time.',
+          },
+          {
+            type: 'heading',
+            text: 'Memory and current-source evidence stay separate',
+          },
+          {
+            type: 'paragraph',
+            text: 'Agents use `recall_context` for historical knowledge, `inspect_code_graph` for focused current-source questions such as query, node, neighbors, explain, path, and impact, and `analyze_code_graph` for repository-wide topology. The graph binds committed Git objects to an isolated staged, unstaged, renamed, deleted, and eligible-untracked overlay for the active worktree, so an answer reflects the checkout the agent is editing rather than a stale shared index.',
           },
           {
             type: 'heading',
@@ -990,6 +1009,7 @@ threadnote share sync`,
         id: 'publish-memory',
         title: 'Publish a memory',
         summary: 'Preview and publish one active durable memory after user confirmation.',
+        keywords: ['share memory', 'team memory', 'publish durable memory', 'memory sharing'],
         body: [
           {
             type: 'code',
@@ -1073,6 +1093,7 @@ threadnote share conflict resolve <id> --take shared`,
         id: 'graph-operations',
         title: 'Query, exact nodes, neighbors, path, and impact',
         summary: 'Choose the graph operation that matches the source question.',
+        keywords: ['code graph search', 'graph impact', 'inspect code graph', 'dependency path', 'symbol neighbors'],
         body: [
           {
             type: 'table',
@@ -1125,6 +1146,13 @@ threadnote share conflict resolve <id> --take shared`,
         title: 'Statistics, communities, groups, confidence, hubs, and surprises',
         summary:
           'Analyze whole-repository topology deterministically without loading one repository-sized graph document.',
+        keywords: [
+          'architecture analysis',
+          'repository architecture',
+          'whole graph analysis',
+          'code graph communities',
+          'structural analysis',
+        ],
         body: [
           {
             type: 'table',

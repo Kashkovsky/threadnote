@@ -62,8 +62,9 @@ and generated sidecar together; never hand-edit the binding.
 
 ## Content and interaction contracts
 
-- Treat current source, CLI help, MCP schemas, checked-in guides, and ADRs as authoritative. The historical GitHub wiki
-  describes Threadnote 3 and must not supply 4.0 commands or architecture facts.
+- Treat current source, CLI help, MCP schemas, checked-in user guides, tests, and shared durable design memories as
+  authoritative. The historical GitHub wiki describes Threadnote 3 and must not supply 4.0 commands or architecture
+  facts.
 - Memory simulations show `recall_context` returning `threadnote://` pointers followed by `read_context`.
 - Scoped current-source questions use `inspect_code_graph`; whole-repository statistics, communities, hubs, and
   surprising links use the separate `analyze_code_graph` tool.

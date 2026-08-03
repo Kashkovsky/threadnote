@@ -1,5 +1,6 @@
 import {access, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   bindRetainedPerformanceArtifact,
@@ -10,6 +11,12 @@ import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-gr
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
+import {
+  createDocsSearchIndex,
+  DOCS_SEARCH_MAXIMUM_LENGTH,
+  DOCS_SEARCH_MAXIMUM_TERMS,
+  searchDocs,
+} from '../../website/src/lib/docsSearch.js';
 import {
   retainedPerformanceArtifactFieldPaths,
   validateRetainedPerformancePayload,
@@ -528,6 +535,104 @@ describe('Threadnote 4 website content', () => {
     expect(landingSource).toContain('Final values stay visibly');
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
+  });
+
+  it('renders a connected, scale-stable Manager graph preview', async () => {
+    const [landingSource, sceneSource, styles] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'visuals', 'ThreadScene.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'styles.css'), 'utf8'),
+    ]);
+    const managerPreview = landingSource.match(/<svg viewBox="0 0 720 360"[\s\S]*?<\/svg>/)?.[0] ?? '';
+
+    expect(managerPreview).not.toBe('');
+    expect(managerPreview.match(/<circle cx=/g)).toHaveLength(8);
+    expect(managerPreview.match(/<path d=/g)).toHaveLength(9);
+    expect(styles).toContain('.graph-showcase__manager-edges path');
+    expect(styles).toContain('vector-effect: non-scaling-stroke');
+    expect(landingSource).not.toContain('graph-showcase__edge--');
+    expect(sceneSource).toContain('timer.update();');
+    expect(sceneSource).not.toContain('timer.update(timestamp)');
+  });
+
+  it('ranks documentation headings, content, keywords, prefixes, and small typos', () => {
+    const index = createDocsSearchIndex(docsSections);
+    const graphResultIds = searchDocs(index, 'polyglot current worktree impact').map(result => result.article.id);
+    const headingResults = searchDocs(index, 'memory current source evidence');
+    const typoResults = searchDocs(index, 'archtecture analysis');
+    const commandResults = searchDocs(index, 'inspect code graph');
+
+    expect(graphResultIds.slice(0, 4)).toContain('what-is-threadnote');
+    expect(headingResults[0]).toMatchObject({article: {id: 'what-is-threadnote'}});
+    expect(headingResults[0]?.matchLabel).toContain('Memory and current-source evidence stay separate');
+    expect(typoResults.map(result => result.article.id)).toContain('graph-analysis');
+    expect(commandResults.map(result => result.article.id)).toContain('graph-operations');
+    expect(commandResults.some(result => result.snippet !== result.article.summary)).toBe(true);
+  });
+
+  it('keeps docs search deterministic and useful without an exact phrase match', () => {
+    const index = createDocsSearchIndex(docsSections);
+    const first = searchDocs(index, 'team publish preview durable');
+    const second = searchDocs(index, 'team publish preview durable');
+
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.map(result => result.article.id)).toEqual(second.map(result => result.article.id));
+    expect(first.map(result => result.article.id)).toContain('publish-memory');
+    expect(first.every(result => result.matchedTerms.length >= 3)).toBe(true);
+  });
+
+  it('ranks purpose-built documentation ahead of the general introduction', () => {
+    const index = createDocsSearchIndex(docsSections);
+
+    expect(searchDocs(index, 'graph impact')[0]?.article.id).toBe('graph-operations');
+    expect(searchDocs(index, 'inspect code graph')[0]?.article.id).toBe('graph-operations');
+    expect(searchDocs(index, 'share memory team')[0]?.article.id).toBe('publish-memory');
+    expect(searchDocs(index, 'architecture analysis')[0]?.article.id).toBe('graph-analysis');
+  });
+
+  it('bounds adversarial query length and term count before fuzzy matching', () => {
+    const index = createDocsSearchIndex(docsSections);
+    const query = Array.from({length: 10_000}, (_, term) => `searchterm${term}`).join(' ');
+    const boundedQuery = query.slice(0, DOCS_SEARCH_MAXIMUM_LENGTH);
+    const startedAt = performance.now();
+    const result = searchDocs(index, query);
+    const elapsedMilliseconds = performance.now() - startedAt;
+
+    expect(result).toEqual(searchDocs(index, boundedQuery));
+    expect(result.every(candidate => candidate.matchedTerms.length <= DOCS_SEARCH_MAXIMUM_TERMS)).toBe(true);
+    expect(elapsedMilliseconds).toBeLessThan(250);
+  });
+
+  it('bounds, deduplicates, and deterministically orders arbitrary docs searches', () => {
+    const index = createDocsSearchIndex(docsSections);
+
+    fc.assert(
+      fc.property(fc.string({maxLength: 80}), query => {
+        const first = searchDocs(index, query, 7);
+        const second = searchDocs(index, query, 7);
+        expect(first).toEqual(second);
+        expect(first.length).toBeLessThanOrEqual(7);
+        expect(new Set(first.map(result => result.article.id)).size).toBe(first.length);
+        for (let index = 1; index < first.length; index += 1) {
+          expect(first[index - 1]!.score).toBeGreaterThanOrEqual(first[index]!.score);
+        }
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('keeps ranked docs search keyboard-navigable and screen-reader discoverable', async () => {
+    const docsPage = await readFile(join(root, 'website', 'src', 'pages', 'DocsPage.tsx'), 'utf8');
+
+    expect(docsPage).toContain('role="combobox"');
+    expect(docsPage).toContain('role="listbox"');
+    expect(docsPage).toContain('aria-activedescendant');
+    expect(docsPage).toContain("event.key === 'ArrowDown'");
+    expect(docsPage).toContain("event.key === 'Enter'");
+    expect(docsPage).toContain('element.tabIndex >= 0');
+    expect(docsPage).toContain('useDeferredValue(query)');
+    expect(docsPage).toContain('maxLength={DOCS_SEARCH_MAXIMUM_LENGTH}');
+    expect(docsPage).toContain('aria-busy={query !== deferredQuery}');
   });
 
   it('binds verified performance evidence to exact local bytes and source', () => {

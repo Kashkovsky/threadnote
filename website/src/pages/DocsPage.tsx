@@ -1,13 +1,21 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {useCallback, useDeferredValue, useEffect, useMemo, useRef, useState} from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {CodeBlock} from '../components/CodeBlock';
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
-import {defaultDocId, docsSections, type DocsArticle, type DocsBlock} from '../content/docs';
+import {defaultDocId, docsSections, type DocsBlock} from '../content/docs';
+import {
+  createDocsSearchIndex,
+  DOCS_SEARCH_MAXIMUM_LENGTH,
+  normalizeDocsSearchText,
+  searchDocs,
+  type DocsSearchResult,
+} from '../lib/docsSearch';
 import {setDocumentMeta, siteHref} from '../lib/site';
 
 const articles = docsSections.flatMap(section => section.articles.map(article => ({article, section})));
+const docsSearchIndex = createDocsSearchIndex(docsSections);
 const focusableSelector = [
   'a[href]',
   'button:not(:disabled)',
@@ -20,7 +28,7 @@ const focusableSelector = [
 function trapFocus(event: KeyboardEvent, container: HTMLElement | null): void {
   if (event.key !== 'Tab' || !container) return;
   const focusable = [...container.querySelectorAll<HTMLElement>(focusableSelector)].filter(
-    element => element.getClientRects().length > 0,
+    element => element.getClientRects().length > 0 && element.tabIndex >= 0,
   );
   const first = focusable[0];
   const last = focusable.at(-1);
@@ -42,20 +50,22 @@ function trapFocus(event: KeyboardEvent, container: HTMLElement | null): void {
   }
 }
 
-function articleText(article: DocsArticle): string {
-  return [
-    article.title,
-    article.summary,
-    ...article.body.flatMap(block => {
-      if ('text' in block) return block.text;
-      if ('code' in block) return block.code;
-      if ('items' in block) return block.items;
-      if ('rows' in block) return [...block.headers, ...block.rows.flat()];
-      return [];
-    }),
-  ]
-    .join(' ')
-    .toLowerCase();
+function HighlightedText({terms, text}: {terms: readonly string[]; text: string}) {
+  const escapedTerms = terms
+    .filter(term => term.length > 1)
+    .sort((left, right) => right.length - left.length)
+    .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (escapedTerms.length === 0) return text;
+  const matcher = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
+  return (
+    <>
+      {text
+        .split(matcher)
+        .map((part, index) =>
+          terms.includes(normalizeDocsSearchText(part)) ? <mark key={`${part}-${index}`}>{part}</mark> : part,
+        )}
+    </>
+  );
 }
 
 function InlineMarkdown({children}: {children: string}) {
@@ -134,7 +144,9 @@ function currentIdFromLocation(): string {
 export default function DocsPage() {
   const [activeId, setActiveId] = useState(currentIdFromLocation);
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [activeSearchResult, setActiveSearchResult] = useState(0);
   const [navOpen, setNavOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const searchPanelRef = useRef<HTMLDivElement>(null);
@@ -257,11 +269,31 @@ export default function DocsPage() {
     }
   }, [activeEntry]);
 
-  const results = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return articles.slice(0, 8);
-    return articles.filter(({article}) => articleText(article).includes(normalized)).slice(0, 12);
-  }, [query]);
+  const results = useMemo(
+    () => searchDocs(docsSearchIndex, deferredQuery, deferredQuery.trim() ? 12 : 8),
+    [deferredQuery],
+  );
+  const selectedSearchResultIndex = Math.min(activeSearchResult, Math.max(0, results.length - 1));
+
+  useEffect(() => {
+    if (activeSearchResult < results.length) return;
+    setActiveSearchResult(Math.max(0, results.length - 1));
+  }, [activeSearchResult, results.length]);
+
+  const moveSearchSelection = useCallback(
+    (direction: -1 | 1): void => {
+      if (results.length === 0) return;
+      setActiveSearchResult(current => {
+        const boundedCurrent = Math.min(current, results.length - 1);
+        const next = (boundedCurrent + direction + results.length) % results.length;
+        window.requestAnimationFrame(() =>
+          document.getElementById(`docs-search-result-${next}`)?.scrollIntoView({block: 'nearest'}),
+        );
+        return next;
+      });
+    },
+    [results.length],
+  );
 
   const navigate = (id: string) => {
     shouldFocusArticleRef.current = true;
@@ -433,9 +465,35 @@ export default function DocsPage() {
               <input
                 ref={searchRef}
                 id="docs-search-input"
+                maxLength={DOCS_SEARCH_MAXIMUM_LENGTH}
                 value={query}
-                onChange={event => setQuery(event.target.value)}
+                onChange={event => {
+                  setQuery(event.target.value);
+                  setActiveSearchResult(0);
+                }}
+                onKeyDown={event => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    moveSearchSelection(event.key === 'ArrowDown' ? 1 : -1);
+                  } else if (event.key === 'Enter') {
+                    const currentResults =
+                      query === deferredQuery ? results : searchDocs(docsSearchIndex, query, query.trim() ? 12 : 8);
+                    const currentResultIndex = Math.min(activeSearchResult, Math.max(0, currentResults.length - 1));
+                    const result: DocsSearchResult | undefined = currentResults[currentResultIndex];
+                    if (!result) return;
+                    event.preventDefault();
+                    navigate(result.article.id);
+                  }
+                }}
                 placeholder="Search memory, graph, sharing, commands…"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-controls="docs-search-results"
+                aria-expanded="true"
+                aria-activedescendant={
+                  results.length > 0 ? `docs-search-result-${selectedSearchResultIndex}` : undefined
+                }
+                aria-describedby="docs-search-help"
               />
               <button
                 aria-label="Close documentation search"
@@ -446,14 +504,44 @@ export default function DocsPage() {
                 esc
               </button>
             </div>
-            <div className="search-dialog__results">
+            <div
+              className="search-dialog__results"
+              id="docs-search-results"
+              role="listbox"
+              aria-busy={query !== deferredQuery}
+              aria-label="Documentation search results"
+            >
+              <div className="search-dialog__results-meta" aria-live="polite">
+                <span>
+                  {query.trim()
+                    ? `${results.length} ranked result${results.length === 1 ? '' : 's'}`
+                    : 'Suggested documentation'}
+                </span>
+                <span id="docs-search-help">↑↓ select · enter open</span>
+              </div>
               {results.length ? (
-                results.map(({article, section}) => (
-                  <button type="button" key={article.id} onClick={() => navigate(article.id)}>
+                results.map((result, index) => (
+                  <button
+                    type="button"
+                    id={`docs-search-result-${index}`}
+                    key={result.article.id}
+                    role="option"
+                    aria-selected={index === selectedSearchResultIndex}
+                    tabIndex={index === selectedSearchResultIndex ? 0 : -1}
+                    onFocus={() => setActiveSearchResult(index)}
+                    onMouseEnter={() => setActiveSearchResult(index)}
+                    onClick={() => navigate(result.article.id)}
+                  >
                     <div>
-                      <small>{section.title}</small>
-                      <strong>{article.title}</strong>
-                      <p>{article.summary}</p>
+                      <small>
+                        {result.section.title} · {result.matchLabel}
+                      </small>
+                      <strong>
+                        <HighlightedText terms={result.matchedTerms} text={result.article.title} />
+                      </strong>
+                      <p>
+                        <HighlightedText terms={result.matchedTerms} text={result.snippet} />
+                      </p>
                     </div>
                     <Icon name="arrow" aria-hidden="true" />
                   </button>
