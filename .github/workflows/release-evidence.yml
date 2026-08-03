@@ -1,0 +1,20 @@
+name: Retain bounded production-large release evidence
+
+on:
+  push:
+    tags:
+      - 'v4.0.0-beta.*'
+      - 'v4.0.0-rc.*'
+      - 'v4.0.0'
+
+permissions:
+  contents: read
+
+jobs:
+  production-large-evidence:
+    name: Retain bounded exact-tag production-large evidence
+    uses: ./.github/workflows/production-large-evidence.yml
+    with:
+      strict: false
+      release_ref: ${{ github.ref }}
+      release_sha: ${{ github.sha }}

@@ -5,10 +5,10 @@
     "workspaceCount": 24
   },
   "notes": [
-    "Scheduled and manually dispatched runs plus the Threadnote 4 exact-tag publication gate use this profile; ordinary pull requests do not materialize it.",
+    "Scheduled and manually dispatched strict runs plus Threadnote 4's separate bounded exact-tag observation use this profile; ordinary pull requests do not materialize it.",
     "Targets come from the beta.27 large-monorepo investigation and are shape checks, not portable latency budgets.",
     "A checked performance artifact must come from a measured run; no synthetic latency baseline is accepted.",
-    "Threadnote 4 beta, RC, and final publication waits for one exact-commit observation retained for 90 days; ordinary pull requests do not run this profile.",
+    "Every covered v4.0.0 beta, RC, and final tag starts one non-blocking exact-commit observation retained for 90 days; ordinary pull requests do not run this profile.",
     "This profile retains materialization duration, CPU, RSS, and aggregate row counts; the separate heavy-tail fixture is parser/cache coverage, not materialization evidence."
   ],
   "profile": "production-large",

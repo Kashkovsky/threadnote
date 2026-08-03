@@ -1052,10 +1052,11 @@ describe('code graph release evidence', () => {
     }
   });
 
-  it('runs exact-tag production-large evidence once and gates RC/stable publication on it', () => {
+  it('runs bounded exact-tag production-large evidence once without gating publication on it', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8')) as BenchmarkWorkflow;
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8')) as BenchmarkWorkflow;
     const publish = load(readFileSync('.github/workflows/publish.yml', 'utf8')) as BenchmarkWorkflow;
+    const releaseEvidence = load(readFileSync('.github/workflows/release-evidence.yml', 'utf8')) as BenchmarkWorkflow;
     expect(workflow.on.push).toBeUndefined();
 
     const scheduled = workflow.jobs['code-graph-production-large']!;
@@ -1063,19 +1064,20 @@ describe('code graph release evidence', () => {
     expect(scheduled.if).toContain('inputs.include_production_large');
     expect(scheduled.uses).toBe('./.github/workflows/production-large-evidence.yml');
 
-    const releaseGate = publish.jobs['production-large-evidence']!;
-    expect(releaseGate.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-beta.')");
-    expect(releaseGate.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-rc.')");
-    expect(releaseGate.if).toContain("github.ref == 'refs/tags/v4.0.0'");
+    const releaseGate = releaseEvidence.jobs['production-large-evidence']!;
     expect(releaseGate.needs).toBeUndefined();
     expect(releaseGate.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(releaseGate.with).toMatchObject({
-      gate_release: "${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}",
+      strict: false,
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
-    expect(publish.jobs['publish-beta']?.if).not.toContain('needs.production-large-evidence');
-    expect(publish.jobs['publish-evidence-gated']?.if).toContain("needs.production-large-evidence.result == 'success'");
+    const publisher = publish.jobs['publish-release']!;
+    expect(publisher.needs).toEqual(['verify', 'linux', 'macos']);
+    expect(publisher.if).not.toContain('needs.production-large-evidence');
+    expect(publish.jobs['publish-beta']).toBeUndefined();
+    expect(publish.jobs['publish-evidence-gated']).toBeUndefined();
+    expect(publish.jobs['production-large-evidence']).toBeUndefined();
 
     const production = evidence.jobs['code-graph-production-large']!;
     const checkout = production.steps?.find(step => step.uses === 'actions/checkout@v7');

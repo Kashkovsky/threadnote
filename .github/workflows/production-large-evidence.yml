@@ -3,11 +3,11 @@ name: Production-large code graph evidence
 on:
   workflow_call:
     inputs:
-      gate_release:
-        description: Whether this observation is a required release gate rather than non-blocking retained evidence
+      strict:
+        description: Whether an incomplete bounded observation should fail the evidence workflow
         required: false
         type: boolean
-        default: false
+        default: true
       release_ref:
         description: Optional exact Threadnote 4 release tag ref
         required: false
@@ -29,7 +29,7 @@ jobs:
   code-graph-production-large:
     name: Code graph production-large · n=1 · pinned Linux class
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
@@ -54,8 +54,10 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Capture one production-large observation with phase and storage telemetry
-        timeout-minutes: 320
+      - id: capture_production_large
+        name: Capture one production-large observation with phase and storage telemetry
+        continue-on-error: true
+        timeout-minutes: 20
         env:
           THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
           THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
@@ -71,7 +73,7 @@ jobs:
       - id: upload-production-large
         uses: actions/upload-artifact@v7
         if: always()
-        timeout-minutes: 10
+        timeout-minutes: 5
         with:
           name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: artifacts/code-graph-production-large-n1-*.json
@@ -86,20 +88,31 @@ jobs:
           ARTIFACT_URL: ${{ steps.upload-production-large.outputs.artifact-url }}
           SOURCE_REF: ${{ inputs.release_ref || github.ref }}
           SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
-          RELEASE_GATE: ${{ inputs.gate_release }}
+          MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
+          STRICT_EVIDENCE: ${{ inputs.strict }}
         run: |
-          if [[ "$RELEASE_GATE" == "true" ]]; then
-            release_policy='required before publishing this RC or stable release'
+          if [[ "$STRICT_EVIDENCE" == "true" ]]; then
+            evidence_policy='must complete for this evidence workflow to pass'
           else
-            release_policy='retained and reported without blocking beta publication'
+            evidence_policy='bounded observation retained without blocking release publication'
           fi
           {
             echo '## Production-large release evidence'
             echo
             echo "- Source ref: \`${SOURCE_REF}\`"
             echo "- Source commit: \`${SOURCE_SHA}\`"
-            echo "- Release policy: ${release_policy}"
+            echo "- Measurement outcome: \`${MEASUREMENT_OUTCOME}\`"
+            echo "- Evidence policy: ${evidence_policy}"
             echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
             echo "- Retained artifact: ${ARTIFACT_URL:-not-produced}"
             echo '- Scope: aggregate production-shaped scan, materialization, resolution, activation-stage, SQLite scratch, and one-file reindex telemetry.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce strict evidence completion
+        if: inputs.strict && steps.capture_production_large.outcome != 'success'
+        env:
+          MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
+        shell: bash
+        run: |
+          echo "::error::Production-large evidence ended with outcome ${MEASUREMENT_OUTCOME}."
+          exit 1

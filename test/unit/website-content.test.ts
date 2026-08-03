@@ -1266,6 +1266,31 @@ describe('Threadnote 4 website content', () => {
     expect(styles).not.toContain('.manager-demo-graph-stage > div:first-child');
   });
 
+  it('contains the landing hero and install command at narrow mobile widths', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const tabletStart = styles.indexOf('@media (max-width: 980px)');
+    const mobileStart = styles.indexOf('@media (max-width: 680px)', tabletStart);
+    const tabletStyles = styles.slice(tabletStart, mobileStart);
+    const mobileStyles = styles.slice(mobileStart);
+
+    expect(styles).toMatch(/\.hero__copy\s*{[^}]*min-width: 0;/s);
+    expect(styles).toMatch(/\.hero__visual\s*{[^}]*min-width: 0;/s);
+    expect(tabletStyles).toMatch(/\.hero\s*{[^}]*grid-template-columns: minmax\(0, 1fr\);/s);
+    expect(mobileStyles).toMatch(/\.hero__actions \.button\s*{[^}]*width: 100%;[^}]*min-width: 0;/s);
+    expect(mobileStyles).toMatch(
+      /\.hero__install code\s*{[^}]*width: 100%;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/s,
+    );
+  });
+
+  it('reveals the skip link only when it receives keyboard focus', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+
+    expect(styles).toMatch(/\.skip-link\s*{[^}]*opacity: 0;[^}]*pointer-events: none;/s);
+    expect(styles).toMatch(
+      /\.skip-link:focus,\s*\.skip-link:focus-visible\s*{[^}]*opacity: 1;[^}]*pointer-events: auto;[^}]*transform: translateY\(0\);/s,
+    );
+  });
+
   it('collapses the footer before its six links can overflow narrow tablet widths', async () => {
     const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
     const tabletStart = styles.indexOf('@media (max-width: 760px)');

@@ -54,29 +54,28 @@ checksums but are not OS code-signed.
    user-visible value rather than implementation history, include concrete commands when useful, and do not add a
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
-3. For final 4.0 signoff, review the exact-tag `code-graph-production-large-n1` artifact produced by the publishing
-   workflow. Do not dispatch a duplicate production-large run for the same tag.
+3. Review the latest retained `code-graph-production-large-n1` evidence when assessing graph performance. Do not
+   dispatch a duplicate production-large run for the same tag.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.0-beta.9`.
-6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Betas publish after all four enabled
-   archives are ready while their production-large evidence continues asynchronously; RC and stable releases publish
-   only after the exact-tag production-large evidence job succeeds.
+6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
+   four enabled archives are verified while its bounded production-large observation continues independently.
 
-Every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag starts one production-large run on `ubuntu-24.04` inside
-the publishing workflow. Archive builds may proceed in parallel. Beta publication does not wait for this asynchronous
-evidence, while RC and stable publication fail closed until it validates the exact source, production-shape attainment,
-parity, telemetry, and canonical artifact. A failed run or missing upload blocks RC and stable publication; the
-benchmark workflow no longer starts duplicate work for the same tag. Aggregate, privacy-safe phase/materialization
-evidence, failure checkpoints, exact source commit, and upload digest are retained for 90 days. Treat a successful
-result as `n=1` same-runner release evidence, not as a portable p95. The heavy-tail job remains separate parser/cache
-coverage and must not be used as a substitute for production-scale materialization evidence.
+Every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag starts a separate production-large evidence workflow on
+`ubuntu-24.04`; the publishing workflow never waits for it and its conclusion reports distribution status only. The
+evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded time to upload the
+latest privacy-safe checkpoint and summary. Incomplete release observations are reported but never delay publication;
+scheduled or explicitly requested strict runs still fail when the profile does not complete inside the same bound.
+Aggregate phase/materialization evidence, failure checkpoints, exact source commit, and upload digest are retained for
+90 days. Treat a successful result as `n=1` same-runner evidence, not as a portable p95. The heavy-tail job remains
+separate parser/cache coverage and must not be used as a substitute for production-scale materialization evidence.
 
-The release-evidence validator fails closed: the artifact must name the Threadnote 4 tag and exact matching commit,
+Completed release evidence remains provenance-strict: the artifact must name the Threadnote 4 tag and exact matching commit,
 the local checkout must resolve that tag through `ref^{commit}` to the same SHA, and the measured checkout must be
 clean. The benchmark workflow explicitly checks out the event ref and verifies that resolution before measurement. A
 production-shaped run without that provenance remains useful development evidence, but it cannot be presented as
-release evidence.
+exact-release evidence.
 
 The tag workflow fails before building or signing when its versioned release-notes file is absent, empty, or does not
 start with the required heading. It prepends this checked-in copy to GitHub's automatically generated changelog, so

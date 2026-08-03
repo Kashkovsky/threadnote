@@ -56,11 +56,12 @@ shared-runner latency is machine-independent.
 
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested
-workspaces. One reusable workflow runs weekly, through the explicit `include_production_large` input, and as the
-publication gate for every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag on the pinned `ubuntu-24.04` runner
-class. Publication waits for the exact-commit artifact and upload digest, retained for 90 days; ordinary pull requests retain the bounded development,
-10k-symbol, and 100k-symbol suites. `--profile-files` and `--profile-symbols` may shrink the same generator for harness
-development, but only the default shape is the reviewed profile. Release evidence must attain at least 90% of each
+workspaces. One reusable workflow runs weekly, through the explicit `include_production_large` input, and from a
+separate bounded workflow for every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag on the pinned
+`ubuntu-24.04` runner class. Publication never waits for this observation; the latest exact-commit checkpoint and upload
+digest are retained for 90 days. Ordinary pull requests retain the bounded development, 10k-symbol, and 100k-symbol
+suites. `--profile-files` and `--profile-symbols` may shrink the same generator for harness development, but only the
+default shape is the reviewed profile. Completed release evidence must attain at least 90% of each
 reviewed file, symbol, edge, and lexical-term target; merely carrying those measurement names cannot qualify an
 undersized run. There is intentionally no portable latency budget or fabricated checked result for this profile:
 retain the JSON artifact from each measured run and review it only when `sameRunnerComparisonKey` matches. The cold and
@@ -230,8 +231,9 @@ Each sampler atomically checkpoints its evidence into the workflow's artifact di
 exit. A separate run-lifecycle checkpoint records the current benchmark phase and ends as `complete` or `failed` when
 the process can finalize normally. If the process is killed, the last `running` phase and the sampler's
 `parent-exited` checkpoint remain. Sampler shutdown is bounded and escalates to process termination if the stop signal
-cannot be written or honored. The production step reserves at least 30 minutes before the job deadline, and artifact
-upload runs with `if: always()`, so failure and timeout evidence is retained whenever the runner itself remains alive.
+cannot be written or honored. The production job has a hard 30-minute ceiling: capture is limited to 20 minutes and
+artifact upload to 5 minutes, leaving the rest for checkout, setup, and summary. Upload runs with `if: always()`, so the
+latest failure or timeout checkpoint is retained whenever the runner itself remains alive.
 
 Graph code search is intentionally separate from memory recall. `recall_context` evaluates durable memories and
 resources; `inspect_code_graph` evaluates current source evidence. Agents may call both, but one subsystem failing or

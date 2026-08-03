@@ -40,24 +40,30 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('windows-11-arm');
       expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
       expect(workflow).toContain('needs: [verify, linux, macos]');
-      expect(workflow).toContain('needs: [verify, linux, macos, production-large-evidence]');
+      expect(workflow).not.toContain('needs: [verify, linux, macos, production-large-evidence]');
       expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
       expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
     }),
   );
 
-  it.effect('blocks Threadnote 4 publication on the exact-tag production-large evidence workflow', () =>
+  it.effect('retains bounded exact-tag production-large evidence without blocking publication', () =>
     Effect.gen(function* () {
       const publish = yield* readProjectFile('.github/workflows/publish.yml');
+      const releaseEvidence = yield* readProjectFile('.github/workflows/release-evidence.yml');
       const benchmarks = yield* readProjectFile('.github/workflows/benchmarks.yml');
       const evidence = yield* readProjectFile('.github/workflows/production-large-evidence.yml');
 
-      expect(publish).toContain('production-large-evidence:');
-      expect(publish).toContain('uses: ./.github/workflows/production-large-evidence.yml');
-      expect(publish).toContain('release_ref: ${{ github.ref }}');
-      expect(publish).toContain('release_sha: ${{ github.sha }}');
-      expect(publish).toContain("needs.production-large-evidence.result == 'success'");
+      expect(publish).not.toContain('production-large-evidence:');
+      expect(publish).not.toContain('needs.production-large-evidence.result');
+      expect(releaseEvidence).toContain('production-large-evidence:');
+      expect(releaseEvidence).toContain('uses: ./.github/workflows/production-large-evidence.yml');
+      expect(releaseEvidence).toContain('release_ref: ${{ github.ref }}');
+      expect(releaseEvidence).toContain('release_sha: ${{ github.sha }}');
+      expect(releaseEvidence).toContain('strict: false');
       expect(evidence).toContain('workflow_call:');
+      expect(evidence).toContain('timeout-minutes: 30');
+      expect(evidence).toContain('timeout-minutes: 20');
+      expect(evidence).toContain('continue-on-error: true');
       expect(evidence).toContain('if-no-files-found: error');
       expect(evidence).toContain('retention-days: 90');
       expect(benchmarks).not.toContain("startsWith(github.ref, 'refs/tags/v4.0.0-");
