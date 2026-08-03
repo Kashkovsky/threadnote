@@ -466,6 +466,10 @@ threadnote doctor`,
             text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, downloads and selects the core BGE Small embedding model, builds recall indexes, and writes user-level instructions. Existing verified models and canonical data are preserved during updates.',
           },
           {
+            type: 'note',
+            text: 'On macOS and Linux the launcher is written to ~/.local/bin. If that directory is not already on PATH, the installer updates the detected shell profile and prints both an absolute command that works immediately and the shell-specific PATH command to apply in the current terminal.',
+          },
+          {
             type: 'heading',
             text: 'Beta channel',
           },

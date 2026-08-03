@@ -1,8 +1,7 @@
 import {useEffect, useState, type ReactNode} from 'react';
 import {githubUrl, siteHref} from '../lib/site';
+import type {SitePage} from '../lib/routes';
 import {ThreadnoteMark} from './Brand';
-
-type SitePage = 'home' | 'performance' | 'docs' | 'pro-tips' | 'manager-demo' | 'faq';
 
 const navItems: Array<{page: SitePage; label: string; href: string}> = [
   {page: 'home', label: 'Product', href: ''},
@@ -72,7 +71,7 @@ export function SiteShell({
           </nav>
         </div>
       </header>
-      <main id="main-content" className={fullBleed ? 'site-main site-main--full' : 'site-main'}>
+      <main id="main-content" tabIndex={-1} className={fullBleed ? 'site-main site-main--full' : 'site-main'}>
         {children}
       </main>
       <footer className="site-footer">

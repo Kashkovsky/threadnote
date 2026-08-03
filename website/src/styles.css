@@ -4287,12 +4287,12 @@ p {
   color: var(--muted);
 }
 
-.performance-run-card--pending .status-dot {
+.performance-run-card--observed .status-dot {
   background: var(--amber);
   box-shadow: 0 0 14px rgba(255, 184, 107, 0.56);
 }
 
-.performance-run-card--pending > header strong {
+.performance-run-card--observed > header strong {
   color: var(--amber);
 }
 
@@ -4360,6 +4360,17 @@ p {
   font-size: 11px;
 }
 
+.performance-run-card > p a {
+  color: var(--teal);
+  text-decoration: underline;
+  text-decoration-color: rgba(103, 232, 199, 0.38);
+  text-underline-offset: 3px;
+}
+
+.performance-run-card > p a:hover {
+  text-decoration-color: currentcolor;
+}
+
 .performance-scale {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -4406,8 +4417,6 @@ p {
   letter-spacing: -0.045em;
 }
 
-.performance-scale article.is-pending strong,
-.performance-phase-panel article.is-pending strong,
 .performance-control-panel article strong:only-child {
   color: var(--muted);
 }

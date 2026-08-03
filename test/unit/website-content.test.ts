@@ -1,3 +1,4 @@
+import {execFileSync} from 'node:child_process';
 import {access, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import fc from 'fast-check';
@@ -21,6 +22,15 @@ import {
   retainedPerformanceArtifactFieldPaths,
   validateRetainedPerformancePayload,
 } from '../../website/src/content/performance.js';
+import {checkedInPerformanceEvidence} from '../../website/src/content/performanceHighlights.js';
+import {
+  commitPreparedRoute,
+  createSitePageModuleCache,
+  isSameDocumentNavigation,
+  siteCanonicalUrlForPathname,
+  sitePageForPathname,
+  type SitePage,
+} from '../../website/src/lib/routes.js';
 import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {proTips} from '../../website/src/content/proTips.js';
 import {EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS} from '../../src/evaluation/external_evidence.js';
@@ -532,7 +542,7 @@ describe('Threadnote 4 website content', () => {
     expect(landingSource).toContain('Open the Manager demo');
     expect(landingSource).toContain("siteHref('performance/')");
     expect(landingSource).toContain('real polyglot Bazel monorepo');
-    expect(landingSource).toContain('Final values stay visibly');
+    expect(landingSource).toContain('Checked-in public-repository evidence covers 232,750 files');
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
@@ -633,6 +643,110 @@ describe('Threadnote 4 website content', () => {
     expect(docsPage).toContain('useDeferredValue(query)');
     expect(docsPage).toContain('maxLength={DOCS_SEARCH_MAXIMUM_LENGTH}');
     expect(docsPage).toContain('aria-busy={query !== deferredQuery}');
+  });
+
+  it('maps every public page under root and project-directory deployments', () => {
+    const routes = [
+      ['', 'home'],
+      ['performance', 'performance'],
+      ['docs', 'docs'],
+      ['pro-tips', 'pro-tips'],
+      ['manager-demo', 'manager-demo'],
+      ['faq', 'faq'],
+    ] as const;
+
+    for (const [path, page] of routes) {
+      expect(sitePageForPathname(`/${path}${path ? '/' : ''}`, '/')).toBe(page);
+      expect(sitePageForPathname(`/threadnote/${path}${path ? '/' : ''}`, '/threadnote/')).toBe(page);
+    }
+    expect(sitePageForPathname('/threadnote', '/threadnote/')).toBe('home');
+    expect(sitePageForPathname('/threadnote/docs/nested/', '/threadnote/')).toBeUndefined();
+    expect(sitePageForPathname('/other/docs/', '/threadnote/')).toBeUndefined();
+    expect(siteCanonicalUrlForPathname('/performance/', '/')).toBe('https://threadnote.io/performance/');
+    expect(siteCanonicalUrlForPathname('/threadnote/docs/', '/threadnote/')).toBe('https://threadnote.io/docs/');
+    expect(
+      isSameDocumentNavigation(
+        new URL('https://threadnote.io/docs/'),
+        new URL('https://threadnote.io/docs/#installation'),
+      ),
+    ).toBe(true);
+    expect(
+      isSameDocumentNavigation(new URL('https://threadnote.io/docs/'), new URL('https://threadnote.io/performance/')),
+    ).toBe(false);
+  });
+
+  it('shows checked-in public measurements instead of placeholder performance cards', async () => {
+    const [performancePage, landingPage] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+    ]);
+
+    expect(checkedInPerformanceEvidence.source).toMatchObject({
+      repository: 'JetBrains/intellij-community',
+      repositoryCommit: '3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c',
+      repositoryCommitUrl:
+        'https://github.com/JetBrains/intellij-community/tree/3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c',
+    });
+    expect(checkedInPerformanceEvidence.scale).toMatchObject({
+      indexedFiles: 232_750,
+      symbols: 2_666_762,
+      relationships: 7_340_596,
+    });
+    expect(checkedInPerformanceEvidence.query.hotSearchAndAdjacencyMilliseconds).toBe(43.7);
+    expect(checkedInPerformanceEvidence.lexicalStorage.writeSpeedup).toBeGreaterThan(2.7);
+    expect(checkedInPerformanceEvidence.lexicalStorage.parityPassed).toBe(true);
+    for (const artifactUrl of Object.values(checkedInPerformanceEvidence.artifacts)) {
+      const target = new URL(artifactUrl).pathname.match(/^\/Kashkovsky\/threadnote\/blob\/([a-f0-9]{40})\/(.+)$/);
+      expect(target).not.toBeNull();
+      if (!target) continue;
+      expect(() =>
+        execFileSync('git', ['cat-file', '-e', `${target[1]}:${target[2]}`], {cwd: root, stdio: 'pipe'}),
+      ).not.toThrow();
+    }
+    expect(performancePage).not.toMatch(/>Pending<|pending artifact|evidence pending/i);
+    expect(performancePage).toContain('aria-label={`Open the pinned');
+    expect(landingPage).toContain('232,750 files, 2.67 million symbols, 7.34 million relationships');
+    expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
+  });
+
+  it('keeps the current route until a page chunk is ready and retries failed prefetches', async () => {
+    let resolveDocs: ((value: string) => void) | undefined;
+    const deferredDocs = new Promise<string>(resolve => {
+      resolveDocs = resolve;
+    });
+    const loaders = Object.fromEntries(
+      (['home', 'performance', 'docs', 'pro-tips', 'manager-demo', 'faq'] as const).map(page => [
+        page,
+        page === 'docs' ? () => deferredDocs : async () => page,
+      ]),
+    ) as Record<SitePage, () => Promise<string>>;
+    const cache = createSitePageModuleCache(loaders);
+    let currentRoute = 'home';
+    const navigation = commitPreparedRoute(
+      () => cache.load('docs'),
+      () => true,
+      prepared => {
+        currentRoute = prepared;
+      },
+    );
+
+    expect(currentRoute).toBe('home');
+    resolveDocs?.('docs');
+    await expect(navigation).resolves.toBe(true);
+    expect(currentRoute).toBe('docs');
+
+    let faqAttempts = 0;
+    const retryingCache = createSitePageModuleCache({
+      ...loaders,
+      faq: async () => {
+        faqAttempts += 1;
+        if (faqAttempts === 1) throw new Error('transient chunk failure');
+        return 'faq';
+      },
+    });
+    await expect(retryingCache.prefetch('faq')).resolves.toBeUndefined();
+    await expect(retryingCache.load('faq')).resolves.toBe('faq');
+    expect(faqAttempts).toBe(2);
   });
 
   it('binds verified performance evidence to exact local bytes and source', () => {

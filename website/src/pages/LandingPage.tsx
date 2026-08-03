@@ -199,9 +199,8 @@ function GraphSearchShowcase() {
           <h3>See how Threadnote is built and benchmarked for a real polyglot Bazel monorepo.</h3>
         </div>
         <p>
-          One strict evidence gate ties exact commits to cold and incremental phases, Java/Kotlin/TypeScript/Bazel
-          controls, storage high-water, queries, Manager rendering, and rebuild parity. Final values stay visibly
-          pending until the retained artifact is complete.
+          Checked-in public-repository evidence covers 232,750 files, 2.67 million symbols, 7.34 million relationships,
+          and Java, Kotlin, TypeScript, and Bazel controls. Each number keeps its exact measurement scope and source.
         </p>
         <Icon name="arrow" aria-hidden="true" />
       </a>

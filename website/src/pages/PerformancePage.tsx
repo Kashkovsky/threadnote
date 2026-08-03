@@ -6,6 +6,7 @@ import {
   type RetainedPerformanceArtifact,
 } from '../content/performance';
 import {performanceEvidence} from '../content/performanceEvidence';
+import {checkedInPerformanceEvidence} from '../content/performanceHighlights';
 import {setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
@@ -63,13 +64,13 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
     },
     {
       label: 'Manager',
-      title: artifact ? 'Bounded views, retained measurements' : 'Manager performance remains gated',
+      title: artifact ? 'Bounded views, retained measurements' : 'Bounded, snapshot-aware views',
       body: artifact
         ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and client-side layout preparation with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget and snapshot binding. Real Manager query controls exercise the GraphWorkspace request gate: superseding aborts an in-flight request, and a completed late response is rejected before it can update the UI.`
-        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, layout-preparation proxy, snapshot-binding, real request-cancellation, and completed stale-response rejection evidence together.',
+        : 'Manager reads bounded snapshots and rejects stale responses. Its current architecture is covered here without turning a development observation into a browser-rendering SLA.',
       detail: artifact
         ? `Query p95 ${formatDuration(artifact.manager.queryP95Milliseconds)} · max payload ${formatBytes(artifact.manager.queryMaxPayloadBytes)}`
-        : 'Pending reviewed code + retained measurements',
+        : 'Bounded payloads · cancellable requests',
     },
     {
       label: 'Graph MCP',
@@ -86,7 +87,7 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
   ] as const;
 }
 
-const proofGroups = [
+const retainedProofGroups = [
   {
     label: 'Exact provenance',
     body: 'The complete harness artifact binds its bytes, exact source and public-repository commits, the measured local-source ApplicationLayer, and a separately validated—but not executed—managed payload, plus hardware, Bun, SQLite, and disk details.',
@@ -105,15 +106,50 @@ const proofGroups = [
   },
 ] as const;
 
+const checkedInProofGroups = [
+  {
+    label: 'Pinned public scale',
+    body: 'The repository name, exact clean checkout commit, graph counts, database size, runner, and measurement scopes are retained together.',
+  },
+  {
+    label: 'Separated query cost',
+    body: 'Hot indexed SQL is reported separately from exact Git observation, process startup, MCP serialization, and strict second observations.',
+  },
+  {
+    label: 'Polyglot controls',
+    body: 'Java, Kotlin, TypeScript, and Bazel / Starlark queries were exercised against the same pinned IntelliJ Community snapshot.',
+  },
+  {
+    label: 'Focused parity checks',
+    body: 'The separate 100k-symbol lexical run retains canonical, posting-count, and query parity while measuring write time and storage.',
+  },
+] as const;
+
 type EvidenceCard = Readonly<{label: string; value: string; detail: string}>;
 
 function scaleCards(artifact: RetainedPerformanceArtifact | undefined): readonly EvidenceCard[] {
   if (!artifact) {
     return [
-      {label: 'Eligible files', value: 'Pending', detail: 'Pinned public checkout inventory'},
-      {label: 'Symbols', value: 'Pending', detail: 'Searchable declarations and structural nodes'},
-      {label: 'Relationships', value: 'Pending', detail: 'Provenance-bearing graph edges'},
-      {label: 'Graph database', value: 'Pending', detail: 'Final persistent SQLite footprint'},
+      {
+        label: 'Indexed files',
+        value: formatInteger(checkedInPerformanceEvidence.scale.indexedFiles),
+        detail: 'Pinned public IntelliJ checkout',
+      },
+      {
+        label: 'Symbols',
+        value: formatInteger(checkedInPerformanceEvidence.scale.symbols),
+        detail: 'Searchable declarations and structural nodes',
+      },
+      {
+        label: 'Relationships',
+        value: formatInteger(checkedInPerformanceEvidence.scale.relationships),
+        detail: 'Provenance-bearing graph edges',
+      },
+      {
+        label: 'Graph database',
+        value: formatBytes(checkedInPerformanceEvidence.scale.databaseBytes),
+        detail: 'Observed SQLite footprint',
+      },
     ];
   }
   return [
@@ -139,10 +175,26 @@ function scaleCards(artifact: RetainedPerformanceArtifact | undefined): readonly
 function phaseCards(artifact: RetainedPerformanceArtifact | undefined): readonly EvidenceCard[] {
   if (!artifact) {
     return [
-      {label: 'Cold index', value: 'Pending', detail: 'All indexing phases from a clean home'},
-      {label: 'One-file incremental', value: 'Pending', detail: 'A semantic edit over the ready snapshot'},
-      {label: 'Independent rebuild', value: 'Pending', detail: 'Fresh graph of the identical overlay'},
-      {label: 'Graph queries', value: 'Pending', detail: 'Retained p50, p95, and maximum latency'},
+      {
+        label: 'Approx. hot SQL work',
+        value: formatDuration(checkedInPerformanceEvidence.query.hotSearchAndAdjacencyMilliseconds),
+        detail: 'Separately sampled indexed search + adjacency SQL, summed',
+      },
+      {
+        label: 'Exact-current query',
+        value: formatDuration(checkedInPerformanceEvidence.query.exactCurrentCliMilliseconds),
+        detail: 'CLI including Git observation + startup',
+      },
+      {
+        label: 'Whole-graph summary',
+        value: `${checkedInPerformanceEvidence.analysis.persistedSummaryMinimumMilliseconds}–${checkedInPerformanceEvidence.analysis.persistedSummaryMaximumMilliseconds} ms`,
+        detail: 'Persisted analysis read',
+      },
+      {
+        label: 'Lexical index build',
+        value: `${checkedInPerformanceEvidence.lexicalStorage.writeSpeedup.toFixed(1)}× faster`,
+        detail: '100k-symbol write phase vs previous index format · identical results',
+      },
     ];
   }
   return [
@@ -172,31 +224,52 @@ function phaseCards(artifact: RetainedPerformanceArtifact | undefined): readonly
 function ProvenanceCard({artifact}: {artifact: RetainedPerformanceArtifact | undefined}) {
   if (!artifact) {
     return (
-      <aside className="performance-run-card performance-run-card--pending">
+      <aside className="performance-run-card performance-run-card--observed">
         <header>
           <div>
             <span className="status-dot" />
-            <strong>Retained evidence pending</strong>
+            <strong>Checked-in engineering evidence</strong>
           </div>
-          <small>fail closed</small>
+          <small>{checkedInPerformanceEvidence.measuredAt.slice(0, 10)}</small>
         </header>
+        <a
+          href={checkedInPerformanceEvidence.source.repositoryCommitUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Open the pinned ${checkedInPerformanceEvidence.source.repository} repository commit on GitHub`}
+        >
+          <span>Pinned public repository</span>
+          <strong>{checkedInPerformanceEvidence.source.repository}</strong>
+          <code>{checkedInPerformanceEvidence.source.repositoryCommit.slice(0, 16)}…</code>
+        </a>
         <dl>
           <div>
             <dt>Threadnote source</dt>
-            <dd>Exact final HEAD pending</dd>
+            <dd>{checkedInPerformanceEvidence.source.threadnoteCommit.slice(0, 12)}</dd>
           </div>
           <div>
             <dt>Public repository</dt>
-            <dd>Pinned commit pending</dd>
+            <dd>{checkedInPerformanceEvidence.source.repositoryCommit.slice(0, 12)}</dd>
           </div>
           <div>
-            <dt>Artifact</dt>
-            <dd>URL + SHA-256 pending</dd>
+            <dt>Runner</dt>
+            <dd>{checkedInPerformanceEvidence.source.runner}</dd>
           </div>
         </dl>
         <p>
-          The page publishes no provisional result values. Numbers appear only after one complete artifact passes the
-          build-time byte and source binding plus strict controls, parity, storage, query, and Manager validation.
+          Review the checked-in, privacy-reviewed{' '}
+          <a href={checkedInPerformanceEvidence.artifacts.query} target="_blank" rel="noreferrer">
+            query evidence
+          </a>
+          ,{' '}
+          <a href={checkedInPerformanceEvidence.artifacts.analysis} target="_blank" rel="noreferrer">
+            analysis evidence
+          </a>{' '}
+          and{' '}
+          <a href={checkedInPerformanceEvidence.artifacts.lexicalStorage} target="_blank" rel="noreferrer">
+            lexical-storage evidence
+          </a>
+          .
         </p>
       </aside>
     );
@@ -248,6 +321,7 @@ export default function PerformancePage() {
   const metrics = scaleCards(artifact);
   const phases = phaseCards(artifact);
   const surfaces = surfaceCards(artifact);
+  const proofGroups = artifact ? retainedProofGroups : checkedInProofGroups;
 
   return (
     <SiteShell page="performance" fullBleed>
@@ -261,7 +335,7 @@ export default function PerformancePage() {
           </p>
           <div className="performance-hero__actions">
             <a className="button" href="#evidence">
-              Inspect the evidence gate
+              Inspect measured evidence
               <Icon name="arrow" aria-hidden="true" />
             </a>
             <a className="button button--ghost" href={siteHref('docs/#graph-monorepos')}>
@@ -274,7 +348,7 @@ export default function PerformancePage() {
 
       <section className="performance-scale" id="evidence" aria-label="Retained benchmark scale">
         {metrics.map(metric => (
-          <article key={metric.label} className={artifact ? undefined : 'is-pending'}>
+          <article key={metric.label}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
             <small>{metric.detail}</small>
@@ -285,12 +359,13 @@ export default function PerformancePage() {
       <section className="performance-section performance-proof">
         <header className="section-heading section-heading--split">
           <div>
-            <span className="eyebrow">One artifact or no claim</span>
-            <h2>Public, pinned, reproducible evidence.</h2>
+            <span className="eyebrow">Measured with named scope</span>
+            <h2>Public evidence, honest boundaries.</h2>
           </div>
           <p>
-            Final numbers are admitted together—not copied from different runs. Exact source, scale, phase, resource,
-            query, language-control, Manager, and digest evidence must all describe the same clean retained run.
+            The large-repository measurements come from one pinned IntelliJ Community snapshot. Focused optimization
+            measurements use separate checked-in artifacts and are labeled by scope instead of being presented as one
+            universal end-to-end run.
           </p>
         </header>
 
@@ -298,7 +373,7 @@ export default function PerformancePage() {
           {proofGroups.map(group => (
             <article key={group.label}>
               <span className={artifact ? 'performance-check performance-check--passed' : 'performance-check'} />
-              <small>{artifact ? 'verified' : 'pending'}</small>
+              <small>{artifact ? 'verified release run' : 'checked-in observation'}</small>
               <h3>{group.label}</h3>
               <p>{group.body}</p>
             </article>
@@ -316,11 +391,12 @@ export default function PerformancePage() {
           <div>
             {performanceControlLanguages.map(language => {
               const control = artifact?.controls[language];
+              const checkedInControl = checkedInPerformanceEvidence.controls[language];
               return (
                 <article key={language}>
                   <span>{language === 'bazel' ? 'Bazel / Starlark' : language}</span>
-                  <strong>{control ? formatDuration(control.milliseconds) : 'Pending'}</strong>
-                  <small>{control ? control.path : 'Retained control not published yet'}</small>
+                  <strong>{formatDuration(control?.milliseconds ?? checkedInControl.milliseconds)}</strong>
+                  <small>{control?.path ?? `Public IntelliJ MCP query · ${checkedInControl.query}`}</small>
                 </article>
               );
             })}
@@ -329,12 +405,15 @@ export default function PerformancePage() {
 
         <div className="performance-phase-panel">
           <header>
-            <span className="eyebrow">End-to-end evidence</span>
-            <p>Every timing has one named scope. File-rate estimates are never presented as total completion time.</p>
+            <span className="eyebrow">Measured execution paths</span>
+            <p>
+              Every timing has one named scope. Hot SQLite work, exact Git observation, process startup, and browser
+              rendering are not blended into a more flattering number.
+            </p>
           </header>
           <div>
             {phases.map(phase => (
-              <article key={phase.label} className={artifact ? undefined : 'is-pending'}>
+              <article key={phase.label}>
                 <span>{phase.label}</span>
                 <strong>{phase.value}</strong>
                 <small>{phase.detail}</small>
@@ -395,7 +474,12 @@ export default function PerformancePage() {
           <div className="performance-worktrees__base">
             <span>Reusable base</span>
             <strong>Git commit snapshot</strong>
-            <code>{artifact ? artifact.source.repository.commit.slice(0, 12) : 'exact SHA pending'}</code>
+            <code>
+              {(artifact?.source.repository.commit ?? checkedInPerformanceEvidence.source.repositoryCommit).slice(
+                0,
+                12,
+              )}
+            </code>
           </div>
           <div className="performance-worktrees__branches">
             <article>
@@ -445,13 +529,20 @@ export default function PerformancePage() {
         </div>
         <div>
           <p>
-            One pinned public repository on one reviewed runner proves that the complete pipeline works at that shape.
-            It does not promise identical times for every repository, disk, operating system, or machine.
+            One pinned public repository on one reviewed runner shows the observed graph-query and persisted-analysis
+            paths working at that shape. It does not promise identical times for every repository, disk, operating
+            system, or machine.
           </p>
           <p>
-            The strict adapter currently requires {retainedPerformanceArtifactFieldPaths.length} retained fields. If any
-            field is missing, malformed, comes from a different commit, or overlay digests disagree, the page remains
-            explicitly pending.
+            A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length} retained
+            fields and fails closed on malformed or mixed evidence. Until that artifact is available, this page shows
+            narrower checked-in engineering measurements with their exact scope instead of empty cards.
+          </p>
+          <p>
+            The public IntelliJ run covers {formatInteger(checkedInPerformanceEvidence.scale.indexedFiles)} files and
+            polyglot Java, Kotlin, TypeScript, and Bazel controls. The separate 100k-symbol lexical artifact records{' '}
+            {checkedInPerformanceEvidence.lexicalStorage.storageReductionPercent.toFixed(1)}% less allocated storage
+            than Threadnote's previous lexical index format, with canonical, query, and posting-count parity.
           </p>
         </div>
       </section>
