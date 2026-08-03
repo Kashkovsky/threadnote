@@ -918,7 +918,7 @@ describe('code graph release evidence', () => {
         mcpOperationCount: 6,
         oneFileReindexMaterializationMode: 'incremental-overlay',
         oneFileReindexMaterializationStorageMode: 'temporary-staged',
-        releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
+        releaseEvidenceRef: 'refs/tags/v4.0.0-beta.32',
         releaseEvidenceResolvedSha: commit,
         releaseEvidenceSha: commit,
         retrievalMode: 'lexical-only',
