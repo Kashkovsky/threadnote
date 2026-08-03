@@ -81,6 +81,15 @@ describe('code graph build-status properties', () => {
     {fastCheck: {numRuns: 250}},
   );
 
+  it('round-trips a bounded repository display name without accepting local-path control characters', () => {
+    const status = buildStatus('running', true);
+    const named = {...status, identity: {...status.identity, displayName: 'example/repository'}};
+    expect(parseCodeGraphBuildStatus(named)?.identity.displayName).toBe('example/repository');
+    expect(
+      parseCodeGraphBuildStatus({...named, identity: {...named.identity, displayName: 'example\nrepository'}}),
+    ).toBeUndefined();
+  });
+
   it.prop(
     'never throws while validating arbitrary JSON values and only returns bounded schema-v1 records',
     {value: FC.jsonValue()},

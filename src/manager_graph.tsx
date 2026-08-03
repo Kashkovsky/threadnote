@@ -151,8 +151,12 @@ export interface GraphBuildStatus {
   readonly identity: {
     readonly checkoutId: string;
     readonly commit: string;
+    readonly displayName?: string;
     readonly repositoryId: string;
     readonly worktreeId: string;
+  };
+  readonly managerContext?: {
+    readonly worktreePath: string;
   };
   readonly observation: {
     readonly heartbeatAgeMilliseconds: number;
@@ -297,8 +301,51 @@ interface GraphMaterializationStorage {
   readonly temporaryDatabaseHighWaterBytes: number;
 }
 
+export function graphBuildIsActive(build: GraphBuildStatus): boolean {
+  return (
+    (build.state === 'queued' || build.state === 'running') &&
+    build.observation.liveness === 'active' &&
+    build.coordination?.role !== 'history'
+  );
+}
+
+export function graphBuildShouldDisplay(build: GraphBuildStatus): boolean {
+  return build.state === 'failed' || graphBuildIsActive(build);
+}
+
+export interface GraphBuildTarget {
+  readonly repositoryLabel: string;
+  readonly worktreeLabel: string;
+}
+
+export function graphBuildTarget(
+  build: GraphBuildStatus,
+  repositories: readonly GraphRepositoryGroup[],
+): GraphBuildTarget {
+  const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
+  const view = repository?.views.find(
+    candidate =>
+      candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+  );
+  const fallbackName = build.identity.displayName?.trim();
+  const repositoryLabel = repository
+    ? graphRepositoryOptionLabel(repository, repositories)
+    : fallbackName
+      ? `${fallbackName} · repository ${shortGraphIdentity(build.identity.repositoryId)}`
+      : `Repository ${shortGraphIdentity(build.identity.repositoryId)}`;
+  return {
+    repositoryLabel,
+    worktreeLabel:
+      build.managerContext?.worktreePath ??
+      view?.label ??
+      `Checkout ${shortGraphIdentity(build.identity.checkoutId)} · worktree ${shortGraphIdentity(
+        build.identity.worktreeId,
+      )}`,
+  };
+}
+
 export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): number {
-  return builds.some(build => build.state === 'queued' || build.state === 'running') ? 1_000 : 15_000;
+  return builds.some(graphBuildIsActive) ? 1_000 : 15_000;
 }
 
 export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): string | undefined {
@@ -365,6 +412,10 @@ export function graphRepositoryOptionLabel(
     candidate => candidate.id !== repository.id && candidate.displayName === repository.displayName,
   );
   return collides ? `${repository.displayName} · ${repository.id.slice(0, 8)}` : repository.displayName;
+}
+
+function shortGraphIdentity(value: string): string {
+  return value.slice(-8) || 'unknown';
 }
 
 export function mergeGraphRepositoryGroups(
@@ -1171,9 +1222,7 @@ export function GraphWorkspace(props: {
     () => [...new Set(graph?.edges.map(edge => edge.relation) ?? [])].sort(compareCodeUnits),
     [graph],
   );
-  const activeBuilds = (props.catalog?.builds ?? []).filter(
-    build => build.state === 'queued' || build.state === 'running' || build.state === 'failed',
-  );
+  const activeBuilds = (props.catalog?.builds ?? []).filter(graphBuildShouldDisplay);
   const selectedRepositoryIsIndexing = activeBuilds.some(
     build =>
       repository !== undefined &&
@@ -1646,6 +1695,7 @@ export function GraphWorkspace(props: {
               <GraphBuildProgress
                 build={build}
                 key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
+                repositories={repositories}
                 waiterCount={graphWaiterCountForBuild(build, props.catalog?.waiters ?? [])}
               />
             ))}
@@ -3004,6 +3054,7 @@ function NodeInspector(props: {
 
 function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
+  readonly repositories: readonly GraphRepositoryGroup[];
   readonly waiterCount: number;
 }): React.ReactElement {
   const {build} = props;
@@ -3015,17 +3066,29 @@ function GraphBuildProgress(props: {
       : undefined;
   const elapsed = Math.max(0, Date.now() - Date.parse(build.timestamps.startedAt));
   const lastProgress = Math.max(0, Date.now() - Date.parse(build.timestamps.lastProgressAt));
-  const progressSilent = build.coordination?.progressSilent === true || lastProgress > 15_000;
-  const eta = lastProgress <= 15_000 ? build.eta : undefined;
-  const role = build.coordination?.role === 'owner' ? 'Builder' : build.state === 'queued' ? 'Queued' : 'Build';
+  const progressSilent = build.coordination?.progressSilent === true;
+  const eta = progressSilent ? undefined : build.eta;
+  const target = graphBuildTarget(build, props.repositories);
+  const statusLabel =
+    build.state === 'failed'
+      ? 'Indexing failed'
+      : build.state === 'queued'
+        ? 'Waiting to index'
+        : progressSilent
+          ? 'Indexing status is stale'
+          : 'Indexing';
   return (
     <article className={`graph-build-card is-${build.state} is-${build.observation.liveness}`}>
       <header>
-        <strong>
-          {role} · {build.phase}/{build.subphase ?? 'working'}
-        </strong>
-        <span>{formatBuildDuration(elapsed)} elapsed</span>
+        <div className="graph-build-target">
+          <strong>{target.repositoryLabel}</strong>
+          <span title={target.worktreeLabel}>{target.worktreeLabel}</span>
+        </div>
+        <span>Elapsed {formatBuildDuration(elapsed)}</span>
       </header>
+      <p className="graph-build-phase">
+        {statusLabel} · {build.phase}/{build.subphase ?? 'working'} · commit {build.identity.commit}
+      </p>
       {percentage === undefined ? null : (
         <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
           <i style={{width: `${percentage}%`}} />
@@ -3039,15 +3102,19 @@ function GraphBuildProgress(props: {
           : completed === undefined || total === undefined
             ? 'Preparing phase counters'
             : `${completed.toLocaleString()} / ${total.toLocaleString()} ${build.counters.unit ?? 'items'}`}
-        {' · '}last progress {formatBuildDuration(lastProgress)} ago
-        {progressSilent && build.coordination?.role === 'owner'
-          ? ' · progress is silent; lock owner is still alive'
-          : ''}
+        {' · '}last progress change {formatBuildDuration(lastProgress)} ago
       </p>
+      {progressSilent ? (
+        <p className="graph-build-attention">
+          No progress update for {formatBuildDuration(lastProgress)}. Process {build.owner.processId} still owns the
+          build lock, but Manager cannot determine whether its current operation is advancing.
+        </p>
+      ) : null}
       {build.activity ? (
         <p>
-          Current: {build.activity.stage} {build.activity.language} · {formatGraphBytes(build.activity.bytes)} · batch{' '}
-          {build.activity.batchCompleted.toLocaleString()}/{build.activity.batchTotal.toLocaleString()}
+          Current reported step: {build.activity.stage} {build.activity.language} ·{' '}
+          {formatGraphBytes(build.activity.bytes)} · batch {build.activity.batchCompleted.toLocaleString()}/
+          {build.activity.batchTotal.toLocaleString()}
           {build.activity.parseMilliseconds === undefined
             ? ''
             : ` · parse ${formatGraphMilliseconds(build.activity.parseMilliseconds)}`}
@@ -3059,7 +3126,7 @@ function GraphBuildProgress(props: {
       ) : null}
       {build.materialization?.activity ? (
         <p>
-          Current: {graphMaterializationStageLabel(build.materialization.activity.stage)} · batch{' '}
+          Current reported step: {graphMaterializationStageLabel(build.materialization.activity.stage)} · batch{' '}
           {graphActiveBatchNumber(
             build.materialization.activity.batchCompleted,
             build.materialization.activity.batchTotal,
@@ -3073,7 +3140,7 @@ function GraphBuildProgress(props: {
             ? ''
             : ` · ${formatGraphBytes(build.materialization.activity.factsBytes)} final facts`}
           {graphMaterializationRows(build.materialization.activity.rows)}
-          {' · '}active{' '}
+          {' · '}this step{' '}
           {formatBuildDuration(Math.max(0, Date.now() - Date.parse(build.materialization.activity.startedAt)))}
           {build.materialization.activity.transactionMilliseconds === undefined
             ? ''
@@ -3082,7 +3149,7 @@ function GraphBuildProgress(props: {
       ) : null}
       {build.activation?.activity ? (
         <p>
-          Current: activating · {build.activation.activity.stage.replaceAll('-', ' ')} ·{' '}
+          Current reported step: activating · {build.activation.activity.stage.replaceAll('-', ' ')} ·{' '}
           {build.activation.activity.state}
           {build.activation.activity.rows === undefined
             ? ''
@@ -3209,14 +3276,13 @@ function GraphBuildProgress(props: {
         </p>
       ) : null}
       <footer>
-        <span>PID {build.owner.processId}</span>
+        <span>Process {build.owner.processId}</span>
         {eta && eta.confidence !== 'low' ? (
           <span>
-            Phase ETA {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}
+            Estimated time remaining in this phase: {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}{' '}
+            confidence
             {eta.basis ? ` · ${graphEtaBasisLabel(eta.basis)}` : ''}
           </span>
-        ) : build.eta ? (
-          <span>{progressSilent ? 'Phase ETA paused while progress is silent' : 'Phase ETA stabilizing'}</span>
         ) : null}
         {props.waiterCount > 0 ? <span>{props.waiterCount} waiting process(es)</span> : null}
         {build.error ? <span className="graph-build-error">{build.error.summary}</span> : null}

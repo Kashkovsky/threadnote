@@ -7,6 +7,9 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphBuildIsActive,
+  graphBuildShouldDisplay,
+  graphBuildTarget,
   graphCatalogSearchOptions,
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
@@ -57,6 +60,35 @@ describe('manager graph focus', () => {
     ).not.toThrow();
   });
 
+  it('renders stale live owners with concrete repository, path, and status facts', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const repository = {...repositoryGroup('repository', ['view-a'], 'view-a'), displayName: 'example/repository'};
+    const build = {
+      ...graphBuildStatus('running'),
+      coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
+      managerContext: {worktreePath: '/tmp/jobs/repository-task-17'},
+    };
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [repository], waiterCount: 0, waiters: []},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('example/repository');
+    expect(markup).toContain('/tmp/jobs/repository-task-17');
+    expect(markup).toContain('Indexing status is stale');
+    expect(markup).toContain('Manager cannot determine whether its current operation is advancing.');
+    expect(markup).not.toContain('Phase ETA paused');
+    expect(markup).not.toContain('progress is silent');
+  });
+
   it('uses catalog fallbacks before either a view or continuation exists', () => {
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'projectHasMore', false)).toBe(false);
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'workspaceHasMore', true)).toBe(true);
@@ -83,6 +115,19 @@ describe('manager graph focus', () => {
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(15_000);
+    const abandoned = {
+      ...graphBuildStatus('running'),
+      observation: {heartbeatAgeMilliseconds: 60_000, liveness: 'abandoned' as const},
+    };
+    expect(graphBuildIsActive(abandoned)).toBe(false);
+    expect(graphBuildShouldDisplay(abandoned)).toBe(false);
+    expect(graphStatusPollDelay([abandoned])).toBe(15_000);
+    const staleOwner = {
+      ...graphBuildStatus('running'),
+      coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
+    };
+    expect(graphBuildIsActive(staleOwner)).toBe(true);
+    expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
   });
 
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {
@@ -181,6 +226,36 @@ describe('manager graph focus', () => {
     const second = {...repositoryGroup('22222222-logical', ['view-b'], 'view-b'), displayName: 'mobile-native'};
     expect(graphRepositoryOptionLabel(first, [first, second])).toBe('mobile-native · 11111111');
     expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · 22222222');
+  });
+
+  it('labels build banners with their global repository and live worktree path', () => {
+    const repository = repositoryGroup('repo-a', ['view-a'], 'view-a');
+    const build = {
+      ...graphBuildStatus('running'),
+      identity: {
+        ...graphBuildStatus('running').identity,
+        checkoutId: 'view-a',
+        displayName: 'example/repo-a',
+        repositoryId: 'repo-a',
+        worktreeId: 'view-a',
+      },
+      managerContext: {worktreePath: '/tmp/jobs/repo-a-task-17'},
+    };
+    expect(graphBuildTarget(build, [repository])).toEqual({
+      repositoryLabel: 'repo-a',
+      worktreeLabel: '/tmp/jobs/repo-a-task-17',
+    });
+    expect(graphBuildTarget({...build, managerContext: undefined}, [repository])).toEqual({
+      repositoryLabel: 'repo-a',
+      worktreeLabel: 'view-a',
+    });
+    const {managerContext: _managerContext, ...buildWithoutContext} = build;
+    expect(
+      graphBuildTarget({...buildWithoutContext, identity: {...build.identity, repositoryId: 'missing'}}, []),
+    ).toEqual({
+      repositoryLabel: 'example/repo-a · repository missing',
+      worktreeLabel: 'Checkout view-a · worktree view-a',
+    });
   });
 
   it('rejects an analysis response after its repository, snapshot, or request generation changes', () => {
