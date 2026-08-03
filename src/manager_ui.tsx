@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   GraphWorkspace,
+  graphBuildIsActive,
   graphCompletedBuildResultIdentity,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
@@ -229,7 +230,7 @@ function App(): React.ReactElement {
       try {
         const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>('/api/graphs/status');
         if (cancelled) return;
-        const active = status.builds.some(build => build.state === 'queued' || build.state === 'running');
+        const active = status.builds.some(graphBuildIsActive);
         const refreshCatalog =
           (observedActiveBuild && !active) ||
           graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults);

@@ -94,6 +94,7 @@ export interface CodeGraphBuildStatus {
   readonly identity: {
     readonly checkoutId: string;
     readonly commit: string;
+    readonly displayName?: string;
     readonly repositoryId: string;
     readonly worktreeId: string;
   };
@@ -137,6 +138,10 @@ export interface ObservedCodeGraphBuildStatus extends CodeGraphBuildStatus {
     readonly progressSilent?: boolean;
     readonly role: 'history' | 'owner' | 'waiter';
   };
+  /** Local-only Manager context. Never written into the privacy-safe build status document. */
+  readonly managerContext?: {
+    readonly worktreePath: string;
+  };
   readonly observation: {
     readonly heartbeatAgeMilliseconds: number;
     readonly liveness: CodeGraphBuildLiveness;
@@ -174,6 +179,8 @@ interface ProcessObservation {
 const STATUS_DIRECTORY = 'build-status';
 const STATUS_FILE_BYTES_LIMIT = 64 * 1_024;
 const STATUS_HISTORY_PER_WORKTREE = 8;
+const MANAGER_CONTEXT_FILE_BYTES_LIMIT = 8 * 1_024;
+const MANAGER_CONTEXT_SCHEMA_VERSION = 1 as const;
 const HASH_ID = /^[0-9a-f]{64}$/;
 const BUILD_ID = /^[0-9a-f-]{16,64}$/;
 const COMMIT_ID = /^[0-9a-f]{7,64}$/;
@@ -213,6 +220,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       identity: {
         checkoutId: identity.checkoutId,
         commit: identity.headCommit.slice(0, 12),
+        displayName: boundedText(identity.displayName, 256),
         repositoryId: identity.repositoryId,
         worktreeId: identity.worktreeId,
       },
@@ -264,6 +272,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       .pipe(Effect.catch(() => Effect.void));
 
   yield* persist(current => current, true);
+  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot).pipe(Effect.catch(() => Effect.void));
 
   const complete = (snapshot: CodeGraphSnapshot, reusedFiles: number, skippedFiles: number) =>
     persist((current, now) => {
@@ -306,7 +315,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           },
         },
       };
-    }, true).pipe(Effect.andThen(pruneCodeGraphBuildHistory(fs, path, layout, identity.worktreeId, buildId)));
+    }, true).pipe(
+      Effect.ensuring(removeCodeGraphManagerContext(fs, path, file, buildId)),
+      Effect.andThen(pruneCodeGraphBuildHistory(fs, path, layout, identity.worktreeId, buildId)),
+    );
 
   return {
     complete: summary => complete(summary.snapshot, summary.reusedFiles, summary.skippedFiles),
@@ -338,7 +350,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             },
           },
         };
-      }, true).pipe(Effect.andThen(pruneCodeGraphBuildHistory(fs, path, layout, identity.worktreeId, buildId))),
+      }, true).pipe(
+        Effect.ensuring(removeCodeGraphManagerContext(fs, path, file, buildId)),
+        Effect.andThen(pruneCodeGraphBuildHistory(fs, path, layout, identity.worktreeId, buildId)),
+      ),
     heartbeat: Effect.gen(function* () {
       while (true) {
         yield* Effect.sleep(CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS);
@@ -406,6 +421,7 @@ export const readAllCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.re
     checkoutId =>
       readBuildStatusesBelow(fs, path, path.join(root, checkoutId, STATUS_DIRECTORY)).pipe(
         Effect.flatMap(statuses => annotateBuildCoordinationByWorktree(fs, path, threadnoteHome, checkoutId, statuses)),
+        Effect.flatMap(statuses => attachCodeGraphManagerContexts(fs, path, root, checkoutId, statuses)),
       ),
     {concurrency: 8},
   );
@@ -680,6 +696,92 @@ function writeCodeGraphBuildStatus(
   });
 }
 
+function codeGraphManagerContextPath(path: Path.Path, statusFile: string, buildId: string): string {
+  return path.join(path.dirname(statusFile), `${buildId}.manager-context`);
+}
+
+function writeCodeGraphManagerContext(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  statusFile: string,
+  buildId: string,
+  worktreePath: string,
+) {
+  return Effect.gen(function* () {
+    if (!isText(worktreePath, 4_096)) return;
+    const file = codeGraphManagerContextPath(path, statusFile, buildId);
+    if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') return;
+    const temporary = path.join(path.dirname(file), `.${buildId}.manager-context.tmp`);
+    const content = `${JSON.stringify({buildId, schemaVersion: MANAGER_CONTEXT_SCHEMA_VERSION, worktreePath})}\n`;
+    if (new TextEncoder().encode(content).byteLength > MANAGER_CONTEXT_FILE_BYTES_LIMIT) return;
+    yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
+    yield* fs
+      .rename(temporary, file)
+      .pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  });
+}
+
+function removeCodeGraphManagerContext(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  statusFile: string,
+  buildId: string,
+) {
+  return fs
+    .remove(codeGraphManagerContextPath(path, statusFile, buildId), {force: true})
+    .pipe(Effect.catch(() => Effect.void));
+}
+
+function attachCodeGraphManagerContexts(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoriesRoot: string,
+  checkoutId: string,
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+) {
+  return Effect.forEach(
+    statuses,
+    status => {
+      const statusFile = path.join(
+        repositoriesRoot,
+        checkoutId,
+        STATUS_DIRECTORY,
+        status.identity.worktreeId,
+        `${status.buildId}.json`,
+      );
+      const contextFile = codeGraphManagerContextPath(path, statusFile, status.buildId);
+      if (status.state === 'completed' || status.state === 'failed' || status.observation.liveness === 'abandoned') {
+        return fs.remove(contextFile, {force: true}).pipe(
+          Effect.catch(() => Effect.void),
+          Effect.as(status),
+        );
+      }
+      return readCodeGraphManagerContext(fs, contextFile, status.buildId).pipe(
+        Effect.map(context => (context ? {...status, managerContext: context} : status)),
+      );
+    },
+    {concurrency: 8},
+  );
+}
+
+function readCodeGraphManagerContext(fs: FileSystem.FileSystem, file: string, buildId: string) {
+  return Effect.gen(function* () {
+    if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') return undefined;
+    const info = yield* fs.stat(file);
+    if (info.type !== 'File' || Number(info.size) > MANAGER_CONTEXT_FILE_BYTES_LIMIT) return undefined;
+    const value: unknown = JSON.parse(yield* fs.readFileString(file));
+    if (
+      !isRecord(value) ||
+      value.schemaVersion !== MANAGER_CONTEXT_SCHEMA_VERSION ||
+      value.buildId !== buildId ||
+      !isText(value.worktreePath, 4_096)
+    ) {
+      return undefined;
+    }
+    return {worktreePath: value.worktreePath};
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+}
+
 function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Path, directory: string) {
   return Effect.gen(function* () {
     const parent = path.dirname(directory);
@@ -796,6 +898,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (value.request !== undefined && !request) return undefined;
   const resolution = parseResolution(value.resolution);
   if (value.resolution !== undefined && !resolution) return undefined;
+  const displayName = value.identity.displayName;
+  if (displayName !== undefined && !isText(displayName, 256)) return undefined;
   return {
     ...(activation ? {activation} : {}),
     ...(activity ? {activity} : {}),
@@ -806,6 +910,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     identity: {
       checkoutId: value.identity.checkoutId,
       commit: value.identity.commit,
+      ...(displayName ? {displayName} : {}),
       repositoryId: value.identity.repositoryId,
       worktreeId: value.identity.worktreeId,
     },
@@ -1413,7 +1518,9 @@ function pruneCodeGraphBuildHistory(
     const directory = path.dirname(codeGraphBuildStatusPath(path, layout, worktreeId, currentBuildId));
     if (!(yield* regularDirectory(fs, directory))) return;
     const candidates = yield* Effect.forEach(
-      (yield* fs.readDirectory(directory)).filter(name => name.endsWith('.json')),
+      (yield* fs.readDirectory(directory)).filter(
+        name => name.endsWith('.json') && BUILD_ID.test(name.slice(0, -'.json'.length)),
+      ),
       name =>
         Effect.gen(function* () {
           const file = path.join(directory, name);
@@ -1426,10 +1533,17 @@ function pruneCodeGraphBuildHistory(
       .flatMap(candidate => (candidate._tag === 'Some' ? [candidate.value] : []))
       .sort((left, right) => right.modifiedAt - left.modifiedAt)
       .slice(STATUS_HISTORY_PER_WORKTREE);
-    yield* Effect.forEach(removable, candidate => fs.remove(candidate.file, {force: true}), {
-      concurrency: 1,
-      discard: true,
-    });
+    yield* Effect.forEach(
+      removable,
+      candidate => {
+        const buildId = path.basename(candidate.file).slice(0, -'.json'.length);
+        return Effect.all(
+          [fs.remove(candidate.file, {force: true}), removeCodeGraphManagerContext(fs, path, candidate.file, buildId)],
+          {concurrency: 2, discard: true},
+        );
+      },
+      {concurrency: 1, discard: true},
+    );
   }).pipe(Effect.catch(() => Effect.void));
 }
 

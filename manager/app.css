@@ -967,12 +967,38 @@ dd {
   font-size: 11px;
 }
 
+.graph-build-target {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.graph-build-target > span {
+  max-width: min(920px, 78vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .graph-build-card > header span,
 .graph-build-card > footer span,
 .graph-build-card > p {
   color: var(--muted);
   font-size: 10px;
   margin: 0;
+}
+
+.graph-build-phase {
+  color: var(--text) !important;
+  font-weight: 650;
+}
+
+.graph-build-attention {
+  background: rgba(247, 213, 107, 0.08);
+  border: 1px solid rgba(247, 213, 107, 0.28);
+  border-radius: 8px;
+  color: #f7d56b !important;
+  padding: 7px 9px;
 }
 
 .graph-build-meter {
