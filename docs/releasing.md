@@ -21,7 +21,7 @@ CI bytecode-compiles the exact standalone entrypoint for all eight Bun base targ
 - Linux arm64 and x64 with musl
 - Windows arm64 and x64
 
-The current beta publishes four archives: macOS and glibc Linux for arm64 and x64. The two musl executables and both
+Threadnote 4 publishes four archives: macOS and glibc Linux for arm64 and x64. The two musl executables and both
 Windows executables remain compile gates only. Musl lacks a distinct compatible bundled local-inference payload, and
 Windows publication is disabled until Authenticode signing is approved and verified. Every enabled native release
 runner installs the core GGUF model and produces a real embedding with its exact `dist/` payload before signing or
@@ -43,7 +43,7 @@ Only then does it create the release archive and checksum. `spctl` app assessmen
 standalone command-line executable rather than an application bundle.
 
 The dormant Windows release jobs retain the previous native build and Azure signing implementation for future work,
-but both jobs are hard-disabled and are not publication dependencies. No Windows 4 beta archive is created. Re-enabling
+but both jobs are hard-disabled and are not publication dependencies. No Windows 4 archive is created. Re-enabling
 Windows requires an approved Authenticode provider, a reviewed ownership policy for bundled upstream `.dll` and `.node`
 files, and clean-machine x64 and arm64 verification. Linux artifacts are protected by the immutable GitHub release and
 checksums but are not OS code-signed.
@@ -54,9 +54,8 @@ checksums but are not OS code-signed.
    user-visible value rather than implementation history, include concrete commands when useful, and do not add a
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
-3. For final 4.0 signoff, manually dispatch **Platform benchmarks** on the exact release source commit with
-   `include_production_large` enabled and review the retained `code-graph-production-large-n1` artifact. This is also
-   available for a beta/RC when performance needs pre-publication review; it is deliberately not a mandatory PR job.
+3. For final 4.0 signoff, review the exact-tag `code-graph-production-large-n1` artifact produced by the publishing
+   workflow. Do not dispatch a duplicate production-large run for the same tag.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.0-beta.9`.
@@ -97,12 +96,12 @@ tag for a signing test. The disabled Windows jobs remain skipped for both manual
 ## Moving users from Threadnote 3
 
 Do not publish an npm transition package. Threadnote 3 discovers updates through npm and cannot cross the standalone
-runtime boundary with `threadnote update`. Existing macOS and Linux users install the beta fresh with
-`scripts/install.sh --beta` and verify the new launcher with `threadnote doctor`. The installer identifies and removes
+runtime boundary with `threadnote update`. Existing macOS and Linux users install v4 fresh with `scripts/install.sh`
+and verify the new launcher with `threadnote doctor`. The installer identifies and removes
 verified global npm-distributed Threadnote packages, including early Node-based 4.0 betas, and Threadnote-owned
 OpenViking tool installations before writing the standalone launcher; it preserves `~/.openviking` for migration and
 rollback. The streamed form is
-`curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta`. Once v4
+`curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh`. Once v4
 is installed, `threadnote update` handles later stable and beta 4.x releases directly from immutable GitHub Releases.
 The PowerShell bootstrap also accepts `-Beta`, ready for use after Windows publishing is re-enabled.
 
@@ -120,7 +119,7 @@ macOS:
 The workflow selects the single valid Developer ID Application identity imported from the PKCS#12 file and signs by
 its certificate fingerprint. An identity-name secret is not required.
 
-Deferred Windows configuration, not required for the current beta:
+Deferred Windows configuration, not required for the current release line:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`

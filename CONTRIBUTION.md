@@ -34,8 +34,8 @@ Test fixtures must use synthetic data.
 
 ## Architecture expectations
 
-Threadnote uses Effect 4 beta for infrastructure and orchestration. See [`docs/effect.md`](./docs/effect.md) before
-changing the CLI, lifecycle, manager, MCP, command execution, HTTP, retry, or AI code.
+Threadnote uses Effect 4 beta for infrastructure and orchestration. Preserve the capability, lifecycle, and runtime
+boundaries below when changing the CLI, lifecycle, manager, MCP, command execution, HTTP, retry, or AI code.
 
 Keep these invariants intact:
 
@@ -123,7 +123,7 @@ Keep tool names and the default core toolset compact and backward-compatible. Wh
 - preserve documented aliases when removing them would break existing agents;
 - test emitted JSON Schema and runtime rejection;
 - test the built native MCP server over stdio when the parameter affects runtime behavior;
-- consider the context cost before adding a tool to the six-tool core surface.
+- consider the context cost before adding a tool to the focused core surface.
 
 ## Documentation and generated output
 

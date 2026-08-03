@@ -14,3 +14,11 @@ CLAUDE.md
 .claude/settings.json
 .codex/hooks.json
 .context
+
+# Internal design records are preserved as shared Threadnote durable memories.
+docs/4.0-plan.md
+docs/**/architecture.md
+docs/**/*-architecture.md
+docs/effect.md
+docs/**/*-implementation-plan.md
+docs/**/adr/

@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1))) -Beta
 ```
 
-The PowerShell beta path is available for testing but no official Windows 4 beta asset is published until Authenticode
+The PowerShell installer path is available for testing but no official Windows 4 asset is published until Authenticode
 signing is re-enabled.
 
 ## Start and stop do not launch a service

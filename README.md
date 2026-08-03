@@ -97,7 +97,7 @@ threadnote mcp-install codex --apply
 ```
 
 The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept
-only immutable GitHub releases and SHA-256 verify archives before atomic promotion. Current Threadnote 4 betas publish
+only immutable GitHub releases and SHA-256 verify archives before atomic promotion. Threadnote 4 releases currently publish
 Developer ID signed and notarized macOS builds plus checksum-verified Linux builds. Windows 4 publishing is temporarily
 disabled until Authenticode signing is approved and verified; Threadnote will not ship an unsigned official Windows
 archive.
@@ -381,11 +381,10 @@ services and adapters.
 
 Contributors need Bun `1.3.14`. Run `bun install --frozen-lockfile`, then `bun run typecheck && bun run test`.
 
-See the [architecture](docs/architecture.md), [Effect boundaries](docs/effect.md),
-[evaluation contract](test/evaluation/README.md), [4.0 plan](docs/4.0-plan.md), [migration](docs/migration.md),
-[Obsidian bridge](docs/obsidian.md), [sharing](docs/share.md), [release signing](docs/releasing.md),
-[website guide](docs/website.md), [troubleshooting](docs/troubleshooting.md), and
-[contribution guide](CONTRIBUTION.md).
+See the [contribution guide](CONTRIBUTION.md), [evaluation contract](test/evaluation/README.md),
+[migration guide](docs/migration.md), [Obsidian bridge](docs/obsidian.md), [sharing guide](docs/share.md),
+[release signing guide](docs/releasing.md), [website guide](docs/website.md), and
+[troubleshooting guide](docs/troubleshooting.md).
 
 ## License
 
