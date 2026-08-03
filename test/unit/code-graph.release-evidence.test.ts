@@ -1075,9 +1075,7 @@ describe('code graph release evidence', () => {
       release_sha: '${{ github.sha }}',
     });
     expect(publish.jobs['publish-beta']?.if).not.toContain('needs.production-large-evidence');
-    expect(publish.jobs['publish-evidence-gated']?.if).toContain(
-      "needs.production-large-evidence.result == 'success'",
-    );
+    expect(publish.jobs['publish-evidence-gated']?.if).toContain("needs.production-large-evidence.result == 'success'");
 
     const production = evidence.jobs['code-graph-production-large']!;
     const checkout = production.steps?.find(step => step.uses === 'actions/checkout@v7');
