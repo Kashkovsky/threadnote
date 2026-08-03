@@ -3,9 +3,7 @@ name: Retain bounded production-large release evidence
 on:
   push:
     tags:
-      - 'v4.0.0-beta.*'
-      - 'v4.0.0-rc.*'
-      - 'v4.0.0'
+      - 'v4.*'
 
 permissions:
   contents: read
