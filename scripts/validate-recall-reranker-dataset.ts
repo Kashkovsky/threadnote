@@ -1,0 +1,104 @@
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Console, Effect, FileSystem, Layer, Path} from 'effect';
+import {SystemInfo} from '../src/effect/system.js';
+import {
+  createRecallEvaluationFixtureV2,
+  serializeRecallEvaluationFixtureV2Identity,
+} from '../src/evaluation/recall-fixture.js';
+import {sha256HexSync} from '../src/crypto/sha256.js';
+import {atomicWrite, scriptArguments} from './effect/script.js';
+import {
+  createRecallRerankerValidationReceiptV1,
+  parseRecallRerankerDatasetManifestV1,
+  parseRecallRerankerDatasetV1,
+  parseRecallRerankerValidationPolicyV1,
+  recallRerankerForbiddenTextsHashV1,
+} from './training/recall-reranker-contract.js';
+
+const program = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const args = yield* scriptArguments();
+  if (args.includes('--help') || args.includes('-h')) {
+    yield* Console.log(
+      'Usage: bun run train:reranker:validate -- [--dataset <dataset-directory>]\n' +
+        'Validates the dataset and emits a content-bound validation receipt.',
+    );
+    return;
+  }
+  const options = parseArguments(args, path.resolve);
+  const manifestPath = path.join(options.dataset, 'manifest.json');
+  const manifestContent = yield* fs.readFileString(manifestPath);
+  const manifestValue = parseJson(manifestContent, manifestPath);
+  const manifest = parseRecallRerankerDatasetManifestV1(manifestValue);
+  const groupPath = path.join(options.dataset, manifest.groupFile);
+  const groupContent = yield* fs.readFileString(groupPath);
+  const policyPath = path.resolve('training/recall-reranker/validation-policy-v1.json');
+  const policyContent = yield* fs.readFileString(policyPath);
+  const policy = parseRecallRerankerValidationPolicyV1(parseJson(policyContent, policyPath));
+  const evaluationFixture = createRecallEvaluationFixtureV2();
+  const evaluationHash = sha256HexSync(serializeRecallEvaluationFixtureV2Identity(evaluationFixture));
+  const forbiddenTexts = [
+    ...evaluationFixture.documents.map(document => document.text),
+    ...evaluationFixture.queries.map(query => query.query),
+  ];
+  const forbiddenTextsHash = recallRerankerForbiddenTextsHashV1(forbiddenTexts);
+  if (
+    policy.reservedEvaluation.name !== evaluationFixture.metadata.name ||
+    policy.reservedEvaluation.sha256 !== evaluationHash ||
+    policy.forbiddenTextsSha256 !== forbiddenTextsHash
+  ) {
+    return yield* Effect.fail(
+      new Error('Recall reranker validation policy does not match the current frozen recall evaluation fixture.'),
+    );
+  }
+  if (
+    !manifest.reservedEvaluations.some(
+      candidate => candidate.name === policy.reservedEvaluation.name && candidate.sha256 === evaluationHash,
+    )
+  ) {
+    return yield* Effect.fail(new Error('Dataset manifest does not reserve the current recall evaluation fixture.'));
+  }
+  const dataset = parseRecallRerankerDatasetV1(manifestValue, groupContent, {
+    forbiddenTexts,
+  });
+  const receipt = createRecallRerankerValidationReceiptV1({dataset, manifestContent, policy, policyContent});
+  const receiptPath = path.join(options.dataset, policy.receiptFile);
+  yield* atomicWrite(receiptPath, `${JSON.stringify(receipt, undefined, 2)}\n`);
+  yield* Console.log(
+    `Validated ${dataset.manifest.name}: ${dataset.manifest.counts.groups} groups, ` +
+      `${dataset.manifest.counts.candidates} candidates, SHA-256 ${dataset.manifest.groupsSha256}.`,
+  );
+  yield* Console.log(`Validation receipt: ${receiptPath}`);
+});
+
+function parseJson(content: string, source: string): unknown {
+  try {
+    return JSON.parse(content) as unknown;
+  } catch (cause) {
+    throw new Error(`Could not parse JSON file: ${source}`, {cause});
+  }
+}
+
+interface Options {
+  readonly dataset: string;
+}
+
+function parseArguments(args: readonly string[], resolve: (value: string) => string): Options {
+  let dataset = resolve('.artifacts/training/recall-reranker/datasets/smoke-v1');
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === '--dataset') dataset = resolve(required(args[++index], argument));
+    else throw new Error(`Unknown recall reranker validation option: ${argument}. Pass --help for usage.`);
+  }
+  return {dataset};
+}
+
+function required(value: string | undefined, option: string): string {
+  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  return value;
+}
+
+const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
+BunRuntime.runMain(program.pipe(Effect.provide(scriptLayer)));

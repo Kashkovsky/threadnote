@@ -154,6 +154,9 @@ function rerankNative(
               contextSize: request.manifest.contextLimit,
               modelId: request.manifest.id,
               modelPath: request.modelPath,
+              ...(request.manifest.architecture === 'modern-bert'
+                ? {rankingTemplate: '[CLS]{{query}}[SEP]{{document}}[SEP]'}
+                : {}),
             }),
             scope,
           ).pipe(Effect.provide(engine));

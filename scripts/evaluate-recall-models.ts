@@ -1,6 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect, Path} from 'effect';
+import {Effect, FileSystem, Path} from 'effect';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
+import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {baselineResult, parseRecallEvaluationBaselineV1} from '../src/evaluation/recall-baseline.js';
 import {
@@ -14,9 +15,10 @@ import {
   type RecallEvaluationQueryScores,
 } from '../src/evaluation/recall.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../src/models/builtin.js';
-import type {LocalModelManifest} from '../src/models/catalog.js';
+import {parseLocalModelManifest, type LocalModelManifest} from '../src/models/catalog.js';
 import {LocalModelStore} from '../src/models/store.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
+import {normalizeRecallRerankerScore} from '../src/recall/reranker-score.js';
 import {normalizeVector} from '../src/search/vector-search.js';
 import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
@@ -31,12 +33,24 @@ const evaluateModels = Effect.gen(function* () {
       new Error(`Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}.`),
     );
   }
-  const manifests = [
-    options.embedding ? manifest(options.embedding, 'embedding') : undefined,
-    options.reranker ? manifest(options.reranker, 'reranker') : undefined,
-  ].filter((value): value is LocalModelManifest => value !== undefined);
+  const embeddingManifest = options.embedding ? builtinManifest(options.embedding, 'embedding') : undefined;
+  const localRerankerManifest = options.rerankerManifest
+    ? parseLocalModelManifest(yield* readJsonFile(options.rerankerManifest))
+    : undefined;
+  if (localRerankerManifest && localRerankerManifest.role !== 'reranker') {
+    return yield* Effect.fail(new Error(`Local model ${localRerankerManifest.id} is not a reranker.`));
+  }
+  const rerankerManifest =
+    localRerankerManifest ?? (options.reranker ? builtinManifest(options.reranker, 'reranker') : undefined);
+  const manifests = [embeddingManifest, rerankerManifest].filter(
+    (value): value is LocalModelManifest => value !== undefined,
+  );
   if (manifests.length === 0) {
-    return yield* Effect.fail(new Error('Pass --embedding <model-id>, --reranker <model-id>, or both.'));
+    return yield* Effect.fail(
+      new Error(
+        'Pass --embedding <model-id>, --reranker <model-id>, or a local --reranker-manifest/--reranker-path pair.',
+      ),
+    );
   }
 
   const evaluationArtifact = yield* Effect.scoped(
@@ -45,6 +59,11 @@ const evaluateModels = Effect.gen(function* () {
       const runtime = yield* LocalModelRuntime;
       const paths = new Map<string, string>();
       for (const candidate of manifests) {
+        if (candidate === localRerankerManifest) {
+          yield* verifyLocalModelArtifact(candidate, options.rerankerPath!);
+          paths.set(candidate.id, options.rerankerPath!);
+          continue;
+        }
         const status = options.install
           ? yield* store.install(options.home, candidate)
           : yield* store.verify(options.home, candidate);
@@ -54,9 +73,9 @@ const evaluateModels = Effect.gen(function* () {
       const documentVectors = options.embedding
         ? yield* runtime.embedMany({
             inputs: fixture.documents.map(
-              document => `${manifest(options.embedding!, 'embedding').promptPrefixes?.document ?? ''}${document.text}`,
+              document => `${embeddingManifest!.promptPrefixes?.document ?? ''}${document.text}`,
             ),
-            manifest: manifest(options.embedding, 'embedding'),
+            manifest: embeddingManifest!,
             modelPath: paths.get(options.embedding)!,
           })
         : undefined;
@@ -64,8 +83,8 @@ const evaluateModels = Effect.gen(function* () {
       const scoresByQuery = new Map<string, RecallEvaluationQueryScores>();
       for (const query of fixture.queries) {
         let semantic: Map<string, number> | undefined;
-        if (options.embedding && normalizedDocuments) {
-          const embedding = manifest(options.embedding, 'embedding');
+        if (embeddingManifest && normalizedDocuments) {
+          const embedding = embeddingManifest;
           const [queryVector] = yield* runtime.embedMany({
             inputs: [`${embedding.promptPrefixes?.query ?? ''}${query.query}`],
             manifest: embedding,
@@ -81,7 +100,7 @@ const evaluateModels = Effect.gen(function* () {
         }
 
         let reranker: Map<string, number> | undefined;
-        if (options.reranker) {
+        if (rerankerManifest) {
           const shortlist = rankRecallCandidates(
             query.query,
             fixture.documents.map(document => ({
@@ -94,7 +113,7 @@ const evaluateModels = Effect.gen(function* () {
               seedUris: query.seedUris,
             },
           ).results.slice(0, 32);
-          const reranking = manifest(options.reranker, 'reranker');
+          const reranking = rerankerManifest;
           const rawScores = yield* runtime.rerank({
             documents: shortlist.map(result => result.candidate.text.slice(0, 4_000)),
             manifest: reranking,
@@ -102,7 +121,10 @@ const evaluateModels = Effect.gen(function* () {
             query: query.query,
           });
           reranker = new Map(
-            shortlist.map((result, index) => [result.candidate.uri, normalizeRerankerScore(rawScores[index] ?? 0)]),
+            shortlist.map((result, index) => [
+              result.candidate.uri,
+              normalizeRecallRerankerScore(rawScores[index] ?? 0),
+            ]),
           );
         }
         scoresByQuery.set(query.id, {reranker, semantic});
@@ -112,7 +134,7 @@ const evaluateModels = Effect.gen(function* () {
       const run = runScoredRecallEvaluationV2(fixture, scoresByQuery, {
         fixtureHash: hash,
         model: modelIds,
-        pipelineName: options.reranker ? 'threadnote-4-native-hybrid-reranked' : 'threadnote-4-native-hybrid',
+        pipelineName: rerankerManifest ? 'threadnote-4-native-hybrid-reranked' : 'threadnote-4-native-hybrid',
         revision: manifests.map(candidate => candidate.revision).join('+'),
       });
       return {
@@ -162,7 +184,7 @@ const evaluateModels = Effect.gen(function* () {
   if (options.failOnRegression && !gate.passed) yield* markFailure();
 });
 
-function manifest(id: string, role: 'embedding' | 'reranker'): LocalModelManifest {
+function builtinManifest(id: string, role: 'embedding' | 'reranker'): LocalModelManifest {
   const candidate = BUILTIN_MODEL_MANIFESTS.find(value => value.id === id);
   if (!candidate || candidate.role !== role) throw new Error(`Unknown ${role} model: ${id}`);
   return candidate;
@@ -174,11 +196,6 @@ function dot(left: readonly number[], right: readonly number[]): number {
   return score;
 }
 
-function normalizeRerankerScore(score: number): number {
-  if (!Number.isFinite(score)) return 0;
-  return score >= 0 && score <= 1 ? score : 1 / (1 + Math.exp(-score));
-}
-
 interface Options {
   readonly baseline: string;
   readonly embedding?: string;
@@ -187,6 +204,8 @@ interface Options {
   readonly install: boolean;
   readonly output?: string;
   readonly reranker?: string;
+  readonly rerankerManifest?: string;
+  readonly rerankerPath?: string;
   readonly summaryOutput?: string;
 }
 
@@ -198,6 +217,8 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   let install = false;
   let output: string | undefined;
   let reranker: string | undefined;
+  let rerankerManifest: string | undefined;
+  let rerankerPath: string | undefined;
   let summaryOutput: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -208,8 +229,16 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
     else if (argument === '--install') install = true;
     else if (argument === '--output') output = required(args[++index], argument);
     else if (argument === '--reranker') reranker = required(args[++index], argument);
+    else if (argument === '--reranker-manifest') rerankerManifest = resolve(required(args[++index], argument));
+    else if (argument === '--reranker-path') rerankerPath = resolve(required(args[++index], argument));
     else if (argument === '--summary-output') summaryOutput = required(args[++index], argument);
     else throw new Error(`Unknown model-evaluation option: ${argument}`);
+  }
+  if ((rerankerManifest === undefined) !== (rerankerPath === undefined)) {
+    throw new Error('--reranker-manifest and --reranker-path must be passed together.');
+  }
+  if (reranker && rerankerManifest) {
+    throw new Error('--reranker cannot be combined with --reranker-manifest.');
   }
   return {
     baseline,
@@ -219,9 +248,27 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
     install,
     output,
     reranker,
+    rerankerManifest,
+    rerankerPath,
     summaryOutput,
   };
 }
+
+const verifyLocalModelArtifact = Effect.fn('evaluateRecallModels.verifyLocalModelArtifact')(function* (
+  manifest: LocalModelManifest,
+  modelPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(modelPath);
+  if (info.type !== 'File') throw new Error(`Local reranker artifact is not a regular file: ${modelPath}`);
+  if (Number(info.size) !== manifest.size) {
+    throw new Error(`Local reranker size ${info.size} does not match manifest size ${manifest.size}.`);
+  }
+  const digest = yield* sha256FileHex(modelPath);
+  if (digest !== manifest.sha256) {
+    throw new Error(`Local reranker SHA-256 ${digest} does not match manifest SHA-256 ${manifest.sha256}.`);
+  }
+});
 
 function required(value: string | undefined, option: string): string {
   if (!value?.trim()) throw new Error(`${option} requires a value.`);

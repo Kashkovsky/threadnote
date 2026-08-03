@@ -15,6 +15,40 @@ import {
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 
 describe('Effect AI native harness', () => {
+  it.effect('uses the reviewed ModernBERT pair template without duplicate separator tokens', () => {
+    let loadOptions: unknown;
+    const engine = Layer.succeed(
+      LlamaCppEngine,
+      LlamaCppEngine.of({
+        diagnostics: {backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4},
+        loadEmbeddingSession: () => Effect.die(new Error('Unexpected embedding model load')),
+        loadGenerationSession: () => Effect.die(new Error('Unexpected generation model load')),
+        loadRankingSession: options =>
+          Effect.sync(() => {
+            loadOptions = options;
+            return {
+              modelId: options.modelId,
+              rank: (_query, documents) => Effect.succeed(documents.map(() => 0.5)),
+            };
+          }),
+      }),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const builtin = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'reranker')!;
+        const manifest = {...builtin, architecture: 'modern-bert'};
+        const runtime = yield* LocalModelRuntime;
+        yield* runtime.rerank({
+          documents: ['document'],
+          manifest,
+          modelPath: '/models/modernbert.gguf',
+          query: 'query',
+        });
+        expect(loadOptions).toEqual(expect.objectContaining({rankingTemplate: '[CLS]{{query}}[SEP]{{document}}[SEP]'}));
+      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+    );
+  });
+
   it('sizes generation context for the request while preserving the model limit for large prompts', () => {
     const manifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
     const small = localGenerationContextSize({

@@ -13,7 +13,9 @@ describe('website and standalone release boundary', () => {
     const buildSource = await readFile(join(root, 'scripts', 'build.ts'), 'utf8');
 
     expect(buildSource).toContain("const RELEASE_DIRECTORIES = ['assets', 'config', 'manager'] as const;");
-    expect(buildSource).toContain("const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;");
+    expect(buildSource).toContain(
+      "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
+    );
   });
 
   it('uses one small-scale graph mark across README, website, and packaged Manager surfaces', async () => {
@@ -109,7 +111,7 @@ describe('website and standalone release boundary', () => {
     expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
     expect(evidenceBuild).toContain('assertPerformanceSourceClean');
     expect(standaloneBuild).toContain(
-      "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;",
+      "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
     );
     expect(standaloneBuild).not.toContain('site-performance-evidence');
   });

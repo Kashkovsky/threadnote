@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "validatorId": "threadnote-recall-reranker-dataset-v1",
+  "receiptFile": "validation-receipt.json",
+  "reservedEvaluation": {
+    "name": "threadnote-recall-v2",
+    "sha256": "3967acf33893251f03126720ebf6fb55f6b6eed62f2c84f768963e9a352e9348"
+  },
+  "forbiddenTextsSha256": "942c118d51ccf7896830d539c1a5f30497c9107ca53a497cfd08ffa6e0562a2c"
+}

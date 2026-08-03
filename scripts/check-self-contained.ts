@@ -39,7 +39,7 @@ const FORBIDDEN_LEGACY_FILES = [
   'scripts/check-node-version.cjs',
   'scripts/local-ai-server.py',
 ] as const;
-const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;
 const ALLOWED_LEGACY_RUNTIME_SOURCES = new Set([
   'src/effect/cli.ts',
   'src/lifecycle.ts',

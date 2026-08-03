@@ -1,0 +1,25 @@
+{
+  "createdAt": "2026-08-03T00:00:00.000Z",
+  "description": "Fictional reviewed examples demonstrating the import contract; replace every record before producing a training corpus.",
+  "generatorRevision": "dataset-preparation-example-v1",
+  "labelMethod": "Each candidate relevance, negative kind, answerability decision, and provenance record was manually reviewed.",
+  "name": "threadnote-reranker-reviewed-example-v1",
+  "partitionStrategy": "Connected fictional organization/repository/product components assigned wholly to train, validation, or test.",
+  "privacyReviewed": true,
+  "purpose": "training_candidate",
+  "seed": 67174400,
+  "sources": [
+    {
+      "id": "threadnote-owned-fictional-examples-v1",
+      "kind": "self_authored_synthetic",
+      "license": "AGPL-3.0-or-later",
+      "licenseUrl": "https://github.com/Kashkovsky/threadnote/blob/main/LICENSE",
+      "privacyBasis": "self_authored",
+      "provenance": "Original fictional examples authored for the reviewed-dataset import template; contains no user, customer, memory, or repository data.",
+      "redistributionApproved": true,
+      "revision": "dataset-preparation-example-v1",
+      "sourceUri": "https://github.com/Kashkovsky/threadnote/blob/main/training/recall-reranker/dataset-tools/groups.example.jsonl",
+      "trainingApproved": true
+    }
+  ]
+}

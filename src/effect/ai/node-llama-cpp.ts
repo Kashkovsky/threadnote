@@ -50,6 +50,7 @@ interface NativeModel {
     readonly contextSize?: number;
     readonly createSignal: AbortSignal;
     readonly ignoreMemorySafetyChecks: false;
+    readonly template?: string;
   }) => Promise<NativeRankingContext>;
   readonly createContext?: (options: {
     readonly contextSize?: number;
@@ -271,6 +272,7 @@ function makeEngine(
                 contextSize: options.contextSize,
                 createSignal: signal,
                 ignoreMemorySafetyChecks: false,
+                ...(options.rankingTemplate === undefined ? {} : {template: options.rankingTemplate}),
               }),
             cause => modelLoadError(options, cause, 'ranking context'),
           ),

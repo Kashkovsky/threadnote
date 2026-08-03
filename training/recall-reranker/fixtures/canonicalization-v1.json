@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "normalization": [
+    {
+      "input": "  Ｔhreadnote　CAFÉ  ",
+      "output": "threadnote café"
+    },
+    {
+      "input": "İSTANBUL\tΣΊΓΜΑ\nПАМ'ЯТЬ",
+      "output": "i̇stanbul σίγμα пам'ять"
+    },
+    {
+      "input": "Straße 🧠 Graph",
+      "output": "straße 🧠 graph"
+    },
+    {
+      "input": " ＡＢＣDéjà vu ",
+      "output": "abc déjà vu"
+    },
+    {
+      "input": "Café",
+      "output": "café"
+    }
+  ],
+  "canonicalGroups": [
+    {
+      "id": "𐀀-origin",
+      "payload": {
+        "𐀀-key": "supplementary",
+        "a-key": "ascii"
+      }
+    },
+    {
+      "id": "alpha",
+      "payload": {
+        "Ω-key": "omega",
+        "é-key": "accent"
+      }
+    },
+    {
+      "id": "-private",
+      "payload": {
+        "-key": "private",
+        "ż-key": "z-dot"
+      }
+    },
+    {
+      "id": "Ωmega",
+      "payload": {
+        "nested": ["Łódź", "Київ", "🧠"]
+      }
+    },
+    {
+      "id": "éclair",
+      "payload": {
+        "label": "Crème brûlée"
+      }
+    },
+    {
+      "id": "żebra",
+      "payload": {
+        "label": "Zażółć gęślą jaźń"
+      }
+    }
+  ],
+  "sortedIds": ["alpha", "éclair", "żebra", "Ωmega", "-private", "𐀀-origin"],
+  "groupsSha256": "efbfbd07be73a8a0b49410a3c71d57bf562ed17aa408a757f1872c5fec7f2a94"
+}

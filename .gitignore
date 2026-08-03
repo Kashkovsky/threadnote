@@ -14,6 +14,10 @@ CLAUDE.md
 .claude/settings.json
 .codex/hooks.json
 .context
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
 
 # Internal design records are preserved as shared Threadnote durable memories.
 docs/4.0-plan.md

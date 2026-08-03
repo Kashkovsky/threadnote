@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "baseModel": {
+    "id": "answerdotai/ModernBERT-base",
+    "revision": "8949b909ec900327062f0ebf497f51aef5e6f0c8",
+    "license": "Apache-2.0",
+    "licenseUrl": "https://huggingface.co/answerdotai/ModernBERT-base",
+    "snapshotSha256": "ea751f494289bf014885cf135459708dc3da116ee551a1387d346205550eff88",
+    "snapshotFiles": [
+      "README.md",
+      "config.json",
+      "model.safetensors",
+      "special_tokens_map.json",
+      "tokenizer.json",
+      "tokenizer_config.json"
+    ]
+  },
+  "runtimeTarget": {
+    "architecture": "modern-bert",
+    "contextLimit": 8192,
+    "documentCharacterLimit": 4000,
+    "nodeLlamaCpp": "3.19.1"
+  },
+  "export": {
+    "llamaCppRevision": "571d0d540df04f25298d0e159e520d9fc62ed121",
+    "llamaCppTag": "b10068",
+    "outType": "f16"
+  },
+  "training": {
+    "batchSize": 4,
+    "epochs": 2,
+    "gradientAccumulationSteps": 4,
+    "learningRate": 0.00002,
+    "maxLength": 1024,
+    "seed": 40000,
+    "warmupRatio": 0.1,
+    "weightDecay": 0.01
+  }
+}

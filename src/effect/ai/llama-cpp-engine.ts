@@ -16,6 +16,7 @@ export interface LocalModelLoadOptions {
   readonly darwinArm64EmbeddingGpuLayers?: number;
   readonly modelId: string;
   readonly modelPath: string;
+  readonly rankingTemplate?: string;
 }
 
 export interface LlamaCppDiagnostics {

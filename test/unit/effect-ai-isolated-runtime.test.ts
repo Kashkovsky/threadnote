@@ -3,6 +3,7 @@ import {Effect, Exit, Layer} from 'effect';
 import {describe} from 'vitest';
 import {
   isolatedLocalModelRuntimeLayer,
+  localModelWorkerSpawnOptions,
   serveWorker,
   type LocalModelWorkerProcess,
   type LocalModelWorkerSpawnOptions,
@@ -21,6 +22,21 @@ const embeddingManifest = {
 const generationManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
 
 describe('isolated local model runtime', () => {
+  it.effect('boots the standalone source worker when called from a Bun development script', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const options = localModelWorkerSpawnOptions({
+        ...system,
+        executablePath: '/runtime/bun',
+        processArguments: ['/runtime/bun', '/checkout/scripts/evaluate-recall-models.ts'],
+      });
+
+      expect(options.executable).toBe('/runtime/bun');
+      expect(options.arguments.at(-1)).toBe('--threadnote-local-model-worker');
+      expect(options.arguments.at(-2)?.replaceAll('\\', '/')).toMatch(/\/src\/standalone\.ts$/);
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
+
   it.effect('contains repeated fatal generation-child crashes as a typed failure', () => {
     const fatalWorker = fatalLocalModelWorkerHarness();
 

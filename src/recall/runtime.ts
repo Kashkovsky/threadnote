@@ -14,6 +14,7 @@ import {
   recallUriMatchesScopes,
 } from './index.js';
 import type {RecallCandidate} from './rank.js';
+import {normalizeRecallRerankerScore} from './reranker-score.js';
 import {
   ensureVectorIndex,
   rebuildVectorIndex,
@@ -413,7 +414,7 @@ const applySelectedNativeReranker = Effect.fn('recall.applySelectedNativeReranke
   }
   const scoresByKey = cache?.scores ?? new Map<string, number>();
   for (const [index, candidate] of missing.entries()) {
-    scoresByKey.set(rerankerCacheKey(candidate), normalizeRerankerScore(scores[index] ?? 0));
+    scoresByKey.set(rerankerCacheKey(candidate), normalizeRecallRerankerScore(scores[index] ?? 0));
   }
   return applyCachedRerankerScores(candidates, {scores: scoresByKey, unavailable: false});
 });
@@ -431,11 +432,6 @@ function applyCachedRerankerScores(
 
 function rerankerCacheKey(candidate: RecallCandidate): string {
   return `${candidate.uri}\u0000${candidate.text}`;
-}
-
-function normalizeRerankerScore(score: number): number {
-  if (!Number.isFinite(score)) return 0;
-  return score >= 0 && score <= 1 ? score : 1 / (1 + Math.exp(-score));
 }
 
 export function buildRecallSelectionCandidates(

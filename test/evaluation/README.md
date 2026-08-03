@@ -247,7 +247,8 @@ returning no answer cannot silently change the other's answer contract.
 - relevance grades from 0 through 3;
 - explicit no-answer queries, forbidden URIs, authority pairs, expected stages, and required explanation codes;
 - reviewed provenance and language on every document and query;
-- every required category represented, including separately reported Polish, Ukrainian, and Spanish queries;
+- every required category represented; the frozen v2 multilingual rotation currently yields Spanish only, so Polish
+  and Ukrainian coverage requires a versioned replacement fixture rather than a silent baseline mutation;
 - no semantic scores embedded in the fixture.
 
 `expandRecallEvaluationFixtureV2()` deterministically grows the same corpus to 1,000, 10,000, or 100,000 documents.
@@ -257,6 +258,18 @@ false`; they must never be added to relevance judgments.
 Fixture identity normalizes the 4.0 `threadnote://` namespace rename back to the frozen 3.0.3 representation before
 hashing. This keeps stored baselines and measured model candidates comparable when only the URI scheme changed; corpus,
 query, or judgment changes still produce a different hash.
+
+## Training boundary
+
+The recall-v2 fixture, its expansions, and all checked baselines are evaluation-only. They are intentionally imbalanced
+and do not constitute model-training data. The development-only harness under `training/recall-reranker/` uses a
+separate versioned query-group contract, records immutable source/license/privacy provenance, partitions before rows,
+and rejects exact overlap with this fixture. Its checked smoke generator is only a wiring test; it cannot support model
+quality or release claims.
+
+Candidate GGUF files are evaluated through this same frozen contract by passing `--reranker-manifest` and
+`--reranker-path` to `bun run eval:recall:models`. The evaluator verifies the local file's size and SHA-256, parses the
+normal production model manifest, invokes `LocalModelRuntime.rerank`, and applies the existing non-inferiority gate.
 
 To add a scenario, add one hand-reviewed entry to `SCENARIOS`. Each entry creates eight documents and ten query
 contracts. If a new behavior does not fit that shape, add an explicit document/query builder and preserve the minimum

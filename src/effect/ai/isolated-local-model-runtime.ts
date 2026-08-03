@@ -366,7 +366,7 @@ class LocalModelWorkerPool {
 
   private async spawnConnection(operation: WorkerOperation): Promise<LocalModelWorkerConnection> {
     try {
-      const process = await this.spawnWorker(workerSpawnOptions(this.system));
+      const process = await this.spawnWorker(localModelWorkerSpawnOptions(this.system));
       const connection = new LocalModelWorkerConnection(process, this.maxStderrBytes, this.responseLimitBytes);
       if (this.closed) {
         await connection.close();
@@ -629,7 +629,7 @@ function spawnBunWorker(options: LocalModelWorkerSpawnOptions): LocalModelWorker
   };
 }
 
-function workerSpawnOptions(system: SystemInfoShape): LocalModelWorkerSpawnOptions {
+export function localModelWorkerSpawnOptions(system: SystemInfoShape): LocalModelWorkerSpawnOptions {
   const script = developmentStandaloneScript(system);
   return {
     arguments: [...Option.toArray(script), LOCAL_MODEL_WORKER_ARGUMENT],
@@ -652,7 +652,11 @@ function developmentStandaloneScript(system: SystemInfoShape): Option.Option<str
   ) {
     return Option.some(candidate);
   }
-  return Option.none();
+  // Evaluation and development scripts use ApplicationLayer without running
+  // through standalone.ts themselves. Point Bun at the source entrypoint so
+  // the isolated worker receives the worker argument instead of Bun treating
+  // it as an unknown top-level command and printing help on protocol stdout.
+  return Option.some(Bun.fileURLToPath(new URL('../../standalone.ts', import.meta.url)));
 }
 
 async function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Promise<WorkerResponse> {

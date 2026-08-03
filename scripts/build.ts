@@ -11,7 +11,7 @@ interface PackageManifest {
 
 const ROOT_URL = new URL('..', import.meta.url);
 const RELEASE_DIRECTORIES = ['assets', 'config', 'manager'] as const;
-const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'website', 'site-dist'] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
 const OPTIONAL_NATIVE_PACKAGE = /^@node-llama-cpp\//;

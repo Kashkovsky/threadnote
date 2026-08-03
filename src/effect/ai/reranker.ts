@@ -16,6 +16,7 @@ export interface LlamaRerankerLayerOptions {
   readonly contextSize?: number;
   readonly modelId: string;
   readonly modelPath: string;
+  readonly rankingTemplate?: string;
 }
 
 export const llamaRerankerLayer = (options: LlamaRerankerLayerOptions) =>
