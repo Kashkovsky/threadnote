@@ -3365,7 +3365,6 @@ interface CompletedBuildRows {
 }
 
 interface PersistentGraphEvidence {
-  readonly digest: string;
   readonly distinctFiles: number;
   readonly edges: number;
   readonly files: number;
@@ -3376,13 +3375,13 @@ function persistentGraphEvidence(databasePath: string, snapshotId: string): Pers
   const database = new Database(databasePath, {readonly: true, strict: true});
   const evidence = database
     .query(
-      `SELECT receipt.digest,
-         (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = receipt.snapshot_id) AS files,
-         (SELECT COUNT(DISTINCT path) FROM snapshot_files WHERE snapshot_id = receipt.snapshot_id) AS distinctFiles,
-         (SELECT COUNT(*) FROM symbols WHERE snapshot_id = receipt.snapshot_id) AS symbols,
-         (SELECT COUNT(*) FROM edges WHERE snapshot_id = receipt.snapshot_id) AS edges
-       FROM snapshot_analysis_summary_receipts AS receipt
-       WHERE receipt.snapshot_id = ?`,
+      `SELECT
+         (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = snapshot.id) AS files,
+         (SELECT COUNT(DISTINCT path) FROM snapshot_files WHERE snapshot_id = snapshot.id) AS distinctFiles,
+         (SELECT COUNT(*) FROM symbols WHERE snapshot_id = snapshot.id) AS symbols,
+         (SELECT COUNT(*) FROM edges WHERE snapshot_id = snapshot.id) AS edges
+       FROM snapshots AS snapshot
+       WHERE snapshot.id = ?`,
     )
     .get(snapshotId) as PersistentGraphEvidence;
   database.close(false);

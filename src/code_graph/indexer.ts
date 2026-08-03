@@ -33,6 +33,7 @@ import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   CodeGraphStore,
+  materializedShardDerivationIdentity,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
@@ -1534,8 +1535,14 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
 }) {
   const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
+  const shardDerivationIdentity = materializedShardDerivationIdentity(
+    input.building.extractorSet,
+    workspace.fingerprint,
+    reusableBaseFileSetFingerprint(input.inventory.files),
+  );
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
+  let materializedShardFilesReused = 0;
   const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
   const incrementalAssessment =
     input.incrementalAssessment ??
@@ -1602,6 +1609,13 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       input.inventory.files,
       input.languagePacks,
     );
+    const materializedShards = yield* input.store.loadMaterializedFileShards(
+      input.layout.databasePath,
+      input.inventory.files,
+      input.building.extractorSet,
+      shardDerivationIdentity,
+    );
+    const materializedShardSetComplete = materializedShards.facts.size === input.inventory.files.length;
     if (cachedMetadata.files !== input.inventory.files.length) {
       return yield* Effect.fail(
         new Error('Cached code graph facts are incomplete during materialization planning; retry with a full rebuild.'),
@@ -1887,11 +1901,17 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         unit: 'files',
       }) ?? Effect.void;
       const loadingStartedAt = yield* Clock.currentTimeMillis;
-      const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, files, input.languagePacks);
+      const missingShardFiles = materializedShardSetComplete ? [] : files;
+      const cached = yield* loadCachedFacts(
+        input.store,
+        input.layout.databasePath,
+        missingShardFiles,
+        input.languagePacks,
+      );
       const batchLoadingMilliseconds = (yield* Clock.currentTimeMillis) - loadingStartedAt;
       loadingMilliseconds += batchLoadingMilliseconds;
       stageMilliseconds['loading-cache'] = loadingMilliseconds;
-      if (files.some(file => !cached.facts.has(file.path))) {
+      if (missingShardFiles.some(file => !cached.facts.has(file.path))) {
         return yield* Effect.fail(
           new Error('A cached code graph fact disappeared during indexing; retry with a full rebuild.'),
         );
@@ -1913,9 +1933,25 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
-      const facts = attributeFacts(
-        files.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+      const attributedMissingFacts = attributeFacts(
+        missingShardFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
       );
+      if (missingShardFiles.length > 0) {
+        yield* input.store.cacheMaterializedFileShards(
+          input.layout.databasePath,
+          missingShardFiles,
+          attributedMissingFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
+          input.building.extractorSet,
+          shardDerivationIdentity,
+        );
+      }
+      const attributedMissingByPath = new Map(attributedMissingFacts.map(fact => [fact.path, fact]));
+      const facts = files.map(file =>
+        materializedShardSetComplete
+          ? materializedShards.facts.get(file.path)!
+          : attributedMissingByPath.get(file.path)!,
+      );
+      materializedShardFilesReused += files.length - missingShardFiles.length;
       const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
       attributionMilliseconds += batchAttributionMilliseconds;
       stageMilliseconds.attributing = attributionMilliseconds;
@@ -1936,7 +1972,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         const batchFiles = finalFacts.map(fact => filesByPath.get(fact.path)!);
         const batchSourceBytes = batchFiles.reduce((total, file) => total + file.size, 0);
         const batchCachedFactBytes = batchFiles.reduce(
-          (total, file) => total + (cached.bytesByPath.get(file.path) ?? 0),
+          (total, file) => total + (cachedMetadata.bytesByPath.get(file.path) ?? 0),
           0,
         );
         const symbols = uniqueById(finalFacts.flatMap(file => file.symbols));
@@ -2165,6 +2201,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         : incrementalApplied
           ? [`Clean snapshot reused persisted base for ${materializedFiles.toLocaleString()} modified file(s).`]
           : []),
+      ...(materializedShardFilesReused > 0
+        ? [`Reused content-addressed materialized shards for ${materializedShardFilesReused.toLocaleString()} file(s).`]
+        : []),
       ...(analysisSummaryBackfilled ? ['Built the persisted whole-graph analysis summary after promotion.'] : []),
       ...(analysisSummaryFailure
         ? [`Whole-graph analysis summary will be retried lazily: ${analysisSummaryFailure}`]
@@ -2410,6 +2449,17 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
   if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
   }
+  yield* input.store.cacheMaterializedFileShards(
+    input.layout.databasePath,
+    modifiedFiles,
+    currentFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
+    input.candidate.snapshot.extractorSet,
+    materializedShardDerivationIdentity(
+      input.candidate.snapshot.extractorSet,
+      workspace.fingerprint,
+      reusableBaseFileSetFingerprint(input.inventory.files),
+    ),
+  );
   return {
     committedWorkspace: workspace,
     facts: currentFacts,
@@ -2454,6 +2504,17 @@ const assessReusableCleanBaseFullClosure = Effect.fn('codeGraph.assessReusableCl
     input.inventory.files,
     workspace,
     input.inventory.files.map(file => input.languagePacks.postprocessFile(file, cache.facts.get(file.path)!)),
+  );
+  yield* input.store.cacheMaterializedFileShards(
+    input.layout.databasePath,
+    input.inventory.files,
+    facts.map(fact => serializeBoundedCodeGraphFact(fact)),
+    input.candidate.snapshot.extractorSet,
+    materializedShardDerivationIdentity(
+      input.candidate.snapshot.extractorSet,
+      workspace.fingerprint,
+      reusableBaseFileSetFingerprint(input.inventory.files),
+    ),
   );
   return {
     committedWorkspace: workspace,

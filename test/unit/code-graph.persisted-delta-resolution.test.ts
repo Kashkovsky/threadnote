@@ -123,6 +123,7 @@ describe('persisted delta reference resolution', () => {
       createResolutionPlanSchema(database);
       database.exec(`
         INSERT INTO activation_files (path) VALUES ('src/caller.ts');
+        INSERT INTO activation_incremental_paths (path) VALUES ('src/caller.ts');
         INSERT INTO activation_edges (
           id, source_id, source_name, relation, target_id, target_name,
           provenance, confidence, evidence_path, evidence_span_json
@@ -291,6 +292,9 @@ function symbol(id: string, name: string, path: string, contentHash: string): Co
 function createResolutionPlanSchema(database: Database): void {
   database.exec(`
     CREATE TEMP TABLE activation_files (
+      path TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
+    CREATE TEMP TABLE activation_incremental_paths (
       path TEXT PRIMARY KEY
     ) WITHOUT ROWID;
     CREATE TEMP TABLE activation_reference_candidates (

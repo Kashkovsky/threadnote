@@ -15,7 +15,11 @@ import {
   snapshotIdentity,
 } from '../../src/code_graph/indexer.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../../src/code_graph/store.js';
+import {
+  CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
+  materializedFileShardIdentity,
+  materializedShardDerivationIdentity,
+} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphMaterializationRows, CodeGraphReference} from '../../src/code_graph/types.js';
 
 const byteCount = FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0});
@@ -68,6 +72,20 @@ describe('code graph indexer properties', () => {
           expect(graphContentIdentity('other-extractor-set', files)).not.toBe(original);
         },
       ),
+      {numRuns: 250},
+    );
+  });
+
+  it('makes materialized shard identity content-addressed and derivation-context sensitive', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (extractor, workspace, fileSet, path) => {
+        const derivation = materializedShardDerivationIdentity(extractor, workspace, fileSet);
+        const shard = materializedFileShardIdentity('content-hash', extractor, derivation, path);
+        expect(materializedFileShardIdentity('content-hash', extractor, derivation, path)).toBe(shard);
+        expect(materializedFileShardIdentity('changed-content', extractor, derivation, path)).not.toBe(shard);
+        expect(materializedFileShardIdentity('content-hash', extractor, derivation, `${path}/changed`)).not.toBe(shard);
+        expect(materializedShardDerivationIdentity(extractor, workspace, `${fileSet}/changed`)).not.toBe(derivation);
+      }),
       {numRuns: 250},
     );
   });

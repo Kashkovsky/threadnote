@@ -575,18 +575,16 @@ describe('native code graph lifecycle', () => {
     );
     const materialization = afterDirty.indexed.materialization;
     expect(materialization).toMatchObject({
-      fallbackReason: 'resolution-surface-changed',
-      mode: 'full',
+      mode: 'incremental-overlay',
     });
     expect(materialization?.stagedFiles).toBe(materialization?.totalFiles);
-    expect(afterDirty.indexed.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
-    expect(afterDirty.indexed.snapshot.id).toMatch(/-direct$/);
+    expect(afterDirty.indexed.snapshot).toMatchObject({baseSnapshotId: result.forced.snapshot.id, dirty: true});
     expect(afterDirty.dirty.nodes.some(node => node.name === 'ensureDirtyVectorIndex')).toBe(true);
     expect(afterDirty.clean.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
     expect(afterDirty.health).toMatchObject({
       activeSnapshots: 2,
       integrity: 'ok',
-      readySnapshots: 2,
+      readySnapshots: 3,
     });
     const database = new Database(databasePath, {readonly: true});
     try {
@@ -719,6 +717,94 @@ describe('native code graph lifecycle', () => {
     });
     expect(result.incremental.diagnostics).toContain('Clean snapshot reused persisted base for 1 modified file(s).');
     expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
+  });
+
+  it('reuses content-addressed materialized file shards during a forced clean rebuild', async () => {
+    const root = createManySourceRepository(12);
+    const home = join(root, '.threadnote-test-home');
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const firstGraph = yield* store.loadGraph(codeGraphDatabasePath(home, first), first.snapshot.id);
+        yield* repairCodeGraphIndexes(home, false);
+        const rebuilt = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+        const databasePath = codeGraphDatabasePath(home, rebuilt);
+        return {
+          databasePath,
+          first,
+          firstGraph,
+          rebuilt,
+          rebuiltGraph: yield* store.loadGraph(databasePath, rebuilt.snapshot.id),
+        };
+      }),
+    );
+
+    expect(result.rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 12, totalFiles: 12});
+    expect(result.rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 12 file(s).');
+    const database = new Database(result.databasePath, {readonly: true});
+    try {
+      const shards = database
+        .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialized_file_shards')
+        .get();
+      const references = database
+        .query<{readonly count: number}, [string]>(
+          `SELECT COUNT(*) AS count
+           FROM snapshot_file_shards
+           WHERE snapshot_id = ?`,
+        )
+        .get(result.rebuilt.snapshot.id);
+      expect(shards?.count).toBe(12);
+      expect(references?.count).toBe(12);
+    } finally {
+      database.close();
+    }
+    expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(result.firstGraph));
+  });
+
+  it('falls back to complete attribution when a materialized shard set is partial', async () => {
+    const root = createManySourceRepository(12);
+    const home = join(root, '.threadnote-test-home');
+    const first = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    const databasePath = codeGraphDatabasePath(home, first);
+    const firstGraph = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadGraph(databasePath, first.snapshot.id);
+      }),
+    );
+    const database = new Database(databasePath);
+    try {
+      database.exec(`DELETE FROM materialized_file_shards
+                     WHERE id = (SELECT id FROM materialized_file_shards ORDER BY id LIMIT 1)`);
+    } finally {
+      database.close();
+    }
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const rebuilt = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+        return {
+          rebuilt,
+          rebuiltGraph: yield* store.loadGraph(databasePath, rebuilt.snapshot.id),
+        };
+      }),
+    );
+
+    expect(
+      result.rebuilt.diagnostics.some(diagnostic =>
+        diagnostic.startsWith('Reused content-addressed materialized shards for'),
+      ),
+    ).toBe(false);
+    expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
   });
 
   it('reuses a full anchor with a conservative graph-wide closure when a clean commit changes resolution', async () => {
@@ -990,7 +1076,11 @@ describe('native code graph lifecycle', () => {
     expect(result.indexed.reusedFiles).toBe(first.snapshot.fileCount - 1);
     expect(result.indexed.snapshot.commit).not.toBe(first.snapshot.commit);
     expect(result.indexed.snapshot.dirty).toBe(false);
-    expect(result.indexed.materialization?.mode).toBe('full');
+    expect(result.indexed.materialization).toEqual({
+      mode: 'incremental-clean',
+      stagedFiles: 1,
+      totalFiles: first.snapshot.fileCount,
+    });
     expect(result.graph.symbols.find(symbol => symbol.name === 'runApplication')?.packageName).toBe('@fixture/app');
     expect(
       result.graph.edges.some(
@@ -1078,8 +1168,7 @@ describe('native code graph lifecycle', () => {
       }),
     );
 
-    expect(cachedHashes).toEqual([latestHash]);
-    expect(cachedHashes).not.toContain(committedHash);
+    expect(cachedHashes).toEqual([committedHash, latestHash].sort());
     expect(cachedHashes).not.toContain(intermediateHash);
     expect(unchanged.reusedFiles).toBe(unchanged.snapshot.fileCount);
   });
