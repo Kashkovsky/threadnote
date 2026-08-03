@@ -222,10 +222,11 @@ describe('external code graph benchmark execution safety', () => {
         expect(result.artifact?.metadata).toMatchObject({
           externalRepositoryName: 'Example/benchmark-fixture',
           externalRepositoryUrl: 'https://github.com/Example/benchmark-fixture',
+          managerRequestCancellationPassed: true,
+          managerRequestLifecycleControl:
+            'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
           managerSnapshotBindingPassed: true,
-          managerStaleRequestCancellationPassed: true,
-          managerStaleRequestControl:
-            'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+          managerStaleResponseRejectionPassed: true,
           oneFileReindexMaterializationMode: 'incremental-overlay',
           sameOverlayReferenceMaterializationMode: 'full',
           simultaneousWorktrees: 2,
@@ -240,7 +241,7 @@ describe('external code graph benchmark execution safety', () => {
           'manager-overview-cold',
           'manager-overview-warm',
           'manager-detail-cold',
-          'manager-render-proxy',
+          'manager-layout-preparation-proxy',
           'manager-response-payload',
           'manager-bounded-query',
           'manager-bounded-query-payload',

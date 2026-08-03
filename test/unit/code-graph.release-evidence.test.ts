@@ -689,6 +689,7 @@ describe('code graph release evidence', () => {
         benchmarkInventoryExcludedFiles: 0,
         benchmarkLogicalCpuCount: 8,
         coldMaterializationStorageMode: 'direct-persistent',
+        externalQueryControlTimeoutMilliseconds: 120_000,
         externalControlCount: 1,
         externalControlEvidence: JSON.stringify({
           java: {
@@ -699,21 +700,42 @@ describe('code graph release evidence', () => {
         }),
         externalControlLanguages: 'java',
         externalRepositoryCommit: '0123456789abcdef0123456789abcdef01234567',
-        externalRepositoryName: 'Example/public-repository',
-        externalRepositoryUrl: 'https://github.com/Example/public-repository',
+        externalRepositoryName: 'JetBrains/intellij-community',
+        externalRepositoryPublicVerification: 'reviewed-release-allowlist',
+        externalRepositoryUrl: 'https://github.com/JetBrains/intellij-community',
+        managerDetailEdgeCount: 1,
+        managerDetailNodeCount: 1,
         managerEdgeBudget: 1_500,
+        managerLayoutPreparationMeasurement:
+          'client-side graph layout-preparation only; excludes browser and WebGL paint',
         managerNodeBudget: 500,
+        managerOverviewEdgeCount: 1,
+        managerOverviewNodeCount: 1,
+        managerRequestCancellationPassed: true,
+        managerRequestLifecycleControl:
+          'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
+        managerSequenceTimeoutMilliseconds: 180_000,
+        managerServiceResponseTimingIncludesSerialization: true,
         managerSnapshotBindingPassed: true,
-        managerStaleRequestCancellationPassed: true,
-        managerStaleRequestControl:
-          'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+        managerStaleResponseRejectionPassed: true,
         mcpOperationCount: 6,
         oneFileReindexMaterializationMode: 'incremental-overlay',
+        oneFileReindexMaterializationStorageMode: 'temporary-staged',
+        retrievalMode: 'lexical-only',
+        runnerClass: 'test-runner',
+        runnerIdentity: 'unit-test',
         sameOverlayReferenceMaterializationMode: 'full',
+        sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
         simultaneousWorktrees: 2,
         sqliteVersion: '3.49.1',
+        structuralGraphDigestCold: '1'.repeat(64),
+        structuralGraphDigestIncremental: '2'.repeat(64),
+        structuralGraphDigestSameOverlayReference: '2'.repeat(64),
+        worktreeIsolationCleanupPassed: true,
+        worktreeIsolationCommandTimeoutMilliseconds: 30_000,
         worktreeIsolationIndexedFiles: 2,
         worktreeIsolationPassed: true,
+        worktreeIsolationOuterTimeoutMilliseconds: 300_000,
         worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
       },
       'code-graph-external-repository-v1',
@@ -738,6 +760,18 @@ describe('code graph release evidence', () => {
         environment: {...artifact.environment, fixtureHash: 'external-code-graph-v1:unrelated'},
       }),
     ).toThrow(/external fixture identity tied to its exact commit/);
+    expect(() =>
+      assertExternalRepositoryEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, managerRequestCancellationPassed: false},
+      }),
+    ).toThrow(/superseded-request cancellation/);
+    expect(() =>
+      assertExternalRepositoryEvidence({
+        ...artifact,
+        metadata: {...artifact.metadata, managerStaleResponseRejectionPassed: false},
+      }),
+    ).toThrow(/completed stale-response rejection/);
     expect(() =>
       assertExternalRepositoryEvidence({...artifact, metadata: {...artifact.metadata, externalRepositoryCommit: ''}}),
     ).toThrow(/exact external repository commit/);
@@ -828,7 +862,7 @@ describe('code graph release evidence', () => {
       ['manager-overview-warm', 'milliseconds'],
       ['manager-detail-cold', 'milliseconds'],
       ['manager-node-detail-cold', 'milliseconds'],
-      ['manager-render-proxy', 'milliseconds'],
+      ['manager-layout-preparation-proxy', 'milliseconds'],
       ['manager-response-payload', 'bytes'],
       ['manager-bounded-query', 'milliseconds'],
       ['manager-bounded-query-payload', 'bytes'],
@@ -844,45 +878,64 @@ describe('code graph release evidence', () => {
         benchmarkInventoryEligibleFiles: 100,
         benchmarkInventoryExcludedFiles: 10,
         benchmarkLogicalCpuCount: 10,
-        benchmarkManagedDependencyInstallation: 'bun install --frozen-lockfile',
-        benchmarkManagedExecutableSha256: 'c'.repeat(64),
-        benchmarkManagedPayloadBytes: 1_024,
-        benchmarkManagedPayloadFileCount: 10,
-        benchmarkManagedPayloadManifestSha256: 'd'.repeat(64),
-        benchmarkManagedProcessLeaseInspection: 'complete',
-        benchmarkManagedReleaseMetadataSha256: 'e'.repeat(64),
-        benchmarkManagedRuntime: 'bun-test',
-        benchmarkManagedTarget: 'linux-x64',
-        benchmarkManagedVersion: `4.0.0.local.g${commit}`,
-        benchmarkRuntimeProvenanceMode: 'managed-exact-head',
+        benchmarkSourceValidationMode: 'managed-payload-exact-head-validated',
+        benchmarkValidatedManagedDependencyInstallation: 'bun install --frozen-lockfile',
+        benchmarkValidatedManagedExecutableSha256: 'c'.repeat(64),
+        benchmarkValidatedManagedPayload: 'exact-head-not-executed',
+        benchmarkValidatedManagedPayloadBytes: 1_024,
+        benchmarkValidatedManagedPayloadFileCount: 10,
+        benchmarkValidatedManagedPayloadManifestSha256: 'd'.repeat(64),
+        benchmarkValidatedManagedProcessLeaseInspection: 'complete',
+        benchmarkValidatedManagedReleaseMetadataSha256: 'e'.repeat(64),
+        benchmarkValidatedManagedRuntime: 'bun-test',
+        benchmarkValidatedManagedTarget: 'linux-x64',
+        benchmarkValidatedManagedVersion: `4.0.0.local.g${commit}`,
         coldMaterializationStorageMode: 'direct-persistent',
+        externalQueryControlTimeoutMilliseconds: 120_000,
         externalControlCount: 4,
         externalControlEvidence: JSON.stringify(controls),
         externalControlLanguages: languages.join(','),
         externalRepositoryCommit: commit,
         externalRepositoryName: 'JetBrains/intellij-community',
+        externalRepositoryPublicVerification: 'reviewed-release-allowlist',
         externalRepositoryUrl: 'https://github.com/JetBrains/intellij-community',
         externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
+        managerDetailEdgeCount: 1,
+        managerDetailNodeCount: 1,
         managerEdgeBudget: 1_500,
+        managerLayoutPreparationMeasurement:
+          'client-side graph layout-preparation only; excludes browser and WebGL paint',
         managerNodeBudget: 500,
+        managerOverviewEdgeCount: 1,
+        managerOverviewNodeCount: 1,
+        managerRequestCancellationPassed: true,
+        managerRequestLifecycleControl:
+          'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
+        managerSequenceTimeoutMilliseconds: 180_000,
+        managerServiceResponseTimingIncludesSerialization: true,
         managerSnapshotBindingPassed: true,
-        managerStaleRequestCancellationPassed: true,
-        managerStaleRequestControl:
-          'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+        managerStaleResponseRejectionPassed: true,
         mcpOperationCount: 6,
         oneFileReindexMaterializationMode: 'incremental-overlay',
+        oneFileReindexMaterializationStorageMode: 'temporary-staged',
         releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
         releaseEvidenceResolvedSha: commit,
         releaseEvidenceSha: commit,
         retrievalMode: 'lexical-only',
         sameOverlayReferenceMaterializationMode: 'full',
+        sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
         simultaneousWorktrees: 2,
         sqliteVersion: '3.49.1',
+        runnerClass: 'test-runner',
+        runnerIdentity: 'unit-test',
         structuralGraphDigestCold: '1'.repeat(64),
         structuralGraphDigestIncremental: '2'.repeat(64),
         structuralGraphDigestSameOverlayReference: '2'.repeat(64),
         worktreeIsolationIndexedFiles: 2,
+        worktreeIsolationCleanupPassed: true,
+        worktreeIsolationCommandTimeoutMilliseconds: 30_000,
         worktreeIsolationPassed: true,
+        worktreeIsolationOuterTimeoutMilliseconds: 300_000,
         worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
       },
       'code-graph-external-repository-v1',
@@ -901,8 +954,11 @@ describe('code graph release evidence', () => {
       edgeBudget: 1_500,
       nodeBudget: 500,
       nodeDetailColdMilliseconds: 1,
+      requestCancellationPassed: true,
+      staleResponseRejectionPassed: true,
     });
     expect(projected.concurrency).toEqual({
+      cleanupPassed: true,
       durationMilliseconds: 1,
       indexedFiles: 2,
       isolationPassed: true,
@@ -912,9 +968,9 @@ describe('code graph release evidence', () => {
     expect(() =>
       assertExternalPerformanceEvidence({
         ...artifact,
-        metadata: {...artifact.metadata, benchmarkRuntimeProvenanceMode: 'github-actions-clean-source'},
+        metadata: {...artifact.metadata, benchmarkSourceValidationMode: 'github-actions-clean-source'},
       }),
-    ).toThrow(/managed exact-head benchmark runtime provenance/);
+    ).toThrow(/separately validated managed exact-HEAD payload/);
     expect(() =>
       assertExternalPerformanceEvidence({
         ...artifact,
@@ -953,7 +1009,7 @@ describe('code graph release evidence', () => {
           ...artifact,
           metadata: {...artifact.metadata, externalControlEvidence: JSON.stringify(sensitiveControls)},
         }),
-      ).toThrow(/privacy-safe external control evidence matching declared languages/);
+      ).toThrow(/privacy-safe external control evidence|credential-like|local filesystem path/);
     }
     expect(() =>
       validateRetainedPerformancePayload({
@@ -1107,12 +1163,23 @@ function benchmarkArtifact(
       runner: 'threadnote-code-graph-e2e',
       runnerVersion: '1',
     },
-    measurements,
+    measurements: measurements.map(measurement =>
+      typeof metadata.releaseEvidenceRef === 'string' &&
+      ['hot-exact-lexical-query', 'manager-bounded-query'].includes(measurement.name)
+        ? benchmarkMeasurement(
+            measurement.name,
+            measurement.unit,
+            Array.from({length: 25}, () => measurement.maximum),
+          )
+        : measurement,
+    ),
     metadata: {
-      benchmarkRuntimeProvenanceMode: 'github-actions-clean-source',
-      benchmarkRuntimeSourceCommit: commit,
-      benchmarkRuntimeSourceLockfileSha256: 'a'.repeat(64),
-      benchmarkRuntimeSourcePackageManifestSha256: 'b'.repeat(64),
+      benchmarkMeasuredExecutionMode: 'local-source-application-layer',
+      benchmarkMeasuredSourceCommit: commit,
+      benchmarkMeasuredSourceLockfileSha256: 'a'.repeat(64),
+      benchmarkMeasuredSourcePackageManifestSha256: 'b'.repeat(64),
+      benchmarkSourceValidationMode: 'github-actions-clean-source',
+      benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source',
       ...(suite.startsWith('code-graph-production-large-')
         ? {
             profile: 'production-large',
@@ -1133,7 +1200,7 @@ function benchmarkArtifact(
     },
     suite,
     version: 1,
-    warmups: 0,
+    warmups: 5,
   };
 }
 

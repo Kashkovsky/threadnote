@@ -16,6 +16,7 @@ import {
 } from '../../scripts/benchmark-code-graph.js';
 import {prepareCodeGraphFixture} from '../../scripts/code-graph-fixture.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const PERFORMANCE_CONTROLS = [
@@ -139,7 +140,7 @@ describe('external performance evidence', () => {
     ).toThrow('exceeded or misreported');
   });
 
-  it('measures real Manager catalog, visualization, detail, query, payload, and client render work', async () => {
+  it('measures real Manager catalog, visualization, detail, query, payload, and client layout preparation', async () => {
     const evidence = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -166,13 +167,16 @@ describe('external performance evidence', () => {
     expect(evidence.nodeDetailColdMilliseconds).toHaveLength(1);
     expect(evidence.queryMilliseconds).toHaveLength(2);
     expect(evidence.queryPayloadBytes).toHaveLength(2);
-    expect(evidence.renderProxyMilliseconds).toHaveLength(2);
+    expect(evidence.layoutPreparationProxyMilliseconds).toHaveLength(2);
+    expect(evidence.overviewNodeCount).toBeGreaterThan(0);
+    expect(evidence.detailNodeCount).toBeGreaterThan(0);
     expect(evidence.maxResponsePayloadBytes.every(bytes => bytes > 0)).toBe(true);
     expect(evidence).toMatchObject({
       edgeBudget: 1_500,
       nodeBudget: 500,
+      requestCancellationPassed: true,
       snapshotBindingPassed: true,
-      staleRequestCancellationPassed: true,
+      staleResponseRejectionPassed: true,
     });
   }, 30_000);
 
@@ -187,6 +191,7 @@ describe('external performance evidence', () => {
       ).pipe(Effect.provide(ApplicationLayer)),
     );
     expect(evidence).toMatchObject({
+      cleanupPassed: true,
       indexedFiles: 2,
       isolationPassed: true,
       simultaneousWorktrees: 2,
@@ -194,4 +199,27 @@ describe('external performance evidence', () => {
     });
     expect(evidence.durationMilliseconds).toBeGreaterThan(0);
   }, 30_000);
+
+  it('cleans interrupted worktree controls without replacing an existing ready snapshot', async () => {
+    const evidence = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+          const indexer = yield* CodeGraphIndexer;
+          const query = yield* CodeGraphQueryService;
+          const baseline = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
+          const failed = yield* benchmarkConcurrentWorktreeIsolation(fixture.home, {
+            failureInjection: 'after-index',
+          }).pipe(Effect.match({onFailure: () => true, onSuccess: () => false}));
+          const status = yield* query.status(fixture.home, fixture.repository);
+          return {baselineSnapshotId: baseline.snapshot.id, failed, readySnapshotId: status.readySnapshot?.id};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+    expect(evidence).toEqual({
+      baselineSnapshotId: evidence.baselineSnapshotId,
+      failed: true,
+      readySnapshotId: evidence.baselineSnapshotId,
+    });
+  }, 60_000);
 });

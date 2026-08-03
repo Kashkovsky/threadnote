@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, Exit, Fiber, FileSystem, Option, Path} from 'effect';
+import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
@@ -23,7 +23,7 @@ import {
 } from '../src/code_graph/visualization.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {sha256FileHex} from '../src/effect/digest.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
@@ -31,7 +31,7 @@ import {selectLocalModel} from '../src/models/selection.js';
 import {LocalModelStore} from '../src/models/store.js';
 import {codeGraphMcpResponse} from '../src/mcp_server.js';
 import {
-  graphQueryRequestIsCurrent,
+  createGraphQueryRequestGate,
   managerGraphClientRenderProxy,
   type GraphQueryVisualization,
   type GraphVisualization,
@@ -43,6 +43,13 @@ import {
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
 } from '../src/evaluation/benchmark.js';
+import {
+  EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
+  projectExternalEvidenceMetadata,
+  reviewedPublicRepositoryVerification,
+  validateExternalRepositoryEvidence,
+  type ExternalRepositoryPublicVerification,
+} from '../src/evaluation/external_evidence.js';
 import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
 import {codeGraphEvaluationFixtureHash, parseCodeGraphEvaluationFixtureV1} from '../src/evaluation/code-graph.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
@@ -77,6 +84,10 @@ const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
 const MANAGER_QUERY_NODE_LIMIT = 200;
 const MANAGER_QUERY_EDGE_LIMIT = 500;
+const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
+const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
+const WORKTREE_GIT_COMMAND_TIMEOUT_MS = 30_000;
+const WORKTREE_ISOLATION_TIMEOUT_MS = 300_000;
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -302,33 +313,7 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
 ] as const;
 
-const EXTERNAL_AGGREGATE_EVIDENCE_MEASUREMENTS = [
-  {name: 'cold-language-category-count', unit: 'count'},
-  {name: 'cold-workspace-scope-rows', unit: 'count'},
-  {name: 'cold-workspace-component-rows', unit: 'count'},
-  {name: 'cold-bazel-workspace-scope-rows', unit: 'count'},
-  {name: 'cold-bazel-workspace-component-rows', unit: 'count'},
-] as const;
-
-const EXTERNAL_MANAGER_EVIDENCE_MEASUREMENTS = [
-  {name: 'manager-catalog-cold', unit: 'milliseconds'},
-  {name: 'manager-catalog-warm', unit: 'milliseconds'},
-  {name: 'manager-overview-cold', unit: 'milliseconds'},
-  {name: 'manager-overview-warm', unit: 'milliseconds'},
-  {name: 'manager-detail-cold', unit: 'milliseconds'},
-  {name: 'manager-node-detail-cold', unit: 'milliseconds'},
-  {name: 'manager-render-proxy', unit: 'milliseconds'},
-  {name: 'manager-response-payload', unit: 'bytes'},
-  {name: 'manager-bounded-query', unit: 'milliseconds'},
-  {name: 'manager-bounded-query-payload', unit: 'bytes'},
-  {name: 'concurrent-worktree-isolation-duration', unit: 'milliseconds'},
-] as const;
-
-export const EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS = [
-  ...PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS.filter(measurement => !measurement.name.startsWith('production-shape-')),
-  ...EXTERNAL_AGGREGATE_EVIDENCE_MEASUREMENTS,
-  ...EXTERNAL_MANAGER_EVIDENCE_MEASUREMENTS,
-] as const;
+export const EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS = EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS;
 
 export interface ExternalRepositoryQueryControl {
   readonly expectedLanguage: string;
@@ -353,12 +338,18 @@ export interface ManagerPerformanceEvidence {
   readonly overviewWarmMilliseconds: readonly number[];
   readonly queryMilliseconds: readonly number[];
   readonly queryPayloadBytes: readonly number[];
-  readonly renderProxyMilliseconds: readonly number[];
+  readonly detailEdgeCount: number;
+  readonly detailNodeCount: number;
+  readonly layoutPreparationProxyMilliseconds: readonly number[];
+  readonly overviewEdgeCount: number;
+  readonly overviewNodeCount: number;
+  readonly requestCancellationPassed: true;
   readonly snapshotBindingPassed: true;
-  readonly staleRequestCancellationPassed: true;
+  readonly staleResponseRejectionPassed: true;
 }
 
 export interface ConcurrentWorktreeEvidence {
+  readonly cleanupPassed: true;
   readonly durationMilliseconds: number;
   readonly indexedFiles: number;
   readonly isolationPassed: true;
@@ -389,6 +380,7 @@ interface PreparedCodeGraphBenchmarkFixture {
   readonly profile?: ProductionCodeGraphFixtureProfile;
   readonly preserveHomes?: Effect.Effect<void>;
   readonly publicRepository?: PublicGitHubRepositoryEvidence;
+  readonly publicRepositoryVerification?: ExternalRepositoryPublicVerification;
   readonly queryText?: string;
   readonly referenceHome?: string;
   readonly repository: string;
@@ -530,6 +522,8 @@ const benchmarkCodeGraph = Effect.scoped(
       benchmarkIdentity.checkoutId,
       benchmarkIdentity.worktreeId,
     );
+    const databaseRoot = path.join(prepared.home, 'indexes', 'code-graph');
+    const coldStorageBaseline = yield* codeGraphStorageTelemetry(fs, path, benchmarkLayout.databasePath, databaseRoot);
     const sqliteWriterProfile = options.sqliteWriterProfile
       ? CODE_GRAPH_SQLITE_WRITER_PROFILES[options.sqliteWriterProfile]
       : undefined;
@@ -588,6 +582,7 @@ const benchmarkCodeGraph = Effect.scoped(
       startedAt: coldStarted,
       timeline: coldTimeline,
     } = coldMeasurement;
+    const coldStorageAfter = yield* codeGraphStorageTelemetry(fs, path, benchmarkLayout.databasePath, databaseRoot);
     yield* runCheckpoint?.mark('hot-query-and-mutation') ?? Effect.void;
     if (options.vectors) {
       if (cold.diagnostics.some(diagnostic => diagnostic.includes('Vector graph retrieval unavailable'))) {
@@ -968,7 +963,6 @@ const benchmarkCodeGraph = Effect.scoped(
       observedStatusRecords = Math.max(observedStatusRecords, statuses.length);
     }
 
-    const databaseRoot = path.join(prepared.home, 'indexes', 'code-graph');
     const storage = yield* codeGraphStorageTelemetry(fs, path, analysisStatus.databasePath, databaseRoot);
     const coldLexicalTermRows = sqliteLexicalTermRowCount(analysisStatus.databasePath, cold.snapshot.id);
     const sqliteVersion = sqliteVersionString(analysisStatus.databasePath);
@@ -1053,7 +1047,7 @@ const benchmarkCodeGraph = Effect.scoped(
       validateSqliteWriterSettingsEvidence(options.sqliteWriterProfile, sqliteWriterSettingsEvidence);
     }
     yield* runCheckpoint?.mark('finalizing-artifact') ?? Effect.void;
-    const artifact: BenchmarkArtifactV1 = {
+    let artifact: BenchmarkArtifactV1 = {
       createdAt: new Date().toISOString(),
       environment: {
         architecture: system.architecture,
@@ -1119,14 +1113,33 @@ const benchmarkCodeGraph = Effect.scoped(
         benchmarkMeasurement('sqlite-main-disk', 'bytes', [storage.sqliteMainBytes]),
         benchmarkMeasurement('sqlite-wal-disk', 'bytes', [storage.sqliteWalBytes]),
         benchmarkMeasurement('sqlite-shm-disk', 'bytes', [storage.sqliteShmBytes]),
+        benchmarkMeasurement('sqlite-journal-disk', 'bytes', [storage.sqliteJournalBytes]),
+        benchmarkMeasurement('cold-sqlite-durable-database-growth', 'bytes', [
+          Math.max(0, coldStorageAfter.sqliteMainBytes - coldStorageBaseline.sqliteMainBytes),
+        ]),
+        benchmarkMeasurement('cold-durable-filesystem-growth', 'bytes', [
+          Math.max(0, coldStorageAfter.totalBytes - coldStorageBaseline.totalBytes),
+        ]),
         benchmarkMeasurement('cold-sqlite-main-peak-observed', 'bytes', [coldStoragePeak.sqliteMainBytes]),
-        benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [coldStoragePeak.sqliteWalBytes]),
+        benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [
+          coldExternalTelemetry
+            ? externalTelemetryPeak(coldExternalTelemetry, 'walPeakBytes')
+            : coldStoragePeak.sqliteWalBytes,
+        ]),
         benchmarkMeasurement('cold-sqlite-shm-peak-observed', 'bytes', [coldStoragePeak.sqliteShmBytes]),
+        benchmarkMeasurement('cold-sqlite-journal-peak-observed', 'bytes', [
+          coldExternalTelemetry
+            ? externalTelemetryPeak(coldExternalTelemetry, 'journalPeakBytes')
+            : coldStoragePeak.sqliteJournalBytes,
+        ]),
         benchmarkMeasurement('incremental-sqlite-main-peak-observed', 'bytes', [
           incrementalStoragePeak.sqliteMainBytes,
         ]),
         benchmarkMeasurement('incremental-sqlite-wal-peak-observed', 'bytes', [incrementalStoragePeak.sqliteWalBytes]),
         benchmarkMeasurement('incremental-sqlite-shm-peak-observed', 'bytes', [incrementalStoragePeak.sqliteShmBytes]),
+        benchmarkMeasurement('incremental-sqlite-journal-peak-observed', 'bytes', [
+          incrementalStoragePeak.sqliteJournalBytes,
+        ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-main-peak-observed', 'bytes', [
           sameOverlayReferenceStoragePeak.sqliteMainBytes,
         ]),
@@ -1135,6 +1148,9 @@ const benchmarkCodeGraph = Effect.scoped(
         ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-shm-peak-observed', 'bytes', [
           sameOverlayReferenceStoragePeak.sqliteShmBytes,
+        ]),
+        benchmarkMeasurement('same-overlay-reference-sqlite-journal-peak-observed', 'bytes', [
+          sameOverlayReferenceStoragePeak.sqliteJournalBytes,
         ]),
         ...(coldExternalTelemetry
           ? [
@@ -1332,19 +1348,33 @@ const benchmarkCodeGraph = Effect.scoped(
               externalRepositoryCommit: prepared.externalCommit,
               externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
               externalRepositoryName: prepared.publicRepository?.name ?? '',
+              externalRepositoryPublicVerification: prepared.publicRepositoryVerification ?? '',
               externalRepositoryUrl: prepared.publicRepository?.url ?? '',
               externalSemanticOverlay:
                 'language-aware import or dependency with effective-state digest change enforcement',
               externalWorkspaceAggregate:
                 'cold total and Bazel workspace scope/component counts; local roots omitted and public GitHub identity retained',
               managerEdgeBudget: managerPerformance?.edgeBudget ?? 0,
+              managerDetailEdgeCount: managerPerformance?.detailEdgeCount ?? 0,
+              managerDetailNodeCount: managerPerformance?.detailNodeCount ?? 0,
+              managerLayoutPreparationMeasurement:
+                'client-side graph layout-preparation only; excludes browser and WebGL paint',
               managerNodeBudget: managerPerformance?.nodeBudget ?? 0,
+              managerOverviewEdgeCount: managerPerformance?.overviewEdgeCount ?? 0,
+              managerOverviewNodeCount: managerPerformance?.overviewNodeCount ?? 0,
+              managerRequestCancellationPassed: managerPerformance?.requestCancellationPassed ?? false,
+              managerRequestLifecycleControl:
+                'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
+              managerSequenceTimeoutMilliseconds: MANAGER_SEQUENCE_TIMEOUT_MS,
+              managerServiceResponseTimingIncludesSerialization: true,
               managerSnapshotBindingPassed: managerPerformance?.snapshotBindingPassed ?? false,
-              managerStaleRequestCancellationPassed: managerPerformance?.staleRequestCancellationPassed ?? false,
-              managerStaleRequestControl:
-                'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+              managerStaleResponseRejectionPassed: managerPerformance?.staleResponseRejectionPassed ?? false,
+              externalQueryControlTimeoutMilliseconds: EXTERNAL_QUERY_CONTROL_TIMEOUT_MS,
               simultaneousWorktrees: concurrentWorktreeEvidence?.simultaneousWorktrees ?? 0,
+              worktreeIsolationCleanupPassed: concurrentWorktreeEvidence?.cleanupPassed ?? false,
+              worktreeIsolationCommandTimeoutMilliseconds: WORKTREE_GIT_COMMAND_TIMEOUT_MS,
               worktreeIsolationIndexedFiles: concurrentWorktreeEvidence?.indexedFiles ?? 0,
+              worktreeIsolationOuterTimeoutMilliseconds: WORKTREE_ISOLATION_TIMEOUT_MS,
               worktreeIsolationPassed: concurrentWorktreeEvidence?.isolationPassed ?? false,
               worktreeIsolationTopology: concurrentWorktreeEvidence?.topology ?? '',
             }
@@ -1377,6 +1407,9 @@ const benchmarkCodeGraph = Effect.scoped(
       version: BENCHMARK_ARTIFACT_VERSION,
       warmups: options.warmups,
     };
+    if (prepared.externalCommit) {
+      artifact = {...artifact, metadata: projectExternalEvidenceMetadata(artifact.metadata)};
+    }
     parseBenchmarkArtifactV1(artifact);
     if (prepared.profile) {
       if (releaseEvidenceSource) {
@@ -1406,7 +1439,11 @@ const benchmarkCodeGraph = Effect.scoped(
     if (prepared.externalCommit) {
       yield* verifyExternalRepositoryUnchanged(prepared.repository, prepared.externalCommit);
       if (prepared.publicRepository) {
-        yield* verifyPublicRepositoryOrigin(prepared.repository, prepared.publicRepository);
+        yield* verifyPublicRepositoryOrigin(
+          prepared.repository,
+          prepared.publicRepository,
+          prepared.publicRepositoryVerification,
+        );
       }
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
@@ -2181,9 +2218,9 @@ function boundedPhaseTotal(
 
 function externalTelemetryPeak(
   artifact: CodeGraphBenchmarkSamplerArtifact,
-  field: 'databasePeakBytes' | 'shmPeakBytes' | 'temporaryPeakBytes' | 'walPeakBytes',
+  field: 'databasePeakBytes' | 'journalPeakBytes' | 'shmPeakBytes' | 'temporaryPeakBytes' | 'walPeakBytes',
 ): number {
-  return Math.max(0, ...Object.values(artifact.phases).map(phase => phase[field]));
+  return Math.max(0, ...Object.values(artifact.phases).map(phase => phase[field] ?? 0));
 }
 
 function externalSamplerDescription(artifact: CodeGraphBenchmarkSamplerArtifact | undefined): string {
@@ -2232,6 +2269,7 @@ function cpuMilliseconds(
 
 interface CodeGraphStorageTelemetry {
   readonly buildStatusBytes: number;
+  readonly sqliteJournalBytes: number;
   readonly sqliteMainBytes: number;
   readonly sqliteShmBytes: number;
   readonly sqliteWalBytes: number;
@@ -2241,14 +2279,16 @@ interface CodeGraphStorageTelemetry {
 }
 
 class SqliteStoragePeakTelemetry {
+  sqliteJournalBytes = 0;
   sqliteMainBytes = 0;
   sqliteShmBytes = 0;
   sqliteWalBytes = 0;
 
-  observe(main: number, wal: number, shm: number): void {
+  observe(main: number, wal: number, shm: number, journal: number): void {
     this.sqliteMainBytes = Math.max(this.sqliteMainBytes, main);
     this.sqliteWalBytes = Math.max(this.sqliteWalBytes, wal);
     this.sqliteShmBytes = Math.max(this.sqliteShmBytes, shm);
+    this.sqliteJournalBytes = Math.max(this.sqliteJournalBytes, journal);
   }
 }
 
@@ -2262,10 +2302,11 @@ function observeSqliteStoragePeak(
       regularFileBytes(fs, databasePath),
       regularFileBytes(fs, `${databasePath}-wal`),
       regularFileBytes(fs, `${databasePath}-shm`),
+      regularFileBytes(fs, `${databasePath}-journal`),
     ],
-    {concurrency: 3},
+    {concurrency: 4},
   ).pipe(
-    Effect.tap(([main, wal, shm]) => Effect.sync(() => telemetry.observe(main, wal, shm))),
+    Effect.tap(([main, wal, shm, journal]) => Effect.sync(() => telemetry.observe(main, wal, shm, journal))),
     Effect.asVoid,
   );
 }
@@ -2492,28 +2533,44 @@ const codeGraphStorageTelemetry = Effect.fn('benchmarkCodeGraph.storageTelemetry
   databaseRoot: string,
 ) {
   const repositoryRoot = path.dirname(databasePath);
-  const [totalBytes, repositoryBytes, sqliteMainBytes, sqliteWalBytes, sqliteShmBytes, vectorBytes, buildStatusBytes] =
-    yield* Effect.all(
-      [
-        directoryBytes(fs, path, databaseRoot),
-        directoryBytes(fs, path, repositoryRoot),
-        regularFileBytes(fs, databasePath),
-        regularFileBytes(fs, `${databasePath}-wal`),
-        regularFileBytes(fs, `${databasePath}-shm`),
-        directoryBytes(fs, path, path.join(repositoryRoot, 'vectors')),
-        directoryBytes(fs, path, path.join(repositoryRoot, 'build-status')),
-      ],
-      {concurrency: 7},
-    );
+  const [
+    totalBytes,
+    repositoryBytes,
+    sqliteMainBytes,
+    sqliteWalBytes,
+    sqliteShmBytes,
+    sqliteJournalBytes,
+    vectorBytes,
+    buildStatusBytes,
+  ] = yield* Effect.all(
+    [
+      directoryBytes(fs, path, databaseRoot),
+      directoryBytes(fs, path, repositoryRoot),
+      regularFileBytes(fs, databasePath),
+      regularFileBytes(fs, `${databasePath}-wal`),
+      regularFileBytes(fs, `${databasePath}-shm`),
+      regularFileBytes(fs, `${databasePath}-journal`),
+      directoryBytes(fs, path, path.join(repositoryRoot, 'vectors')),
+      directoryBytes(fs, path, path.join(repositoryRoot, 'build-status')),
+    ],
+    {concurrency: 8},
+  );
   return {
     buildStatusBytes,
     sqliteMainBytes,
+    sqliteJournalBytes,
     sqliteShmBytes,
     sqliteWalBytes,
     totalBytes,
     unclassifiedRepositoryBytes: Math.max(
       0,
-      repositoryBytes - sqliteMainBytes - sqliteWalBytes - sqliteShmBytes - vectorBytes - buildStatusBytes,
+      repositoryBytes -
+        sqliteMainBytes -
+        sqliteWalBytes -
+        sqliteShmBytes -
+        sqliteJournalBytes -
+        vectorBytes -
+        buildStatusBytes,
     ),
     vectorBytes,
   } satisfies CodeGraphStorageTelemetry;
@@ -3096,13 +3153,25 @@ const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQuer
   phase: 'cold' | 'incremental' | 'same-overlay-reference',
 ) {
   const started = yield* Clock.currentTimeNanos;
-  const result = yield* query.inspect({
-    cwd: repository,
-    operation: 'query',
-    query: control.query,
-    refresh: false,
-    threadnoteHome,
-  });
+  const result = yield* query
+    .inspect({
+      cwd: repository,
+      operation: 'query',
+      query: control.query,
+      refresh: false,
+      threadnoteHome,
+    })
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: EXTERNAL_QUERY_CONTROL_TIMEOUT_MS,
+        orElse: () =>
+          Effect.fail(
+            new Error(
+              `External ${phase} query control timed out after ${EXTERNAL_QUERY_CONTROL_TIMEOUT_MS} milliseconds.`,
+            ),
+          ),
+      }),
+    );
   const durationMilliseconds = Math.max(
     Number.EPSILON,
     Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
@@ -3194,13 +3263,14 @@ const timedJsonEffect = Effect.fn('benchmarkCodeGraph.timedJsonEffect')(function
 ) {
   const started = yield* Clock.currentTimeNanos;
   const value = yield* effect;
+  const encoded = JSON.stringify(value);
   const durationMilliseconds = Math.max(
     Number.EPSILON,
     Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
   );
   return {
     durationMilliseconds,
-    payloadBytes: encodedBytes(JSON.stringify(value)),
+    payloadBytes: encodedBytes(encoded),
     value,
   } satisfies TimedEffectResult<A>;
 });
@@ -3220,7 +3290,7 @@ export function assertManagerVisualizationBounds(
   }
 }
 
-export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.managerPerformance')(function* (
+const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.managerPerformanceMeasured')(function* (
   threadnoteHome: string,
   expectedRepositoryId: string,
   expectedSnapshotId: string,
@@ -3272,6 +3342,9 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
     edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
     nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
   });
+  if (overviewCold.value.nodes.length === 0) {
+    return yield* Effect.fail(new Error('Manager benchmark overview returned no graph nodes.'));
+  }
   for (const sample of overviewWarm) {
     assertManagerVisualizationBounds('overview warm response', sample.value, {
       edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
@@ -3293,6 +3366,9 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
     edgeLimit: MANAGER_GRAPH_MAX_EDGE_LIMIT,
     nodeLimit: MANAGER_GRAPH_MAX_NODE_LIMIT,
   });
+  if (detailCold.value.nodes.length === 0) {
+    return yield* Effect.fail(new Error('Manager benchmark selected project detail returned no graph nodes.'));
+  }
 
   for (let index = 0; index < warmups; index += 1) {
     yield* managerGraphQuery(
@@ -3333,15 +3409,17 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
   const renderGraph = [overviewCold.value, detailCold.value, queryResult].sort(
     (left, right) => right.nodes.length + right.edges.length - (left.nodes.length + left.edges.length),
   )[0]!;
-  const renderProxyMilliseconds: number[] = [];
+  const layoutPreparationProxyMilliseconds: number[] = [];
   for (let index = 0; index < samples; index += 1) {
     const started = yield* Clock.currentTimeNanos;
     const rendered = managerGraphClientRenderProxy(renderGraph as GraphVisualization);
-    renderProxyMilliseconds.push(
+    layoutPreparationProxyMilliseconds.push(
       Math.max(Number.EPSILON, Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND),
     );
     if (rendered.nodes !== renderGraph.nodes.length || rendered.matchedEdges > renderGraph.edges.length) {
-      return yield* Effect.fail(new Error('Manager benchmark render proxy did not preserve its bounded graph input.'));
+      return yield* Effect.fail(
+        new Error('Manager benchmark layout-preparation proxy did not preserve its bounded graph input.'),
+      );
     }
   }
 
@@ -3363,66 +3441,107 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
   }
 
   const scope = `${indexedView.id}:${expectedSnapshotId}:${queryText}:${MANAGER_QUERY_NODE_LIMIT}:${MANAGER_QUERY_EDGE_LIMIT}`;
-  const staleScope = `${scope}:stale`;
-  const staleController = new AbortController();
-  const currentController = new AbortController();
-  const staleFiber = yield* Effect.forkChild(
-    managerGraphQuery(
-      threadnoteHome,
-      indexedView.id,
-      queryText,
-      {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
-      expectedSnapshot,
-    ),
-  );
-  staleController.abort();
-  const currentRequestResult = yield* managerGraphQuery(
-    threadnoteHome,
-    indexedView.id,
-    queryText,
-    {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
-    expectedSnapshot,
-  );
-  const staleRequestResult = yield* Fiber.join(staleFiber);
-  assertManagerVisualizationBounds('aborted stale query response', staleRequestResult, {
-    edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
-    nodeLimit: MANAGER_QUERY_NODE_LIMIT,
-  });
-  assertManagerVisualizationBounds('current overlapping query response', currentRequestResult, {
-    edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
-    nodeLimit: MANAGER_QUERY_NODE_LIMIT,
-  });
-  const staleRequestCancellationPassed =
-    staleController.signal.aborted &&
-    !currentController.signal.aborted &&
-    !graphQueryRequestIsCurrent(
-      staleController.signal.aborted,
-      2,
-      1,
-      scope,
-      staleScope,
-      staleRequestResult as GraphQueryVisualization,
-      expectedSnapshotId,
-      queryText,
-    ) &&
-    graphQueryRequestIsCurrent(
-      currentController.signal.aborted,
-      2,
-      2,
-      scope,
-      scope,
-      currentRequestResult as GraphQueryVisualization,
-      expectedSnapshotId,
-      queryText,
+  const requestInput = {expectedQuery: queryText, expectedSnapshotId, scope};
+  const services = yield* Effect.context<ApplicationServices>();
+  const runManagerQuery = (signal?: AbortSignal): Promise<GraphQueryVisualization> =>
+    Effect.runPromiseWith(services)(
+      managerGraphQuery(
+        threadnoteHome,
+        indexedView.id,
+        queryText,
+        {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+        expectedSnapshot,
+      ),
+      signal ? {signal} : undefined,
+    ) as Promise<GraphQueryVisualization>;
+  const awaitRequestPair = <A, B>(left: Promise<A>, right: Promise<B>) =>
+    Effect.tryPromise({
+      try: () => Promise.all([left, right] as const),
+      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+
+  const cancellationGate = createGraphQueryRequestGate();
+  const cancellableQueryCompleted = yield* Deferred.make<void>();
+  let cancelledSignal: AbortSignal | undefined;
+  const cancelledRequest = cancellationGate.request(requestInput, signal => {
+    cancelledSignal = signal;
+    return Effect.runPromiseWith(services)(
+      Effect.gen(function* () {
+        yield* managerGraphQuery(
+          threadnoteHome,
+          indexedView.id,
+          queryText,
+          {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+          expectedSnapshot,
+        );
+        yield* Deferred.succeed(cancellableQueryCompleted, undefined);
+        return yield* Effect.never;
+      }),
+      {signal},
     );
-  if (!staleRequestCancellationPassed) {
-    return yield* Effect.fail(new Error('Manager benchmark stale-request cancellation control failed.'));
+  });
+  yield* Deferred.await(cancellableQueryCompleted);
+  const acceptedAfterCancellation = cancellationGate.request(requestInput, runManagerQuery);
+  const [cancelledOutcome, acceptedAfterCancellationOutcome] = yield* awaitRequestPair(
+    cancelledRequest.result,
+    acceptedAfterCancellation.result,
+  );
+  const requestCancellationPassed =
+    cancelledSignal?.aborted === true &&
+    cancelledOutcome.state === 'cancelled' &&
+    acceptedAfterCancellationOutcome.state === 'accepted';
+  if (!requestCancellationPassed) {
+    return yield* Effect.fail(new Error('Manager benchmark request-cancellation control failed.'));
+  }
+
+  const staleResponseGate = createGraphQueryRequestGate();
+  const lateQueryCompleted = yield* Deferred.make<void>();
+  const releaseLateResponse = yield* Deferred.make<void>();
+  let lateSignal: AbortSignal | undefined;
+  const lateRequest = staleResponseGate.request(requestInput, signal => {
+    lateSignal = signal;
+    return Effect.runPromiseWith(services)(
+      Effect.gen(function* () {
+        const graph = yield* managerGraphQuery(
+          threadnoteHome,
+          indexedView.id,
+          queryText,
+          {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+          expectedSnapshot,
+        );
+        yield* Deferred.succeed(lateQueryCompleted, undefined);
+        yield* Deferred.await(releaseLateResponse);
+        return graph;
+      }),
+    ) as Promise<GraphQueryVisualization>;
+  });
+  yield* Deferred.await(lateQueryCompleted);
+  const acceptedAfterLateResponse = staleResponseGate.request(requestInput, runManagerQuery);
+  yield* Deferred.succeed(releaseLateResponse, undefined);
+  const [lateOutcome, acceptedAfterLateResponseOutcome] = yield* awaitRequestPair(
+    lateRequest.result,
+    acceptedAfterLateResponse.result,
+  );
+  if (lateOutcome.state === 'stale') {
+    assertManagerVisualizationBounds('rejected late query response', lateOutcome.graph, {
+      edgeLimit: MANAGER_QUERY_EDGE_LIMIT,
+      nodeLimit: MANAGER_QUERY_NODE_LIMIT,
+    });
+  }
+  const staleResponseRejectionPassed =
+    lateSignal?.aborted === true &&
+    lateOutcome.state === 'stale' &&
+    acceptedAfterLateResponseOutcome.state === 'accepted';
+  if (!staleResponseRejectionPassed) {
+    return yield* Effect.fail(new Error('Manager benchmark stale-response rejection control failed.'));
   }
 
   return {
     catalogColdMilliseconds: [catalogCold.durationMilliseconds],
     catalogWarmMilliseconds: catalogWarm.map(sample => sample.durationMilliseconds),
     detailColdMilliseconds: [detailCold.durationMilliseconds],
+    detailEdgeCount: detailCold.value.edges.length,
+    detailNodeCount: detailCold.value.nodes.length,
     edgeBudget: MANAGER_GRAPH_MAX_EDGE_LIMIT,
     maxResponsePayloadBytes: [
       catalogCold.payloadBytes,
@@ -3436,13 +3555,42 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
     nodeBudget: MANAGER_GRAPH_MAX_NODE_LIMIT,
     nodeDetailColdMilliseconds: [nodeDetail.durationMilliseconds],
     overviewColdMilliseconds: [overviewCold.durationMilliseconds],
+    overviewEdgeCount: overviewCold.value.edges.length,
+    overviewNodeCount: overviewCold.value.nodes.length,
     overviewWarmMilliseconds: overviewWarm.map(sample => sample.durationMilliseconds),
     queryMilliseconds: querySamples.map(sample => sample.durationMilliseconds),
     queryPayloadBytes: querySamples.map(sample => sample.payloadBytes),
-    renderProxyMilliseconds,
+    layoutPreparationProxyMilliseconds,
+    requestCancellationPassed: true,
     snapshotBindingPassed: true,
-    staleRequestCancellationPassed: true,
+    staleResponseRejectionPassed: true,
   } satisfies ManagerPerformanceEvidence;
+});
+
+export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.managerPerformance')(function* (
+  threadnoteHome: string,
+  expectedRepositoryId: string,
+  expectedSnapshotId: string,
+  queryText: string,
+  samples: number,
+  warmups: number,
+) {
+  return yield* benchmarkManagerPerformanceMeasured(
+    threadnoteHome,
+    expectedRepositoryId,
+    expectedSnapshotId,
+    queryText,
+    samples,
+    warmups,
+  ).pipe(
+    Effect.timeoutOrElse({
+      duration: MANAGER_SEQUENCE_TIMEOUT_MS,
+      orElse: () =>
+        Effect.fail(
+          new Error(`Manager benchmark sequence timed out after ${MANAGER_SEQUENCE_TIMEOUT_MS} milliseconds.`),
+        ),
+    }),
+  );
 });
 
 function mcpOperationMatrixMeasurements(
@@ -3470,10 +3618,18 @@ function managerPerformanceMeasurements(
     benchmarkMeasurement('manager-overview-warm', 'milliseconds', evidence.overviewWarmMilliseconds),
     benchmarkMeasurement('manager-detail-cold', 'milliseconds', evidence.detailColdMilliseconds),
     benchmarkMeasurement('manager-node-detail-cold', 'milliseconds', evidence.nodeDetailColdMilliseconds),
-    benchmarkMeasurement('manager-render-proxy', 'milliseconds', evidence.renderProxyMilliseconds),
+    benchmarkMeasurement(
+      'manager-layout-preparation-proxy',
+      'milliseconds',
+      evidence.layoutPreparationProxyMilliseconds,
+    ),
     benchmarkMeasurement('manager-response-payload', 'bytes', evidence.maxResponsePayloadBytes),
     benchmarkMeasurement('manager-bounded-query', 'milliseconds', evidence.queryMilliseconds),
     benchmarkMeasurement('manager-bounded-query-payload', 'bytes', evidence.queryPayloadBytes),
+    benchmarkMeasurement('manager-overview-node-count', 'count', [evidence.overviewNodeCount]),
+    benchmarkMeasurement('manager-overview-edge-count', 'count', [evidence.overviewEdgeCount]),
+    benchmarkMeasurement('manager-detail-node-count', 'count', [evidence.detailNodeCount]),
+    benchmarkMeasurement('manager-detail-edge-count', 'count', [evidence.detailEdgeCount]),
   ];
 }
 
@@ -3551,42 +3707,6 @@ export function retainedExternalControlEvidence(
     throw new Error('External control evidence contains duplicate public language categories.');
   }
   return JSON.stringify(Object.fromEntries(entries));
-}
-
-function assertRetainedExternalControlEvidence(serialized: string, languages: readonly string[]): void {
-  const expectedKeys = languages.map(performanceControlMetadataKey).sort();
-  if (new Set(expectedKeys).size !== expectedKeys.length) {
-    throw new Error('External control evidence contains duplicate public language categories.');
-  }
-  const parsed = JSON.parse(serialized) as unknown;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('External control evidence must be a JSON object.');
-  }
-  const evidence = parsed as Record<string, unknown>;
-  const actualKeys = Object.keys(evidence).sort();
-  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new Error('External control evidence does not match its declared languages.');
-  }
-  for (const key of expectedKeys) {
-    const value = evidence[key];
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('External control evidence entries must be JSON objects.');
-    }
-    const control = value as Record<string, unknown>;
-    const keys = Object.keys(control).sort();
-    if (keys.length !== 3 || keys[0] !== 'path' || keys[1] !== 'query' || keys[2] !== 'stableNodeId') {
-      throw new Error('External control evidence entries have unexpected fields.');
-    }
-    if (typeof control.path !== 'string' || privacySafeExternalControlPath(control.path) !== control.path) {
-      throw new Error('External control evidence contains an invalid public path.');
-    }
-    if (typeof control.query !== 'string' || privacySafeExternalControlQuery(control.query) !== control.query) {
-      throw new Error('External control evidence contains an invalid public query.');
-    }
-    if (typeof control.stableNodeId !== 'string' || !/^cgs_[a-f0-9]{32,64}$/.test(control.stableNodeId)) {
-      throw new Error('External control evidence contains an invalid stable node identity.');
-    }
-  }
 }
 
 export function assertPerformanceControlSet(controls: readonly ExternalRepositoryQueryControl[]): void {
@@ -3735,228 +3855,19 @@ function missingReviewedProductionProfile(artifact: BenchmarkArtifactV1): readon
 }
 
 export function assertExternalRepositoryEvidence(artifact: BenchmarkArtifactV1): void {
-  if (artifact.suite !== 'code-graph-external-repository-v1') {
-    throw new Error(`External repository evidence has the wrong suite: ${artifact.suite}.`);
-  }
-  const measurements = new Map(artifact.measurements.map(measurement => [measurement.name, measurement]));
-  const missing = EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS.flatMap(required => {
-    const measurement = measurements.get(required.name);
-    return measurement?.unit === required.unit ? [] : [`${required.name} (${required.unit})`];
+  validateExternalRepositoryEvidence(artifact, {
+    managerEdgeBudget: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+    managerNodeBudget: MANAGER_GRAPH_MAX_NODE_LIMIT,
   });
-  if (artifact.metadata.oneFileReindexMaterializationMode !== 'incremental-overlay') {
-    missing.push('one-file reindex incremental-overlay materialization mode');
-  }
-  if (artifact.metadata.coldMaterializationStorageMode !== 'direct-persistent') {
-    missing.push('cold direct-persistent materialization storage mode');
-  }
-  if (artifact.metadata.sameOverlayReferenceMaterializationMode !== 'full') {
-    missing.push('same-overlay full rebuild materialization mode');
-  }
-  if (!EXACT_GIT_COMMIT_PATTERN.test(String(artifact.metadata.externalRepositoryCommit ?? ''))) {
-    missing.push('exact external repository commit');
-  }
-  if (!EXACT_GIT_COMMIT_PATTERN.test(artifact.environment.commit) || artifact.environment.dirty) {
-    missing.push('clean exact Threadnote source commit');
-  }
-  if (
-    artifact.environment.fixtureHash !== `external-code-graph-v1:${String(artifact.metadata.externalRepositoryCommit)}`
-  ) {
-    missing.push('external fixture identity tied to its exact commit');
-  }
-  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(artifact.metadata.sqliteVersion ?? ''))) {
-    missing.push('SQLite version');
-  }
-  for (const name of [
-    'benchmarkDiskFilesystem',
-    'benchmarkDiskMedium',
-    'externalControlEvidence',
-    'externalRepositoryName',
-    'externalRepositoryUrl',
-  ]) {
-    if (typeof artifact.metadata[name] !== 'string' || artifact.metadata[name].length === 0) {
-      missing.push(`${name} metadata`);
-    }
-  }
-  for (const name of [
-    'benchmarkInventoryEligibleFiles',
-    'benchmarkLogicalCpuCount',
-    'managerEdgeBudget',
-    'managerNodeBudget',
-    'simultaneousWorktrees',
-  ]) {
-    if (typeof artifact.metadata[name] !== 'number' || artifact.metadata[name] <= 0) {
-      missing.push(`${name} positive metadata`);
-    }
-  }
-  if (
-    typeof artifact.metadata.benchmarkInventoryExcludedFiles !== 'number' ||
-    artifact.metadata.benchmarkInventoryExcludedFiles < 0
-  ) {
-    missing.push('benchmarkInventoryExcludedFiles non-negative metadata');
-  }
-  if (artifact.metadata.managerSnapshotBindingPassed !== true) missing.push('Manager exact snapshot binding');
-  if (artifact.metadata.managerStaleRequestCancellationPassed !== true) {
-    missing.push('Manager stale-request cancellation');
-  }
-  if (
-    artifact.metadata.managerStaleRequestControl !==
-    'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate'
-  ) {
-    missing.push('overlapping Manager stale-result request control');
-  }
-  if (typeof artifact.metadata.simultaneousWorktrees !== 'number' || artifact.metadata.simultaneousWorktrees < 2) {
-    missing.push('at least two simultaneous worktrees');
-  }
-  if (artifact.metadata.worktreeIsolationPassed !== true) missing.push('concurrent worktree isolation');
-  if (artifact.metadata.worktreeIsolationTopology !== 'bounded-synthetic-linked-worktrees-in-measured-primary-home') {
-    missing.push('bounded shared-primary-home linked-worktree topology');
-  }
-  if (artifact.metadata.worktreeIsolationIndexedFiles !== 2) {
-    missing.push('bounded linked-worktree indexed file count');
-  }
-  const controlLanguages = externalControlLanguages(artifact.metadata);
-  if (controlLanguages.length === 0) missing.push('external query control languages');
-  if (artifact.metadata.externalControlCount !== controlLanguages.length) missing.push('external query control count');
-  try {
-    assertRetainedExternalControlEvidence(String(artifact.metadata.externalControlEvidence ?? ''), controlLanguages);
-  } catch {
-    missing.push('privacy-safe external control evidence matching declared languages');
-  }
-  try {
-    const repository = publicGitHubRepositoryEvidence(String(artifact.metadata.externalRepositoryUrl ?? ''));
-    if (repository.name !== artifact.metadata.externalRepositoryName) {
-      missing.push('matching public GitHub repository identity');
-    }
-  } catch {
-    missing.push('public GitHub repository identity');
-  }
-  if (
-    !['rotational', 'solid-state', 'unknown', 'virtual-or-network'].includes(
-      String(artifact.metadata.benchmarkDiskMedium),
-    )
-  ) {
-    missing.push('privacy-safe disk medium category');
-  }
-  if (!/^[a-z0-9._+-]{1,64}$/.test(String(artifact.metadata.benchmarkDiskFilesystem))) {
-    missing.push('privacy-safe filesystem category');
-  }
-  if (!Number.isInteger(artifact.metadata.benchmarkLogicalCpuCount)) missing.push('integer logical CPU count');
-  if (!Number.isInteger(artifact.metadata.benchmarkInventoryEligibleFiles)) missing.push('integer eligible-file count');
-  if (!Number.isInteger(artifact.metadata.benchmarkInventoryExcludedFiles)) missing.push('integer excluded-file count');
-  if (artifact.metadata.managerNodeBudget !== MANAGER_GRAPH_MAX_NODE_LIMIT)
-    missing.push('reviewed Manager node budget');
-  if (artifact.metadata.managerEdgeBudget !== MANAGER_GRAPH_MAX_EDGE_LIMIT)
-    missing.push('reviewed Manager edge budget');
-  if (artifact.metadata.mcpOperationCount !== 6) missing.push('complete six-operation MCP matrix');
-  missing.push(...missingBenchmarkRuntimeProvenance(artifact));
-  missing.push(...missingDeterministicParityEvidence(measurements));
-  missing.push(...missingSamplerObservations(measurements));
-  missing.push(...missingActivationObservations(artifact, measurements));
-  for (const language of controlLanguages) {
-    const duration = measurements.get(`external-query-cold-${language}-duration`);
-    if (!duration || duration.unit !== 'milliseconds' || duration.maximum <= 0) {
-      missing.push(`external-query-cold-${language}-duration positive result`);
-    }
-    for (const name of [
-      `cold-materialized-file-rows-language-${language}`,
-      `cold-materialized-symbol-rows-language-${language}`,
-      `external-query-cold-${language}-returned-nodes`,
-      `external-query-cold-${language}-expected-path-language-nodes`,
-      `external-query-incremental-${language}-returned-nodes`,
-      `external-query-incremental-${language}-expected-path-language-nodes`,
-      `external-query-same-overlay-reference-${language}-returned-nodes`,
-      `external-query-same-overlay-reference-${language}-expected-path-language-nodes`,
-      `external-query-${language}-same-overlay-structural-parity`,
-    ]) {
-      const measurement = measurements.get(name);
-      if (!measurement || measurement.minimum < 1) missing.push(`${name} positive result`);
-    }
-  }
-  if (controlLanguages.includes('bazel-build')) {
-    for (const name of ['cold-bazel-workspace-scope-rows', 'cold-bazel-workspace-component-rows']) {
-      const measurement = measurements.get(name);
-      if (!measurement || measurement.minimum < 1) missing.push(`${name} positive result`);
-    }
-  }
-  for (const operation of ['query', 'node', 'neighbors', 'explain', 'impact', 'path'] as const) {
-    const duration = measurements.get(`mcp-${operation}-duration`);
-    if (!duration || duration.maximum > 25_000) missing.push(`mcp-${operation}-duration within 25 seconds`);
-    for (const part of ['structured', 'text'] as const) {
-      const bytes = measurements.get(`mcp-${operation}-${part}-output`);
-      if (!bytes || bytes.minimum < 1 || bytes.maximum > 24 * 1_024) {
-        missing.push(`mcp-${operation}-${part}-output within 24 KiB`);
-      }
-    }
-  }
-  if (missing.length > 0) {
-    throw new Error(`External repository evidence is incomplete: ${missing.join(', ')}.`);
-  }
 }
 
 export function assertExternalPerformanceEvidence(artifact: BenchmarkArtifactV1): void {
-  assertExternalRepositoryEvidence(artifact);
-  const measurements = new Map(artifact.measurements.map(measurement => [measurement.name, measurement]));
-  const missing = [
-    ['manager-catalog-cold', 'milliseconds'],
-    ['manager-catalog-warm', 'milliseconds'],
-    ['manager-overview-cold', 'milliseconds'],
-    ['manager-overview-warm', 'milliseconds'],
-    ['manager-detail-cold', 'milliseconds'],
-    ['manager-node-detail-cold', 'milliseconds'],
-    ['manager-render-proxy', 'milliseconds'],
-    ['manager-response-payload', 'bytes'],
-    ['manager-bounded-query', 'milliseconds'],
-    ['manager-bounded-query-payload', 'bytes'],
-    ['concurrent-worktree-isolation-duration', 'milliseconds'],
-    ...PERFORMANCE_CONTROL_LANGUAGES.map(language => [`external-query-cold-${language}-duration`, 'milliseconds']),
-  ].flatMap(([name, unit]) => {
-    const measurement = measurements.get(name!);
-    return measurement?.unit === unit && measurement.maximum > 0 ? [] : [`${name} (${unit}) positive result`];
+  validateExternalRepositoryEvidence(artifact, {
+    expectedControlLanguages: PERFORMANCE_CONTROL_LANGUAGES,
+    managerEdgeBudget: MANAGER_GRAPH_MAX_EDGE_LIMIT,
+    managerNodeBudget: MANAGER_GRAPH_MAX_NODE_LIMIT,
+    releaseBound: true,
   });
-  missing.push(...missingReleaseSourceProvenance(artifact));
-  const metadata = artifact.metadata;
-  if (metadata.benchmarkRuntimeProvenanceMode !== 'managed-exact-head') {
-    missing.push('managed exact-head benchmark runtime provenance');
-  }
-  const controlLanguages = externalControlLanguages(metadata);
-  if (
-    controlLanguages.length !== PERFORMANCE_CONTROL_LANGUAGES.length ||
-    [...controlLanguages]
-      .sort()
-      .some((language, index) => language !== [...PERFORMANCE_CONTROL_LANGUAGES].sort()[index])
-  ) {
-    missing.push('exact Java, Kotlin, TypeScript, and Bazel control set');
-  }
-  for (const name of [
-    'benchmarkDiskFilesystem',
-    'benchmarkDiskMedium',
-    'externalControlEvidence',
-    'externalRepositoryName',
-    'externalRepositoryUrl',
-  ]) {
-    if (typeof metadata[name] !== 'string' || metadata[name].length === 0) missing.push(`${name} metadata`);
-  }
-  for (const name of [
-    'benchmarkInventoryEligibleFiles',
-    'benchmarkLogicalCpuCount',
-    'managerEdgeBudget',
-    'managerNodeBudget',
-    'simultaneousWorktrees',
-  ]) {
-    if (typeof metadata[name] !== 'number' || metadata[name] <= 0) missing.push(`${name} positive metadata`);
-  }
-  if (typeof metadata.benchmarkInventoryExcludedFiles !== 'number' || metadata.benchmarkInventoryExcludedFiles < 0) {
-    missing.push('benchmarkInventoryExcludedFiles non-negative metadata');
-  }
-  if (metadata.managerSnapshotBindingPassed !== true) missing.push('Manager exact snapshot binding');
-  if (metadata.managerStaleRequestCancellationPassed !== true) missing.push('Manager stale-request cancellation');
-  if (typeof metadata.simultaneousWorktrees !== 'number' || metadata.simultaneousWorktrees < 2) {
-    missing.push('at least two simultaneous worktrees');
-  }
-  if (metadata.worktreeIsolationPassed !== true) missing.push('concurrent worktree isolation');
-  if (missing.length > 0) {
-    throw new Error(`External performance evidence is incomplete: ${missing.join(', ')}.`);
-  }
 }
 
 function missingDeterministicParityEvidence(
@@ -4030,16 +3941,6 @@ function missingSamplerObservations(
   return missing;
 }
 
-function externalControlLanguages(metadata: BenchmarkArtifactV1['metadata']): readonly string[] {
-  const value = metadata.externalControlLanguages;
-  if (typeof value !== 'string' || value.length === 0) return [];
-  const languages = value.split(',');
-  if (languages.some(language => !/^[a-z][a-z0-9-]*$/.test(language)) || new Set(languages).size !== languages.length) {
-    return [];
-  }
-  return languages;
-}
-
 function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly string[] {
   const ref = artifact.metadata.releaseEvidenceRef;
   const resolvedSha = artifact.metadata.releaseEvidenceResolvedSha;
@@ -4057,12 +3958,13 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
 
 function missingBenchmarkRuntimeProvenance(artifact: BenchmarkArtifactV1): readonly string[] {
   const metadata = artifact.metadata;
-  const mode = metadata.benchmarkRuntimeProvenanceMode;
-  const sourceCommit = metadata.benchmarkRuntimeSourceCommit;
-  const sourceLockfileSha256 = metadata.benchmarkRuntimeSourceLockfileSha256;
-  const sourcePackageManifestSha256 = metadata.benchmarkRuntimeSourcePackageManifestSha256;
+  const mode = metadata.benchmarkSourceValidationMode;
+  const sourceCommit = metadata.benchmarkMeasuredSourceCommit;
+  const sourceLockfileSha256 = metadata.benchmarkMeasuredSourceLockfileSha256;
+  const sourcePackageManifestSha256 = metadata.benchmarkMeasuredSourcePackageManifestSha256;
   if (
-    (mode !== 'managed-exact-head' && mode !== 'github-actions-clean-source') ||
+    metadata.benchmarkMeasuredExecutionMode !== 'local-source-application-layer' ||
+    (mode !== 'managed-payload-exact-head-validated' && mode !== 'github-actions-clean-source') ||
     sourceCommit !== artifact.environment.commit ||
     typeof sourceCommit !== 'string' ||
     !EXACT_GIT_COMMIT_PATTERN.test(sourceCommit) ||
@@ -4072,29 +3974,34 @@ function missingBenchmarkRuntimeProvenance(artifact: BenchmarkArtifactV1): reado
     !/^[0-9a-f]{64}$/.test(sourcePackageManifestSha256) ||
     artifact.environment.dirty
   ) {
-    return ['clean exact benchmark runtime provenance'];
+    return ['clean exact local-source ApplicationLayer benchmark provenance'];
   }
-  if (mode === 'github-actions-clean-source') return [];
-  const managedVersion = metadata.benchmarkManagedVersion;
-  return metadata.benchmarkManagedProcessLeaseInspection === 'complete' &&
-    metadata.benchmarkManagedDependencyInstallation === 'bun install --frozen-lockfile' &&
+  if (mode === 'github-actions-clean-source') {
+    return metadata.benchmarkValidatedManagedPayload === 'not-applicable-github-actions-clean-source'
+      ? []
+      : ['GitHub Actions source-only validation disclosure'];
+  }
+  const managedVersion = metadata.benchmarkValidatedManagedVersion;
+  return metadata.benchmarkValidatedManagedPayload === 'exact-head-not-executed' &&
+    metadata.benchmarkValidatedManagedProcessLeaseInspection === 'complete' &&
+    metadata.benchmarkValidatedManagedDependencyInstallation === 'bun install --frozen-lockfile' &&
     typeof managedVersion === 'string' &&
     managedVersion.endsWith(`.local.g${sourceCommit}`) &&
-    typeof metadata.benchmarkManagedPayloadFileCount === 'number' &&
-    metadata.benchmarkManagedPayloadFileCount > 0 &&
-    typeof metadata.benchmarkManagedPayloadBytes === 'number' &&
-    metadata.benchmarkManagedPayloadBytes > 0 &&
+    typeof metadata.benchmarkValidatedManagedPayloadFileCount === 'number' &&
+    metadata.benchmarkValidatedManagedPayloadFileCount > 0 &&
+    typeof metadata.benchmarkValidatedManagedPayloadBytes === 'number' &&
+    metadata.benchmarkValidatedManagedPayloadBytes > 0 &&
     [
-      metadata.benchmarkManagedExecutableSha256,
-      metadata.benchmarkManagedPayloadManifestSha256,
-      metadata.benchmarkManagedReleaseMetadataSha256,
+      metadata.benchmarkValidatedManagedExecutableSha256,
+      metadata.benchmarkValidatedManagedPayloadManifestSha256,
+      metadata.benchmarkValidatedManagedReleaseMetadataSha256,
     ].every(value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)) &&
-    typeof metadata.benchmarkManagedRuntime === 'string' &&
-    metadata.benchmarkManagedRuntime.length > 0 &&
-    typeof metadata.benchmarkManagedTarget === 'string' &&
-    metadata.benchmarkManagedTarget.length > 0
+    typeof metadata.benchmarkValidatedManagedRuntime === 'string' &&
+    metadata.benchmarkValidatedManagedRuntime.length > 0 &&
+    typeof metadata.benchmarkValidatedManagedTarget === 'string' &&
+    metadata.benchmarkValidatedManagedTarget.length > 0
     ? []
-    : ['complete managed exact-HEAD benchmark runtime provenance'];
+    : ['complete separately validated managed exact-HEAD payload provenance'];
 }
 
 function missingActivationObservations(
@@ -4241,25 +4148,28 @@ function benchmarkRuntimeProvenanceMetadata(
   provenance: BenchmarkRuntimeProvenance,
 ): Readonly<Record<string, boolean | number | string>> {
   const common = {
-    benchmarkRuntimeProvenanceMode: provenance.mode,
-    benchmarkRuntimeSourceCommit: provenance.sourceCommit,
-    benchmarkRuntimeSourceLockfileSha256: provenance.sourceLockfileSha256,
-    benchmarkRuntimeSourcePackageManifestSha256: provenance.sourcePackageManifestSha256,
+    benchmarkMeasuredExecutionMode: 'local-source-application-layer',
+    benchmarkMeasuredSourceCommit: provenance.sourceCommit,
+    benchmarkMeasuredSourceLockfileSha256: provenance.sourceLockfileSha256,
+    benchmarkMeasuredSourcePackageManifestSha256: provenance.sourcePackageManifestSha256,
+    benchmarkSourceValidationMode:
+      provenance.mode === 'managed-exact-head' ? 'managed-payload-exact-head-validated' : provenance.mode,
   } as const;
   return provenance.mode === 'github-actions-clean-source'
-    ? common
+    ? {...common, benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source'}
     : {
         ...common,
-        benchmarkManagedDependencyInstallation: provenance.dependencyInstallation,
-        benchmarkManagedExecutableSha256: provenance.executableSha256,
-        benchmarkManagedPayloadBytes: provenance.payloadBytes,
-        benchmarkManagedPayloadFileCount: provenance.payloadFileCount,
-        benchmarkManagedPayloadManifestSha256: provenance.payloadManifestSha256,
-        benchmarkManagedProcessLeaseInspection: provenance.processLeaseInspection,
-        benchmarkManagedReleaseMetadataSha256: provenance.releaseMetadataSha256,
-        benchmarkManagedRuntime: provenance.runtime,
-        benchmarkManagedTarget: provenance.target,
-        benchmarkManagedVersion: provenance.version,
+        benchmarkValidatedManagedDependencyInstallation: provenance.dependencyInstallation,
+        benchmarkValidatedManagedExecutableSha256: provenance.executableSha256,
+        benchmarkValidatedManagedPayload: 'exact-head-not-executed',
+        benchmarkValidatedManagedPayloadBytes: provenance.payloadBytes,
+        benchmarkValidatedManagedPayloadFileCount: provenance.payloadFileCount,
+        benchmarkValidatedManagedPayloadManifestSha256: provenance.payloadManifestSha256,
+        benchmarkValidatedManagedProcessLeaseInspection: provenance.processLeaseInspection,
+        benchmarkValidatedManagedReleaseMetadataSha256: provenance.releaseMetadataSha256,
+        benchmarkValidatedManagedRuntime: provenance.runtime,
+        benchmarkValidatedManagedTarget: provenance.target,
+        benchmarkValidatedManagedVersion: provenance.version,
       };
 }
 
@@ -4538,6 +4448,9 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
     return yield* Effect.fail(new Error('External repository benchmark requires a clean checkout.'));
   }
   const publicRepository = publicGitHubRepositoryEvidence(origin);
+  const publicRepositoryVerification =
+    reviewedPublicRepositoryVerification(publicRepository) ??
+    (yield* verifyAnonymousPublicGitHubRepository(publicRepository));
 
   const artifactPath = yield* canonicalizeProspectivePath(fs, path, options.outputPath);
   const artifactContainment = path.relative(repository, artifactPath);
@@ -4613,6 +4526,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
       referenceHomeReservation.preserve();
     }),
     publicRepository,
+    publicRepositoryVerification,
     queryText: externalControls[0]!.query,
     referenceHome,
     repository,
@@ -4654,6 +4568,39 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
 }
 
 export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
+
+export const verifyAnonymousPublicGitHubRepository = Effect.fn(
+  'benchmarkCodeGraph.verifyAnonymousPublicGitHubRepository',
+)(function* (repository: PublicGitHubRepositoryEvidence) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-public-repository-proof-'});
+  const emptyGitConfig = path.join(root, 'empty.gitconfig');
+  yield* fs.writeFileString(emptyGitConfig, '');
+  yield* runCommandEffect(
+    'git',
+    ['-c', 'credential.helper=', '-c', 'core.askPass=', 'ls-remote', '--exit-code', repository.url, 'HEAD'],
+    {
+      env: {
+        ...process.env,
+        GCM_INTERACTIVE: 'never',
+        GIT_ASKPASS: '',
+        GIT_CONFIG_GLOBAL: emptyGitConfig,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_TERMINAL_PROMPT: '0',
+        SSH_ASKPASS: '',
+      },
+      maxOutputBytes: 16 * 1_024,
+      timeoutMs: 30_000,
+    },
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new Error('External benchmark repository could not be verified through credentials-disabled anonymous HTTPS.'),
+    ),
+  );
+  return 'anonymous-https-ls-remote' as const;
+});
 
 const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome')(function* (
   fs: FileSystem.FileSystem,
@@ -4782,11 +4729,17 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
 const verifyPublicRepositoryOrigin = Effect.fn('benchmarkCodeGraph.verifyPublicRepositoryOrigin')(function* (
   repository: string,
   expected: PublicGitHubRepositoryEvidence,
+  expectedVerification: ExternalRepositoryPublicVerification | undefined,
 ) {
   const remote = (yield* repositoryGit(repository, ['remote', 'get-url', 'origin'])).stdout.trim();
   const actual = publicGitHubRepositoryEvidence(remote);
   if (actual.name !== expected.name || actual.url !== expected.url) {
     return yield* Effect.fail(new Error('External benchmark public repository identity changed during the run.'));
+  }
+  const verification =
+    reviewedPublicRepositoryVerification(actual) ?? (yield* verifyAnonymousPublicGitHubRepository(actual));
+  if (verification !== expectedVerification) {
+    return yield* Effect.fail(new Error('External benchmark public repository verification changed during the run.'));
   }
 });
 
@@ -4843,111 +4796,156 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
 });
 
 export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGraph.concurrentWorktreeIsolation')(
-  function* (threadnoteHome: string) {
+  function* (threadnoteHome: string, options: Readonly<{failureInjection?: 'after-index'}> = {}) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const indexer = yield* CodeGraphIndexer;
     const query = yield* CodeGraphQueryService;
-    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-worktree-control-'});
+    const root = yield* fs.makeTempDirectory({prefix: 'threadnote-code-graph-worktree-control-'});
     const repository = path.join(root, 'repository');
     const linkedWorktree = path.join(root, 'linked-worktree');
-    const started = yield* Clock.currentTimeNanos;
-    yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
-    yield* fs.writeFileString(
-      path.join(repository, 'src', 'service.ts'),
-      'export const committedWorktreeSentinel = 0;\n',
-    );
-    yield* runCommandEffect('git', ['init', '--quiet'], {cwd: repository});
-    yield* runCommandEffect('git', ['config', 'user.name', 'Threadnote Benchmark'], {cwd: repository});
-    yield* runCommandEffect('git', ['config', 'user.email', 'benchmark@threadnote.invalid'], {cwd: repository});
-    yield* runCommandEffect('git', ['add', 'src/service.ts'], {cwd: repository});
-    yield* runCommandEffect('git', ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'fixture'], {
-      cwd: repository,
+    const disabledHooks = path.join(root, 'disabled-hooks');
+    const emptyGitConfig = path.join(root, 'empty.gitconfig');
+    const repositoryRoots = new Set<string>();
+    const git = (cwd: string, args: readonly string[]) =>
+      runCommandEffect('git', ['-c', `core.hooksPath=${disabledHooks}`, ...args], {
+        cwd,
+        env: {
+          ...process.env,
+          GCM_INTERACTIVE: 'never',
+          GIT_CONFIG_GLOBAL: emptyGitConfig,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_TERMINAL_PROMPT: '0',
+        },
+        timeoutMs: WORKTREE_GIT_COMMAND_TIMEOUT_MS,
+      });
+    const cleanup = Effect.gen(function* () {
+      for (const target of [...repositoryRoots, root]) {
+        yield* fs.remove(target, {force: true, recursive: true}).pipe(Effect.ignore);
+      }
+      for (const target of [...repositoryRoots, root]) {
+        if (yield* fs.exists(target)) {
+          return yield* Effect.fail(new Error('Concurrent worktree benchmark cleanup left a generated path behind.'));
+        }
+      }
     });
-    yield* runCommandEffect('git', ['worktree', 'add', '--quiet', '--detach', linkedWorktree, 'HEAD'], {
-      cwd: repository,
+    const measured = Effect.gen(function* () {
+      const started = yield* Clock.currentTimeNanos;
+      yield* fs.makeDirectory(path.join(repository, 'src'), {recursive: true});
+      yield* fs.makeDirectory(disabledHooks, {recursive: true});
+      yield* fs.writeFileString(emptyGitConfig, '');
+      yield* fs.writeFileString(
+        path.join(repository, 'src', 'service.ts'),
+        'export const committedWorktreeSentinel = 0;\n',
+      );
+      yield* git(repository, ['init', '--quiet']);
+      yield* git(repository, ['config', 'user.name', 'Threadnote Benchmark']);
+      yield* git(repository, ['config', 'user.email', 'benchmark@threadnote.invalid']);
+      yield* git(repository, ['add', 'src/service.ts']);
+      yield* git(repository, ['-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'fixture']);
+      yield* git(repository, ['worktree', 'add', '--quiet', '--detach', linkedWorktree, 'HEAD']);
+      yield* Effect.all(
+        [
+          fs.writeFileString(path.join(repository, 'src', 'service.ts'), 'export const primaryWorktreeSentinel = 1;\n'),
+          fs.writeFileString(
+            path.join(linkedWorktree, 'src', 'service.ts'),
+            'export const linkedWorktreeSentinel = 2;\n',
+          ),
+        ],
+        {concurrency: 2},
+      );
+      const [primaryIdentity, linkedIdentity] = yield* Effect.all(
+        [resolveRepositoryIdentity(repository), resolveRepositoryIdentity(linkedWorktree)],
+        {concurrency: 2},
+      );
+      repositoryRoots.add(
+        codeGraphLayout(path, threadnoteHome, primaryIdentity.checkoutId, primaryIdentity.worktreeId).repositoryRoot,
+      );
+      repositoryRoots.add(
+        codeGraphLayout(path, threadnoteHome, linkedIdentity.checkoutId, linkedIdentity.worktreeId).repositoryRoot,
+      );
+      const [primary, linked] = yield* Effect.all(
+        [indexer.index({cwd: repository, threadnoteHome}), indexer.index({cwd: linkedWorktree, threadnoteHome})],
+        {concurrency: 2},
+      );
+      if (options.failureInjection === 'after-index') {
+        return yield* Effect.fail(new Error('Injected concurrent worktree benchmark failure after indexing.'));
+      }
+      const [primaryQuery, linkedQuery, primaryCrossQuery, linkedCrossQuery] = yield* Effect.all(
+        [
+          query.inspect({
+            cwd: repository,
+            operation: 'query',
+            query: 'primaryWorktreeSentinel',
+            refresh: false,
+            threadnoteHome,
+          }),
+          query.inspect({
+            cwd: linkedWorktree,
+            operation: 'query',
+            query: 'linkedWorktreeSentinel',
+            refresh: false,
+            threadnoteHome,
+          }),
+          query.inspect({
+            cwd: repository,
+            operation: 'query',
+            query: 'linkedWorktreeSentinel',
+            refresh: false,
+            threadnoteHome,
+          }),
+          query.inspect({
+            cwd: linkedWorktree,
+            operation: 'query',
+            query: 'primaryWorktreeSentinel',
+            refresh: false,
+            threadnoteHome,
+          }),
+        ],
+        {concurrency: 2},
+      );
+      const isolationPassed =
+        primary.identity.repositoryId === linked.identity.repositoryId &&
+        primary.identity.checkoutId === linked.identity.checkoutId &&
+        primary.identity.worktreeId !== linked.identity.worktreeId &&
+        primary.snapshot.worktreeId === primary.identity.worktreeId &&
+        linked.snapshot.worktreeId === linked.identity.worktreeId &&
+        primaryQuery.snapshot.worktreeId === primary.identity.worktreeId &&
+        linkedQuery.snapshot.worktreeId === linked.identity.worktreeId &&
+        primaryCrossQuery.snapshot.worktreeId === primary.identity.worktreeId &&
+        linkedCrossQuery.snapshot.worktreeId === linked.identity.worktreeId &&
+        primaryQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
+        !primaryQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+        linkedQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+        !linkedQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
+        !primaryCrossQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
+        !linkedCrossQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel');
+      if (!isolationPassed) {
+        return yield* Effect.fail(new Error('Concurrent linked-worktree graph isolation control failed.'));
+      }
+      const durationMilliseconds = Math.max(
+        Number.EPSILON,
+        Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
+      );
+      return {
+        cleanupPassed: true,
+        durationMilliseconds,
+        indexedFiles: primary.snapshot.fileCount + linked.snapshot.fileCount,
+        isolationPassed: true,
+        simultaneousWorktrees: 2,
+        topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+      } satisfies ConcurrentWorktreeEvidence;
     });
-    yield* Effect.all(
-      [
-        fs.writeFileString(path.join(repository, 'src', 'service.ts'), 'export const primaryWorktreeSentinel = 1;\n'),
-        fs.writeFileString(
-          path.join(linkedWorktree, 'src', 'service.ts'),
-          'export const linkedWorktreeSentinel = 2;\n',
-        ),
-      ],
-      {concurrency: 2},
+    return yield* measured.pipe(
+      Effect.timeoutOrElse({
+        duration: WORKTREE_ISOLATION_TIMEOUT_MS,
+        orElse: () =>
+          Effect.fail(
+            new Error(`Concurrent worktree control timed out after ${WORKTREE_ISOLATION_TIMEOUT_MS} milliseconds.`),
+          ),
+      }),
+      Effect.ensuring(cleanup.pipe(Effect.orDie)),
     );
-    const [primary, linked] = yield* Effect.all(
-      [indexer.index({cwd: repository, threadnoteHome}), indexer.index({cwd: linkedWorktree, threadnoteHome})],
-      {concurrency: 2},
-    );
-    const [primaryQuery, linkedQuery, primaryCrossQuery, linkedCrossQuery] = yield* Effect.all(
-      [
-        query.inspect({
-          cwd: repository,
-          operation: 'query',
-          query: 'primaryWorktreeSentinel',
-          refresh: false,
-          threadnoteHome,
-        }),
-        query.inspect({
-          cwd: linkedWorktree,
-          operation: 'query',
-          query: 'linkedWorktreeSentinel',
-          refresh: false,
-          threadnoteHome,
-        }),
-        query.inspect({
-          cwd: repository,
-          operation: 'query',
-          query: 'linkedWorktreeSentinel',
-          refresh: false,
-          threadnoteHome,
-        }),
-        query.inspect({
-          cwd: linkedWorktree,
-          operation: 'query',
-          query: 'primaryWorktreeSentinel',
-          refresh: false,
-          threadnoteHome,
-        }),
-      ],
-      {concurrency: 2},
-    );
-    const isolationPassed =
-      primary.identity.repositoryId === linked.identity.repositoryId &&
-      primary.identity.checkoutId === linked.identity.checkoutId &&
-      primary.identity.worktreeId !== linked.identity.worktreeId &&
-      primary.snapshot.worktreeId === primary.identity.worktreeId &&
-      linked.snapshot.worktreeId === linked.identity.worktreeId &&
-      primaryQuery.snapshot.worktreeId === primary.identity.worktreeId &&
-      linkedQuery.snapshot.worktreeId === linked.identity.worktreeId &&
-      primaryCrossQuery.snapshot.worktreeId === primary.identity.worktreeId &&
-      linkedCrossQuery.snapshot.worktreeId === linked.identity.worktreeId &&
-      primaryQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
-      !primaryQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
-      linkedQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
-      !linkedQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel') &&
-      !primaryCrossQuery.nodes.some(node => node.name === 'linkedWorktreeSentinel') &&
-      !linkedCrossQuery.nodes.some(node => node.name === 'primaryWorktreeSentinel');
-    if (!isolationPassed) {
-      return yield* Effect.fail(new Error('Concurrent linked-worktree graph isolation control failed.'));
-    }
-    yield* fs.remove(
-      codeGraphLayout(path, threadnoteHome, primary.identity.checkoutId, primary.identity.worktreeId).repositoryRoot,
-      {force: true, recursive: true},
-    );
-    const durationMilliseconds = Math.max(
-      Number.EPSILON,
-      Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND,
-    );
-    return {
-      durationMilliseconds,
-      indexedFiles: primary.snapshot.fileCount + linked.snapshot.fileCount,
-      isolationPassed: true,
-      simultaneousWorktrees: 2,
-      topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
-    } satisfies ConcurrentWorktreeEvidence;
   },
 );
 

@@ -588,6 +588,99 @@ export function graphQueryRequestIsCurrent(
   );
 }
 
+export interface GraphQueryRequestInput {
+  readonly expectedQuery: string;
+  readonly expectedSnapshotId: string;
+  readonly scope: string;
+}
+
+export type GraphQueryRequestOutcome =
+  | {readonly graph: GraphQueryVisualization; readonly state: 'accepted'}
+  | {readonly cause: unknown; readonly state: 'failed'}
+  | {readonly state: 'cancelled'}
+  | {readonly graph: GraphQueryVisualization; readonly state: 'stale'};
+
+export interface GraphQueryRequestHandle {
+  readonly cancel: () => void;
+  readonly isCurrent: () => boolean;
+  readonly result: Promise<GraphQueryRequestOutcome>;
+}
+
+export interface GraphQueryRequestGate {
+  readonly cancelCurrent: () => void;
+  readonly request: (
+    input: GraphQueryRequestInput,
+    load: (signal: AbortSignal) => Promise<GraphQueryVisualization>,
+  ) => GraphQueryRequestHandle;
+}
+
+/**
+ * Owns the same supersession boundary used by the Manager graph-query UI.
+ *
+ * A new request aborts the previous signal. The sequence, scope, snapshot, and
+ * query checks remain mandatory even when a loader ignores cancellation and
+ * eventually delivers a late response.
+ */
+export function createGraphQueryRequestGate(): GraphQueryRequestGate {
+  let currentController: AbortController | undefined;
+  let currentScope = '';
+  let currentSequence = 0;
+
+  const cancelCurrent = (): void => {
+    currentController?.abort();
+    currentController = undefined;
+    currentScope = '';
+    currentSequence += 1;
+  };
+
+  return {
+    cancelCurrent,
+    request: (input, load) => {
+      currentController?.abort();
+      const controller = new AbortController();
+      const requestedSequence = currentSequence + 1;
+      currentController = controller;
+      currentScope = input.scope;
+      currentSequence = requestedSequence;
+      const isCurrent = (): boolean =>
+        currentController === controller &&
+        graphRequestIsCurrent(currentSequence, requestedSequence, currentScope, input.scope);
+      const cancel = (): void => {
+        if (!isCurrent()) return;
+        cancelCurrent();
+      };
+      let pending: Promise<GraphQueryVisualization>;
+      try {
+        pending = load(controller.signal);
+      } catch (cause) {
+        pending = Promise.reject(cause);
+      }
+      const result = pending.then<GraphQueryRequestOutcome, GraphQueryRequestOutcome>(
+        graph =>
+          graphQueryRequestIsCurrent(
+            controller.signal.aborted,
+            currentSequence,
+            requestedSequence,
+            currentScope,
+            input.scope,
+            graph,
+            input.expectedSnapshotId,
+            input.expectedQuery,
+          )
+            ? {graph, state: 'accepted'}
+            : {graph, state: 'stale'},
+        cause =>
+          controller.signal.aborted || isAbortError(cause)
+            ? {state: 'cancelled'}
+            : isCurrent()
+              ? {cause, state: 'failed'}
+              : {state: 'cancelled'},
+      );
+      return {cancel, isCurrent, result};
+    },
+  };
+}
+
 export function graphNodeDetailRequestIsCurrent(
   aborted: boolean,
   detail: Pick<GraphNodeDetail, 'node' | 'snapshotId'>,
@@ -960,7 +1053,7 @@ export function GraphWorkspace(props: {
   const [queryError, setQueryError] = useState('');
   const [queryAttempt, setQueryAttempt] = useState(0);
   const [queryWorkingSet, setQueryWorkingSet] = useState<ManagerGraphVisualizationLimits>(DEFAULT_QUERY_WORKING_SET);
-  const queryRequestSequence = useRef(0);
+  const queryRequestGate = useRef(createGraphQueryRequestGate());
   const [relationFilter, setRelationFilter] = useState('all');
   const [focusMode, setFocusMode] = useState<GraphFocusMode>('all');
   const [sizeMetric, setSizeMetric] = useState<GraphSizeMetric>('connections');
@@ -1011,8 +1104,6 @@ export function GraphWorkspace(props: {
   const graphScopeRef = useRef(graphScope);
   graphScopeRef.current = graphScope;
   const queryScope = `${analysisScope}:${activeQuery}:${queryAttempt}:${queryWorkingSet.nodeLimit}:${queryWorkingSet.edgeLimit}`;
-  const queryScopeRef = useRef(queryScope);
-  queryScopeRef.current = queryScope;
   const graphSource = activeQuery ? queryGraph : baseGraph;
   const graph = useMemo(
     () =>
@@ -1138,12 +1229,11 @@ export function GraphWorkspace(props: {
       setQueryError('');
       return;
     }
-    const requestSequence = queryRequestSequence.current + 1;
-    queryRequestSequence.current = requestSequence;
-    const requestedScope = queryScope;
     const expectedSnapshotId = repository.snapshot.id;
     const expectedQuery = activeQuery;
-    const controller = new AbortController();
+    const request = queryRequestGate.current.request({expectedQuery, expectedSnapshotId, scope: queryScope}, signal =>
+      props.loadQuery(repository.id, expectedSnapshotId, expectedQuery, queryWorkingSet, signal),
+    );
     setQueryGraph(undefined);
     setQueryLoading(true);
     setQueryError('');
@@ -1153,43 +1243,18 @@ export function GraphWorkspace(props: {
     setFocusMode('all');
     setRelationFilter('all');
     setSizeMetric('connections');
-    void props
-      .loadQuery(repository.id, expectedSnapshotId, expectedQuery, queryWorkingSet, controller.signal)
-      .then(next => {
-        if (
-          graphQueryRequestIsCurrent(
-            controller.signal.aborted,
-            queryRequestSequence.current,
-            requestSequence,
-            queryScopeRef.current,
-            requestedScope,
-            next,
-            expectedSnapshotId,
-            expectedQuery,
-          )
-        ) {
-          setQueryGraph(next);
-        }
-      })
-      .catch(cause => {
-        if (
-          !isAbortError(cause) &&
-          graphRequestIsCurrent(queryRequestSequence.current, requestSequence, queryScopeRef.current, requestedScope)
-        ) {
-          setQueryGraph(undefined);
-          setQueryError(cause instanceof Error ? cause.message : String(cause));
-        }
-      })
-      .finally(() => {
-        if (
-          graphRequestIsCurrent(queryRequestSequence.current, requestSequence, queryScopeRef.current, requestedScope)
-        ) {
-          setQueryLoading(false);
-        }
-      });
+    void request.result.then(outcome => {
+      if (!request.isCurrent()) return;
+      if (outcome.state === 'accepted') {
+        setQueryGraph(outcome.graph);
+      } else if (outcome.state === 'failed') {
+        setQueryGraph(undefined);
+        setQueryError(outcome.cause instanceof Error ? outcome.cause.message : String(outcome.cause));
+      }
+      setQueryLoading(false);
+    });
     return () => {
-      controller.abort();
-      queryRequestSequence.current += 1;
+      request.cancel();
     };
   }, [activeQuery, props.loadQuery, queryScope, queryWorkingSet, repository?.id, repository?.snapshot.id]);
 
@@ -1361,7 +1426,7 @@ export function GraphWorkspace(props: {
   };
 
   function clearCodeQuery(): void {
-    queryRequestSequence.current += 1;
+    queryRequestGate.current.cancelCurrent();
     setQueryInput('');
     setActiveQuery('');
     setQueryGraph(undefined);

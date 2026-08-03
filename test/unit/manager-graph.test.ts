@@ -3,6 +3,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
 import {
   cacheGraphNodeDetail,
+  createGraphQueryRequestGate,
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
@@ -267,6 +268,48 @@ describe('manager graph focus', () => {
         'hydrate document',
       ),
     ).toBe(false);
+  });
+
+  it('aborts superseded query requests and rejects completed late responses through the workspace gate', async () => {
+    const cancellationGate = createGraphQueryRequestGate();
+    let cancelledSignal: AbortSignal | undefined;
+    const cancelled = cancellationGate.request(
+      {expectedQuery: 'first query', expectedSnapshotId: 'snapshot', scope: 'repository:snapshot:first query'},
+      signal => {
+        cancelledSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new DOMException('Superseded', 'AbortError')), {once: true});
+        });
+      },
+    );
+    const acceptedAfterCancellation = cancellationGate.request(
+      {expectedQuery: 'second query', expectedSnapshotId: 'snapshot', scope: 'repository:snapshot:second query'},
+      () => Promise.resolve(queryVisualization('second query')),
+    );
+    expect(cancelledSignal?.aborted).toBe(true);
+    await expect(cancelled.result).resolves.toEqual({state: 'cancelled'});
+    await expect(acceptedAfterCancellation.result).resolves.toMatchObject({state: 'accepted'});
+
+    const staleResponseGate = createGraphQueryRequestGate();
+    let lateSignal: AbortSignal | undefined;
+    let resolveLate: ((graph: GraphQueryVisualization) => void) | undefined;
+    const late = staleResponseGate.request(
+      {expectedQuery: 'late query', expectedSnapshotId: 'snapshot', scope: 'repository:snapshot:late query'},
+      signal => {
+        lateSignal = signal;
+        return new Promise(resolve => {
+          resolveLate = resolve;
+        });
+      },
+    );
+    const acceptedAfterLateResponse = staleResponseGate.request(
+      {expectedQuery: 'current query', expectedSnapshotId: 'snapshot', scope: 'repository:snapshot:current query'},
+      () => Promise.resolve(queryVisualization('current query')),
+    );
+    expect(lateSignal?.aborted).toBe(true);
+    resolveLate?.(queryVisualization('late query'));
+    await expect(late.result).resolves.toMatchObject({state: 'stale'});
+    await expect(acceptedAfterLateResponse.result).resolves.toMatchObject({state: 'accepted'});
   });
 
   it('rejects a late node detail after rapid selection, cancellation, or snapshot promotion', () => {

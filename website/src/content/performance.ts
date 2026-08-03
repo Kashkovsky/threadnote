@@ -2,6 +2,8 @@ import {
   privacySafeExternalControlPath,
   privacySafeExternalControlQuery,
 } from '../../../src/evaluation/public_controls.js';
+import {validateExternalRepositoryEvidence} from '../../../src/evaluation/external_evidence.js';
+import type {BenchmarkArtifactV1} from '../../../src/evaluation/benchmark.js';
 
 export const performanceControlLanguages = ['java', 'kotlin', 'typescript', 'bazel'] as const;
 
@@ -34,9 +36,12 @@ export type RetainedPerformanceArtifact = Readonly<{
       url: string;
       commit: string;
       checkout: 'clean';
+      publicVerification: 'anonymous-https-ls-remote' | 'reviewed-release-allowlist';
     }>;
   }>;
   runner: Readonly<{
+    class: string;
+    id: string;
     hardware: string;
     operatingSystem: string;
     architecture: string;
@@ -46,7 +51,8 @@ export type RetainedPerformanceArtifact = Readonly<{
       name: 'Bun';
       version: string;
       target: string;
-      executionMode: 'managed-exact-head';
+      executionMode: 'local-source-application-layer';
+      managedPayloadValidation: 'exact-head-not-executed';
       dependencyInstallation: 'bun install --frozen-lockfile';
       executableSha256: string;
       payloadManifestSha256: string;
@@ -117,20 +123,26 @@ export type RetainedPerformanceArtifact = Readonly<{
     incrementalMatchesIndependent: true;
   }>;
   storage: Readonly<{
+    databaseGrowthBytes: number;
     databaseBytes: number;
     peakResidentBytes: number;
     peakWalBytes: number;
     peakTemporaryBytes: number;
     peakDurableGrowthBytes: number;
+    peakJournalBytes: number;
   }>;
   manager: Readonly<{
     catalogColdMilliseconds: number;
     catalogWarmMilliseconds: number;
     overviewColdMilliseconds: number;
+    overviewEdgeCount: number;
+    overviewNodeCount: number;
     overviewWarmMilliseconds: number;
     detailColdMilliseconds: number;
     nodeDetailColdMilliseconds: number;
-    renderProxyMilliseconds: number;
+    detailEdgeCount: number;
+    detailNodeCount: number;
+    layoutPreparationProxyMilliseconds: number;
     maxPayloadBytes: number;
     querySampleCount: number;
     queryP50Milliseconds: number;
@@ -139,10 +151,12 @@ export type RetainedPerformanceArtifact = Readonly<{
     queryMaxPayloadBytes: number;
     nodeBudget: number;
     edgeBudget: number;
+    requestCancellationPassed: true;
     snapshotBindingPassed: true;
-    staleRequestCancellationPassed: true;
+    staleResponseRejectionPassed: true;
   }>;
   concurrency: Readonly<{
+    cleanupPassed: true;
     simultaneousWorktrees: number;
     durationMilliseconds: number;
     indexedFiles: 2;
@@ -210,6 +224,9 @@ export const retainedPerformanceArtifactFieldPaths = [
   'source.repository.url',
   'source.repository.commit',
   'source.repository.checkout',
+  'source.repository.publicVerification',
+  'runner.class',
+  'runner.id',
   'runner.hardware',
   'runner.operatingSystem',
   'runner.architecture',
@@ -219,6 +236,7 @@ export const retainedPerformanceArtifactFieldPaths = [
   'runner.runtime.version',
   'runner.runtime.target',
   'runner.runtime.executionMode',
+  'runner.runtime.managedPayloadValidation',
   'runner.runtime.dependencyInstallation',
   'runner.runtime.executableSha256',
   'runner.runtime.payloadManifestSha256',
@@ -280,18 +298,24 @@ export const retainedPerformanceArtifactFieldPaths = [
   'parity.incrementalOverlayDigest',
   'parity.independentOverlayDigest',
   'parity.incrementalMatchesIndependent',
+  'storage.databaseGrowthBytes',
   'storage.databaseBytes',
   'storage.peakResidentBytes',
   'storage.peakWalBytes',
   'storage.peakTemporaryBytes',
   'storage.peakDurableGrowthBytes',
+  'storage.peakJournalBytes',
   'manager.catalogColdMilliseconds',
   'manager.catalogWarmMilliseconds',
   'manager.overviewColdMilliseconds',
+  'manager.overviewEdgeCount',
+  'manager.overviewNodeCount',
   'manager.overviewWarmMilliseconds',
   'manager.detailColdMilliseconds',
   'manager.nodeDetailColdMilliseconds',
-  'manager.renderProxyMilliseconds',
+  'manager.detailEdgeCount',
+  'manager.detailNodeCount',
+  'manager.layoutPreparationProxyMilliseconds',
   'manager.maxPayloadBytes',
   'manager.querySampleCount',
   'manager.queryP50Milliseconds',
@@ -300,8 +324,10 @@ export const retainedPerformanceArtifactFieldPaths = [
   'manager.queryMaxPayloadBytes',
   'manager.nodeBudget',
   'manager.edgeBudget',
+  'manager.requestCancellationPassed',
   'manager.snapshotBindingPassed',
-  'manager.staleRequestCancellationPassed',
+  'manager.staleResponseRejectionPassed',
+  'concurrency.cleanupPassed',
   'concurrency.simultaneousWorktrees',
   'concurrency.durationMilliseconds',
   'concurrency.indexedFiles',
@@ -437,13 +463,24 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   digestAt(threadnote, 'commit', 'source.threadnote', sha40Pattern);
   digestAt(threadnote, 'lockfileSha256', 'source.threadnote');
   digestAt(threadnote, 'packageManifestSha256', 'source.threadnote');
-  const repository = recordAt(source.repository, 'source.repository', ['name', 'url', 'commit', 'checkout']);
+  const repository = recordAt(source.repository, 'source.repository', [
+    'name',
+    'url',
+    'commit',
+    'checkout',
+    'publicVerification',
+  ]);
   stringAt(repository, 'name', 'source.repository');
   httpsUrlAt(repository, 'url', 'source.repository');
   digestAt(repository, 'commit', 'source.repository', sha40Pattern);
   literalAt(repository, 'checkout', 'source.repository', 'clean');
+  if (!['anonymous-https-ls-remote', 'reviewed-release-allowlist'].includes(String(repository.publicVerification))) {
+    throw new Error('Performance evidence source.repository.publicVerification is invalid.');
+  }
 
   const runner = recordAt(root.runner, 'runner', [
+    'class',
+    'id',
     'hardware',
     'operatingSystem',
     'architecture',
@@ -453,6 +490,8 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'database',
     'disk',
   ]);
+  stringAt(runner, 'class', 'runner');
+  stringAt(runner, 'id', 'runner');
   stringAt(runner, 'hardware', 'runner');
   stringAt(runner, 'operatingSystem', 'runner');
   stringAt(runner, 'architecture', 'runner');
@@ -463,6 +502,7 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'version',
     'target',
     'executionMode',
+    'managedPayloadValidation',
     'dependencyInstallation',
     'executableSha256',
     'payloadManifestSha256',
@@ -474,7 +514,8 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   literalAt(runtime, 'name', 'runner.runtime', 'Bun');
   stringAt(runtime, 'version', 'runner.runtime');
   stringAt(runtime, 'target', 'runner.runtime');
-  literalAt(runtime, 'executionMode', 'runner.runtime', 'managed-exact-head');
+  literalAt(runtime, 'executionMode', 'runner.runtime', 'local-source-application-layer');
+  literalAt(runtime, 'managedPayloadValidation', 'runner.runtime', 'exact-head-not-executed');
   literalAt(runtime, 'dependencyInstallation', 'runner.runtime', 'bun install --frozen-lockfile');
   digestAt(runtime, 'executableSha256', 'runner.runtime');
   digestAt(runtime, 'payloadManifestSha256', 'runner.runtime');
@@ -577,15 +618,18 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   }
 
   const storage = recordAt(root.storage, 'storage', [
+    'databaseGrowthBytes',
     'databaseBytes',
     'peakResidentBytes',
     'peakWalBytes',
     'peakTemporaryBytes',
     'peakDurableGrowthBytes',
+    'peakJournalBytes',
   ]);
+  positiveNumberAt(storage, 'databaseGrowthBytes', 'storage', true);
   positiveNumberAt(storage, 'databaseBytes', 'storage', true);
   positiveNumberAt(storage, 'peakResidentBytes', 'storage', true);
-  for (const key of ['peakWalBytes', 'peakTemporaryBytes', 'peakDurableGrowthBytes']) {
+  for (const key of ['peakWalBytes', 'peakTemporaryBytes', 'peakDurableGrowthBytes', 'peakJournalBytes']) {
     numberAt(storage, key, 'storage', true);
   }
 
@@ -593,10 +637,14 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'catalogColdMilliseconds',
     'catalogWarmMilliseconds',
     'overviewColdMilliseconds',
+    'overviewEdgeCount',
+    'overviewNodeCount',
     'overviewWarmMilliseconds',
     'detailColdMilliseconds',
     'nodeDetailColdMilliseconds',
-    'renderProxyMilliseconds',
+    'detailEdgeCount',
+    'detailNodeCount',
+    'layoutPreparationProxyMilliseconds',
     'maxPayloadBytes',
     'querySampleCount',
     'queryP50Milliseconds',
@@ -605,8 +653,9 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'queryMaxPayloadBytes',
     'nodeBudget',
     'edgeBudget',
+    'requestCancellationPassed',
     'snapshotBindingPassed',
-    'staleRequestCancellationPassed',
+    'staleResponseRejectionPassed',
   ]);
   for (const key of [
     'catalogColdMilliseconds',
@@ -615,10 +664,12 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'overviewWarmMilliseconds',
     'detailColdMilliseconds',
     'nodeDetailColdMilliseconds',
-    'renderProxyMilliseconds',
+    'layoutPreparationProxyMilliseconds',
   ]) {
     positiveNumberAt(manager, key, 'manager');
   }
+  for (const key of ['overviewNodeCount', 'detailNodeCount']) positiveNumberAt(manager, key, 'manager', true);
+  for (const key of ['overviewEdgeCount', 'detailEdgeCount']) numberAt(manager, key, 'manager', true);
   for (const key of ['maxPayloadBytes', 'querySampleCount', 'queryMaxPayloadBytes', 'nodeBudget', 'edgeBudget']) {
     positiveNumberAt(manager, key, 'manager', true);
   }
@@ -628,18 +679,21 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   if (managerQueryP50 > managerQueryP95 || managerQueryP95 > managerQueryMax) {
     throw new Error('Performance evidence Manager query percentiles must be monotonic.');
   }
+  literalAt(manager, 'requestCancellationPassed', 'manager', true);
   literalAt(manager, 'snapshotBindingPassed', 'manager', true);
-  literalAt(manager, 'staleRequestCancellationPassed', 'manager', true);
+  literalAt(manager, 'staleResponseRejectionPassed', 'manager', true);
   literalAt(manager, 'nodeBudget', 'manager', retainedManagerNodeBudget);
   literalAt(manager, 'edgeBudget', 'manager', retainedManagerEdgeBudget);
 
   const concurrency = recordAt(root.concurrency, 'concurrency', [
+    'cleanupPassed',
     'simultaneousWorktrees',
     'durationMilliseconds',
     'indexedFiles',
     'topology',
     'isolationPassed',
   ]);
+  literalAt(concurrency, 'cleanupPassed', 'concurrency', true);
   const simultaneousWorktrees = positiveNumberAt(concurrency, 'simultaneousWorktrees', 'concurrency', true);
   if (simultaneousWorktrees < 2) {
     throw new Error('Performance evidence concurrency.simultaneousWorktrees must exercise concurrency.');
@@ -739,31 +793,38 @@ function validateHarnessRuntimeProvenance(
   const commit = stringAt(environment, 'commit', 'harness.environment');
   digestAt(environment, 'commit', 'harness.environment', sha40Pattern);
   literalAt(environment, 'dirty', 'harness.environment', false);
-  literalAt(metadata, 'benchmarkRuntimeProvenanceMode', 'harness.metadata', 'managed-exact-head');
-  literalAt(metadata, 'benchmarkRuntimeSourceCommit', 'harness.metadata', commit);
-  digestAt(metadata, 'benchmarkRuntimeSourceLockfileSha256', 'harness.metadata');
-  digestAt(metadata, 'benchmarkRuntimeSourcePackageManifestSha256', 'harness.metadata');
-  literalAt(metadata, 'benchmarkManagedDependencyInstallation', 'harness.metadata', 'bun install --frozen-lockfile');
-  literalAt(metadata, 'benchmarkManagedProcessLeaseInspection', 'harness.metadata', 'complete');
+  literalAt(metadata, 'benchmarkMeasuredExecutionMode', 'harness.metadata', 'local-source-application-layer');
+  literalAt(metadata, 'benchmarkSourceValidationMode', 'harness.metadata', 'managed-payload-exact-head-validated');
+  literalAt(metadata, 'benchmarkMeasuredSourceCommit', 'harness.metadata', commit);
+  digestAt(metadata, 'benchmarkMeasuredSourceLockfileSha256', 'harness.metadata');
+  digestAt(metadata, 'benchmarkMeasuredSourcePackageManifestSha256', 'harness.metadata');
+  literalAt(metadata, 'benchmarkValidatedManagedPayload', 'harness.metadata', 'exact-head-not-executed');
+  literalAt(
+    metadata,
+    'benchmarkValidatedManagedDependencyInstallation',
+    'harness.metadata',
+    'bun install --frozen-lockfile',
+  );
+  literalAt(metadata, 'benchmarkValidatedManagedProcessLeaseInspection', 'harness.metadata', 'complete');
   for (const key of [
-    'benchmarkManagedExecutableSha256',
-    'benchmarkManagedPayloadManifestSha256',
-    'benchmarkManagedReleaseMetadataSha256',
+    'benchmarkValidatedManagedExecutableSha256',
+    'benchmarkValidatedManagedPayloadManifestSha256',
+    'benchmarkValidatedManagedReleaseMetadataSha256',
   ]) {
     digestAt(metadata, key, 'harness.metadata');
   }
-  positiveNumberAt(metadata, 'benchmarkManagedPayloadBytes', 'harness.metadata', true);
-  positiveNumberAt(metadata, 'benchmarkManagedPayloadFileCount', 'harness.metadata', true);
-  const managedVersion = metadataString(metadata, 'benchmarkManagedVersion');
+  positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadBytes', 'harness.metadata', true);
+  positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadFileCount', 'harness.metadata', true);
+  const managedVersion = metadataString(metadata, 'benchmarkValidatedManagedVersion');
   if (!managedVersion.endsWith(`.local.g${commit}`)) {
     throw new Error('Performance harness managed version is not bound to its source commit.');
   }
-  const managedRuntime = metadataString(metadata, 'benchmarkManagedRuntime');
+  const managedRuntime = metadataString(metadata, 'benchmarkValidatedManagedRuntime');
   const environmentRuntime = stringAt(environment, 'node', 'harness.environment');
   if (!environmentRuntime.startsWith('bun/') || managedRuntime !== `bun-${environmentRuntime.slice(4)}`) {
     throw new Error('Performance harness managed runtime does not match the measured Bun runtime.');
   }
-  const target = metadataString(metadata, 'benchmarkManagedTarget');
+  const target = metadataString(metadata, 'benchmarkValidatedManagedTarget');
   const architecture = stringAt(environment, 'architecture', 'harness.environment');
   if (!target.endsWith(`-${architecture}`)) {
     throw new Error('Performance harness managed target does not match the measured architecture.');
@@ -805,10 +866,17 @@ function validateHarnessMeasurements(
     ['manager-overview-warm', 'milliseconds'],
     ['manager-detail-cold', 'milliseconds'],
     ['manager-node-detail-cold', 'milliseconds'],
-    ['manager-render-proxy', 'milliseconds'],
+    ['manager-layout-preparation-proxy', 'milliseconds'],
     ['manager-response-payload', 'bytes'],
     ['manager-bounded-query', 'milliseconds'],
     ['manager-bounded-query-payload', 'bytes'],
+    ['manager-overview-node-count', 'count'],
+    ['manager-overview-edge-count', 'count', false],
+    ['manager-detail-node-count', 'count'],
+    ['manager-detail-edge-count', 'count', false],
+    ['cold-sqlite-durable-database-growth', 'bytes'],
+    ['cold-durable-filesystem-growth', 'bytes'],
+    ['cold-sqlite-journal-peak-observed', 'bytes', false],
     ['concurrent-worktree-isolation-duration', 'milliseconds'],
   ] as const) {
     requiredMeasurement(measurements, name, unit, positive);
@@ -973,12 +1041,13 @@ export function validateRetainedPerformancePayload(input: unknown): RetainedPerf
   literalAt(metadata, 'managerNodeBudget', 'harness.metadata', retainedManagerNodeBudget);
   literalAt(metadata, 'managerEdgeBudget', 'harness.metadata', retainedManagerEdgeBudget);
   literalAt(metadata, 'managerSnapshotBindingPassed', 'harness.metadata', true);
-  literalAt(metadata, 'managerStaleRequestCancellationPassed', 'harness.metadata', true);
+  literalAt(metadata, 'managerRequestCancellationPassed', 'harness.metadata', true);
+  literalAt(metadata, 'managerStaleResponseRejectionPassed', 'harness.metadata', true);
   literalAt(
     metadata,
-    'managerStaleRequestControl',
+    'managerRequestLifecycleControl',
     'harness.metadata',
-    'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+    'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
   );
   const simultaneousWorktrees = positiveNumberAt(metadata, 'simultaneousWorktrees', 'harness.metadata', true);
   if (simultaneousWorktrees < 2) throw new Error('Performance harness must exercise concurrent worktrees.');
@@ -1000,6 +1069,12 @@ export function validateRetainedPerformancePayload(input: unknown): RetainedPerf
   }
   parseHarnessControls(metadata);
   validateHarnessMeasurements(input as RetainedPerformanceHarnessArtifact, metadata);
+  validateExternalRepositoryEvidence(input as BenchmarkArtifactV1, {
+    expectedControlLanguages: harnessLanguageControls.map(control => control.harness),
+    managerEdgeBudget: retainedManagerEdgeBudget,
+    managerNodeBudget: retainedManagerNodeBudget,
+    releaseBound: true,
+  });
   return input as RetainedPerformancePayload;
 }
 
@@ -1019,8 +1094,8 @@ export function retainedPerformanceArtifactFromHarness(
     throw new Error('Performance binding timestamp does not match the retained harness artifact.');
   }
   for (const [actual, metadataKey, label] of [
-    [binding.currentLockfileSha256, 'benchmarkRuntimeSourceLockfileSha256', 'lockfile'],
-    [binding.currentPackageManifestSha256, 'benchmarkRuntimeSourcePackageManifestSha256', 'package manifest'],
+    [binding.currentLockfileSha256, 'benchmarkMeasuredSourceLockfileSha256', 'lockfile'],
+    [binding.currentPackageManifestSha256, 'benchmarkMeasuredSourcePackageManifestSha256', 'package manifest'],
   ] as const) {
     if (!sha256Pattern.test(actual) || actual !== metadata[metadataKey]) {
       throw new Error(`Performance harness ${label} SHA-256 does not match the bound source tree.`);
@@ -1056,7 +1131,7 @@ export function retainedPerformanceArtifactFromHarness(
     },
     source: {
       threadnote: {
-        version: metadataString(metadata, 'benchmarkManagedVersion'),
+        version: metadataString(metadata, 'benchmarkValidatedManagedVersion'),
         commit: harness.environment.commit,
         lockfileSha256: binding.currentLockfileSha256,
         packageManifestSha256: binding.currentPackageManifestSha256,
@@ -1066,9 +1141,13 @@ export function retainedPerformanceArtifactFromHarness(
         url: metadataString(metadata, 'externalRepositoryUrl'),
         commit: metadataString(metadata, 'externalRepositoryCommit'),
         checkout: 'clean',
+        publicVerification: metadataString(metadata, 'externalRepositoryPublicVerification') as
+          'anonymous-https-ls-remote' | 'reviewed-release-allowlist',
       },
     },
     runner: {
+      class: metadataString(metadata, 'runnerClass'),
+      id: metadataString(metadata, 'runnerIdentity'),
       hardware: harness.environment.cpu,
       operatingSystem: harness.environment.operatingSystem,
       architecture: harness.environment.architecture,
@@ -1077,14 +1156,15 @@ export function retainedPerformanceArtifactFromHarness(
       runtime: {
         name: 'Bun',
         version: harness.environment.node.slice(4),
-        target: metadataString(metadata, 'benchmarkManagedTarget'),
-        executionMode: 'managed-exact-head',
+        target: metadataString(metadata, 'benchmarkValidatedManagedTarget'),
+        executionMode: 'local-source-application-layer',
+        managedPayloadValidation: 'exact-head-not-executed',
         dependencyInstallation: 'bun install --frozen-lockfile',
-        executableSha256: metadataString(metadata, 'benchmarkManagedExecutableSha256'),
-        payloadManifestSha256: metadataString(metadata, 'benchmarkManagedPayloadManifestSha256'),
-        releaseMetadataSha256: metadataString(metadata, 'benchmarkManagedReleaseMetadataSha256'),
-        payloadBytes: metadataNumber(metadata, 'benchmarkManagedPayloadBytes', true),
-        payloadFileCount: metadataNumber(metadata, 'benchmarkManagedPayloadFileCount', true),
+        executableSha256: metadataString(metadata, 'benchmarkValidatedManagedExecutableSha256'),
+        payloadManifestSha256: metadataString(metadata, 'benchmarkValidatedManagedPayloadManifestSha256'),
+        releaseMetadataSha256: metadataString(metadata, 'benchmarkValidatedManagedReleaseMetadataSha256'),
+        payloadBytes: metadataNumber(metadata, 'benchmarkValidatedManagedPayloadBytes', true),
+        payloadFileCount: metadataNumber(metadata, 'benchmarkValidatedManagedPayloadFileCount', true),
         processLeaseInspection: 'complete',
       },
       database: {name: 'SQLite', version: metadataString(metadata, 'sqliteVersion')},
@@ -1138,20 +1218,26 @@ export function retainedPerformanceArtifactFromHarness(
       incrementalMatchesIndependent: true,
     },
     storage: {
+      databaseGrowthBytes: bytes('cold-sqlite-durable-database-growth'),
       databaseBytes: bytes('sqlite-main-disk'),
       peakResidentBytes: bytes('cold-process-peak-rss'),
       peakWalBytes: bytes('cold-sqlite-wal-peak-observed', false),
       peakTemporaryBytes: bytes('cold-sqlite-temp-peak-observed', false),
-      peakDurableGrowthBytes: bytes('cold-sqlite-durable-database-pages-high-water-n1', false),
+      peakDurableGrowthBytes: bytes('cold-durable-filesystem-growth'),
+      peakJournalBytes: bytes('cold-sqlite-journal-peak-observed', false),
     },
     manager: {
       catalogColdMilliseconds: duration('manager-catalog-cold'),
       catalogWarmMilliseconds: duration('manager-catalog-warm'),
       overviewColdMilliseconds: duration('manager-overview-cold'),
+      overviewEdgeCount: count('manager-overview-edge-count'),
+      overviewNodeCount: count('manager-overview-node-count'),
       overviewWarmMilliseconds: duration('manager-overview-warm'),
       detailColdMilliseconds: duration('manager-detail-cold'),
       nodeDetailColdMilliseconds: duration('manager-node-detail-cold'),
-      renderProxyMilliseconds: duration('manager-render-proxy'),
+      detailEdgeCount: count('manager-detail-edge-count'),
+      detailNodeCount: count('manager-detail-node-count'),
+      layoutPreparationProxyMilliseconds: duration('manager-layout-preparation-proxy'),
       maxPayloadBytes: bytes('manager-response-payload'),
       querySampleCount: managerQuery.samples,
       queryP50Milliseconds: managerQuery.p50,
@@ -1160,10 +1246,12 @@ export function retainedPerformanceArtifactFromHarness(
       queryMaxPayloadBytes: bytes('manager-bounded-query-payload'),
       nodeBudget: metadataNumber(metadata, 'managerNodeBudget', true),
       edgeBudget: metadataNumber(metadata, 'managerEdgeBudget', true),
+      requestCancellationPassed: true,
       snapshotBindingPassed: true,
-      staleRequestCancellationPassed: true,
+      staleResponseRejectionPassed: true,
     },
     concurrency: {
+      cleanupPassed: true,
       simultaneousWorktrees: metadataNumber(metadata, 'simultaneousWorktrees', true),
       durationMilliseconds: duration('concurrent-worktree-isolation-duration'),
       indexedFiles: retainedWorktreeIsolationIndexedFiles,

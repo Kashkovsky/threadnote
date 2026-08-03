@@ -6,11 +6,17 @@ import {
   performanceArtifactPublicUrl,
   sha256Hex,
 } from '../../scripts/site-performance-evidence.js';
+import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
-import {retainedPerformanceArtifactFieldPaths} from '../../website/src/content/performance.js';
+import {
+  retainedPerformanceArtifactFieldPaths,
+  validateRetainedPerformancePayload,
+} from '../../website/src/content/performance.js';
+import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {proTips} from '../../website/src/content/proTips.js';
+import {EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS} from '../../src/evaluation/external_evidence.js';
 
 const root = process.cwd();
 const toolKeys = {
@@ -135,7 +141,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       p95: 12,
       p99: 16,
       maximum: 18,
-      samples: 20,
+      samples: 25,
     }),
     harnessMeasurement('cold-materialized-file-rows', 'count', 90),
     harnessMeasurement('cold-materialized-symbol-rows', 'count', 1_000),
@@ -157,14 +163,14 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     harnessMeasurement('manager-overview-warm', 'milliseconds', 4),
     harnessMeasurement('manager-detail-cold', 'milliseconds', 10),
     harnessMeasurement('manager-node-detail-cold', 'milliseconds', 8),
-    harnessMeasurement('manager-render-proxy', 'milliseconds', 2),
+    harnessMeasurement('manager-layout-preparation-proxy', 'milliseconds', 2),
     harnessMeasurement('manager-response-payload', 'bytes', 400_000),
     harnessMeasurement('manager-bounded-query', 'milliseconds', 10, {
       p50: 6,
       p95: 14,
       p99: 20,
       maximum: 24,
-      samples: 20,
+      samples: 25,
     }),
     harnessMeasurement('manager-bounded-query-payload', 'bytes', 120_000),
     harnessMeasurement('concurrent-worktree-isolation-duration', 'milliseconds', 250),
@@ -177,11 +183,42 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
   ] as const) {
     measurements.push(
       harnessMeasurement(`cold-materialized-file-rows-language-${language}`, 'count', files),
+      harnessMeasurement(`cold-materialized-symbol-rows-language-${language}`, 'count', files * 10),
       harnessMeasurement(`external-query-cold-${language}-duration`, 'milliseconds', duration),
       harnessMeasurement(`external-query-cold-${language}-returned-nodes`, 'count', 2),
       harnessMeasurement(`external-query-cold-${language}-expected-path-language-nodes`, 'count', 1),
+      harnessMeasurement(`external-query-incremental-${language}-returned-nodes`, 'count', 2),
+      harnessMeasurement(`external-query-incremental-${language}-expected-path-language-nodes`, 'count', 1),
+      harnessMeasurement(`external-query-same-overlay-reference-${language}-returned-nodes`, 'count', 2),
+      harnessMeasurement(`external-query-same-overlay-reference-${language}-expected-path-language-nodes`, 'count', 1),
       harnessMeasurement(`external-query-${language}-same-overlay-structural-parity`, 'count', 1),
     );
+  }
+  for (const operation of ['query', 'node', 'neighbors', 'explain', 'impact', 'path']) {
+    measurements.push(
+      harnessMeasurement(`mcp-${operation}-duration`, 'milliseconds', 10),
+      harnessMeasurement(`mcp-${operation}-structured-output`, 'bytes', 1_024),
+      harnessMeasurement(`mcp-${operation}-text-output`, 'bytes', 1_024),
+    );
+  }
+  const measurementNames = new Set(measurements.map(measurement => String(measurement.name)));
+  for (const required of EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS) {
+    if (measurementNames.has(required.name)) continue;
+    const value =
+      required.name.startsWith('cold-activation-copying-') && required.name.endsWith('-observed-n1')
+        ? 0
+        : required.name.endsWith('-external-sampler-version-n1')
+          ? 4
+          : required.name.endsWith('-external-process-tree-failures-n1') ||
+              required.name.endsWith('-external-open-temp-process-tree-failures-n1') ||
+              required.name.endsWith('-journal-peak-observed')
+            ? 0
+            : required.name === 'cold-activation-observed-stages-n1'
+              ? 3
+              : required.name.endsWith('-activation-observed-stages-n1')
+                ? 32
+                : 1;
+    measurements.push(harnessMeasurement(required.name, required.unit, value));
   }
 
   return {
@@ -201,53 +238,78 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     },
     measurements,
     metadata: {
-      benchmarkDiskFilesystem: 'APFS',
-      benchmarkDiskMedium: 'SSD',
+      benchmarkDiskFilesystem: 'apfs',
+      benchmarkDiskMedium: 'solid-state',
       benchmarkInventoryEligibleFiles: 100,
       benchmarkInventoryExcludedFiles: 10,
       benchmarkLogicalCpuCount: 10,
-      benchmarkManagedDependencyInstallation: 'bun install --frozen-lockfile',
-      benchmarkManagedExecutableSha256: '3'.repeat(64),
-      benchmarkManagedPayloadBytes: 1_000_000,
-      benchmarkManagedPayloadFileCount: 20,
-      benchmarkManagedPayloadManifestSha256: '4'.repeat(64),
-      benchmarkManagedProcessLeaseInspection: 'complete',
-      benchmarkManagedReleaseMetadataSha256: '5'.repeat(64),
-      benchmarkManagedRuntime: 'bun-1.3.14',
-      benchmarkManagedTarget: 'darwin-arm64',
-      benchmarkManagedVersion: `4.0.0-beta.31.local.g${sourceCommit}`,
-      benchmarkRuntimeProvenanceMode: 'managed-exact-head',
-      benchmarkRuntimeSourceCommit: sourceCommit,
-      benchmarkRuntimeSourceLockfileSha256: fixtureLockfileSha256,
-      benchmarkRuntimeSourcePackageManifestSha256: fixturePackageManifestSha256,
+      benchmarkMeasuredExecutionMode: 'local-source-application-layer',
+      benchmarkMeasuredSourceCommit: sourceCommit,
+      benchmarkMeasuredSourceLockfileSha256: fixtureLockfileSha256,
+      benchmarkMeasuredSourcePackageManifestSha256: fixturePackageManifestSha256,
+      benchmarkSourceValidationMode: 'managed-payload-exact-head-validated',
+      benchmarkValidatedManagedDependencyInstallation: 'bun install --frozen-lockfile',
+      benchmarkValidatedManagedExecutableSha256: '3'.repeat(64),
+      benchmarkValidatedManagedPayload: 'exact-head-not-executed',
+      benchmarkValidatedManagedPayloadBytes: 1_000_000,
+      benchmarkValidatedManagedPayloadFileCount: 20,
+      benchmarkValidatedManagedPayloadManifestSha256: '4'.repeat(64),
+      benchmarkValidatedManagedProcessLeaseInspection: 'complete',
+      benchmarkValidatedManagedReleaseMetadataSha256: '5'.repeat(64),
+      benchmarkValidatedManagedRuntime: 'bun-1.3.14',
+      benchmarkValidatedManagedTarget: 'darwin-arm64',
+      benchmarkValidatedManagedVersion: `4.0.0-beta.31.local.g${sourceCommit}`,
+      coldMaterializationStorageMode: 'direct-persistent',
+      externalControlCount: 4,
       externalControlEvidence: JSON.stringify(controls),
       externalControlLanguages: 'java,kotlin,typescript,bazel-build',
       externalRepositoryCommit: repositoryCommit,
       externalRepositoryMode: 'clean checkout with a byte-compared, scoped one-file overlay',
-      externalRepositoryName: 'Example/public-monorepo',
-      externalRepositoryUrl: 'https://github.com/Example/public-monorepo',
+      externalQueryControlTimeoutMilliseconds: 120_000,
+      externalRepositoryName: 'JetBrains/intellij-community',
+      externalRepositoryPublicVerification: 'reviewed-release-allowlist',
+      externalRepositoryUrl: 'https://github.com/JetBrains/intellij-community',
+      managerDetailEdgeCount: 100,
+      managerDetailNodeCount: 80,
       managerEdgeBudget: 1_500,
+      managerLayoutPreparationMeasurement:
+        'client-side graph layout-preparation only; excludes browser and WebGL paint',
       managerNodeBudget: 500,
+      managerOverviewEdgeCount: 200,
+      managerOverviewNodeCount: 100,
+      managerRequestCancellationPassed: true,
+      managerRequestLifecycleControl:
+        'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
+      managerSequenceTimeoutMilliseconds: 180_000,
+      managerServiceResponseTimingIncludesSerialization: true,
       managerSnapshotBindingPassed: true,
-      managerStaleRequestCancellationPassed: true,
-      managerStaleRequestControl:
-        'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+      managerStaleResponseRejectionPassed: true,
+      mcpOperationCount: 6,
+      oneFileReindexMaterializationMode: 'incremental-overlay',
+      oneFileReindexMaterializationStorageMode: 'temporary-staged',
       releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
       releaseEvidenceResolvedSha: sourceCommit,
       releaseEvidenceSha: sourceCommit,
       retrievalMode: 'lexical-only',
+      runnerClass: 'public-benchmark',
+      runnerIdentity: 'intellij-arm64-01',
+      sameOverlayReferenceMaterializationMode: 'full',
+      sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
       simultaneousWorktrees: 2,
       sqliteVersion: '3.54.0',
       structuralGraphDigestCold: 'e'.repeat(64),
       structuralGraphDigestIncremental: overlayDigest,
       structuralGraphDigestSameOverlayReference: overlayDigest,
+      worktreeIsolationCleanupPassed: true,
+      worktreeIsolationCommandTimeoutMilliseconds: 30_000,
       worktreeIsolationIndexedFiles: 2,
       worktreeIsolationPassed: true,
+      worktreeIsolationOuterTimeoutMilliseconds: 300_000,
       worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
     },
     suite: 'code-graph-external-repository-v1',
     version: 1,
-    warmups: 0,
+    warmups: 5,
   };
 }
 
@@ -492,6 +554,73 @@ describe('Threadnote 4 website content', () => {
     });
   });
 
+  it('keeps harness and website validation fail-closed under the same adversarial mutations', () => {
+    const mutations: readonly [string, (fixture: Record<string, unknown>) => void][] = [
+      [
+        'MCP output',
+        fixture => {
+          fixture.measurements = (fixture.measurements as Record<string, unknown>[]).filter(
+            measurement => measurement.name !== 'mcp-path-text-output',
+          );
+        },
+      ],
+      [
+        'sampler observation',
+        fixture => {
+          fixture.measurements = (fixture.measurements as Record<string, unknown>[]).filter(
+            measurement => measurement.name !== 'cold-external-storage-samples-n1',
+          );
+        },
+      ],
+      [
+        'activation observation',
+        fixture => {
+          fixture.measurements = (fixture.measurements as Record<string, unknown>[]).filter(
+            measurement => measurement.name !== 'cold-activation-committing-snapshot-observed-n1',
+          );
+        },
+      ],
+      [
+        'unknown metadata',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).privateRepositoryRoot = '/private/repository';
+        },
+      ],
+      [
+        'credential metadata',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).runnerIdentity = 'token=github_pat_example';
+        },
+      ],
+      [
+        'local-path metadata',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).runnerIdentity = '/Users/private/runner';
+        },
+      ],
+      [
+        'insufficient p95 samples',
+        fixture => {
+          const measurement = (fixture.measurements as Record<string, unknown>[]).find(
+            candidate => candidate.name === 'manager-bounded-query',
+          )!;
+          measurement.samples = 24;
+        },
+      ],
+      ['insufficient warmups', fixture => void (fixture.warmups = 4)],
+    ];
+    for (const [label, mutate] of mutations) {
+      const fixture = structuredClone(verifiedPerformanceFixture());
+      mutate(fixture);
+      for (const validate of [
+        (input: unknown) => assertExternalPerformanceEvidence(input as BenchmarkArtifactV1),
+        validateRetainedPerformancePayload,
+      ]) {
+        expect(() => validate(fixture), label).toThrow();
+      }
+    }
+  });
+
   it('rejects retained artifact tampering and a wrong bound SHA-256', () => {
     const artifactBytes = fixtureBytes(verifiedPerformanceFixture());
     const binding = fixtureBinding(artifactBytes);
@@ -623,7 +752,7 @@ describe('Threadnote 4 website content', () => {
 
   it('rejects fabricated, mixed-runtime, and separately supplied Manager evidence', () => {
     const githubMode = verifiedPerformanceFixture();
-    (githubMode.metadata as Record<string, unknown>).benchmarkRuntimeProvenanceMode = 'github-actions-clean-source';
+    (githubMode.metadata as Record<string, unknown>).benchmarkSourceValidationMode = 'github-actions-clean-source';
     const githubBytes = fixtureBytes(githubMode);
     expect(() =>
       bindRetainedPerformanceArtifact({
@@ -634,10 +763,10 @@ describe('Threadnote 4 website content', () => {
         currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
-    ).toThrow('managed-exact-head');
+    ).toThrow('managed-payload-exact-head-validated');
 
     const missingRuntimeHash = verifiedPerformanceFixture();
-    delete (missingRuntimeHash.metadata as Record<string, unknown>).benchmarkManagedExecutableSha256;
+    delete (missingRuntimeHash.metadata as Record<string, unknown>).benchmarkValidatedManagedExecutableSha256;
     const runtimeBytes = fixtureBytes(missingRuntimeHash);
     expect(() =>
       bindRetainedPerformanceArtifact({
@@ -648,7 +777,7 @@ describe('Threadnote 4 website content', () => {
         currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
-    ).toThrow('benchmarkManagedExecutableSha256');
+    ).toThrow('benchmarkValidatedManagedExecutableSha256');
 
     for (const [label, mutate] of [
       [
@@ -660,25 +789,25 @@ describe('Threadnote 4 website content', () => {
       [
         'dependency installation',
         (fixture: Record<string, unknown>) => {
-          (fixture.metadata as Record<string, unknown>).benchmarkManagedDependencyInstallation = 'bun install';
+          (fixture.metadata as Record<string, unknown>).benchmarkValidatedManagedDependencyInstallation = 'bun install';
         },
       ],
       [
         'payload manifest hash',
         (fixture: Record<string, unknown>) => {
-          delete (fixture.metadata as Record<string, unknown>).benchmarkManagedPayloadManifestSha256;
+          delete (fixture.metadata as Record<string, unknown>).benchmarkValidatedManagedPayloadManifestSha256;
         },
       ],
       [
         'release metadata hash',
         (fixture: Record<string, unknown>) => {
-          delete (fixture.metadata as Record<string, unknown>).benchmarkManagedReleaseMetadataSha256;
+          delete (fixture.metadata as Record<string, unknown>).benchmarkValidatedManagedReleaseMetadataSha256;
         },
       ],
       [
         'runtime target',
         (fixture: Record<string, unknown>) => {
-          (fixture.metadata as Record<string, unknown>).benchmarkManagedTarget = 'linux-x64';
+          (fixture.metadata as Record<string, unknown>).benchmarkValidatedManagedTarget = 'linux-x64';
         },
       ],
     ] as const) {
@@ -785,12 +914,15 @@ describe('Threadnote 4 website content', () => {
         'storage.peakResidentBytes',
         'storage.peakWalBytes',
         'storage.peakTemporaryBytes',
+        'storage.peakDurableGrowthBytes',
+        'storage.peakJournalBytes',
         'manager.overviewColdMilliseconds',
-        'manager.renderProxyMilliseconds',
+        'manager.layoutPreparationProxyMilliseconds',
         'manager.queryP95Milliseconds',
         'manager.queryMaxPayloadBytes',
+        'manager.requestCancellationPassed',
         'manager.snapshotBindingPassed',
-        'manager.staleRequestCancellationPassed',
+        'manager.staleResponseRejectionPassed',
         'concurrency.simultaneousWorktrees',
       ]),
     );

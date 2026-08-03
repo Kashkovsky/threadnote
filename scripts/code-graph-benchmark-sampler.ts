@@ -9,6 +9,7 @@ const MAX_OPEN_FILE_PROCESSES = 4_096;
 export interface CodeGraphBenchmarkSamplerPhase {
   readonly cpuMilliseconds?: number;
   readonly databasePeakBytes: number;
+  readonly journalPeakBytes?: number;
   readonly ioReadBytes?: number;
   readonly ioWriteBytes?: number;
   readonly processPeakCount?: number;
@@ -237,6 +238,9 @@ function isSamplerPhase(
   if (typeof value !== 'object' || value === null) return false;
   const sample = value as Partial<CodeGraphBenchmarkSamplerPhase>;
   const byteCounts = [sample.databasePeakBytes, sample.shmPeakBytes, sample.temporaryPeakBytes, sample.walPeakBytes];
+  const journalValid =
+    sample.journalPeakBytes === undefined ||
+    (Number.isSafeInteger(sample.journalPeakBytes) && Number(sample.journalPeakBytes) >= 0);
   const processTelemetryValid =
     processTelemetry.availability === 'available'
       ? typeof sample.cpuMilliseconds === 'number' &&
@@ -304,7 +308,8 @@ function isSamplerPhase(
     temporaryTelemetryValid &&
     Number.isSafeInteger(sample.samples) &&
     Number(sample.samples) > 0 &&
-    byteCounts.every(candidate => Number.isSafeInteger(candidate) && Number(candidate) >= 0)
+    byteCounts.every(candidate => Number.isSafeInteger(candidate) && Number(candidate) >= 0) &&
+    journalValid
   );
 }
 
@@ -313,6 +318,7 @@ interface MutablePhase {
   databasePeakBytes: number;
   ioReadBytes: number;
   ioWriteBytes: number;
+  journalPeakBytes: number;
   processPeakCount: number;
   processSampleAttempts: number;
   processSampleFailures: number;
@@ -386,17 +392,19 @@ async function main(): Promise<void> {
     const temporaryOpenSampleDue =
       pendingInitialTemporaryOpenFiles !== undefined ||
       Date.now() - lastTemporaryOpenSampleAt >= openFileSampleIntervalMilliseconds;
-    const [databaseBytes, walBytes, shmBytes, temporaryLinkedFiles, observedProcessSample] = await Promise.all([
-      fileBytes(options.databasePath),
-      fileBytes(`${options.databasePath}-wal`),
-      fileBytes(`${options.databasePath}-shm`),
-      directoryFileSnapshot(canonicalTemporaryRoot),
-      processSampleDue
-        ? pendingInitialProcessSample !== undefined
-          ? Promise.resolve(pendingInitialProcessSample)
-          : readProcessTreeSample(options.processId, clockTicksPerSecond)
-        : Promise.resolve(undefined),
-    ]);
+    const [databaseBytes, walBytes, shmBytes, journalBytes, temporaryLinkedFiles, observedProcessSample] =
+      await Promise.all([
+        fileBytes(options.databasePath),
+        fileBytes(`${options.databasePath}-wal`),
+        fileBytes(`${options.databasePath}-shm`),
+        fileBytes(`${options.databasePath}-journal`),
+        directoryFileSnapshot(canonicalTemporaryRoot),
+        processSampleDue
+          ? pendingInitialProcessSample !== undefined
+            ? Promise.resolve(pendingInitialProcessSample)
+            : readProcessTreeSample(options.processId, clockTicksPerSecond)
+          : Promise.resolve(undefined),
+      ]);
     const processSample = processSampleDue ? observedProcessSample : undefined;
     if (processSampleDue) {
       pendingInitialProcessSample = undefined;
@@ -424,6 +432,7 @@ async function main(): Promise<void> {
       databasePeakBytes: 0,
       ioReadBytes: 0,
       ioWriteBytes: 0,
+      journalPeakBytes: 0,
       processPeakCount: 0,
       processSampleAttempts: 0,
       processSampleFailures: 0,
@@ -441,6 +450,7 @@ async function main(): Promise<void> {
       walPeakBytes: 0,
     };
     current.databasePeakBytes = Math.max(current.databasePeakBytes, databaseBytes);
+    current.journalPeakBytes = Math.max(current.journalPeakBytes, journalBytes);
     current.walPeakBytes = Math.max(current.walPeakBytes, walBytes);
     current.shmPeakBytes = Math.max(current.shmPeakBytes, shmBytes);
     current.temporaryLinkedPeakBytes = Math.max(current.temporaryLinkedPeakBytes, temporaryLinkedFiles.bytes);
@@ -543,6 +553,7 @@ function samplerArtifact(
               ...process,
               ...temporary,
               databasePeakBytes: value.databasePeakBytes,
+              journalPeakBytes: value.journalPeakBytes,
               samples: value.samples,
               shmPeakBytes: value.shmPeakBytes,
               temporaryPeakBytes: value.temporaryPeakBytes,

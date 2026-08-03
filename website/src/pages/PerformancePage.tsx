@@ -65,8 +65,8 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
       label: 'Manager',
       title: artifact ? 'Bounded views, retained measurements' : 'Manager performance remains gated',
       body: artifact
-        ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and render work with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget, snapshot binding, and aborted stale-result rejection through the GraphWorkspace request gate.`
-        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, render, snapshot-binding, and aborted stale-result rejection evidence together.',
+        ? `The retained run covers indexed catalog, bounded graph query, overview, detail, and render work with a ${formatInteger(artifact.manager.nodeBudget)}-node / ${formatInteger(artifact.manager.edgeBudget)}-edge evidence budget and snapshot binding. Real Manager query controls exercise the GraphWorkspace request gate: superseding aborts an in-flight request, and a completed late response is rejected before it can update the UI.`
+        : 'This page makes no Manager-speed claim until the reviewed Manager implementation and retained artifact supply catalog, bounded-query latency and payload, overview, detail, render, snapshot-binding, real request-cancellation, and completed stale-response rejection evidence together.',
       detail: artifact
         ? `Query p95 ${formatDuration(artifact.manager.queryP95Milliseconds)} · max payload ${formatBytes(artifact.manager.queryMaxPayloadBytes)}`
         : 'Pending reviewed code + retained measurements',
@@ -89,7 +89,7 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
 const proofGroups = [
   {
     label: 'Exact provenance',
-    body: 'The complete harness artifact binds its bytes, exact source and public-repository commits, clean managed executable, dependency lock, payload manifest, release metadata, runtime target, hardware, Bun, SQLite, and disk details.',
+    body: 'The complete harness artifact binds its bytes, exact source and public-repository commits, the measured local-source ApplicationLayer, and a separately validated—but not executed—managed payload, plus hardware, Bun, SQLite, and disk details.',
   },
   {
     label: 'End-to-end phases',

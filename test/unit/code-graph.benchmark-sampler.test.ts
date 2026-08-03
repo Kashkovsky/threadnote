@@ -68,6 +68,18 @@ const unavailableArtifact = {
 describe('code graph benchmark sampler artifact', () => {
   it('accepts finite non-negative phase telemetry', () => {
     expect(parseCodeGraphBenchmarkSamplerArtifact(validArtifact)).toEqual(validArtifact);
+    expect(
+      parseCodeGraphBenchmarkSamplerArtifact({
+        ...validArtifact,
+        phases: {scanning: {...validArtifact.phases.scanning, journalPeakBytes: 4_096}},
+      }).phases.scanning.journalPeakBytes,
+    ).toBe(4_096);
+    expect(() =>
+      parseCodeGraphBenchmarkSamplerArtifact({
+        ...validArtifact,
+        phases: {scanning: {...validArtifact.phases.scanning, journalPeakBytes: -1}},
+      }),
+    ).toThrow('invalid');
   });
 
   it('accepts recursive Linux process-tree and I/O telemetry', () => {
@@ -653,6 +665,7 @@ describe('code graph benchmark sampler artifact', () => {
         expect(artifact.phases.materializing.temporaryOpenSamples).toBe(
           artifact.phases.materializing.temporaryOpenAttempts,
         );
+        expect(artifact.phases.materializing.journalPeakBytes).toBeGreaterThanOrEqual(0);
         expect(artifactText).not.toContain(root);
         expect(artifactText).not.toContain('etilqs_deadbeef');
       } finally {
