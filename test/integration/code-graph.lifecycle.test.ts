@@ -1042,6 +1042,53 @@ describe('native code graph lifecycle', () => {
     expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
   });
 
+  it('preserves scoped TypeScript barrel resolution in a persisted dirty overlay', async () => {
+    const incrementalRoot = createFixtureRepository();
+    const fullRoot = createFixtureRepository();
+    for (const root of [incrementalRoot, fullRoot]) {
+      const sourcePath = join(root, 'packages/search/src/vector-index.ts');
+      writeFileSync(sourcePath, `${readFileSync(sourcePath, 'utf8')}\n// body-only dirty overlay\n`);
+    }
+    const incrementalHome = join(incrementalRoot, '.threadnote-test-home');
+    const fullHome = join(fullRoot, '.threadnote-test-home');
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const incremental = yield* indexer.index({cwd: incrementalRoot, threadnoteHome: incrementalHome});
+        const full = yield* indexer.index({
+          cwd: fullRoot,
+          incrementalOverlay: false,
+          threadnoteHome: fullHome,
+        });
+        const incrementalGraph = yield* store.loadGraph(
+          codeGraphDatabasePath(incrementalHome, incremental),
+          incremental.snapshot.id,
+        );
+        const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(fullHome, full), full.snapshot.id);
+        return {fullGraph, incremental, incrementalGraph};
+      }),
+    );
+
+    expect(result.incremental.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 1});
+    expect(
+      result.incrementalGraph.edges
+        .filter(
+          edge =>
+            edge.evidencePath === 'packages/search/src/vector-index.ts' &&
+            ((edge.relation === 'extends' && edge.targetName === 'FileLock') ||
+              (edge.relation === 'calls' && edge.targetName === 'withExclusiveFileLock')),
+        )
+        .map(edge => ({confidence: edge.confidence, provenance: edge.provenance, relation: edge.relation}))
+        .sort((left, right) => left.relation.localeCompare(right.relation)),
+    ).toEqual([
+      {confidence: 1, provenance: 'resolved', relation: 'calls'},
+      {confidence: 1, provenance: 'resolved', relation: 'extends'},
+    ]);
+    expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
+  });
+
   it('preserves diagnostics from unchanged files when reusing clean staging', async () => {
     const root = createBodyModifiedRepositoryWithCommittedDiagnostic();
     const result = await runEffect(

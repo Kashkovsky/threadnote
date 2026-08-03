@@ -53,7 +53,6 @@ import {
   type CodeGraphOverlayFallbackReason,
   type CodeGraphProgress,
   type CodeGraphReference,
-  type CodeGraphRelation,
   type CodeGraphSnapshot,
   type CodeGraphSymbol,
   type RepositoryIdentity,
@@ -1986,27 +1985,26 @@ function enrichPersistedTypeScriptReference(
   ) {
     return reference;
   }
-  const parsedTargets = uniqueByKey(
-    reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey)),
-    target => `${target.path}\0${target.name}`,
-  );
+  const parsedTargets = reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupTarget));
   if (!parsedTargets.some(target => provenance.has(`${target.path}\0${target.name}`))) return reference;
-  const targets = uniqueByKey(
-    parsedTargets.flatMap(target => terminalPersistedReexportTargets(target, provenance)),
-    target => `${target.path}\0${target.name}`,
-  );
-  if (targets.length === 0) return reference;
-  const generated = typeScriptLookupTiersForTargets(targets, reference.relation, reference.arity);
-  const nonPathKeys = reference.lookupTiers.map(tier =>
-    tier.filter(key => parseTypeScriptPathNameLookupKey(key).length === 0),
-  );
-  const tierCount = Math.max(generated.length, nonPathKeys.length);
   return {
     ...reference,
-    lookupTiers: Array.from({length: tierCount}, (_, index) => [
-      ...(generated[index] ?? []),
-      ...(nonPathKeys[index] ?? []),
-    ]).filter(tier => tier.length > 0),
+    lookupTiers: reference.lookupTiers
+      .map(tier =>
+        uniqueStrings(
+          tier.flatMap(key => {
+            const parsed = parseTypeScriptPathNameLookupTarget(key);
+            if (parsed.length === 0) return [key];
+            return parsed.flatMap(target =>
+              terminalPersistedReexportTargets(target, provenance).map(
+                terminal =>
+                  `${target.lookupPrefix}path:${encodeURIComponent(terminal.path)}:name:${encodeURIComponent(terminal.name)}${target.lookupSuffix}`,
+              ),
+            );
+          }),
+        ),
+      )
+      .filter(tier => tier.length > 0),
   };
 }
 
@@ -2027,29 +2025,28 @@ function terminalPersistedReexportTargets(
   return terminals.length > 0 ? terminals : [target];
 }
 
-function typeScriptLookupTiersForTargets(
-  targets: readonly CodeGraphReusableReexportSeed[],
-  relation: CodeGraphRelation,
-  arity?: number,
-): readonly (readonly string[])[] {
-  const perTarget = targets.map(target => {
-    const base = `typescript:path:${encodeURIComponent(target.path)}:name:${encodeURIComponent(target.name)}`;
-    return (relation === 'calls' || relation === 'constructs') && arity !== undefined
-      ? [[`${base}:implementation`], [`${base}:arity:${arity}`], [base]]
-      : [[`${base}:merge-canonical`], [base]];
-  });
-  const tierCount = Math.max(0, ...perTarget.map(tiers => tiers.length));
-  return Array.from({length: tierCount}, (_, index) =>
-    uniqueStrings(perTarget.flatMap(tiers => tiers[index] ?? [])),
-  ).filter(tier => tier.length > 0);
+function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
+  return parseTypeScriptPathNameLookupTarget(value).map(({name, path}) => ({name, path}));
 }
 
-function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
+interface TypeScriptPathNameLookupTarget extends CodeGraphReusableReexportSeed {
+  readonly lookupPrefix: string;
+  readonly lookupSuffix: string;
+}
+
+function parseTypeScriptPathNameLookupTarget(value: string): readonly TypeScriptPathNameLookupTarget[] {
   const match =
-    /^typescript:(?:[^:]+:)?path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
+    /^typescript:((?:[^:]+:)?)path:([^:]+):name:([^:]+)(:(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
   if (!match) return [];
   try {
-    return [{name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)}];
+    return [
+      {
+        lookupPrefix: `typescript:${match[1]!}`,
+        lookupSuffix: match[4] ?? '',
+        name: decodeURIComponent(match[3]!),
+        path: decodeURIComponent(match[2]!),
+      },
+    ];
   } catch {
     return [];
   }
