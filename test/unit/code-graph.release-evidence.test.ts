@@ -1,5 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {load} from 'js-yaml';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   EXTERNAL_REPOSITORY_EVIDENCE_MEASUREMENTS,
@@ -188,6 +189,39 @@ describe('code graph release evidence', () => {
     expect(() => resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', commit, commit, commit, true)).toThrow(
       /clean checkout/,
     );
+  });
+
+  it('accepts every stable, beta, and RC Threadnote 4 tag', () => {
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    const versionNumber = fc.integer({max: 10_000, min: 0});
+    const prerelease = fc.option(fc.tuple(fc.constantFrom('beta', 'rc'), versionNumber), {nil: undefined});
+
+    fc.assert(
+      fc.property(versionNumber, versionNumber, prerelease, (minor, patch, channel) => {
+        const suffix = channel === undefined ? '' : `-${channel[0]}.${channel[1]}`;
+        const ref = `refs/tags/v4.${minor}.${patch}${suffix}`;
+
+        expect(resolvedReleaseEvidenceSource(ref, commit, commit, commit, false)).toEqual({
+          ref,
+          resolvedSha: commit,
+          sha: commit,
+        });
+      }),
+      {numRuns: 250},
+    );
+  });
+
+  it.each([
+    'refs/tags/v3.9.9',
+    'refs/tags/v5.0.0',
+    'refs/tags/v4.0',
+    'refs/tags/v4.0.1-alpha.1',
+    'refs/tags/v4.0.1-beta',
+    'refs/tags/v4.00.1',
+    'refs/heads/v4.0.1',
+  ])('rejects non-Threadnote-4 release ref %s', ref => {
+    const commit = '0123456789abcdef0123456789abcdef01234567';
+    expect(() => resolvedReleaseEvidenceSource(ref, commit, commit, commit, false)).toThrow(/locally resolvable tag/);
   });
 
   it('requires aggregate materialization evidence in every production-large artifact', () => {
