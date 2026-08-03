@@ -1,3 +1,8 @@
+import {
+  privacySafeExternalControlPath,
+  privacySafeExternalControlQuery,
+} from '../../../src/evaluation/public_controls.js';
+
 export const performanceControlLanguages = ['java', 'kotlin', 'typescript', 'bazel'] as const;
 
 const retainedManagerNodeBudget = 500;
@@ -713,6 +718,12 @@ function parseHarnessControls(metadata: Record<string, unknown>): LanguageRecord
       const query = stringAt(control, 'query', `harness.controls.${language}`);
       const path = stringAt(control, 'path', `harness.controls.${language}`);
       const stableNodeId = stringAt(control, 'stableNodeId', `harness.controls.${language}`);
+      if (privacySafeExternalControlQuery(query) !== query) {
+        throw new Error(`Performance harness controls.${language}.query is not canonical privacy-safe evidence.`);
+      }
+      if (privacySafeExternalControlPath(path) !== path) {
+        throw new Error(`Performance harness controls.${language}.path is not canonical privacy-safe evidence.`);
+      }
       if (!/^cgs_[a-f0-9]{32,64}$/.test(stableNodeId)) {
         throw new Error(`Performance harness controls.${language}.stableNodeId is invalid.`);
       }

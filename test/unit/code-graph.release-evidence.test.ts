@@ -933,6 +933,28 @@ describe('code graph release evidence', () => {
         },
       }),
     ).toThrow(/privacy-safe external control evidence matching declared languages/);
+    for (const [field, value] of [
+      ['query', `ghp_${'a'.repeat(24)}`],
+      ['query', `sk-proj_${'b'.repeat(24)}`],
+      ['path', '/Users/example/private.ts'],
+      ['path', '/home/example/private.ts'],
+      ['path', '/mnt/c/Users/example/private.ts'],
+      ['path', '/c/Users/example/private.ts'],
+      ['path', 'C:\\Users\\example\\private.ts'],
+      ['path', '\\\\server\\share\\private.ts'],
+    ] as const) {
+      const sensitiveControls = JSON.parse(JSON.stringify(controls)) as Record<
+        string,
+        Record<'path' | 'query' | 'stableNodeId', string>
+      >;
+      sensitiveControls.java![field] = value;
+      expect(() =>
+        assertExternalPerformanceEvidence({
+          ...artifact,
+          metadata: {...artifact.metadata, externalControlEvidence: JSON.stringify(sensitiveControls)},
+        }),
+      ).toThrow(/privacy-safe external control evidence matching declared languages/);
+    }
     expect(() =>
       validateRetainedPerformancePayload({
         ...artifact,

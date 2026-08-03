@@ -115,7 +115,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     ['java', 'kotlin', 'typescript', 'bazel'].map((language, index) => [
       language,
       {
-        query: `${language} definition`,
+        query: `${language}Definition`,
         path: `src/${language}/control.${language}`,
         stableNodeId: `cgs_${String(index + 1).repeat(32)}`,
       },
@@ -517,6 +517,38 @@ describe('Threadnote 4 website content', () => {
         currentSourceTreeSha256: 'f'.repeat(64),
       }),
     ).toThrow('artifact SHA-256 mismatch');
+  });
+
+  it('rejects sensitive or machine-local public control evidence at the site binder', () => {
+    for (const [field, value] of [
+      ['query', `ghp_${'a'.repeat(24)}`],
+      ['query', `sk-proj_${'b'.repeat(24)}`],
+      ['path', '/Users/example/private.ts'],
+      ['path', '/home/example/private.ts'],
+      ['path', '/mnt/c/Users/example/private.ts'],
+      ['path', '/c/Users/example/private.ts'],
+      ['path', 'C:\\Users\\example\\private.ts'],
+      ['path', '\\\\server\\share\\private.ts'],
+      ['path', '../outside/private.ts'],
+    ] as const) {
+      const fixture = verifiedPerformanceFixture();
+      const metadata = fixture.metadata as Record<string, unknown>;
+      const controls = JSON.parse(String(metadata.externalControlEvidence)) as Record<string, Record<string, string>>;
+      controls.java = {...controls.java!, [field]: value};
+      metadata.externalControlEvidence = JSON.stringify(controls);
+      const artifactBytes = fixtureBytes(fixture);
+
+      expect(() =>
+        bindRetainedPerformanceArtifact({
+          artifactBytes,
+          artifactPublicUrl: performanceArtifactPublicUrl('/'),
+          binding: fixtureBinding(artifactBytes),
+          currentLockfileSha256: fixtureLockfileSha256,
+          currentPackageManifestSha256: fixturePackageManifestSha256,
+          currentSourceTreeSha256: 'f'.repeat(64),
+        }),
+      ).toThrow(/privacy-safe|repository-relative/);
+    }
   });
 
   it('rejects evidence bound to the wrong source commit or source tree', () => {

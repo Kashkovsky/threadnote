@@ -49,7 +49,12 @@ describe('external performance evidence', () => {
     expect(() => privacySafeExternalControlPath('../outside.ts')).toThrow('repository-relative paths');
     for (const sensitive of [
       '/Users/alice/private-repository',
+      '/home/alice/private-repository',
+      '/mnt/c/Users/alice/private-repository',
+      '/c/Users/alice/private-repository',
       'C:/Users/alice/private-repository',
+      'C:\\Users\\alice\\private-repository',
+      '\\\\server\\share\\private-repository',
       `ghp_${'a'.repeat(32)}`,
       `sk-proj-${'a'.repeat(32)}`,
     ]) {

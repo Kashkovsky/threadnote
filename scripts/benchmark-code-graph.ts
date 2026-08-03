@@ -30,7 +30,6 @@ import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
 import {LocalModelStore} from '../src/models/store.js';
 import {codeGraphMcpResponse} from '../src/mcp_server.js';
-import {credentialScrubberBlocker} from '../src/scrubber.js';
 import {
   graphQueryRequestIsCurrent,
   managerGraphClientRenderProxy,
@@ -44,6 +43,7 @@ import {
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
 } from '../src/evaluation/benchmark.js';
+import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
 import {codeGraphEvaluationFixtureHash, parseCodeGraphEvaluationFixtureV1} from '../src/evaluation/code-graph.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
@@ -77,7 +77,6 @@ const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
 const MANAGER_QUERY_NODE_LIMIT = 200;
 const MANAGER_QUERY_EDGE_LIMIT = 500;
-const SAFE_PUBLIC_CONTROL_QUERY = /^[A-Za-z0-9_./:@+-]{1,512}$/;
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -3190,8 +3189,8 @@ interface TimedEffectResult<A> {
   readonly value: A;
 }
 
-const timedJsonEffect = Effect.fn('benchmarkCodeGraph.timedJsonEffect')(function* <A>(
-  effect: Effect.Effect<A, unknown>,
+const timedJsonEffect = Effect.fn('benchmarkCodeGraph.timedJsonEffect')(function* <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
 ) {
   const started = yield* Clock.currentTimeNanos;
   const value = yield* effect;
@@ -4654,34 +4653,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
   return {name, url: `https://github.com/${name}`};
 }
 
-export function privacySafeExternalControlQuery(query: string): string {
-  const value = query.trim();
-  if (
-    !SAFE_PUBLIC_CONTROL_QUERY.test(value) ||
-    credentialScrubberBlocker(value) !== undefined ||
-    value.startsWith('/') ||
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    value.startsWith('\\\\')
-  ) {
-    throw new Error('External benchmark controls must use a privacy-safe public symbol or repository-relative path.');
-  }
-  return value;
-}
-
-export function privacySafeExternalControlPath(path: string): string {
-  const normalized = path.replaceAll('\\', '/');
-  if (
-    normalized.length === 0 ||
-    normalized.length > 1_024 ||
-    normalized.startsWith('/') ||
-    /^[A-Za-z]:\//.test(normalized) ||
-    credentialScrubberBlocker(normalized) !== undefined ||
-    normalized.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
-  ) {
-    throw new Error('External benchmark control paths must be normalized repository-relative paths.');
-  }
-  return normalized;
-}
+export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
 
 const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome')(function* (
   fs: FileSystem.FileSystem,
