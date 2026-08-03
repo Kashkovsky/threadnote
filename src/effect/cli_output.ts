@@ -4,6 +4,7 @@ export interface CliOutputShape {
   readonly drain: Effect.Effect<void, Error>;
   readonly enqueueError: (output: string) => void;
   readonly enqueueOutput: (output: string) => void;
+  readonly flush: Effect.Effect<void, Error>;
   readonly writeError: (output: string) => Effect.Effect<void, Error>;
   readonly writeFinal: (output: string) => Effect.Effect<void, Error>;
 }
@@ -33,10 +34,13 @@ function makeQueuedBunWriter(open: () => ReturnType<typeof Bun.stdout.writer>) {
     });
     return write;
   };
+  const flush = async (): Promise<void> => {
+    await tail;
+    if (failure !== undefined) throw failure;
+  };
   return {
     drain: async (): Promise<void> => {
-      await tail;
-      if (failure !== undefined) throw failure;
+      await flush();
       if (sink !== undefined && !ended) {
         ended = true;
         await sink.end();
@@ -45,6 +49,7 @@ function makeQueuedBunWriter(open: () => ReturnType<typeof Bun.stdout.writer>) {
     enqueue: (output: string): void => {
       void write(output);
     },
+    flush,
     write,
   };
 }
@@ -63,6 +68,10 @@ export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('thr
       }),
       enqueueError: stderr.enqueue,
       enqueueOutput: stdout.enqueue,
+      flush: Effect.tryPromise({
+        try: () => Promise.all([stdout.flush(), stderr.flush()]).then(() => undefined),
+        catch: cause => new Error('Failed to flush Threadnote CLI output.', {cause}),
+      }),
       writeError: makeFinalCliOutput(stderr.write),
       writeFinal: makeFinalCliOutput(stdout.write),
     });
@@ -94,3 +103,5 @@ export const writeFinalCliOutput = Effect.fn('cliOutput.writeFinalFromService')(
   const cliOutput = yield* CliOutput;
   yield* cliOutput.writeFinal(output);
 });
+
+export const flushCliOutput = Effect.flatMap(CliOutput, output => output.flush).pipe(Effect.orDie);

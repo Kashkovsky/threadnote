@@ -1,4 +1,5 @@
 import {Clock, Console, Effect, Fiber, Ref, Schedule, Semaphore, Terminal} from 'effect';
+import {CliOutput, flushCliOutput} from './effect/cli_output.js';
 import {SystemInfo} from './effect/system.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
@@ -77,6 +78,7 @@ export const promptForConfirmation = Effect.fn('cliUi.promptForConfirmation')(fu
   defaultYes = false,
 ) {
   const system = yield* SystemInfo;
+  yield* flushCliOutput;
   return yield* Effect.callback<boolean>(resume => {
     const cleanup = system.readLine(prompt, answer => resume(Effect.succeed(confirmationAnswer(answer, defaultYes))));
     return Effect.sync(cleanup);
@@ -101,7 +103,7 @@ export function promptForSelection(
   prompt: string,
   choices: readonly string[],
   defaultIndex = 0,
-): Effect.Effect<number, never, SystemInfo> {
+): Effect.Effect<number, never, CliOutput | SystemInfo> {
   return Effect.gen(function* () {
     if (choices.length === 0) {
       return -1;
@@ -112,6 +114,7 @@ export function promptForSelection(
     }
     const system = yield* SystemInfo;
     while (true) {
+      yield* flushCliOutput;
       const answer = yield* Effect.callback<string>(resume => {
         const cleanup = system.readLine(`Select [${defaultIndex + 1}]: `, line => resume(Effect.succeed(line)));
         return Effect.sync(cleanup);
@@ -146,15 +149,19 @@ export function withSpinnerEffect<A, E, R>(message: string, effect: Effect.Effec
 
 const startSpinner = Effect.fn('cliUi.startSpinner')(function* (message: string) {
   const terminal = yield* Terminal.Terminal;
+  const output = yield* CliOutput;
+  const flush = output.flush.pipe(Effect.orDie);
   const frames = ['-', '\\', '|', '/'];
   const frameIndex = yield* Ref.make(0);
   const render = Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length).pipe(
-    Effect.flatMap(index => terminal.display(`\r\u001b[2K${muted(frames[index])} ${message}`)),
+    Effect.flatMap(index =>
+      flush.pipe(Effect.andThen(terminal.display(`\r\u001b[2K${muted(frames[index])} ${message}`))),
+    ),
   );
   yield* render;
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
-    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
 
@@ -237,18 +244,24 @@ export const startProgress = Effect.fn('cliUi.startProgress')(function* (message
   }
 
   const terminal = yield* Terminal.Terminal;
+  const output = yield* CliOutput;
+  const flush = output.flush.pipe(Effect.orDie);
   const frames = ['-', '\\', '|', '/'];
   const frameIndex = yield* Ref.make(0);
   const currentMessage = yield* Ref.make(message);
   const render = Effect.all([
     Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length),
     Ref.get(currentMessage),
-  ]).pipe(Effect.flatMap(([index, text]) => terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`)));
+  ]).pipe(
+    Effect.flatMap(([index, text]) =>
+      flush.pipe(Effect.andThen(terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`))),
+    ),
+  );
   yield* render;
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
     update: (nextMessage: string) => Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
-    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
 

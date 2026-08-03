@@ -26,6 +26,7 @@ export function captureConsole<A, E, R>(
       enqueueOutput: output => {
         lines.push(output);
       },
+      flush: Effect.void,
       writeError: output =>
         Effect.sync(() => {
           lines.push(output);
